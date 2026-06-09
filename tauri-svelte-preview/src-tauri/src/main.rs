@@ -166,6 +166,33 @@ struct RuntimeContext {
     root_label: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GitRepositorySummary {
+    #[serde(rename = "projectID")]
+    project_id: String,
+    project_name: String,
+    repo: String,
+    path: String,
+    root_label: String,
+    branch: String,
+    #[serde(rename = "taskID")]
+    task_id: Option<String>,
+    is_worktree: bool,
+    is_dirty: bool,
+    staged_count: usize,
+    unstaged_count: usize,
+    untracked_count: usize,
+    dirty_count: usize,
+    ahead: usize,
+    behind: usize,
+    last_commit_sha: Option<String>,
+    last_commit_subject: Option<String>,
+    last_commit_at: Option<String>,
+    dirty_since_epoch_ms: Option<u64>,
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcessListener {
     pid: u32,
@@ -461,6 +488,15 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Worktree scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_git_repository_summaries(
+    projects: Vec<RuntimeContextProject>,
+) -> Result<Vec<GitRepositorySummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_git_repository_summaries_sync(projects))
+        .await
+        .map_err(|error| format!("Repository dashboard task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1401,6 +1437,222 @@ fn project_worktree_last_activity(path: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+fn list_git_repository_summaries_sync(
+    projects: Vec<RuntimeContextProject>,
+) -> Result<Vec<GitRepositorySummary>, String> {
+    let mut seen_paths = HashSet::new();
+    let mut summaries = Vec::new();
+
+    for project in projects {
+        for (path, is_worktree) in git_repository_paths_for_project(&project) {
+            let normalized_path = normalized_path_string(&path);
+            if !seen_paths.insert(normalized_path) {
+                continue;
+            }
+
+            summaries.push(git_repository_summary_for_path(&project, path, is_worktree));
+        }
+    }
+
+    summaries.sort_by(|left, right| {
+        left.project_name
+            .cmp(&right.project_name)
+            .then(left.root_label.cmp(&right.root_label))
+            .then(left.branch.cmp(&right.branch))
+    });
+    Ok(summaries)
+}
+
+fn git_repository_paths_for_project(project: &RuntimeContextProject) -> Vec<(PathBuf, bool)> {
+    let project_path = PathBuf::from(&project.path);
+    let project_path_string = normalized_path_string(&project_path);
+    let mut seen = HashSet::from([project_path_string]);
+    let mut paths = vec![(project_path.clone(), false)];
+
+    if let Ok(worktrees) = list_project_worktree_paths(&project_path) {
+        for worktree_path in worktrees {
+            let normalized_path = normalized_path_string(&worktree_path);
+            if seen.insert(normalized_path) {
+                paths.push((worktree_path, true));
+            }
+        }
+    }
+
+    paths
+}
+
+fn list_project_worktree_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let output = run_git_text(root, &["worktree", "list", "--porcelain"])?;
+    Ok(parse_project_worktree_porcelain(&output)
+        .into_iter()
+        .map(|worktree| PathBuf::from(worktree.path))
+        .collect())
+}
+
+fn git_repository_summary_for_path(
+    project: &RuntimeContextProject,
+    path: PathBuf,
+    is_worktree: bool,
+) -> GitRepositorySummary {
+    git_repository_summary_for_path_result(project, &path, is_worktree).unwrap_or_else(|error| {
+        empty_git_repository_summary(project, &path, is_worktree, Some(error))
+    })
+}
+
+fn git_repository_summary_for_path_result(
+    project: &RuntimeContextProject,
+    path: &Path,
+    is_worktree: bool,
+) -> Result<GitRepositorySummary, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Could not read repository metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Repository path is not a directory".to_string());
+    }
+
+    let status = project_git_status_sync(path.to_path_buf())?;
+    let counts = git_repository_status_counts(&status.files);
+    let (last_commit_sha, last_commit_subject, last_commit_at) = git_last_commit(path);
+    let branch = status.branch.unwrap_or_else(|| "unknown".to_string());
+    let dirty_count = counts.staged_count + counts.unstaged_count + counts.untracked_count;
+
+    Ok(GitRepositorySummary {
+        project_id: project.id.clone(),
+        project_name: project.name.clone(),
+        repo: path_last_segment(Path::new(&project.path)).unwrap_or_else(|| project.name.clone()),
+        path: path.display().to_string(),
+        root_label: runtime_context_root_label(path),
+        branch: branch.clone(),
+        task_id: branch_task_id(&branch),
+        is_worktree,
+        is_dirty: dirty_count > 0,
+        staged_count: counts.staged_count,
+        unstaged_count: counts.unstaged_count,
+        untracked_count: counts.untracked_count,
+        dirty_count,
+        ahead: status.ahead,
+        behind: status.behind,
+        last_commit_sha,
+        last_commit_subject,
+        last_commit_at,
+        dirty_since_epoch_ms: git_dirty_since_epoch_ms(path, &status.files),
+        error: None,
+    })
+}
+
+fn empty_git_repository_summary(
+    project: &RuntimeContextProject,
+    path: &Path,
+    is_worktree: bool,
+    error: Option<String>,
+) -> GitRepositorySummary {
+    GitRepositorySummary {
+        project_id: project.id.clone(),
+        project_name: project.name.clone(),
+        repo: path_last_segment(Path::new(&project.path)).unwrap_or_else(|| project.name.clone()),
+        path: path.display().to_string(),
+        root_label: runtime_context_root_label(path),
+        branch: "unknown".to_string(),
+        task_id: None,
+        is_worktree,
+        is_dirty: false,
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        dirty_count: 0,
+        ahead: 0,
+        behind: 0,
+        last_commit_sha: None,
+        last_commit_subject: None,
+        last_commit_at: None,
+        dirty_since_epoch_ms: None,
+        error,
+    }
+}
+
+#[derive(Default)]
+struct GitRepositoryStatusCounts {
+    staged_count: usize,
+    unstaged_count: usize,
+    untracked_count: usize,
+}
+
+fn git_repository_status_counts(files: &[GitFileStatus]) -> GitRepositoryStatusCounts {
+    let mut counts = GitRepositoryStatusCounts::default();
+
+    for file in files {
+        if file.status == "untracked" {
+            counts.untracked_count += 1;
+            continue;
+        }
+
+        if !file.index_status.is_empty() {
+            counts.staged_count += 1;
+        }
+        if !file.worktree_status.is_empty() {
+            counts.unstaged_count += 1;
+        }
+    }
+
+    counts
+}
+
+fn git_last_commit(root: &Path) -> (Option<String>, Option<String>, Option<String>) {
+    let Ok(output) = run_git_text(root, &["log", "-1", "--format=%h%x1f%s%x1f%cI"]) else {
+        return (None, None, None);
+    };
+
+    let mut parts = output.trim().split('\x1f');
+    let sha = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let subject = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let committed_at = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    (sha, subject, committed_at)
+}
+
+fn git_dirty_since_epoch_ms(root: &Path, files: &[GitFileStatus]) -> Option<u64> {
+    files
+        .iter()
+        .filter_map(|file| {
+            std::fs::metadata(root.join(&file.relative_path))
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        })
+        .min()
+}
+
+fn branch_task_id(branch: &str) -> Option<String> {
+    let lower_branch = branch.to_ascii_lowercase();
+    for (index, _) in lower_branch.match_indices("tsk") {
+        let suffix = lower_branch[index + 3..].trim_start_matches(['-', '_', '/', '#']);
+        let digits: String = suffix
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return Some(format!("TSK-{digits}"));
+        }
+    }
+
+    None
+}
+
 fn list_runtime_contexts_sync(
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<RuntimeContext>, String> {
@@ -1862,6 +2114,7 @@ fn main() {
             project_git_status,
             read_source_git_diff,
             list_project_worktrees,
+            list_git_repository_summaries,
             list_agent_sessions,
             list_runtime_contexts
         ])
@@ -2251,6 +2504,64 @@ mod tests {
         assert!(!diff.is_binary);
         assert!(diff.diff.contains("-export const value = 1;"));
         assert!(diff.diff.contains("+export const value = 2;"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_repository_summary_counts_dirty_files_and_task_branch() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let readme_path = root.join("README.md");
+        std::fs::write(&readme_path, "initial\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["add", "README.md"]);
+        run_git_for_test(
+            &root,
+            &[
+                "-c",
+                "user.name=MacCommandBar Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        run_git_for_test(&root, &["checkout", "-b", "tsk-127-repo-dashboard"]);
+
+        std::fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        run_git_for_test(&root, &["add", "staged.txt"]);
+        std::fs::write(&readme_path, "changed\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+
+        let project = RuntimeContextProject {
+            id: "mac-command-bar".to_string(),
+            name: "MacCommandBar".to_string(),
+            path: root.display().to_string(),
+        };
+        let summaries = list_git_repository_summaries_sync(vec![project]).unwrap();
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.path == root.display().to_string())
+            .unwrap();
+
+        assert_eq!(summary.project_id, "mac-command-bar");
+        assert_eq!(summary.project_name, "MacCommandBar");
+        assert_eq!(summary.branch, "tsk-127-repo-dashboard");
+        assert_eq!(summary.task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(summary.staged_count, 1);
+        assert_eq!(summary.unstaged_count, 1);
+        assert_eq!(summary.untracked_count, 1);
+        assert_eq!(summary.dirty_count, 3);
+        assert!(summary.is_dirty);
+        assert_eq!(summary.last_commit_subject.as_deref(), Some("initial"));
+        assert!(summary
+            .last_commit_sha
+            .as_ref()
+            .is_some_and(|sha| !sha.is_empty()));
+        assert!(summary.dirty_since_epoch_ms.is_some());
 
         std::fs::remove_dir_all(root).unwrap();
     }

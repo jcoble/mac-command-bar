@@ -7,6 +7,7 @@ import {
   findSourceDefinitionsFromTauri,
   findSourceReferencesFromTauri,
   listAgentSessionsFromTauri,
+  listGitRepositorySummariesFromTauri,
   listProjectWorktreesFromTauri,
   listRuntimeContextsFromTauri,
   readProjectGitStatusFromTauri,
@@ -35,6 +36,10 @@ assert.equal(
 assert.equal(await readProjectGitStatusFromTauri('/tmp/repo'), null);
 assert.equal(await readSourceGitDiffFromTauri('/tmp/repo', '/tmp/repo/src/App.ts'), null);
 assert.equal(await listAgentSessionsFromTauri(), null);
+assert.equal(
+  await listGitRepositorySummariesFromTauri([{ id: 'repo', name: 'Repo', path: '/tmp/repo' }]),
+  null
+);
 assert.equal(await listProjectWorktreesFromTauri('/tmp/repo'), null);
 assert.equal(
   await listRuntimeContextsFromTauri([

@@ -82,6 +82,7 @@
     findSourceDefinitionsFromTauri,
     findSourceReferencesFromTauri,
     listAgentSessionsFromTauri,
+    listGitRepositorySummariesFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
     listenToSourceScanProgress,
@@ -96,6 +97,7 @@
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type AgentSession,
+    type GitRepositorySummary,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
     type ProjectWorktree,
@@ -149,6 +151,10 @@
   let projectWorktreesLoading = $state(false);
   let projectWorktreeError = $state('');
   let projectWorktreeSource = $state('browser preview');
+  let gitRepositorySummaries = $state<GitRepositorySummary[]>([]);
+  let gitRepositorySummariesLoading = $state(false);
+  let gitRepositorySummaryError = $state('');
+  let gitRepositorySummarySource = $state('browser preview');
   let agentSessions = $state<AgentSession[]>([]);
   let agentSessionsLoading = $state(false);
   let agentSessionError = $state('');
@@ -321,6 +327,14 @@
       projectWorktreesLoading,
       projectWorktreeError,
       projectWorktreeSource
+    )
+  );
+  let repoDashboardSummary = $derived(
+    formatRepoDashboardSummary(
+      gitRepositorySummaries,
+      gitRepositorySummariesLoading,
+      gitRepositorySummaryError,
+      gitRepositorySummarySource
     )
   );
   let agentSessionSummary = $derived(
@@ -649,6 +663,30 @@
     }
   }
 
+  async function loadGitRepositorySummaries(projects: ProjectRoot[] = projectOptions) {
+    gitRepositorySummariesLoading = true;
+    gitRepositorySummaryError = '';
+
+    try {
+      const nativeSummaries = await listGitRepositorySummariesFromTauri(projects);
+      if (nativeSummaries) {
+        gitRepositorySummaries = nativeSummaries;
+        gitRepositorySummarySource = 'native git dashboard';
+        return;
+      }
+
+      gitRepositorySummaries = demoGitRepositorySummariesForProjects(projects);
+      gitRepositorySummarySource = 'browser preview';
+    } catch (summaryError) {
+      gitRepositorySummaries = demoGitRepositorySummariesForProjects(projects);
+      gitRepositorySummarySource = 'browser preview';
+      gitRepositorySummaryError =
+        summaryError instanceof Error ? summaryError.message : 'Could not scan repositories';
+    } finally {
+      gitRepositorySummariesLoading = false;
+    }
+  }
+
   async function loadAgentSessions() {
     agentSessionsLoading = true;
     agentSessionError = '';
@@ -701,6 +739,31 @@
     ];
   }
 
+  function demoGitRepositorySummariesForProjects(projects: ProjectRoot[]): GitRepositorySummary[] {
+    return projects.map((project) => ({
+      projectID: project.id,
+      projectName: project.name,
+      repo: project.name,
+      path: project.path,
+      rootLabel: formatSourceContextRootLabel(project.path),
+      branch: 'main',
+      taskID: null,
+      isWorktree: false,
+      isDirty: false,
+      stagedCount: 0,
+      unstagedCount: 0,
+      untrackedCount: 0,
+      dirtyCount: 0,
+      ahead: 0,
+      behind: 0,
+      lastCommitSha: null,
+      lastCommitSubject: null,
+      lastCommitAt: null,
+      dirtySinceEpochMs: null,
+      error: null
+    }));
+  }
+
   function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
     return [
       {
@@ -736,6 +799,61 @@
     if (worktreeError) return worktreeError;
     if (worktreeCount === 0) return `No worktrees found · ${worktreeSource}`;
     return `${worktreeCount} ${worktreeCount === 1 ? 'worktree' : 'worktrees'} · ${worktreeSource}`;
+  }
+
+  function formatRepoDashboardSummary(
+    summaries: GitRepositorySummary[],
+    loadingSummaries: boolean,
+    summaryError: string,
+    summarySource: string
+  ) {
+    if (loadingSummaries) return 'Scanning configured repos';
+    if (summaryError) return summaryError;
+    if (summaries.length === 0) return `No repositories found · ${summarySource}`;
+
+    const dirtyCount = summaries.filter((summary) => summary.isDirty || summary.error).length;
+    return `${dirtyCount} dirty / ${summaries.length} repos · ${summarySource}`;
+  }
+
+  function repoDashboardTaskLabel(summary: GitRepositorySummary) {
+    return summary.taskID ?? 'none';
+  }
+
+  function repoDashboardDirtyLabel(summary: GitRepositorySummary) {
+    if (summary.error) return 'error';
+    if (!summary.isDirty) return 'clean';
+
+    const counts = `${summary.dirtyCount} files`;
+    if (!summary.dirtySinceEpochMs) return counts;
+
+    return `${counts} · ${formatRelativeAge(summary.dirtySinceEpochMs)}`;
+  }
+
+  function repoDashboardRemoteLabel(summary: GitRepositorySummary) {
+    const remote = `↑${summary.ahead} ↓${summary.behind}`;
+    const commit = summary.lastCommitSha ? ` · ${summary.lastCommitSha}` : '';
+    return `${remote}${commit}`;
+  }
+
+  function repoDashboardTitle(summary: GitRepositorySummary) {
+    const parts = [
+      summary.path,
+      summary.lastCommitSubject ? `Last commit: ${summary.lastCommitSubject}` : '',
+      summary.error ? `Error: ${summary.error}` : ''
+    ].filter(Boolean);
+    return parts.join('\n');
+  }
+
+  function formatRelativeAge(epochMs: number) {
+    const elapsedMs = Math.max(0, Date.now() - epochMs);
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+
+    if (elapsedMs < minuteMs) return 'just now';
+    if (elapsedMs < hourMs) return `${Math.floor(elapsedMs / minuteMs)}m`;
+    if (elapsedMs < dayMs) return `${Math.floor(elapsedMs / hourMs)}h`;
+    return `${Math.floor(elapsedMs / dayMs)}d`;
   }
 
   function formatAgentSessionSummary(
@@ -1473,6 +1591,7 @@
     void loadProjectGitStatus(nextProject);
     void loadRuntimeContexts(projectOptions);
     void loadProjectWorktrees(nextProject);
+    void loadGitRepositorySummaries(projectOptions);
     void loadAgentSessions();
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
     void indexProjectsInBackground(projectOptions);
@@ -1718,6 +1837,7 @@
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     void loadProjectGitStatus(project);
+    void loadGitRepositorySummaries(projectOptions);
     void loadAgentSessions();
     await scanProject(project, selectedSourcePaths[project.id]);
     void indexProjectsInBackground(projectOptions);
@@ -1919,6 +2039,7 @@
     void loadProjectGitStatus(storedProject);
     void loadRuntimeContexts(storedProjectOptions);
     void loadProjectWorktrees(storedProject);
+    void loadGitRepositorySummaries(storedProjectOptions);
     void loadAgentSessions();
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
       indexProjectsInBackground(storedProjectOptions)
@@ -2322,6 +2443,51 @@
                 <span>{worktree.repo}</span>
                 <small title={worktree.path}>{worktree.path}</small>
                 <em>{worktree.deleteEligibility}</em>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section class="repo-dashboard-panel" aria-label="Repository dashboard">
+        <div class="repo-dashboard-header">
+          <div>
+            <strong>Repo Dashboard</strong>
+            <span>{repoDashboardSummary}</span>
+          </div>
+          <button
+            class="file-action-button"
+            type="button"
+            aria-label="Refresh repository dashboard"
+            title="Refresh repository dashboard"
+            disabled={gitRepositorySummariesLoading}
+            onclick={() => loadGitRepositorySummaries(projectOptions)}
+          >
+            <RefreshCw size={14} strokeWidth={1.9} />
+          </button>
+        </div>
+        {#if gitRepositorySummaries.length > 0}
+          <div class="repo-dashboard-list">
+            {#each gitRepositorySummaries as summary (`${summary.projectID}:${summary.path}`)}
+              <div
+                class="repo-dashboard-row"
+                class:dirty={summary.isDirty || summary.error}
+                title={repoDashboardTitle(summary)}
+              >
+                <div class="repo-dashboard-main">
+                  <strong>{summary.projectName}</strong>
+                  <small>{summary.rootLabel}</small>
+                </div>
+                <span class="repo-branch-badge">{summary.branch}</span>
+                <div class="repo-dashboard-metric">
+                  <span>Task</span>
+                  <strong>{repoDashboardTaskLabel(summary)}</strong>
+                </div>
+                <div class="repo-dashboard-metric">
+                  <span>Dirty</span>
+                  <strong>{repoDashboardDirtyLabel(summary)}</strong>
+                </div>
+                <em>{repoDashboardRemoteLabel(summary)}</em>
               </div>
             {/each}
           </div>
@@ -3564,7 +3730,8 @@
 
   .runtime-context-panel,
   .agent-session-panel,
-  .worktree-context-panel {
+  .worktree-context-panel,
+  .repo-dashboard-panel {
     display: grid;
     gap: 8px;
     min-width: 0;
@@ -3576,7 +3743,8 @@
 
   .runtime-context-header,
   .agent-session-header,
-  .worktree-context-header {
+  .worktree-context-header,
+  .repo-dashboard-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -3586,7 +3754,8 @@
 
   .runtime-context-header div,
   .agent-session-header div,
-  .worktree-context-header div {
+  .worktree-context-header div,
+  .repo-dashboard-header div {
     display: grid;
     gap: 2px;
     min-width: 0;
@@ -3597,7 +3766,9 @@
   .agent-session-header strong,
   .agent-session-header span,
   .worktree-context-header strong,
-  .worktree-context-header span {
+  .worktree-context-header span,
+  .repo-dashboard-header strong,
+  .repo-dashboard-header span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3606,7 +3777,8 @@
 
   .runtime-context-header strong,
   .agent-session-header strong,
-  .worktree-context-header strong {
+  .worktree-context-header strong,
+  .repo-dashboard-header strong {
     color: #f0f4f3;
     font-size: 12px;
     font-weight: 800;
@@ -3614,7 +3786,8 @@
 
   .runtime-context-header span,
   .agent-session-header span,
-  .worktree-context-header span {
+  .worktree-context-header span,
+  .repo-dashboard-header span {
     color: #8d9995;
     font-size: 10px;
     font-weight: 740;
@@ -3622,7 +3795,8 @@
 
   .runtime-context-list,
   .agent-session-list,
-  .worktree-context-list {
+  .worktree-context-list,
+  .repo-dashboard-list {
     display: grid;
     gap: 5px;
     max-height: 108px;
@@ -3649,9 +3823,15 @@
     scrollbar-width: thin;
   }
 
+  .repo-dashboard-list {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
   .runtime-context-row,
   .agent-session-row,
-  .worktree-context-row {
+  .worktree-context-row,
+  .repo-dashboard-row {
     display: grid;
     align-items: center;
     gap: 8px;
@@ -3674,13 +3854,22 @@
     grid-template-columns: auto minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1fr);
   }
 
+  .repo-dashboard-row {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.75fr) minmax(0, 0.7fr) minmax(0, 0.82fr) minmax(0, 0.65fr);
+  }
+
   .worktree-context-row.blocked {
+    background: rgba(216, 170, 85, 0.09);
+  }
+
+  .repo-dashboard-row.dirty {
     background: rgba(216, 170, 85, 0.09);
   }
 
   .runtime-port,
   .agent-provider-badge,
   .worktree-status-badge,
+  .repo-branch-badge,
   .runtime-context-row strong,
   .runtime-context-row span,
   .runtime-context-row small,
@@ -3690,7 +3879,14 @@
   .worktree-context-row strong,
   .worktree-context-row span,
   .worktree-context-row small,
-  .worktree-context-row em {
+  .worktree-context-row em,
+  .repo-dashboard-main,
+  .repo-dashboard-main strong,
+  .repo-dashboard-main small,
+  .repo-dashboard-metric,
+  .repo-dashboard-metric span,
+  .repo-dashboard-metric strong,
+  .repo-dashboard-row em {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3729,6 +3925,13 @@
     font-weight: 820;
   }
 
+  .repo-branch-badge {
+    color: #6fdfcf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
   .worktree-context-row.blocked .worktree-status-badge {
     color: #211606;
     background: #d8aa55;
@@ -3752,13 +3955,49 @@
     font-weight: 780;
   }
 
+  .repo-dashboard-main {
+    display: grid;
+    gap: 2px;
+  }
+
+  .repo-dashboard-main strong {
+    color: #f0f4f3;
+    font-size: 11px;
+    font-weight: 780;
+  }
+
+  .repo-dashboard-main small {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 720;
+  }
+
+  .repo-dashboard-metric {
+    display: grid;
+    gap: 2px;
+  }
+
+  .repo-dashboard-metric span {
+    color: #6fdfcf;
+    font-size: 9px;
+    font-weight: 840;
+    text-transform: uppercase;
+  }
+
+  .repo-dashboard-metric strong {
+    color: #cbd3d1;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
   .runtime-context-row span,
   .runtime-context-row small,
   .agent-session-row span,
   .agent-session-row small,
   .worktree-context-row span,
   .worktree-context-row small,
-  .worktree-context-row em {
+  .worktree-context-row em,
+  .repo-dashboard-row em {
     color: #8d9995;
     font-size: 10px;
     font-style: normal;
@@ -4483,6 +4722,10 @@
 
     .worktree-context-row {
       grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .repo-dashboard-row {
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .editor-frame {

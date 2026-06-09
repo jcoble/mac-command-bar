@@ -263,6 +263,17 @@ assert.ok(pageSource.includes('class="worktree-status-badge"'), 'Worktree rows s
 assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');
 assertDeclaration('.worktree-context-list', 'overflow-y: auto');
 assertDeclaration('.worktree-context-list', 'scrollbar-width: thin');
+assert.ok(pageSource.includes('listGitRepositorySummariesFromTauri'), 'Source page should load native repository summaries');
+assert.ok(pageSource.includes('gitRepositorySummaries'), 'Source page should track repository dashboard summaries');
+assert.ok(pageSource.includes('function loadGitRepositorySummaries'), 'Source page should expose a repository dashboard refresh action');
+assert.ok(pageSource.includes('aria-label="Refresh repository dashboard"'), 'Repository dashboard should expose a refresh action');
+assert.ok(pageSource.includes('class="repo-dashboard-panel"'), 'Source page should render a repository dashboard panel');
+assert.ok(pageSource.includes('class="repo-dashboard-list"'), 'Repository dashboard should render a scrollable list');
+assert.ok(pageSource.includes('class="repo-dashboard-row"'), 'Repository dashboard should render repository summary rows');
+assert.ok(pageSource.includes('<span>Task</span>'), 'Repository dashboard should label inferred task IDs');
+assert.ok(pageSource.includes('<span>Dirty</span>'), 'Repository dashboard should label dirty age/count');
+assertDeclaration('.repo-dashboard-list', 'overflow-y: auto');
+assertDeclaration('.repo-dashboard-list', 'scrollbar-width: thin');
 assert.ok(pageSource.includes('listAgentSessionsFromTauri'), 'Source page should load native agent sessions');
 assert.ok(pageSource.includes('agentSessions'), 'Source page should track agent sessions');
 assert.ok(pageSource.includes('selectedProjectAgentSessions'), 'Source page should filter sessions to the selected project');

@@ -50,6 +50,29 @@ export type ProjectWorktree = {
   deleteEligibility: string;
 };
 
+export type GitRepositorySummary = {
+  projectID: string;
+  projectName: string;
+  repo: string;
+  path: string;
+  rootLabel: string;
+  branch: string;
+  taskID: string | null;
+  isWorktree: boolean;
+  isDirty: boolean;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  dirtyCount: number;
+  ahead: number;
+  behind: number;
+  lastCommitSha: string | null;
+  lastCommitSubject: string | null;
+  lastCommitAt: string | null;
+  dirtySinceEpochMs: number | null;
+  error: string | null;
+};
+
 export type AgentSession = {
   provider: string;
   id: string;
@@ -191,6 +214,17 @@ export async function listProjectWorktreesFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectWorktree[]>('list_project_worktrees', { root });
+}
+
+export async function listGitRepositorySummariesFromTauri(
+  projects: RuntimeContextProject[]
+): Promise<GitRepositorySummary[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitRepositorySummary[]>('list_git_repository_summaries', { projects });
 }
 
 export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | null> {
