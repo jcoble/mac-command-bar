@@ -1,9 +1,11 @@
 import type { SourcePreview, SourceRecord } from './sourceData';
 
+export const defaultSourceScanLimit = 2_000;
+
 export async function listSourceFilesFromTauri(
   root: string,
   query = '',
-  limit = 300
+  limit = defaultSourceScanLimit
 ): Promise<SourceRecord[] | null> {
   if (!isTauriRuntime()) {
     return null;

@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
-const DEFAULT_SOURCE_LIST_LIMIT: usize = 300;
+const DEFAULT_SOURCE_LIST_LIMIT: usize = 2_000;
+const MAX_SOURCE_LIST_LIMIT: usize = 5_000;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,7 +95,7 @@ fn list_source_files_sync(
     let limit = if limit == 0 {
         DEFAULT_SOURCE_LIST_LIMIT
     } else {
-        limit.min(1_000)
+        limit.min(MAX_SOURCE_LIST_LIMIT)
     };
     let normalized_query = query
         .map(|value| value.trim().to_lowercase())
@@ -431,6 +432,38 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "src/Workers/Worker.cs");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_default_limit_covers_large_project_trees() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for index in 0..350 {
+            std::fs::write(root.join(format!("src/File{index:03}.ts")), "export const value = 1;")
+                .unwrap();
+        }
+
+        let files = list_source_files_sync(root.clone(), 0, None).unwrap();
+
+        assert_eq!(files.len(), 350);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_allows_explicit_limits_above_the_default_preview_cap() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for index in 0..1_200 {
+            std::fs::write(root.join(format!("src/File{index:04}.ts")), "export const value = 1;")
+                .unwrap();
+        }
+
+        let files = list_source_files_sync(root.clone(), 1_200, None).unwrap();
+
+        assert_eq!(files.len(), 1_200);
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -11,6 +11,7 @@
     "check": "svelte-kit sync && tsc --noEmit",
     "test:source-data": "node --experimental-strip-types scripts/sourceData.test.mjs",
     "test:source-ui": "node scripts/sourceUi.test.mjs",
+    "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
