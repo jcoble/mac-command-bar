@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
+  rankSourceRecords,
   selectPreferredSourceRecord,
   upsertOpenSourceTab,
   upsertRecentSourceRecord
@@ -99,3 +100,34 @@ assert.equal(closeActive.nextActivePath, '/repo/src/B.ts');
 const closeOnly = closeOpenSourceTab(firstTab, '/repo/src/A.ts', '/repo/src/A.ts');
 assert.deepEqual(closeOnly.tabs, []);
 assert.equal(closeOnly.nextActivePath, null);
+
+const rankedByFileName = rankSourceRecords(records, 'b', 5);
+assert.deepEqual(
+  rankedByFileName.map((record) => record.path),
+  ['/repo/src/B.ts']
+);
+
+const rankedEmptyQuery = rankSourceRecords(records, '', 1);
+assert.deepEqual(
+  rankedEmptyQuery.map((record) => record.path),
+  ['/repo/src/A.ts']
+);
+
+const rankedByRelativePath = rankSourceRecords(
+  [
+    ...records,
+    {
+      path: '/repo/tools/Generate.ts',
+      relativePath: 'tools/Generate.ts',
+      fileName: 'Generate.ts',
+      language: 'typescript',
+      byteCount: 30
+    }
+  ],
+  'tools',
+  5
+);
+assert.deepEqual(
+  rankedByRelativePath.map((record) => record.path),
+  ['/repo/tools/Generate.ts']
+);

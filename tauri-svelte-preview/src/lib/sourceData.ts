@@ -347,6 +347,32 @@ export function filterSourceRecords(records: SourceRecord[], query: string): Sou
   );
 }
 
+export function rankSourceRecords(
+  records: SourceRecord[],
+  query: string,
+  limit = 20
+): SourceRecord[] {
+  const cappedLimit = Math.max(0, Math.floor(limit));
+  if (cappedLimit === 0) return [];
+
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return records.slice(0, cappedLimit);
+
+  return records
+    .map((record) => ({
+      record,
+      score: scoreSourceRecord(record, normalizedQuery)
+    }))
+    .filter((result): result is { record: SourceRecord; score: number } => result.score !== null)
+    .sort(
+      (left, right) =>
+        left.score - right.score ||
+        localizedAscending(left.record.relativePath, right.record.relativePath)
+    )
+    .slice(0, cappedLimit)
+    .map((result) => result.record);
+}
+
 export function buildSourceTree(records: SourceRecord[]): SourceTreeNode[] {
   const entries = records.map((record) => ({
     components: record.relativePath.split('/').filter(Boolean),
@@ -430,6 +456,20 @@ function buildTreeNodes(entries: SourceTreeEntry[], prefix: string[]): SourceTre
 
 function localizedAscending(left: string, right: string): number {
   return left.localeCompare(right, undefined, { sensitivity: 'base', numeric: true });
+}
+
+function scoreSourceRecord(record: SourceRecord, normalizedQuery: string): number | null {
+  const fileName = record.fileName.toLowerCase();
+  const relativePath = record.relativePath.toLowerCase();
+  const language = record.language.toLowerCase();
+
+  if (fileName === normalizedQuery) return 0;
+  if (fileName.startsWith(normalizedQuery)) return 1;
+  if (fileName.includes(normalizedQuery)) return 2;
+  if (relativePath.startsWith(normalizedQuery)) return 3;
+  if (relativePath.includes(normalizedQuery)) return 4;
+  if (language.includes(normalizedQuery)) return 5;
+  return null;
 }
 
 function createProjectSourceRecord(

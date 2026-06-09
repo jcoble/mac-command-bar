@@ -37,6 +37,7 @@
     mergeProjectRoots,
     normalizeProjectPath,
     previewFromContent,
+    rankSourceRecords,
     selectPreferredSourceRecord,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
@@ -86,6 +87,10 @@
   let fileActionBusy = $state('');
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
+  let quickOpenVisible = $state(false);
+  let quickOpenQuery = $state('');
+  let quickOpenIndex = $state(0);
+  let quickOpenInput = $state<HTMLInputElement | null>(null);
   let projectNameInput = $state('');
   let projectPathInput = $state('');
   let projectFormError = $state('');
@@ -110,6 +115,7 @@
   let projectOpenSourceTabs = $derived(
     openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
   );
+  let quickOpenResults = $derived(rankSourceRecords(records, quickOpenQuery, 12));
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
@@ -118,6 +124,14 @@
       ? `${records.length}`
       : `${filteredRecords.length} / ${records.length}`
   );
+
+  $effect(() => {
+    if (!quickOpenVisible) return;
+    const lastResultIndex = Math.max(0, quickOpenResults.length - 1);
+    if (quickOpenIndex > lastResultIndex) {
+      quickOpenIndex = lastResultIndex;
+    }
+  });
 
   async function scanProject(
     project: ProjectRoot,
@@ -198,6 +212,59 @@
   async function selectOpenTab(tab: SourceOpenTab) {
     const record = records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
     await selectRecord(record);
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'p') {
+      event.preventDefault();
+      openQuickOpen();
+    }
+  }
+
+  function openQuickOpen() {
+    quickOpenVisible = true;
+    quickOpenQuery = '';
+    quickOpenIndex = 0;
+    window.setTimeout(() => quickOpenInput?.focus(), 0);
+  }
+
+  function closeQuickOpen() {
+    quickOpenVisible = false;
+    quickOpenQuery = '';
+    quickOpenIndex = 0;
+  }
+
+  async function chooseQuickOpenRecord(record: SourceRecord) {
+    await selectRecord(record);
+    closeQuickOpen();
+  }
+
+  function handleQuickOpenKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeQuickOpen();
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      quickOpenIndex = Math.min(quickOpenIndex + 1, Math.max(0, quickOpenResults.length - 1));
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      quickOpenIndex = Math.max(quickOpenIndex - 1, 0);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const selectedQuickOpenRecord = quickOpenResults[quickOpenIndex];
+      if (selectedQuickOpenRecord) {
+        void chooseQuickOpenRecord(selectedQuickOpenRecord);
+      }
+    }
   }
 
   async function closeSourceTab(tab: SourceOpenTab, event: MouseEvent) {
@@ -659,6 +726,8 @@
   <title>MacCommandBar Webview Preview</title>
 </svelte:head>
 
+<svelte:window onkeydown={handleWindowKeydown} />
+
 <main class="shell">
   <aside class="sidebar" aria-label="Project source files">
     <div class="brand-row">
@@ -933,6 +1002,62 @@
     {/if}
   </section>
 </main>
+
+{#if quickOpenVisible}
+  <div class="quick-open-layer">
+    <button
+      class="quick-open-backdrop"
+      type="button"
+      aria-label="Close quick open"
+      onclick={closeQuickOpen}
+    ></button>
+    <div
+      class="quick-open-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Open source file"
+    >
+      <label class="quick-open-search">
+        <span class="quick-open-icon">
+          <Search size={17} strokeWidth={1.8} />
+        </span>
+        <input
+          bind:this={quickOpenInput}
+          bind:value={quickOpenQuery}
+          onkeydown={handleQuickOpenKeydown}
+          placeholder="Open source file"
+          autocomplete="off"
+        />
+      </label>
+
+      <div class="quick-open-results" role="listbox" aria-label="Matching source files">
+        {#if quickOpenResults.length === 0}
+          <div class="quick-open-empty">No matching source files</div>
+        {:else}
+          {#each quickOpenResults as record, index (record.path)}
+            <button
+              class:active={index === quickOpenIndex}
+              type="button"
+              role="option"
+              aria-selected={index === quickOpenIndex}
+              title={record.relativePath}
+              onclick={() => chooseQuickOpenRecord(record)}
+            >
+              <span class="quick-open-result-icon">
+                <FileCode2 size={15} strokeWidth={1.8} />
+              </span>
+              <span>
+                <strong>{record.fileName}</strong>
+                <small>{record.relativePath}</small>
+              </span>
+              <em>{record.language}</em>
+            </button>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .shell {
@@ -1706,6 +1831,140 @@
 
   .quality-pill {
     color: #7ce5d5;
+  }
+
+  .quick-open-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: start center;
+    padding: 72px 16px 16px;
+  }
+
+  .quick-open-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: rgba(7, 9, 10, 0.56);
+    backdrop-filter: blur(10px);
+    cursor: default;
+  }
+
+  .quick-open-panel {
+    position: relative;
+    z-index: 1;
+    width: min(720px, calc(100vw - 32px));
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-radius: 12px;
+    background: rgba(22, 24, 24, 0.98);
+    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.44);
+  }
+
+  .quick-open-search {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    height: 50px;
+    padding: 0 14px;
+    color: #9aa5a1;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .quick-open-icon,
+  .quick-open-result-icon {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+  }
+
+  .quick-open-icon {
+    color: #6fdfcf;
+  }
+
+  .quick-open-search input {
+    height: 100%;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .quick-open-results {
+    display: grid;
+    gap: 3px;
+    max-height: 368px;
+    padding: 7px;
+    overflow: auto;
+  }
+
+  .quick-open-results button {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    height: 44px;
+    padding: 0 9px;
+    color: #cbd3d1;
+    text-align: left;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .quick-open-results button:hover,
+  .quick-open-results button.active {
+    color: #f2f6f5;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .quick-open-result-icon {
+    color: #8d9995;
+  }
+
+  .quick-open-results button.active .quick-open-result-icon {
+    color: #6fdfcf;
+  }
+
+  .quick-open-results button span {
+    display: grid;
+    min-width: 0;
+  }
+
+  .quick-open-results strong,
+  .quick-open-results small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .quick-open-results strong {
+    font-size: 13px;
+    line-height: 1.15;
+  }
+
+  .quick-open-results small,
+  .quick-open-results em {
+    color: #7f8b87;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 760;
+  }
+
+  .quick-open-empty {
+    display: grid;
+    place-items: center;
+    min-height: 112px;
+    color: #9aa5a1;
+    font-size: 13px;
+    font-weight: 700;
   }
 
   @keyframes shimmer {
