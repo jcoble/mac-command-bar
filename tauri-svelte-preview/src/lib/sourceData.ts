@@ -27,6 +27,17 @@ export type SourceRecentRecord = SourceRecord & {
 
 export type SourceOpenTab = SourceRecentRecord;
 
+export type SourceScanCacheEntry = {
+  key: string;
+  projectID: string;
+  projectPath: string;
+  limit: number;
+  records: SourceRecord[];
+  scannedAt: number;
+};
+
+export type SourceScanCache = Record<string, SourceScanCacheEntry>;
+
 export type CloseOpenSourceTabResult = {
   tabs: SourceOpenTab[];
   nextActivePath: string | null;
@@ -310,6 +321,52 @@ export function upsertRecentSourceRecord(
     createProjectSourceRecord(record, project, openedAt),
     ...recents.filter((recentRecord) => recentRecord.path !== record.path)
   ].slice(0, cappedLimit);
+}
+
+export function getSourceScanCacheEntry(
+  cache: SourceScanCache,
+  project: ProjectRoot,
+  limit: number,
+  now = Date.now(),
+  maxAgeMs = 5 * 60 * 1000
+): SourceScanCacheEntry | null {
+  const entry = cache[sourceScanCacheKey(project, limit)];
+  if (!entry) return null;
+  if (now - entry.scannedAt > maxAgeMs) return null;
+  return entry;
+}
+
+export function upsertSourceScanCacheEntry(
+  cache: SourceScanCache,
+  project: ProjectRoot,
+  records: SourceRecord[],
+  limit: number,
+  scannedAt = Date.now(),
+  maxEntries = 8
+): SourceScanCache {
+  const cappedMaxEntries = Math.max(0, Math.floor(maxEntries));
+  if (cappedMaxEntries === 0) return {};
+
+  const key = sourceScanCacheKey(project, limit);
+  const nextEntries = [
+    ...Object.values(cache).filter((entry) => entry.key !== key),
+    {
+      key,
+      projectID: project.id,
+      projectPath: normalizeProjectPath(project.path),
+      limit,
+      records,
+      scannedAt
+    }
+  ]
+    .sort((left, right) => left.scannedAt - right.scannedAt)
+    .slice(-cappedMaxEntries);
+
+  return Object.fromEntries(nextEntries.map((entry) => [entry.key, entry]));
+}
+
+function sourceScanCacheKey(project: ProjectRoot, limit: number): string {
+  return `${normalizeProjectPath(project.path)}::${Math.max(0, Math.floor(limit))}`;
 }
 
 export function upsertOpenSourceTab(

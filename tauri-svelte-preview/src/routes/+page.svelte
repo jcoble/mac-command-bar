@@ -35,15 +35,18 @@
     filterSourceRecords,
     flattenSourceTree,
     folderIdsForSourceRecord,
+    getSourceScanCacheEntry,
     mergeProjectRoots,
     normalizeProjectPath,
     parseQuickOpenQuery,
     previewFromContent,
     rankSourceRecords,
     selectPreferredSourceRecord,
+    upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
     type ProjectRoot,
+    type SourceScanCache,
     type SourceOpenTab,
     type SourcePreview,
     type SourceRecentRecord,
@@ -51,6 +54,7 @@
     type SourceTreeNode
   } from '$lib/sourceData';
   import {
+    defaultSourceScanLimit,
     listSourceFilesFromTauri,
     openSourceFileFromTauri,
     readSourceFromTauri,
@@ -66,6 +70,8 @@
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
   const maxStoredOpenSourceTabs = 64;
+  const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
+  const maxSourceScanCacheEntries = 8;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
 
@@ -73,6 +79,7 @@
   let selectedSourcePaths = $state<Record<string, string>>({});
   let recentSourceRecords = $state<SourceRecentRecord[]>([]);
   let openSourceTabs = $state<SourceOpenTab[]>([]);
+  let sourceScanCache = $state<SourceScanCache>({});
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -99,6 +106,10 @@
   let projectPathInput = $state('');
   let projectFormError = $state('');
   let scanGeneration = 0;
+
+  type SourceScanOptions = {
+    force?: boolean;
+  };
 
   let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
   let selectedProject = $derived(
@@ -140,9 +151,35 @@
 
   async function scanProject(
     project: ProjectRoot,
-    preferredPath = selectedSourcePaths[project.id] ?? selectedRecord?.path ?? null
+    preferredPath = selectedSourcePaths[project.id] ?? selectedRecord?.path ?? null,
+    options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
+    const cachedScan = options.force
+      ? null
+      : getSourceScanCacheEntry(
+          sourceScanCache,
+          project,
+          defaultSourceScanLimit,
+          Date.now(),
+          sourceScanCacheMaxAgeMs
+        );
+
+    if (cachedScan) {
+      scanning = false;
+      loading = true;
+      error = '';
+      runtime = 'cached source scan';
+
+      const nextSelection = applySourceRecords(cachedScan.records, preferredPath, 'cached source scan');
+      if (nextSelection) {
+        await loadRecord(nextSelection);
+      } else {
+        loading = false;
+      }
+      return;
+    }
+
     scanning = true;
     loading = true;
     error = '';
@@ -153,18 +190,22 @@
       if (generation !== scanGeneration) return;
 
       const nextRecords = tauriRecords ?? demoRecordsForProject(project);
-      records = nextRecords;
-      runtime = tauriRecords ? 'tauri source scan' : 'browser preview';
+      if (tauriRecords) {
+        sourceScanCache = upsertSourceScanCacheEntry(
+          sourceScanCache,
+          project,
+          tauriRecords,
+          defaultSourceScanLimit,
+          Date.now(),
+          maxSourceScanCacheEntries
+        );
+      }
 
-      const nextSelection = selectPreferredSourceRecord(
+      const nextSelection = applySourceRecords(
         nextRecords,
         preferredPath,
-        selectedRecord?.path
+        tauriRecords ? 'tauri source scan' : 'browser preview'
       );
-      selectedRecord = nextSelection;
-      selectedSourceLine = null;
-      preview = nextSelection ? previewFromContent(nextSelection, '') : null;
-      expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
 
       if (nextSelection) {
         await loadRecord(nextSelection);
@@ -186,6 +227,26 @@
         scanning = false;
       }
     }
+  }
+
+  function applySourceRecords(
+    nextRecords: SourceRecord[],
+    preferredPath: string | null | undefined,
+    nextRuntime: string
+  ): SourceRecord | null {
+    records = nextRecords;
+    runtime = nextRuntime;
+
+    const nextSelection = selectPreferredSourceRecord(
+      nextRecords,
+      preferredPath,
+      selectedRecord?.path
+    );
+    selectedRecord = nextSelection;
+    selectedSourceLine = null;
+    preview = nextSelection ? previewFromContent(nextSelection, '') : null;
+    expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
+    return nextSelection;
   }
 
   async function loadRecord(record: SourceRecord) {
@@ -770,7 +831,7 @@
         <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot} onclick={chooseProjectRoot}>
           <Plus size={16} strokeWidth={2} />
         </button>
-        <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject)}>
+        <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject, undefined, { force: true })}>
           <RefreshCw size={15} strokeWidth={1.8} />
           <span>{scanning ? 'Scanning' : 'Scan'}</span>
         </button>

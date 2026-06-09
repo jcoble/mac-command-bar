@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
   folderIdsForSourceRecord,
+  getSourceScanCacheEntry,
   monacoLanguageForSource,
   parseQuickOpenQuery,
   rankSourceRecords,
   selectPreferredSourceRecord,
+  upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
   upsertRecentSourceRecord
 } from '../src/lib/sourceData.ts';
@@ -32,6 +34,12 @@ const records = [
     byteCount: 20
   }
 ];
+
+const otherProject = {
+  id: 'project-2',
+  name: 'Project Two',
+  path: '/repo-other'
+};
 
 assert.equal(selectPreferredSourceRecord(records, '/repo/src/B.ts')?.path, '/repo/src/B.ts');
 assert.equal(
@@ -69,6 +77,32 @@ const limitedRecent = upsertRecentSourceRecord(bumpedRecent, records[1], project
 assert.deepEqual(
   limitedRecent.map((record) => record.path),
   ['/repo/src/B.ts']
+);
+
+const scanCache = upsertSourceScanCacheEntry({}, project, records, 2_000, 10_000);
+assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.records.length, 2);
+assert.equal(getSourceScanCacheEntry(scanCache, project, 1_000, 10_500, 1_000), null);
+assert.equal(getSourceScanCacheEntry(scanCache, otherProject, 2_000, 10_500, 1_000), null);
+assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 12_000, 1_000), null);
+
+const boundedScanCache = upsertSourceScanCacheEntry(
+  upsertSourceScanCacheEntry(
+    upsertSourceScanCacheEntry({}, project, [records[0]], 2_000, 10_000, 2),
+    otherProject,
+    [records[1]],
+    2_000,
+    11_000,
+    2
+  ),
+  { ...project, id: 'project-3', path: '/third' },
+  records,
+  2_000,
+  12_000,
+  2
+);
+assert.deepEqual(
+  Object.values(boundedScanCache).map((entry) => entry.projectPath),
+  ['/repo-other', '/third']
 );
 
 const firstTab = upsertOpenSourceTab([], records[0], project, 1000, 3);
