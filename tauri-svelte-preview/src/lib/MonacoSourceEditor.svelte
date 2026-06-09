@@ -37,6 +37,7 @@
 		intelligenceCommand?: SourceEditorIntelligenceCommand | null;
 		onContentChange?: (content: string) => void;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
+		onDefinitionLookup?: (symbolName: string) => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 	};
 
@@ -50,6 +51,7 @@
 		intelligenceCommand = null,
 		onContentChange,
 		onDiagnosticsChange,
+		onDefinitionLookup,
 		onSymbolsChange,
 	}: Props = $props();
 
@@ -305,11 +307,23 @@
 		}
 
 		handledIntelligenceCommandId = intelligenceCommand.id;
+		if (intelligenceCommand.action === "definition") {
+			onDefinitionLookup?.(symbolNameAtCursor());
+		}
+
 		const actionId =
 			intelligenceCommand.action === "hover"
 				? "editor.action.showHover"
 				: "editor.action.revealDefinition";
 		void editor.getAction(actionId)?.run();
+	}
+
+	function symbolNameAtCursor(): string {
+		const model = editor?.getModel();
+		const position = editor?.getPosition();
+		if (!model || !position) return "";
+
+		return model.getWordAtPosition(position)?.word ?? "";
 	}
 
 	onMount(async () => {

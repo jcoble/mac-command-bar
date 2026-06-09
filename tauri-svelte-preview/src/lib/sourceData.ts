@@ -25,6 +25,14 @@ export type SourceSearchMatch = SourceRecord & {
   excerpt: string;
 };
 
+export type SourceDefinitionTarget = SourceRecord & {
+  symbolName: string;
+  kind: string;
+  line: number;
+  column: number;
+  detail: string;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {
@@ -832,6 +840,44 @@ export function findSourceSearchMatches(
   }
 
   return matches;
+}
+
+export function findSourceDefinitionTargets(
+  previews: SourcePreview[],
+  symbolName: string,
+  limit = 20
+): SourceDefinitionTarget[] {
+  const cappedLimit = Math.max(0, Math.floor(limit));
+  if (cappedLimit === 0) return [];
+
+  const normalizedSymbolName = symbolName.trim().toLowerCase();
+  if (!normalizedSymbolName) return [];
+
+  const targets: SourceDefinitionTarget[] = [];
+  for (const preview of previews) {
+    for (const symbol of extractSourceSymbols(preview, preview.content)) {
+      if (symbol.name.toLowerCase() !== normalizedSymbolName) continue;
+
+      targets.push({
+        path: preview.path,
+        relativePath: preview.relativePath,
+        fileName: preview.fileName,
+        language: preview.language,
+        byteCount: preview.byteCount,
+        symbolName: symbol.name,
+        kind: symbol.kind,
+        line: symbol.line,
+        column: symbol.detail.indexOf(symbol.name) + 1 || symbol.column,
+        detail: symbol.detail
+      });
+
+      if (targets.length >= cappedLimit) {
+        return targets;
+      }
+    }
+  }
+
+  return targets;
 }
 
 export function parseQuickOpenQuery(query: string): QuickOpenQuery {

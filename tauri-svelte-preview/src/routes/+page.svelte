@@ -34,6 +34,7 @@
     demoPreviewFor,
     demoRecordsForProject,
     filterSourceRecords,
+    findSourceDefinitionTargets,
     findSourceSearchMatches,
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
@@ -61,6 +62,7 @@
     type SourcePreview,
     type SourceRecentRecord,
     type SourceRecord,
+    type SourceDefinitionTarget,
     type SourceSearchMatch,
     type SourceDiagnostic,
     type SourceSymbol,
@@ -72,6 +74,7 @@
     createSourceScanId,
     defaultSourceScanLimit,
     expandedSourceScanLimit,
+    findSourceDefinitionsFromTauri,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
@@ -96,6 +99,7 @@
   const maxProjectOpenSourceTabs = 8;
   const maxStoredOpenSourceTabs = 64;
   const maxSourceSearchResults = 50;
+  const maxSourceDefinitionResults = 20;
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
   const sourceTreeRowHeight = 30;
@@ -137,6 +141,10 @@
   );
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
+  let sourceDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
+  let sourceDefinitionQuery = $state('');
+  let sourceDefinitionLoading = $state(false);
+  let sourceDefinitionError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
   let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
   let sourceSearchQuery = $state('');
@@ -247,6 +255,14 @@
   );
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
+  );
+  let sourceDefinitionSummary = $derived(
+    formatSourceDefinitionSummary(
+      sourceDefinitionTargets.length,
+      sourceDefinitionLoading,
+      sourceDefinitionError,
+      sourceDefinitionQuery
+    )
   );
 
   $effect(() => {
@@ -584,6 +600,84 @@
     sourceSearchLoading = false;
   }
 
+  async function runSourceDefinitionLookup(symbolName: string) {
+    const normalizedSymbolName = symbolName.trim();
+    sourceDefinitionQuery = normalizedSymbolName;
+    sourceDefinitionError = '';
+
+    if (!normalizedSymbolName) {
+      sourceDefinitionTargets = [];
+      fileActionStatus = 'No symbol under cursor';
+      return;
+    }
+
+    sourceDefinitionLoading = true;
+    fileActionStatus = `Looking up ${normalizedSymbolName}`;
+    try {
+      const nativeTargets = await findSourceDefinitionsFromTauri(
+        records,
+        normalizedSymbolName,
+        maxSourceDefinitionResults
+      );
+      const nextTargets =
+        nativeTargets ??
+        findSourceDefinitionTargets(
+          records.map((record) => demoPreviewFor(record)),
+          normalizedSymbolName,
+          maxSourceDefinitionResults
+        );
+
+      sourceDefinitionTargets = nextTargets;
+      sourceDefinitionError = nativeTargets ? '' : 'Browser preview definitions';
+
+      if (nextTargets.length === 0) {
+        fileActionStatus = `No definition for ${normalizedSymbolName}`;
+        return;
+      }
+
+      fileActionStatus = `Opened ${nextTargets[0].symbolName}`;
+      await selectSourceDefinitionTarget(nextTargets[0]);
+    } catch (definitionError) {
+      sourceDefinitionTargets = findSourceDefinitionTargets(
+        records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceDefinitionResults
+      );
+      sourceDefinitionError =
+        definitionError instanceof Error ? definitionError.message : 'Could not find definition';
+
+      if (sourceDefinitionTargets[0]) {
+        await selectSourceDefinitionTarget(sourceDefinitionTargets[0]);
+      }
+    } finally {
+      sourceDefinitionLoading = false;
+    }
+  }
+
+  function formatSourceDefinitionSummary(
+    targetCount: number,
+    loadingDefinitions: boolean,
+    definitionError: string,
+    symbolName: string
+  ) {
+    if (loadingDefinitions) return 'Finding definition';
+    if (definitionError) return definitionError;
+    if (!symbolName.trim()) return '';
+    return `${targetCount} ${targetCount === 1 ? 'definition' : 'definitions'} for ${symbolName}`;
+  }
+
+  async function selectSourceDefinitionTarget(target: SourceDefinitionTarget) {
+    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    await selectRecord(record, target.line);
+  }
+
+  function clearSourceDefinitionTargets() {
+    sourceDefinitionTargets = [];
+    sourceDefinitionError = '';
+    sourceDefinitionLoading = false;
+    sourceDefinitionQuery = '';
+  }
+
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
     const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
     if (indexing) {
@@ -622,6 +716,7 @@
     preview = nextSelection ? previewFromContent(nextSelection, '') : null;
     expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
     clearSourceSearchResults();
+    clearSourceDefinitionTargets();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -960,8 +1055,13 @@
     sourceSymbols = symbols;
   }
 
+  function handleEditorDefinitionLookup(symbolName: string) {
+    void runSourceDefinitionLookup(symbolName);
+  }
+
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
-    if (!sourceIntelligenceAvailable) return;
+    if (!preview || loading) return;
+    if (action === 'hover' && !sourceIntelligenceAvailable) return;
 
     sourceIntelligenceCommand = {
       id: ++sourceIntelligenceCommandId,
@@ -1858,7 +1958,7 @@
               type="button"
               aria-label="Go to definition"
               title="Go to definition"
-              disabled={!sourceIntelligenceAvailable}
+              disabled={!preview || loading}
               onclick={() => requestSourceIntelligenceAction('definition')}
             >
               <Search size={13} strokeWidth={2} />
@@ -1885,6 +1985,7 @@
               intelligenceCommand={sourceIntelligenceCommand}
               onContentChange={updateSelectedSourceDraft}
               onDiagnosticsChange={handleEditorDiagnosticsChange}
+              onDefinitionLookup={handleEditorDefinitionLookup}
               onSymbolsChange={handleEditorSymbolsChange}
             />
           {/key}
@@ -1914,6 +2015,28 @@
                 <strong>{sourceSymbols.length}</strong>
               </button>
             </div>
+
+            {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
+              <div class="definition-results" aria-label="Definition lookup results">
+                <div class="definition-summary">{sourceDefinitionSummary}</div>
+                {#if sourceDefinitionTargets.length === 0 && !sourceDefinitionLoading}
+                  <div class="intelligence-empty">No definition</div>
+                {:else}
+                  {#each sourceDefinitionTargets as target (`${target.path}:${target.line}:${target.symbolName}`)}
+                    <button
+                      class="definition-row"
+                      type="button"
+                      title={target.detail}
+                      onclick={() => selectSourceDefinitionTarget(target)}
+                    >
+                      <strong>{target.kind}</strong>
+                      <span>{target.symbolName}</span>
+                      <small>{target.relativePath}:{target.line}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
 
             {#if sourceIntelligencePanel === 'problems'}
               <div class="intelligence-summary">{sourceDiagnosticSummary}</div>
@@ -3126,8 +3249,8 @@
   }
 
   .source-intelligence-panel {
-    display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -3192,6 +3315,7 @@
   }
 
   .intelligence-list {
+    flex: 1 1 auto;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
@@ -3225,7 +3349,32 @@
     font-weight: 750;
   }
 
-  .intelligence-row {
+  .definition-results {
+    flex: 0 0 auto;
+    max-height: 164px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .definition-summary {
+    margin-bottom: 6px;
+    min-width: 0;
+    overflow: hidden;
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 780;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .intelligence-row,
+  .definition-row {
     display: grid;
     grid-template-columns: minmax(68px, auto) minmax(0, 1fr) auto;
     align-items: center;
@@ -3242,7 +3391,9 @@
   }
 
   .intelligence-row:hover,
-  .intelligence-row:focus-visible {
+  .intelligence-row:focus-visible,
+  .definition-row:hover,
+  .definition-row:focus-visible {
     color: #f2f6f5;
     outline: 0;
     background: rgba(92, 226, 207, 0.1);
@@ -3250,26 +3401,32 @@
 
   .intelligence-row strong,
   .intelligence-row span,
-  .intelligence-row small {
+  .intelligence-row small,
+  .definition-row strong,
+  .definition-row span,
+  .definition-row small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .intelligence-row strong {
+  .intelligence-row strong,
+  .definition-row strong {
     color: #8fd8cf;
     font-size: 10px;
     font-weight: 850;
     text-transform: uppercase;
   }
 
-  .intelligence-row span {
+  .intelligence-row span,
+  .definition-row span {
     font-size: 12px;
     font-weight: 760;
   }
 
-  .intelligence-row small {
+  .intelligence-row small,
+  .definition-row small {
     color: #7f8b87;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
     font-size: 10px;

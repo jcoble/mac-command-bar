@@ -3,6 +3,7 @@ import {
   closeOpenSourceTab,
   extractSourceSemanticTokens,
   extractSourceSymbols,
+  findSourceDefinitionTargets,
   findSourceSearchMatches,
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
@@ -252,6 +253,90 @@ assert.deepEqual(
 );
 assert.deepEqual(findSourceSearchMatches([], '   ', 10), []);
 assert.deepEqual(findSourceSearchMatches(sourceSearchPreviews, 'widget', 0), []);
+
+const definitionPreviews = [
+  {
+    path: '/repo/src/FormatResolver.cs',
+    relativePath: 'src/FormatResolver.cs',
+    fileName: 'FormatResolver.cs',
+    language: 'csharp',
+    byteCount: 100,
+    content: [
+      'namespace Demo;',
+      'public sealed class FormatResolver',
+      '{',
+      '    private readonly FormatDetector _detector;',
+      '    public Task ResolveAsync() => _detector.DetectAsync();',
+      '}'
+    ].join('\n'),
+    lineCount: 6
+  },
+  {
+    path: '/repo/src/FormatDetector.cs',
+    relativePath: 'src/FormatDetector.cs',
+    fileName: 'FormatDetector.cs',
+    language: 'csharp',
+    byteCount: 100,
+    content: [
+      'namespace Demo;',
+      'public sealed class FormatDetector',
+      '{',
+      '    public Task DetectAsync() => Task.CompletedTask;',
+      '}'
+    ].join('\n'),
+    lineCount: 5
+  },
+  {
+    path: '/repo/src/widgets.ts',
+    relativePath: 'src/widgets.ts',
+    fileName: 'widgets.ts',
+    language: 'typescript',
+    byteCount: 100,
+    content: [
+      'export interface WidgetProps {',
+      '  name: string;',
+      '}',
+      'export function createWidget() {',
+      '  return { name: "demo" };',
+      '}'
+    ].join('\n'),
+    lineCount: 6
+  }
+];
+
+assert.deepEqual(
+  findSourceDefinitionTargets(definitionPreviews, 'FormatDetector', 10).map((target) => [
+    target.path,
+    target.symbolName,
+    target.kind,
+    target.line,
+    target.column,
+    target.detail
+  ]),
+  [
+    [
+      '/repo/src/FormatDetector.cs',
+      'FormatDetector',
+      'class',
+      2,
+      21,
+      'public sealed class FormatDetector'
+    ]
+  ]
+);
+assert.deepEqual(
+  findSourceDefinitionTargets(definitionPreviews, 'createWidget', 10).map((target) => [
+    target.path,
+    target.kind,
+    target.line
+  ]),
+  [['/repo/src/widgets.ts', 'function', 4]]
+);
+assert.deepEqual(
+  findSourceDefinitionTargets(definitionPreviews, 'formatdetector', 1).map((target) => target.path),
+  ['/repo/src/FormatDetector.cs']
+);
+assert.deepEqual(findSourceDefinitionTargets(definitionPreviews, '   ', 10), []);
 
 assert.deepEqual(parseQuickOpenQuery('FormatDetector:20'), {
   searchQuery: 'FormatDetector',
