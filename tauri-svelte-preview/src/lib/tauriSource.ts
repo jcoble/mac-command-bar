@@ -246,6 +246,39 @@ export async function commitGitRepositoryFromTauri(
   return invoke<GitActionResult>('commit_git_repository', { root, message });
 }
 
+export async function fetchGitRepositoryFromTauri(
+  root: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('fetch_git_repository', { root });
+}
+
+export async function pullGitRepositoryFromTauri(
+  root: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('pull_git_repository', { root });
+}
+
+export async function pushGitRepositoryFromTauri(
+  root: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('push_git_repository', { root });
+}
+
 export async function listProjectWorktreesFromTauri(
   root: string
 ): Promise<ProjectWorktree[] | null> {

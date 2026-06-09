@@ -80,6 +80,7 @@
     createSourceScanId,
     defaultSourceScanLimit,
     expandedSourceScanLimit,
+    fetchGitRepositoryFromTauri,
     findSourceDefinitionsFromTauri,
     findSourceReferencesFromTauri,
     listAgentSessionsFromTauri,
@@ -94,6 +95,8 @@
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
     revealSourceFileFromTauri,
+    pullGitRepositoryFromTauri,
+    pushGitRepositoryFromTauri,
     searchSourceFilesFromTauri,
     stageGitPathsFromTauri,
     unstageGitPathsFromTauri,
@@ -188,7 +191,7 @@
   let selectedSourceGitDiffLoading = $state(false);
   let selectedSourceGitDiffError = $state('');
   let gitCommitMessage = $state('');
-  let gitActionBusy = $state<'stage' | 'unstage' | 'commit' | ''>('');
+  let gitActionBusy = $state<'stage' | 'unstage' | 'commit' | 'fetch' | 'pull' | 'push' | ''>('');
   let gitActionStatus = $state('');
   let gitActionError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
@@ -308,6 +311,7 @@
   let gitCommitDisabled = $derived(
     gitCommitMessage.trim().length === 0 || !gitHasStagedChanges || gitActionBusy !== ''
   );
+  let gitRemoteActionDisabled = $derived(projectGitLoading || Boolean(projectGitError) || gitActionBusy !== '');
   let selectedSourceGitSummary = $derived(
     formatSelectedSourceGitSummary(
       selectedRecordGitStatus,
@@ -929,6 +933,35 @@
       void loadGitRepositorySummaries(projectOptions);
     } catch (gitError) {
       gitActionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
+    } finally {
+      gitActionBusy = '';
+    }
+  }
+
+  async function runGitRemoteAction(action: 'fetch' | 'pull' | 'push') {
+    gitActionBusy = action;
+    gitActionError = '';
+    gitActionStatus = '';
+
+    try {
+      const result =
+        action === 'fetch'
+          ? await fetchGitRepositoryFromTauri(selectedProject.path)
+          : action === 'pull'
+            ? await pullGitRepositoryFromTauri(selectedProject.path)
+            : await pushGitRepositoryFromTauri(selectedProject.path);
+
+      if (!result) {
+        gitActionStatus = 'Native Git unavailable';
+        return;
+      }
+
+      projectGitStatus = result.status;
+      gitActionStatus = result.message;
+      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      void loadGitRepositorySummaries(projectOptions);
+    } catch (gitError) {
+      gitActionError = gitError instanceof Error ? gitError.message : `Could not ${action} repository`;
     } finally {
       gitActionBusy = '';
     }
@@ -2907,6 +2940,41 @@
                       <span>{gitActionBusy === 'unstage' ? 'Unstaging' : 'Unstage'}</span>
                     </button>
                   </div>
+                  <div class="git-remote-row">
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Fetch selected repository"
+                      title="Fetch selected repository"
+                      disabled={gitRemoteActionDisabled}
+                      onclick={() => runGitRemoteAction('fetch')}
+                    >
+                      <RefreshCw size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
+                    </button>
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Pull selected repository"
+                      title="Pull selected repository with fast-forward only"
+                      disabled={gitRemoteActionDisabled}
+                      onclick={() => runGitRemoteAction('pull')}
+                    >
+                      <ChevronDown size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
+                    </button>
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Push selected repository"
+                      title="Push selected repository"
+                      disabled={gitRemoteActionDisabled}
+                      onclick={() => runGitRemoteAction('push')}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'push' ? 'Pushing' : 'Push'}</span>
+                    </button>
+                  </div>
                   <div class="git-commit-row">
                     <textarea
                       class="git-commit-input"
@@ -4592,6 +4660,7 @@
   }
 
   .git-action-row,
+  .git-remote-row,
   .git-commit-row {
     display: grid;
     min-width: 0;
@@ -4600,6 +4669,10 @@
 
   .git-action-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .git-remote-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .git-commit-row {

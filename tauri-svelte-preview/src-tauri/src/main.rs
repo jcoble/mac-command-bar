@@ -514,6 +514,27 @@ async fn commit_git_repository(root: String, message: String) -> Result<GitActio
 }
 
 #[tauri::command]
+async fn fetch_git_repository(root: String) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || fetch_git_repository_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git fetch task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn pull_git_repository(root: String) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || pull_git_repository_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git pull task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn push_git_repository(root: String) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || push_git_repository_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git push task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, String> {
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
         .await
@@ -1260,6 +1281,33 @@ fn commit_git_repository_sync(root: PathBuf, message: String) -> Result<GitActio
     run_git_text(&root, &["commit", "-m", message])?;
     Ok(GitActionResult {
         message: "Committed staged changes".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn fetch_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    run_git_text(&root, &["fetch", "--prune"])?;
+    Ok(GitActionResult {
+        message: "Fetched repository remotes".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn pull_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    run_git_text(&root, &["pull", "--ff-only"])?;
+    Ok(GitActionResult {
+        message: "Pulled fast-forward updates".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    run_git_text(&root, &["push"])?;
+    Ok(GitActionResult {
+        message: "Pushed current branch".to_string(),
         status: project_git_status_sync(root)?,
     })
 }
@@ -2254,6 +2302,9 @@ fn main() {
             stage_git_paths,
             unstage_git_paths,
             commit_git_repository,
+            fetch_git_repository,
+            pull_git_repository,
+            push_git_repository,
             list_project_worktrees,
             list_git_repository_summaries,
             list_agent_sessions,
@@ -2766,6 +2817,64 @@ mod tests {
         assert!(outside_path_error.contains("relative repo paths"));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_remote_actions_fetch_pull_and_push_current_upstream() {
+        let remote = unique_temp_root();
+        let local = unique_temp_root();
+        let peer = unique_temp_root();
+
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::create_dir_all(&peer).unwrap();
+        run_git_for_test(&remote, &["init", "--bare"]);
+        std::fs::create_dir_all(local.join("src")).unwrap();
+        std::fs::write(local.join("src/App.ts"), "export const value = 1;\n").unwrap();
+        run_git_for_test(&local, &["init"]);
+        run_git_for_test(&local, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&local, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&local, &["add", "src/App.ts"]);
+        run_git_for_test(&local, &["commit", "-m", "initial"]);
+        run_git_for_test(&local, &["branch", "-M", "main"]);
+        let remote_path = remote.display().to_string();
+        run_git_for_test(&local, &["remote", "add", "origin", remote_path.as_str()]);
+        run_git_for_test(&local, &["push", "-u", "origin", "main"]);
+
+        let remote_path = remote.display().to_string();
+        run_git_for_test(&peer, &["clone", remote_path.as_str(), "."]);
+        run_git_for_test(&peer, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&peer, &["config", "user.email", "test@example.invalid"]);
+        std::fs::write(peer.join("src/App.ts"), "export const value = 2;\n").unwrap();
+        run_git_for_test(&peer, &["commit", "-am", "remote update"]);
+        run_git_for_test(&peer, &["push"]);
+
+        let fetched = fetch_git_repository_sync(local.clone()).unwrap();
+        assert_eq!(fetched.message, "Fetched repository remotes");
+        assert_eq!(fetched.status.behind, 1);
+
+        let pulled = pull_git_repository_sync(local.clone()).unwrap();
+        assert_eq!(pulled.message, "Pulled fast-forward updates");
+        assert_eq!(pulled.status.behind, 0);
+        assert_eq!(
+            std::fs::read_to_string(local.join("src/App.ts")).unwrap(),
+            "export const value = 2;\n"
+        );
+
+        std::fs::write(local.join("src/App.ts"), "export const value = 3;\n").unwrap();
+        stage_git_paths_sync(local.clone(), vec!["src/App.ts".to_string()]).unwrap();
+        commit_git_repository_sync(local.clone(), "local update".to_string()).unwrap();
+        let ahead_status = project_git_status_sync(local.clone()).unwrap();
+        assert_eq!(ahead_status.ahead, 1);
+
+        let pushed = push_git_repository_sync(local.clone()).unwrap();
+        assert_eq!(pushed.message, "Pushed current branch");
+        assert_eq!(pushed.status.ahead, 0);
+        let remote_subject = run_git_text(&remote, &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(remote_subject.trim(), "local update");
+
+        std::fs::remove_dir_all(remote).unwrap();
+        std::fs::remove_dir_all(local).unwrap();
+        std::fs::remove_dir_all(peer).unwrap();
     }
 
     #[test]

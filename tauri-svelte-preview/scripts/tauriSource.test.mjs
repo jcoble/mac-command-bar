@@ -3,6 +3,7 @@ import {
   defaultSourceScanLimit,
   expandedSourceScanLimit,
   nativeSourceScanProgressEvent,
+  fetchGitRepositoryFromTauri,
   createSourceScanId,
   findSourceDefinitionsFromTauri,
   findSourceReferencesFromTauri,
@@ -15,6 +16,8 @@ import {
   searchSourceFilesFromTauri,
   stageGitPathsFromTauri,
   commitGitRepositoryFromTauri,
+  pullGitRepositoryFromTauri,
+  pushGitRepositoryFromTauri,
   unstageGitPathsFromTauri,
   writeSourceToTauri
 } from '../src/lib/tauriSource.ts';
@@ -41,6 +44,9 @@ assert.equal(await readSourceGitDiffFromTauri('/tmp/repo', '/tmp/repo/src/App.ts
 assert.equal(await stageGitPathsFromTauri('/tmp/repo', ['src/App.ts']), null);
 assert.equal(await unstageGitPathsFromTauri('/tmp/repo', ['src/App.ts']), null);
 assert.equal(await commitGitRepositoryFromTauri('/tmp/repo', 'test commit'), null);
+assert.equal(await fetchGitRepositoryFromTauri('/tmp/repo'), null);
+assert.equal(await pullGitRepositoryFromTauri('/tmp/repo'), null);
+assert.equal(await pushGitRepositoryFromTauri('/tmp/repo'), null);
 assert.equal(await listAgentSessionsFromTauri(), null);
 assert.equal(
   await listGitRepositorySummariesFromTauri([{ id: 'repo', name: 'Repo', path: '/tmp/repo' }]),
