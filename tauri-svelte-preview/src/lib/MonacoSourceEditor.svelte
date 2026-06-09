@@ -7,11 +7,14 @@
 	import { onDestroy, onMount } from "svelte";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
 	import {
+		extractSourceSemanticTokens,
 		extractSourceSymbols,
 		monacoLanguageForSource,
+		sourceSemanticTokenLegend,
 		type SourceDiagnostic,
 		type SourceDiagnosticSeverity,
 		type SourcePreview,
+		type SourceSemanticToken,
 		type SourceSymbol,
 	} from "./sourceData";
 
@@ -55,6 +58,7 @@
 	let monacoApi: typeof Monaco | null = null;
 	let contentChangeDisposable: Monaco.IDisposable | null = null;
 	let markerChangeDisposable: Monaco.IDisposable | null = null;
+	let semanticTokensDisposable: Monaco.IDisposable | null = null;
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
 	let currentTargetLineRequestId = -1;
@@ -110,6 +114,61 @@
 		typeScriptLanguage.javascriptDefaults.setEagerModelSync(true);
 		typeScriptLanguage.javascriptDefaults.setCompilerOptions(compilerOptions);
 		typeScriptLanguage.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+	}
+
+	function registerSourceSemanticTokens(monaco: typeof Monaco) {
+		semanticTokensDisposable?.dispose();
+		semanticTokensDisposable = monaco.languages.registerDocumentSemanticTokensProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				getLegend: () => ({
+					tokenTypes: [...sourceSemanticTokenLegend.tokenTypes],
+					tokenModifiers: [...sourceSemanticTokenLegend.tokenModifiers],
+				}),
+				provideDocumentSemanticTokens: (model) => ({
+					data: encodeSemanticTokens(
+						extractSourceSemanticTokens(previewForModel(model), model.getValue())
+					),
+				}),
+				releaseDocumentSemanticTokens: () => {},
+			}
+		);
+	}
+
+	function previewForModel(model: Monaco.editor.ITextModel): SourcePreview {
+		const content = model.getValue();
+		const path = model.uri.fsPath || model.uri.path;
+		const fileName = path.split("/").filter(Boolean).at(-1) ?? "source";
+
+		return {
+			path,
+			relativePath: fileName,
+			fileName,
+			language: model.getLanguageId(),
+			byteCount: new TextEncoder().encode(content).length,
+			content,
+			lineCount: model.getLineCount(),
+		};
+	}
+
+	function encodeSemanticTokens(tokens: SourceSemanticToken[]): Uint32Array {
+		const data: number[] = [];
+		let previousLine = 0;
+		let previousStart = 0;
+
+		for (const token of tokens) {
+			const tokenTypeIndex = sourceSemanticTokenLegend.tokenTypes.indexOf(token.tokenType);
+			if (tokenTypeIndex < 0 || token.length <= 0) continue;
+
+			const line = Math.max(0, token.line - 1);
+			const start = Math.max(0, token.startColumn - 1);
+			data.push(line - previousLine, line === previousLine ? start - previousStart : start);
+			data.push(token.length, tokenTypeIndex, 0);
+			previousLine = line;
+			previousStart = start;
+		}
+
+		return new Uint32Array(data);
 	}
 
 	function applyAppearance() {
@@ -301,6 +360,7 @@
 		monacoApi = monaco;
 		configureMonaco(monaco);
 		configureTypeScriptLanguageService(typeScriptLanguage);
+		registerSourceSemanticTokens(monaco);
 
 		editor = monaco.editor.create(host, {
 			automaticLayout: true,
@@ -337,6 +397,7 @@
 				horizontalScrollbarSize: 12,
 				verticalScrollbarSize: 12,
 			},
+			"semanticHighlighting.enabled": true,
 			smoothScrolling: true,
 			stickyScroll: { enabled: false },
 			tabSize: 4,
@@ -367,6 +428,7 @@
 	onDestroy(() => {
 		contentChangeDisposable?.dispose();
 		markerChangeDisposable?.dispose();
+		semanticTokensDisposable?.dispose();
 		onDiagnosticsChange?.([]);
 		onSymbolsChange?.([]);
 		editor?.dispose();

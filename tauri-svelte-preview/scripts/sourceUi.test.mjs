@@ -6,6 +6,10 @@ const editorSource = await readFile(
   new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
   'utf8'
 );
+const appearanceSource = await readFile(
+  new URL('../src/lib/sourcePreviewAppearance.ts', import.meta.url),
+  'utf8'
+);
 
 function blockFor(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -137,3 +141,31 @@ assert.ok(pageSource.includes('aria-label="Go to definition"'), 'Editor controls
 assert.ok(pageSource.includes('Problems'), 'Language panel should include Problems');
 assert.ok(pageSource.includes('Symbols'), 'Language panel should include Symbols');
 assert.ok(pageSource.includes('selectSourceSymbol'), 'Symbol rows should reveal source lines');
+assert.ok(
+  appearanceSource.includes('encodedTokensColors'),
+  'Theme should include an encoded token palette for sharper Monaco token color separation'
+);
+assert.ok(
+  appearanceSource.includes("token: 'keyword.public'"),
+  'Theme should target C# modifier keyword tokens'
+);
+assert.ok(
+  appearanceSource.includes("token: 'delimiter.bracket'"),
+  'Theme should target Monaco bracket delimiter tokens'
+);
+assert.ok(
+  editorSource.includes('sourceSemanticTokenLegend'),
+  'Editor should import the source semantic-token legend'
+);
+assert.ok(
+  editorSource.includes('extractSourceSemanticTokens'),
+  'Editor should extract semantic tokens for Monaco'
+);
+assert.ok(
+  editorSource.includes('registerDocumentSemanticTokensProvider'),
+  'Editor should register a semantic-token provider'
+);
+assert.ok(
+  /["']semanticHighlighting\.enabled["']:\s*true/.test(editorSource),
+  'Editor should enable semantic highlighting explicitly'
+);

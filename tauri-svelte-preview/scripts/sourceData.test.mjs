@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
+  extractSourceSemanticTokens,
   extractSourceSymbols,
   formatSourceDiagnosticSummary,
   formatSourceRecordCount,
@@ -12,6 +13,7 @@ import {
   rankSourceRecords,
   scrollTopForSourceTreeReveal,
   selectPreferredSourceRecord,
+  sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
   upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
@@ -263,6 +265,50 @@ assert.deepEqual(
   ]
 );
 
+assert.deepEqual(sourceSemanticTokenLegend.tokenTypes, [
+  'namespace',
+  'class',
+  'interface',
+  'type',
+  'enum',
+  'function',
+  'method',
+  'variable'
+]);
+
+const typescriptSemanticTokens = extractSourceSemanticTokens(
+  {
+    path: '/repo/src/Widget.ts',
+    relativePath: 'src/Widget.ts',
+    fileName: 'Widget.ts',
+    language: 'typescript',
+    byteCount: 100,
+    content: '',
+    lineCount: 0
+  },
+  [
+    'export interface WidgetProps {',
+    '  name: string;',
+    '}',
+    'export class WidgetController {',
+    '  mount() {}',
+    '}',
+    'export function createWidget() {',
+    '  return new WidgetController();',
+    '}',
+    'const widgetCache = new Map<string, WidgetController>();'
+  ].join('\n')
+);
+assert.deepEqual(
+  typescriptSemanticTokens.map((token) => [token.tokenType, token.line, token.startColumn, token.length]),
+  [
+    ['interface', 1, 18, 11],
+    ['class', 4, 14, 16],
+    ['function', 7, 17, 12],
+    ['variable', 10, 7, 11]
+  ]
+);
+
 const csharpSymbols = extractSourceSymbols(
   {
     path: '/repo/src/Widget.cs',
@@ -287,6 +333,33 @@ assert.deepEqual(
     ['namespace', 'Demo', 1],
     ['class', 'WidgetController', 2],
     ['method', 'MountAsync', 4]
+  ]
+);
+
+const csharpSemanticTokens = extractSourceSemanticTokens(
+  {
+    path: '/repo/src/Widget.cs',
+    relativePath: 'src/Widget.cs',
+    fileName: 'Widget.cs',
+    language: 'csharp',
+    byteCount: 100,
+    content: '',
+    lineCount: 0
+  },
+  [
+    'namespace Demo;',
+    'public sealed class WidgetController',
+    '{',
+    '    public Task MountAsync() => Task.CompletedTask;',
+    '}'
+  ].join('\n')
+);
+assert.deepEqual(
+  csharpSemanticTokens.map((token) => [token.tokenType, token.line, token.startColumn, token.length]),
+  [
+    ['namespace', 1, 11, 4],
+    ['class', 2, 21, 16],
+    ['method', 4, 17, 10]
   ]
 );
 

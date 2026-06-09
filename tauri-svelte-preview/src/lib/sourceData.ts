@@ -37,6 +37,29 @@ export type SourceSymbol = {
   detail: string;
 };
 
+export const sourceSemanticTokenLegend = {
+  tokenTypes: [
+    'namespace',
+    'class',
+    'interface',
+    'type',
+    'enum',
+    'function',
+    'method',
+    'variable'
+  ],
+  tokenModifiers: []
+} as const;
+
+export type SourceSemanticTokenType = (typeof sourceSemanticTokenLegend.tokenTypes)[number];
+
+export type SourceSemanticToken = {
+  tokenType: SourceSemanticTokenType;
+  line: number;
+  startColumn: number;
+  length: number;
+};
+
 export type SourceScanResult = {
   records: SourceRecord[];
   limit: number;
@@ -422,9 +445,56 @@ export function extractSourceSymbols(preview: SourcePreview, content: string): S
   }
 }
 
+export function extractSourceSemanticTokens(
+  preview: SourcePreview,
+  content: string
+): SourceSemanticToken[] {
+  const lines = content.split(/\r\n|\r|\n/);
+
+  return extractSourceSymbols(preview, content)
+    .map((symbol): SourceSemanticToken | null => {
+      const tokenType = semanticTokenTypeForSourceSymbol(symbol.kind);
+      if (!tokenType) return null;
+
+      const line = lines[symbol.line - 1] ?? '';
+      const startIndex = line.indexOf(symbol.name);
+      if (startIndex < 0) return null;
+
+      return {
+        tokenType,
+        line: symbol.line,
+        startColumn: startIndex + 1,
+        length: symbol.name.length
+      };
+    })
+    .filter((token): token is SourceSemanticToken => token !== null)
+    .sort((left, right) => left.line - right.line || left.startColumn - right.startColumn);
+}
+
 function formatProblemCount(count: number, label: string): string {
   if (count === 0) return '';
   return `${count} ${label}${count === 1 ? '' : 's'}`;
+}
+
+function semanticTokenTypeForSourceSymbol(kind: string): SourceSemanticTokenType | null {
+  switch (kind) {
+    case 'namespace':
+    case 'class':
+    case 'interface':
+    case 'type':
+    case 'enum':
+    case 'function':
+    case 'method':
+      return kind;
+    case 'constant':
+    case 'variable':
+      return 'variable';
+    case 'record':
+    case 'struct':
+      return 'class';
+    default:
+      return null;
+  }
 }
 
 function extractTypeScriptSymbols(content: string): SourceSymbol[] {
