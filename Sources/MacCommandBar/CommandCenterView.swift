@@ -309,12 +309,27 @@ private struct ProjectsPanel: View {
                             }
                         }
                     }
+                    if !profile.urls.isEmpty {
+                        HStack {
+                            ForEach(profile.urls, id: \.self) { url in
+                                Button {
+                                    state.openProjectURL(url)
+                                } label: {
+                                    Label(projectURLLabel(url), systemImage: "safari")
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(.vertical, 8)
                 Divider()
             }
         }
     }
+}
+
+private func projectURLLabel(_ rawURL: String) -> String {
+    URL(string: rawURL)?.host ?? rawURL
 }
 
 private struct ProcessesPanel: View {

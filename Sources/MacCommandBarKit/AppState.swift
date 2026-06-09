@@ -15,6 +15,24 @@ public struct SystemClipboardWriter: ClipboardWriting {
     }
 }
 
+public protocol URLOpening {
+    func open(_ url: URL) throws
+}
+
+public enum URLOpenerError: Error, Equatable {
+    case openFailed(URL)
+}
+
+public struct WorkspaceURLOpener: URLOpening {
+    public init() {}
+
+    public func open(_ url: URL) throws {
+        guard NSWorkspace.shared.open(url) else {
+            throw URLOpenerError.openFailed(url)
+        }
+    }
+}
+
 @MainActor
 public final class AppState: ObservableObject {
     @Published public var modules: [DashboardModule]
@@ -33,6 +51,7 @@ public final class AppState: ObservableObject {
     private var persistence: (any AppPersisting)?
     private var clipboardWriter: any ClipboardWriting
     private var commandLauncher: any CommandLaunching
+    private var urlOpener: any URLOpening
 
     public init(
         modules: [DashboardModule],
@@ -43,7 +62,8 @@ public final class AppState: ObservableObject {
         coreClient: (any CoreSending)?,
         persistence: (any AppPersisting)? = nil,
         clipboardWriter: any ClipboardWriting = SystemClipboardWriter(),
-        commandLauncher: any CommandLaunching = TerminalCommandLauncher()
+        commandLauncher: any CommandLaunching = TerminalCommandLauncher(),
+        urlOpener: any URLOpening = WorkspaceURLOpener()
     ) {
         self.modules = modules
         self.selectedModuleID = selectedModuleID
@@ -59,6 +79,7 @@ public final class AppState: ObservableObject {
         self.persistence = persistence
         self.clipboardWriter = clipboardWriter
         self.commandLauncher = commandLauncher
+        self.urlOpener = urlOpener
     }
 
     public static func bootstrap() -> AppState {
@@ -158,6 +179,24 @@ public final class AppState: ObservableObject {
 
     public func launchTerminalCommand(_ command: String, label: String) {
         launchCommand(command, target: .terminal, label: label)
+    }
+
+    public func openProjectURL(_ rawURL: String) {
+        guard
+            let url = URL(string: rawURL),
+            let scheme = url.scheme?.lowercased(),
+            ["http", "https", "file"].contains(scheme)
+        else {
+            statusMessage = "Invalid URL"
+            return
+        }
+
+        do {
+            try urlOpener.open(url)
+            statusMessage = "Opened \(url.host ?? rawURL)"
+        } catch {
+            statusMessage = "Open failed: \(error.localizedDescription)"
+        }
     }
 
     public func refreshSnapshots() async {

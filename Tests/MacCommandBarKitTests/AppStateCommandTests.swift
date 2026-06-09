@@ -48,6 +48,42 @@ final class AppStateCommandTests: XCTestCase {
         ])
         XCTAssertEqual(state.statusMessage, "Launched Resume")
     }
+
+    func testOpenProjectURLUsesURLOpenerAndUpdatesStatus() throws {
+        let opener = RecordingURLOpener()
+        let state = AppState(
+            modules: [],
+            selectedModuleID: "projects",
+            clipboardVault: ClipboardVaultModel(),
+            profiles: [],
+            statusMessage: "Ready",
+            coreClient: nil,
+            urlOpener: opener
+        )
+
+        state.openProjectURL("http://localhost:5173")
+
+        XCTAssertEqual(opener.openedURLs, [URL(string: "http://localhost:5173")!])
+        XCTAssertEqual(state.statusMessage, "Opened localhost")
+    }
+
+    func testOpenProjectURLRejectsInvalidURLWithoutCallingOpener() {
+        let opener = RecordingURLOpener()
+        let state = AppState(
+            modules: [],
+            selectedModuleID: "projects",
+            clipboardVault: ClipboardVaultModel(),
+            profiles: [],
+            statusMessage: "Ready",
+            coreClient: nil,
+            urlOpener: opener
+        )
+
+        state.openProjectURL("localhost:5173")
+
+        XCTAssertEqual(opener.openedURLs, [])
+        XCTAssertEqual(state.statusMessage, "Invalid URL")
+    }
 }
 
 private final class RecordingCommandLauncher: CommandLaunching {
@@ -55,5 +91,13 @@ private final class RecordingCommandLauncher: CommandLaunching {
 
     func launch(_ command: String, target: ProfileLaunchTarget) throws {
         launches.append(CommandLaunch(command: command, target: target))
+    }
+}
+
+private final class RecordingURLOpener: URLOpening {
+    private(set) var openedURLs: [URL] = []
+
+    func open(_ url: URL) throws {
+        openedURLs.append(url)
     }
 }
