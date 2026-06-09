@@ -1,4 +1,4 @@
-import type { SourcePreview, SourceRecord } from './sourceData';
+import type { SourcePreview, SourceRecord, SourceScanResult } from './sourceData';
 
 export const defaultSourceScanLimit = 2_000;
 
@@ -6,13 +6,13 @@ export async function listSourceFilesFromTauri(
   root: string,
   query = '',
   limit = defaultSourceScanLimit
-): Promise<SourceRecord[] | null> {
+): Promise<SourceScanResult | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SourceRecord[]>('list_source_files', {
+  return invoke<SourceScanResult>('list_source_files', {
     root,
     limit,
     query: query.trim() || null

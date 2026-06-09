@@ -17,6 +17,14 @@ struct SourceRecord {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SourceScanResult {
+    records: Vec<SourceRecord>,
+    limit: usize,
+    truncated: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourcePreview {
     path: String,
     relative_path: String,
@@ -44,7 +52,7 @@ async fn list_source_files(
     root: String,
     limit: Option<usize>,
     query: Option<String>,
-) -> Result<Vec<SourceRecord>, String> {
+) -> Result<SourceScanResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         list_source_files_sync(
             PathBuf::from(root),
@@ -85,7 +93,7 @@ fn list_source_files_sync(
     root: PathBuf,
     limit: usize,
     query: Option<String>,
-) -> Result<Vec<SourceRecord>, String> {
+) -> Result<SourceScanResult, String> {
     let metadata = std::fs::metadata(&root)
         .map_err(|error| format!("Could not read source root metadata: {error}"))?;
     if !metadata.is_dir() {
@@ -100,11 +108,12 @@ fn list_source_files_sync(
     let normalized_query = query
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty());
+    let collect_limit = limit.saturating_add(1);
     let mut records = Vec::new();
     collect_source_files(
         &root,
         &root,
-        limit,
+        collect_limit,
         normalized_query.as_deref(),
         &mut records,
     )?;
@@ -113,14 +122,20 @@ fn list_source_files_sync(
             .to_lowercase()
             .cmp(&right.relative_path.to_lowercase())
     });
+    let truncated = records.len() > limit;
     records.truncate(limit);
     #[cfg(debug_assertions)]
     eprintln!(
-        "mcb tauri source.list root={} count={}",
+        "mcb tauri source.list root={} count={} truncated={}",
         root.display(),
-        records.len()
+        records.len(),
+        truncated
     );
-    Ok(records)
+    Ok(SourceScanResult {
+        records,
+        limit,
+        truncated,
+    })
 }
 
 fn collect_source_files(
@@ -382,8 +397,8 @@ mod tests {
         std::fs::write(root.join("target/debug/generated.rs"), "fn generated() {}").unwrap();
         std::fs::write(root.join("README.md"), "# docs").unwrap();
 
-        let files = list_source_files_sync(root.clone(), 20, None).unwrap();
-        let relative_paths = files
+        let scan = list_source_files_sync(root.clone(), 20, None).unwrap();
+        let relative_paths = scan.records
             .iter()
             .map(|file| file.relative_path.as_str())
             .collect::<Vec<_>>();
@@ -428,10 +443,10 @@ mod tests {
         std::fs::write(root.join("src/App.svelte"), "<script></script>").unwrap();
         std::fs::write(root.join("src/Workers/Worker.cs"), "public class Worker {}").unwrap();
 
-        let files = list_source_files_sync(root.clone(), 20, Some("worker".to_string())).unwrap();
+        let scan = list_source_files_sync(root.clone(), 20, Some("worker".to_string())).unwrap();
 
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].relative_path, "src/Workers/Worker.cs");
+        assert_eq!(scan.records.len(), 1);
+        assert_eq!(scan.records[0].relative_path, "src/Workers/Worker.cs");
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -445,9 +460,10 @@ mod tests {
                 .unwrap();
         }
 
-        let files = list_source_files_sync(root.clone(), 0, None).unwrap();
+        let scan = list_source_files_sync(root.clone(), 0, None).unwrap();
 
-        assert_eq!(files.len(), 350);
+        assert_eq!(scan.records.len(), 350);
+        assert!(!scan.truncated);
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -461,9 +477,26 @@ mod tests {
                 .unwrap();
         }
 
-        let files = list_source_files_sync(root.clone(), 1_200, None).unwrap();
+        let scan = list_source_files_sync(root.clone(), 1_200, None).unwrap();
 
-        assert_eq!(files.len(), 1_200);
+        assert_eq!(scan.records.len(), 1_200);
+        assert!(!scan.truncated);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_reports_when_the_limit_was_reached() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/A.ts"), "export const a = 1;").unwrap();
+        std::fs::write(root.join("src/B.ts"), "export const b = 1;").unwrap();
+
+        let scan = list_source_files_sync(root.clone(), 1, None).unwrap();
+
+        assert_eq!(scan.records.len(), 1);
+        assert_eq!(scan.limit, 1);
+        assert!(scan.truncated);
 
         std::fs::remove_dir_all(root).unwrap();
     }

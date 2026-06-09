@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
+  formatSourceRecordCount,
   folderIdsForSourceRecord,
   getSourceScanCacheEntry,
   monacoLanguageForSource,
@@ -78,6 +79,10 @@ assert.deepEqual(
   limitedRecent.map((record) => record.path),
   ['/repo/src/B.ts']
 );
+
+assert.equal(formatSourceRecordCount(2, 2, false), '2');
+assert.equal(formatSourceRecordCount(2_000, 2_000, true), '2,000+');
+assert.equal(formatSourceRecordCount(12, 2_000, true), '12 / 2,000+');
 
 const scanCache = upsertSourceScanCacheEntry({}, project, records, 2_000, 10_000);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.records.length, 2);

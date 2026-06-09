@@ -34,6 +34,7 @@
     demoRecordsForProject,
     filterSourceRecords,
     flattenSourceTree,
+    formatSourceRecordCount,
     folderIdsForSourceRecord,
     getSourceScanCacheEntry,
     mergeProjectRoots,
@@ -92,6 +93,7 @@
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
   let scanning = $state(false);
+  let scanLimitReached = $state(false);
   let runtime = $state('browser preview');
   let error = $state('');
   let fileActionStatus = $state('');
@@ -136,9 +138,7 @@
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
   let recordCountLabel = $derived(
-    filteredRecords.length === records.length
-      ? `${records.length}`
-      : `${filteredRecords.length} / ${records.length}`
+    formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
   );
 
   $effect(() => {
@@ -171,7 +171,12 @@
       error = '';
       runtime = 'cached source scan';
 
-      const nextSelection = applySourceRecords(cachedScan.records, preferredPath, 'cached source scan');
+      const nextSelection = applySourceRecords(
+        cachedScan.records,
+        preferredPath,
+        'cached source scan',
+        cachedScan.truncated
+      );
       if (nextSelection) {
         await loadRecord(nextSelection);
       } else {
@@ -186,25 +191,27 @@
     runtime = 'scanning source files';
 
     try {
-      const tauriRecords = await listSourceFilesFromTauri(project.path);
+      const tauriScan = await listSourceFilesFromTauri(project.path);
       if (generation !== scanGeneration) return;
 
-      const nextRecords = tauriRecords ?? demoRecordsForProject(project);
-      if (tauriRecords) {
+      const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
+      if (tauriScan) {
         sourceScanCache = upsertSourceScanCacheEntry(
           sourceScanCache,
           project,
-          tauriRecords,
-          defaultSourceScanLimit,
+          tauriScan.records,
+          tauriScan.limit,
           Date.now(),
-          maxSourceScanCacheEntries
+          maxSourceScanCacheEntries,
+          tauriScan.truncated
         );
       }
 
       const nextSelection = applySourceRecords(
         nextRecords,
         preferredPath,
-        tauriRecords ? 'tauri source scan' : 'browser preview'
+        tauriScan ? 'tauri source scan' : 'browser preview',
+        tauriScan?.truncated ?? false
       );
 
       if (nextSelection) {
@@ -217,6 +224,7 @@
       records = demoRecordsForProject(project);
       selectedRecord = records[0] ?? null;
       selectedSourceLine = null;
+      scanLimitReached = false;
       preview = selectedRecord ? demoPreviewFor(selectedRecord) : null;
       expandedFolderIds = selectedRecord ? new Set(folderIdsForSourceRecord(selectedRecord)) : new Set();
       runtime = 'browser preview';
@@ -232,10 +240,12 @@
   function applySourceRecords(
     nextRecords: SourceRecord[],
     preferredPath: string | null | undefined,
-    nextRuntime: string
+    nextRuntime: string,
+    truncated = false
   ): SourceRecord | null {
     records = nextRecords;
     runtime = nextRuntime;
+    scanLimitReached = truncated;
 
     const nextSelection = selectPreferredSourceRecord(
       nextRecords,
@@ -408,6 +418,7 @@
     selectedSourcePaths = nextSelectedSourcePaths;
     selectedRecord = null;
     selectedSourceLine = null;
+    scanLimitReached = false;
     preview = null;
     loading = false;
     error = '';

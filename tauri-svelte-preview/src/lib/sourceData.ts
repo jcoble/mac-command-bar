@@ -19,6 +19,12 @@ export type SourcePreview = SourceRecord & {
   lineCount: number;
 };
 
+export type SourceScanResult = {
+  records: SourceRecord[];
+  limit: number;
+  truncated: boolean;
+};
+
 export type SourceRecentRecord = SourceRecord & {
   projectID: string;
   projectName: string;
@@ -32,6 +38,7 @@ export type SourceScanCacheEntry = {
   projectID: string;
   projectPath: string;
   limit: number;
+  truncated: boolean;
   records: SourceRecord[];
   scannedAt: number;
 };
@@ -274,6 +281,15 @@ export function previewFromContent(record: SourceRecord, content: string): Sourc
   };
 }
 
+export function formatSourceRecordCount(
+  filteredCount: number,
+  totalCount: number,
+  truncated: boolean
+): string {
+  const totalLabel = `${formatCount(totalCount)}${truncated ? '+' : ''}`;
+  return filteredCount === totalCount ? totalLabel : `${formatCount(filteredCount)} / ${totalLabel}`;
+}
+
 export function monacoLanguageForSource(language: SourceLanguage): string {
   switch (language) {
     case 'tsx':
@@ -342,7 +358,8 @@ export function upsertSourceScanCacheEntry(
   records: SourceRecord[],
   limit: number,
   scannedAt = Date.now(),
-  maxEntries = 8
+  maxEntries = 8,
+  truncated = false
 ): SourceScanCache {
   const cappedMaxEntries = Math.max(0, Math.floor(maxEntries));
   if (cappedMaxEntries === 0) return {};
@@ -355,6 +372,7 @@ export function upsertSourceScanCacheEntry(
       projectID: project.id,
       projectPath: normalizeProjectPath(project.path),
       limit,
+      truncated,
       records,
       scannedAt
     }
@@ -367,6 +385,10 @@ export function upsertSourceScanCacheEntry(
 
 function sourceScanCacheKey(project: ProjectRoot, limit: number): string {
   return `${normalizeProjectPath(project.path)}::${Math.max(0, Math.floor(limit))}`;
+}
+
+function formatCount(value: number): string {
+  return Math.max(0, Math.floor(value)).toLocaleString('en-US');
 }
 
 export function upsertOpenSourceTab(
