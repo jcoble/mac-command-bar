@@ -25,6 +25,13 @@ export type SourceRecentRecord = SourceRecord & {
   openedAt: number;
 };
 
+export type SourceOpenTab = SourceRecentRecord;
+
+export type CloseOpenSourceTabResult = {
+  tabs: SourceOpenTab[];
+  nextActivePath: string | null;
+};
+
 export type SourceTreeNode = {
   id: string;
   name: string;
@@ -278,14 +285,57 @@ export function upsertRecentSourceRecord(
   if (cappedLimit === 0) return [];
 
   return [
-    {
-      ...record,
-      projectID: project.id,
-      projectName: project.name,
-      openedAt
-    },
+    createProjectSourceRecord(record, project, openedAt),
     ...recents.filter((recentRecord) => recentRecord.path !== record.path)
   ].slice(0, cappedLimit);
+}
+
+export function upsertOpenSourceTab(
+  tabs: SourceOpenTab[],
+  record: SourceRecord,
+  project: ProjectRoot,
+  openedAt = Date.now(),
+  limit = 8
+): SourceOpenTab[] {
+  const cappedLimit = Math.max(0, Math.floor(limit));
+  if (cappedLimit === 0) return [];
+
+  const nextTab = createProjectSourceRecord(record, project, openedAt);
+  const existingTabIndex = tabs.findIndex((tab) => tab.path === record.path);
+  const nextTabs =
+    existingTabIndex === -1
+      ? [...tabs, nextTab]
+      : tabs.map((tab, index) => (index === existingTabIndex ? nextTab : tab));
+
+  return nextTabs.slice(Math.max(0, nextTabs.length - cappedLimit));
+}
+
+export function closeOpenSourceTab(
+  tabs: SourceOpenTab[],
+  closedPath: string,
+  activePath: string | null | undefined
+): CloseOpenSourceTabResult {
+  const closedTabIndex = tabs.findIndex((tab) => tab.path === closedPath);
+  if (closedTabIndex === -1) {
+    return {
+      tabs,
+      nextActivePath: activePath ?? tabs[0]?.path ?? null
+    };
+  }
+
+  const nextTabs = tabs.filter((tab) => tab.path !== closedPath);
+  const closedActiveTab = activePath === closedPath;
+  if (!closedActiveTab) {
+    return {
+      tabs: nextTabs,
+      nextActivePath: activePath ?? nextTabs[0]?.path ?? null
+    };
+  }
+
+  return {
+    tabs: nextTabs,
+    nextActivePath: nextTabs[closedTabIndex]?.path ?? nextTabs[closedTabIndex - 1]?.path ?? null
+  };
 }
 
 export function filterSourceRecords(records: SourceRecord[], query: string): SourceRecord[] {
@@ -380,4 +430,17 @@ function buildTreeNodes(entries: SourceTreeEntry[], prefix: string[]): SourceTre
 
 function localizedAscending(left: string, right: string): number {
   return left.localeCompare(right, undefined, { sensitivity: 'base', numeric: true });
+}
+
+function createProjectSourceRecord(
+  record: SourceRecord,
+  project: ProjectRoot,
+  openedAt: number
+): SourceRecentRecord {
+  return {
+    ...record,
+    projectID: project.id,
+    projectName: project.name,
+    openedAt
+  };
 }

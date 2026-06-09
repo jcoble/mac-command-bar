@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
+  closeOpenSourceTab,
   selectPreferredSourceRecord,
+  upsertOpenSourceTab,
   upsertRecentSourceRecord
 } from '../src/lib/sourceData.ts';
 
@@ -64,3 +66,36 @@ assert.deepEqual(
   limitedRecent.map((record) => record.path),
   ['/repo/src/B.ts']
 );
+
+const firstTab = upsertOpenSourceTab([], records[0], project, 1000, 3);
+assert.deepEqual(
+  firstTab.map((record) => [record.path, record.openedAt]),
+  [['/repo/src/A.ts', 1000]]
+);
+
+const secondTab = upsertOpenSourceTab(firstTab, records[1], project, 2000, 3);
+assert.deepEqual(
+  secondTab.map((record) => record.path),
+  ['/repo/src/A.ts', '/repo/src/B.ts']
+);
+
+const reselectedTab = upsertOpenSourceTab(secondTab, records[0], project, 3000, 3);
+assert.deepEqual(
+  reselectedTab.map((record) => [record.path, record.openedAt]),
+  [
+    ['/repo/src/A.ts', 3000],
+    ['/repo/src/B.ts', 2000]
+  ]
+);
+
+const closeInactive = closeOpenSourceTab(reselectedTab, '/repo/src/B.ts', '/repo/src/A.ts');
+assert.deepEqual(closeInactive.tabs.map((record) => record.path), ['/repo/src/A.ts']);
+assert.equal(closeInactive.nextActivePath, '/repo/src/A.ts');
+
+const closeActive = closeOpenSourceTab(reselectedTab, '/repo/src/A.ts', '/repo/src/A.ts');
+assert.deepEqual(closeActive.tabs.map((record) => record.path), ['/repo/src/B.ts']);
+assert.equal(closeActive.nextActivePath, '/repo/src/B.ts');
+
+const closeOnly = closeOpenSourceTab(firstTab, '/repo/src/A.ts', '/repo/src/A.ts');
+assert.deepEqual(closeOnly.tabs, []);
+assert.equal(closeOnly.nextActivePath, null);

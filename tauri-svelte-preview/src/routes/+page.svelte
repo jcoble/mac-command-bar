@@ -27,6 +27,7 @@
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import {
     buildSourceTree,
+    closeOpenSourceTab,
     createProjectRoot,
     defaultProjectRoots,
     demoPreviewFor,
@@ -37,8 +38,10 @@
     normalizeProjectPath,
     previewFromContent,
     selectPreferredSourceRecord,
+    upsertOpenSourceTab,
     upsertRecentSourceRecord,
     type ProjectRoot,
+    type SourceOpenTab,
     type SourcePreview,
     type SourceRecentRecord,
     type SourceRecord,
@@ -55,14 +58,18 @@
   const selectedProjectStorageKey = 'mac-command-bar.source-browser.selected-project';
   const selectedSourcePathStorageKey = 'mac-command-bar.source-browser.selected-source-paths';
   const recentSourceRecordsStorageKey = 'mac-command-bar.source-browser.recent-source-records';
+  const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const maxRecentSourceRecords = 24;
   const maxProjectRecentRecords = 5;
+  const maxProjectOpenSourceTabs = 8;
+  const maxStoredOpenSourceTabs = 64;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
   let recentSourceRecords = $state<SourceRecentRecord[]>([]);
+  let openSourceTabs = $state<SourceOpenTab[]>([]);
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -99,6 +106,9 @@
     recentSourceRecords
       .filter((record) => record.projectID === selectedProject.id)
       .slice(0, maxProjectRecentRecords)
+  );
+  let projectOpenSourceTabs = $derived(
+    openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
   );
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
@@ -185,7 +195,34 @@
     await selectRecord(record);
   }
 
+  async function selectOpenTab(tab: SourceOpenTab) {
+    const record = records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
+    await selectRecord(record);
+  }
+
+  async function closeSourceTab(tab: SourceOpenTab, event: MouseEvent) {
+    event.stopPropagation();
+
+    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, selectedRecord?.path);
+    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, closeResult.tabs);
+    openSourceTabs = nextOpenSourceTabs;
+    persistOpenSourceTabs(nextOpenSourceTabs);
+
+    if (closeResult.nextActivePath === selectedRecord?.path) return;
+
+    if (closeResult.nextActivePath) {
+      const nextTab = closeResult.tabs.find((openTab) => openTab.path === closeResult.nextActivePath);
+      if (nextTab) {
+        await selectOpenTab(nextTab);
+      }
+      return;
+    }
+
+    clearSelectedSourceRecordForProject(selectedProject.id);
+  }
+
   function trackSelectedSourceRecord(record: SourceRecord, project: ProjectRoot) {
+    const openedAt = Date.now();
     const nextSelectedSourcePaths = {
       ...selectedSourcePaths,
       [project.id]: record.path
@@ -194,14 +231,48 @@
       recentSourceRecords,
       record,
       project,
-      Date.now(),
+      openedAt,
       maxRecentSourceRecords
     );
+    const nextProjectOpenTabs = upsertOpenSourceTab(
+      projectOpenSourceTabs,
+      record,
+      project,
+      openedAt,
+      maxProjectOpenSourceTabs
+    );
+    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, nextProjectOpenTabs);
 
     selectedSourcePaths = nextSelectedSourcePaths;
     recentSourceRecords = nextRecentSourceRecords;
+    openSourceTabs = nextOpenSourceTabs;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
     persistRecentSourceRecords(nextRecentSourceRecords);
+    persistOpenSourceTabs(nextOpenSourceTabs);
+  }
+
+  function replaceProjectOpenTabs(
+    existingTabs: SourceOpenTab[],
+    projectID: string,
+    projectTabs: SourceOpenTab[]
+  ): SourceOpenTab[] {
+    return [
+      ...existingTabs.filter((tab) => tab.projectID !== projectID),
+      ...projectTabs
+    ].slice(0, maxStoredOpenSourceTabs);
+  }
+
+  function clearSelectedSourceRecordForProject(projectID: string) {
+    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    delete nextSelectedSourcePaths[projectID];
+
+    selectedSourcePaths = nextSelectedSourcePaths;
+    selectedRecord = null;
+    preview = null;
+    loading = false;
+    error = '';
+    fileActionStatus = '';
+    persistSelectedSourcePaths(nextSelectedSourcePaths);
   }
 
   async function copySelectedPath() {
@@ -317,6 +388,11 @@
     window.localStorage.setItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
   }
 
+  function persistOpenSourceTabs(tabs: SourceOpenTab[]) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(openSourceTabsStorageKey, JSON.stringify(tabs));
+  }
+
   function loadStoredSelectedProjectID(roots: ProjectRoot[]): string {
     if (typeof window === 'undefined') return initialProject.id;
 
@@ -362,7 +438,7 @@
       if (!Array.isArray(parsedValue)) return [];
 
       return parsedValue
-        .map(parseStoredRecentSourceRecord)
+        .map(parseStoredProjectSourceRecord)
         .filter((record): record is SourceRecentRecord => record !== null)
         .slice(0, maxRecentSourceRecords);
     } catch {
@@ -370,7 +446,26 @@
     }
   }
 
-  function parseStoredRecentSourceRecord(value: unknown): SourceRecentRecord | null {
+  function loadStoredOpenSourceTabs(): SourceOpenTab[] {
+    if (typeof window === 'undefined') return [];
+
+    try {
+      const storedValue = window.localStorage.getItem(openSourceTabsStorageKey);
+      if (!storedValue) return [];
+
+      const parsedValue: unknown = JSON.parse(storedValue);
+      if (!Array.isArray(parsedValue)) return [];
+
+      return parsedValue
+        .map(parseStoredProjectSourceRecord)
+        .filter((record): record is SourceOpenTab => record !== null)
+        .slice(0, maxStoredOpenSourceTabs);
+    } catch {
+      return [];
+    }
+  }
+
+  function parseStoredProjectSourceRecord(value: unknown): SourceRecentRecord | null {
     if (typeof value !== 'object' || value === null) return null;
 
     const recentRecord = value as Partial<SourceRecentRecord>;
@@ -502,6 +597,12 @@
     recentSourceRecords = nextRecentSourceRecords;
     persistRecentSourceRecords(nextRecentSourceRecords);
 
+    const nextOpenSourceTabs = openSourceTabs.filter(
+      (tab) => tab.projectID !== removedProjectID
+    );
+    openSourceTabs = nextOpenSourceTabs;
+    persistOpenSourceTabs(nextOpenSourceTabs);
+
     if (selectedProjectID === removedProjectID) {
       const fallbackProject = defaultProjectRoots[0];
       selectedProjectID = fallbackProject.id;
@@ -538,6 +639,7 @@
     const storedProjectID = loadStoredSelectedProjectID(storedProjectOptions);
     const storedSelectedSourcePaths = loadStoredSelectedSourcePaths();
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
+    const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedProject =
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
@@ -546,6 +648,7 @@
     customProjectRoots = storedCustomProjectRoots;
     selectedSourcePaths = storedSelectedSourcePaths;
     recentSourceRecords = storedRecentSourceRecords;
+    openSourceTabs = storedOpenSourceTabs;
     selectedProjectID = storedProject.id;
     persistSelectedProjectID(storedProject.id);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]);
@@ -732,6 +835,37 @@
         {/if}
       </div>
     </header>
+
+    {#if projectOpenSourceTabs.length > 0}
+      <div class="tab-strip" aria-label="Open source files">
+        {#each projectOpenSourceTabs as tab (tab.path)}
+          <div class="source-tab" class:active={tab.path === selectedRecord?.path}>
+            <button
+              class="tab-select-button"
+              type="button"
+              aria-label={`Select ${tab.fileName}`}
+              title={tab.relativePath}
+              onclick={() => selectOpenTab(tab)}
+            >
+              <span class="tab-file-icon">
+                <FileCode2 size={14} strokeWidth={1.8} />
+              </span>
+              <span>{tab.fileName}</span>
+              <small>{tab.language}</small>
+            </button>
+            <button
+              class="tab-close-button"
+              type="button"
+              aria-label={`Close ${tab.fileName}`}
+              title={`Close ${tab.fileName}`}
+              onclick={(event) => closeSourceTab(tab, event)}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     {#if preview}
       <div class="path-row">
@@ -1351,6 +1485,101 @@
     background: rgba(255, 255, 255, 0.045);
     font-size: 11px;
     font-weight: 700;
+  }
+
+  .tab-strip {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    padding-bottom: 4px;
+    margin: -2px 0 12px;
+    overflow-x: auto;
+  }
+
+  .source-tab {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 28px;
+    align-items: center;
+    flex: 0 1 228px;
+    min-width: 148px;
+    max-width: 228px;
+    height: 36px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .source-tab.active {
+    border-color: rgba(92, 226, 207, 0.42);
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .tab-select-button {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    height: 100%;
+    padding: 0 7px 0 9px;
+    color: #cbd3d1;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .tab-file-icon {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    color: #8d9995;
+  }
+
+  .source-tab.active .tab-file-icon {
+    color: #6fdfcf;
+  }
+
+  .tab-select-button span,
+  .tab-select-button small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tab-select-button span {
+    font-size: 12px;
+    font-weight: 760;
+  }
+
+  .tab-select-button small {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .tab-close-button {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: #8d9995;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .tab-close-button:hover {
+    color: #f2f6f5;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .tab-select-button:focus-visible,
+  .tab-close-button:focus-visible {
+    outline: 0;
+    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
   }
 
   .path-row {
