@@ -1,11 +1,23 @@
 import type { SourcePreview, SourceRecord, SourceScanResult } from './sourceData';
 
 export const defaultSourceScanLimit = 2_000;
+export const nativeSourceScanProgressEvent = 'source_scan_progress';
+
+export type NativeSourceScanProgress = {
+  scanId: string;
+  visitedEntries: number;
+  matchedFiles: number;
+};
+
+export function createSourceScanId(): string {
+  return `source-scan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
 
 export async function listSourceFilesFromTauri(
   root: string,
   query = '',
-  limit = defaultSourceScanLimit
+  limit = defaultSourceScanLimit,
+  scanId: string | null = null
 ): Promise<SourceScanResult | null> {
   if (!isTauriRuntime()) {
     return null;
@@ -15,7 +27,30 @@ export async function listSourceFilesFromTauri(
   return invoke<SourceScanResult>('list_source_files', {
     root,
     limit,
-    query: query.trim() || null
+    query: query.trim() || null,
+    scanId
+  });
+}
+
+export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean> {
+  if (!isTauriRuntime() || !scanId.trim()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<boolean>('cancel_source_scan', { scanId });
+}
+
+export async function listenToSourceScanProgress(
+  handler: (progress: NativeSourceScanProgress) => void
+): Promise<(() => void) | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
+    handler(event.payload);
   });
 }
 

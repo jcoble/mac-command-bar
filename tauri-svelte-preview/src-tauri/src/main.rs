@@ -1,11 +1,18 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use tauri::Emitter;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 2_000;
 const MAX_SOURCE_LIST_LIMIT: usize = 5_000;
+const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
+const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceRecord {
     path: String,
@@ -15,12 +22,26 @@ struct SourceRecord {
     byte_count: u64,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceScanResult {
     records: Vec<SourceRecord>,
     limit: usize,
     truncated: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SourceScanProgressSnapshot {
+    visited_entries: usize,
+    matched_files: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceScanProgressEvent {
+    scan_id: String,
+    visited_entries: usize,
+    matched_files: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -47,21 +68,180 @@ struct SourceFileActionCommand {
     args: Vec<String>,
 }
 
+#[derive(Default)]
+struct SourceScanRegistry {
+    scans: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+impl SourceScanRegistry {
+    fn register(&self, scan_id: &str) -> Arc<AtomicBool> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.scans
+            .lock()
+            .expect("source scan registry lock poisoned")
+            .insert(scan_id.to_string(), Arc::clone(&cancelled));
+        cancelled
+    }
+
+    fn cancel(&self, scan_id: &str) -> bool {
+        let Some(cancelled) = self
+            .scans
+            .lock()
+            .expect("source scan registry lock poisoned")
+            .get(scan_id)
+            .cloned()
+        else {
+            return false;
+        };
+        cancelled.store(true, Ordering::Relaxed);
+        true
+    }
+
+    fn unregister(&self, scan_id: &str) {
+        self.scans
+            .lock()
+            .expect("source scan registry lock poisoned")
+            .remove(scan_id);
+    }
+}
+
+struct SourceScanCancellation {
+    cancelled: Arc<AtomicBool>,
+    progress: Option<Arc<dyn Fn(SourceScanProgressSnapshot) + Send + Sync>>,
+}
+
+impl SourceScanCancellation {
+    fn new(
+        cancelled: Arc<AtomicBool>,
+        progress: Option<Arc<dyn Fn(SourceScanProgressSnapshot) + Send + Sync>>,
+    ) -> Self {
+        Self {
+            cancelled,
+            progress,
+        }
+    }
+
+    fn none() -> Self {
+        Self::new(Arc::new(AtomicBool::new(false)), None)
+    }
+
+    #[cfg(test)]
+    fn cancelled_for_test() -> Self {
+        Self::new(Arc::new(AtomicBool::new(true)), None)
+    }
+
+    #[cfg(test)]
+    fn active_for_test(
+        progress: impl Fn(SourceScanProgressSnapshot) + Send + Sync + 'static,
+    ) -> Self {
+        Self::new(Arc::new(AtomicBool::new(false)), Some(Arc::new(progress)))
+    }
+
+    fn ensure_active(&self) -> Result<(), String> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            Err("Source scan cancelled".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn report_progress(&self, progress: SourceScanProgressSnapshot) {
+        if let Some(callback) = &self.progress {
+            callback(progress);
+        }
+    }
+}
+
+#[derive(Default)]
+struct SourceScanWalkProgress {
+    visited_entries: usize,
+    matched_files: usize,
+    next_report_at: usize,
+}
+
+impl SourceScanWalkProgress {
+    fn visit_entry(&mut self, cancellation: &SourceScanCancellation) {
+        self.visited_entries += 1;
+        if self.visited_entries == 1 || self.visited_entries >= self.next_report_at {
+            self.next_report_at = self.visited_entries + SOURCE_SCAN_PROGRESS_INTERVAL;
+            self.report(cancellation);
+        }
+    }
+
+    fn match_file(&mut self, cancellation: &SourceScanCancellation) {
+        self.matched_files += 1;
+        self.report(cancellation);
+    }
+
+    fn report(&self, cancellation: &SourceScanCancellation) {
+        cancellation.report_progress(SourceScanProgressSnapshot {
+            visited_entries: self.visited_entries,
+            matched_files: self.matched_files,
+        });
+    }
+}
+
 #[tauri::command]
 async fn list_source_files(
+    app: tauri::AppHandle,
+    scan_registry: tauri::State<'_, SourceScanRegistry>,
     root: String,
     limit: Option<usize>,
     query: Option<String>,
+    scan_id: Option<String>,
 ) -> Result<SourceScanResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        list_source_files_sync(
+    let cancellation = source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
+    let scan_id_for_cleanup = scan_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        list_source_files_sync_with_cancellation(
             PathBuf::from(root),
             limit.unwrap_or(DEFAULT_SOURCE_LIST_LIMIT),
             query,
+            cancellation,
         )
     })
     .await
-    .map_err(|error| format!("Source scan task failed: {error}"))?
+    .map_err(|error| format!("Source scan task failed: {error}"))?;
+
+    if let Some(scan_id) = &scan_id_for_cleanup {
+        scan_registry.unregister(scan_id);
+    }
+
+    result
+}
+
+#[tauri::command]
+async fn cancel_source_scan(
+    scan_registry: tauri::State<'_, SourceScanRegistry>,
+    scan_id: String,
+) -> Result<bool, String> {
+    Ok(scan_registry.cancel(&scan_id))
+}
+
+fn source_scan_cancellation_for_command(
+    app: &tauri::AppHandle,
+    scan_registry: &SourceScanRegistry,
+    scan_id: Option<&str>,
+) -> SourceScanCancellation {
+    let Some(scan_id) = scan_id.filter(|value| !value.trim().is_empty()) else {
+        return SourceScanCancellation::none();
+    };
+
+    let cancelled = scan_registry.register(scan_id);
+    let app = app.clone();
+    let scan_id = scan_id.to_string();
+    let progress = Arc::new(move |snapshot: SourceScanProgressSnapshot| {
+        let _ = app.emit(
+            SOURCE_SCAN_PROGRESS_EVENT,
+            SourceScanProgressEvent {
+                scan_id: scan_id.clone(),
+                visited_entries: snapshot.visited_entries,
+                matched_files: snapshot.matched_files,
+            },
+        );
+    });
+
+    SourceScanCancellation::new(cancelled, Some(progress))
 }
 
 #[tauri::command]
@@ -94,6 +274,16 @@ fn list_source_files_sync(
     limit: usize,
     query: Option<String>,
 ) -> Result<SourceScanResult, String> {
+    list_source_files_sync_with_cancellation(root, limit, query, SourceScanCancellation::none())
+}
+
+fn list_source_files_sync_with_cancellation(
+    root: PathBuf,
+    limit: usize,
+    query: Option<String>,
+    cancellation: SourceScanCancellation,
+) -> Result<SourceScanResult, String> {
+    cancellation.ensure_active()?;
     let metadata = std::fs::metadata(&root)
         .map_err(|error| format!("Could not read source root metadata: {error}"))?;
     if !metadata.is_dir() {
@@ -110,13 +300,18 @@ fn list_source_files_sync(
         .filter(|value| !value.is_empty());
     let collect_limit = limit.saturating_add(1);
     let mut records = Vec::new();
+    let mut progress = SourceScanWalkProgress::default();
     collect_source_files(
         &root,
         &root,
         collect_limit,
         normalized_query.as_deref(),
         &mut records,
+        &cancellation,
+        &mut progress,
     )?;
+    progress.report(&cancellation);
+    cancellation.ensure_active()?;
     records.sort_by(|left, right| {
         left.relative_path
             .to_lowercase()
@@ -144,7 +339,10 @@ fn collect_source_files(
     limit: usize,
     query: Option<&str>,
     records: &mut Vec<SourceRecord>,
+    cancellation: &SourceScanCancellation,
+    progress: &mut SourceScanWalkProgress,
 ) -> Result<(), String> {
+    cancellation.ensure_active()?;
     if records.len() >= limit {
         return Ok(());
     }
@@ -156,6 +354,9 @@ fn collect_source_files(
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
+        cancellation.ensure_active()?;
+        progress.visit_entry(cancellation);
+
         if records.len() >= limit {
             break;
         }
@@ -170,7 +371,7 @@ fn collect_source_files(
             if should_skip_dir(&file_name) {
                 continue;
             }
-            collect_source_files(root, &path, limit, query, records)?;
+            collect_source_files(root, &path, limit, query, records, cancellation, progress)?;
             continue;
         }
 
@@ -194,6 +395,7 @@ fn collect_source_files(
             language: detect_language(&path),
             byte_count: metadata.len(),
         });
+        progress.match_file(cancellation);
     }
 
     Ok(())
@@ -367,9 +569,11 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
 
 fn main() {
     tauri::Builder::default()
+        .manage(SourceScanRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_source_files,
+            cancel_source_scan,
             read_source_file,
             open_source_file,
             reveal_source_file
@@ -502,6 +706,43 @@ mod tests {
     }
 
     #[test]
+    fn source_scan_can_be_cancelled_before_collection() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/A.ts"), "export const a = 1;").unwrap();
+
+        let cancellation = SourceScanCancellation::cancelled_for_test();
+        let error = list_source_files_sync_with_cancellation(root.clone(), 20, None, cancellation)
+            .unwrap_err();
+
+        assert!(error.contains("Source scan cancelled"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_reports_progress_during_collection() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/A.ts"), "export const a = 1;").unwrap();
+        std::fs::write(root.join("src/B.ts"), "export const b = 1;").unwrap();
+
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let progress_clone = std::sync::Arc::clone(&progress);
+        let cancellation = SourceScanCancellation::active_for_test(move |_| {
+            progress_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        let scan = list_source_files_sync_with_cancellation(root.clone(), 20, None, cancellation)
+            .unwrap();
+
+        assert_eq!(scan.records.len(), 2);
+        assert!(progress.load(std::sync::atomic::Ordering::Relaxed) > 0);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn source_file_action_builds_open_and_reveal_commands() {
         let root = unique_temp_root();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -535,12 +776,16 @@ mod tests {
     }
 
     fn unique_temp_root() -> PathBuf {
+        static TEMP_ROOT_COUNTER: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let counter = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "mac-command-bar-tauri-source-test-{}-{unique}",
+            "mac-command-bar-tauri-source-test-{}-{unique}-{counter}",
             std::process::id()
         ))
     }

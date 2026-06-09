@@ -58,11 +58,16 @@
     type SourceTreeRow
   } from '$lib/sourceData';
   import {
+    cancelSourceScanFromTauri,
+    createSourceScanId,
     defaultSourceScanLimit,
+    listenToSourceScanProgress,
     listSourceFilesFromTauri,
+    nativeSourceScanProgressEvent,
     openSourceFileFromTauri,
     readSourceFromTauri,
-    revealSourceFileFromTauri
+    revealSourceFileFromTauri,
+    type NativeSourceScanProgress
   } from '$lib/tauriSource';
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
@@ -79,6 +84,7 @@
   const sourceTreeRowHeight = 30;
   const sourceTreeOverscanRows = 8;
   const sourceTreeFallbackViewportHeight = 420;
+  const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
 
@@ -99,6 +105,8 @@
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
   let scanning = $state(false);
+  let activeSourceScanId = $state('');
+  let sourceScanProgress = $state<NativeSourceScanProgress | null>(null);
   let scanLimitReached = $state(false);
   let runtime = $state('browser preview');
   let error = $state('');
@@ -240,6 +248,8 @@
         );
 
     if (cachedScan) {
+      activeSourceScanId = '';
+      sourceScanProgress = null;
       scanning = false;
       loading = true;
       error = '';
@@ -261,11 +271,14 @@
 
     scanning = true;
     loading = true;
+    const scanId = createSourceScanId();
+    activeSourceScanId = scanId;
+    sourceScanProgress = null;
     error = '';
     runtime = 'scanning source files';
 
     try {
-      const tauriScan = await listSourceFilesFromTauri(project.path);
+      const tauriScan = await listSourceFilesFromTauri(project.path, '', defaultSourceScanLimit, scanId);
       if (generation !== scanGeneration) return;
 
       const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
@@ -307,6 +320,8 @@
     } finally {
       if (generation === scanGeneration) {
         scanning = false;
+        activeSourceScanId = '';
+        sourceScanProgress = null;
       }
     }
   }
@@ -314,9 +329,16 @@
   function cancelSourceScan() {
     if (!scanning) return;
 
+    if (activeSourceScanId) {
+      void cancelSourceScanFromTauri(activeSourceScanId).catch(() => {
+        // Stop is optimistic; stale scan results are already ignored by generation.
+      });
+    }
     scanGeneration += 1;
     scanning = false;
     loading = false;
+    activeSourceScanId = '';
+    sourceScanProgress = null;
     runtime = 'source scan stopped';
     error = '';
     fileActionStatus = 'Scan stopped';
@@ -992,6 +1014,19 @@
   }
 
   onMount(() => {
+    let unlistenSourceScanProgress: (() => void) | null = null;
+    void listenToSourceScanProgress((progress) => {
+      if (progress.scanId === activeSourceScanId) {
+        sourceScanProgress = progress;
+      }
+    })
+      .then((unlisten) => {
+        unlistenSourceScanProgress = unlisten;
+      })
+      .catch(() => {
+        unlistenSourceScanProgress = null;
+      });
+
     const storedCustomProjectRoots = loadStoredCustomProjectRoots();
     const storedProjectOptions = mergeProjectRoots(defaultProjectRoots, storedCustomProjectRoots);
     const storedProjectID = loadStoredSelectedProjectID(storedProjectOptions);
@@ -1011,6 +1046,10 @@
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]);
+
+    return () => {
+      unlistenSourceScanProgress?.();
+    };
   });
 </script>
 
@@ -1066,6 +1105,13 @@
           </button>
         {/if}
       </div>
+
+      {#if scanning && sourceScanProgress}
+        <div class="scan-progress" aria-live="polite" data-progress-event={sourceScanProgressEventName}>
+          <span>{sourceScanProgress.matchedFiles.toLocaleString()} files</span>
+          <span>{sourceScanProgress.visitedEntries.toLocaleString()} entries checked</span>
+        </div>
+      {/if}
 
       {#if addingProject}
         <form class="project-form" onsubmit={saveProject}>
@@ -1568,6 +1614,25 @@
   }
 
   .project-path-row span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-progress {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-height: 18px;
+    margin: 4px 0 2px;
+    color: #8fd8cf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .scan-progress span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
