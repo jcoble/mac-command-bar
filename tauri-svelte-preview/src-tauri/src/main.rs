@@ -259,17 +259,56 @@ fn source_file_action_command(
 }
 
 fn detect_language(path: &Path) -> String {
-    match path.extension().and_then(|value| value.to_str()) {
-        Some("cs") => "csharp".to_string(),
-        Some("swift") => "swift".to_string(),
-        Some("rs") => "rust".to_string(),
-        Some("ts") => "typescript".to_string(),
-        Some("tsx") => "tsx".to_string(),
-        Some("js") => "javascript".to_string(),
-        Some("jsx") => "jsx".to_string(),
-        Some("svelte") => "svelte".to_string(),
-        _ => "plain".to_string(),
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    if file_name == "dockerfile" || file_name.ends_with(".dockerfile") {
+        return "dockerfile".to_string();
     }
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+
+    match extension.as_str() {
+        "cs" => "csharp",
+        "csproj" | "fsproj" | "vbproj" | "props" | "targets" | "xaml" | "xml" => "xml",
+        "swift" => "swift",
+        "rs" => "rust",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "jsx",
+        "svelte" => "svelte",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
+        "json" | "jsonc" => "json",
+        "md" | "markdown" => "markdown",
+        "mdx" => "mdx",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "ini" | "env" => "ini",
+        "sh" | "bash" | "zsh" => "shell",
+        "ps1" | "psm1" => "powershell",
+        "py" => "python",
+        "rb" => "ruby",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" => "cpp",
+        "sql" => "sql",
+        "graphql" | "gql" => "graphql",
+        "fs" | "fsx" => "fsharp",
+        "razor" => "razor",
+        _ => "plain",
+    }
+    .to_string()
 }
 
 fn is_source_file(path: &Path) -> bool {
@@ -297,7 +336,6 @@ fn should_skip_dir(name: &str) -> bool {
             | "dist"
             | "node_modules"
             | "obj"
-            | "packages"
             | "target"
             | "vendor"
             | "worktrees"
@@ -332,10 +370,13 @@ mod tests {
     #[test]
     fn source_scan_groups_supported_files_and_skips_build_dirs() {
         let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("packages/ui")).unwrap();
         std::fs::create_dir_all(root.join("src/Workers")).unwrap();
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(root.join("packages/ui/Button.tsx"), "export function Button() {}").unwrap();
         std::fs::write(root.join("Package.swift"), "let package = 1").unwrap();
         std::fs::write(root.join("src/App.svelte"), "<script></script>").unwrap();
+        std::fs::write(root.join("src/settings.json"), "{}").unwrap();
         std::fs::write(root.join("src/Workers/Worker.cs"), "public class Worker {}").unwrap();
         std::fs::write(root.join("target/debug/generated.rs"), "fn generated() {}").unwrap();
         std::fs::write(root.join("README.md"), "# docs").unwrap();
@@ -348,10 +389,35 @@ mod tests {
 
         assert_eq!(
             relative_paths,
-            vec!["Package.swift", "src/App.svelte", "src/Workers/Worker.cs"]
+            vec![
+                "Package.swift",
+                "packages/ui/Button.tsx",
+                "README.md",
+                "src/App.svelte",
+                "src/settings.json",
+                "src/Workers/Worker.cs"
+            ]
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_language_detection_covers_common_project_files() {
+        assert_eq!(detect_language(Path::new("Program.cs")), "csharp");
+        assert_eq!(detect_language(Path::new("Package.swift")), "swift");
+        assert_eq!(detect_language(Path::new("main.rs")), "rust");
+        assert_eq!(detect_language(Path::new("src/routes/+page.svelte")), "svelte");
+        assert_eq!(detect_language(Path::new("src/main.tsx")), "tsx");
+        assert_eq!(detect_language(Path::new("src/app.jsx")), "jsx");
+        assert_eq!(detect_language(Path::new("README.md")), "markdown");
+        assert_eq!(detect_language(Path::new("package.json")), "json");
+        assert_eq!(detect_language(Path::new("pnpm-lock.yaml")), "yaml");
+        assert_eq!(detect_language(Path::new("Cargo.toml")), "toml");
+        assert_eq!(detect_language(Path::new("scripts/build.sh")), "shell");
+        assert_eq!(detect_language(Path::new("tools/import.py")), "python");
+        assert_eq!(detect_language(Path::new("Dockerfile")), "dockerfile");
+        assert_eq!(detect_language(Path::new("EdiPlatform.Api.csproj")), "xml");
     }
 
     #[test]

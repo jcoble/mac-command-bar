@@ -263,6 +263,23 @@ export function previewFromContent(record: SourceRecord, content: string): Sourc
   };
 }
 
+export function monacoLanguageForSource(language: SourceLanguage): string {
+  switch (language) {
+    case 'tsx':
+      return 'typescript';
+    case 'jsx':
+      return 'javascript';
+    case 'svelte':
+      return 'html';
+    case 'toml':
+      return 'ini';
+    case 'plain':
+      return 'plaintext';
+    default:
+      return language;
+  }
+}
+
 export function selectPreferredSourceRecord(
   records: SourceRecord[],
   preferredPath: string | null | undefined,

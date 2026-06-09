@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
   folderIdsForSourceRecord,
+  monacoLanguageForSource,
   parseQuickOpenQuery,
   rankSourceRecords,
   selectPreferredSourceRecord,
@@ -156,6 +157,13 @@ assert.deepEqual(parseQuickOpenQuery('FormatDetector:0'), {
   searchQuery: 'FormatDetector:0',
   targetLine: null
 });
+
+assert.equal(monacoLanguageForSource('csharp'), 'csharp');
+assert.equal(monacoLanguageForSource('tsx'), 'typescript');
+assert.equal(monacoLanguageForSource('jsx'), 'javascript');
+assert.equal(monacoLanguageForSource('svelte'), 'html');
+assert.equal(monacoLanguageForSource('toml'), 'ini');
+assert.equal(monacoLanguageForSource('plain'), 'plaintext');
 
 assert.deepEqual(folderIdsForSourceRecord(records[0]), ['folder:src']);
 assert.deepEqual(

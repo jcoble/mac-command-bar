@@ -1,10 +1,11 @@
 <script lang="ts">
 	import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 	import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+	import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 	import "monaco-editor/min/vs/editor/editor.main.css";
 	import { onDestroy, onMount } from "svelte";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
-	import type { SourcePreview } from "./sourceData";
+	import { monacoLanguageForSource, type SourcePreview } from "./sourceData";
 
 	type Props = {
 		preview: SourcePreview;
@@ -25,17 +26,13 @@
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 
-	function languageId(language: SourcePreview["language"]) {
-		return language === "csharp" ? "csharp" : language;
-	}
-
 	function installWorker() {
 		const target = self as unknown as {
 			MonacoEnvironment?: { getWorker: (_moduleId: string, _label: string) => Worker };
 		};
 
 		target.MonacoEnvironment = {
-			getWorker: () => new EditorWorker(),
+			getWorker: (_moduleId, label) => (label === "json" ? new JsonWorker() : new EditorWorker()),
 		};
 	}
 
@@ -65,7 +62,7 @@
 	function applyPreview() {
 		if (!monacoApi || !editor || !preview) return;
 
-		const language = languageId(preview.language);
+		const language = monacoLanguageForSource(preview.language);
 		const uri = monacoApi.Uri.file(preview.path);
 		let model = monacoApi.editor.getModel(uri);
 
@@ -119,9 +116,34 @@
 
 		const [monaco] = await Promise.all([
 			import("monaco-editor/esm/vs/editor/editor.api"),
+			import("monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution"),
 			import("monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/swift/swift.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/css/css.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/fsharp/fsharp.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/go/go.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/graphql/graphql.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/html/html.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/ini/ini.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/java/java.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/kotlin/kotlin.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/less/less.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/mdx/mdx.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/python/python.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/razor/razor.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution"),
 			import("monaco-editor/esm/vs/basic-languages/rust/rust.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/scss/scss.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/shell/shell.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/sql/sql.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/swift/swift.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/xml/xml.contribution"),
+			import("monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution"),
+			import("monaco-editor/esm/vs/language/json/monaco.contribution"),
 		]);
 
 		monacoApi = monaco;
@@ -141,7 +163,7 @@
 			fontSize: sourcePreviewAppearance.fontSize,
 			glyphMargin: false,
 			hideCursorInOverviewRuler: true,
-			language: languageId(preview.language),
+			language: monacoLanguageForSource(preview.language),
 			letterSpacing: sourcePreviewAppearance.letterSpacing,
 			lineDecorationsWidth: 14,
 			lineHeight: sourcePreviewAppearance.lineHeight,
