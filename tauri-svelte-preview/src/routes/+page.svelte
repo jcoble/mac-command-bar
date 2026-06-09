@@ -1088,6 +1088,9 @@
         <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot} onclick={chooseProjectRoot}>
           <Plus size={16} strokeWidth={2} />
         </button>
+        <button class="icon-button quick-open-trigger" type="button" aria-label="Open source file" title="Open source file" onclick={openQuickOpen}>
+          <Search size={16} strokeWidth={1.9} />
+        </button>
         <button
           class="scan-button"
           type="button"
@@ -1541,7 +1544,7 @@
 
   .project-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 36px 96px;
+    grid-template-columns: minmax(0, 1fr) 36px 36px 96px;
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
