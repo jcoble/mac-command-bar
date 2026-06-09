@@ -1110,6 +1110,7 @@
     display: grid;
     grid-template-rows: auto auto minmax(0, 1fr);
     min-width: 0;
+    overflow: hidden;
     padding: 22px 18px;
     background: rgba(19, 21, 21, 0.94);
     border-right: 1px solid rgba(255, 255, 255, 0.08);
@@ -1168,6 +1169,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden;
   }
 
   .project-row {
@@ -1471,6 +1473,7 @@
     grid-template-rows: auto minmax(0, 1fr);
     flex: 1;
     min-height: 0;
+    overflow: hidden;
   }
 
   .tree-heading {
@@ -1491,8 +1494,32 @@
 
   .file-tree {
     min-height: 0;
-    overflow: auto;
-    padding: 4px 2px 4px 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 4px 4px 4px 0;
+    scrollbar-color: rgba(174, 184, 181, 0.58) rgba(255, 255, 255, 0.055);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .file-tree::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .file-tree::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.055);
+  }
+
+  .file-tree::-webkit-scrollbar-thumb {
+    border: 2px solid rgba(19, 21, 21, 0.94);
+    border-radius: 999px;
+    background: rgba(174, 184, 181, 0.58);
+  }
+
+  .file-tree::-webkit-scrollbar-thumb:hover {
+    background: rgba(218, 225, 223, 0.72);
   }
 
   .file-tree button {
