@@ -252,6 +252,15 @@ async fn read_source_file(path: String) -> Result<SourcePreview, String> {
 }
 
 #[tauri::command]
+async fn write_source_file(path: String, content: String) -> Result<SourcePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        write_source_file_sync(PathBuf::from(path), content)
+    })
+    .await
+    .map_err(|error| format!("Source write task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn open_source_file(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         run_source_file_action(PathBuf::from(path), SourceFileAction::Open)
@@ -440,6 +449,48 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
     Ok(preview)
 }
 
+fn write_source_file_sync(path: PathBuf, content: String) -> Result<SourcePreview, String> {
+    let path_ref = path.as_path();
+    let metadata = std::fs::metadata(path_ref)
+        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Source path is not a file".to_string());
+    }
+    if !is_source_file(path_ref) {
+        return Err("Source path is not a supported source file".to_string());
+    }
+
+    let byte_count = content.as_bytes().len() as u64;
+    if byte_count > MAX_PREVIEW_BYTES {
+        return Err(format!("Source content is too large: {byte_count} bytes"));
+    }
+
+    let parent = path_ref
+        .parent()
+        .ok_or_else(|| "Source path has no parent directory".to_string())?;
+    let file_name = path_ref
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("source");
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_path = parent.join(format!(
+        ".{file_name}.mcb-write-{}-{unique}",
+        std::process::id()
+    ));
+
+    std::fs::write(&temp_path, content.as_bytes())
+        .map_err(|error| format!("Could not write source temp file: {error}"))?;
+    if let Err(error) = std::fs::rename(&temp_path, path_ref) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("Could not replace source file: {error}"));
+    }
+
+    read_source_file_sync(path)
+}
+
 fn run_source_file_action(path: PathBuf, action: SourceFileAction) -> Result<(), String> {
     let command = source_file_action_command(&path, action)?;
     let status = Command::new(&command.program)
@@ -592,6 +643,7 @@ fn main() {
             list_source_files,
             cancel_source_scan,
             read_source_file,
+            write_source_file,
             open_source_file,
             reveal_source_file
         ])
@@ -802,6 +854,30 @@ mod tests {
 
         assert_eq!(scan.records.len(), 2);
         assert!(progress.load(std::sync::atomic::Ordering::Relaxed) > 0);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_write_file_persists_utf8_content_and_returns_preview() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file_path = root.join("src/App.ts");
+        std::fs::write(&file_path, "export const oldValue = 1;\n").unwrap();
+
+        let preview =
+            write_source_file_sync(file_path.clone(), "export const newValue = 2;\n".to_string())
+                .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "export const newValue = 2;\n"
+        );
+        assert_eq!(preview.path, file_path.display().to_string());
+        assert_eq!(preview.file_name, "App.ts");
+        assert_eq!(preview.language, "typescript");
+        assert_eq!(preview.line_count, 1);
+        assert_eq!(preview.content, "export const newValue = 2;\n");
 
         std::fs::remove_dir_all(root).unwrap();
     }

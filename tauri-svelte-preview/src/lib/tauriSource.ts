@@ -70,6 +70,26 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
   };
 }
 
+export async function writeSourceToTauri(
+  record: SourceRecord,
+  content: string
+): Promise<SourcePreview | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  const preview = await invoke<SourcePreview>('write_source_file', {
+    path: record.path,
+    content
+  });
+  return {
+    ...preview,
+    relativePath: record.relativePath,
+    language: record.language
+  };
+}
+
 export async function openSourceFileFromTauri(path: string): Promise<boolean> {
   return runSourceFileAction('open_source_file', path);
 }

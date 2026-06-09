@@ -68,3 +68,34 @@ assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor
 assert.ok(editorSource.includes('basic-languages/lua/lua.contribution'), 'Editor should load Lua highlighting');
 assert.ok(editorSource.includes('basic-languages/php/php.contribution'), 'Editor should load PHP highlighting');
 assert.ok(editorSource.includes('basic-languages/protobuf/protobuf.contribution'), 'Editor should load Protobuf highlighting');
+assert.ok(editorSource.includes('editable?: boolean'), 'Editor should expose an editable mode prop');
+assert.ok(editorSource.includes('content?: string'), 'Editor should allow external draft content');
+assert.ok(
+  editorSource.includes('onContentChange?: (content: string) => void'),
+  'Editor should report Monaco content changes to the parent'
+);
+assert.ok(
+  editorSource.includes('onDidChangeModelContent'),
+  'Editor should subscribe to Monaco content changes'
+);
+assert.ok(pageSource.includes('sourceDraftContentByPath'), 'Source page should track draft content per path');
+assert.ok(pageSource.includes('savedSourceContentByPath'), 'Source page should track saved content per path');
+assert.ok(pageSource.includes('writeSourceToTauri'), 'Source page should use the native write command');
+assert.ok(pageSource.includes('function saveSelectedSourceFile'), 'Source page should expose a save action');
+assert.ok(pageSource.includes('function revertSelectedSourceFile'), 'Source page should expose a revert action');
+assert.ok(
+  pageSource.includes('class:dirty={isSourcePathDirty(tab.path)}'),
+  'Source tabs should show dirty state per path'
+);
+assert.ok(pageSource.includes('class="tab-dirty-dot"'), 'Dirty tabs should include a compact dirty marker');
+assert.ok(pageSource.includes('aria-label="Save source file"'), 'Editor toolbar should expose save');
+assert.ok(pageSource.includes('aria-label="Revert source file"'), 'Editor toolbar should expose revert');
+assert.ok(
+  pageSource.includes('content={selectedSourceDraftContent}'),
+  'Monaco should receive the active source draft content'
+);
+assert.ok(pageSource.includes('editable={true}'), 'Monaco should run in editable mode');
+assert.ok(
+  pageSource.includes('onContentChange={updateSelectedSourceDraft}'),
+  'Monaco should update the active draft content'
+);

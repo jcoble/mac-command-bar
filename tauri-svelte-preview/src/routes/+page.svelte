@@ -15,6 +15,7 @@
     History,
     Plus,
     RefreshCw,
+    RotateCcw,
     Save,
     Search,
     SplitSquareHorizontal,
@@ -69,6 +70,7 @@
     openSourceFileFromTauri,
     readSourceFromTauri,
     revealSourceFileFromTauri,
+    writeSourceToTauri,
     type NativeSourceScanProgress
   } from '$lib/tauriSource';
 
@@ -89,6 +91,7 @@
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
+  const initialPreview = initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null;
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
@@ -100,8 +103,12 @@
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
   let selectedSourceLine = $state<number | null>(null);
   let selectedSourceLineRequestId = $state(0);
-  let preview = $state<SourcePreview | null>(
-    initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null
+  let preview = $state<SourcePreview | null>(initialPreview);
+  let sourceDraftContentByPath = $state<Record<string, string>>(
+    initialPreview ? { [initialPreview.path]: initialPreview.content } : {}
+  );
+  let savedSourceContentByPath = $state<Record<string, string>>(
+    initialPreview ? { [initialPreview.path]: initialPreview.content } : {}
   );
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
@@ -168,6 +175,10 @@
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
+  let selectedSourceDraftContent = $derived(
+    preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
+  );
+  let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
   let recordCountLabel = $derived(
     formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
   );
@@ -320,6 +331,7 @@
       selectedSourceLine = null;
       scanLimitReached = false;
       preview = selectedRecord ? demoPreviewFor(selectedRecord) : null;
+      if (preview) syncSourcePreviewContent(preview);
       expandedFolderIds = selectedRecord ? new Set(folderIdsForSourceRecord(selectedRecord)) : new Set();
       runtime = 'browser preview';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
@@ -384,13 +396,17 @@
       if (expectedScanGeneration !== null && expectedScanGeneration !== scanGeneration) return;
 
       runtime = tauriPreview ? 'tauri file read' : 'browser preview';
-      preview = tauriPreview ?? demoPreviewFor(record);
+      const nextPreview = tauriPreview ?? demoPreviewFor(record);
+      preview = nextPreview;
+      syncSourcePreviewContent(nextPreview);
     } catch (previewError) {
       if (expectedScanGeneration !== null && expectedScanGeneration !== scanGeneration) return;
 
       runtime = 'browser preview';
       error = previewError instanceof Error ? previewError.message : 'Could not read source file';
-      preview = demoPreviewFor(record);
+      const nextPreview = demoPreviewFor(record);
+      preview = nextPreview;
+      syncSourcePreviewContent(nextPreview);
     } finally {
       if (expectedScanGeneration === null || expectedScanGeneration === scanGeneration) {
         loading = false;
@@ -607,6 +623,85 @@
     } finally {
       fileActionBusy = '';
     }
+  }
+
+  async function saveSelectedSourceFile() {
+    if (!preview || !selectedRecord || !selectedSourceDirty) return;
+
+    const record = selectedRecord;
+    const content = selectedSourceDraftContent;
+    fileActionBusy = 'save';
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const savedPreview = await writeSourceToTauri(record, content);
+      if (!savedPreview) {
+        fileActionStatus = 'Native save unavailable';
+        return;
+      }
+
+      commitSourcePreviewContent(savedPreview);
+      runtime = 'tauri file write';
+      if (selectedRecord?.path === record.path) {
+        preview = savedPreview;
+      }
+      fileActionStatus = 'Saved file';
+    } catch (saveError) {
+      error = saveError instanceof Error ? saveError.message : 'Could not save source file';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  function revertSelectedSourceFile() {
+    if (!preview || !selectedSourceDirty) return;
+
+    const savedContent = savedSourceContentByPath[preview.path] ?? preview.content;
+    sourceDraftContentByPath = {
+      ...sourceDraftContentByPath,
+      [preview.path]: savedContent
+    };
+    fileActionStatus = 'Reverted edits';
+    error = '';
+  }
+
+  function updateSelectedSourceDraft(content: string) {
+    if (!preview) return;
+
+    sourceDraftContentByPath = {
+      ...sourceDraftContentByPath,
+      [preview.path]: content
+    };
+  }
+
+  function syncSourcePreviewContent(nextPreview: SourcePreview) {
+    const existingDraft = sourceDraftContentByPath[nextPreview.path];
+    sourceDraftContentByPath = {
+      ...sourceDraftContentByPath,
+      [nextPreview.path]: existingDraft ?? nextPreview.content
+    };
+    savedSourceContentByPath = {
+      ...savedSourceContentByPath,
+      [nextPreview.path]: nextPreview.content
+    };
+  }
+
+  function commitSourcePreviewContent(nextPreview: SourcePreview) {
+    sourceDraftContentByPath = {
+      ...sourceDraftContentByPath,
+      [nextPreview.path]: nextPreview.content
+    };
+    savedSourceContentByPath = {
+      ...savedSourceContentByPath,
+      [nextPreview.path]: nextPreview.content
+    };
+  }
+
+  function isSourcePathDirty(path: string) {
+    const draftContent = sourceDraftContentByPath[path];
+    const savedContent = savedSourceContentByPath[path];
+    return draftContent !== undefined && savedContent !== undefined && draftContent !== savedContent;
   }
 
   async function handleProjectChange() {
@@ -1298,7 +1393,11 @@
     {#if projectOpenSourceTabs.length > 0}
       <div class="tab-strip" aria-label="Open source files">
         {#each projectOpenSourceTabs as tab (tab.path)}
-          <div class="source-tab" class:active={tab.path === selectedRecord?.path}>
+          <div
+            class="source-tab"
+            class:active={tab.path === selectedRecord?.path}
+            class:dirty={isSourcePathDirty(tab.path)}
+          >
             <button
               class="tab-select-button"
               type="button"
@@ -1311,6 +1410,9 @@
               </span>
               <span>{tab.fileName}</span>
               <small>{tab.language}</small>
+              {#if isSourcePathDirty(tab.path)}
+                <span class="tab-dirty-dot" aria-hidden="true"></span>
+              {/if}
             </button>
             <button
               class="tab-close-button"
@@ -1374,7 +1476,31 @@
           </div>
           <div class="mode-pill">
             <SplitSquareHorizontal size={14} strokeWidth={1.8} />
-            <span>Read only</span>
+            <span>{selectedSourceDirty ? 'Modified' : 'Editable'}</span>
+          </div>
+          <div class="editor-save-actions">
+            <button
+              class="editor-action-button primary"
+              type="button"
+              aria-label="Save source file"
+              title="Save source file"
+              disabled={!selectedSourceDirty || fileActionBusy === 'save'}
+              onclick={saveSelectedSourceFile}
+            >
+              <Save size={13} strokeWidth={2} />
+              <span>Save</span>
+            </button>
+            <button
+              class="editor-action-button"
+              type="button"
+              aria-label="Revert source file"
+              title="Revert source file"
+              disabled={!selectedSourceDirty || fileActionBusy === 'save'}
+              onclick={revertSelectedSourceFile}
+            >
+              <RotateCcw size={13} strokeWidth={2} />
+              <span>Revert</span>
+            </button>
           </div>
           <div class="quality-pill">
             <span>{sourcePreviewAppearance.theme.id}</span>
@@ -1387,9 +1513,12 @@
         {#key sourcePreviewAppearanceKey}
           <MonacoSourceEditor
             {preview}
+            content={selectedSourceDraftContent}
+            editable={true}
             {loading}
             targetLine={selectedSourceLine}
             targetLineRequestId={selectedSourceLineRequestId}
+            onContentChange={updateSelectedSourceDraft}
           />
         {/key}
       </div>
@@ -2130,9 +2259,13 @@
     background: rgba(92, 226, 207, 0.12);
   }
 
+  .source-tab.dirty {
+    border-color: rgba(216, 170, 85, 0.44);
+  }
+
   .tab-select-button {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto;
+    grid-template-columns: 16px minmax(0, 1fr) auto 8px;
     align-items: center;
     gap: 7px;
     min-width: 0;
@@ -2154,6 +2287,14 @@
 
   .source-tab.active .tab-file-icon {
     color: #6fdfcf;
+  }
+
+  .tab-dirty-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #d8aa55;
+    box-shadow: 0 0 0 2px rgba(216, 170, 85, 0.14);
   }
 
   .tab-select-button span,
@@ -2286,7 +2427,7 @@
 
   .editor-toolbar {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 10px;
     height: 42px;
@@ -2322,6 +2463,64 @@
 
   .quality-pill {
     color: #7ce5d5;
+  }
+
+  .editor-save-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .editor-action-button {
+    display: grid;
+    grid-template-columns: 14px minmax(0, auto);
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    min-width: 0;
+    padding: 0 9px;
+    color: #b9c5c1;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.045);
+    font-size: 11px;
+    font-weight: 760;
+    cursor: pointer;
+  }
+
+  .editor-action-button.primary {
+    color: #071b18;
+    border-color: rgba(111, 223, 207, 0.68);
+    background: #6fdfcf;
+  }
+
+  .editor-action-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-action-button:hover:not(:disabled) {
+    color: #f2f6f5;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .editor-action-button.primary:hover:not(:disabled) {
+    color: #071b18;
+    background: #81eadc;
+  }
+
+  .editor-action-button:focus-visible {
+    border-color: rgba(92, 226, 207, 0.58);
+    outline: 0;
+    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+  }
+
+  .editor-action-button:disabled {
+    cursor: default;
+    opacity: 0.52;
   }
 
   .quick-open-layer {

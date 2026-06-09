@@ -9,19 +9,32 @@
 
 	type Props = {
 		preview: SourcePreview;
+		content?: string;
+		editable?: boolean;
 		loading?: boolean;
 		targetLine?: number | null;
 		targetLineRequestId?: number;
+		onContentChange?: (content: string) => void;
 	};
 
-	let { preview, loading = false, targetLine = null, targetLineRequestId = 0 }: Props = $props();
+	let {
+		preview,
+		content,
+		editable = false,
+		loading = false,
+		targetLine = null,
+		targetLineRequestId = 0,
+		onContentChange,
+	}: Props = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
 	let editor = $state<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	let monacoApi: typeof Monaco | null = null;
+	let contentChangeDisposable: Monaco.IDisposable | null = null;
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
 	let currentTargetLineRequestId = -1;
+	let applyingContent = false;
 	let isReady = $state(false);
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
@@ -63,20 +76,26 @@
 		if (!monacoApi || !editor || !preview) return;
 
 		const language = monacoLanguageForSource(preview.language);
+		const nextContent = content ?? preview.content;
 		const uri = monacoApi.Uri.file(preview.path);
 		let model = monacoApi.editor.getModel(uri);
 
 		if (!model) {
-			model = monacoApi.editor.createModel(preview.content, language, uri);
+			model = monacoApi.editor.createModel(nextContent, language, uri);
 			ownedModels.add(model);
 		} else {
-			if (model.getValue() !== preview.content) {
-				model.setValue(preview.content);
+			if (model.getValue() !== nextContent) {
+				setModelValue(model, nextContent);
 			}
 			if (model.getLanguageId() !== language) {
 				monacoApi.editor.setModelLanguage(model, language);
 			}
 		}
+
+		editor.updateOptions({
+			domReadOnly: !editable,
+			readOnly: !editable,
+		});
 
 		if (editor.getModel() !== model) {
 			editor.setModel(model);
@@ -107,6 +126,20 @@
 
 		currentTargetLine = targetLine;
 		currentTargetLineRequestId = targetLineRequestId;
+	}
+
+	function setModelValue(model: Monaco.editor.ITextModel, nextContent: string) {
+		applyingContent = true;
+		try {
+			model.setValue(nextContent);
+		} finally {
+			applyingContent = false;
+		}
+	}
+
+	function handleEditorContentChange() {
+		if (applyingContent || !editor) return;
+		onContentChange?.(editor.getValue());
 	}
 
 	onMount(async () => {
@@ -161,7 +194,7 @@
 			cursorBlinking: "solid",
 			cursorStyle: "line-thin",
 			cursorWidth: 1,
-			domReadOnly: true,
+			domReadOnly: !editable,
 			folding: true,
 			fontFamily: sourcePreviewAppearance.fontFamily,
 			fontLigatures: sourcePreviewAppearance.fontLigatures,
@@ -180,7 +213,7 @@
 			overviewRulerBorder: false,
 			overviewRulerLanes: 0,
 			padding: { top: 16, bottom: 20 },
-			readOnly: true,
+			readOnly: !editable,
 			renderLineHighlight: "gutter",
 			renderWhitespace: "selection",
 			scrollBeyondLastLine: false,
@@ -196,6 +229,7 @@
 			wordWrap: "off",
 		});
 
+		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
 		isReady = true;
 		applyAppearance();
 		applyPreview();
@@ -208,6 +242,7 @@
 	});
 
 	onDestroy(() => {
+		contentChangeDisposable?.dispose();
 		editor?.dispose();
 		for (const model of ownedModels) {
 			model.dispose();
