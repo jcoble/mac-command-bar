@@ -81,6 +81,7 @@
     expandedSourceScanLimit,
     findSourceDefinitionsFromTauri,
     findSourceReferencesFromTauri,
+    listAgentSessionsFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
     listenToSourceScanProgress,
@@ -93,6 +94,7 @@
     searchSourceFilesFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
+    type AgentSession,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
     type ProjectWorktree,
@@ -145,6 +147,10 @@
   let projectWorktreesLoading = $state(false);
   let projectWorktreeError = $state('');
   let projectWorktreeSource = $state('browser preview');
+  let agentSessions = $state<AgentSession[]>([]);
+  let agentSessionsLoading = $state(false);
+  let agentSessionError = $state('');
+  let agentSessionSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -284,6 +290,9 @@
         context.projectID === selectedProject.id || context.projectName === selectedProject.name
     )
   );
+  let selectedProjectAgentSessions = $derived(
+    agentSessions.filter((session) => agentSessionMatchesProject(session, selectedProject))
+  );
   let runtimeContextSummary = $derived(
     formatRuntimeContextSummary(
       selectedProjectRuntimeContexts.length,
@@ -298,6 +307,14 @@
       projectWorktreesLoading,
       projectWorktreeError,
       projectWorktreeSource
+    )
+  );
+  let agentSessionSummary = $derived(
+    formatAgentSessionSummary(
+      selectedProjectAgentSessions.length,
+      agentSessionsLoading,
+      agentSessionError,
+      agentSessionSource
     )
   );
   let sourceSearchSummary = $derived(
@@ -618,6 +635,30 @@
     }
   }
 
+  async function loadAgentSessions() {
+    agentSessionsLoading = true;
+    agentSessionError = '';
+
+    try {
+      const nativeSessions = await listAgentSessionsFromTauri();
+      if (nativeSessions) {
+        agentSessions = nativeSessions;
+        agentSessionSource = 'native session scan';
+        return;
+      }
+
+      agentSessions = demoAgentSessionsForProject(selectedProject);
+      agentSessionSource = 'browser preview';
+    } catch (sessionError) {
+      agentSessions = demoAgentSessionsForProject(selectedProject);
+      agentSessionSource = 'browser preview';
+      agentSessionError =
+        sessionError instanceof Error ? sessionError.message : 'Could not scan agent sessions';
+    } finally {
+      agentSessionsLoading = false;
+    }
+  }
+
   function demoRuntimeContextsForProject(project: ProjectRoot): RuntimeContext[] {
     return [
       {
@@ -646,6 +687,19 @@
     ];
   }
 
+  function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
+    return [
+      {
+        provider: 'codex',
+        id: 'preview-session',
+        title: `Review ${project.name}`,
+        projectPath: project.path,
+        lastActivity: null,
+        resumeCommands: ['codex resume preview-session']
+      }
+    ];
+  }
+
   function formatRuntimeContextSummary(
     contextCount: number,
     loadingContexts: boolean,
@@ -668,6 +722,41 @@
     if (worktreeError) return worktreeError;
     if (worktreeCount === 0) return `No worktrees found · ${worktreeSource}`;
     return `${worktreeCount} ${worktreeCount === 1 ? 'worktree' : 'worktrees'} · ${worktreeSource}`;
+  }
+
+  function formatAgentSessionSummary(
+    sessionCount: number,
+    loadingSessions: boolean,
+    sessionError: string,
+    sessionSource: string
+  ) {
+    if (loadingSessions) return 'Scanning local sessions';
+    if (sessionError) return sessionError;
+    if (sessionCount === 0) return `No sessions for this project · ${sessionSource}`;
+    return `${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'} · ${sessionSource}`;
+  }
+
+  function agentSessionMatchesProject(session: AgentSession, project: ProjectRoot) {
+    if (!session.projectPath) return true;
+
+    const sessionPath = normalizeProjectPath(session.projectPath);
+    const projectPath = normalizeProjectPath(project.path);
+    if (sessionPath === projectPath || sessionPath.startsWith(`${projectPath}/`)) return true;
+
+    const projectName = project.name.toLowerCase();
+    return sessionPath.toLowerCase().includes(`/worktrees/${projectName}/`);
+  }
+
+  function agentSessionProjectLabel(session: AgentSession) {
+    return session.projectPath ? formatSourceContextRootLabel(session.projectPath) : 'global';
+  }
+
+  function agentSessionActivityLabel(session: AgentSession) {
+    return session.lastActivity ?? 'unknown activity';
+  }
+
+  function agentSessionResumeCommand(session: AgentSession) {
+    return session.resumeCommands[0] ?? `${session.provider} resume ${session.id}`;
   }
 
   function projectWorktreeEligibilityKind(worktree: ProjectWorktree) {
@@ -1302,6 +1391,7 @@
     void loadProjectGitStatus(nextProject);
     void loadRuntimeContexts(projectOptions);
     void loadProjectWorktrees(nextProject);
+    void loadAgentSessions();
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -1546,6 +1636,7 @@
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     void loadProjectGitStatus(project);
+    void loadAgentSessions();
     await scanProject(project, selectedSourcePaths[project.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -1746,6 +1837,7 @@
     void loadProjectGitStatus(storedProject);
     void loadRuntimeContexts(storedProjectOptions);
     void loadProjectWorktrees(storedProject);
+    void loadAgentSessions();
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
       indexProjectsInBackground(storedProjectOptions)
     );
@@ -2058,69 +2150,102 @@
       </div>
     </div>
 
-    <section class="runtime-context-panel" aria-label="Runtime contexts">
-      <div class="runtime-context-header">
-        <div>
-          <strong>Runtime Contexts</strong>
-          <span>{runtimeContextSummary}</span>
+    <div class="context-panel-grid">
+      <section class="runtime-context-panel" aria-label="Runtime contexts">
+        <div class="runtime-context-header">
+          <div>
+            <strong>Runtime Contexts</strong>
+            <span>{runtimeContextSummary}</span>
+          </div>
+          <button
+            class="file-action-button"
+            type="button"
+            aria-label="Refresh runtime contexts"
+            title="Refresh runtime contexts"
+            disabled={runtimeContextsLoading}
+            onclick={() => loadRuntimeContexts(projectOptions)}
+          >
+            <RefreshCw size={14} strokeWidth={1.9} />
+          </button>
         </div>
-        <button
-          class="file-action-button"
-          type="button"
-          aria-label="Refresh runtime contexts"
-          title="Refresh runtime contexts"
-          disabled={runtimeContextsLoading}
-          onclick={() => loadRuntimeContexts(projectOptions)}
-        >
-          <RefreshCw size={14} strokeWidth={1.9} />
-        </button>
-      </div>
-      {#if selectedProjectRuntimeContexts.length > 0}
-        <div class="runtime-context-list">
-          {#each selectedProjectRuntimeContexts as context (`${context.pid}:${context.port}:${context.cwd}`)}
-            <div class="runtime-context-row">
-              <span class="runtime-port">:{context.port}</span>
-              <strong>{context.command}</strong>
-              <span>{context.rootLabel}</span>
-              <small title={context.cwd}>{context.cwd}</small>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </section>
+        {#if selectedProjectRuntimeContexts.length > 0}
+          <div class="runtime-context-list">
+            {#each selectedProjectRuntimeContexts as context (`${context.pid}:${context.port}:${context.cwd}`)}
+              <div class="runtime-context-row">
+                <span class="runtime-port">:{context.port}</span>
+                <strong>{context.command}</strong>
+                <span>{context.rootLabel}</span>
+                <small title={context.cwd}>{context.cwd}</small>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
 
-    <section class="worktree-context-panel" aria-label="Worktree safety">
-      <div class="worktree-context-header">
-        <div>
-          <strong>Worktree Safety</strong>
-          <span>{projectWorktreeSummary}</span>
+      <section class="agent-session-panel" aria-label="Agent sessions">
+        <div class="agent-session-header">
+          <div>
+            <strong>Agent Sessions</strong>
+            <span>{agentSessionSummary}</span>
+          </div>
+          <button
+            class="file-action-button"
+            type="button"
+            aria-label="Refresh agent sessions"
+            title="Refresh agent sessions"
+            disabled={agentSessionsLoading}
+            onclick={loadAgentSessions}
+          >
+            <RefreshCw size={14} strokeWidth={1.9} />
+          </button>
         </div>
-        <button
-          class="file-action-button"
-          type="button"
-          aria-label="Refresh worktrees"
-          title="Refresh worktrees"
-          disabled={projectWorktreesLoading}
-          onclick={() => loadProjectWorktrees(selectedProject)}
-        >
-          <RefreshCw size={14} strokeWidth={1.9} />
-        </button>
-      </div>
-      {#if projectWorktrees.length > 0}
-        <div class="worktree-context-list">
-          {#each projectWorktrees as worktree (worktree.path)}
-            {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
-            <div class="worktree-context-row" class:blocked={eligibilityKind === 'blocked'}>
-              <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
-              <strong>{worktree.branch}</strong>
-              <span>{worktree.repo}</span>
-              <small title={worktree.path}>{worktree.path}</small>
-              <em>{worktree.deleteEligibility}</em>
-            </div>
-          {/each}
+        {#if selectedProjectAgentSessions.length > 0}
+          <div class="agent-session-list">
+            {#each selectedProjectAgentSessions as session (`${session.provider}:${session.id}`)}
+              <div class="agent-session-row" title={agentSessionResumeCommand(session)}>
+                <span class="agent-provider-badge">{session.provider}</span>
+                <strong>{session.title}</strong>
+                <span>{agentSessionProjectLabel(session)}</span>
+                <small>{agentSessionActivityLabel(session)}</small>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+
+      <section class="worktree-context-panel" aria-label="Worktree safety">
+        <div class="worktree-context-header">
+          <div>
+            <strong>Worktree Safety</strong>
+            <span>{projectWorktreeSummary}</span>
+          </div>
+          <button
+            class="file-action-button"
+            type="button"
+            aria-label="Refresh worktrees"
+            title="Refresh worktrees"
+            disabled={projectWorktreesLoading}
+            onclick={() => loadProjectWorktrees(selectedProject)}
+          >
+            <RefreshCw size={14} strokeWidth={1.9} />
+          </button>
         </div>
-      {/if}
-    </section>
+        {#if projectWorktrees.length > 0}
+          <div class="worktree-context-list">
+            {#each projectWorktrees as worktree (worktree.path)}
+              {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
+              <div class="worktree-context-row" class:blocked={eligibilityKind === 'blocked'}>
+                <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
+                <strong>{worktree.branch}</strong>
+                <span>{worktree.repo}</span>
+                <small title={worktree.path}>{worktree.path}</small>
+                <em>{worktree.deleteEligibility}</em>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    </div>
 
     {#if projectOpenSourceTabs.length > 0}
       <div class="tab-strip" aria-label="Open source files">
@@ -3323,19 +3448,28 @@
     font-weight: 760;
   }
 
+  .context-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+    min-width: 0;
+    margin: -4px 0 14px;
+  }
+
   .runtime-context-panel,
+  .agent-session-panel,
   .worktree-context-panel {
     display: grid;
     gap: 8px;
     min-width: 0;
     padding: 10px;
-    margin: -4px 0 14px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.035);
   }
 
   .runtime-context-header,
+  .agent-session-header,
   .worktree-context-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -3345,6 +3479,7 @@
   }
 
   .runtime-context-header div,
+  .agent-session-header div,
   .worktree-context-header div {
     display: grid;
     gap: 2px;
@@ -3353,6 +3488,8 @@
 
   .runtime-context-header strong,
   .runtime-context-header span,
+  .agent-session-header strong,
+  .agent-session-header span,
   .worktree-context-header strong,
   .worktree-context-header span {
     min-width: 0;
@@ -3362,6 +3499,7 @@
   }
 
   .runtime-context-header strong,
+  .agent-session-header strong,
   .worktree-context-header strong {
     color: #f0f4f3;
     font-size: 12px;
@@ -3369,6 +3507,7 @@
   }
 
   .runtime-context-header span,
+  .agent-session-header span,
   .worktree-context-header span {
     color: #8d9995;
     font-size: 10px;
@@ -3376,6 +3515,7 @@
   }
 
   .runtime-context-list,
+  .agent-session-list,
   .worktree-context-list {
     display: grid;
     gap: 5px;
@@ -3393,12 +3533,18 @@
     scrollbar-width: thin;
   }
 
+  .agent-session-list {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
   .worktree-context-list {
     overflow-y: auto;
     scrollbar-width: thin;
   }
 
   .runtime-context-row,
+  .agent-session-row,
   .worktree-context-row {
     display: grid;
     align-items: center;
@@ -3414,6 +3560,10 @@
     grid-template-columns: auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
   }
 
+  .agent-session-row {
+    grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 0.72fr) minmax(0, 1fr);
+  }
+
   .worktree-context-row {
     grid-template-columns: auto minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1fr);
   }
@@ -3423,10 +3573,14 @@
   }
 
   .runtime-port,
+  .agent-provider-badge,
   .worktree-status-badge,
   .runtime-context-row strong,
   .runtime-context-row span,
   .runtime-context-row small,
+  .agent-session-row strong,
+  .agent-session-row span,
+  .agent-session-row small,
   .worktree-context-row strong,
   .worktree-context-row span,
   .worktree-context-row small,
@@ -3442,6 +3596,19 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
     font-size: 11px;
     font-weight: 820;
+  }
+
+  .agent-provider-badge {
+    display: inline-grid;
+    place-items: center;
+    height: 20px;
+    padding: 0 7px;
+    color: #081916;
+    border-radius: 999px;
+    background: #81d6e4;
+    font-size: 10px;
+    font-weight: 820;
+    text-transform: capitalize;
   }
 
   .worktree-status-badge {
@@ -3467,6 +3634,12 @@
     font-weight: 780;
   }
 
+  .agent-session-row strong {
+    color: #f0f4f3;
+    font-size: 11px;
+    font-weight: 780;
+  }
+
   .worktree-context-row strong {
     color: #f0f4f3;
     font-size: 11px;
@@ -3475,6 +3648,8 @@
 
   .runtime-context-row span,
   .runtime-context-row small,
+  .agent-session-row span,
+  .agent-session-row small,
   .worktree-context-row span,
   .worktree-context-row small,
   .worktree-context-row em {

@@ -254,3 +254,14 @@ assert.ok(pageSource.includes('class="worktree-status-badge"'), 'Worktree rows s
 assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');
 assertDeclaration('.worktree-context-list', 'overflow-y: auto');
 assertDeclaration('.worktree-context-list', 'scrollbar-width: thin');
+assert.ok(pageSource.includes('listAgentSessionsFromTauri'), 'Source page should load native agent sessions');
+assert.ok(pageSource.includes('agentSessions'), 'Source page should track agent sessions');
+assert.ok(pageSource.includes('selectedProjectAgentSessions'), 'Source page should filter sessions to the selected project');
+assert.ok(pageSource.includes('function loadAgentSessions'), 'Source page should expose an agent session refresh action');
+assert.ok(pageSource.includes('aria-label="Refresh agent sessions"'), 'Agent session panel should expose a refresh action');
+assert.ok(pageSource.includes('class="agent-session-panel"'), 'Source page should render an agent session panel');
+assert.ok(pageSource.includes('class="agent-session-list"'), 'Agent session panel should render a scrollable list');
+assert.ok(pageSource.includes('class="agent-provider-badge"'), 'Agent session rows should show the provider');
+assert.ok(pageSource.includes('Agent Sessions'), 'Agent session panel should have a clear heading');
+assertDeclaration('.agent-session-list', 'overflow-y: auto');
+assertDeclaration('.agent-session-list', 'scrollbar-width: thin');

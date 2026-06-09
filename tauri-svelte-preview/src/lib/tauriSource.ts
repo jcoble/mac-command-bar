@@ -43,6 +43,15 @@ export type ProjectWorktree = {
   deleteEligibility: string;
 };
 
+export type AgentSession = {
+  provider: string;
+  id: string;
+  title: string;
+  projectPath: string | null;
+  lastActivity: string | null;
+  resumeCommands: string[];
+};
+
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
 
 export type RuntimeContext = {
@@ -163,6 +172,15 @@ export async function listProjectWorktreesFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectWorktree[]>('list_project_worktrees', { root });
+}
+
+export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentSession[]>('list_agent_sessions');
 }
 
 export async function listRuntimeContextsFromTauri(

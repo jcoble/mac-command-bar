@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
 use tauri::Emitter;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
@@ -442,6 +443,13 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Worktree scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_agent_sessions() -> Result<Vec<AgentSessionRecord>, String> {
+    tauri::async_runtime::spawn_blocking(scan_sessions)
+        .await
+        .map_err(|error| format!("Agent session scan task failed: {error}"))
 }
 
 #[tauri::command]
@@ -1720,6 +1728,7 @@ fn main() {
             find_source_references,
             project_git_status,
             list_project_worktrees,
+            list_agent_sessions,
             list_runtime_contexts
         ])
         .run(tauri::generate_context!())
