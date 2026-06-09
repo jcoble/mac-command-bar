@@ -34,6 +34,7 @@
     demoPreviewFor,
     demoRecordsForProject,
     filterSourceRecords,
+    formatSourceDiagnosticSummary,
     flattenSourceTree,
     formatSourceRecordCount,
     formatSourceScanSummary,
@@ -46,6 +47,7 @@
     rankSourceRecords,
     scrollTopForSourceTreeReveal,
     selectPreferredSourceRecord,
+    sourceSupportsLanguageIntelligence,
     upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
@@ -56,6 +58,8 @@
     type SourcePreview,
     type SourceRecentRecord,
     type SourceRecord,
+    type SourceDiagnostic,
+    type SourceSymbol,
     type SourceTreeNode,
     type SourceTreeRow
   } from '$lib/sourceData';
@@ -93,6 +97,13 @@
   const initialRecords = demoRecordsForProject(initialProject);
   const initialPreview = initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null;
 
+  type SourceIntelligenceAction = 'definition' | 'hover';
+  type SourceEditorIntelligenceCommand = {
+    id: number;
+    action: SourceIntelligenceAction;
+  };
+  type SourceIntelligencePanel = 'problems' | 'symbols';
+
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
   let recentSourceRecords = $state<SourceRecentRecord[]>([]);
@@ -110,6 +121,10 @@
   let savedSourceContentByPath = $state<Record<string, string>>(
     initialPreview ? { [initialPreview.path]: initialPreview.content } : {}
   );
+  let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
+  let sourceSymbols = $state<SourceSymbol[]>([]);
+  let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
+  let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
@@ -136,6 +151,7 @@
   let projectPathInput = $state('');
   let projectFormError = $state('');
   let scanGeneration = 0;
+  let sourceIntelligenceCommandId = 0;
 
   type SourceScanOptions = {
     force?: boolean;
@@ -179,6 +195,10 @@
     preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
   );
   let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
+  let sourceIntelligenceAvailable = $derived(
+    preview ? sourceSupportsLanguageIntelligence(preview.language) : false
+  );
+  let sourceDiagnosticSummary = $derived(formatSourceDiagnosticSummary(sourceDiagnostics));
   let recordCountLabel = $derived(
     formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
   );
@@ -390,6 +410,7 @@
     loading = true;
     error = '';
     fileActionStatus = '';
+    resetSourceIntelligence();
 
     try {
       const tauriPreview = await readSourceFromTauri(record);
@@ -560,6 +581,7 @@
     pendingTreeFocusRowIndex = null;
     scanLimitReached = false;
     preview = null;
+    resetSourceIntelligence();
     loading = false;
     error = '';
     fileActionStatus = '';
@@ -702,6 +724,44 @@
     const draftContent = sourceDraftContentByPath[path];
     const savedContent = savedSourceContentByPath[path];
     return draftContent !== undefined && savedContent !== undefined && draftContent !== savedContent;
+  }
+
+  function resetSourceIntelligence() {
+    sourceDiagnostics = [];
+    sourceSymbols = [];
+    sourceIntelligenceCommand = null;
+  }
+
+  function handleEditorDiagnosticsChange(diagnostics: SourceDiagnostic[]) {
+    sourceDiagnostics = diagnostics;
+  }
+
+  function handleEditorSymbolsChange(symbols: SourceSymbol[]) {
+    sourceSymbols = symbols;
+  }
+
+  function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
+    if (!sourceIntelligenceAvailable) return;
+
+    sourceIntelligenceCommand = {
+      id: ++sourceIntelligenceCommandId,
+      action
+    };
+  }
+
+  function selectSourceDiagnostic(diagnostic: SourceDiagnostic) {
+    revealSourceLine(diagnostic.line);
+  }
+
+  function selectSourceSymbol(symbol: SourceSymbol) {
+    revealSourceLine(symbol.line);
+  }
+
+  function revealSourceLine(line: number) {
+    if (!preview) return;
+
+    selectedSourceLine = Math.max(1, Math.floor(line));
+    selectedSourceLineRequestId += 1;
   }
 
   async function handleProjectChange() {
@@ -1502,6 +1562,30 @@
               <span>Revert</span>
             </button>
           </div>
+          <div class="editor-intelligence-actions">
+            <button
+              class="editor-action-button"
+              type="button"
+              aria-label="Show hover"
+              title="Show hover"
+              disabled={!sourceIntelligenceAvailable}
+              onclick={() => requestSourceIntelligenceAction('hover')}
+            >
+              <SplitSquareHorizontal size={13} strokeWidth={2} />
+              <span>Hover</span>
+            </button>
+            <button
+              class="editor-action-button"
+              type="button"
+              aria-label="Go to definition"
+              title="Go to definition"
+              disabled={!sourceIntelligenceAvailable}
+              onclick={() => requestSourceIntelligenceAction('definition')}
+            >
+              <Search size={13} strokeWidth={2} />
+              <span>Definition</span>
+            </button>
+          </div>
           <div class="quality-pill">
             <span>{sourcePreviewAppearance.theme.id}</span>
           </div>
@@ -1510,17 +1594,93 @@
           </div>
         </div>
 
-        {#key sourcePreviewAppearanceKey}
-          <MonacoSourceEditor
-            {preview}
-            content={selectedSourceDraftContent}
-            editable={true}
-            {loading}
-            targetLine={selectedSourceLine}
-            targetLineRequestId={selectedSourceLineRequestId}
-            onContentChange={updateSelectedSourceDraft}
-          />
-        {/key}
+        <div class="editor-body-grid">
+          {#key sourcePreviewAppearanceKey}
+            <MonacoSourceEditor
+              {preview}
+              content={selectedSourceDraftContent}
+              editable={true}
+              {loading}
+              targetLine={selectedSourceLine}
+              targetLineRequestId={selectedSourceLineRequestId}
+              intelligenceCommand={sourceIntelligenceCommand}
+              onContentChange={updateSelectedSourceDraft}
+              onDiagnosticsChange={handleEditorDiagnosticsChange}
+              onSymbolsChange={handleEditorSymbolsChange}
+            />
+          {/key}
+
+          <aside class="source-intelligence-panel" aria-label="Language intelligence">
+            <div class="intelligence-tabs" role="tablist" aria-label="Source insights">
+              <button
+                class:active={sourceIntelligencePanel === 'problems'}
+                type="button"
+                role="tab"
+                aria-selected={sourceIntelligencePanel === 'problems'}
+                onclick={() => sourceIntelligencePanel = 'problems'}
+              >
+                <Activity size={13} strokeWidth={1.9} />
+                <span>Problems</span>
+                <strong>{sourceDiagnostics.length}</strong>
+              </button>
+              <button
+                class:active={sourceIntelligencePanel === 'symbols'}
+                type="button"
+                role="tab"
+                aria-selected={sourceIntelligencePanel === 'symbols'}
+                onclick={() => sourceIntelligencePanel = 'symbols'}
+              >
+                <FileCode2 size={13} strokeWidth={1.9} />
+                <span>Symbols</span>
+                <strong>{sourceSymbols.length}</strong>
+              </button>
+            </div>
+
+            {#if sourceIntelligencePanel === 'problems'}
+              <div class="intelligence-summary">{sourceDiagnosticSummary}</div>
+              <div class="intelligence-list">
+                {#if sourceDiagnostics.length === 0}
+                  <div class="intelligence-empty">No problems</div>
+                {:else}
+                  {#each sourceDiagnostics as diagnostic, index (`${diagnostic.line}:${diagnostic.column}:${index}`)}
+                    <button
+                      class="intelligence-row diagnostic"
+                      class:error={diagnostic.severity === 'error'}
+                      class:warning={diagnostic.severity === 'warning'}
+                      type="button"
+                      title={diagnostic.message}
+                      onclick={() => selectSourceDiagnostic(diagnostic)}
+                    >
+                      <strong>{diagnostic.severity}</strong>
+                      <span>{diagnostic.message}</span>
+                      <small>{diagnostic.line}:{diagnostic.column}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {:else}
+              <div class="intelligence-summary">{sourceSymbols.length} symbols</div>
+              <div class="intelligence-list">
+                {#if sourceSymbols.length === 0}
+                  <div class="intelligence-empty">No symbols</div>
+                {:else}
+                  {#each sourceSymbols as symbol (`${symbol.kind}:${symbol.name}:${symbol.line}`)}
+                    <button
+                      class="intelligence-row"
+                      type="button"
+                      title={symbol.detail}
+                      onclick={() => selectSourceSymbol(symbol)}
+                    >
+                      <strong>{symbol.kind}</strong>
+                      <span>{symbol.name}</span>
+                      <small>{symbol.line}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+          </aside>
+        </div>
       </div>
     {:else}
       <div class="empty-preview">
@@ -2414,6 +2574,8 @@
   }
 
   .editor-frame {
+    display: grid;
+    grid-template-rows: 42px minmax(0, 1fr);
     height: 560px;
     min-height: 0;
     overflow: hidden;
@@ -2427,7 +2589,7 @@
 
   .editor-toolbar {
     display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 10px;
     height: 42px;
@@ -2465,7 +2627,14 @@
     color: #7ce5d5;
   }
 
-  .editor-save-actions {
+  .editor-body-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 260px;
+    min-height: 0;
+  }
+
+  .editor-save-actions,
+  .editor-intelligence-actions {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -2521,6 +2690,165 @@
   .editor-action-button:disabled {
     cursor: default;
     opacity: 0.52;
+  }
+
+  .source-intelligence-panel {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(20, 23, 24, 0.86);
+  }
+
+  .intelligence-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .intelligence-tabs button {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    min-width: 0;
+    padding: 0 7px;
+    color: #9fa9a6;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .intelligence-tabs button.active {
+    color: #f2f6f5;
+    border-color: rgba(92, 226, 207, 0.36);
+    background: rgba(92, 226, 207, 0.11);
+  }
+
+  .intelligence-tabs span,
+  .intelligence-tabs strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .intelligence-tabs strong {
+    color: #7ce5d5;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  }
+
+  .intelligence-summary {
+    min-width: 0;
+    padding: 9px 12px;
+    overflow: hidden;
+    color: #8d9995;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 11px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .intelligence-list {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px;
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .intelligence-list::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .intelligence-list::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .intelligence-list::-webkit-scrollbar-thumb {
+    border: 2px solid rgba(20, 23, 24, 0.86);
+    border-radius: 999px;
+    background: rgba(174, 184, 181, 0.54);
+  }
+
+  .intelligence-empty {
+    display: grid;
+    place-items: center;
+    min-height: 126px;
+    color: #75817d;
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  .intelligence-row {
+    display: grid;
+    grid-template-columns: minmax(68px, auto) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    min-height: 31px;
+    padding: 5px 7px;
+    color: #cbd3d1;
+    text-align: left;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .intelligence-row:hover,
+  .intelligence-row:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .intelligence-row strong,
+  .intelligence-row span,
+  .intelligence-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .intelligence-row strong {
+    color: #8fd8cf;
+    font-size: 10px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .intelligence-row span {
+    font-size: 12px;
+    font-weight: 760;
+  }
+
+  .intelligence-row small {
+    color: #7f8b87;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 750;
+  }
+
+  .intelligence-row.diagnostic.error strong {
+    color: #f1a9a0;
+  }
+
+  .intelligence-row.diagnostic.warning strong {
+    color: #d8aa55;
   }
 
   .quick-open-layer {
@@ -2692,6 +3020,16 @@
 
     .editor-frame {
       height: 520px;
+    }
+
+    .editor-body-grid {
+      grid-template-columns: 1fr;
+      grid-template-rows: minmax(0, 1fr) 148px;
+    }
+
+    .source-intelligence-panel {
+      border-left: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
     }
   }
 </style>

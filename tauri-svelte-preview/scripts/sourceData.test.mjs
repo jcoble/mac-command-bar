@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
+  extractSourceSymbols,
+  formatSourceDiagnosticSummary,
   formatSourceRecordCount,
   formatSourceScanSummary,
   folderIdsForSourceRecord,
@@ -10,6 +12,7 @@ import {
   rankSourceRecords,
   scrollTopForSourceTreeReveal,
   selectPreferredSourceRecord,
+  sourceSupportsLanguageIntelligence,
   upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
   upsertRecentSourceRecord,
@@ -212,6 +215,80 @@ assert.equal(monacoLanguageForSource('jsx'), 'javascript');
 assert.equal(monacoLanguageForSource('svelte'), 'html');
 assert.equal(monacoLanguageForSource('toml'), 'ini');
 assert.equal(monacoLanguageForSource('plain'), 'plaintext');
+assert.equal(sourceSupportsLanguageIntelligence('typescript'), true);
+assert.equal(sourceSupportsLanguageIntelligence('tsx'), true);
+assert.equal(sourceSupportsLanguageIntelligence('javascript'), true);
+assert.equal(sourceSupportsLanguageIntelligence('csharp'), false);
+
+assert.equal(formatSourceDiagnosticSummary([]), 'No problems');
+assert.equal(
+  formatSourceDiagnosticSummary([
+    { severity: 'error', message: 'Broken syntax', line: 2, column: 4 },
+    { severity: 'warning', message: 'Unused value', line: 6, column: 12 },
+    { severity: 'warning', message: 'Deprecated API', line: 8, column: 2 }
+  ]),
+  '1 error, 2 warnings'
+);
+
+const typescriptSymbols = extractSourceSymbols(
+  {
+    path: '/repo/src/Widget.ts',
+    relativePath: 'src/Widget.ts',
+    fileName: 'Widget.ts',
+    language: 'typescript',
+    byteCount: 100,
+    content: '',
+    lineCount: 0
+  },
+  [
+    'export interface WidgetProps {',
+    '  name: string;',
+    '}',
+    'export class WidgetController {',
+    '  mount() {}',
+    '}',
+    'export function createWidget() {',
+    '  return new WidgetController();',
+    '}',
+    'const widgetCache = new Map<string, WidgetController>();'
+  ].join('\n')
+);
+assert.deepEqual(
+  typescriptSymbols.map((symbol) => [symbol.kind, symbol.name, symbol.line]),
+  [
+    ['interface', 'WidgetProps', 1],
+    ['class', 'WidgetController', 4],
+    ['function', 'createWidget', 7],
+    ['constant', 'widgetCache', 10]
+  ]
+);
+
+const csharpSymbols = extractSourceSymbols(
+  {
+    path: '/repo/src/Widget.cs',
+    relativePath: 'src/Widget.cs',
+    fileName: 'Widget.cs',
+    language: 'csharp',
+    byteCount: 100,
+    content: '',
+    lineCount: 0
+  },
+  [
+    'namespace Demo;',
+    'public sealed class WidgetController',
+    '{',
+    '    public Task MountAsync() => Task.CompletedTask;',
+    '}'
+  ].join('\n')
+);
+assert.deepEqual(
+  csharpSymbols.map((symbol) => [symbol.kind, symbol.name, symbol.line]),
+  [
+    ['namespace', 'Demo', 1],
+    ['class', 'WidgetController', 2],
+    ['method', 'MountAsync', 4]
+  ]
+);
 
 assert.deepEqual(folderIdsForSourceRecord(records[0]), ['folder:src']);
 assert.deepEqual(

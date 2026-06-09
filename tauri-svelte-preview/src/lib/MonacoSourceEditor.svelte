@@ -2,10 +2,27 @@
 	import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 	import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 	import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
+	import TypeScriptWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 	import "monaco-editor/min/vs/editor/editor.main.css";
 	import { onDestroy, onMount } from "svelte";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
-	import { monacoLanguageForSource, type SourcePreview } from "./sourceData";
+	import {
+		extractSourceSymbols,
+		monacoLanguageForSource,
+		type SourceDiagnostic,
+		type SourceDiagnosticSeverity,
+		type SourcePreview,
+		type SourceSymbol,
+	} from "./sourceData";
+
+	type SourceEditorIntelligenceAction = "definition" | "hover";
+
+	type SourceEditorIntelligenceCommand = {
+		id: number;
+		action: SourceEditorIntelligenceAction;
+	};
+
+	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
 		preview: SourcePreview;
@@ -14,7 +31,10 @@
 		loading?: boolean;
 		targetLine?: number | null;
 		targetLineRequestId?: number;
+		intelligenceCommand?: SourceEditorIntelligenceCommand | null;
 		onContentChange?: (content: string) => void;
+		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
+		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 	};
 
 	let {
@@ -24,16 +44,21 @@
 		loading = false,
 		targetLine = null,
 		targetLineRequestId = 0,
+		intelligenceCommand = null,
 		onContentChange,
+		onDiagnosticsChange,
+		onSymbolsChange,
 	}: Props = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
 	let editor = $state<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	let monacoApi: typeof Monaco | null = null;
 	let contentChangeDisposable: Monaco.IDisposable | null = null;
+	let markerChangeDisposable: Monaco.IDisposable | null = null;
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
 	let currentTargetLineRequestId = -1;
+	let handledIntelligenceCommandId = -1;
 	let applyingContent = false;
 	let isReady = $state(false);
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
@@ -45,7 +70,11 @@
 		};
 
 		target.MonacoEnvironment = {
-			getWorker: (_moduleId, label) => (label === "json" ? new JsonWorker() : new EditorWorker()),
+			getWorker: (_moduleId, label) => {
+				if (label === "json") return new JsonWorker();
+				if (label === "typescript" || label === "javascript") return new TypeScriptWorker();
+				return new EditorWorker();
+			},
 		};
 	}
 
@@ -56,6 +85,31 @@
 			rules: theme.rules ?? [],
 			colors: theme.colors ?? {},
 		});
+	}
+
+	function configureTypeScriptLanguageService(typeScriptLanguage: TypeScriptContribution) {
+		const compilerOptions = {
+			allowNonTsExtensions: true,
+			allowJs: true,
+			checkJs: false,
+			module: typeScriptLanguage.ModuleKind.ESNext,
+			moduleResolution: typeScriptLanguage.ModuleResolutionKind.NodeJs,
+			noEmit: true,
+			strict: true,
+			target: typeScriptLanguage.ScriptTarget.ESNext,
+		};
+		const diagnosticsOptions = {
+			noSemanticValidation: false,
+			noSyntaxValidation: false,
+			noSuggestionDiagnostics: false,
+		};
+
+		typeScriptLanguage.typescriptDefaults.setEagerModelSync(true);
+		typeScriptLanguage.typescriptDefaults.setCompilerOptions(compilerOptions);
+		typeScriptLanguage.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+		typeScriptLanguage.javascriptDefaults.setEagerModelSync(true);
+		typeScriptLanguage.javascriptDefaults.setCompilerOptions(compilerOptions);
+		typeScriptLanguage.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
 	}
 
 	function applyAppearance() {
@@ -101,6 +155,9 @@
 			editor.setModel(model);
 		}
 
+		publishDiagnostics();
+		publishSymbols();
+
 		const pathChanged = currentPath !== preview.path;
 		const targetLineChanged =
 			currentTargetLine !== targetLine || currentTargetLineRequestId !== targetLineRequestId;
@@ -139,7 +196,61 @@
 
 	function handleEditorContentChange() {
 		if (applyingContent || !editor) return;
-		onContentChange?.(editor.getValue());
+		const nextContent = editor.getValue();
+		onContentChange?.(nextContent);
+		publishSymbols(nextContent);
+	}
+
+	function publishDiagnostics() {
+		if (!monacoApi || !editor) return;
+
+		const model = editor.getModel();
+		if (!model) {
+			onDiagnosticsChange?.([]);
+			return;
+		}
+
+		const markers = monacoApi.editor.getModelMarkers({ resource: model.uri });
+		onDiagnosticsChange?.(
+			markers.map((marker) => ({
+				severity: markerSeverityToSourceSeverity(marker.severity),
+				message: marker.message,
+				line: marker.startLineNumber,
+				column: marker.startColumn,
+				source: marker.source ?? undefined,
+			}))
+		);
+	}
+
+	function publishSymbols(nextContent = content ?? preview.content) {
+		onSymbolsChange?.(extractSourceSymbols(preview, nextContent));
+	}
+
+	function markerSeverityToSourceSeverity(severity: Monaco.MarkerSeverity): SourceDiagnosticSeverity {
+		if (!monacoApi) return "info";
+		switch (severity) {
+			case monacoApi.MarkerSeverity.Error:
+				return "error";
+			case monacoApi.MarkerSeverity.Warning:
+				return "warning";
+			case monacoApi.MarkerSeverity.Hint:
+				return "hint";
+			default:
+				return "info";
+		}
+	}
+
+	function runIntelligenceCommand() {
+		if (!editor || !intelligenceCommand || intelligenceCommand.id === handledIntelligenceCommandId) {
+			return;
+		}
+
+		handledIntelligenceCommandId = intelligenceCommand.id;
+		const actionId =
+			intelligenceCommand.action === "hover"
+				? "editor.action.showHover"
+				: "editor.action.revealDefinition";
+		void editor.getAction(actionId)?.run();
 	}
 
 	onMount(async () => {
@@ -147,7 +258,7 @@
 
 		installWorker();
 
-		const [monaco] = await Promise.all([
+		const modules = await Promise.all([
 			import("monaco-editor/esm/vs/editor/editor.api"),
 			import("monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution"),
 			import("monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution"),
@@ -182,10 +293,14 @@
 			import("monaco-editor/esm/vs/basic-languages/xml/xml.contribution"),
 			import("monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution"),
 			import("monaco-editor/esm/vs/language/json/monaco.contribution"),
+			import("monaco-editor/esm/vs/language/typescript/monaco.contribution"),
 		]);
+		const monaco = modules[0] as typeof Monaco;
+		const typeScriptLanguage = modules[modules.length - 1] as TypeScriptContribution;
 
 		monacoApi = monaco;
 		configureMonaco(monaco);
+		configureTypeScriptLanguageService(typeScriptLanguage);
 
 		editor = monaco.editor.create(host, {
 			automaticLayout: true,
@@ -230,19 +345,30 @@
 		});
 
 		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
+		markerChangeDisposable = monaco.editor.onDidChangeMarkers((uris) => {
+			const modelUri = editor?.getModel()?.uri.toString();
+			if (modelUri && uris.some((uri) => uri.toString() === modelUri)) {
+				publishDiagnostics();
+			}
+		});
 		isReady = true;
 		applyAppearance();
 		applyPreview();
+		runIntelligenceCommand();
 	});
 
 	$effect(() => {
 		if (isReady) {
 			applyPreview();
+			runIntelligenceCommand();
 		}
 	});
 
 	onDestroy(() => {
 		contentChangeDisposable?.dispose();
+		markerChangeDisposable?.dispose();
+		onDiagnosticsChange?.([]);
+		onSymbolsChange?.([]);
 		editor?.dispose();
 		for (const model of ownedModels) {
 			model.dispose();
@@ -272,7 +398,7 @@
 <style>
 	.source-editor {
 		position: relative;
-		height: calc(100% - 42px);
+		height: 100%;
 		min-height: 0;
 		overflow: hidden;
 		background: var(--source-editor-background, #17191e);

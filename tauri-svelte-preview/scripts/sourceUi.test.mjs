@@ -99,3 +99,41 @@ assert.ok(
   pageSource.includes('onContentChange={updateSelectedSourceDraft}'),
   'Monaco should update the active draft content'
 );
+assert.ok(
+  editorSource.includes('vs/language/typescript/monaco.contribution'),
+  'Editor should load the Monaco TypeScript language service'
+);
+assert.ok(
+  editorSource.includes('vs/language/typescript/ts.worker?worker'),
+  'Editor should route TypeScript language requests to the TypeScript worker'
+);
+assert.ok(
+  editorSource.includes('function configureTypeScriptLanguageService'),
+  'Editor should configure TypeScript diagnostics'
+);
+assert.ok(
+  editorSource.includes('onDidChangeMarkers'),
+  'Editor should subscribe to Monaco diagnostics marker changes'
+);
+assert.ok(
+  editorSource.includes('onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void'),
+  'Editor should report diagnostics to the parent'
+);
+assert.ok(
+  editorSource.includes('onSymbolsChange?: (symbols: SourceSymbol[]) => void'),
+  'Editor should report symbols to the parent'
+);
+assert.ok(editorSource.includes('intelligenceCommand?: SourceEditorIntelligenceCommand | null'), 'Editor should accept language-intelligence commands');
+assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
+assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
+assert.ok(pageSource.includes('sourceDiagnostics'), 'Source page should track diagnostics');
+assert.ok(pageSource.includes('sourceSymbols'), 'Source page should track symbols');
+assert.ok(pageSource.includes('formatSourceDiagnosticSummary'), 'Source page should summarize diagnostics');
+assert.ok(pageSource.includes('sourceSupportsLanguageIntelligence'), 'Source page should gate Monaco language actions');
+assert.ok(pageSource.includes('requestSourceIntelligenceAction'), 'Source page should dispatch language actions');
+assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
+assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
+assert.ok(pageSource.includes('aria-label="Go to definition"'), 'Editor controls should expose definition');
+assert.ok(pageSource.includes('Problems'), 'Language panel should include Problems');
+assert.ok(pageSource.includes('Symbols'), 'Language panel should include Symbols');
+assert.ok(pageSource.includes('selectSourceSymbol'), 'Symbol rows should reveal source lines');

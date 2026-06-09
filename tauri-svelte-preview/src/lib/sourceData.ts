@@ -19,6 +19,24 @@ export type SourcePreview = SourceRecord & {
   lineCount: number;
 };
 
+export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
+
+export type SourceDiagnostic = {
+  severity: SourceDiagnosticSeverity;
+  message: string;
+  line: number;
+  column: number;
+  source?: string;
+};
+
+export type SourceSymbol = {
+  name: string;
+  kind: string;
+  line: number;
+  column: number;
+  detail: string;
+};
+
 export type SourceScanResult = {
   records: SourceRecord[];
   limit: number;
@@ -242,6 +260,29 @@ const coreClientContent = String.raw`public struct CoreClient: CoreSending {
     }
 }`;
 
+const sourceIntelligenceContent = String.raw`export type SourceDiagnostic = {
+  severity: 'error' | 'warning' | 'info' | 'hint';
+  message: string;
+  line: number;
+  column: number;
+};
+
+export class SourceIntelligenceIndex {
+  private diagnostics = new Map<string, SourceDiagnostic[]>();
+
+  record(path: string, diagnostics: SourceDiagnostic[]) {
+    this.diagnostics.set(path, diagnostics);
+  }
+
+  problemsFor(path: string) {
+    return this.diagnostics.get(path) ?? [];
+  }
+}
+
+export function formatDiagnosticCount(diagnostics: SourceDiagnostic[]) {
+  return diagnostics.length === 0 ? 'No problems' : diagnostics.length + ' problems';
+}`;
+
 export const sourceRecords: SourceRecord[] = [
   {
     path: '/Users/blackcolours/dev/work/EdiPlatform/EdiPlatform.Core/Services/FormatResolver.cs',
@@ -263,13 +304,21 @@ export const sourceRecords: SourceRecord[] = [
     fileName: 'CoreClient.swift',
     language: 'swift',
     byteCount: 2900
+  },
+  {
+    path: '/Users/blackcolours/dev/work/mac-command-bar/tauri-svelte-preview/src/lib/sourceIntelligence.ts',
+    relativePath: 'tauri-svelte-preview/src/lib/sourceIntelligence.ts',
+    fileName: 'sourceIntelligence.ts',
+    language: 'typescript',
+    byteCount: 868
   }
 ];
 
 const demoContentByPath = new Map<string, string>([
   [sourceRecords[0].path, formatResolverContent],
   [sourceRecords[1].path, formatDetectorContent],
-  [sourceRecords[2].path, coreClientContent]
+  [sourceRecords[2].path, coreClientContent],
+  [sourceRecords[3].path, sourceIntelligenceContent]
 ]);
 
 export function demoPreviewFor(record: SourceRecord): SourcePreview {
@@ -338,6 +387,138 @@ export function monacoLanguageForSource(language: SourceLanguage): string {
     default:
       return language;
   }
+}
+
+export function sourceSupportsLanguageIntelligence(language: SourceLanguage): boolean {
+  return ['typescript', 'tsx', 'javascript', 'jsx'].includes(language);
+}
+
+export function formatSourceDiagnosticSummary(diagnostics: SourceDiagnostic[]): string {
+  if (diagnostics.length === 0) return 'No problems';
+
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
+  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length;
+  const infos = diagnostics.length - errors - warnings;
+  const parts = [
+    formatProblemCount(errors, 'error'),
+    formatProblemCount(warnings, 'warning'),
+    formatProblemCount(infos, 'note')
+  ].filter(Boolean);
+
+  return parts.join(', ');
+}
+
+export function extractSourceSymbols(preview: SourcePreview, content: string): SourceSymbol[] {
+  switch (preview.language) {
+    case 'typescript':
+    case 'tsx':
+    case 'javascript':
+    case 'jsx':
+      return extractTypeScriptSymbols(content);
+    case 'csharp':
+      return extractCSharpSymbols(content);
+    default:
+      return [];
+  }
+}
+
+function formatProblemCount(count: number, label: string): string {
+  if (count === 0) return '';
+  return `${count} ${label}${count === 1 ? '' : 's'}`;
+}
+
+function extractTypeScriptSymbols(content: string): SourceSymbol[] {
+  const symbols: SourceSymbol[] = [];
+  const lines = content.split(/\r\n|\r|\n/);
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    const lineNumber = index + 1;
+    const column = line.search(/\S/) + 1 || 1;
+    const declaration = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?(class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/.exec(trimmed);
+    if (declaration) {
+      symbols.push({
+        kind: declaration[1],
+        name: declaration[2],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const functionDeclaration = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/.exec(trimmed);
+    if (functionDeclaration) {
+      symbols.push({
+        kind: 'function',
+        name: functionDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const constantDeclaration = /^(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=/.exec(trimmed);
+    if (constantDeclaration) {
+      symbols.push({
+        kind: 'constant',
+        name: constantDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+    }
+  });
+
+  return symbols;
+}
+
+function extractCSharpSymbols(content: string): SourceSymbol[] {
+  const symbols: SourceSymbol[] = [];
+  const lines = content.split(/\r\n|\r|\n/);
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    const lineNumber = index + 1;
+    const column = line.search(/\S/) + 1 || 1;
+    const namespaceDeclaration = /^namespace\s+([A-Za-z_][\w.]*);?/.exec(trimmed);
+    if (namespaceDeclaration) {
+      symbols.push({
+        kind: 'namespace',
+        name: namespaceDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const typeDeclaration = /^(?:(?:public|private|protected|internal|sealed|abstract|static|partial)\s+)*(class|interface|record|enum)\s+([A-Za-z_][\w]*)/.exec(trimmed);
+    if (typeDeclaration) {
+      symbols.push({
+        kind: typeDeclaration[1],
+        name: typeDeclaration[2],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const methodDeclaration = /^(?:(?:public|private|protected|internal|static|async|virtual|override|sealed)\s+)+[\w<>,.?[\]\s]+\s+([A-Za-z_][\w]*)\s*\(/.exec(trimmed);
+    if (methodDeclaration) {
+      symbols.push({
+        kind: 'method',
+        name: methodDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+    }
+  });
+
+  return symbols;
 }
 
 export function selectPreferredSourceRecord(
