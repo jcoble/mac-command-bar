@@ -8,21 +8,28 @@
     Folder,
     FolderGit2,
     FolderOpen,
+    Plus,
     RefreshCw,
+    Save,
     Search,
-    SplitSquareHorizontal
+    SplitSquareHorizontal,
+    Trash2,
+    X
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import {
     buildSourceTree,
+    createProjectRoot,
+    defaultProjectRoots,
     demoPreviewFor,
     demoRecordsForProject,
     filterSourceRecords,
     flattenSourceTree,
+    mergeProjectRoots,
+    normalizeProjectPath,
     previewFromContent,
-    projectRoots,
     type ProjectRoot,
     type SourcePreview,
     type SourceRecord,
@@ -30,9 +37,13 @@
   } from '$lib/sourceData';
   import { listSourceFilesFromTauri, readSourceFromTauri } from '$lib/tauriSource';
 
-  const initialRecords = demoRecordsForProject(projectRoots[0]);
+  const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
+  const selectedProjectStorageKey = 'mac-command-bar.source-browser.selected-project';
+  const initialProject = defaultProjectRoots[0];
+  const initialRecords = demoRecordsForProject(initialProject);
 
-  let selectedProjectID = $state(projectRoots[0].id);
+  let customProjectRoots = $state<ProjectRoot[]>([]);
+  let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
   let preview = $state<SourcePreview | null>(
@@ -44,10 +55,18 @@
   let scanning = $state(false);
   let runtime = $state('browser preview');
   let error = $state('');
+  let addingProject = $state(false);
+  let projectNameInput = $state('');
+  let projectPathInput = $state('');
+  let projectFormError = $state('');
   let scanGeneration = 0;
 
+  let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
   let selectedProject = $derived(
-    projectRoots.find((project) => project.id === selectedProjectID) ?? projectRoots[0]
+    projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject
+  );
+  let selectedProjectIsCustom = $derived(
+    customProjectRoots.some((project) => project.id === selectedProject.id)
   );
   let filteredRecords = $derived(filterSourceRecords(records, query));
   let sourceTree = $derived(buildSourceTree(filteredRecords));
@@ -125,7 +144,122 @@
   }
 
   async function handleProjectChange() {
-    await scanProject(selectedProject);
+    const nextProject =
+      projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
+    selectedProjectID = nextProject.id;
+    persistSelectedProjectID(nextProject.id);
+    await scanProject(nextProject);
+  }
+
+  function loadStoredCustomProjectRoots(): ProjectRoot[] {
+    if (typeof window === 'undefined') return [];
+
+    try {
+      const storedValue = window.localStorage.getItem(customProjectRootsStorageKey);
+      if (!storedValue) return [];
+
+      const parsedValue: unknown = JSON.parse(storedValue);
+      if (!Array.isArray(parsedValue)) return [];
+
+      const parsedRoots = parsedValue
+        .map(parseStoredProjectRoot)
+        .filter((project): project is ProjectRoot => project !== null);
+
+      return mergeProjectRoots([], parsedRoots);
+    } catch {
+      return [];
+    }
+  }
+
+  function parseStoredProjectRoot(value: unknown): ProjectRoot | null {
+    if (typeof value !== 'object' || value === null) return null;
+
+    const project = value as Partial<ProjectRoot>;
+    if (typeof project.path !== 'string') return null;
+
+    const parsedRoot = createProjectRoot(
+      typeof project.name === 'string' ? project.name : '',
+      project.path
+    );
+
+    return parsedRoot.path ? parsedRoot : null;
+  }
+
+  function persistCustomProjectRoots(roots: ProjectRoot[]) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(customProjectRootsStorageKey, JSON.stringify(roots));
+  }
+
+  function persistSelectedProjectID(projectID: string) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(selectedProjectStorageKey, projectID);
+  }
+
+  function loadStoredSelectedProjectID(roots: ProjectRoot[]): string {
+    if (typeof window === 'undefined') return initialProject.id;
+
+    const storedProjectID = window.localStorage.getItem(selectedProjectStorageKey);
+    return roots.some((project) => project.id === storedProjectID)
+      ? storedProjectID ?? initialProject.id
+      : roots[0]?.id ?? initialProject.id;
+  }
+
+  function startAddingProject() {
+    addingProject = true;
+    projectNameInput = '';
+    projectPathInput = '';
+    projectFormError = '';
+  }
+
+  function cancelAddingProject() {
+    addingProject = false;
+    projectFormError = '';
+  }
+
+  function saveProject(event: SubmitEvent) {
+    event.preventDefault();
+    const nextProject = createProjectRoot(projectNameInput, projectPathInput);
+
+    if (!nextProject.path) {
+      projectFormError = 'Path is required';
+      return;
+    }
+
+    const duplicatePath = projectOptions.some(
+      (project) => normalizeProjectPath(project.path) === nextProject.path
+    );
+
+    if (duplicatePath) {
+      projectFormError = 'That path is already listed';
+      return;
+    }
+
+    const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
+    customProjectRoots = nextCustomProjectRoots;
+    persistCustomProjectRoots(nextCustomProjectRoots);
+    selectedProjectID = nextProject.id;
+    persistSelectedProjectID(nextProject.id);
+    addingProject = false;
+    projectFormError = '';
+    void scanProject(nextProject);
+  }
+
+  function removeSelectedProject() {
+    if (!selectedProjectIsCustom) return;
+
+    const removedProjectID = selectedProject.id;
+    const nextCustomProjectRoots = customProjectRoots.filter(
+      (project) => project.id !== removedProjectID
+    );
+    customProjectRoots = nextCustomProjectRoots;
+    persistCustomProjectRoots(nextCustomProjectRoots);
+
+    if (selectedProjectID === removedProjectID) {
+      const fallbackProject = defaultProjectRoots[0];
+      selectedProjectID = fallbackProject.id;
+      persistSelectedProjectID(fallbackProject.id);
+      void scanProject(fallbackProject);
+    }
   }
 
   function isFolderExpanded(node: SourceTreeNode): boolean {
@@ -151,7 +285,18 @@
   }
 
   onMount(() => {
-    void scanProject(selectedProject);
+    const storedCustomProjectRoots = loadStoredCustomProjectRoots();
+    const storedProjectOptions = mergeProjectRoots(defaultProjectRoots, storedCustomProjectRoots);
+    const storedProjectID = loadStoredSelectedProjectID(storedProjectOptions);
+    const storedProject =
+      storedProjectOptions.find((project) => project.id === storedProjectID) ??
+      storedProjectOptions[0] ??
+      initialProject;
+
+    customProjectRoots = storedCustomProjectRoots;
+    selectedProjectID = storedProject.id;
+    persistSelectedProjectID(storedProject.id);
+    void scanProject(storedProject);
   });
 </script>
 
@@ -171,16 +316,56 @@
       </div>
     </div>
 
-    <div class="project-row">
-      <select bind:value={selectedProjectID} onchange={handleProjectChange} aria-label="Project">
-        {#each projectRoots as project}
-          <option value={project.id}>{project.name}</option>
-        {/each}
-      </select>
-      <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject)}>
-        <RefreshCw size={15} strokeWidth={1.8} />
-        <span>{scanning ? 'Scanning' : 'Scan'}</span>
-      </button>
+    <div class="project-controls">
+      <div class="project-row">
+        <select bind:value={selectedProjectID} onchange={handleProjectChange} aria-label="Project">
+          {#each projectOptions as project}
+            <option value={project.id}>{project.name}</option>
+          {/each}
+        </select>
+        <button class="icon-button" type="button" aria-label="Add project root" title="Add project root" onclick={startAddingProject}>
+          <Plus size={16} strokeWidth={2} />
+        </button>
+        <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject)}>
+          <RefreshCw size={15} strokeWidth={1.8} />
+          <span>{scanning ? 'Scanning' : 'Scan'}</span>
+        </button>
+      </div>
+
+      <div class="project-path-row">
+        <span title={selectedProject.path}>{selectedProject.path}</span>
+        {#if selectedProjectIsCustom}
+          <button class="icon-button danger" type="button" aria-label="Remove project root" title="Remove project root" onclick={removeSelectedProject}>
+            <Trash2 size={14} strokeWidth={1.9} />
+          </button>
+        {/if}
+      </div>
+
+      {#if addingProject}
+        <form class="project-form" onsubmit={saveProject}>
+          <label>
+            <span>Name</span>
+            <input bind:value={projectNameInput} autocomplete="off" />
+          </label>
+          <label>
+            <span>Path</span>
+            <input bind:value={projectPathInput} autocomplete="off" placeholder="/Users/blackcolours/dev/work/project" />
+          </label>
+          {#if projectFormError}
+            <p class="project-form-error">{projectFormError}</p>
+          {/if}
+          <div class="form-actions">
+            <button class="form-button" type="button" onclick={cancelAddingProject}>
+              <X size={14} strokeWidth={2} />
+              <span>Cancel</span>
+            </button>
+            <button class="form-button primary" type="submit">
+              <Save size={14} strokeWidth={2} />
+              <span>Save</span>
+            </button>
+          </div>
+        </form>
+      {/if}
     </div>
 
     <label class="search-box">
@@ -382,16 +567,22 @@
     font-size: 28px;
   }
 
-  .project-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px;
-    align-items: center;
-    gap: 8px;
+  .project-controls {
     margin-bottom: 12px;
   }
 
+  .project-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 36px 96px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
   select,
-  .scan-button {
+  .scan-button,
+  .icon-button,
+  .form-button {
     height: 36px;
     min-width: 0;
     color: #f3f5f4;
@@ -407,7 +598,9 @@
   }
 
   select:focus,
-  .scan-button:focus-visible {
+  .scan-button:focus-visible,
+  .icon-button:focus-visible,
+  .form-button:focus-visible {
     border-color: rgba(92, 226, 207, 0.58);
     box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
   }
@@ -431,6 +624,124 @@
 
   .scan-button span {
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .icon-button {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    padding: 0;
+    color: #cbd3d1;
+    cursor: pointer;
+  }
+
+  .icon-button:hover {
+    color: #f2f6f5;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .icon-button.danger {
+    width: 28px;
+    height: 28px;
+    color: #f1a9a0;
+    border-radius: 8px;
+  }
+
+  .icon-button.danger:hover {
+    background: rgba(225, 109, 93, 0.13);
+  }
+
+  .project-path-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    margin-bottom: 2px;
+    color: #818d89;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  .project-path-row span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-form {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    margin-top: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .project-form label {
+    display: grid;
+    gap: 5px;
+  }
+
+  .project-form label span {
+    color: #9aa5a1;
+    font-size: 11px;
+    font-weight: 760;
+  }
+
+  .project-form input {
+    height: 32px;
+    padding: 0 9px;
+    color: #f3f5f4;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    outline: 0;
+    background: rgba(0, 0, 0, 0.18);
+  }
+
+  .project-form input:focus {
+    border-color: rgba(92, 226, 207, 0.58);
+    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+  }
+
+  .project-form-error {
+    margin: 0;
+    color: #f1a9a0;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .form-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .form-button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    padding: 0 9px;
+    color: #cbd3d1;
+    font-size: 12px;
+    font-weight: 760;
+    cursor: pointer;
+  }
+
+  .form-button.primary {
+    color: #071b18;
+    border-color: rgba(111, 223, 207, 0.72);
+    background: #6fdfcf;
+  }
+
+  .form-button span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

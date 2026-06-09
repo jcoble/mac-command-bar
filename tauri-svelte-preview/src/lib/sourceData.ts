@@ -32,7 +32,7 @@ export type SourceTreeRow = {
   level: number;
 };
 
-export const projectRoots: ProjectRoot[] = [
+export const defaultProjectRoots: ProjectRoot[] = [
   {
     id: 'ediplatform',
     name: 'EdiPlatform',
@@ -44,6 +44,55 @@ export const projectRoots: ProjectRoot[] = [
     path: '/Users/blackcolours/dev/work/mac-command-bar'
   }
 ];
+
+export const projectRoots = defaultProjectRoots;
+
+export function normalizeProjectPath(path: string): string {
+  return path.trim().replace(/\/+$/, '');
+}
+
+export function projectRootNameFromPath(path: string): string {
+  const normalizedPath = normalizeProjectPath(path);
+  return normalizedPath.split('/').filter(Boolean).at(-1) ?? 'Project';
+}
+
+export function createProjectRoot(name: string, path: string): ProjectRoot {
+  const normalizedPath = normalizeProjectPath(path);
+  return {
+    id: `custom-${stableIDFor(normalizedPath)}`,
+    name: name.trim() || projectRootNameFromPath(normalizedPath),
+    path: normalizedPath
+  };
+}
+
+export function mergeProjectRoots(defaultRoots: ProjectRoot[], customRoots: ProjectRoot[]): ProjectRoot[] {
+  const seenPaths = new Set<string>();
+  const mergedRoots: ProjectRoot[] = [];
+
+  for (const root of [...defaultRoots, ...customRoots]) {
+    const normalizedPath = normalizeProjectPath(root.path);
+    if (!root.id || !root.name.trim() || !normalizedPath || seenPaths.has(normalizedPath)) {
+      continue;
+    }
+
+    seenPaths.add(normalizedPath);
+    mergedRoots.push({
+      ...root,
+      name: root.name.trim(),
+      path: normalizedPath
+    });
+  }
+
+  return mergedRoots;
+}
+
+function stableIDFor(value: string): string {
+  let hash = 5381;
+  for (const char of value) {
+    hash = (hash * 33) ^ char.charCodeAt(0);
+  }
+  return (hash >>> 0).toString(36);
+}
 
 const formatResolverContent = String.raw`using EdiPlatform.Core.Entities;
 using EdiPlatform.Core.Models.RetailerRuntime;
