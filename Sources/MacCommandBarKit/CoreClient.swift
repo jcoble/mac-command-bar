@@ -17,7 +17,11 @@ public enum CoreClientError: Error, LocalizedError {
     }
 }
 
-public struct CoreClient: Sendable {
+public protocol CoreSending: Sendable {
+    func send(_ request: CoreRequest) async throws -> CoreResponse
+}
+
+public struct CoreClient: CoreSending {
     public var executableURL: URL
 
     public init(executableURL: URL) {
@@ -45,7 +49,13 @@ public struct CoreClient: Sendable {
         throw CoreClientError.helperUnavailable(candidates.map(\.path))
     }
 
-    public func send(_ request: CoreRequest) throws -> CoreResponse {
+    public func send(_ request: CoreRequest) async throws -> CoreResponse {
+        try await Task.detached(priority: .utility) {
+            try Self.sendSync(request, executableURL: executableURL)
+        }.value
+    }
+
+    private static func sendSync(_ request: CoreRequest, executableURL: URL) throws -> CoreResponse {
         let input = try JSONEncoder().encode(request)
         let process = Process()
         process.executableURL = executableURL
@@ -76,4 +86,3 @@ public struct CoreClient: Sendable {
         return response
     }
 }
-

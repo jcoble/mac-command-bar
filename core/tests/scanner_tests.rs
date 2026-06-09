@@ -2,8 +2,10 @@ use mcb_core::crypto::SecretBox;
 use mcb_core::scanners::processes::parse_lsof_listeners;
 use mcb_core::scanners::sessions::{
     decode_claude_project_dir_with_users_root, parse_claude_jsonl, parse_codex_index_jsonl,
+    read_tail_utf8,
 };
 use mcb_core::scanners::worktrees::parse_worktree_porcelain;
+use mcb_core::scanners::worktrees::WorktreeScanOptions;
 
 #[test]
 fn parses_git_worktree_porcelain() {
@@ -70,4 +72,28 @@ fn decodes_claude_project_dirs_with_hyphenated_repo_names() {
     .unwrap();
 
     assert!(decoded.ends_with("/Users/blackcolours/dev/work/rental-management"));
+}
+
+#[test]
+fn worktree_scan_options_default_to_skipping_expensive_disk_usage() {
+    let options = WorktreeScanOptions::default();
+
+    assert!(!options.include_disk_bytes);
+}
+
+#[test]
+fn reads_only_tail_of_large_jsonl_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("session.jsonl");
+    let mut body = String::new();
+    for index in 0..200 {
+        body.push_str(&format!("{{\"line\":{index}}}\n"));
+    }
+    std::fs::write(&file, body).unwrap();
+
+    let tail = read_tail_utf8(&file, 128).unwrap();
+
+    assert!(tail.contains("\"line\":199"));
+    assert!(!tail.contains("\"line\":0"));
+    assert!(tail.starts_with('{'));
 }

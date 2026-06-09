@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+const CLAUDE_SESSION_FILE_LIMIT: usize = 120;
+const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -26,14 +30,16 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     }
 
     let claude_projects = home.join(".claude/projects");
-    for file in jsonl_files(&claude_projects) {
+    let mut files = jsonl_files(&claude_projects);
+    files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
+    for file in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
         let project_path = file
             .parent()
             .and_then(|parent| parent.file_name())
             .and_then(|name| name.to_str())
             .and_then(decode_claude_project_dir)
             .unwrap_or_default();
-        if let Ok(contents) = fs::read_to_string(&file) {
+        if let Ok(contents) = read_tail_utf8(&file, CLAUDE_SESSION_TAIL_BYTES) {
             records.extend(parse_claude_jsonl(&contents, &project_path));
         }
     }
@@ -164,6 +170,31 @@ fn jsonl_files(root: &Path) -> Vec<PathBuf> {
     }
 
     files
+}
+
+pub fn read_tail_utf8(path: &Path, max_bytes: usize) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(max_bytes as u64);
+    file.seek(SeekFrom::Start(start))?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    if start == 0 {
+        return Ok(text.into_owned());
+    }
+
+    Ok(text
+        .split_once('\n')
+        .map(|(_, tail)| tail.to_string())
+        .unwrap_or_default())
+}
+
+fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 pub fn decode_claude_project_dir(name: &str) -> Option<String> {

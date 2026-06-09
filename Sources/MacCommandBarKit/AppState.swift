@@ -16,7 +16,7 @@ public final class AppState: ObservableObject {
     @Published public var searchText: String
     @Published public var lastCoreWarning: String?
 
-    private var coreClient: CoreClient?
+    private var coreClient: (any CoreSending)?
 
     public init(
         modules: [DashboardModule],
@@ -24,7 +24,7 @@ public final class AppState: ObservableObject {
         clipboardVault: ClipboardVaultModel,
         profiles: [ProjectProfile],
         statusMessage: String,
-        coreClient: CoreClient?
+        coreClient: (any CoreSending)?
     ) {
         self.modules = modules
         self.selectedModuleID = selectedModuleID
@@ -71,7 +71,7 @@ public final class AppState: ObservableObject {
         clipboardVault.togglePinned(id)
     }
 
-    public func refreshSnapshots() {
+    public func refreshSnapshots() async {
         guard coreClient != nil else {
             lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"
             statusMessage = "Core helper unavailable"
@@ -79,16 +79,39 @@ public final class AppState: ObservableObject {
         }
 
         statusMessage = "Refreshing"
-        refresh(.scanProcesses, moduleID: "processes")
-        refresh(.scanSessions, moduleID: "sessions")
+        await refreshProcesses()
+        await refreshSessions()
         if let firstProfile = profiles.first {
-            refresh(
-                .scanWorktrees,
-                moduleID: "worktrees",
-                payload: ["repoPath": .string(firstProfile.repoPath)]
-            )
+            await refreshWorktrees(repoPath: firstProfile.repoPath)
         }
         statusMessage = "Refreshed"
+    }
+
+    public func refreshProcesses() async {
+        statusMessage = "Scanning processes"
+        await refresh(.scanProcesses, moduleID: "processes")
+        statusMessage = "Refreshed processes"
+    }
+
+    public func refreshSessions() async {
+        statusMessage = "Scanning agent sessions"
+        await refresh(.scanSessions, moduleID: "sessions")
+        statusMessage = "Refreshed agent sessions"
+    }
+
+    public func refreshWorktrees(repoPath: String? = nil) async {
+        guard let repoPath = repoPath ?? profiles.first?.repoPath else {
+            statusMessage = "No project profile for worktree scan"
+            return
+        }
+
+        statusMessage = "Scanning worktrees"
+        await refresh(
+            .scanWorktrees,
+            moduleID: "worktrees",
+            payload: ["repoPath": .string(repoPath)]
+        )
+        statusMessage = "Refreshed worktrees"
     }
 
     public func planKill(pid: Int) -> ConfirmableAction {
@@ -127,26 +150,27 @@ public final class AppState: ObservableObject {
         }
     }
 
-    public func executePendingAction() {
+    public func executePendingAction() async {
         guard let action = pendingAction else {
             return
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", action.commandPreview]
         do {
-            try process.run()
-            process.waitUntilExit()
-            statusMessage = process.terminationStatus == 0
-                ? "Action completed"
-                : "Action exited \(process.terminationStatus)"
+            let exitCode = try await Task.detached(priority: .utility) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                process.arguments = ["-lc", action.commandPreview]
+                try process.run()
+                process.waitUntilExit()
+                return process.terminationStatus
+            }.value
+            statusMessage = exitCode == 0 ? "Action completed" : "Action exited \(exitCode)"
         } catch {
             statusMessage = "Action failed: \(error.localizedDescription)"
         }
 
         pendingAction = nil
-        refreshSnapshots()
+        await refreshSnapshots()
     }
 
     public func cancelPendingAction() {
@@ -157,9 +181,9 @@ public final class AppState: ObservableObject {
         _ action: CoreAction,
         moduleID: String,
         payload: [String: JSONValue] = [:]
-    ) {
+    ) async {
         do {
-            let response = try coreClient?.send(
+            let response = try await coreClient?.send(
                 CoreRequest(action: action, dryRun: true, payload: payload)
             )
             guard let response else { return }

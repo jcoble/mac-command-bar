@@ -59,7 +59,9 @@ private struct HeaderView: View {
             Spacer(minLength: 12)
 
             Button {
-                state.refreshSnapshots()
+                Task {
+                    await state.refreshSnapshots()
+                }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -307,7 +309,9 @@ private struct ProcessesPanel: View {
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button {
-                    state.refreshSnapshots()
+                    Task {
+                        await state.refreshProcesses()
+                    }
                 } label: {
                     Label("Scan", systemImage: "arrow.clockwise")
                 }
@@ -343,7 +347,9 @@ private struct SessionsPanel: View {
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button {
-                    state.refreshSnapshots()
+                    Task {
+                        await state.refreshSessions()
+                    }
                 } label: {
                     Label("Scan", systemImage: "arrow.clockwise")
                 }
@@ -379,7 +385,9 @@ private struct WorktreesPanel: View {
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button {
-                    state.refreshSnapshots()
+                    Task {
+                        await state.refreshWorktrees()
+                    }
                 } label: {
                     Label("Scan", systemImage: "arrow.clockwise")
                 }
@@ -637,7 +645,9 @@ private struct ConfirmActionSheet: View {
                     state.cancelPendingAction()
                 }
                 Button("Run") {
-                    state.executePendingAction()
+                    Task {
+                        await state.executePendingAction()
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }

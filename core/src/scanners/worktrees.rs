@@ -15,7 +15,19 @@ pub struct WorktreeRecord {
     pub delete_eligibility: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorktreeScanOptions {
+    pub include_disk_bytes: bool,
+}
+
 pub fn scan_worktrees(repo_path: &str) -> Vec<WorktreeRecord> {
+    scan_worktrees_with_options(repo_path, WorktreeScanOptions::default())
+}
+
+pub fn scan_worktrees_with_options(
+    repo_path: &str,
+    options: WorktreeScanOptions,
+) -> Vec<WorktreeRecord> {
     let output = Command::new("git")
         .args(["-C", repo_path, "worktree", "list", "--porcelain"])
         .output();
@@ -39,7 +51,10 @@ pub fn scan_worktrees(repo_path: &str) -> Vec<WorktreeRecord> {
             record.repo = repo.clone();
             record.is_dirty = is_dirty(&record.path);
             record.has_unmerged_commits = has_unmerged_commits(&record.path);
-            record.disk_bytes = disk_bytes(&record.path);
+            record.disk_bytes = options
+                .include_disk_bytes
+                .then(|| disk_bytes(&record.path))
+                .flatten();
             record.last_activity = last_activity(&record.path);
             record.delete_eligibility = if record.is_dirty {
                 "blocked: dirty worktree".to_string()

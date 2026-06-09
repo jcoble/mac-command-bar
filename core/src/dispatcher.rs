@@ -1,7 +1,7 @@
 use crate::protocol::{ConfirmableAction, CoreRequest, CoreResponse};
 use crate::scanners::processes::scan_lsof_listeners;
 use crate::scanners::sessions::scan_sessions;
-use crate::scanners::worktrees::scan_worktrees;
+use crate::scanners::worktrees::{scan_worktrees_with_options, WorktreeScanOptions};
 use serde_json::{json, Value};
 
 pub fn dispatch(request: CoreRequest) -> CoreResponse {
@@ -35,7 +35,16 @@ fn scan_worktrees_action(request: CoreRequest) -> CoreResponse {
         return CoreResponse::error(request.id, "repo path unavailable", Vec::new());
     };
 
-    let records = scan_worktrees(&repo_path);
+    let records = scan_worktrees_with_options(
+        &repo_path,
+        WorktreeScanOptions {
+            include_disk_bytes: request
+                .payload
+                .get("includeDiskBytes")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        },
+    );
     CoreResponse::ok(
         request.id,
         format!("found {} worktrees", records.len()),
