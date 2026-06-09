@@ -32,6 +32,11 @@ export type CloseOpenSourceTabResult = {
   nextActivePath: string | null;
 };
 
+export type QuickOpenQuery = {
+  searchQuery: string;
+  targetLine: number | null;
+};
+
 export type SourceTreeNode = {
   id: string;
   name: string;
@@ -355,7 +360,7 @@ export function rankSourceRecords(
   const cappedLimit = Math.max(0, Math.floor(limit));
   if (cappedLimit === 0) return [];
 
-  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedQuery = parseQuickOpenQuery(query).searchQuery.toLowerCase();
   if (!normalizedQuery) return records.slice(0, cappedLimit);
 
   return records
@@ -371,6 +376,30 @@ export function rankSourceRecords(
     )
     .slice(0, cappedLimit)
     .map((result) => result.record);
+}
+
+export function parseQuickOpenQuery(query: string): QuickOpenQuery {
+  const trimmedQuery = query.trim();
+  const lineMatch = /^(.*):(\d+)$/.exec(trimmedQuery);
+  if (!lineMatch) {
+    return {
+      searchQuery: trimmedQuery,
+      targetLine: null
+    };
+  }
+
+  const parsedLine = Number.parseInt(lineMatch[2], 10);
+  if (!Number.isSafeInteger(parsedLine) || parsedLine < 1) {
+    return {
+      searchQuery: trimmedQuery,
+      targetLine: null
+    };
+  }
+
+  return {
+    searchQuery: lineMatch[1].trim(),
+    targetLine: parsedLine
+  };
 }
 
 export function folderIdsForSourceRecord(record: SourceRecord): string[] {

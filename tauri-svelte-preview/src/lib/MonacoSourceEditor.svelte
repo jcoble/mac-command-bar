@@ -9,14 +9,18 @@
 	type Props = {
 		preview: SourcePreview;
 		loading?: boolean;
+		targetLine?: number | null;
+		targetLineRequestId?: number;
 	};
 
-	let { preview, loading = false }: Props = $props();
+	let { preview, loading = false, targetLine = null, targetLineRequestId = 0 }: Props = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
 	let editor = $state<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	let monacoApi: typeof Monaco | null = null;
 	let currentPath = "";
+	let currentTargetLine: number | null = null;
+	let currentTargetLineRequestId = -1;
 	let isReady = $state(false);
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
@@ -81,12 +85,31 @@
 			editor.setModel(model);
 		}
 
-		if (currentPath !== preview.path) {
+		const pathChanged = currentPath !== preview.path;
+		const targetLineChanged =
+			currentTargetLine !== targetLine || currentTargetLineRequestId !== targetLineRequestId;
+		if (targetLine && (pathChanged || targetLineChanged)) {
+			const lineNumber = Math.min(Math.max(1, targetLine), model.getLineCount());
 			currentPath = preview.path;
+			currentTargetLine = targetLine;
+			currentTargetLineRequestId = targetLineRequestId;
+			editor.setPosition({ lineNumber, column: 1 });
+			editor.revealLineInCenterIfOutsideViewport(lineNumber);
+			return;
+		}
+
+		if (pathChanged) {
+			currentPath = preview.path;
+			currentTargetLine = null;
+			currentTargetLineRequestId = targetLineRequestId;
 			editor.setScrollTop(0);
 			editor.setScrollLeft(0);
 			editor.setPosition({ lineNumber: 1, column: 1 });
+			return;
 		}
+
+		currentTargetLine = targetLine;
+		currentTargetLineRequestId = targetLineRequestId;
 	}
 
 	onMount(async () => {

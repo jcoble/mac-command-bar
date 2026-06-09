@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
   folderIdsForSourceRecord,
+  parseQuickOpenQuery,
   rankSourceRecords,
   selectPreferredSourceRecord,
   upsertOpenSourceTab,
@@ -108,6 +109,12 @@ assert.deepEqual(
   ['/repo/src/B.ts']
 );
 
+const rankedByFileNameWithLine = rankSourceRecords(records, 'b:20', 5);
+assert.deepEqual(
+  rankedByFileNameWithLine.map((record) => record.path),
+  ['/repo/src/B.ts']
+);
+
 const rankedEmptyQuery = rankSourceRecords(records, '', 1);
 assert.deepEqual(
   rankedEmptyQuery.map((record) => record.path),
@@ -132,6 +139,23 @@ assert.deepEqual(
   rankedByRelativePath.map((record) => record.path),
   ['/repo/tools/Generate.ts']
 );
+
+assert.deepEqual(parseQuickOpenQuery('FormatDetector:20'), {
+  searchQuery: 'FormatDetector',
+  targetLine: 20
+});
+assert.deepEqual(parseQuickOpenQuery('apps/web/+page.svelte:003'), {
+  searchQuery: 'apps/web/+page.svelte',
+  targetLine: 3
+});
+assert.deepEqual(parseQuickOpenQuery('FormatDetector:'), {
+  searchQuery: 'FormatDetector:',
+  targetLine: null
+});
+assert.deepEqual(parseQuickOpenQuery('FormatDetector:0'), {
+  searchQuery: 'FormatDetector:0',
+  targetLine: null
+});
 
 assert.deepEqual(folderIdsForSourceRecord(records[0]), ['folder:src']);
 assert.deepEqual(

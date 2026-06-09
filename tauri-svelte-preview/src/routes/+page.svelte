@@ -37,6 +37,7 @@
     folderIdsForSourceRecord,
     mergeProjectRoots,
     normalizeProjectPath,
+    parseQuickOpenQuery,
     previewFromContent,
     rankSourceRecords,
     selectPreferredSourceRecord,
@@ -75,6 +76,8 @@
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
+  let selectedSourceLine = $state<number | null>(null);
+  let selectedSourceLineRequestId = $state(0);
   let preview = $state<SourcePreview | null>(
     initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null
   );
@@ -116,6 +119,7 @@
   let projectOpenSourceTabs = $derived(
     openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
   );
+  let parsedQuickOpenQuery = $derived(parseQuickOpenQuery(quickOpenQuery));
   let quickOpenResults = $derived(rankSourceRecords(records, quickOpenQuery, 12));
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
@@ -158,6 +162,7 @@
         selectedRecord?.path
       );
       selectedRecord = nextSelection;
+      selectedSourceLine = null;
       preview = nextSelection ? previewFromContent(nextSelection, '') : null;
       expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
 
@@ -170,6 +175,7 @@
       if (generation !== scanGeneration) return;
       records = demoRecordsForProject(project);
       selectedRecord = records[0] ?? null;
+      selectedSourceLine = null;
       preview = selectedRecord ? demoPreviewFor(selectedRecord) : null;
       expandedFolderIds = selectedRecord ? new Set(folderIdsForSourceRecord(selectedRecord)) : new Set();
       runtime = 'browser preview';
@@ -200,8 +206,10 @@
     }
   }
 
-  async function selectRecord(record: SourceRecord) {
+  async function selectRecord(record: SourceRecord, targetLine: number | null = null) {
     selectedRecord = record;
+    selectedSourceLine = targetLine;
+    if (targetLine) selectedSourceLineRequestId += 1;
     expandFoldersForRecord(record);
     trackSelectedSourceRecord(record, selectedProject);
     await loadRecord(record);
@@ -238,7 +246,7 @@
   }
 
   async function chooseQuickOpenRecord(record: SourceRecord) {
-    await selectRecord(record);
+    await selectRecord(record, parsedQuickOpenQuery.targetLine);
     closeQuickOpen();
   }
 
@@ -338,6 +346,7 @@
 
     selectedSourcePaths = nextSelectedSourcePaths;
     selectedRecord = null;
+    selectedSourceLine = null;
     preview = null;
     loading = false;
     error = '';
@@ -965,7 +974,12 @@
             <FolderSearch size={14} strokeWidth={1.9} />
           </button>
         </div>
-        <strong>{selectedIndex} / {records.length}</strong>
+        <strong>
+          {selectedIndex} / {records.length}
+          {#if selectedSourceLine}
+            · line {selectedSourceLine}
+          {/if}
+        </strong>
       </div>
     {/if}
 
@@ -1001,7 +1015,12 @@
         </div>
 
         {#key sourcePreviewAppearanceKey}
-          <MonacoSourceEditor {preview} {loading} />
+          <MonacoSourceEditor
+            {preview}
+            {loading}
+            targetLine={selectedSourceLine}
+            targetLineRequestId={selectedSourceLineRequestId}
+          />
         {/key}
       </div>
     {:else}
@@ -1061,7 +1080,7 @@
                 <strong>{record.fileName}</strong>
                 <small>{record.relativePath}</small>
               </span>
-              <em>{record.language}</em>
+              <em>{parsedQuickOpenQuery.targetLine ? `line ${parsedQuickOpenQuery.targetLine}` : record.language}</em>
             </button>
           {/each}
         {/if}
