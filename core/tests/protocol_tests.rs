@@ -52,7 +52,10 @@ fn source_preview_reads_csharp_file_and_returns_highlight_spans() {
     assert_eq!(response.id, "req-source");
     assert_eq!(response.data["language"], "csharp");
     assert_eq!(response.data["fileName"], "Example.cs");
-    assert!(response.data["content"].as_str().unwrap().contains("public class Example"));
+    assert!(response.data["content"]
+        .as_str()
+        .unwrap()
+        .contains("public class Example"));
     assert_eq!(response.data["lineCount"], 4);
 
     let spans = response.data["spans"].as_array().unwrap();
@@ -128,10 +131,22 @@ fn source_list_scans_repo_and_skips_build_dependency_dirs() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("obj")).unwrap();
     std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
-    std::fs::write(root.join("src/ExternalLogin.cs"), "public class ExternalLogin {}\n").unwrap();
-    std::fs::write(root.join("src/App.svelte"), "<script>let count = 0;</script>\n").unwrap();
+    std::fs::write(
+        root.join("src/ExternalLogin.cs"),
+        "public class ExternalLogin {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/App.svelte"),
+        "<script>let count = 0;</script>\n",
+    )
+    .unwrap();
     std::fs::write(root.join("obj/Generated.cs"), "public class Generated {}\n").unwrap();
-    std::fs::write(root.join("node_modules/pkg/index.ts"), "export const x = 1;\n").unwrap();
+    std::fs::write(
+        root.join("node_modules/pkg/index.ts"),
+        "export const x = 1;\n",
+    )
+    .unwrap();
 
     let response = dispatch(CoreRequest {
         id: "req-source-list".to_string(),
@@ -148,7 +163,105 @@ fn source_list_scans_repo_and_skips_build_dependency_dirs() {
         .iter()
         .map(|file| file["relativePath"].as_str().unwrap())
         .collect();
-    assert_eq!(relative_paths, vec!["src/App.svelte", "src/ExternalLogin.cs"]);
+    assert_eq!(
+        relative_paths,
+        vec!["src/App.svelte", "src/ExternalLogin.cs"]
+    );
     assert!(files.iter().any(|file| file["language"] == "csharp"));
     assert!(files.iter().any(|file| file["language"] == "svelte"));
+}
+
+#[test]
+fn source_list_skips_agent_and_worktree_dirs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".claude/hooks")).unwrap();
+    std::fs::create_dir_all(root.join(".claude/worktrees/agent/EdiPlatform.Data")).unwrap();
+    std::fs::create_dir_all(root.join("worktrees/session/EdiPlatform.Engine")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join(".claude/hooks/guard.js"),
+        "console.log('guard');\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".claude/worktrees/agent/EdiPlatform.Data/Stale.cs"),
+        "public class Stale {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("worktrees/session/EdiPlatform.Engine/Hidden.cs"),
+        "public class Hidden {}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/Real.cs"), "public class Real {}\n").unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-list-skip-agents".to_string(),
+        action: "source.list".to_string(),
+        dry_run: true,
+        payload: json!({ "rootPath": root, "limit": 20 }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["count"], 1);
+    assert_eq!(
+        response.data["files"][0]["relativePath"].as_str().unwrap(),
+        "src/Real.cs"
+    );
+}
+
+#[test]
+fn source_list_skips_saved_web_asset_dirs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("Docs/Research/Guide_files")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Docs/Research/Guide_files/app.js"),
+        "console.log('asset');\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/Real.cs"), "public class Real {}\n").unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-list-skip-web-assets".to_string(),
+        action: "source.list".to_string(),
+        dry_run: true,
+        payload: json!({ "rootPath": root, "limit": 20 }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["count"], 1);
+    assert_eq!(
+        response.data["files"][0]["relativePath"].as_str().unwrap(),
+        "src/Real.cs"
+    );
+}
+
+#[test]
+fn source_list_applies_query_before_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/AFirst.cs"), "public class AFirst {}\n").unwrap();
+    std::fs::write(
+        root.join("src/TransactionProcessorWorker.cs"),
+        "public class TransactionProcessorWorker {}\n",
+    )
+    .unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-list-query".to_string(),
+        action: "source.list".to_string(),
+        dry_run: true,
+        payload: json!({ "rootPath": root, "limit": 1, "query": "ProcessorWorker.cs" }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["count"], 1);
+    assert_eq!(
+        response.data["files"][0]["relativePath"].as_str().unwrap(),
+        "src/TransactionProcessorWorker.cs"
+    );
 }

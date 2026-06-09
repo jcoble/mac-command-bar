@@ -338,6 +338,102 @@ public struct SourceFileRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct SourceFileTreeNode: Equatable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var relativePath: String
+    public var file: SourceFileRecord?
+    public var children: [SourceFileTreeNode]
+
+    public var isFolder: Bool { file == nil }
+
+    public init(
+        id: String,
+        name: String,
+        relativePath: String,
+        file: SourceFileRecord? = nil,
+        children: [SourceFileTreeNode] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.relativePath = relativePath
+        self.file = file
+        self.children = children
+    }
+
+    public static func build(from files: [SourceFileRecord]) -> [SourceFileTreeNode] {
+        let entries = files.map { file in
+            SourceFileTreeEntry(
+                components: file.relativePath.split(separator: "/").map(String.init),
+                file: file
+            )
+        }
+        return buildNodes(from: entries, prefix: [])
+    }
+
+    private static func buildNodes(
+        from entries: [SourceFileTreeEntry],
+        prefix: [String]
+    ) -> [SourceFileTreeNode] {
+        var folderEntries: [String: [SourceFileTreeEntry]] = [:]
+        var fileEntries: [SourceFileTreeEntry] = []
+
+        for entry in entries {
+            guard let firstComponent = entry.components.first else {
+                continue
+            }
+
+            if entry.components.count == 1 {
+                fileEntries.append(entry)
+            } else {
+                folderEntries[firstComponent, default: []].append(
+                    SourceFileTreeEntry(
+                        components: Array(entry.components.dropFirst()),
+                        file: entry.file
+                    )
+                )
+            }
+        }
+
+        let folderNodes = folderEntries.keys.sorted(by: localizedAscending).map { folderName in
+            let relativePath = (prefix + [folderName]).joined(separator: "/")
+            return SourceFileTreeNode(
+                id: "folder:\(relativePath)",
+                name: folderName,
+                relativePath: relativePath,
+                children: buildNodes(
+                    from: folderEntries[folderName] ?? [],
+                    prefix: prefix + [folderName]
+                )
+            )
+        }
+
+        let fileNodes = fileEntries
+            .sorted { left, right in
+                localizedAscending(left.file.fileName, right.file.fileName)
+            }
+            .map { entry in
+                SourceFileTreeNode(
+                    id: "file:\(entry.file.path)",
+                    name: entry.file.fileName,
+                    relativePath: entry.file.relativePath,
+                    file: entry.file
+                )
+            }
+
+        return folderNodes + fileNodes
+    }
+}
+
+private struct SourceFileTreeEntry {
+    var components: [String]
+    var file: SourceFileRecord
+}
+
+private func localizedAscending(_ left: String, _ right: String) -> Bool {
+    left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+}
+
 public struct SourceSyntaxSpan: Codable, Equatable, Sendable {
     public var start: Int
     public var end: Int

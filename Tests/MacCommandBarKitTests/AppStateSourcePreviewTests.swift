@@ -36,6 +36,30 @@ final class AppStateSourcePreviewTests: XCTestCase {
         XCTAssertEqual(state.modules.first(where: { $0.id == "source" })?.status, "Files")
     }
 
+    func testRefreshSourceFilesSendsQueryWhenProvided() async throws {
+        let spy = SourcePreviewCoreClientSpy(responseData: [
+            "count": .number(1),
+            "files": .array([
+                .object([
+                    "path": .string("/repo/src/TransactionProcessorWorker.cs"),
+                    "relativePath": .string("src/TransactionProcessorWorker.cs"),
+                    "fileName": .string("TransactionProcessorWorker.cs"),
+                    "language": .string("csharp"),
+                    "byteCount": .number(41)
+                ])
+            ])
+        ])
+        let state = AppState.sourcePreviewTestState(coreClient: spy)
+
+        await state.refreshSourceFiles(rootPath: "/repo", query: " ProcessorWorker.cs ")
+
+        let requests = await spy.recordedRequests()
+        XCTAssertEqual(requests.map(\.action), [.sourceList])
+        XCTAssertEqual(requests.first?.payload["rootPath"]?.stringValue, "/repo")
+        XCTAssertEqual(requests.first?.payload["query"]?.stringValue, "ProcessorWorker.cs")
+        XCTAssertEqual(state.sourceFiles.map(\.relativePath), ["src/TransactionProcessorWorker.cs"])
+    }
+
     func testPreviewSourceFileSendsRequestAndDecodesPreview() async throws {
         let spy = SourcePreviewCoreClientSpy(responseData: [
             "path": .string("/repo/Example.cs"),

@@ -93,7 +93,11 @@ pub fn preview_source_file(path: &Path) -> Result<SourcePreview> {
     })
 }
 
-pub fn list_source_files(root: &Path, limit: usize) -> Result<Vec<SourceFileRecord>> {
+pub fn list_source_files(
+    root: &Path,
+    limit: usize,
+    query: Option<&str>,
+) -> Result<Vec<SourceFileRecord>> {
     let metadata = std::fs::metadata(root)
         .with_context(|| format!("could not read metadata for {}", root.display()))?;
     if !metadata.is_dir() {
@@ -105,8 +109,11 @@ pub fn list_source_files(root: &Path, limit: usize) -> Result<Vec<SourceFileReco
     } else {
         limit.min(1_000)
     };
+    let normalized_query = query
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty());
     let mut records = Vec::new();
-    collect_source_files(root, root, limit, &mut records)?;
+    collect_source_files(root, root, limit, normalized_query.as_deref(), &mut records)?;
     records.sort_by(|left, right| {
         left.relative_path
             .to_lowercase()
@@ -136,6 +143,7 @@ fn collect_source_files(
     root: &Path,
     current: &Path,
     limit: usize,
+    query: Option<&str>,
     records: &mut Vec<SourceFileRecord>,
 ) -> Result<()> {
     if records.len() >= limit {
@@ -163,7 +171,7 @@ fn collect_source_files(
             if should_skip_dir(&file_name) {
                 continue;
             }
-            collect_source_files(root, &path, limit, records)?;
+            collect_source_files(root, &path, limit, query, records)?;
             continue;
         }
 
@@ -176,6 +184,9 @@ fn collect_source_files(
             .unwrap_or(&path)
             .display()
             .to_string();
+        if !source_file_matches_query(&relative_path, &file_name, query) {
+            continue;
+        }
         records.push(SourceFileRecord {
             path: path.display().to_string(),
             relative_path,
@@ -189,12 +200,19 @@ fn collect_source_files(
 }
 
 fn should_skip_dir(name: &str) -> bool {
+    if name.ends_with("_files") {
+        return true;
+    }
+
     matches!(
         name,
         ".git"
             | ".hg"
             | ".svn"
+            | ".agents"
             | ".build"
+            | ".claude"
+            | ".codex"
             | ".next"
             | ".svelte-kit"
             | "bin"
@@ -205,11 +223,22 @@ fn should_skip_dir(name: &str) -> bool {
             | "packages"
             | "target"
             | "vendor"
+            | "worktrees"
     )
 }
 
+fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option<&str>) -> bool {
+    let Some(query) = query else {
+        return true;
+    };
+    relative_path.to_lowercase().contains(query) || file_name.to_lowercase().contains(query)
+}
+
 fn is_source_file(path: &Path) -> bool {
-    !matches!(detect_language(path).as_str(), "plain" | "json" | "markdown")
+    !matches!(
+        detect_language(path).as_str(),
+        "plain" | "json" | "markdown"
+    )
 }
 
 fn csharp_spans(content: &str) -> Result<Vec<SyntaxSpan>> {
@@ -266,7 +295,8 @@ fn collect_csharp_query_spans(
     content: &str,
     spans: &mut Vec<SyntaxSpan>,
 ) -> Result<()> {
-    let query = Query::new(language, CSHARP_HIGHLIGHT_QUERY).context("invalid C# highlight query")?;
+    let query =
+        Query::new(language, CSHARP_HIGHLIGHT_QUERY).context("invalid C# highlight query")?;
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut captures = cursor.captures(&query, root, content.as_bytes());
@@ -368,23 +398,24 @@ fn csharp_role_for_node(node: Node<'_>) -> Option<SyntaxRole> {
     match node.kind() {
         "abstract" | "as" | "base" | "break" | "case" | "catch" | "class" | "const"
         | "continue" | "default" | "delegate" | "do" | "else" | "enum" | "event" | "explicit"
-        | "extern" | "finally" | "fixed" | "for" | "foreach" | "get" | "if" | "implicit"
-        | "in" | "interface" | "internal" | "is" | "lock" | "namespace" | "new" | "operator"
-        | "out" | "override" | "params" | "private" | "protected" | "public" | "readonly"
-        | "ref" | "return" | "sealed" | "set" | "sizeof" | "stackalloc" | "static" | "struct"
+        | "extern" | "finally" | "fixed" | "for" | "foreach" | "get" | "if" | "implicit" | "in"
+        | "interface" | "internal" | "is" | "lock" | "namespace" | "new" | "operator" | "out"
+        | "override" | "params" | "private" | "protected" | "public" | "readonly" | "ref"
+        | "return" | "sealed" | "set" | "sizeof" | "stackalloc" | "static" | "struct"
         | "switch" | "this" | "throw" | "try" | "typeof" | "unchecked" | "unsafe" | "using"
         | "virtual" | "void" | "volatile" | "while" => Some(SyntaxRole::Keyword),
         "predefined_type" => Some(SyntaxRole::Type),
-        "string_literal" | "raw_string_literal" | "verbatim_string_literal" | "character_literal" => {
-            Some(SyntaxRole::String)
-        }
+        "string_literal"
+        | "raw_string_literal"
+        | "verbatim_string_literal"
+        | "character_literal" => Some(SyntaxRole::String),
         "boolean_literal" | "null_literal" => Some(SyntaxRole::Constant),
         "comment" => Some(SyntaxRole::Comment),
         "integer_literal" | "real_literal" => Some(SyntaxRole::Number),
-        "--" | "-" | "-=" | "&" | "&=" | "&&" | "+" | "++" | "+=" | "<" | "<=" | "<<"
-        | "<<=" | "=" | "==" | "!" | "!=" | "=>" | ">" | ">=" | ">>" | ">>=" | ">>>"
-        | ">>>=" | "|" | "|=" | "||" | "?" | "??" | "??=" | "^" | "^=" | "~" | "*"
-        | "*=" | "/" | "/=" | "%" | "%=" | ":" | ".." => Some(SyntaxRole::Operator),
+        "--" | "-" | "-=" | "&" | "&=" | "&&" | "+" | "++" | "+=" | "<" | "<=" | "<<" | "<<="
+        | "=" | "==" | "!" | "!=" | "=>" | ">" | ">=" | ">>" | ">>=" | ">>>" | ">>>=" | "|"
+        | "|=" | "||" | "?" | "??" | "??=" | "^" | "^=" | "~" | "*" | "*=" | "/" | "/=" | "%"
+        | "%=" | ":" | ".." => Some(SyntaxRole::Operator),
         ";" | "." | "," | "(" | ")" | "[" | "]" | "{" | "}" => Some(SyntaxRole::Punctuation),
         _ => None,
     }

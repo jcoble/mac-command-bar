@@ -421,6 +421,7 @@ private struct SourcePreviewPanel: View {
     @EnvironmentObject private var state: AppState
     @State private var selectedProfileID: UUID?
     @State private var pathText = ""
+    @State private var expandedFolderIDs: Set<String> = []
 
     private var selectedProfile: ProjectProfile? {
         if let selectedProfileID,
@@ -431,26 +432,52 @@ private struct SourcePreviewPanel: View {
     }
 
     private var resolvedPath: String {
-        let trimmed = pathText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard !trimmedPathText.isEmpty else {
             return ""
         }
-        guard !trimmed.hasPrefix("/"), let repoPath = selectedProfile?.repoPath else {
-            return trimmed
+        guard !trimmedPathText.hasPrefix("/"), let repoPath = selectedProfile?.repoPath else {
+            return trimmedPathText
         }
-        return URL(fileURLWithPath: repoPath).appendingPathComponent(trimmed).path
+        return URL(fileURLWithPath: repoPath).appendingPathComponent(trimmedPathText).path
+    }
+
+    private var trimmedPathText: String {
+        pathText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var filteredSourceFiles: [SourceFileRecord] {
-        let query = pathText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
+        guard !trimmedPathText.isEmpty else {
             return state.sourceFiles
         }
         return state.sourceFiles.filter { file in
-            file.relativePath.localizedCaseInsensitiveContains(query)
-                || file.fileName.localizedCaseInsensitiveContains(query)
-                || file.language.localizedCaseInsensitiveContains(query)
+            file.relativePath.localizedCaseInsensitiveContains(trimmedPathText)
+                || file.fileName.localizedCaseInsensitiveContains(trimmedPathText)
+                || file.language.localizedCaseInsensitiveContains(trimmedPathText)
         }
+    }
+
+    private var sourceTree: [SourceFileTreeNode] {
+        SourceFileTreeNode.build(from: filteredSourceFiles)
+    }
+
+    private var autoExpandFolders: Bool {
+        !trimmedPathText.isEmpty
+    }
+
+    private var bestSourceFileMatch: SourceFileRecord? {
+        guard !trimmedPathText.isEmpty else {
+            return nil
+        }
+
+        return state.sourceFiles.first { file in
+            file.path.localizedCaseInsensitiveCompare(trimmedPathText) == .orderedSame
+                || file.relativePath.localizedCaseInsensitiveCompare(trimmedPathText) == .orderedSame
+                || file.fileName.localizedCaseInsensitiveCompare(trimmedPathText) == .orderedSame
+        } ?? (filteredSourceFiles.count == 1 ? filteredSourceFiles.first : nil)
+    }
+
+    private var previewTargetPath: String {
+        bestSourceFileMatch?.path ?? resolvedPath
     }
 
     var body: some View {
@@ -472,60 +499,40 @@ private struct SourcePreviewPanel: View {
                 }
                 .disabled(selectedProfile == nil)
 
-                TextField("Relative or absolute source path", text: $pathText)
+                TextField("Search file or paste source path", text: $pathText)
                     .textFieldStyle(.roundedBorder)
 
                 Button {
-                    preview(path: resolvedPath)
+                    preview(path: previewTargetPath)
                 } label: {
                     Label("Preview", systemImage: "doc.text.magnifyingglass")
                 }
-                .disabled(resolvedPath.isEmpty)
+                .disabled(previewTargetPath.isEmpty)
             }
 
             if !state.sourceFiles.isEmpty {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filteredSourceFiles) { file in
-                            Button {
-                                pathText = file.relativePath
-                                preview(path: file.path)
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: file.language == "csharp" ? "curlybraces" : "doc.text")
-                                        .foregroundStyle(.blue)
-                                        .frame(width: 16)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(file.fileName)
-                                            .font(.system(size: 11, weight: .medium))
-                                            .lineLimit(1)
-                                        Text(file.relativePath)
-                                            .font(.system(size: 9, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer()
-                                    Text(file.language)
-                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                                .contentShape(Rectangle())
-                                .padding(.vertical, 5)
-                            }
-                            .buttonStyle(.plain)
-                            Divider()
-                        }
-
-                        if filteredSourceFiles.isEmpty {
+                    if sourceTree.isEmpty {
+                        VStack(alignment: .leading) {
                             Text("No scanned files match")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 8)
                         }
+                    } else {
+                        SourceFileTreeBrowser(
+                            nodes: sourceTree,
+                            activeFilePath: state.sourcePreview?.path,
+                            autoExpandFolders: autoExpandFolders,
+                            expandedFolderIDs: $expandedFolderIDs
+                        ) { file in
+                            pathText = file.relativePath
+                            preview(path: file.path)
+                        }
                     }
                 }
-                .frame(height: 92)
+                .frame(height: 136)
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 7))
             }
@@ -570,13 +577,136 @@ private struct SourcePreviewPanel: View {
             return
         }
         Task {
-            await state.refreshSourceFiles(rootPath: repoPath)
+            await state.refreshSourceFiles(rootPath: repoPath, query: pathText)
         }
     }
 
     private func preview(path: String) {
         Task {
             await state.previewSourceFile(path: path)
+        }
+    }
+}
+
+private struct SourceFileTreeBrowser: View {
+    let nodes: [SourceFileTreeNode]
+    let activeFilePath: String?
+    let autoExpandFolders: Bool
+    @Binding var expandedFolderIDs: Set<String>
+    let onSelect: (SourceFileRecord) -> Void
+
+    var body: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(nodes) { node in
+                SourceFileTreeNodeRow(
+                    node: node,
+                    level: 0,
+                    activeFilePath: activeFilePath,
+                    autoExpandFolders: autoExpandFolders,
+                    expandedFolderIDs: $expandedFolderIDs,
+                    onSelect: onSelect
+                )
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct SourceFileTreeNodeRow: View {
+    let node: SourceFileTreeNode
+    let level: Int
+    let activeFilePath: String?
+    let autoExpandFolders: Bool
+    @Binding var expandedFolderIDs: Set<String>
+    let onSelect: (SourceFileRecord) -> Void
+
+    private var isExpanded: Bool {
+        autoExpandFolders || expandedFolderIDs.contains(node.id)
+    }
+
+    private var isActiveFile: Bool {
+        node.file?.path == activeFilePath
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button {
+                if node.isFolder {
+                    toggleFolder()
+                } else if let file = node.file {
+                    onSelect(file)
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    if node.isFolder {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 11)
+                    } else {
+                        Color.clear.frame(width: 11, height: 1)
+                    }
+
+                    Image(systemName: symbolName)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(node.isFolder ? Color.secondary : Color.blue)
+                        .frame(width: 16)
+
+                    Text(node.name)
+                        .font(.system(size: 11, weight: node.isFolder ? .semibold : .medium))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
+                    if let file = node.file {
+                        Text(file.language)
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("\(node.children.count)")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+                .frame(height: 24)
+                .padding(.leading, CGFloat(level) * 14 + 8)
+                .padding(.trailing, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(isActiveFile ? Color.accentColor.opacity(0.18) : .clear)
+                )
+            }
+            .buttonStyle(.plain)
+
+            if node.isFolder, isExpanded {
+                ForEach(node.children) { child in
+                    SourceFileTreeNodeRow(
+                        node: child,
+                        level: level + 1,
+                        activeFilePath: activeFilePath,
+                        autoExpandFolders: autoExpandFolders,
+                        expandedFolderIDs: $expandedFolderIDs,
+                        onSelect: onSelect
+                    )
+                }
+            }
+        }
+    }
+
+    private var symbolName: String {
+        if node.isFolder {
+            return isExpanded ? "folder.open" : "folder"
+        }
+        return node.file?.language == "csharp" ? "curlybraces" : "doc.text"
+    }
+
+    private func toggleFolder() {
+        if expandedFolderIDs.contains(node.id) {
+            expandedFolderIDs.remove(node.id)
+        } else {
+            expandedFolderIDs.insert(node.id)
         }
     }
 }

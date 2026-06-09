@@ -431,7 +431,7 @@ public final class AppState: ObservableObject {
         }
     }
 
-    public func refreshSourceFiles(rootPath rawRootPath: String) async {
+    public func refreshSourceFiles(rootPath rawRootPath: String, query rawQuery: String? = nil) async {
         let rootPath = rawRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rootPath.isEmpty else {
             statusMessage = "Source root required"
@@ -443,17 +443,38 @@ public final class AppState: ObservableObject {
             return
         }
 
+        var payload: [String: JSONValue] = [
+            "rootPath": .string(rootPath),
+            "limit": .number(250)
+        ]
+        if let query = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !query.isEmpty {
+            payload["query"] = .string(query)
+        }
+
         statusMessage = "Scanning source files"
-        await refresh(
-            .sourceList,
-            moduleID: "source",
-            payload: [
-                "rootPath": .string(rootPath),
-                "limit": .number(250)
-            ]
-        )
-        updateModule("source", count: sourceFiles.count, status: "Files")
-        statusMessage = "Loaded source files"
+        do {
+            let response = try await coreClient?.send(
+                CoreRequest(action: .sourceList, dryRun: true, payload: payload)
+            )
+            guard let response else { return }
+            guard response.ok else {
+                updateModule("source", count: 0, status: "Check")
+                lastCoreWarning = response.warnings.first
+                statusMessage = response.summary
+                return
+            }
+
+            sourceFiles = try response.data["files"]?.decode() ?? []
+            let count = response.data["count"]?.intValue ?? sourceFiles.count
+            updateModule("source", count: count, status: sourceFiles.isEmpty ? "No files" : "Files")
+            lastCoreWarning = response.warnings.first
+            statusMessage = sourceFiles.isEmpty ? "No source files found" : "Loaded source files"
+        } catch {
+            updateModule("source", count: 0, status: "Unavailable")
+            lastCoreWarning = error.localizedDescription
+            statusMessage = "Source file scan failed"
+        }
     }
 
     public func planKill(pid: Int) -> ConfirmableAction {
