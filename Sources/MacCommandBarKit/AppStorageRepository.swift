@@ -41,12 +41,21 @@ public final class AppStorageRepository: AppPersisting {
 
     public init(
         stateURL: URL = AppStorageRepository.defaultStateURL(),
-        cipher: any ContentCipher = KeychainContentCipher(),
+        cipher: (any ContentCipher)? = nil,
         fileManager: FileManager = .default
     ) {
         self.stateURL = stateURL
-        self.cipher = cipher
+        self.cipher = cipher ?? Self.defaultCipher()
         self.fileManager = fileManager
+    }
+
+    public static func defaultCipher(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> any ContentCipher {
+        if environment["MCB_USE_KEYCHAIN_CIPHER"] == "1" {
+            return KeychainContentCipher()
+        }
+        return LocalFileContentCipher()
     }
 
     public static func defaultStateURL(fileManager: FileManager = .default) -> URL {
@@ -144,11 +153,12 @@ private struct PersistedClipboardItem: Codable {
     func clipboardItem(cipher: any ContentCipher) throws -> ClipboardItem {
         let content: String?
         if let encryptedContent {
-            let data = try cipher.decrypt(encryptedContent)
-            guard let text = String(data: data, encoding: .utf8) else {
-                throw AppStorageError.invalidEncryptedText
+            do {
+                let data = try cipher.decrypt(encryptedContent)
+                content = String(data: data, encoding: .utf8)
+            } catch {
+                content = nil
             }
-            content = text
         } else {
             content = nil
         }

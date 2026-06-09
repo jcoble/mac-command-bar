@@ -31,6 +31,8 @@ open dist/MacCommandBar.app
 
 The script builds `mcb-core`, builds the Swift executable, creates `dist/MacCommandBar.app`, copies the helper into `Contents/Resources`, and ad-hoc signs the bundle for local use.
 
+Local/ad-hoc builds use a private file-backed AES key at `~/Library/Application Support/MacCommandBar/content-key.bin` for clipboard vault encryption. This avoids repeated macOS Keychain prompts after every rebuild. To opt back into Keychain storage for a stable signed build, launch with `MCB_USE_KEYCHAIN_CIPHER=1`.
+
 For development without the app bundle:
 
 ```bash
@@ -56,4 +58,3 @@ V1 uses global app profiles rather than repo-local config files. See `config/pro
 - Worktree deletion is blocked when dirty or unmerged.
 - Cleanup and indexing actions should be reversible where macOS allows it.
 - No privileged helper or `sudo` actions in v1.
-

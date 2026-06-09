@@ -3,6 +3,14 @@ import XCTest
 @testable import MacCommandBarKit
 
 final class AppStorageRepositoryTests: XCTestCase {
+    func testDefaultCipherUsesLocalFileCipherUnlessKeychainIsExplicitlyRequested() {
+        XCTAssertTrue(AppStorageRepository.defaultCipher(environment: [:]) is LocalFileContentCipher)
+        XCTAssertTrue(
+            AppStorageRepository.defaultCipher(environment: ["MCB_USE_KEYCHAIN_CIPHER": "1"])
+                is KeychainContentCipher
+        )
+    }
+
     func testMissingStateFileLoadsNoSnapshot() throws {
         let directory = try temporaryDirectory()
         let repository = AppStorageRepository(
@@ -60,6 +68,64 @@ final class AppStorageRepositoryTests: XCTestCase {
         XCTAssertTrue(loadedItem.isSecret)
     }
 
+    func testRepositoryLoadsProfilesAndUnavailableClipboardItemWhenDecryptFails() throws {
+        let directory = try temporaryDirectory()
+        let stateURL = directory.appendingPathComponent("state.json")
+        let profileID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let itemID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let rawState = """
+        {
+          "version" : 1,
+          "profiles" : [
+            {
+              "id" : "\(profileID.uuidString)",
+              "name" : "MacCommandBar",
+              "repoPath" : "/repo",
+              "worktreeRoots" : [],
+              "ports" : [],
+              "urls" : [],
+              "commands" : []
+            }
+          ],
+          "clipboardItems" : [
+            {
+              "id" : "\(itemID.uuidString)",
+              "kind" : "text",
+              "preview" : "Secret text saved",
+              "tags" : ["credential"],
+              "isPinned" : true,
+              "isSecret" : true,
+              "createdAt" : "2026-06-08T00:00:00Z",
+              "encryptedContent" : {
+                "algorithm" : "test-reverse",
+                "payload" : "not decryptable"
+              }
+            }
+          ]
+        }
+        """
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        try rawState.data(using: .utf8)?.write(to: stateURL)
+        let repository = AppStorageRepository(
+            stateURL: stateURL,
+            cipher: ThrowingContentCipher()
+        )
+
+        let loaded = try XCTUnwrap(repository.load())
+
+        XCTAssertEqual(loaded.profiles.map(\.id), [profileID])
+        let item = try XCTUnwrap(loaded.clipboardVault.items.first)
+        XCTAssertEqual(item.id, itemID)
+        XCTAssertEqual(item.preview, "Secret text saved")
+        XCTAssertNil(item.content)
+        XCTAssertEqual(item.tags, ["credential"])
+        XCTAssertTrue(item.isPinned)
+        XCTAssertTrue(item.isSecret)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacCommandBarTests-\(UUID().uuidString)", isDirectory: true)
@@ -82,5 +148,15 @@ private struct ReversingContentCipher: ContentCipher {
     func decrypt(_ content: EncryptedContent) throws -> Data {
         let data = Data(base64Encoded: content.payload) ?? Data()
         return Data(data.reversed())
+    }
+}
+
+private struct ThrowingContentCipher: ContentCipher {
+    func encrypt(_ plaintext: Data) throws -> EncryptedContent {
+        EncryptedContent(algorithm: "throwing", payload: "")
+    }
+
+    func decrypt(_ content: EncryptedContent) throws -> Data {
+        throw AppStorageError.invalidEncryptedText
     }
 }
