@@ -2,6 +2,7 @@ import type {
   SourceDefinitionTarget,
   SourcePreview,
   SourceRecord,
+  SourceReferenceTarget,
   SourceScanResult,
   SourceSearchMatch
 } from './sourceData';
@@ -158,6 +159,23 @@ export async function findSourceDefinitionsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceDefinitionTarget[]>('find_source_definitions', {
+    records,
+    symbolName,
+    limit
+  });
+}
+
+export async function findSourceReferencesFromTauri(
+  records: SourceRecord[],
+  symbolName: string,
+  limit = 50
+): Promise<SourceReferenceTarget[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceReferenceTarget[]>('find_source_references', {
     records,
     symbolName,
     limit

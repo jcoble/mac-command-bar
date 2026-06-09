@@ -35,6 +35,7 @@
     demoRecordsForProject,
     filterSourceRecords,
     findSourceDefinitionTargets,
+    findSourceReferenceTargets,
     findSourceSearchMatches,
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
@@ -63,6 +64,7 @@
     type SourceRecentRecord,
     type SourceRecord,
     type SourceDefinitionTarget,
+    type SourceReferenceTarget,
     type SourceSearchMatch,
     type SourceDiagnostic,
     type SourceSymbol,
@@ -75,6 +77,7 @@
     defaultSourceScanLimit,
     expandedSourceScanLimit,
     findSourceDefinitionsFromTauri,
+    findSourceReferencesFromTauri,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
@@ -110,7 +113,7 @@
   const initialRecords = demoRecordsForProject(initialProject);
   const initialPreview = initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null;
 
-  type SourceIntelligenceAction = 'definition' | 'hover';
+  type SourceIntelligenceAction = 'definition' | 'hover' | 'references';
   type SourceEditorIntelligenceCommand = {
     id: number;
     action: SourceIntelligenceAction;
@@ -145,6 +148,10 @@
   let sourceDefinitionQuery = $state('');
   let sourceDefinitionLoading = $state(false);
   let sourceDefinitionError = $state('');
+  let sourceReferenceTargets = $state<SourceReferenceTarget[]>([]);
+  let sourceReferenceQuery = $state('');
+  let sourceReferenceLoading = $state(false);
+  let sourceReferenceError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
   let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
   let sourceSearchQuery = $state('');
@@ -262,6 +269,14 @@
       sourceDefinitionLoading,
       sourceDefinitionError,
       sourceDefinitionQuery
+    )
+  );
+  let sourceReferenceSummary = $derived(
+    formatSourceReferenceSummary(
+      sourceReferenceTargets.length,
+      sourceReferenceLoading,
+      sourceReferenceError,
+      sourceReferenceQuery
     )
   );
 
@@ -678,6 +693,71 @@
     sourceDefinitionQuery = '';
   }
 
+  async function runSourceReferenceLookup(symbolName: string) {
+    const normalizedSymbolName = symbolName.trim();
+    sourceReferenceQuery = normalizedSymbolName;
+    sourceReferenceError = '';
+
+    if (!normalizedSymbolName) {
+      sourceReferenceTargets = [];
+      fileActionStatus = 'No symbol under cursor';
+      return;
+    }
+
+    sourceReferenceLoading = true;
+    fileActionStatus = `Finding references for ${normalizedSymbolName}`;
+    try {
+      const nativeTargets = await findSourceReferencesFromTauri(
+        records,
+        normalizedSymbolName,
+        maxSourceSearchResults
+      );
+      sourceReferenceTargets =
+        nativeTargets ??
+        findSourceReferenceTargets(
+          records.map((record) => demoPreviewFor(record)),
+          normalizedSymbolName,
+          maxSourceSearchResults
+        );
+      sourceReferenceError = nativeTargets ? '' : 'Browser preview references';
+      fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
+    } catch (referenceError) {
+      sourceReferenceTargets = findSourceReferenceTargets(
+        records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceSearchResults
+      );
+      sourceReferenceError =
+        referenceError instanceof Error ? referenceError.message : 'Could not find references';
+    } finally {
+      sourceReferenceLoading = false;
+    }
+  }
+
+  function formatSourceReferenceSummary(
+    targetCount: number,
+    loadingReferences: boolean,
+    referenceError: string,
+    symbolName: string
+  ) {
+    if (loadingReferences) return 'Finding references';
+    if (referenceError) return referenceError;
+    if (!symbolName.trim()) return '';
+    return `${targetCount} ${targetCount === 1 ? 'reference' : 'references'} for ${symbolName}`;
+  }
+
+  async function selectSourceReferenceTarget(target: SourceReferenceTarget) {
+    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    await selectRecord(record, target.line);
+  }
+
+  function clearSourceReferenceTargets() {
+    sourceReferenceTargets = [];
+    sourceReferenceError = '';
+    sourceReferenceLoading = false;
+    sourceReferenceQuery = '';
+  }
+
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
     const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
     if (indexing) {
@@ -717,6 +797,7 @@
     expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
     clearSourceSearchResults();
     clearSourceDefinitionTargets();
+    clearSourceReferenceTargets();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -1057,6 +1138,10 @@
 
   function handleEditorDefinitionLookup(symbolName: string) {
     void runSourceDefinitionLookup(symbolName);
+  }
+
+  function handleEditorReferenceLookup(symbolName: string) {
+    void runSourceReferenceLookup(symbolName);
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
@@ -1964,6 +2049,17 @@
               <Search size={13} strokeWidth={2} />
               <span>Definition</span>
             </button>
+            <button
+              class="editor-action-button"
+              type="button"
+              aria-label="Find references"
+              title="Find references"
+              disabled={!preview || loading}
+              onclick={() => requestSourceIntelligenceAction('references')}
+            >
+              <Braces size={13} strokeWidth={2} />
+              <span>References</span>
+            </button>
           </div>
           <div class="quality-pill">
             <span>{sourcePreviewAppearance.theme.id}</span>
@@ -1986,6 +2082,7 @@
               onContentChange={updateSelectedSourceDraft}
               onDiagnosticsChange={handleEditorDiagnosticsChange}
               onDefinitionLookup={handleEditorDefinitionLookup}
+              onReferenceLookup={handleEditorReferenceLookup}
               onSymbolsChange={handleEditorSymbolsChange}
             />
           {/key}
@@ -2032,6 +2129,28 @@
                       <strong>{target.kind}</strong>
                       <span>{target.symbolName}</span>
                       <small>{target.relativePath}:{target.line}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+
+            {#if sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading}
+              <div class="reference-results" aria-label="Reference lookup results">
+                <div class="reference-summary">{sourceReferenceSummary}</div>
+                {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
+                  <div class="intelligence-empty">No references</div>
+                {:else}
+                  {#each sourceReferenceTargets as target (`${target.path}:${target.line}:${target.column}`)}
+                    <button
+                      class="reference-row"
+                      type="button"
+                      title={target.excerpt}
+                      onclick={() => selectSourceReferenceTarget(target)}
+                    >
+                      <strong>{target.line}:{target.column}</strong>
+                      <span>{target.fileName}</span>
+                      <small>{target.excerpt}</small>
                     </button>
                   {/each}
                 {/if}
@@ -3349,7 +3468,8 @@
     font-weight: 750;
   }
 
-  .definition-results {
+  .definition-results,
+  .reference-results {
     flex: 0 0 auto;
     max-height: 164px;
     min-height: 0;
@@ -3362,7 +3482,18 @@
     scrollbar-width: thin;
   }
 
-  .definition-summary {
+  .definition-results {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .reference-results {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .definition-summary,
+  .reference-summary {
     margin-bottom: 6px;
     min-width: 0;
     overflow: hidden;
@@ -3374,7 +3505,8 @@
   }
 
   .intelligence-row,
-  .definition-row {
+  .definition-row,
+  .reference-row {
     display: grid;
     grid-template-columns: minmax(68px, auto) minmax(0, 1fr) auto;
     align-items: center;
@@ -3393,7 +3525,9 @@
   .intelligence-row:hover,
   .intelligence-row:focus-visible,
   .definition-row:hover,
-  .definition-row:focus-visible {
+  .definition-row:focus-visible,
+  .reference-row:hover,
+  .reference-row:focus-visible {
     color: #f2f6f5;
     outline: 0;
     background: rgba(92, 226, 207, 0.1);
@@ -3404,7 +3538,10 @@
   .intelligence-row small,
   .definition-row strong,
   .definition-row span,
-  .definition-row small {
+  .definition-row small,
+  .reference-row strong,
+  .reference-row span,
+  .reference-row small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3412,7 +3549,8 @@
   }
 
   .intelligence-row strong,
-  .definition-row strong {
+  .definition-row strong,
+  .reference-row strong {
     color: #8fd8cf;
     font-size: 10px;
     font-weight: 850;
@@ -3420,13 +3558,15 @@
   }
 
   .intelligence-row span,
-  .definition-row span {
+  .definition-row span,
+  .reference-row span {
     font-size: 12px;
     font-weight: 760;
   }
 
   .intelligence-row small,
-  .definition-row small {
+  .definition-row small,
+  .reference-row small {
     color: #7f8b87;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
     font-size: 10px;

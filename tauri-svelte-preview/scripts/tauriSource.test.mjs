@@ -5,6 +5,7 @@ import {
   nativeSourceScanProgressEvent,
   createSourceScanId,
   findSourceDefinitionsFromTauri,
+  findSourceReferencesFromTauri,
   readProjectGitStatusFromTauri,
   searchSourceFilesFromTauri,
   writeSourceToTauri
@@ -30,6 +31,21 @@ assert.equal(
 assert.equal(await readProjectGitStatusFromTauri('/tmp/repo'), null);
 assert.equal(
   await findSourceDefinitionsFromTauri(
+    [
+      {
+        path: '/tmp/App.ts',
+        relativePath: 'App.ts',
+        fileName: 'App.ts',
+        language: 'typescript',
+        byteCount: 12
+      }
+    ],
+    'App'
+  ),
+  null
+);
+assert.equal(
+  await findSourceReferencesFromTauri(
     [
       {
         path: '/tmp/App.ts',

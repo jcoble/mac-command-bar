@@ -33,6 +33,13 @@ export type SourceDefinitionTarget = SourceRecord & {
   detail: string;
 };
 
+export type SourceReferenceTarget = SourceRecord & {
+  symbolName: string;
+  line: number;
+  column: number;
+  excerpt: string;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {
@@ -880,6 +887,46 @@ export function findSourceDefinitionTargets(
   return targets;
 }
 
+export function findSourceReferenceTargets(
+  previews: SourcePreview[],
+  symbolName: string,
+  limit = 50
+): SourceReferenceTarget[] {
+  const cappedLimit = Math.max(0, Math.floor(limit));
+  if (cappedLimit === 0) return [];
+
+  const normalizedSymbolName = symbolName.trim();
+  if (!normalizedSymbolName) return [];
+
+  const symbolPattern = new RegExp(`\\b${escapeRegExp(normalizedSymbolName)}\\b`, 'i');
+  const targets: SourceReferenceTarget[] = [];
+  for (const preview of previews) {
+    const lines = preview.content.split(/\r\n|\r|\n/);
+    for (const [lineIndex, line] of lines.entries()) {
+      const match = symbolPattern.exec(line);
+      if (!match) continue;
+
+      targets.push({
+        path: preview.path,
+        relativePath: preview.relativePath,
+        fileName: preview.fileName,
+        language: preview.language,
+        byteCount: preview.byteCount,
+        symbolName: match[0],
+        line: lineIndex + 1,
+        column: match.index + 1,
+        excerpt: compactSourceLineExcerpt(line)
+      });
+
+      if (targets.length >= cappedLimit) {
+        return targets;
+      }
+    }
+  }
+
+  return targets;
+}
+
 export function parseQuickOpenQuery(query: string): QuickOpenQuery {
   const trimmedQuery = query.trim();
   const lineMatch = /^(.*):(\d+)$/.exec(trimmedQuery);
@@ -1071,6 +1118,10 @@ function compactSourceLineExcerpt(line: string): string {
   const trimmedLine = line.trim();
   if (trimmedLine.length <= 180) return trimmedLine;
   return `${trimmedLine.slice(0, 177)}...`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function createProjectSourceRecord(

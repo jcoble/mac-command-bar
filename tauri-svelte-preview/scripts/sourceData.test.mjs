@@ -4,6 +4,7 @@ import {
   extractSourceSemanticTokens,
   extractSourceSymbols,
   findSourceDefinitionTargets,
+  findSourceReferenceTargets,
   findSourceSearchMatches,
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
@@ -337,6 +338,19 @@ assert.deepEqual(
   ['/repo/src/FormatDetector.cs']
 );
 assert.deepEqual(findSourceDefinitionTargets(definitionPreviews, '   ', 10), []);
+
+const referenceTargets = findSourceReferenceTargets(definitionPreviews, 'FormatDetector', 10);
+assert.deepEqual(
+  referenceTargets.map((target) => [target.path, target.line, target.column, target.excerpt]),
+  [
+    ['/repo/src/FormatResolver.cs', 4, 22, 'private readonly FormatDetector _detector;'],
+    ['/repo/src/FormatDetector.cs', 2, 21, 'public sealed class FormatDetector']
+  ]
+);
+assert.deepEqual(findSourceReferenceTargets(definitionPreviews, 'FormatDetector', 1), [
+  referenceTargets[0]
+]);
+assert.deepEqual(findSourceReferenceTargets(definitionPreviews, '   ', 10), []);
 
 assert.deepEqual(parseQuickOpenQuery('FormatDetector:20'), {
   searchQuery: 'FormatDetector',

@@ -13,6 +13,8 @@ const DEFAULT_SOURCE_SEARCH_LIMIT: usize = 50;
 const MAX_SOURCE_SEARCH_LIMIT: usize = 200;
 const DEFAULT_SOURCE_DEFINITION_LIMIT: usize = 20;
 const MAX_SOURCE_DEFINITION_LIMIT: usize = 100;
+const DEFAULT_SOURCE_REFERENCE_LIMIT: usize = 50;
+const MAX_SOURCE_REFERENCE_LIMIT: usize = 200;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
 const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
@@ -86,6 +88,20 @@ struct SourceDefinitionTarget {
     line: usize,
     column: usize,
     detail: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceReferenceTarget {
+    path: String,
+    relative_path: String,
+    file_name: String,
+    language: String,
+    byte_count: u64,
+    symbol_name: String,
+    line: usize,
+    column: usize,
+    excerpt: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -352,6 +368,19 @@ async fn find_source_definitions(
     })
     .await
     .map_err(|error| format!("Source definition task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn find_source_references(
+    records: Vec<SourceRecord>,
+    symbol_name: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceReferenceTarget>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        find_source_references_sync(records, symbol_name, limit)
+    })
+    .await
+    .map_err(|error| format!("Source reference task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -729,6 +758,120 @@ fn append_source_definition_targets(
             break;
         }
     }
+}
+
+fn find_source_references_sync(
+    records: Vec<SourceRecord>,
+    symbol_name: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceReferenceTarget>, String> {
+    let normalized_symbol_name = symbol_name.trim().to_lowercase();
+    if normalized_symbol_name.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let capped_limit = limit
+        .unwrap_or(DEFAULT_SOURCE_REFERENCE_LIMIT)
+        .min(MAX_SOURCE_REFERENCE_LIMIT);
+    if capped_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut targets = Vec::new();
+    for record in records {
+        if targets.len() >= capped_limit {
+            break;
+        }
+
+        let path = PathBuf::from(&record.path);
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PREVIEW_BYTES {
+            continue;
+        }
+
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let content = String::from_utf8_lossy(&bytes);
+        append_source_reference_targets(
+            &record,
+            &content,
+            &normalized_symbol_name,
+            capped_limit,
+            &mut targets,
+        );
+    }
+
+    Ok(targets)
+}
+
+fn append_source_reference_targets(
+    record: &SourceRecord,
+    content: &str,
+    normalized_symbol_name: &str,
+    limit: usize,
+    targets: &mut Vec<SourceReferenceTarget>,
+) {
+    for (line_index, line) in content.lines().enumerate() {
+        let Some(column_index) = find_source_reference_column(line, normalized_symbol_name) else {
+            continue;
+        };
+
+        let symbol_name = line
+            .get(column_index..column_index + normalized_symbol_name.len())
+            .unwrap_or(normalized_symbol_name)
+            .to_string();
+        targets.push(SourceReferenceTarget {
+            path: record.path.clone(),
+            relative_path: record.relative_path.clone(),
+            file_name: record.file_name.clone(),
+            language: record.language.clone(),
+            byte_count: record.byte_count,
+            symbol_name,
+            line: line_index + 1,
+            column: column_index + 1,
+            excerpt: compact_source_line_excerpt(line),
+        });
+
+        if targets.len() >= limit {
+            break;
+        }
+    }
+}
+
+fn find_source_reference_column(line: &str, normalized_symbol_name: &str) -> Option<usize> {
+    let normalized_line = line.to_lowercase();
+    let mut search_start = 0;
+
+    while search_start < normalized_line.len() {
+        let relative_index = normalized_line[search_start..].find(normalized_symbol_name)?;
+        let index = search_start + relative_index;
+        let end_index = index + normalized_symbol_name.len();
+        if is_source_token_boundary(line, index, end_index) {
+            return Some(index);
+        }
+        search_start = end_index;
+    }
+
+    None
+}
+
+fn is_source_token_boundary(line: &str, start: usize, end: usize) -> bool {
+    let before = if start == 0 {
+        None
+    } else {
+        line[..start].chars().next_back()
+    };
+    let after = line[end..].chars().next();
+
+    !before.is_some_and(is_source_identifier_character)
+        && !after.is_some_and(is_source_identifier_character)
+}
+
+fn is_source_identifier_character(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1174,6 +1317,7 @@ fn main() {
             reveal_source_file,
             search_source_files,
             find_source_definitions,
+            find_source_references,
             project_git_status
         ])
         .run(tauri::generate_context!())
@@ -1659,6 +1803,84 @@ mod tests {
                 21,
                 "public sealed class FormatDetector"
             )]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_reference_lookup_reads_token_bounded_matches_and_caps_results() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let resolver_path = root.join("src/FormatResolver.cs");
+        let detector_path = root.join("src/FormatDetector.cs");
+        std::fs::write(
+            &resolver_path,
+            [
+                "public sealed class FormatResolver",
+                "{",
+                "    private readonly FormatDetector _detector;",
+                "    private readonly FormatDetectorFactory _factory;",
+                "}",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &detector_path,
+            ["public sealed class FormatDetector", "{"].join("\n"),
+        )
+        .unwrap();
+
+        let targets = find_source_references_sync(
+            vec![
+                SourceRecord {
+                    path: resolver_path.display().to_string(),
+                    relative_path: "src/FormatResolver.cs".to_string(),
+                    file_name: "FormatResolver.cs".to_string(),
+                    language: "csharp".to_string(),
+                    byte_count: 128,
+                },
+                SourceRecord {
+                    path: detector_path.display().to_string(),
+                    relative_path: "src/FormatDetector.cs".to_string(),
+                    file_name: "FormatDetector.cs".to_string(),
+                    language: "csharp".to_string(),
+                    byte_count: 64,
+                },
+            ],
+            "formatdetector".to_string(),
+            Some(2),
+        )
+        .unwrap();
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| (
+                    target.relative_path.as_str(),
+                    target.symbol_name.as_str(),
+                    target.line,
+                    target.column,
+                    target.excerpt.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "src/FormatResolver.cs",
+                    "FormatDetector",
+                    3,
+                    22,
+                    "private readonly FormatDetector _detector;"
+                ),
+                (
+                    "src/FormatDetector.cs",
+                    "FormatDetector",
+                    1,
+                    21,
+                    "public sealed class FormatDetector"
+                )
+            ]
         );
 
         std::fs::remove_dir_all(root).unwrap();

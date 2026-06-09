@@ -18,7 +18,7 @@
 		type SourceSymbol,
 	} from "./sourceData";
 
-	type SourceEditorIntelligenceAction = "definition" | "hover";
+	type SourceEditorIntelligenceAction = "definition" | "hover" | "references";
 
 	type SourceEditorIntelligenceCommand = {
 		id: number;
@@ -38,6 +38,7 @@
 		onContentChange?: (content: string) => void;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
 		onDefinitionLookup?: (symbolName: string) => void;
+		onReferenceLookup?: (symbolName: string) => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 	};
 
@@ -52,6 +53,7 @@
 		onContentChange,
 		onDiagnosticsChange,
 		onDefinitionLookup,
+		onReferenceLookup,
 		onSymbolsChange,
 	}: Props = $props();
 
@@ -309,6 +311,10 @@
 		handledIntelligenceCommandId = intelligenceCommand.id;
 		if (intelligenceCommand.action === "definition") {
 			onDefinitionLookup?.(symbolNameAtCursor());
+		}
+		if (intelligenceCommand.action === "references") {
+			onReferenceLookup?.(symbolNameAtCursor());
+			return;
 		}
 
 		const actionId =

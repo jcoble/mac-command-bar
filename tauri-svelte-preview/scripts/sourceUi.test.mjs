@@ -132,29 +132,43 @@ assert.ok(
   editorSource.includes('onDefinitionLookup?: (symbolName: string) => void'),
   'Editor should report the current word for project definition lookup'
 );
+assert.ok(
+  editorSource.includes('onReferenceLookup?: (symbolName: string) => void'),
+  'Editor should report the current word for project reference lookup'
+);
 assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the symbol under the cursor');
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
 assert.ok(pageSource.includes('sourceDiagnostics'), 'Source page should track diagnostics');
 assert.ok(pageSource.includes('sourceSymbols'), 'Source page should track symbols');
 assert.ok(pageSource.includes('sourceDefinitionTargets'), 'Source page should track project definition lookup targets');
+assert.ok(pageSource.includes('sourceReferenceTargets'), 'Source page should track project reference lookup targets');
 assert.ok(pageSource.includes('formatSourceDiagnosticSummary'), 'Source page should summarize diagnostics');
 assert.ok(pageSource.includes('sourceSupportsLanguageIntelligence'), 'Source page should gate Monaco language actions');
 assert.ok(pageSource.includes('requestSourceIntelligenceAction'), 'Source page should dispatch language actions');
 assert.ok(pageSource.includes('findSourceDefinitionsFromTauri'), 'Source page should call native project definition lookup');
 assert.ok(pageSource.includes('findSourceDefinitionTargets'), 'Source page should fall back to browser definition lookup');
+assert.ok(pageSource.includes('findSourceReferencesFromTauri'), 'Source page should call native project reference lookup');
+assert.ok(pageSource.includes('findSourceReferenceTargets'), 'Source page should fall back to browser reference lookup');
 assert.ok(pageSource.includes('function runSourceDefinitionLookup'), 'Source page should expose project definition lookup');
+assert.ok(pageSource.includes('function runSourceReferenceLookup'), 'Source page should expose project reference lookup');
 assert.ok(pageSource.includes('function handleEditorDefinitionLookup'), 'Source page should receive editor definition lookup requests');
+assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source page should receive editor reference lookup requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
+assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
 assert.ok(pageSource.includes('aria-label="Go to definition"'), 'Editor controls should expose definition');
+assert.ok(pageSource.includes('aria-label="Find references"'), 'Editor controls should expose references');
 assert.ok(pageSource.includes('Problems'), 'Language panel should include Problems');
 assert.ok(pageSource.includes('Symbols'), 'Language panel should include Symbols');
 assert.ok(pageSource.includes('selectSourceSymbol'), 'Symbol rows should reveal source lines');
 assert.ok(pageSource.includes('class="definition-results"'), 'Language panel should show project definition lookup results');
+assert.ok(pageSource.includes('class="reference-results"'), 'Language panel should show project reference lookup results');
 assertDeclaration('.definition-results', 'overflow-y: auto');
 assertDeclaration('.definition-results', 'scrollbar-width: thin');
+assertDeclaration('.reference-results', 'overflow-y: auto');
+assertDeclaration('.reference-results', 'scrollbar-width: thin');
 assert.ok(
   appearanceSource.includes('encodedTokensColors'),
   'Theme should include an encoded token palette for sharper Monaco token color separation'
