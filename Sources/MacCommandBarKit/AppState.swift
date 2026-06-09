@@ -138,6 +138,17 @@ public final class AppState: ObservableObject {
         statusMessage = item.isSecret ? "Secret copied to clipboard" : "Copied to clipboard"
     }
 
+    public func deleteClipboardItem(_ id: UUID) {
+        guard clipboardVault.delete(id) else {
+            statusMessage = "Clipboard item missing"
+            return
+        }
+
+        updateModule("clipboard", count: clipboardVault.items.count, status: "Local")
+        statusMessage = "Clipboard item deleted"
+        persistState()
+    }
+
     public func refreshSnapshots() async {
         guard coreClient != nil else {
             lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"

@@ -43,4 +43,32 @@ final class ClipboardVaultTests: XCTestCase {
             ClipboardVaultModel.secretPreview
         ])
     }
+
+    func testDeletingClipboardItemRemovesItFromVault() {
+        let keep = ClipboardItem(
+            id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+            kind: .text,
+            preview: "keep",
+            content: "keep",
+            tags: [],
+            isPinned: false,
+            isSecret: false,
+            createdAt: Date(timeIntervalSince1970: 3)
+        )
+        let remove = ClipboardItem(
+            id: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+            kind: .text,
+            preview: "remove",
+            content: "remove",
+            tags: [],
+            isPinned: false,
+            isSecret: false,
+            createdAt: Date(timeIntervalSince1970: 4)
+        )
+        var vault = ClipboardVaultModel(items: [keep, remove])
+
+        vault.delete(remove.id)
+
+        XCTAssertEqual(vault.items.map(\.id), [keep.id])
+    }
 }

@@ -91,6 +91,39 @@ final class AppStatePersistenceTests: XCTestCase {
         XCTAssertEqual(clipboardWriter.writtenStrings, ["restored clipboard body"])
         XCTAssertEqual(state.statusMessage, "Copied to clipboard")
     }
+
+    func testDeleteClipboardItemRemovesItemAndPersistsSnapshot() throws {
+        let item = ClipboardItem(
+            id: UUID(uuidString: "55555555-5555-5555-5555-555555555555")!,
+            kind: .text,
+            preview: "delete me",
+            content: "delete me",
+            tags: [],
+            isPinned: false,
+            isSecret: false,
+            createdAt: Date(timeIntervalSince1970: 400)
+        )
+        let persistence = MemoryAppPersistence()
+        let state = AppState(
+            modules: [
+                DashboardModule(id: "clipboard", title: "Clipboard", symbol: "doc.on.clipboard", count: 1, status: "Local", accent: .blue)
+            ],
+            selectedModuleID: "clipboard",
+            clipboardVault: ClipboardVaultModel(items: [item]),
+            profiles: [],
+            statusMessage: "Ready",
+            coreClient: nil,
+            persistence: persistence
+        )
+
+        state.deleteClipboardItem(item.id)
+
+        XCTAssertTrue(state.clipboardVault.items.isEmpty)
+        XCTAssertEqual(state.modules.first(where: { $0.id == "clipboard" })?.count, 0)
+        XCTAssertEqual(state.statusMessage, "Clipboard item deleted")
+        let savedSnapshot = try XCTUnwrap(persistence.savedSnapshots.last)
+        XCTAssertTrue(savedSnapshot.clipboardVault.items.isEmpty)
+    }
 }
 
 private final class MemoryAppPersistence: AppPersisting {

@@ -267,6 +267,15 @@ private struct ClipboardRow: View {
             }
             .buttonStyle(.borderless)
             .help("Pin")
+
+            Button {
+                state.deleteClipboardItem(item.id)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.red)
+            .help("Delete")
         }
         .padding(.vertical, 9)
     }

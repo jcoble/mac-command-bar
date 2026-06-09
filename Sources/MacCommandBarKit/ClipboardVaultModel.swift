@@ -32,6 +32,13 @@ public struct ClipboardVaultModel: Equatable, Sendable {
         items = items.sortedForDisplay()
     }
 
+    @discardableResult
+    public mutating func delete(_ id: UUID) -> Bool {
+        let beforeCount = items.count
+        items.removeAll { $0.id == id }
+        return items.count != beforeCount
+    }
+
     public mutating func addText(_ text: String, tags: [String] = []) {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
