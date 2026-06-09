@@ -1755,6 +1755,8 @@ fn git_repository_summary_for_path_result(
     let counts = git_repository_status_counts(&status.files);
     let (last_commit_sha, last_commit_subject, last_commit_at) = git_last_commit(path);
     let branch = status.branch.unwrap_or_else(|| "unknown".to_string());
+    let task_id = branch_task_id(&branch)
+        .or_else(|| last_commit_subject.as_deref().and_then(task_id_from_text));
     let dirty_count = counts.staged_count + counts.unstaged_count + counts.untracked_count;
 
     Ok(GitRepositorySummary {
@@ -1764,7 +1766,7 @@ fn git_repository_summary_for_path_result(
         path: path.display().to_string(),
         root_label: runtime_context_root_label(path),
         branch: branch.clone(),
-        task_id: branch_task_id(&branch),
+        task_id,
         is_worktree,
         is_dirty: dirty_count > 0,
         staged_count: counts.staged_count,
@@ -2847,6 +2849,43 @@ mod tests {
             .as_ref()
             .is_some_and(|sha| !sha.is_empty()));
         assert!(summary.dirty_since_epoch_ms.is_some());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_repository_summary_infers_task_from_last_commit_subject() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["add", "README.md"]);
+        run_git_for_test(
+            &root,
+            &[
+                "-c",
+                "user.name=MacCommandBar Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "feat: add TSK-127 repo task links",
+            ],
+        );
+
+        let project = RuntimeContextProject {
+            id: "mac-command-bar".to_string(),
+            name: "MacCommandBar".to_string(),
+            path: root.display().to_string(),
+        };
+        let summary = git_repository_summary_for_path_result(&project, &root, false).unwrap();
+
+        assert_eq!(summary.task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(
+            summary.last_commit_subject.as_deref(),
+            Some("feat: add TSK-127 repo task links")
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

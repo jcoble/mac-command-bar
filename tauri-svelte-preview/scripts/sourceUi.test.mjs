@@ -303,9 +303,12 @@ assert.ok(pageSource.includes('class="repo-dashboard-panel"'), 'Source page shou
 assert.ok(pageSource.includes('class="repo-dashboard-list"'), 'Repository dashboard should render a scrollable list');
 assert.ok(pageSource.includes('class="repo-dashboard-row"'), 'Repository dashboard should render repository summary rows');
 assert.ok(pageSource.includes('<span>Task</span>'), 'Repository dashboard should label inferred task IDs');
+assert.ok(pageSource.includes('repoDashboardTaskUrl'), 'Repository dashboard should link recognized task IDs');
+assert.ok(pageSource.includes('class="repo-task-link"'), 'Repository dashboard should render task badges as links');
 assert.ok(pageSource.includes('<span>Dirty</span>'), 'Repository dashboard should label dirty age/count');
 assertDeclaration('.repo-dashboard-list', 'overflow-y: auto');
 assertDeclaration('.repo-dashboard-list', 'scrollbar-width: thin');
+assertDeclaration('.repo-task-link', 'white-space: nowrap');
 assert.ok(pageSource.includes('listAgentSessionsFromTauri'), 'Source page should load native agent sessions');
 assert.ok(pageSource.includes('agentSessions'), 'Source page should track agent sessions');
 assert.ok(pageSource.includes('selectedProjectAgentSessions'), 'Source page should filter sessions to the selected project');

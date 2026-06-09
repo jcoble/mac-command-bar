@@ -812,28 +812,31 @@
   }
 
   function demoGitRepositorySummariesForProjects(projects: ProjectRoot[]): GitRepositorySummary[] {
-    return projects.map((project) => ({
-      projectID: project.id,
-      projectName: project.name,
-      repo: project.name,
-      path: project.path,
-      rootLabel: formatSourceContextRootLabel(project.path),
-      branch: 'main',
-      taskID: null,
-      isWorktree: false,
-      isDirty: false,
-      stagedCount: 0,
-      unstagedCount: 0,
-      untrackedCount: 0,
-      dirtyCount: 0,
-      ahead: 0,
-      behind: 0,
-      lastCommitSha: null,
-      lastCommitSubject: null,
-      lastCommitAt: null,
-      dirtySinceEpochMs: null,
-      error: null
-    }));
+    return projects.map((project) => {
+      const isMacCommandBar = project.id === 'mac-command-bar';
+      return {
+        projectID: project.id,
+        projectName: project.name,
+        repo: project.name,
+        path: project.path,
+        rootLabel: formatSourceContextRootLabel(project.path),
+        branch: 'main',
+        taskID: isMacCommandBar ? 'TSK-127' : null,
+        isWorktree: false,
+        isDirty: false,
+        stagedCount: 0,
+        unstagedCount: 0,
+        untrackedCount: 0,
+        dirtyCount: 0,
+        ahead: 0,
+        behind: 0,
+        lastCommitSha: isMacCommandBar ? 'b022003' : null,
+        lastCommitSubject: isMacCommandBar ? 'feat: add TSK-127 git history panel' : null,
+        lastCommitAt: isMacCommandBar ? new Date().toISOString() : null,
+        dirtySinceEpochMs: null,
+        error: null
+      };
+    });
   }
 
   function demoGitCommitHistoryForProject(project: ProjectRoot): GitCommitHistoryEntry[] {
@@ -956,6 +959,10 @@
 
   function repoDashboardTaskLabel(summary: GitRepositorySummary) {
     return summary.taskID ?? 'none';
+  }
+
+  function repoDashboardTaskUrl(summary: GitRepositorySummary) {
+    return gitTaskUrl(summary.taskID);
   }
 
   function repoDashboardDirtyLabel(summary: GitRepositorySummary) {
@@ -2743,7 +2750,18 @@
                 <span class="repo-branch-badge">{summary.branch}</span>
                 <div class="repo-dashboard-metric">
                   <span>Task</span>
-                  <strong>{repoDashboardTaskLabel(summary)}</strong>
+                  {#if summary.taskID && repoDashboardTaskUrl(summary)}
+                    <a
+                      class="repo-task-link"
+                      href={repoDashboardTaskUrl(summary) ?? ''}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {summary.taskID}
+                    </a>
+                  {:else}
+                    <strong>{repoDashboardTaskLabel(summary)}</strong>
+                  {/if}
                 </div>
                 <div class="repo-dashboard-metric">
                   <span>Dirty</span>
@@ -4403,6 +4421,23 @@
     color: #cbd3d1;
     font-size: 10px;
     font-weight: 760;
+  }
+
+  .repo-task-link {
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    max-width: 100%;
+    min-height: 20px;
+    padding: 0 7px;
+    color: #071b18;
+    border-radius: 999px;
+    background: #6fdfcf;
+    font-size: 9px;
+    font-weight: 900;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
   }
 
   .runtime-context-row span,
