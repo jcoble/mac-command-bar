@@ -21,6 +21,12 @@ pnpm tauri:dev
 
 The browser preview uses embedded demo source. The Tauri shell can call `read_source_file` from Rust to load the listed local files.
 
+## Appearance
+
+Source preview font and Monaco theme settings live in `src/lib/sourcePreviewAppearance.ts`.
+The `theme.id` value is registered with Monaco before the editor is created, so changing the
+theme colors or font stack in that file is reflected by the web viewer after Vite reloads.
+
 ## Verify
 
 ```bash
