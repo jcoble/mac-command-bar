@@ -3,6 +3,12 @@
 DerivedData/
 core/target/
 dist/
+tauri-svelte-preview/.svelte-kit/
+tauri-svelte-preview/.playwright-cli/
+tauri-svelte-preview/artifacts/
+tauri-svelte-preview/build/
+tauri-svelte-preview/node_modules/
+tauri-svelte-preview/src-tauri/gen/
+tauri-svelte-preview/src-tauri/target/
 *.xcuserstate
 .DS_Store
-
