@@ -10,6 +10,7 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import { demoPreviewFor, sourceRecords, type SourcePreview, type SourceRecord } from '$lib/sourceData';
   import { readSourceFromTauri } from '$lib/tauriSource';
 
@@ -137,11 +138,16 @@
           <span>Read only</span>
         </div>
         <div class="quality-pill">
-          <span>Monaco</span>
+          <span>{sourcePreviewAppearance.theme.id}</span>
+        </div>
+        <div class="quality-pill font-pill">
+          <span>{sourcePreviewAppearance.fontFamily.split(',')[0].replaceAll('"', '')}</span>
         </div>
       </div>
 
-      <MonacoSourceEditor {preview} {loading} />
+      {#key sourcePreviewAppearanceKey}
+        <MonacoSourceEditor {preview} {loading} />
+      {/key}
     </div>
   </section>
 </main>

@@ -168,7 +168,9 @@
 
 <div
 	class="source-editor"
+	data-font-family={sourcePreviewAppearance.fontFamily}
 	data-testid="monaco-source-editor"
+	data-theme-id={sourcePreviewAppearance.theme.id}
 	style={`--source-editor-background: ${editorBackground}`}
 >
 	<div bind:this={host} class="monaco-host"></div>

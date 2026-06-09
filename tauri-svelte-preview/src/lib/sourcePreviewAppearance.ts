@@ -62,3 +62,12 @@ export const sourcePreviewAppearance: SourcePreviewAppearance = {
 		}
 	}
 };
+
+export const sourcePreviewAppearanceKey = JSON.stringify({
+	fontFamily: sourcePreviewAppearance.fontFamily,
+	fontLigatures: sourcePreviewAppearance.fontLigatures,
+	fontSize: sourcePreviewAppearance.fontSize,
+	letterSpacing: sourcePreviewAppearance.letterSpacing,
+	lineHeight: sourcePreviewAppearance.lineHeight,
+	theme: sourcePreviewAppearance.theme
+});
