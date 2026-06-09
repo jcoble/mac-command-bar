@@ -84,6 +84,44 @@ final class AppStateCommandTests: XCTestCase {
         XCTAssertEqual(opener.openedURLs, [])
         XCTAssertEqual(state.statusMessage, "Invalid URL")
     }
+
+    func testOpenProjectFolderUsesFileURL() throws {
+        let opener = RecordingURLOpener()
+        let state = AppState(
+            modules: [],
+            selectedModuleID: "projects",
+            clipboardVault: ClipboardVaultModel(),
+            profiles: [],
+            statusMessage: "Ready",
+            coreClient: nil,
+            urlOpener: opener
+        )
+
+        state.openProjectFolder("/Users/blackcolours/dev/work/mac-command-bar")
+
+        XCTAssertEqual(opener.openedURLs, [
+            URL(fileURLWithPath: "/Users/blackcolours/dev/work/mac-command-bar", isDirectory: true)
+        ])
+        XCTAssertEqual(state.statusMessage, "Opened project folder")
+    }
+
+    func testOpenProjectFolderRejectsEmptyPathWithoutCallingOpener() {
+        let opener = RecordingURLOpener()
+        let state = AppState(
+            modules: [],
+            selectedModuleID: "projects",
+            clipboardVault: ClipboardVaultModel(),
+            profiles: [],
+            statusMessage: "Ready",
+            coreClient: nil,
+            urlOpener: opener
+        )
+
+        state.openProjectFolder("   ")
+
+        XCTAssertEqual(opener.openedURLs, [])
+        XCTAssertEqual(state.statusMessage, "Invalid folder path")
+    }
 }
 
 private final class RecordingCommandLauncher: CommandLaunching {

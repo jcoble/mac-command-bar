@@ -199,6 +199,21 @@ public final class AppState: ObservableObject {
         }
     }
 
+    public func openProjectFolder(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusMessage = "Invalid folder path"
+            return
+        }
+
+        do {
+            try urlOpener.open(URL(fileURLWithPath: trimmed, isDirectory: true))
+            statusMessage = "Opened project folder"
+        } catch {
+            statusMessage = "Open failed: \(error.localizedDescription)"
+        }
+    }
+
     public func refreshSnapshots() async {
         guard coreClient != nil else {
             lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"

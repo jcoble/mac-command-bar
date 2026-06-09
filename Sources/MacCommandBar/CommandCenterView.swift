@@ -292,6 +292,13 @@ private struct ProjectsPanel: View {
                         Text(profile.name)
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
+                        Button {
+                            state.openProjectFolder(profile.repoPath)
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Open folder")
                         Text(profile.ports.map(String.init).joined(separator: ", "))
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
