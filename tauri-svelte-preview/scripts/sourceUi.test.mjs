@@ -183,3 +183,12 @@ assert.ok(pageSource.includes('class="project-git-pill"'), 'Topbar should render
 assert.ok(pageSource.includes('class="git-status-badge"'), 'Tree and tabs should render file-level Git status badges');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.project-git-pill', 'overflow: hidden');
+assert.ok(pageSource.includes('searchSourceFilesFromTauri'), 'Source page should call native global source search');
+assert.ok(pageSource.includes('sourceSearchQuery'), 'Source page should track a global source search query');
+assert.ok(pageSource.includes('sourceSearchResults'), 'Source page should track global source search results');
+assert.ok(pageSource.includes('function runGlobalSourceSearch'), 'Source page should expose a global source search action');
+assert.ok(pageSource.includes('function selectSourceSearchResult'), 'Source page should open search results at their line');
+assert.ok(pageSource.includes('class="global-search-panel"'), 'Source page should render a global source search panel');
+assert.ok(pageSource.includes('class="source-search-results"'), 'Source page should render source search results');
+assertDeclaration('.source-search-results', 'overflow-y: auto');
+assertDeclaration('.source-search-results', 'scrollbar-width: thin');

@@ -34,6 +34,7 @@
     demoPreviewFor,
     demoRecordsForProject,
     filterSourceRecords,
+    findSourceSearchMatches,
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
     flattenSourceTree,
@@ -60,6 +61,7 @@
     type SourcePreview,
     type SourceRecentRecord,
     type SourceRecord,
+    type SourceSearchMatch,
     type SourceDiagnostic,
     type SourceSymbol,
     type SourceTreeNode,
@@ -77,6 +79,7 @@
     readProjectGitStatusFromTauri,
     readSourceFromTauri,
     revealSourceFileFromTauri,
+    searchSourceFilesFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type ProjectGitFileStatus,
@@ -92,6 +95,7 @@
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
   const maxStoredOpenSourceTabs = 64;
+  const maxSourceSearchResults = 50;
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
   const sourceTreeRowHeight = 30;
@@ -135,6 +139,10 @@
   let sourceSymbols = $state<SourceSymbol[]>([]);
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
   let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
+  let sourceSearchQuery = $state('');
+  let sourceSearchResults = $state<SourceSearchMatch[]>([]);
+  let sourceSearchLoading = $state(false);
+  let sourceSearchError = $state('');
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
@@ -236,6 +244,9 @@
   );
   let projectGitSummary = $derived(
     formatProjectGitSummary(projectGitStatus, projectGitLoading, projectGitError)
+  );
+  let sourceSearchSummary = $derived(
+    formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
   );
 
   $effect(() => {
@@ -513,6 +524,66 @@
     return record ? gitStatusByRelativePath.get(record.relativePath) ?? null : null;
   }
 
+  async function runGlobalSourceSearch() {
+    const normalizedQuery = sourceSearchQuery.trim();
+    sourceSearchError = '';
+
+    if (!normalizedQuery) {
+      sourceSearchResults = [];
+      return;
+    }
+
+    sourceSearchLoading = true;
+    try {
+      const nativeResults = await searchSourceFilesFromTauri(
+        records,
+        normalizedQuery,
+        maxSourceSearchResults
+      );
+      sourceSearchResults =
+        nativeResults ??
+        findSourceSearchMatches(
+          records.map((record) => demoPreviewFor(record)),
+          normalizedQuery,
+          maxSourceSearchResults
+        );
+      sourceSearchError = nativeResults ? '' : 'Browser preview results';
+    } catch (searchError) {
+      sourceSearchResults = findSourceSearchMatches(
+        records.map((record) => demoPreviewFor(record)),
+        normalizedQuery,
+        maxSourceSearchResults
+      );
+      sourceSearchError =
+        searchError instanceof Error ? searchError.message : 'Could not search source files';
+    } finally {
+      sourceSearchLoading = false;
+    }
+  }
+
+  function formatSourceSearchSummary(resultCount: number, searching: boolean, searchError: string) {
+    if (searching) return 'Searching';
+    if (searchError) return searchError;
+    if (sourceSearchQuery.trim().length === 0) return '';
+    return `${resultCount} ${resultCount === 1 ? 'result' : 'results'}`;
+  }
+
+  function handleGlobalSourceSearchSubmit(event: SubmitEvent) {
+    event.preventDefault();
+    void runGlobalSourceSearch();
+  }
+
+  async function selectSourceSearchResult(result: SourceSearchMatch) {
+    const record = records.find((sourceRecord) => sourceRecord.path === result.path) ?? result;
+    await selectRecord(record, result.line);
+  }
+
+  function clearSourceSearchResults() {
+    sourceSearchResults = [];
+    sourceSearchError = '';
+    sourceSearchLoading = false;
+  }
+
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
     const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
     if (indexing) {
@@ -550,6 +621,7 @@
     selectedSourceLine = null;
     preview = nextSelection ? previewFromContent(nextSelection, '') : null;
     expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
+    clearSourceSearchResults();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -1466,6 +1538,48 @@
         <input bind:value={query} placeholder="Filter source files" />
       </label>
 
+      <form class="global-search-panel" onsubmit={handleGlobalSourceSearchSubmit}>
+        <div class="global-search-box">
+          <Search size={15} strokeWidth={1.8} />
+          <input bind:value={sourceSearchQuery} placeholder="Search file contents" />
+          <button
+            class="source-search-submit"
+            type="submit"
+            aria-label="Search source contents"
+            title="Search source contents"
+            disabled={sourceSearchLoading || sourceSearchQuery.trim().length === 0}
+          >
+            {#if sourceSearchLoading}
+              <RefreshCw size={13} strokeWidth={1.8} />
+            {:else}
+              <Search size={13} strokeWidth={1.8} />
+            {/if}
+          </button>
+        </div>
+
+        {#if sourceSearchSummary}
+          <div class="source-search-summary" title={sourceSearchSummary}>{sourceSearchSummary}</div>
+        {/if}
+
+        {#if sourceSearchResults.length > 0}
+          <div class="source-search-results" aria-label="Source content search results">
+            {#each sourceSearchResults as result (`${result.path}:${result.line}:${result.column}`)}
+              <button
+                type="button"
+                title={`${result.relativePath}:${result.line}:${result.column}`}
+                onclick={() => selectSourceSearchResult(result)}
+              >
+                <span>
+                  <strong>{result.fileName}</strong>
+                  <small>{result.relativePath}:{result.line}:{result.column}</small>
+                </span>
+                <code>{result.excerpt}</code>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </form>
+
       {#if projectRecentRecords.length > 0}
         <div class="recent-panel" aria-label="Recent source files">
           <div class="recent-heading">
@@ -2208,6 +2322,126 @@
   .search-box:focus-within {
     border-color: rgba(92, 226, 207, 0.58);
     box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+  }
+
+  .global-search-panel {
+    display: grid;
+    gap: 7px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .global-search-box {
+    display: grid;
+    grid-template-columns: 17px minmax(0, 1fr) 30px;
+    align-items: center;
+    gap: 7px;
+    height: 34px;
+    padding: 0 4px 0 10px;
+    color: #9aa5a1;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .global-search-box:focus-within {
+    border-color: rgba(92, 226, 207, 0.48);
+    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.1);
+  }
+
+  .source-search-submit {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    color: #071b18;
+    border: 0;
+    border-radius: 7px;
+    background: #6fdfcf;
+    cursor: pointer;
+  }
+
+  .source-search-submit:disabled {
+    color: #8d9995;
+    background: rgba(255, 255, 255, 0.08);
+    cursor: default;
+  }
+
+  .source-search-summary {
+    min-width: 0;
+    overflow: hidden;
+    color: #8fd8cf;
+    font-size: 10px;
+    font-weight: 760;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source-search-results {
+    display: grid;
+    gap: 4px;
+    max-height: 184px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .source-search-results button {
+    display: grid;
+    gap: 3px;
+    width: 100%;
+    min-width: 0;
+    padding: 7px 8px;
+    color: #cbd3d1;
+    text-align: left;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.045);
+    cursor: pointer;
+  }
+
+  .source-search-results button:hover {
+    color: #f2f6f5;
+    background: rgba(92, 226, 207, 0.11);
+  }
+
+  .source-search-results span {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .source-search-results strong,
+  .source-search-results small,
+  .source-search-results code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source-search-results strong {
+    font-size: 11px;
+    font-weight: 780;
+  }
+
+  .source-search-results small {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .source-search-results code {
+    color: #d7dddb;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
   }
 
   input {

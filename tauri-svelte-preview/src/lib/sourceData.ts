@@ -19,6 +19,12 @@ export type SourcePreview = SourceRecord & {
   lineCount: number;
 };
 
+export type SourceSearchMatch = SourceRecord & {
+  line: number;
+  column: number;
+  excerpt: string;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {
@@ -790,6 +796,44 @@ export function rankSourceRecords(
     .map((result) => result.record);
 }
 
+export function findSourceSearchMatches(
+  previews: SourcePreview[],
+  query: string,
+  limit = 50
+): SourceSearchMatch[] {
+  const cappedLimit = Math.max(0, Math.floor(limit));
+  if (cappedLimit === 0) return [];
+
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return [];
+
+  const matches: SourceSearchMatch[] = [];
+  for (const preview of previews) {
+    const lines = preview.content.split(/\r\n|\r|\n/);
+    for (const [lineIndex, line] of lines.entries()) {
+      const columnIndex = line.toLowerCase().indexOf(normalizedQuery);
+      if (columnIndex < 0) continue;
+
+      matches.push({
+        path: preview.path,
+        relativePath: preview.relativePath,
+        fileName: preview.fileName,
+        language: preview.language,
+        byteCount: preview.byteCount,
+        line: lineIndex + 1,
+        column: columnIndex + 1,
+        excerpt: compactSourceLineExcerpt(line)
+      });
+
+      if (matches.length >= cappedLimit) {
+        return matches;
+      }
+    }
+  }
+
+  return matches;
+}
+
 export function parseQuickOpenQuery(query: string): QuickOpenQuery {
   const trimmedQuery = query.trim();
   const lineMatch = /^(.*):(\d+)$/.exec(trimmedQuery);
@@ -975,6 +1019,12 @@ function scoreSourceRecord(record: SourceRecord, normalizedQuery: string): numbe
   if (relativePath.includes(normalizedQuery)) return 4;
   if (language.includes(normalizedQuery)) return 5;
   return null;
+}
+
+function compactSourceLineExcerpt(line: string): string {
+  const trimmedLine = line.trim();
+  if (trimmedLine.length <= 180) return trimmedLine;
+  return `${trimmedLine.slice(0, 177)}...`;
 }
 
 function createProjectSourceRecord(

@@ -3,6 +3,7 @@ import {
   closeOpenSourceTab,
   extractSourceSemanticTokens,
   extractSourceSymbols,
+  findSourceSearchMatches,
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
   formatSourceRecordCount,
@@ -219,6 +220,38 @@ assert.deepEqual(
   rankedByRelativePath.map((record) => record.path),
   ['/repo/tools/Generate.ts']
 );
+
+const sourceSearchPreviews = [
+  {
+    ...records[0],
+    content: ['export function createWidget() {', '  return "Widget";'].join('\n'),
+    lineCount: 2
+  },
+  {
+    ...records[1],
+    content: ['export const ignored = true;', 'export const WidgetName = "B";'].join('\n'),
+    lineCount: 2
+  }
+];
+const sourceSearchMatches = findSourceSearchMatches(
+  sourceSearchPreviews,
+  'widget',
+  2
+);
+assert.deepEqual(
+  sourceSearchMatches.map((match) => [
+    match.path,
+    match.line,
+    match.column,
+    match.excerpt
+  ]),
+  [
+    ['/repo/src/A.ts', 1, 23, 'export function createWidget() {'],
+    ['/repo/src/A.ts', 2, 11, 'return "Widget";']
+  ]
+);
+assert.deepEqual(findSourceSearchMatches([], '   ', 10), []);
+assert.deepEqual(findSourceSearchMatches(sourceSearchPreviews, 'widget', 0), []);
 
 assert.deepEqual(parseQuickOpenQuery('FormatDetector:20'), {
   searchQuery: 'FormatDetector',

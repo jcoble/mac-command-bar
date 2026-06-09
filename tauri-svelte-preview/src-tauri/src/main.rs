@@ -9,10 +9,12 @@ use tauri::Emitter;
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 2_000;
 const MAX_SOURCE_LIST_LIMIT: usize = 5_000;
+const DEFAULT_SOURCE_SEARCH_LIMIT: usize = 50;
+const MAX_SOURCE_SEARCH_LIMIT: usize = 200;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
 const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceRecord {
     path: String,
@@ -54,6 +56,19 @@ struct SourcePreview {
     byte_count: u64,
     content: String,
     line_count: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceSearchMatch {
+    path: String,
+    relative_path: String,
+    file_name: String,
+    language: String,
+    byte_count: u64,
+    line: usize,
+    column: usize,
+    excerpt: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -299,6 +314,17 @@ async fn reveal_source_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn search_source_files(
+    records: Vec<SourceRecord>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceSearchMatch>, String> {
+    tauri::async_runtime::spawn_blocking(move || search_source_files_sync(records, query, limit))
+        .await
+        .map_err(|error| format!("Source search task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
         .await
@@ -516,6 +542,91 @@ fn write_source_file_sync(path: PathBuf, content: String) -> Result<SourcePrevie
     }
 
     read_source_file_sync(path)
+}
+
+fn search_source_files_sync(
+    records: Vec<SourceRecord>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceSearchMatch>, String> {
+    let normalized_query = query.trim().to_lowercase();
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let capped_limit = limit
+        .unwrap_or(DEFAULT_SOURCE_SEARCH_LIMIT)
+        .min(MAX_SOURCE_SEARCH_LIMIT);
+    if capped_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut matches = Vec::new();
+    for record in records {
+        if matches.len() >= capped_limit {
+            break;
+        }
+
+        let path = PathBuf::from(&record.path);
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PREVIEW_BYTES {
+            continue;
+        }
+
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let content = String::from_utf8_lossy(&bytes);
+        append_source_search_matches(
+            &record,
+            &content,
+            &normalized_query,
+            capped_limit,
+            &mut matches,
+        );
+    }
+
+    Ok(matches)
+}
+
+fn append_source_search_matches(
+    record: &SourceRecord,
+    content: &str,
+    normalized_query: &str,
+    limit: usize,
+    matches: &mut Vec<SourceSearchMatch>,
+) {
+    for (line_index, line) in content.lines().enumerate() {
+        let Some(column_index) = line.to_lowercase().find(normalized_query) else {
+            continue;
+        };
+
+        matches.push(SourceSearchMatch {
+            path: record.path.clone(),
+            relative_path: record.relative_path.clone(),
+            file_name: record.file_name.clone(),
+            language: record.language.clone(),
+            byte_count: record.byte_count,
+            line: line_index + 1,
+            column: column_index + 1,
+            excerpt: compact_source_line_excerpt(line),
+        });
+
+        if matches.len() >= limit {
+            break;
+        }
+    }
+}
+
+fn compact_source_line_excerpt(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.chars().count() <= 180 {
+        return trimmed.to_string();
+    }
+
+    format!("{}...", trimmed.chars().take(177).collect::<String>())
 }
 
 fn run_source_file_action(path: PathBuf, action: SourceFileAction) -> Result<(), String> {
@@ -828,6 +939,7 @@ fn main() {
             write_source_file,
             open_source_file,
             reveal_source_file,
+            search_source_files,
             project_git_status
         ])
         .run(tauri::generate_context!())
@@ -1184,6 +1296,60 @@ mod tests {
         assert_eq!(status.ahead, 0);
         assert_eq!(status.behind, 0);
         assert!(status.files.is_empty());
+    }
+
+    #[test]
+    fn source_search_reads_indexed_files_case_insensitively_and_caps_results() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let first_path = root.join("src/A.ts");
+        let second_path = root.join("src/B.ts");
+        std::fs::write(
+            &first_path,
+            "export function createWidget() {}\nconst label = \"Widget\";\n",
+        )
+        .unwrap();
+        std::fs::write(&second_path, "export const WidgetName = \"B\";\n").unwrap();
+
+        let matches = search_source_files_sync(
+            vec![
+                SourceRecord {
+                    path: first_path.display().to_string(),
+                    relative_path: "src/A.ts".to_string(),
+                    file_name: "A.ts".to_string(),
+                    language: "typescript".to_string(),
+                    byte_count: 64,
+                },
+                SourceRecord {
+                    path: second_path.display().to_string(),
+                    relative_path: "src/B.ts".to_string(),
+                    file_name: "B.ts".to_string(),
+                    language: "typescript".to_string(),
+                    byte_count: 32,
+                },
+            ],
+            "widget".to_string(),
+            Some(2),
+        )
+        .unwrap();
+
+        assert_eq!(
+            matches
+                .iter()
+                .map(|source_match| (
+                    source_match.relative_path.as_str(),
+                    source_match.line,
+                    source_match.column,
+                    source_match.excerpt.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("src/A.ts", 1, 23, "export function createWidget() {}"),
+                ("src/A.ts", 2, 16, "const label = \"Widget\";")
+            ]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_root() -> PathBuf {

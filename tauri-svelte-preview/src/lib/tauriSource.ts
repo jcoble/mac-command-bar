@@ -1,4 +1,4 @@
-import type { SourcePreview, SourceRecord, SourceScanResult } from './sourceData';
+import type { SourcePreview, SourceRecord, SourceScanResult, SourceSearchMatch } from './sourceData';
 
 export const defaultSourceScanLimit = 2_000;
 export const expandedSourceScanLimit = 5_000;
@@ -122,6 +122,23 @@ export async function readProjectGitStatusFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectGitStatus>('project_git_status', { root });
+}
+
+export async function searchSourceFilesFromTauri(
+  records: SourceRecord[],
+  query: string,
+  limit = 50
+): Promise<SourceSearchMatch[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceSearchMatch[]>('search_source_files', {
+    records,
+    query,
+    limit
+  });
 }
 
 async function runSourceFileAction(command: string, path: string): Promise<boolean> {
