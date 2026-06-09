@@ -24,6 +24,7 @@ final class AppStateRefreshTests: XCTestCase {
         let actions = await spy.recordedActions()
         XCTAssertEqual(actions, [.scanSessions])
         XCTAssertEqual(state.sessions.count, 1)
+        XCTAssertEqual(state.modules.first(where: { $0.id == "commands" })?.count, 1)
         XCTAssertEqual(state.worktrees.count, 0)
         XCTAssertEqual(state.processes.count, 0)
     }
@@ -70,7 +71,8 @@ private extension AppState {
             modules: [
                 DashboardModule(id: "processes", title: "Processes", symbol: "cpu", count: 0, status: "Ready", accent: .orange),
                 DashboardModule(id: "sessions", title: "Sessions", symbol: "terminal", count: 0, status: "Ready", accent: .green),
-                DashboardModule(id: "worktrees", title: "Worktrees", symbol: "point.3.connected.trianglepath.dotted", count: 0, status: "Ready", accent: .slate)
+                DashboardModule(id: "worktrees", title: "Worktrees", symbol: "point.3.connected.trianglepath.dotted", count: 0, status: "Ready", accent: .slate),
+                DashboardModule(id: "commands", title: "Commands", symbol: "command", count: 0, status: "Palette", accent: .slate)
             ],
             selectedModuleID: "sessions",
             clipboardVault: ClipboardVaultModel(),

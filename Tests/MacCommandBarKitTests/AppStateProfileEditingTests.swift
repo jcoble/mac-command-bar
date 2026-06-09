@@ -114,6 +114,27 @@ final class AppStateProfileEditingTests: XCTestCase {
         XCTAssertEqual(state.statusMessage, "Profile deleted")
         XCTAssertEqual(try XCTUnwrap(persistence.savedSnapshots.last).profiles, [])
     }
+
+    func testProfileChangesUpdateCommandModuleCount() throws {
+        let persistence = MemoryAppPersistence()
+        let state = AppState.profileEditingTestState(
+            profiles: [],
+            persistence: persistence
+        )
+        let draft = ProjectProfileDraft(
+            name: "Commands",
+            repoPath: "/commands"
+        )
+
+        state.saveProfileDraft(draft)
+
+        XCTAssertEqual(state.modules.first(where: { $0.id == "commands" })?.count, 1)
+
+        let profile = try XCTUnwrap(state.profiles.first)
+        state.deleteProfile(profile.id)
+
+        XCTAssertEqual(state.modules.first(where: { $0.id == "commands" })?.count, 0)
+    }
 }
 
 private extension AppState {
@@ -123,7 +144,8 @@ private extension AppState {
     ) -> AppState {
         AppState(
             modules: [
-                DashboardModule(id: "projects", title: "Projects", symbol: "rectangle.stack", count: profiles.count, status: "Profiles", accent: .blue)
+                DashboardModule(id: "projects", title: "Projects", symbol: "rectangle.stack", count: profiles.count, status: "Profiles", accent: .blue),
+                DashboardModule(id: "commands", title: "Commands", symbol: "command", count: 0, status: "Palette", accent: .slate)
             ],
             selectedModuleID: "projects",
             clipboardVault: ClipboardVaultModel(),

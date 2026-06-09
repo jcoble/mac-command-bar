@@ -116,7 +116,8 @@ public final class AppState: ObservableObject {
         return AppState(
             modules: defaultModules(
                 profileCount: profiles.count,
-                clipboardCount: clipboardVault.items.count
+                clipboardCount: clipboardVault.items.count,
+                commandCount: profiles.reduce(0) { $0 + $1.commands.count }
             ),
             selectedModuleID: "projects",
             clipboardVault: clipboardVault,
@@ -314,6 +315,7 @@ public final class AppState: ObservableObject {
         }
         profiles.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         updateModule("projects", count: profiles.count, status: "Profiles")
+        updateCommandModuleCount()
         statusMessage = "Profile saved"
         persistState()
         return true
@@ -328,6 +330,7 @@ public final class AppState: ObservableObject {
         }
 
         updateModule("projects", count: profiles.count, status: "Profiles")
+        updateCommandModuleCount()
         statusMessage = "Profile deleted"
         persistState()
     }
@@ -473,6 +476,7 @@ public final class AppState: ObservableObject {
                 processes = try response.data["processes"]?.decode() ?? []
             case .scanSessions:
                 sessions = try response.data["sessions"]?.decode() ?? []
+                updateCommandModuleCount()
             case .scanWorktrees:
                 worktrees = try response.data["worktrees"]?.decode() ?? []
             case .healthSnapshot, .planKillProcess:
@@ -481,6 +485,10 @@ public final class AppState: ObservableObject {
         } catch {
             lastCoreWarning = "Could not decode \(action.rawValue): \(error.localizedDescription)"
         }
+    }
+
+    private func updateCommandModuleCount() {
+        updateModule("commands", count: commandPaletteItems(matching: "").count, status: "Palette")
     }
 
     private func persistState() {
@@ -509,7 +517,11 @@ public final class AppState: ObservableObject {
         }
     }
 
-    private static func defaultModules(profileCount: Int, clipboardCount: Int = 0) -> [DashboardModule] {
+    private static func defaultModules(
+        profileCount: Int,
+        clipboardCount: Int = 0,
+        commandCount: Int = 0
+    ) -> [DashboardModule] {
         [
             DashboardModule(id: "projects", title: "Projects", symbol: "rectangle.stack", count: profileCount, status: "Profiles", accent: .blue),
             DashboardModule(id: "processes", title: "Processes", symbol: "cpu", count: 0, status: "Scan ready", accent: .orange),
@@ -519,7 +531,7 @@ public final class AppState: ObservableObject {
             DashboardModule(id: "artifacts", title: "Artifacts", symbol: "doc.badge.plus", count: 6, status: "Templates", accent: .green),
             DashboardModule(id: "cleanup", title: "Repo Cleanup", symbol: "externaldrive.badge.minus", count: 0, status: "Confirm only", accent: .red),
             DashboardModule(id: "health", title: "Dev Health", symbol: "gauge.with.dots.needle.67percent", count: 0, status: "Local", accent: .orange),
-            DashboardModule(id: "commands", title: "Commands", symbol: "command", count: 0, status: "Palette", accent: .slate),
+            DashboardModule(id: "commands", title: "Commands", symbol: "command", count: commandCount, status: "Palette", accent: .slate),
             DashboardModule(id: "focus", title: "Focus", symbol: "sparkle.magnifyingglass", count: 0, status: "Reversible", accent: .green)
         ]
     }
