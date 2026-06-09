@@ -30,4 +30,17 @@ final class ClipboardVaultTests: XCTestCase {
         XCTAssertTrue(vault.items.first(where: { $0.id == plain.id })?.isPinned == true)
         XCTAssertTrue(vault.items.first(where: { $0.id == secret.id })?.isSecret == true)
     }
+
+    func testDistinctSecretsDoNotCollapseToSharedRedactedPreview() {
+        var vault = ClipboardVaultModel()
+
+        vault.addText("api_key=first-secret")
+        vault.addText("api_key=second-secret")
+
+        XCTAssertEqual(vault.items.count, 2)
+        XCTAssertEqual(vault.items.map(\.preview), [
+            ClipboardVaultModel.secretPreview,
+            ClipboardVaultModel.secretPreview
+        ])
+    }
 }

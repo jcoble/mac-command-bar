@@ -1,6 +1,8 @@
 import Foundation
 
 public struct ClipboardVaultModel: Equatable, Sendable {
+    public static let secretPreview = "Secret text saved"
+
     public private(set) var items: [ClipboardItem]
 
     public init(items: [ClipboardItem] = []) {
@@ -16,6 +18,7 @@ public struct ClipboardVaultModel: Equatable, Sendable {
         return items
             .filter { item in
                 item.preview.localizedCaseInsensitiveContains(trimmed)
+                    || item.content?.localizedCaseInsensitiveContains(trimmed) == true
                     || item.tags.contains { $0.localizedCaseInsensitiveContains(trimmed) }
             }
             .sortedForDisplay()
@@ -35,16 +38,18 @@ public struct ClipboardVaultModel: Equatable, Sendable {
             return
         }
 
-        let preview = String(normalized.prefix(180))
+        let isSecret = SecretDetector.containsSecret(normalized)
+        let preview = isSecret ? Self.secretPreview : String(normalized.prefix(180))
         let item = ClipboardItem(
             kind: normalized.looksLikeURL ? .url : .text,
             preview: preview,
+            content: normalized,
             tags: tags,
             isPinned: false,
-            isSecret: SecretDetector.containsSecret(normalized)
+            isSecret: isSecret
         )
         items.insert(item, at: 0)
-        items = Array(items.uniquedByPreview().prefix(200)).sortedForDisplay()
+        items = Array(items.uniquedByContentOrPreview().prefix(200)).sortedForDisplay()
     }
 }
 
@@ -77,14 +82,17 @@ private extension Array where Element == ClipboardItem {
         }
     }
 
-    func uniquedByPreview() -> [ClipboardItem] {
+    func uniquedByContentOrPreview() -> [ClipboardItem] {
         var seen = Set<String>()
         var result: [ClipboardItem] = []
-        for item in self where !seen.contains(item.preview) {
-            seen.insert(item.preview)
+        for item in self {
+            let key = item.content ?? item.preview
+            guard !seen.contains(key) else {
+                continue
+            }
+            seen.insert(key)
             result.append(item)
         }
         return result
     }
 }
-

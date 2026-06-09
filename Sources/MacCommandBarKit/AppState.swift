@@ -17,6 +17,7 @@ public final class AppState: ObservableObject {
     @Published public var lastCoreWarning: String?
 
     private var coreClient: (any CoreSending)?
+    private var persistence: (any AppPersisting)?
 
     public init(
         modules: [DashboardModule],
@@ -24,7 +25,8 @@ public final class AppState: ObservableObject {
         clipboardVault: ClipboardVaultModel,
         profiles: [ProjectProfile],
         statusMessage: String,
-        coreClient: (any CoreSending)?
+        coreClient: (any CoreSending)?,
+        persistence: (any AppPersisting)? = nil
     ) {
         self.modules = modules
         self.selectedModuleID = selectedModuleID
@@ -37,18 +39,51 @@ public final class AppState: ObservableObject {
         self.statusMessage = statusMessage
         self.searchText = ""
         self.coreClient = coreClient
+        self.persistence = persistence
     }
 
     public static func bootstrap() -> AppState {
-        let profiles = ProfileStore.defaultProfiles()
         let client = try? CoreClient.discover()
+        return bootstrap(coreClient: client, persistence: AppStorageRepository())
+    }
+
+    public static func bootstrap(
+        coreClient: (any CoreSending)?,
+        persistence: (any AppPersisting)?
+    ) -> AppState {
+        var profiles = ProfileStore.defaultProfiles()
+        var clipboardVault = ClipboardVaultModel()
+        var statusMessage = coreClient == nil ? "Core helper not built yet" : "Ready"
+
+        if let persistence {
+            do {
+                if let snapshot = try persistence.load() {
+                    profiles = snapshot.profiles
+                    clipboardVault = snapshot.clipboardVault
+                } else {
+                    try persistence.save(
+                        AppPersistenceSnapshot(
+                            profiles: profiles,
+                            clipboardVault: clipboardVault
+                        )
+                    )
+                }
+            } catch {
+                statusMessage = "Storage unavailable: \(error.localizedDescription)"
+            }
+        }
+
         return AppState(
-            modules: defaultModules(profileCount: profiles.count),
+            modules: defaultModules(
+                profileCount: profiles.count,
+                clipboardCount: clipboardVault.items.count
+            ),
             selectedModuleID: "projects",
-            clipboardVault: ClipboardVaultModel(),
+            clipboardVault: clipboardVault,
             profiles: profiles,
-            statusMessage: client == nil ? "Core helper not built yet" : "Ready",
-            coreClient: client
+            statusMessage: statusMessage,
+            coreClient: coreClient,
+            persistence: persistence
         )
     }
 
@@ -65,10 +100,12 @@ public final class AppState: ObservableObject {
         clipboardVault.addText(text)
         updateModule("clipboard", count: clipboardVault.items.count, status: "Captured")
         statusMessage = "Clipboard text saved"
+        persistState()
     }
 
     public func togglePinnedClipboardItem(_ id: UUID) {
         clipboardVault.togglePinned(id)
+        persistState()
     }
 
     public func refreshSnapshots() async {
@@ -222,13 +259,30 @@ public final class AppState: ObservableObject {
         }
     }
 
-    private static func defaultModules(profileCount: Int) -> [DashboardModule] {
+    private func persistState() {
+        guard let persistence else {
+            return
+        }
+
+        do {
+            try persistence.save(
+                AppPersistenceSnapshot(
+                    profiles: profiles,
+                    clipboardVault: clipboardVault
+                )
+            )
+        } catch {
+            statusMessage = "Storage failed: \(error.localizedDescription)"
+        }
+    }
+
+    private static func defaultModules(profileCount: Int, clipboardCount: Int = 0) -> [DashboardModule] {
         [
             DashboardModule(id: "projects", title: "Projects", symbol: "rectangle.stack", count: profileCount, status: "Profiles", accent: .blue),
             DashboardModule(id: "processes", title: "Processes", symbol: "cpu", count: 0, status: "Scan ready", accent: .orange),
             DashboardModule(id: "sessions", title: "Agent Sessions", symbol: "terminal", count: 0, status: "Scan ready", accent: .green),
             DashboardModule(id: "worktrees", title: "Worktrees", symbol: "point.3.connected.trianglepath.dotted", count: 0, status: "Scan ready", accent: .slate),
-            DashboardModule(id: "clipboard", title: "Clipboard Vault", symbol: "doc.on.clipboard", count: 0, status: "Local", accent: .blue),
+            DashboardModule(id: "clipboard", title: "Clipboard Vault", symbol: "doc.on.clipboard", count: clipboardCount, status: "Local", accent: .blue),
             DashboardModule(id: "artifacts", title: "Artifacts", symbol: "doc.badge.plus", count: 6, status: "Templates", accent: .green),
             DashboardModule(id: "cleanup", title: "Repo Cleanup", symbol: "externaldrive.badge.minus", count: 0, status: "Confirm only", accent: .red),
             DashboardModule(id: "health", title: "Dev Health", symbol: "gauge.with.dots.needle.67percent", count: 0, status: "Local", accent: .orange),

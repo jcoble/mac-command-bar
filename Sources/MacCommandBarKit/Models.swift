@@ -274,6 +274,7 @@ public struct ClipboardItem: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var kind: ClipboardItemKind
     public var preview: String
+    public var content: String?
     public var tags: [String]
     public var isPinned: Bool
     public var isSecret: Bool
@@ -283,6 +284,7 @@ public struct ClipboardItem: Codable, Equatable, Identifiable, Sendable {
         id: UUID = UUID(),
         kind: ClipboardItemKind,
         preview: String,
+        content: String? = nil,
         tags: [String],
         isPinned: Bool,
         isSecret: Bool,
@@ -291,6 +293,7 @@ public struct ClipboardItem: Codable, Equatable, Identifiable, Sendable {
         self.id = id
         self.kind = kind
         self.preview = preview
+        self.content = content
         self.tags = tags
         self.isPinned = isPinned
         self.isSecret = isSecret
