@@ -74,10 +74,13 @@
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
     openSourceFileFromTauri,
+    readProjectGitStatusFromTauri,
     readSourceFromTauri,
     revealSourceFileFromTauri,
     writeSourceToTauri,
-    type NativeSourceScanProgress
+    type NativeSourceScanProgress,
+    type ProjectGitFileStatus,
+    type ProjectGitStatus
   } from '$lib/tauriSource';
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
@@ -113,6 +116,9 @@
   let sourceScanCache = $state<SourceScanCache>({});
   let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
   let backgroundIndexErrorByProject = $state<Record<string, string>>({});
+  let projectGitStatus = $state<ProjectGitStatus | null>(null);
+  let projectGitLoading = $state(false);
+  let projectGitError = $state('');
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -224,6 +230,12 @@
       backgroundIndexingProjectIDs.has(selectedProject.id),
       backgroundIndexErrorByProject[selectedProject.id] ?? ''
     )
+  );
+  let gitStatusByRelativePath = $derived(
+    new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
+  );
+  let projectGitSummary = $derived(
+    formatProjectGitSummary(projectGitStatus, projectGitLoading, projectGitError)
   );
 
   $effect(() => {
@@ -450,6 +462,55 @@
     } finally {
       setBackgroundProjectIndexing(project.id, false);
     }
+  }
+
+  async function loadProjectGitStatus(project: ProjectRoot) {
+    const projectID = project.id;
+    projectGitLoading = true;
+    projectGitStatus = null;
+    projectGitError = '';
+
+    try {
+      const nextStatus = await readProjectGitStatusFromTauri(project.path);
+      if (selectedProjectID !== projectID) return;
+
+      projectGitStatus = nextStatus;
+      projectGitError = nextStatus ? '' : 'Native Git unavailable';
+    } catch (gitError) {
+      if (selectedProjectID !== projectID) return;
+
+      projectGitStatus = null;
+      projectGitError = gitError instanceof Error ? gitError.message : 'Could not read Git status';
+    } finally {
+      if (selectedProjectID === projectID) {
+        projectGitLoading = false;
+      }
+    }
+  }
+
+  function formatProjectGitSummary(
+    status: ProjectGitStatus | null,
+    loadingGit: boolean,
+    gitError: string
+  ) {
+    if (loadingGit) return 'git loading';
+    if (!status) return gitError ? 'git unavailable' : 'git clean';
+
+    const branch = status.branch ?? 'detached';
+    const syncParts = [
+      status.ahead > 0 ? `ahead ${status.ahead}` : '',
+      status.behind > 0 ? `behind ${status.behind}` : ''
+    ].filter(Boolean);
+    const changeLabel =
+      status.files.length === 0
+        ? 'clean'
+        : `${status.files.length} change${status.files.length === 1 ? '' : 's'}`;
+
+    return [branch, ...syncParts, changeLabel].join(' · ');
+  }
+
+  function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
+    return record ? gitStatusByRelativePath.get(record.relativePath) ?? null : null;
   }
 
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
@@ -856,6 +917,7 @@
       projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
     selectedProjectID = nextProject.id;
     persistSelectedProjectID(nextProject.id);
+    void loadProjectGitStatus(nextProject);
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -1099,6 +1161,7 @@
   async function activateProject(project: ProjectRoot) {
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
+    void loadProjectGitStatus(project);
     await scanProject(project, selectedSourcePaths[project.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -1296,6 +1359,7 @@
     selectedProjectID = storedProject.id;
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
+    void loadProjectGitStatus(storedProject);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
       indexProjectsInBackground(storedProjectOptions)
     );
@@ -1479,6 +1543,7 @@
               {@const node = row.node}
               {@const isFolder = node.file === null}
               {@const isExpanded = isFolderExpanded(node)}
+              {@const gitStatus = node.file ? gitStatusForSourceRecord(node.file) : null}
               <button
                 class:active={!isFolder && node.file?.path === selectedRecord?.path}
                 class:folder-row={isFolder}
@@ -1513,6 +1578,9 @@
                   {/if}
                 </span>
                 <strong>{node.name}</strong>
+                {#if gitStatus}
+                  <span class="git-status-badge" title={gitStatus.status}>{gitStatus.badge}</span>
+                {/if}
                 <small>{isFolder ? node.children.length : node.file?.language}</small>
               </button>
             {/each}
@@ -1534,6 +1602,7 @@
         <h2>{preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="status-strip">
+        <span class="project-git-pill" title={projectGitSummary}>{projectGitSummary}</span>
         <span>{runtime}</span>
         {#if preview}
           <span>{preview.language}</span>
@@ -1545,6 +1614,7 @@
     {#if projectOpenSourceTabs.length > 0}
       <div class="tab-strip" aria-label="Open source files">
         {#each projectOpenSourceTabs as tab (tab.path)}
+          {@const tabGitStatus = gitStatusForSourceRecord(tab)}
           <div
             class="source-tab"
             class:active={tab.path === selectedRecord?.path}
@@ -1562,6 +1632,9 @@
               </span>
               <span>{tab.fileName}</span>
               <small>{tab.language}</small>
+              {#if tabGitStatus}
+                <span class="git-status-badge" title={tabGitStatus.status}>{tabGitStatus.badge}</span>
+              {/if}
               {#if isSourcePathDirty(tab.path)}
                 <span class="tab-dirty-dot" aria-hidden="true"></span>
               {/if}
@@ -2351,7 +2424,7 @@
 
   .file-tree button {
     display: grid;
-    grid-template-columns: calc(var(--tree-level, 0) * 14px) 14px 18px minmax(0, 1fr) auto;
+    grid-template-columns: calc(var(--tree-level, 0) * 14px) 14px 18px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 7px;
     width: 100%;
@@ -2415,6 +2488,21 @@
     color: #7f8b87;
     font-size: 10px;
     font-weight: 700;
+  }
+
+  .git-status-badge {
+    display: inline-grid;
+    place-items: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    color: #071b18;
+    border-radius: 5px;
+    background: #d8aa55;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 850;
+    line-height: 1;
   }
 
   .tree-skeleton {
@@ -2496,6 +2584,13 @@
     font-weight: 700;
   }
 
+  .project-git-pill {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .tab-strip {
     display: flex;
     gap: 6px;
@@ -2529,7 +2624,7 @@
 
   .tab-select-button {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto 8px;
+    grid-template-columns: 16px minmax(0, 1fr) auto auto 8px;
     align-items: center;
     gap: 7px;
     min-width: 0;

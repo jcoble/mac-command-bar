@@ -4,6 +4,7 @@ import {
   expandedSourceScanLimit,
   nativeSourceScanProgressEvent,
   createSourceScanId,
+  readProjectGitStatusFromTauri,
   writeSourceToTauri
 } from '../src/lib/tauriSource.ts';
 
@@ -24,3 +25,4 @@ assert.equal(
   ),
   null
 );
+assert.equal(await readProjectGitStatusFromTauri('/tmp/repo'), null);

@@ -10,6 +10,21 @@ export type NativeSourceScanProgress = {
   matchedFiles: number;
 };
 
+export type ProjectGitFileStatus = {
+  relativePath: string;
+  indexStatus: string;
+  worktreeStatus: string;
+  status: string;
+  badge: string;
+};
+
+export type ProjectGitStatus = {
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  files: ProjectGitFileStatus[];
+};
+
 export function createSourceScanId(): string {
   return `source-scan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -96,6 +111,17 @@ export async function openSourceFileFromTauri(path: string): Promise<boolean> {
 
 export async function revealSourceFileFromTauri(path: string): Promise<boolean> {
   return runSourceFileAction('reveal_source_file', path);
+}
+
+export async function readProjectGitStatusFromTauri(
+  root: string
+): Promise<ProjectGitStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProjectGitStatus>('project_git_status', { root });
 }
 
 async function runSourceFileAction(command: string, path: string): Promise<boolean> {

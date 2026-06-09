@@ -176,3 +176,10 @@ assert.ok(pageSource.includes('formatSourceIndexSummary'), 'Source page should f
 assert.ok(pageSource.includes('class="index-summary"'), 'Source Browser should render an index status line');
 assertDeclaration('.index-summary', 'overflow: hidden');
 assertDeclaration('.index-summary', 'text-overflow: ellipsis');
+assert.ok(pageSource.includes('readProjectGitStatusFromTauri'), 'Source page should load native project Git status');
+assert.ok(pageSource.includes('projectGitStatus'), 'Source page should track selected project Git status');
+assert.ok(pageSource.includes('gitStatusByRelativePath'), 'Source page should map Git file status by relative path');
+assert.ok(pageSource.includes('class="project-git-pill"'), 'Topbar should render a compact project Git branch/status pill');
+assert.ok(pageSource.includes('class="git-status-badge"'), 'Tree and tabs should render file-level Git status badges');
+assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
+assertDeclaration('.project-git-pill', 'overflow: hidden');

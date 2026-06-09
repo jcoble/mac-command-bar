@@ -56,6 +56,25 @@ struct SourcePreview {
     line_count: usize,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectGitStatus {
+    branch: Option<String>,
+    ahead: usize,
+    behind: usize,
+    files: Vec<GitFileStatus>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileStatus {
+    relative_path: String,
+    index_status: String,
+    worktree_status: String,
+    status: String,
+    badge: String,
+}
+
 #[derive(Clone, Copy)]
 enum SourceFileAction {
     Open,
@@ -190,7 +209,8 @@ async fn list_source_files(
     query: Option<String>,
     scan_id: Option<String>,
 ) -> Result<SourceScanResult, String> {
-    let cancellation = source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
+    let cancellation =
+        source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
     let scan_id_for_cleanup = scan_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         list_source_files_sync_with_cancellation(
@@ -276,6 +296,13 @@ async fn reveal_source_file(path: String) -> Result<(), String> {
     })
     .await
     .map_err(|error| format!("Source reveal task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git status task failed: {error}"))?
 }
 
 fn list_source_files_sync(
@@ -509,8 +536,8 @@ fn source_file_action_command(
     path: &Path,
     action: SourceFileAction,
 ) -> Result<SourceFileActionCommand, String> {
-    let metadata =
-        std::fs::metadata(path).map_err(|error| format!("Could not read source metadata: {error}"))?;
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Could not read source metadata: {error}"))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }
@@ -525,6 +552,161 @@ fn source_file_action_command(
         program: "open".to_string(),
         args,
     })
+}
+
+fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
+    let metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Git root is not a directory".to_string());
+    }
+
+    let root_arg = root.display().to_string();
+    let output = Command::new("git")
+        .args([
+            "-C",
+            root_arg.as_str(),
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "--untracked-files=normal",
+        ])
+        .output()
+        .map_err(|error| format!("Could not run git status: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git status exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+
+    parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
+    let mut git_status = ProjectGitStatus {
+        branch: None,
+        ahead: 0,
+        behind: 0,
+        files: Vec::new(),
+    };
+
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        if let Some(header) = line.strip_prefix("## ") {
+            let (branch, ahead, behind) = parse_git_branch_header(header);
+            git_status.branch = branch;
+            git_status.ahead = ahead;
+            git_status.behind = behind;
+            continue;
+        }
+
+        if line.len() < 4 {
+            continue;
+        }
+
+        let index_code = line.chars().next().unwrap_or(' ');
+        let worktree_code = line.chars().nth(1).unwrap_or(' ');
+        let relative_path = normalize_git_status_path(&line[3..]);
+        if relative_path.is_empty() {
+            continue;
+        }
+
+        let index_status = git_status_name(index_code).to_string();
+        let worktree_status = git_status_name(worktree_code).to_string();
+        let status = if !worktree_status.is_empty() {
+            worktree_status.clone()
+        } else {
+            index_status.clone()
+        };
+        let badge = git_status_badge(index_code, worktree_code).to_string();
+
+        git_status.files.push(GitFileStatus {
+            relative_path,
+            index_status,
+            worktree_status,
+            status,
+            badge,
+        });
+    }
+
+    Ok(git_status)
+}
+
+fn parse_git_branch_header(header: &str) -> (Option<String>, usize, usize) {
+    let mut branch_part = header.trim();
+    let mut ahead = 0;
+    let mut behind = 0;
+
+    if let Some(metadata_index) = branch_part.find(" [") {
+        let metadata = branch_part[metadata_index + 2..].trim_end_matches(']');
+        branch_part = &branch_part[..metadata_index];
+        for item in metadata.split(',').map(str::trim) {
+            if let Some(value) = item.strip_prefix("ahead ") {
+                ahead = value.parse::<usize>().unwrap_or(0);
+            } else if let Some(value) = item.strip_prefix("behind ") {
+                behind = value.parse::<usize>().unwrap_or(0);
+            }
+        }
+    }
+
+    if let Some(branch) = branch_part.strip_prefix("No commits yet on ") {
+        return (Some(branch.trim().to_string()), ahead, behind);
+    }
+
+    let branch = branch_part
+        .split("...")
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    (branch, ahead, behind)
+}
+
+fn normalize_git_status_path(path: &str) -> String {
+    path.split(" -> ")
+        .last()
+        .unwrap_or(path)
+        .trim_matches('"')
+        .trim()
+        .to_string()
+}
+
+fn git_status_name(code: char) -> &'static str {
+    match code {
+        'M' => "modified",
+        'A' => "added",
+        'D' => "deleted",
+        'R' => "renamed",
+        'C' => "copied",
+        'U' => "unmerged",
+        '?' => "untracked",
+        '!' => "ignored",
+        _ => "",
+    }
+}
+
+fn git_status_badge(index_code: char, worktree_code: char) -> &'static str {
+    let status_code = if worktree_code != ' ' {
+        worktree_code
+    } else {
+        index_code
+    };
+
+    match status_code {
+        '?' => "?",
+        'M' => "M",
+        'A' => "A",
+        'D' => "D",
+        'R' => "R",
+        'C' => "C",
+        'U' => "U",
+        '!' => "!",
+        _ => "",
+    }
 }
 
 fn detect_language(path: &Path) -> String {
@@ -645,7 +827,8 @@ fn main() {
             read_source_file,
             write_source_file,
             open_source_file,
-            reveal_source_file
+            reveal_source_file,
+            project_git_status
         ])
         .run(tauri::generate_context!())
         .expect("failed to run MacCommandBar webview preview");
@@ -662,7 +845,11 @@ mod tests {
         std::fs::create_dir_all(root.join("packages/ui")).unwrap();
         std::fs::create_dir_all(root.join("src/Workers")).unwrap();
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
-        std::fs::write(root.join("packages/ui/Button.tsx"), "export function Button() {}").unwrap();
+        std::fs::write(
+            root.join("packages/ui/Button.tsx"),
+            "export function Button() {}",
+        )
+        .unwrap();
         std::fs::write(root.join("Package.swift"), "let package = 1").unwrap();
         std::fs::write(root.join("src/App.svelte"), "<script></script>").unwrap();
         std::fs::write(root.join("src/settings.json"), "{}").unwrap();
@@ -671,7 +858,8 @@ mod tests {
         std::fs::write(root.join("README.md"), "# docs").unwrap();
 
         let scan = list_source_files_sync(root.clone(), 20, None).unwrap();
-        let relative_paths = scan.records
+        let relative_paths = scan
+            .records
             .iter()
             .map(|file| file.relative_path.as_str())
             .collect::<Vec<_>>();
@@ -705,18 +893,47 @@ mod tests {
         std::fs::create_dir_all(root.join("TestResults/run")).unwrap();
         std::fs::create_dir_all(root.join("Pods/SomeDependency")).unwrap();
         std::fs::write(root.join("src/Keep.ts"), "export const keep = true;").unwrap();
-        std::fs::write(root.join(".cache/generated/Cache.ts"), "export const cache = true;").unwrap();
-        std::fs::write(root.join(".turbo/cache/Turbo.ts"), "export const turbo = true;").unwrap();
-        std::fs::write(root.join(".parcel-cache/Parcel.ts"), "export const parcel = true;").unwrap();
+        std::fs::write(
+            root.join(".cache/generated/Cache.ts"),
+            "export const cache = true;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".turbo/cache/Turbo.ts"),
+            "export const turbo = true;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".parcel-cache/Parcel.ts"),
+            "export const parcel = true;",
+        )
+        .unwrap();
         std::fs::write(root.join(".nuxt/App.vue"), "<template></template>").unwrap();
         std::fs::write(root.join(".vite/deps/Vite.ts"), "export const vite = true;").unwrap();
-        std::fs::write(root.join("coverage/lcov-report/Coverage.ts"), "export const covered = true;").unwrap();
-        std::fs::write(root.join("DerivedData/Build/Generated.swift"), "let generated = true").unwrap();
-        std::fs::write(root.join("TestResults/run/TestLog.cs"), "public class TestLog {}").unwrap();
-        std::fs::write(root.join("Pods/SomeDependency/Dependency.swift"), "let dependency = true").unwrap();
+        std::fs::write(
+            root.join("coverage/lcov-report/Coverage.ts"),
+            "export const covered = true;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("DerivedData/Build/Generated.swift"),
+            "let generated = true",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("TestResults/run/TestLog.cs"),
+            "public class TestLog {}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Pods/SomeDependency/Dependency.swift"),
+            "let dependency = true",
+        )
+        .unwrap();
 
         let scan = list_source_files_sync(root.clone(), 20, None).unwrap();
-        let relative_paths = scan.records
+        let relative_paths = scan
+            .records
             .iter()
             .map(|file| file.relative_path.as_str())
             .collect::<Vec<_>>();
@@ -731,7 +948,10 @@ mod tests {
         assert_eq!(detect_language(Path::new("Program.cs")), "csharp");
         assert_eq!(detect_language(Path::new("Package.swift")), "swift");
         assert_eq!(detect_language(Path::new("main.rs")), "rust");
-        assert_eq!(detect_language(Path::new("src/routes/+page.svelte")), "svelte");
+        assert_eq!(
+            detect_language(Path::new("src/routes/+page.svelte")),
+            "svelte"
+        );
         assert_eq!(detect_language(Path::new("src/main.tsx")), "tsx");
         assert_eq!(detect_language(Path::new("src/app.jsx")), "jsx");
         assert_eq!(detect_language(Path::new("README.md")), "markdown");
@@ -753,7 +973,10 @@ mod tests {
         assert_eq!(detect_language(Path::new("scripts/tool.lua")), "lua");
         assert_eq!(detect_language(Path::new("infra/main.tf")), "hcl");
         assert_eq!(detect_language(Path::new("infra/dev.tfvars")), "hcl");
-        assert_eq!(detect_language(Path::new("schemas/service.proto")), "protobuf");
+        assert_eq!(
+            detect_language(Path::new("schemas/service.proto")),
+            "protobuf"
+        );
     }
 
     #[test]
@@ -776,8 +999,11 @@ mod tests {
         let root = unique_temp_root();
         std::fs::create_dir_all(root.join("src")).unwrap();
         for index in 0..350 {
-            std::fs::write(root.join(format!("src/File{index:03}.ts")), "export const value = 1;")
-                .unwrap();
+            std::fs::write(
+                root.join(format!("src/File{index:03}.ts")),
+                "export const value = 1;",
+            )
+            .unwrap();
         }
 
         let scan = list_source_files_sync(root.clone(), 0, None).unwrap();
@@ -793,8 +1019,11 @@ mod tests {
         let root = unique_temp_root();
         std::fs::create_dir_all(root.join("src")).unwrap();
         for index in 0..1_200 {
-            std::fs::write(root.join(format!("src/File{index:04}.ts")), "export const value = 1;")
-                .unwrap();
+            std::fs::write(
+                root.join(format!("src/File{index:04}.ts")),
+                "export const value = 1;",
+            )
+            .unwrap();
         }
 
         let scan = list_source_files_sync(root.clone(), 1_200, None).unwrap();
@@ -849,8 +1078,8 @@ mod tests {
             progress_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
 
-        let scan = list_source_files_sync_with_cancellation(root.clone(), 20, None, cancellation)
-            .unwrap();
+        let scan =
+            list_source_files_sync_with_cancellation(root.clone(), 20, None, cancellation).unwrap();
 
         assert_eq!(scan.records.len(), 2);
         assert!(progress.load(std::sync::atomic::Ordering::Relaxed) > 0);
@@ -865,9 +1094,11 @@ mod tests {
         let file_path = root.join("src/App.ts");
         std::fs::write(&file_path, "export const oldValue = 1;\n").unwrap();
 
-        let preview =
-            write_source_file_sync(file_path.clone(), "export const newValue = 2;\n".to_string())
-                .unwrap();
+        let preview = write_source_file_sync(
+            file_path.clone(),
+            "export const newValue = 2;\n".to_string(),
+        )
+        .unwrap();
 
         assert_eq!(
             std::fs::read_to_string(&file_path).unwrap(),
@@ -913,6 +1144,46 @@ mod tests {
         assert!(error.contains("Source path is not a file"));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_status_parser_reads_branch_counts_and_file_badges() {
+        let status = parse_project_git_status(
+            "## main...origin/main [ahead 1, behind 2]\n M src/App.ts\nA  src/Added.ts\n?? src/New.ts\n",
+        )
+        .unwrap();
+
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 2);
+        assert_eq!(
+            status
+                .files
+                .iter()
+                .map(|file| (
+                    file.relative_path.as_str(),
+                    file.index_status.as_str(),
+                    file.worktree_status.as_str(),
+                    file.badge.as_str(),
+                    file.status.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("src/App.ts", "", "modified", "M", "modified"),
+                ("src/Added.ts", "added", "", "A", "added"),
+                ("src/New.ts", "untracked", "untracked", "?", "untracked")
+            ]
+        );
+    }
+
+    #[test]
+    fn git_status_parser_handles_clean_branch_header() {
+        let status = parse_project_git_status("## feature/source-browser\n").unwrap();
+
+        assert_eq!(status.branch.as_deref(), Some("feature/source-browser"));
+        assert_eq!(status.ahead, 0);
+        assert_eq!(status.behind, 0);
+        assert!(status.files.is_empty());
     }
 
     fn unique_temp_root() -> PathBuf {
