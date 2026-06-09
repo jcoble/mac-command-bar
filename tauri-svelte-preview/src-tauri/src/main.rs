@@ -16,6 +16,8 @@ const DEFAULT_SOURCE_DEFINITION_LIMIT: usize = 20;
 const MAX_SOURCE_DEFINITION_LIMIT: usize = 100;
 const DEFAULT_SOURCE_REFERENCE_LIMIT: usize = 50;
 const MAX_SOURCE_REFERENCE_LIMIT: usize = 200;
+const DEFAULT_GIT_HISTORY_LIMIT: usize = 24;
+const MAX_GIT_HISTORY_LIMIT: usize = 80;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
 const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
@@ -198,6 +200,19 @@ struct GitRepositorySummary {
     last_commit_at: Option<String>,
     dirty_since_epoch_ms: Option<u64>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitHistoryEntry {
+    short_sha: String,
+    sha: String,
+    subject: String,
+    author: String,
+    committed_at: String,
+    refs: String,
+    #[serde(rename = "taskID")]
+    task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -532,6 +547,18 @@ async fn push_git_repository(root: String) -> Result<GitActionResult, String> {
     tauri::async_runtime::spawn_blocking(move || push_git_repository_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Git push task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_git_commit_history(
+    root: String,
+    limit: Option<usize>,
+) -> Result<Vec<GitCommitHistoryEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_git_commit_history_sync(PathBuf::from(root), limit)
+    })
+    .await
+    .map_err(|error| format!("Git history task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1312,6 +1339,34 @@ fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     })
 }
 
+fn read_git_commit_history_sync(
+    root: PathBuf,
+    limit: Option<usize>,
+) -> Result<Vec<GitCommitHistoryEntry>, String> {
+    validate_git_root(&root)?;
+
+    let limit = limit
+        .unwrap_or(DEFAULT_GIT_HISTORY_LIMIT)
+        .clamp(1, MAX_GIT_HISTORY_LIMIT);
+    let limit_arg = format!("-n{limit}");
+    let history_output = run_git_text(
+        &root,
+        &[
+            "log",
+            "--decorate=short",
+            "--date=iso-strict",
+            "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D",
+            limit_arg.as_str(),
+        ],
+    );
+
+    match history_output {
+        Ok(output) => parse_git_commit_history(&output),
+        Err(error) if error.contains("does not have any commits") => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
 fn validate_git_root(root: &Path) -> Result<(), String> {
     let metadata = std::fs::metadata(root)
         .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
@@ -1823,10 +1878,45 @@ fn git_dirty_since_epoch_ms(root: &Path, files: &[GitFileStatus]) -> Option<u64>
         .min()
 }
 
+fn parse_git_commit_history(output: &str) -> Result<Vec<GitCommitHistoryEntry>, String> {
+    let mut entries = Vec::new();
+
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let mut parts = line.split('\x1f');
+        let short_sha = parts.next().unwrap_or_default().trim().to_string();
+        let sha = parts.next().unwrap_or_default().trim().to_string();
+        let subject = parts.next().unwrap_or_default().trim().to_string();
+        let author = parts.next().unwrap_or_default().trim().to_string();
+        let committed_at = parts.next().unwrap_or_default().trim().to_string();
+        let refs = parts.next().unwrap_or_default().trim().to_string();
+
+        if short_sha.is_empty() || sha.is_empty() {
+            return Err("Could not parse Git history entry".to_string());
+        }
+
+        let task_id = task_id_from_text(&refs).or_else(|| task_id_from_text(&subject));
+        entries.push(GitCommitHistoryEntry {
+            short_sha,
+            sha,
+            subject,
+            author,
+            committed_at,
+            refs,
+            task_id,
+        });
+    }
+
+    Ok(entries)
+}
+
 fn branch_task_id(branch: &str) -> Option<String> {
-    let lower_branch = branch.to_ascii_lowercase();
-    for (index, _) in lower_branch.match_indices("tsk") {
-        let suffix = lower_branch[index + 3..].trim_start_matches(['-', '_', '/', '#']);
+    task_id_from_text(branch)
+}
+
+fn task_id_from_text(text: &str) -> Option<String> {
+    let lower_text = text.to_ascii_lowercase();
+    for (index, _) in lower_text.match_indices("tsk") {
+        let suffix = lower_text[index + 3..].trim_start_matches(['-', '_', '/', '#', '[', ' ']);
         let digits: String = suffix
             .chars()
             .take_while(|character| character.is_ascii_digit())
@@ -2305,6 +2395,7 @@ fn main() {
             fetch_git_repository,
             pull_git_repository,
             push_git_repository,
+            read_git_commit_history,
             list_project_worktrees,
             list_git_repository_summaries,
             list_agent_sessions,
@@ -2756,6 +2847,48 @@ mod tests {
             .as_ref()
             .is_some_and(|sha| !sha.is_empty()));
         assert!(summary.dirty_since_epoch_ms.is_some());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_commit_history_reads_graph_metadata_and_task_ids() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "README.md"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        std::fs::write(root.join("README.md"), "dashboard\n").unwrap();
+        run_git_for_test(&root, &["commit", "-am", "[TSK-127] add dashboard"]);
+
+        std::fs::write(root.join("README.md"), "remote\n").unwrap();
+        run_git_for_test(
+            &root,
+            &["commit", "-am", "feat: add TSK-128 remote controls"],
+        );
+
+        run_git_for_test(&root, &["checkout", "-b", "tsk-129-history"]);
+        std::fs::write(root.join("README.md"), "history\n").unwrap();
+        run_git_for_test(&root, &["commit", "-am", "history panel"]);
+
+        let history = read_git_commit_history_sync(root.clone(), Some(4)).unwrap();
+
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].subject, "history panel");
+        assert_eq!(history[0].task_id.as_deref(), Some("TSK-129"));
+        assert!(history[0].refs.contains("HEAD -> tsk-129-history"));
+        assert!(!history[0].short_sha.is_empty());
+        assert!(!history[0].sha.is_empty());
+        assert_eq!(history[0].author, "MacCommandBar Test");
+        assert!(!history[0].committed_at.is_empty());
+        assert_eq!(history[1].task_id.as_deref(), Some("TSK-128"));
+        assert_eq!(history[2].task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(history[3].task_id, None);
 
         std::fs::remove_dir_all(root).unwrap();
     }

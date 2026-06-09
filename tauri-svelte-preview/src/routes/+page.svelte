@@ -97,12 +97,14 @@
     revealSourceFileFromTauri,
     pullGitRepositoryFromTauri,
     pushGitRepositoryFromTauri,
+    readGitCommitHistoryFromTauri,
     searchSourceFilesFromTauri,
     stageGitPathsFromTauri,
     unstageGitPathsFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type AgentSession,
+    type GitCommitHistoryEntry,
     type GitRepositorySummary,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
@@ -122,6 +124,11 @@
   const maxStoredOpenSourceTabs = 64;
   const maxSourceSearchResults = 50;
   const maxSourceDefinitionResults = 20;
+  const maxGitCommitHistoryEntries = 24;
+  const commandCenterTaskUrls: Record<string, string> = {
+    'TSK-127':
+      'https://app.notion.com/p/TSK-127-Create-a-native-MAC-OS-app-for-doing-diff-things-in-menu-bar-379394b0689d8053af76fd44c7ffdba4'
+  };
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
   const sourceTreeRowHeight = 30;
@@ -161,6 +168,10 @@
   let gitRepositorySummariesLoading = $state(false);
   let gitRepositorySummaryError = $state('');
   let gitRepositorySummarySource = $state('browser preview');
+  let gitCommitHistory = $state<GitCommitHistoryEntry[]>([]);
+  let gitCommitHistoryLoading = $state(false);
+  let gitCommitHistoryError = $state('');
+  let gitCommitHistorySource = $state('browser preview');
   let agentSessions = $state<AgentSession[]>([]);
   let agentSessionsLoading = $state(false);
   let agentSessionError = $state('');
@@ -312,6 +323,14 @@
     gitCommitMessage.trim().length === 0 || !gitHasStagedChanges || gitActionBusy !== ''
   );
   let gitRemoteActionDisabled = $derived(projectGitLoading || Boolean(projectGitError) || gitActionBusy !== '');
+  let gitCommitHistorySummary = $derived(
+    formatGitCommitHistorySummary(
+      gitCommitHistory.length,
+      gitCommitHistoryLoading,
+      gitCommitHistoryError,
+      gitCommitHistorySource
+    )
+  );
   let selectedSourceGitSummary = $derived(
     formatSelectedSourceGitSummary(
       selectedRecordGitStatus,
@@ -709,6 +728,37 @@
     }
   }
 
+  async function loadGitCommitHistory(project: ProjectRoot = selectedProject) {
+    const projectID = project.id;
+    gitCommitHistoryLoading = true;
+    gitCommitHistoryError = '';
+
+    try {
+      const nativeHistory = await readGitCommitHistoryFromTauri(project.path, maxGitCommitHistoryEntries);
+      if (selectedProjectID !== projectID) return;
+
+      if (nativeHistory) {
+        gitCommitHistory = nativeHistory;
+        gitCommitHistorySource = 'native git log';
+        return;
+      }
+
+      gitCommitHistory = demoGitCommitHistoryForProject(project);
+      gitCommitHistorySource = 'browser preview';
+    } catch (historyError) {
+      if (selectedProjectID !== projectID) return;
+
+      gitCommitHistory = demoGitCommitHistoryForProject(project);
+      gitCommitHistorySource = 'browser preview';
+      gitCommitHistoryError =
+        historyError instanceof Error ? historyError.message : 'Could not read Git history';
+    } finally {
+      if (selectedProjectID === projectID) {
+        gitCommitHistoryLoading = false;
+      }
+    }
+  }
+
   async function loadAgentSessions() {
     agentSessionsLoading = true;
     agentSessionError = '';
@@ -786,6 +836,41 @@
     }));
   }
 
+  function demoGitCommitHistoryForProject(project: ProjectRoot): GitCommitHistoryEntry[] {
+    const committedAt = new Date().toISOString();
+    const repoSlug = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+    return [
+      {
+        shortSha: '3d14498',
+        sha: '3d14498f0d8d54d4b89ad51b4e7ed6d3f12d0001',
+        subject: 'feat: add TSK-127 git remote controls',
+        author: 'MacCommandBar',
+        committedAt,
+        refs: 'HEAD -> main',
+        taskID: 'TSK-127'
+      },
+      {
+        shortSha: 'ebca14e',
+        sha: 'ebca14e7594f84f6be0d18f2f0d39c48a2d0002',
+        subject: 'feat: add TSK-127 git action controls',
+        author: 'MacCommandBar',
+        committedAt,
+        refs: repoSlug ? `origin/${repoSlug}` : 'origin/main',
+        taskID: 'TSK-127'
+      },
+      {
+        shortSha: '27a95ed',
+        sha: '27a95ed5b28f23d345ccac9a8c6e63f99ad0003',
+        subject: 'feat: add TSK-127 repo dashboard',
+        author: 'MacCommandBar',
+        committedAt,
+        refs: '',
+        taskID: 'TSK-127'
+      }
+    ];
+  }
+
   function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
     return [
       {
@@ -835,6 +920,38 @@
 
     const dirtyCount = summaries.filter((summary) => summary.isDirty || summary.error).length;
     return `${dirtyCount} dirty / ${summaries.length} repos · ${summarySource}`;
+  }
+
+  function formatGitCommitHistorySummary(
+    commitCount: number,
+    loadingHistory: boolean,
+    historyError: string,
+    historySource: string
+  ) {
+    if (loadingHistory) return 'Loading history';
+    if (historyError) return historyError;
+    if (commitCount === 0) return `No commits · ${historySource}`;
+    return `${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} · ${historySource}`;
+  }
+
+  function formatGitCommitTime(committedAt: string) {
+    const date = new Date(committedAt);
+    if (Number.isNaN(date.getTime())) return committedAt;
+
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    }).format(date);
+  }
+
+  function gitCommitTitle(entry: GitCommitHistoryEntry) {
+    return [entry.sha, entry.refs, entry.subject].filter(Boolean).join('\n');
+  }
+
+  function gitTaskUrl(taskID: string | null) {
+    return taskID ? commandCenterTaskUrls[taskID] ?? null : null;
   }
 
   function repoDashboardTaskLabel(summary: GitRepositorySummary) {
@@ -960,6 +1077,7 @@
       gitActionStatus = result.message;
       if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
+      if (action !== 'fetch') void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
       gitActionError = gitError instanceof Error ? gitError.message : `Could not ${action} repository`;
     } finally {
@@ -987,6 +1105,7 @@
       gitActionStatus = result.message;
       if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
+      void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
       gitActionError = gitError instanceof Error ? gitError.message : 'Could not commit Git changes';
     } finally {
@@ -1727,6 +1846,7 @@
     selectedProjectID = nextProject.id;
     persistSelectedProjectID(nextProject.id);
     void loadProjectGitStatus(nextProject);
+    void loadGitCommitHistory(nextProject);
     void loadRuntimeContexts(projectOptions);
     void loadProjectWorktrees(nextProject);
     void loadGitRepositorySummaries(projectOptions);
@@ -1975,6 +2095,7 @@
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     void loadProjectGitStatus(project);
+    void loadGitCommitHistory(project);
     void loadGitRepositorySummaries(projectOptions);
     void loadAgentSessions();
     await scanProject(project, selectedSourcePaths[project.id]);
@@ -2012,6 +2133,8 @@
       const fallbackProject = defaultProjectRoots[0];
       selectedProjectID = fallbackProject.id;
       persistSelectedProjectID(fallbackProject.id);
+      void loadProjectGitStatus(fallbackProject);
+      void loadGitCommitHistory(fallbackProject);
       void scanProject(fallbackProject, nextSelectedSourcePaths[fallbackProject.id]);
     }
   }
@@ -2175,6 +2298,7 @@
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
+    void loadGitCommitHistory(storedProject);
     void loadRuntimeContexts(storedProjectOptions);
     void loadProjectWorktrees(storedProject);
     void loadGitRepositorySummaries(storedProjectOptions);
@@ -3023,6 +3147,50 @@
                       </button>
                     {/each}
                   {/if}
+                </div>
+                <div class="git-history-panel" aria-label="Git commit history">
+                  <div class="git-history-heading">
+                    <span>History</span>
+                    <small>{gitCommitHistorySummary}</small>
+                  </div>
+                  <div class="git-history-list">
+                    {#if gitCommitHistoryLoading}
+                      <div class="intelligence-empty">Loading history</div>
+                    {:else if gitCommitHistoryError}
+                      <div class="intelligence-empty">{gitCommitHistoryError}</div>
+                    {:else if gitCommitHistory.length === 0}
+                      <div class="intelligence-empty">No commits</div>
+                    {:else}
+                      {#each gitCommitHistory as entry (entry.sha)}
+                        <div class="git-history-row" title={gitCommitTitle(entry)}>
+                          <span class="git-graph-marker" aria-hidden="true"></span>
+                          <div class="git-history-main">
+                            <strong>{entry.subject}</strong>
+                            <small>{entry.shortSha} · {entry.author} · {formatGitCommitTime(entry.committedAt)}</small>
+                          </div>
+                          <div class="git-history-meta">
+                            {#if entry.refs}
+                              <span class="git-ref-label">{entry.refs}</span>
+                            {/if}
+                            {#if entry.taskID}
+                              {#if gitTaskUrl(entry.taskID)}
+                                <a
+                                  class="git-task-link"
+                                  href={gitTaskUrl(entry.taskID) ?? ''}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {entry.taskID}
+                                </a>
+                              {:else}
+                                <span class="git-task-link">{entry.taskID}</span>
+                              {/if}
+                            {/if}
+                          </div>
+                        </div>
+                      {/each}
+                    {/if}
+                  </div>
                 </div>
                 <div class="intelligence-summary">{selectedSourceGitSummary}</div>
                 {#if selectedSourceGitDiffLoading}
@@ -4811,6 +4979,150 @@
     color: #8d9995;
     font-size: 9px;
     font-weight: 760;
+  }
+
+  .git-history-panel {
+    display: grid;
+    flex: 0 0 auto;
+    gap: 6px;
+    min-height: 0;
+    padding: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .git-history-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: #e4eae8;
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .git-history-heading small {
+    min-width: 0;
+    overflow: hidden;
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-history-list {
+    display: grid;
+    gap: 5px;
+    max-height: 170px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .git-history-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    min-height: 38px;
+    padding: 6px 7px;
+    color: #cfd8d5;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .git-graph-marker {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 24px;
+  }
+
+  .git-graph-marker::before {
+    position: absolute;
+    inset: -8px auto;
+    width: 1px;
+    background: rgba(111, 223, 207, 0.22);
+    content: "";
+  }
+
+  .git-graph-marker::after {
+    z-index: 1;
+    width: 8px;
+    height: 8px;
+    border: 2px solid rgba(111, 223, 207, 0.72);
+    border-radius: 999px;
+    background: #171b1b;
+    content: "";
+  }
+
+  .git-history-main,
+  .git-history-meta {
+    min-width: 0;
+  }
+
+  .git-history-main {
+    display: grid;
+    gap: 3px;
+  }
+
+  .git-history-main strong,
+  .git-history-main small,
+  .git-ref-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-history-main strong {
+    color: #f1f5f4;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .git-history-main small {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 740;
+  }
+
+  .git-history-meta {
+    display: grid;
+    justify-items: end;
+    gap: 4px;
+    max-width: 112px;
+  }
+
+  .git-ref-label {
+    max-width: 112px;
+    color: #aeb8b5;
+    font-size: 8.5px;
+    font-weight: 760;
+  }
+
+  .git-task-link {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    min-height: 19px;
+    padding: 0 6px;
+    color: #071b18;
+    border-radius: 999px;
+    background: #6fdfcf;
+    font-size: 8.5px;
+    font-weight: 900;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
   }
 
   .git-diff-block {

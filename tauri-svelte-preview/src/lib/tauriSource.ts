@@ -78,6 +78,16 @@ export type GitRepositorySummary = {
   error: string | null;
 };
 
+export type GitCommitHistoryEntry = {
+  shortSha: string;
+  sha: string;
+  subject: string;
+  author: string;
+  committedAt: string;
+  refs: string;
+  taskID: string | null;
+};
+
 export type AgentSession = {
   provider: string;
   id: string;
@@ -277,6 +287,18 @@ export async function pushGitRepositoryFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<GitActionResult>('push_git_repository', { root });
+}
+
+export async function readGitCommitHistoryFromTauri(
+  root: string,
+  limit = 24
+): Promise<GitCommitHistoryEntry[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitCommitHistoryEntry[]>('read_git_commit_history', { root, limit });
 }
 
 export async function listProjectWorktreesFromTauri(
