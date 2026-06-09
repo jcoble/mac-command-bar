@@ -32,6 +32,7 @@ public final class AppState: ObservableObject {
     private var coreClient: (any CoreSending)?
     private var persistence: (any AppPersisting)?
     private var clipboardWriter: any ClipboardWriting
+    private var commandLauncher: any CommandLaunching
 
     public init(
         modules: [DashboardModule],
@@ -41,7 +42,8 @@ public final class AppState: ObservableObject {
         statusMessage: String,
         coreClient: (any CoreSending)?,
         persistence: (any AppPersisting)? = nil,
-        clipboardWriter: any ClipboardWriting = SystemClipboardWriter()
+        clipboardWriter: any ClipboardWriting = SystemClipboardWriter(),
+        commandLauncher: any CommandLaunching = TerminalCommandLauncher()
     ) {
         self.modules = modules
         self.selectedModuleID = selectedModuleID
@@ -56,6 +58,7 @@ public final class AppState: ObservableObject {
         self.coreClient = coreClient
         self.persistence = persistence
         self.clipboardWriter = clipboardWriter
+        self.commandLauncher = commandLauncher
     }
 
     public static func bootstrap() -> AppState {
@@ -147,6 +150,14 @@ public final class AppState: ObservableObject {
         updateModule("clipboard", count: clipboardVault.items.count, status: "Local")
         statusMessage = "Clipboard item deleted"
         persistState()
+    }
+
+    public func launchProfileCommand(_ command: ProfileCommand) {
+        launchCommand(command.command, target: command.target, label: command.label)
+    }
+
+    public func launchTerminalCommand(_ command: String, label: String) {
+        launchCommand(command, target: .terminal, label: label)
     }
 
     public func refreshSnapshots() async {
@@ -314,6 +325,15 @@ public final class AppState: ObservableObject {
             )
         } catch {
             statusMessage = "Storage failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func launchCommand(_ command: String, target: ProfileLaunchTarget, label: String) {
+        do {
+            try commandLauncher.launch(command, target: target)
+            statusMessage = "Launched \(label)"
+        } catch {
+            statusMessage = "Launch failed: \(error.localizedDescription)"
         }
     }
 

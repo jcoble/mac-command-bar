@@ -303,7 +303,7 @@ private struct ProjectsPanel: View {
                     HStack {
                         ForEach(profile.commands) { command in
                             Button {
-                                TerminalLauncher.open(command.command)
+                                state.launchProfileCommand(command)
                             } label: {
                                 Label(command.label, systemImage: "terminal")
                             }
@@ -475,6 +475,7 @@ private struct ProcessRow: View {
 }
 
 private struct SessionRow: View {
+    @EnvironmentObject private var state: AppState
     let session: AgentSessionRecord
 
     var body: some View {
@@ -507,7 +508,7 @@ private struct SessionRow: View {
 
             Button {
                 if let command = session.resumeCommands.first {
-                    TerminalLauncher.open(command)
+                    state.launchTerminalCommand(command, label: "Resume")
                 }
             } label: {
                 Image(systemName: "play")
@@ -749,28 +750,6 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 520)
-    }
-}
-
-private enum TerminalLauncher {
-    static func open(_ command: String) {
-        let script = """
-        tell application "Terminal"
-          activate
-          do script "\(command.escapingForAppleScript)"
-        end tell
-        """
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        try? process.run()
-    }
-}
-
-private extension String {
-    var escapingForAppleScript: String {
-        replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }
 
