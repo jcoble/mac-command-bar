@@ -252,6 +252,15 @@ private struct ClipboardRow: View {
             }
             Spacer()
             Button {
+                state.restoreClipboardItem(item.id)
+            } label: {
+                Image(systemName: "doc.on.clipboard")
+            }
+            .buttonStyle(.borderless)
+            .disabled(item.content == nil)
+            .help("Copy to clipboard")
+
+            Button {
                 state.togglePinnedClipboardItem(item.id)
             } label: {
                 Image(systemName: item.isPinned ? "pin.fill" : "pin")

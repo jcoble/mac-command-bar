@@ -63,6 +63,34 @@ final class AppStatePersistenceTests: XCTestCase {
         let savedSnapshot = try XCTUnwrap(persistence.savedSnapshots.last)
         XCTAssertTrue(savedSnapshot.clipboardVault.items.first?.isPinned == true)
     }
+
+    func testRestoreClipboardItemWritesSavedContentToClipboard() {
+        let item = ClipboardItem(
+            id: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+            kind: .text,
+            preview: "restored",
+            content: "restored clipboard body",
+            tags: [],
+            isPinned: false,
+            isSecret: false,
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+        let clipboardWriter = MemoryClipboardWriter()
+        let state = AppState(
+            modules: [],
+            selectedModuleID: "clipboard",
+            clipboardVault: ClipboardVaultModel(items: [item]),
+            profiles: [],
+            statusMessage: "Ready",
+            coreClient: nil,
+            clipboardWriter: clipboardWriter
+        )
+
+        state.restoreClipboardItem(item.id)
+
+        XCTAssertEqual(clipboardWriter.writtenStrings, ["restored clipboard body"])
+        XCTAssertEqual(state.statusMessage, "Copied to clipboard")
+    }
 }
 
 private final class MemoryAppPersistence: AppPersisting {
@@ -80,5 +108,13 @@ private final class MemoryAppPersistence: AppPersisting {
 
     func save(_ snapshot: AppPersistenceSnapshot) throws {
         savedSnapshots.append(snapshot)
+    }
+}
+
+private final class MemoryClipboardWriter: ClipboardWriting {
+    private(set) var writtenStrings: [String] = []
+
+    func writeString(_ value: String) {
+        writtenStrings.append(value)
     }
 }

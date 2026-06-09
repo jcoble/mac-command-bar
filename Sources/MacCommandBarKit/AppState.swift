@@ -2,6 +2,19 @@ import AppKit
 import Combine
 import Foundation
 
+public protocol ClipboardWriting {
+    func writeString(_ value: String)
+}
+
+public struct SystemClipboardWriter: ClipboardWriting {
+    public init() {}
+
+    public func writeString(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+}
+
 @MainActor
 public final class AppState: ObservableObject {
     @Published public var modules: [DashboardModule]
@@ -18,6 +31,7 @@ public final class AppState: ObservableObject {
 
     private var coreClient: (any CoreSending)?
     private var persistence: (any AppPersisting)?
+    private var clipboardWriter: any ClipboardWriting
 
     public init(
         modules: [DashboardModule],
@@ -26,7 +40,8 @@ public final class AppState: ObservableObject {
         profiles: [ProjectProfile],
         statusMessage: String,
         coreClient: (any CoreSending)?,
-        persistence: (any AppPersisting)? = nil
+        persistence: (any AppPersisting)? = nil,
+        clipboardWriter: any ClipboardWriting = SystemClipboardWriter()
     ) {
         self.modules = modules
         self.selectedModuleID = selectedModuleID
@@ -40,6 +55,7 @@ public final class AppState: ObservableObject {
         self.searchText = ""
         self.coreClient = coreClient
         self.persistence = persistence
+        self.clipboardWriter = clipboardWriter
     }
 
     public static func bootstrap() -> AppState {
@@ -106,6 +122,20 @@ public final class AppState: ObservableObject {
     public func togglePinnedClipboardItem(_ id: UUID) {
         clipboardVault.togglePinned(id)
         persistState()
+    }
+
+    public func restoreClipboardItem(_ id: UUID) {
+        guard let item = clipboardVault.items.first(where: { $0.id == id }) else {
+            statusMessage = "Clipboard item missing"
+            return
+        }
+        guard let content = item.content else {
+            statusMessage = "Clipboard content unavailable"
+            return
+        }
+
+        clipboardWriter.writeString(content)
+        statusMessage = item.isSecret ? "Secret copied to clipboard" : "Copied to clipboard"
     }
 
     public func refreshSnapshots() async {
