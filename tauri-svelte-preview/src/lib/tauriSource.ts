@@ -32,6 +32,24 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
   };
 }
 
+export async function openSourceFileFromTauri(path: string): Promise<boolean> {
+  return runSourceFileAction('open_source_file', path);
+}
+
+export async function revealSourceFileFromTauri(path: string): Promise<boolean> {
+  return runSourceFileAction('reveal_source_file', path);
+}
+
+async function runSourceFileAction(command: string, path: string): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke(command, { path });
+  return true;
+}
+
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }

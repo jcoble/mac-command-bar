@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 300;
@@ -25,6 +26,18 @@ struct SourcePreview {
     line_count: usize,
 }
 
+#[derive(Clone, Copy)]
+enum SourceFileAction {
+    Open,
+    Reveal,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SourceFileActionCommand {
+    program: String,
+    args: Vec<String>,
+}
+
 #[tauri::command]
 async fn list_source_files(
     root: String,
@@ -47,6 +60,24 @@ async fn read_source_file(path: String) -> Result<SourcePreview, String> {
     tauri::async_runtime::spawn_blocking(move || read_source_file_sync(PathBuf::from(path)))
         .await
         .map_err(|error| format!("Source preview task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_source_file(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_source_file_action(PathBuf::from(path), SourceFileAction::Open)
+    })
+    .await
+    .map_err(|error| format!("Source open task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn reveal_source_file(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_source_file_action(PathBuf::from(path), SourceFileAction::Reveal)
+    })
+    .await
+    .map_err(|error| format!("Source reveal task failed: {error}"))?
 }
 
 fn list_source_files_sync(
@@ -191,6 +222,42 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
     Ok(preview)
 }
 
+fn run_source_file_action(path: PathBuf, action: SourceFileAction) -> Result<(), String> {
+    let command = source_file_action_command(&path, action)?;
+    let status = Command::new(&command.program)
+        .args(&command.args)
+        .status()
+        .map_err(|error| format!("Could not run source file action: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Source file action exited with {status}"))
+    }
+}
+
+fn source_file_action_command(
+    path: &Path,
+    action: SourceFileAction,
+) -> Result<SourceFileActionCommand, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("Could not read source metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Source path is not a file".to_string());
+    }
+
+    let path_arg = path.display().to_string();
+    let args = match action {
+        SourceFileAction::Open => vec![path_arg],
+        SourceFileAction::Reveal => vec!["-R".to_string(), path_arg],
+    };
+
+    Ok(SourceFileActionCommand {
+        program: "open".to_string(),
+        args,
+    })
+}
+
 fn detect_language(path: &Path) -> String {
     match path.extension().and_then(|value| value.to_str()) {
         Some("cs") => "csharp".to_string(),
@@ -249,7 +316,9 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_source_files,
-            read_source_file
+            read_source_file,
+            open_source_file,
+            reveal_source_file
         ])
         .run(tauri::generate_context!())
         .expect("failed to run MacCommandBar webview preview");
@@ -296,6 +365,39 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "src/Workers/Worker.cs");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_file_action_builds_open_and_reveal_commands() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file_path = root.join("src/App.svelte");
+        std::fs::write(&file_path, "<script></script>").unwrap();
+
+        let open_command = source_file_action_command(&file_path, SourceFileAction::Open).unwrap();
+        assert_eq!(open_command.program, "open");
+        assert_eq!(open_command.args, vec![file_path.display().to_string()]);
+
+        let reveal_command =
+            source_file_action_command(&file_path, SourceFileAction::Reveal).unwrap();
+        assert_eq!(reveal_command.program, "open");
+        assert_eq!(
+            reveal_command.args,
+            vec!["-R".to_string(), file_path.display().to_string()]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_file_action_rejects_directories() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        let error = source_file_action_command(&root, SourceFileAction::Open).unwrap_err();
+        assert!(error.contains("Source path is not a file"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

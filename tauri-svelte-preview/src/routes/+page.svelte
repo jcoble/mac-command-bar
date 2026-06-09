@@ -2,12 +2,16 @@
   import {
     Activity,
     Braces,
+    Check,
     ChevronDown,
     ChevronRight,
+    Copy,
+    ExternalLink,
     FileCode2,
     Folder,
     FolderGit2,
     FolderOpen,
+    FolderSearch,
     Plus,
     RefreshCw,
     Save,
@@ -36,7 +40,12 @@
     type SourceRecord,
     type SourceTreeNode
   } from '$lib/sourceData';
-  import { listSourceFilesFromTauri, readSourceFromTauri } from '$lib/tauriSource';
+  import {
+    listSourceFilesFromTauri,
+    openSourceFileFromTauri,
+    readSourceFromTauri,
+    revealSourceFileFromTauri
+  } from '$lib/tauriSource';
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
   const selectedProjectStorageKey = 'mac-command-bar.source-browser.selected-project';
@@ -56,6 +65,8 @@
   let scanning = $state(false);
   let runtime = $state('browser preview');
   let error = $state('');
+  let fileActionStatus = $state('');
+  let fileActionBusy = $state('');
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
   let projectNameInput = $state('');
@@ -126,6 +137,7 @@
   async function loadRecord(record: SourceRecord) {
     loading = true;
     error = '';
+    fileActionStatus = '';
 
     try {
       const tauriPreview = await readSourceFromTauri(record);
@@ -143,6 +155,57 @@
   async function selectRecord(record: SourceRecord) {
     selectedRecord = record;
     await loadRecord(record);
+  }
+
+  async function copySelectedPath() {
+    if (!preview) return;
+
+    fileActionBusy = 'copy';
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      await navigator.clipboard.writeText(preview.path);
+      fileActionStatus = 'Path copied';
+    } catch (copyError) {
+      error = copyError instanceof Error ? copyError.message : 'Could not copy source path';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function openSelectedFile() {
+    if (!preview) return;
+
+    fileActionBusy = 'open';
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const opened = await openSourceFileFromTauri(preview.path);
+      fileActionStatus = opened ? 'Opened file' : 'Native action unavailable';
+    } catch (openError) {
+      error = openError instanceof Error ? openError.message : 'Could not open source file';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function revealSelectedFile() {
+    if (!preview) return;
+
+    fileActionBusy = 'reveal';
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const revealed = await revealSourceFileFromTauri(preview.path);
+      fileActionStatus = revealed ? 'Revealed in Finder' : 'Native action unavailable';
+    } catch (revealError) {
+      error = revealError instanceof Error ? revealError.message : 'Could not reveal source file';
+    } finally {
+      fileActionBusy = '';
+    }
   }
 
   async function handleProjectChange() {
@@ -493,8 +556,27 @@
     {#if preview}
       <div class="path-row">
         <span>{preview.relativePath}</span>
+        <div class="file-actions" aria-label="Source file actions">
+          <button class="file-action-button" type="button" aria-label="Copy source path" title="Copy source path" disabled={fileActionBusy === 'copy'} onclick={copySelectedPath}>
+            {#if fileActionStatus === 'Path copied'}
+              <Check size={14} strokeWidth={2} />
+            {:else}
+              <Copy size={14} strokeWidth={1.9} />
+            {/if}
+          </button>
+          <button class="file-action-button" type="button" aria-label="Open source file" title="Open source file" disabled={fileActionBusy === 'open'} onclick={openSelectedFile}>
+            <ExternalLink size={14} strokeWidth={1.9} />
+          </button>
+          <button class="file-action-button" type="button" aria-label="Reveal source file" title="Reveal source file" disabled={fileActionBusy === 'reveal'} onclick={revealSelectedFile}>
+            <FolderSearch size={14} strokeWidth={1.9} />
+          </button>
+        </div>
         <strong>{selectedIndex} / {records.length}</strong>
       </div>
+    {/if}
+
+    {#if fileActionStatus}
+      <div class="file-action-feedback">{fileActionStatus}</div>
     {/if}
 
     {#if error}
@@ -992,7 +1074,8 @@
 
   .path-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
     gap: 16px;
     margin-bottom: 12px;
     color: #87918e;
@@ -1008,6 +1091,48 @@
 
   .path-row strong {
     color: #cbd3d1;
+  }
+
+  .file-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .file-action-button {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 28px;
+    color: #b9c5c1;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.045);
+    cursor: pointer;
+  }
+
+  .file-action-button:hover {
+    color: #f2f6f5;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .file-action-button:focus-visible {
+    border-color: rgba(92, 226, 207, 0.58);
+    outline: 0;
+    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+  }
+
+  .file-action-button:disabled {
+    cursor: default;
+    opacity: 0.58;
+  }
+
+  .file-action-feedback {
+    margin: -4px 0 10px;
+    color: #7ce5d5;
+    font-size: 11px;
+    font-weight: 750;
   }
 
   .inline-error {
