@@ -43,6 +43,7 @@ public final class AppState: ObservableObject {
     @Published public var worktrees: [WorktreeRecord]
     @Published public var sessions: [AgentSessionRecord]
     @Published public var healthSnapshot: HealthSnapshot?
+    @Published public var sourcePreview: SourcePreview?
     @Published public var pendingAction: ConfirmableAction?
     @Published public var statusMessage: String
     @Published public var searchText: String
@@ -74,6 +75,7 @@ public final class AppState: ObservableObject {
         self.worktrees = []
         self.sessions = []
         self.healthSnapshot = nil
+        self.sourcePreview = nil
         self.pendingAction = nil
         self.statusMessage = statusMessage
         self.searchText = ""
@@ -386,6 +388,47 @@ public final class AppState: ObservableObject {
         statusMessage = "Refreshed health"
     }
 
+    public func previewSourceFile(path rawPath: String) async {
+        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            statusMessage = "Source path required"
+            return
+        }
+        guard coreClient != nil else {
+            lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"
+            statusMessage = "Core helper unavailable"
+            return
+        }
+
+        statusMessage = "Loading source preview"
+        do {
+            let response = try await coreClient?.send(
+                CoreRequest(
+                    action: .sourcePreview,
+                    dryRun: true,
+                    payload: ["path": .string(path)]
+                )
+            )
+            guard let response else { return }
+            guard response.ok else {
+                updateModule("source", count: 0, status: "Unavailable")
+                lastCoreWarning = response.warnings.first
+                statusMessage = response.summary
+                return
+            }
+
+            let preview = try JSONValue.object(response.data).decode(SourcePreview.self)
+            sourcePreview = preview
+            updateModule("source", count: preview.lineCount, status: preview.language)
+            lastCoreWarning = response.warnings.first
+            statusMessage = "Loaded \(preview.fileName)"
+        } catch {
+            updateModule("source", count: 0, status: "Unavailable")
+            lastCoreWarning = error.localizedDescription
+            statusMessage = "Source preview failed"
+        }
+    }
+
     public func planKill(pid: Int) -> ConfirmableAction {
         ConfirmableAction(
             actionId: "kill-\(pid)",
@@ -489,6 +532,8 @@ public final class AppState: ObservableObject {
                 worktrees = try response.data["worktrees"]?.decode() ?? []
             case .healthSnapshot:
                 healthSnapshot = try JSONValue.object(response.data).decode(HealthSnapshot.self)
+            case .sourcePreview:
+                sourcePreview = try JSONValue.object(response.data).decode(SourcePreview.self)
             case .planKillProcess:
                 break
             }
@@ -507,6 +552,8 @@ public final class AppState: ObservableObject {
             return ["hostname", "cwd", "home"].filter { key in
                 response.data[key]?.stringValue?.isEmpty == false
             }.count
+        case .sourcePreview:
+            return response.data["lineCount"]?.intValue ?? 0
         default:
             return response.data["count"]?.intValue ?? 0
         }
@@ -545,6 +592,7 @@ public final class AppState: ObservableObject {
     ) -> [DashboardModule] {
         [
             DashboardModule(id: "projects", title: "Projects", symbol: "rectangle.stack", count: profileCount, status: "Profiles", accent: .blue),
+            DashboardModule(id: "source", title: "Source Preview", symbol: "doc.text.magnifyingglass", count: 0, status: "Read only", accent: .blue),
             DashboardModule(id: "processes", title: "Processes", symbol: "cpu", count: 0, status: "Scan ready", accent: .orange),
             DashboardModule(id: "sessions", title: "Agent Sessions", symbol: "terminal", count: 0, status: "Scan ready", accent: .green),
             DashboardModule(id: "worktrees", title: "Worktrees", symbol: "point.3.connected.trianglepath.dotted", count: 0, status: "Scan ready", accent: .slate),

@@ -67,6 +67,7 @@ public enum CoreAction: String, Codable, Sendable {
     case scanProcesses = "scan.processes"
     case scanSessions = "scan.sessions"
     case healthSnapshot = "health.snapshot"
+    case sourcePreview = "source.preview"
     case planKillProcess = "plan.killProcess"
 }
 
@@ -282,6 +283,54 @@ public struct HealthSnapshot: Codable, Equatable, Sendable {
             return !value.isEmpty
         }.count
     }
+}
+
+public struct SourcePreview: Codable, Equatable, Sendable {
+    public var path: String
+    public var fileName: String
+    public var language: String
+    public var content: String
+    public var spans: [SourceSyntaxSpan]
+    public var lineCount: Int
+    public var byteCount: Int
+
+    public init(
+        path: String,
+        fileName: String,
+        language: String,
+        content: String,
+        spans: [SourceSyntaxSpan],
+        lineCount: Int,
+        byteCount: Int
+    ) {
+        self.path = path
+        self.fileName = fileName
+        self.language = language
+        self.content = content
+        self.spans = spans
+        self.lineCount = lineCount
+        self.byteCount = byteCount
+    }
+}
+
+public struct SourceSyntaxSpan: Codable, Equatable, Sendable {
+    public var start: Int
+    public var end: Int
+    public var role: SourceSyntaxRole
+
+    public init(start: Int, end: Int, role: SourceSyntaxRole) {
+        self.start = start
+        self.end = end
+        self.role = role
+    }
+}
+
+public enum SourceSyntaxRole: String, Codable, Sendable {
+    case keyword
+    case type
+    case string
+    case comment
+    case number
 }
 
 public enum ClipboardItemKind: String, Codable, Sendable {

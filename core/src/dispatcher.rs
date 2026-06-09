@@ -2,7 +2,9 @@ use crate::protocol::{ConfirmableAction, CoreRequest, CoreResponse};
 use crate::scanners::processes::scan_lsof_listeners;
 use crate::scanners::sessions::scan_sessions;
 use crate::scanners::worktrees::{scan_worktrees_with_options, WorktreeScanOptions};
+use crate::source::preview_source_file;
 use serde_json::{json, Value};
+use std::path::Path;
 
 pub fn dispatch(request: CoreRequest) -> CoreResponse {
     match request.action.as_str() {
@@ -10,11 +12,35 @@ pub fn dispatch(request: CoreRequest) -> CoreResponse {
         "scan.processes" => scan_processes_action(request),
         "scan.sessions" => scan_sessions_action(request),
         "health.snapshot" => health_snapshot_action(request),
+        "source.preview" => source_preview_action(request),
         "plan.killProcess" => plan_kill_process_action(request),
         action => CoreResponse::error(
             request.id,
             format!("unknown action: {action}"),
             vec![format!("No dispatcher is registered for {action}")],
+        ),
+    }
+}
+
+fn source_preview_action(request: CoreRequest) -> CoreResponse {
+    let Some(path) = request.payload.get("path").and_then(Value::as_str) else {
+        return CoreResponse::error(
+            request.id,
+            "missing path",
+            vec!["payload.path must be a source file path".to_string()],
+        );
+    };
+
+    match preview_source_file(Path::new(path)) {
+        Ok(preview) => CoreResponse::ok(
+            request.id,
+            format!("previewed {}", preview.file_name),
+            serde_json::to_value(preview).unwrap_or_else(|_| json!({})),
+        ),
+        Err(error) => CoreResponse::error(
+            request.id,
+            "source preview failed",
+            vec![format!("{error:#}")],
         ),
     }
 }

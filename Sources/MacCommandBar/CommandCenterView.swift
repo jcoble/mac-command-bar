@@ -208,6 +208,8 @@ private struct ModuleDetailView: View {
             ClipboardPanel()
         case "projects":
             ProjectsPanel(onEditProfile: onEditProfile)
+        case "source":
+            SourcePreviewPanel()
         case "processes":
             ProcessesPanel()
         case "sessions":
@@ -413,6 +415,189 @@ private struct ProjectsPanel: View {
 
 private func projectURLLabel(_ rawURL: String) -> String {
     URL(string: rawURL)?.host ?? rawURL
+}
+
+private struct SourcePreviewPanel: View {
+    @EnvironmentObject private var state: AppState
+    @State private var selectedProfileID: UUID?
+    @State private var pathText = ""
+
+    private var selectedProfile: ProjectProfile? {
+        if let selectedProfileID,
+           let profile = state.profiles.first(where: { $0.id == selectedProfileID }) {
+            return profile
+        }
+        return state.profiles.first
+    }
+
+    private var resolvedPath: String {
+        let trimmed = pathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ""
+        }
+        guard !trimmed.hasPrefix("/"), let repoPath = selectedProfile?.repoPath else {
+            return trimmed
+        }
+        return URL(fileURLWithPath: repoPath).appendingPathComponent(trimmed).path
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Picker("Project", selection: $selectedProfileID) {
+                    ForEach(state.profiles) { profile in
+                        Text(profile.name).tag(Optional(profile.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                .disabled(state.profiles.isEmpty)
+
+                TextField("Relative or absolute source path", text: $pathText)
+                    .textFieldStyle(.roundedBorder)
+
+                Button {
+                    Task {
+                        await state.previewSourceFile(path: resolvedPath)
+                    }
+                } label: {
+                    Label("Preview", systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(resolvedPath.isEmpty)
+            }
+
+            if let preview = state.sourcePreview {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(preview.fileName)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(preview.path)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text("\(preview.language) - \(preview.lineCount) lines")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                SourceCodeTextView(preview: preview)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+            } else {
+                EmptyModuleState(
+                    symbol: "doc.text.magnifyingglass",
+                    title: "No source file loaded",
+                    detail: "Choose a project file to preview it with native text rendering."
+                )
+            }
+        }
+        .onAppear {
+            selectedProfileID = selectedProfileID ?? state.profiles.first?.id
+        }
+    }
+}
+
+private struct SourceCodeTextView: NSViewRepresentable {
+    let preview: SourcePreview
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.textContainerInset = NSSize(width: 10, height: 10)
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return
+        }
+        textView.textStorage?.setAttributedString(
+            SourceCodeAttributedStringBuilder.attributedString(for: preview)
+        )
+    }
+}
+
+private enum SourceCodeAttributedStringBuilder {
+    static func attributedString(for preview: SourcePreview) -> NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byClipping
+        paragraphStyle.lineSpacing = 1
+
+        let baseFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let highlighted = NSMutableAttributedString(
+            string: preview.content,
+            attributes: [
+                .font: baseFont,
+                .foregroundColor: NSColor.textColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+
+        for span in preview.spans {
+            guard let range = nsRange(start: span.start, end: span.end, in: preview.content) else {
+                continue
+            }
+            highlighted.addAttributes(attributes(for: span.role), range: range)
+        }
+
+        return highlighted
+    }
+
+    private static func attributes(for role: SourceSyntaxRole) -> [NSAttributedString.Key: Any] {
+        switch role {
+        case .keyword:
+            return [
+                .foregroundColor: NSColor.systemPink,
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+            ]
+        case .type:
+            return [.foregroundColor: NSColor.systemTeal]
+        case .string:
+            return [.foregroundColor: NSColor.systemGreen]
+        case .comment:
+            return [.foregroundColor: NSColor.secondaryLabelColor]
+        case .number:
+            return [.foregroundColor: NSColor.systemOrange]
+        }
+    }
+
+    private static func nsRange(start: Int, end: Int, in content: String) -> NSRange? {
+        guard start >= 0, end > start, end <= content.utf8.count else {
+            return nil
+        }
+        let startUTF8 = content.utf8.index(content.utf8.startIndex, offsetBy: start)
+        let endUTF8 = content.utf8.index(content.utf8.startIndex, offsetBy: end)
+        guard
+            let startIndex = String.Index(startUTF8, within: content),
+            let endIndex = String.Index(endUTF8, within: content)
+        else {
+            return nil
+        }
+        return NSRange(startIndex..<endIndex, in: content)
+    }
 }
 
 private struct ProfileEditorPanel: View {
