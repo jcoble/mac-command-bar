@@ -15,4 +15,23 @@ final class MenuBarPresentationRegressionTests: XCTestCase {
             "CommandCenterView is hosted inside MenuBarExtra; use in-window overlays instead of SwiftUI sheets so focus stays in the menu-bar window."
         )
     }
+
+    func testSourcePreviewDoesNotUseUnboundedAppKitPreviewHeight() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MacCommandBar/CommandCenterView.swift")
+
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(
+            source.contains("SourceCodeTextView(preview: preview)\n                    .frame(maxWidth: .infinity, maxHeight: .infinity)"),
+            "The AppKit source preview must have a bounded height so it cannot cover the Scan button or file tree inside the menu-bar window."
+        )
+        XCTAssertTrue(
+            source.contains(".frame(height: SourcePreviewPanelLayout.previewHeight)"),
+            "Keep SourceCodeTextView on an explicit preview-height frame; unbounded AppKit views can intercept clicks meant for the tree."
+        )
+    }
 }

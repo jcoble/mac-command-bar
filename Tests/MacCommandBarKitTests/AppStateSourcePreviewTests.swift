@@ -120,6 +120,46 @@ final class AppStateSourcePreviewTests: XCTestCase {
         XCTAssertEqual(state.modules.first(where: { $0.id == "source" })?.status, "csharp")
     }
 
+    func testPreviewSourceFileClearsStalePreviewOnCoreFailure() async throws {
+        let spy = SourcePreviewCoreClientSpy(
+            responses: [
+                CoreResponse(
+                    id: "first",
+                    ok: true,
+                    summary: "ok",
+                    data: [
+                        "path": .string("/repo/First.cs"),
+                        "fileName": .string("First.cs"),
+                        "language": .string("csharp"),
+                        "content": .string("public class First {}"),
+                        "lineCount": .number(1),
+                        "byteCount": .number(21),
+                        "spans": .array([])
+                    ],
+                    warnings: [],
+                    proposedCommand: nil
+                ),
+                CoreResponse(
+                    id: "second",
+                    ok: false,
+                    summary: "source preview failed",
+                    data: [:],
+                    warnings: ["could not read source file"],
+                    proposedCommand: nil
+                )
+            ]
+        )
+        let state = AppState.sourcePreviewTestState(coreClient: spy)
+
+        await state.previewSourceFile(path: "/repo/First.cs")
+        await state.previewSourceFile(path: "/repo/Missing.cs")
+
+        XCTAssertNil(state.sourcePreview)
+        XCTAssertEqual(state.statusMessage, "source preview failed")
+        XCTAssertEqual(state.lastCoreWarning, "could not read source file")
+        XCTAssertEqual(state.modules.first(where: { $0.id == "source" })?.status, "Unavailable")
+    }
+
     func testPreviewSourceFileRejectsEmptyPathWithoutCallingCore() async throws {
         let spy = SourcePreviewCoreClientSpy(responseData: [:])
         let state = AppState.sourcePreviewTestState(coreClient: spy)
@@ -135,19 +175,35 @@ final class AppStateSourcePreviewTests: XCTestCase {
 
 private actor SourcePreviewCoreClientSpy: CoreSending {
     private(set) var requests: [CoreRequest] = []
-    private let responseData: [String: JSONValue]
+    private var responses: [CoreResponse]
 
     init(responseData: [String: JSONValue]) {
-        self.responseData = responseData
+        self.responses = [
+            CoreResponse(
+                id: "spy",
+                ok: true,
+                summary: "ok",
+                data: responseData,
+                warnings: [],
+                proposedCommand: nil
+            )
+        ]
+    }
+
+    init(responses: [CoreResponse]) {
+        self.responses = responses
     }
 
     func send(_ request: CoreRequest) async throws -> CoreResponse {
         requests.append(request)
-        return CoreResponse(
+        if responses.count > 1 {
+            return responses.removeFirst()
+        }
+        return responses.first ?? CoreResponse(
             id: request.id,
             ok: true,
             summary: "ok",
-            data: responseData,
+            data: [:],
             warnings: [],
             proposedCommand: nil
         )

@@ -413,6 +413,7 @@ public final class AppState: ObservableObject {
             )
             guard let response else { return }
             guard response.ok else {
+                sourcePreview = nil
                 updateModule("source", count: 0, status: "Unavailable")
                 lastCoreWarning = response.warnings.first
                 statusMessage = response.summary
@@ -425,6 +426,7 @@ public final class AppState: ObservableObject {
             lastCoreWarning = response.warnings.first
             statusMessage = "Loaded \(preview.fileName)"
         } catch {
+            sourcePreview = nil
             updateModule("source", count: 0, status: "Unavailable")
             lastCoreWarning = error.localizedDescription
             statusMessage = "Source preview failed"

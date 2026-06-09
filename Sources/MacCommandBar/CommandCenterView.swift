@@ -417,6 +417,11 @@ private func projectURLLabel(_ rawURL: String) -> String {
     URL(string: rawURL)?.host ?? rawURL
 }
 
+private enum SourcePreviewPanelLayout {
+    static let treeHeight: CGFloat = 136
+    static let previewHeight: CGFloat = 300
+}
+
 private struct SourcePreviewPanel: View {
     @EnvironmentObject private var state: AppState
     @State private var selectedProfileID: UUID?
@@ -476,6 +481,7 @@ private struct SourcePreviewPanel: View {
                 }
                 .disabled(previewTargetPath.isEmpty)
             }
+            .zIndex(3)
 
             if !state.sourceFiles.isEmpty {
                 ScrollView {
@@ -499,9 +505,10 @@ private struct SourcePreviewPanel: View {
                         }
                     }
                 }
-                .frame(height: 136)
+                .frame(height: SourcePreviewPanelLayout.treeHeight)
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 7))
+                .zIndex(2)
             }
 
             if let preview = state.sourcePreview {
@@ -521,8 +528,9 @@ private struct SourcePreviewPanel: View {
                 }
 
                 SourceCodeTextView(preview: preview)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(height: SourcePreviewPanelLayout.previewHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .zIndex(1)
             } else {
                 EmptyModuleState(
                     symbol: "doc.text.magnifyingglass",
