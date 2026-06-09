@@ -502,7 +502,7 @@ fn detect_language(path: &Path) -> String {
         "js" | "mjs" | "cjs" => "javascript",
         "jsx" => "jsx",
         "svelte" => "svelte",
-        "html" | "htm" => "html",
+        "astro" | "html" | "htm" | "vue" => "html",
         "css" => "css",
         "scss" => "scss",
         "less" => "less",
@@ -516,10 +516,15 @@ fn detect_language(path: &Path) -> String {
         "ps1" | "psm1" => "powershell",
         "py" => "python",
         "rb" => "ruby",
+        "php" => "php",
+        "dart" => "dart",
+        "lua" => "lua",
         "go" => "go",
         "java" => "java",
         "kt" | "kts" => "kotlin",
         "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" => "cpp",
+        "tf" | "tfvars" => "hcl",
+        "proto" => "protobuf",
         "sql" => "sql",
         "graphql" | "gql" => "graphql",
         "fs" | "fsx" => "fsharp",
@@ -685,6 +690,18 @@ mod tests {
         assert_eq!(detect_language(Path::new("tools/import.py")), "python");
         assert_eq!(detect_language(Path::new("Dockerfile")), "dockerfile");
         assert_eq!(detect_language(Path::new("EdiPlatform.Api.csproj")), "xml");
+    }
+
+    #[test]
+    fn source_language_detection_covers_more_preview_formats() {
+        assert_eq!(detect_language(Path::new("web/App.vue")), "html");
+        assert_eq!(detect_language(Path::new("web/Page.astro")), "html");
+        assert_eq!(detect_language(Path::new("index.php")), "php");
+        assert_eq!(detect_language(Path::new("lib/main.dart")), "dart");
+        assert_eq!(detect_language(Path::new("scripts/tool.lua")), "lua");
+        assert_eq!(detect_language(Path::new("infra/main.tf")), "hcl");
+        assert_eq!(detect_language(Path::new("infra/dev.tfvars")), "hcl");
+        assert_eq!(detect_language(Path::new("schemas/service.proto")), "protobuf");
     }
 
     #[test]

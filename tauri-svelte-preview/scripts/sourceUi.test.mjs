@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const pageSource = await readFile(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
+const editorSource = await readFile(
+  new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
+  'utf8'
+);
 
 function blockFor(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -49,3 +53,8 @@ assert.ok(pageSource.includes('scanSummaryLabel'), 'Source tree should expose an
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
+assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');
+assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor should load HCL highlighting');
+assert.ok(editorSource.includes('basic-languages/lua/lua.contribution'), 'Editor should load Lua highlighting');
+assert.ok(editorSource.includes('basic-languages/php/php.contribution'), 'Editor should load PHP highlighting');
+assert.ok(editorSource.includes('basic-languages/protobuf/protobuf.contribution'), 'Editor should load Protobuf highlighting');
