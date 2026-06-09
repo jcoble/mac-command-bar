@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
+  folderIdsForSourceRecord,
   rankSourceRecords,
   selectPreferredSourceRecord,
   upsertOpenSourceTab,
@@ -130,4 +131,16 @@ const rankedByRelativePath = rankSourceRecords(
 assert.deepEqual(
   rankedByRelativePath.map((record) => record.path),
   ['/repo/tools/Generate.ts']
+);
+
+assert.deepEqual(folderIdsForSourceRecord(records[0]), ['folder:src']);
+assert.deepEqual(
+  folderIdsForSourceRecord({
+    path: '/repo/apps/web/src/routes/+page.svelte',
+    relativePath: 'apps/web/src/routes/+page.svelte',
+    fileName: '+page.svelte',
+    language: 'svelte',
+    byteCount: 40
+  }),
+  ['folder:apps', 'folder:apps/web', 'folder:apps/web/src', 'folder:apps/web/src/routes']
 );

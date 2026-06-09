@@ -373,6 +373,11 @@ export function rankSourceRecords(
     .map((result) => result.record);
 }
 
+export function folderIdsForSourceRecord(record: SourceRecord): string[] {
+  const folderComponents = record.relativePath.split('/').filter(Boolean).slice(0, -1);
+  return folderComponents.map((_, index) => `folder:${folderComponents.slice(0, index + 1).join('/')}`);
+}
+
 export function buildSourceTree(records: SourceRecord[]): SourceTreeNode[] {
   const entries = records.map((record) => ({
     components: record.relativePath.split('/').filter(Boolean),

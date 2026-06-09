@@ -34,6 +34,7 @@
     demoRecordsForProject,
     filterSourceRecords,
     flattenSourceTree,
+    folderIdsForSourceRecord,
     mergeProjectRoots,
     normalizeProjectPath,
     previewFromContent,
@@ -149,7 +150,6 @@
 
       const nextRecords = tauriRecords ?? demoRecordsForProject(project);
       records = nextRecords;
-      expandedFolderIds = new Set();
       runtime = tauriRecords ? 'tauri source scan' : 'browser preview';
 
       const nextSelection = selectPreferredSourceRecord(
@@ -159,6 +159,7 @@
       );
       selectedRecord = nextSelection;
       preview = nextSelection ? previewFromContent(nextSelection, '') : null;
+      expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
 
       if (nextSelection) {
         await loadRecord(nextSelection);
@@ -170,6 +171,7 @@
       records = demoRecordsForProject(project);
       selectedRecord = records[0] ?? null;
       preview = selectedRecord ? demoPreviewFor(selectedRecord) : null;
+      expandedFolderIds = selectedRecord ? new Set(folderIdsForSourceRecord(selectedRecord)) : new Set();
       runtime = 'browser preview';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
       loading = false;
@@ -200,6 +202,7 @@
 
   async function selectRecord(record: SourceRecord) {
     selectedRecord = record;
+    expandFoldersForRecord(record);
     trackSelectedSourceRecord(record, selectedProject);
     await loadRecord(record);
   }
@@ -340,6 +343,14 @@
     error = '';
     fileActionStatus = '';
     persistSelectedSourcePaths(nextSelectedSourcePaths);
+  }
+
+  function expandFoldersForRecord(record: SourceRecord) {
+    const nextFolderIds = new Set(expandedFolderIds);
+    for (const folderID of folderIdsForSourceRecord(record)) {
+      nextFolderIds.add(folderID);
+    }
+    expandedFolderIds = nextFolderIds;
   }
 
   async function copySelectedPath() {
