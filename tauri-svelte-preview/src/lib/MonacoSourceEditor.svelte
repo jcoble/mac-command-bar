@@ -19,7 +19,7 @@
 	let currentPath = "";
 	let isReady = $state(false);
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
-	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#101212";
+	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 
 	function languageId(language: SourcePreview["language"]) {
 		return language === "csharp" ? "csharp" : language;
@@ -190,7 +190,7 @@
 		height: calc(100% - 42px);
 		min-height: 0;
 		overflow: hidden;
-		background: var(--source-editor-background, #101212);
+		background: var(--source-editor-background, #17191e);
 	}
 
 	.monaco-host {
@@ -205,7 +205,7 @@
 	}
 
 	.monaco-host :global(.monaco-editor .margin) {
-		background: var(--source-editor-background, #101212);
+		background: var(--source-editor-background, #17191e);
 	}
 
 	.skeleton-code {
@@ -215,7 +215,7 @@
 		align-content: start;
 		gap: 12px;
 		padding: 22px;
-		background: var(--source-editor-background, #101212);
+		background: var(--source-editor-background, #17191e);
 	}
 
 	.skeleton-code span {
@@ -223,7 +223,7 @@
 		width: var(--line-width);
 		height: 13px;
 		border-radius: 999px;
-		background: linear-gradient(90deg, #242929, #333a38, #242929);
+		background: linear-gradient(90deg, #23262d, #343841, #23262d);
 		background-size: 180% 100%;
 		animation: shimmer 1.2s ease-in-out infinite;
 	}
