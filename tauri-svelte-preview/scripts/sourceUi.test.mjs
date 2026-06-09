@@ -53,6 +53,14 @@ assert.ok(pageSource.includes('scanSummaryLabel'), 'Source tree should expose an
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
+assert.ok(pageSource.includes('expandedSourceScanLimit'), 'Source preview should expose an expanded scan limit');
+assert.ok(pageSource.includes('{#if scanLimitReached && !scanning}'), 'Truncated source scans should expose a rescan-more action');
+assert.ok(pageSource.includes('class="scan-more-button"'), 'Expanded source scans should use a compact action button');
+assert.ok(
+  pageSource.includes('scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })'),
+  'Expanded source scans should rescan the active project at the larger limit'
+);
+assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');
 assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor should load HCL highlighting');
 assert.ok(editorSource.includes('basic-languages/lua/lua.contribution'), 'Editor should load Lua highlighting');

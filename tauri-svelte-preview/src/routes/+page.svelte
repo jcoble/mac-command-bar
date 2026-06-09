@@ -62,6 +62,7 @@
     cancelSourceScanFromTauri,
     createSourceScanId,
     defaultSourceScanLimit,
+    expandedSourceScanLimit,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
@@ -131,6 +132,7 @@
 
   type SourceScanOptions = {
     force?: boolean;
+    limit?: number;
   };
 
   let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
@@ -241,12 +243,13 @@
     options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
+    const scanLimit = options.limit ?? defaultSourceScanLimit;
     const cachedScan = options.force
       ? null
       : getSourceScanCacheEntry(
           sourceScanCache,
           project,
-          defaultSourceScanLimit,
+          scanLimit,
           Date.now(),
           sourceScanCacheMaxAgeMs
         );
@@ -282,7 +285,7 @@
     runtime = 'scanning source files';
 
     try {
-      const tauriScan = await listSourceFilesFromTauri(project.path, '', defaultSourceScanLimit, scanId);
+      const tauriScan = await listSourceFilesFromTauri(project.path, '', scanLimit, scanId);
       if (generation !== scanGeneration) return;
 
       const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
@@ -1180,12 +1183,26 @@
       {/if}
 
       <div class="source-list-panel">
-        <div class="tree-heading">
-          <FolderGit2 size={15} strokeWidth={1.8} />
-          <span>{selectedProject.name}</span>
-          <strong>{recordCountLabel}</strong>
+        <div class="tree-panel-header">
+          <div class="tree-heading">
+            <FolderGit2 size={15} strokeWidth={1.8} />
+            <span>{selectedProject.name}</span>
+            <strong>{recordCountLabel}</strong>
+          </div>
+          <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
+          {#if scanLimitReached && !scanning}
+            <button
+              class="scan-more-button"
+              type="button"
+              aria-label={`Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
+              title={`Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
+              onclick={() => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })}
+            >
+              <Plus size={13} strokeWidth={2} />
+              <span>Scan 5K</span>
+            </button>
+          {/if}
         </div>
-        <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
 
         <div
           class="file-tree"
@@ -1845,6 +1862,10 @@
     overflow: hidden;
   }
 
+  .tree-panel-header {
+    min-width: 0;
+  }
+
   .tree-heading {
     display: grid;
     grid-template-columns: 18px minmax(0, 1fr) auto;
@@ -1871,6 +1892,29 @@
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .scan-more-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    min-height: 24px;
+    margin: 0 0 8px;
+    border: 1px solid rgba(111, 223, 207, 0.22);
+    border-radius: 6px;
+    padding: 0 8px;
+    overflow: hidden;
+    background: rgba(111, 223, 207, 0.09);
+    color: #8fd8cf;
+    font-size: 10px;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+
+  .scan-more-button:hover {
+    border-color: rgba(111, 223, 207, 0.42);
+    background: rgba(111, 223, 207, 0.15);
   }
 
   .file-tree {

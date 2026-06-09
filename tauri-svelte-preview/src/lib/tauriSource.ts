@@ -1,6 +1,7 @@
 import type { SourcePreview, SourceRecord, SourceScanResult } from './sourceData';
 
 export const defaultSourceScanLimit = 2_000;
+export const expandedSourceScanLimit = 5_000;
 export const nativeSourceScanProgressEvent = 'source_scan_progress';
 
 export type NativeSourceScanProgress = {
