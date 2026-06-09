@@ -33,6 +33,11 @@ export type ProjectGitStatus = {
   files: ProjectGitFileStatus[];
 };
 
+export type GitActionResult = {
+  message: string;
+  status: ProjectGitStatus;
+};
+
 export type SourceGitDiff = {
   relativePath: string;
   status: string;
@@ -203,6 +208,42 @@ export async function readSourceGitDiffFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceGitDiff>('read_source_git_diff', { root, path });
+}
+
+export async function stageGitPathsFromTauri(
+  root: string,
+  paths: string[]
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('stage_git_paths', { root, paths });
+}
+
+export async function unstageGitPathsFromTauri(
+  root: string,
+  paths: string[]
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('unstage_git_paths', { root, paths });
+}
+
+export async function commitGitRepositoryFromTauri(
+  root: string,
+  message: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('commit_git_repository', { root, message });
 }
 
 export async function listProjectWorktreesFromTauri(

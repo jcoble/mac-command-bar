@@ -116,6 +116,13 @@ struct ProjectGitStatus {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct GitActionResult {
+    message: String,
+    status: ProjectGitStatus,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitFileStatus {
     relative_path: String,
     index_status: String,
@@ -481,6 +488,29 @@ async fn read_source_git_diff(root: String, path: String) -> Result<SourceGitDif
     })
     .await
     .map_err(|error| format!("Git diff task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn stage_git_paths(root: String, paths: Vec<String>) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || stage_git_paths_sync(PathBuf::from(root), paths))
+        .await
+        .map_err(|error| format!("Git stage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn unstage_git_paths(root: String, paths: Vec<String>) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || unstage_git_paths_sync(PathBuf::from(root), paths))
+        .await
+        .map_err(|error| format!("Git unstage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn commit_git_repository(root: String, message: String) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        commit_git_repository_sync(PathBuf::from(root), message)
+    })
+    .await
+    .map_err(|error| format!("Git commit task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1167,11 +1197,7 @@ fn source_file_action_command(
 }
 
 fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
-    let metadata = std::fs::metadata(&root)
-        .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
-    if !metadata.is_dir() {
-        return Err("Git root is not a directory".to_string());
-    }
+    validate_git_root(&root)?;
 
     let root_arg = root.display().to_string();
     let output = Command::new("git")
@@ -1198,12 +1224,124 @@ fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDiff, String> {
-    let root_metadata = std::fs::metadata(&root)
-        .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
-    if !root_metadata.is_dir() {
-        return Err("Git root is not a directory".to_string());
+fn stage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let validated_paths = validate_git_relative_paths(&paths)?;
+    run_git_with_paths(&root, &["add"], &validated_paths)?;
+    Ok(GitActionResult {
+        message: format_git_path_action_message("Staged", validated_paths.len()),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn unstage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let validated_paths = validate_git_relative_paths(&paths)?;
+    run_git_with_paths(&root, &["restore", "--staged"], &validated_paths)?;
+    Ok(GitActionResult {
+        message: format_git_path_action_message("Unstaged", validated_paths.len()),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn commit_git_repository_sync(root: PathBuf, message: String) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Commit message is required".to_string());
     }
+    if message.contains('\0') {
+        return Err("Commit message cannot contain null bytes".to_string());
+    }
+    if !git_has_staged_changes(&root)? {
+        return Err("No staged changes to commit".to_string());
+    }
+
+    run_git_text(&root, &["commit", "-m", message])?;
+    Ok(GitActionResult {
+        message: "Committed staged changes".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn validate_git_root(root: &Path) -> Result<(), String> {
+    let metadata = std::fs::metadata(root)
+        .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
+    if metadata.is_dir() {
+        Ok(())
+    } else {
+        Err("Git root is not a directory".to_string())
+    }
+}
+
+fn validate_git_relative_paths(paths: &[String]) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Err("At least one relative repo path is required".to_string());
+    }
+
+    let mut validated_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        let trimmed = path.trim();
+        let relative_path = Path::new(trimmed);
+        let is_safe_relative_path = !trimmed.is_empty()
+            && !trimmed.contains('\0')
+            && !relative_path.is_absolute()
+            && relative_path
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)));
+
+        if !is_safe_relative_path {
+            return Err("Git actions only accept relative repo paths".to_string());
+        }
+
+        validated_paths.push(trimmed.to_string());
+    }
+
+    Ok(validated_paths)
+}
+
+fn run_git_with_paths(root: &Path, args: &[&str], paths: &[String]) -> Result<String, String> {
+    let mut git_args = args.to_vec();
+    git_args.push("--");
+    for path in paths {
+        git_args.push(path.as_str());
+    }
+
+    run_git_text(root, &git_args)
+}
+
+fn git_has_staged_changes(root: &Path) -> Result<bool, String> {
+    let root_arg = root.display().to_string();
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root_arg)
+        .args(["diff", "--cached", "--quiet", "--exit-code"])
+        .output()
+        .map_err(|error| format!("Could not run git diff --cached: {error}"))?;
+
+    if output.status.success() {
+        return Ok(false);
+    }
+
+    if output.status.code() == Some(1) {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        format!("git diff --cached exited with {}", output.status)
+    } else {
+        stderr
+    })
+}
+
+fn format_git_path_action_message(action: &str, count: usize) -> String {
+    let noun = if count == 1 { "path" } else { "paths" };
+    format!("{action} {count} {noun}")
+}
+
+fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDiff, String> {
+    validate_git_root(&root)?;
 
     let path_metadata = std::fs::metadata(&path)
         .map_err(|error| format!("Could not read source path metadata: {error}"))?;
@@ -2113,6 +2251,9 @@ fn main() {
             find_source_references,
             project_git_status,
             read_source_git_diff,
+            stage_git_paths,
+            unstage_git_paths,
+            commit_git_repository,
             list_project_worktrees,
             list_git_repository_summaries,
             list_agent_sessions,
@@ -2482,6 +2623,8 @@ mod tests {
         std::fs::write(&file_path, "export const value = 1;\n").unwrap();
 
         run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
         run_git_for_test(&root, &["add", "src/App.ts"]);
         run_git_for_test(
             &root,
@@ -2562,6 +2705,65 @@ mod tests {
             .as_ref()
             .is_some_and(|sha| !sha.is_empty()));
         assert!(summary.dirty_since_epoch_ms.is_some());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_actions_stage_unstage_and_commit_repo_paths() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file_path = root.join("src/App.ts");
+        std::fs::write(&file_path, "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(
+            &root,
+            &[
+                "-c",
+                "user.name=MacCommandBar Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        std::fs::write(&file_path, "export const value = 2;\n").unwrap();
+
+        let staged = stage_git_paths_sync(root.clone(), vec!["src/App.ts".to_string()]).unwrap();
+        assert_eq!(staged.message, "Staged 1 path");
+        assert_eq!(staged.status.files[0].index_status, "modified");
+        assert_eq!(staged.status.files[0].worktree_status, "");
+
+        let unstaged =
+            unstage_git_paths_sync(root.clone(), vec!["src/App.ts".to_string()]).unwrap();
+        assert_eq!(unstaged.message, "Unstaged 1 path");
+        assert_eq!(unstaged.status.files[0].index_status, "");
+        assert_eq!(unstaged.status.files[0].worktree_status, "modified");
+
+        stage_git_paths_sync(root.clone(), vec!["src/App.ts".to_string()]).unwrap();
+        let committed =
+            commit_git_repository_sync(root.clone(), "Update app value".to_string()).unwrap();
+        assert_eq!(committed.message, "Committed staged changes");
+        assert!(committed.status.files.is_empty());
+        let latest_subject = run_git_text(&root, &["log", "-1", "--format=%s"]).unwrap();
+        assert_eq!(latest_subject.trim(), "Update app value");
+
+        let empty_message_error =
+            commit_git_repository_sync(root.clone(), "   ".to_string()).unwrap_err();
+        assert!(empty_message_error.contains("Commit message is required"));
+
+        let no_staged_error =
+            commit_git_repository_sync(root.clone(), "No staged changes".to_string()).unwrap_err();
+        assert!(no_staged_error.contains("No staged changes to commit"));
+
+        let outside_path_error =
+            stage_git_paths_sync(root.clone(), vec!["../outside.txt".to_string()]).unwrap_err();
+        assert!(outside_path_error.contains("relative repo paths"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

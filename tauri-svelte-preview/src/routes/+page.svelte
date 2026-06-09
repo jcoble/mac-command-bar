@@ -76,6 +76,7 @@
   } from '$lib/sourceData';
   import {
     cancelSourceScanFromTauri,
+    commitGitRepositoryFromTauri,
     createSourceScanId,
     defaultSourceScanLimit,
     expandedSourceScanLimit,
@@ -94,6 +95,8 @@
     readSourceFromTauri,
     revealSourceFileFromTauri,
     searchSourceFilesFromTauri,
+    stageGitPathsFromTauri,
+    unstageGitPathsFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type AgentSession,
@@ -184,6 +187,10 @@
   let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
   let selectedSourceGitDiffLoading = $state(false);
   let selectedSourceGitDiffError = $state('');
+  let gitCommitMessage = $state('');
+  let gitActionBusy = $state<'stage' | 'unstage' | 'commit' | ''>('');
+  let gitActionStatus = $state('');
+  let gitActionError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
   let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
   let sourceSearchQuery = $state('');
@@ -289,7 +296,18 @@
   let gitStatusByRelativePath = $derived(
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
+  let selectedProjectGitChangedFiles = $derived(projectGitStatus?.files ?? []);
   let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(selectedRecord));
+  let selectedGitPathActionDisabled = $derived(
+    !selectedRecordGitStatus || selectedSourceDirty || gitActionBusy !== ''
+  );
+  let selectedGitUnstageDisabled = $derived(
+    !selectedRecordGitStatus || !isGitFileStaged(selectedRecordGitStatus) || gitActionBusy !== ''
+  );
+  let gitHasStagedChanges = $derived(selectedProjectGitChangedFiles.some(isGitFileStaged));
+  let gitCommitDisabled = $derived(
+    gitCommitMessage.trim().length === 0 || !gitHasStagedChanges || gitActionBusy !== ''
+  );
   let selectedSourceGitSummary = $derived(
     formatSelectedSourceGitSummary(
       selectedRecordGitStatus,
@@ -854,6 +872,93 @@
     if (elapsedMs < hourMs) return `${Math.floor(elapsedMs / minuteMs)}m`;
     if (elapsedMs < dayMs) return `${Math.floor(elapsedMs / hourMs)}h`;
     return `${Math.floor(elapsedMs / dayMs)}d`;
+  }
+
+  function isGitFileStaged(fileStatus: ProjectGitFileStatus | null | undefined) {
+    return Boolean(fileStatus?.indexStatus && fileStatus.badge !== '?');
+  }
+
+  function gitStatusFileTitle(fileStatus: ProjectGitFileStatus) {
+    const states = [
+      fileStatus.indexStatus ? `Index: ${fileStatus.indexStatus}` : '',
+      fileStatus.worktreeStatus ? `Worktree: ${fileStatus.worktreeStatus}` : ''
+    ].filter(Boolean);
+    return `${fileStatus.relativePath}${states.length > 0 ? `\n${states.join('\n')}` : ''}`;
+  }
+
+  function gitStatusFileSummary(fileStatus: ProjectGitFileStatus) {
+    if (fileStatus.indexStatus && fileStatus.worktreeStatus) {
+      return `${fileStatus.indexStatus} + ${fileStatus.worktreeStatus}`;
+    }
+
+    return fileStatus.status || 'changed';
+  }
+
+  async function selectGitStatusFile(fileStatus: ProjectGitFileStatus) {
+    const record = records.find((sourceRecord) => sourceRecord.relativePath === fileStatus.relativePath);
+    if (!record) {
+      gitActionStatus = `No indexed source record for ${fileStatus.relativePath}`;
+      return;
+    }
+
+    await selectRecord(record);
+  }
+
+  async function runGitPathAction(action: 'stage' | 'unstage', paths: string[]) {
+    const nextPaths = paths.map((path) => path.trim()).filter(Boolean);
+    if (nextPaths.length === 0) return;
+
+    gitActionBusy = action;
+    gitActionError = '';
+    gitActionStatus = '';
+
+    try {
+      const result =
+        action === 'stage'
+          ? await stageGitPathsFromTauri(selectedProject.path, nextPaths)
+          : await unstageGitPathsFromTauri(selectedProject.path, nextPaths);
+
+      if (!result) {
+        gitActionStatus = 'Native Git unavailable';
+        return;
+      }
+
+      projectGitStatus = result.status;
+      gitActionStatus = result.message;
+      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      void loadGitRepositorySummaries(projectOptions);
+    } catch (gitError) {
+      gitActionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
+    } finally {
+      gitActionBusy = '';
+    }
+  }
+
+  async function commitGitChanges() {
+    const message = gitCommitMessage.trim();
+    if (!message) return;
+
+    gitActionBusy = 'commit';
+    gitActionError = '';
+    gitActionStatus = '';
+
+    try {
+      const result = await commitGitRepositoryFromTauri(selectedProject.path, message);
+      if (!result) {
+        gitActionStatus = 'Native Git unavailable';
+        return;
+      }
+
+      projectGitStatus = result.status;
+      gitCommitMessage = '';
+      gitActionStatus = result.message;
+      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      void loadGitRepositorySummaries(projectOptions);
+    } catch (gitError) {
+      gitActionError = gitError instanceof Error ? gitError.message : 'Could not commit Git changes';
+    } finally {
+      gitActionBusy = '';
+    }
   }
 
   function formatAgentSessionSummary(
@@ -2777,6 +2882,80 @@
               </div>
             {:else if sourceIntelligencePanel === 'git'}
               <div class="git-diff-panel" aria-label="Selected file Git diff">
+                <div class="git-controls" aria-label="Git working tree controls">
+                  <div class="git-action-row">
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Stage selected source file"
+                      title={selectedSourceDirty ? 'Save the source file before staging it' : 'Stage selected source file'}
+                      disabled={selectedGitPathActionDisabled}
+                      onclick={() => selectedRecord && runGitPathAction('stage', [selectedRecord.relativePath])}
+                    >
+                      <Plus size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'stage' ? 'Staging' : 'Stage'}</span>
+                    </button>
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Unstage selected source file"
+                      title="Unstage selected source file"
+                      disabled={selectedGitUnstageDisabled}
+                      onclick={() => selectedRecord && runGitPathAction('unstage', [selectedRecord.relativePath])}
+                    >
+                      <RotateCcw size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'unstage' ? 'Unstaging' : 'Unstage'}</span>
+                    </button>
+                  </div>
+                  <div class="git-commit-row">
+                    <textarea
+                      class="git-commit-input"
+                      bind:value={gitCommitMessage}
+                      aria-label="Git commit message"
+                      placeholder="Commit message"
+                      rows="2"
+                    ></textarea>
+                    <button
+                      class="git-action-button commit"
+                      type="button"
+                      aria-label="Commit staged Git changes"
+                      title="Commit staged Git changes"
+                      disabled={gitCommitDisabled}
+                      onclick={commitGitChanges}
+                    >
+                      <Check size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
+                    </button>
+                  </div>
+                  {#if gitActionError || gitActionStatus}
+                    <div class:error={Boolean(gitActionError)} class="git-action-message">
+                      {gitActionError || gitActionStatus}
+                    </div>
+                  {/if}
+                </div>
+                <div class="git-status-list" aria-label="Changed Git files">
+                  {#if projectGitLoading}
+                    <div class="intelligence-empty">Loading changed files</div>
+                  {:else if projectGitError}
+                    <div class="intelligence-empty">{projectGitError}</div>
+                  {:else if selectedProjectGitChangedFiles.length === 0}
+                    <div class="intelligence-empty">No changed files</div>
+                  {:else}
+                    {#each selectedProjectGitChangedFiles as fileStatus (fileStatus.relativePath)}
+                      <button
+                        class="git-status-row"
+                        class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
+                        type="button"
+                        title={gitStatusFileTitle(fileStatus)}
+                        onclick={() => selectGitStatusFile(fileStatus)}
+                      >
+                        <strong>{fileStatus.badge}</strong>
+                        <span>{fileStatus.relativePath}</span>
+                        <small>{gitStatusFileSummary(fileStatus)}</small>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
                 <div class="intelligence-summary">{selectedSourceGitSummary}</div>
                 {#if selectedSourceGitDiffLoading}
                   <div class="intelligence-empty">Loading Git diff</div>
@@ -4402,6 +4581,163 @@
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .git-controls {
+    display: grid;
+    flex: 0 0 auto;
+    gap: 8px;
+    padding: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .git-action-row,
+  .git-commit-row {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .git-action-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .git-commit-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+  }
+
+  .git-action-button {
+    display: grid;
+    grid-template-columns: 13px minmax(0, auto);
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 0 8px;
+    color: #cfd8d5;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.045);
+    font-size: 10px;
+    font-weight: 820;
+    cursor: pointer;
+  }
+
+  .git-action-button.commit {
+    color: #dff8f4;
+    border-color: rgba(92, 226, 207, 0.28);
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .git-action-button:disabled {
+    cursor: default;
+    opacity: 0.48;
+  }
+
+  .git-action-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-commit-input {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding: 8px 9px;
+    resize: none;
+    color: #e6ecea;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    outline: none;
+    background: rgba(0, 0, 0, 0.22);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .git-commit-input:focus {
+    border-color: rgba(92, 226, 207, 0.42);
+  }
+
+  .git-action-message {
+    min-width: 0;
+    overflow: hidden;
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-action-message.error {
+    color: #ff8f8f;
+  }
+
+  .git-status-list {
+    display: grid;
+    flex: 0 0 auto;
+    gap: 5px;
+    max-height: 150px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .git-status-row {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) minmax(0, 76px);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 5px 7px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .git-status-row.selected {
+    border-color: rgba(92, 226, 207, 0.32);
+    background: rgba(92, 226, 207, 0.11);
+  }
+
+  .git-status-row strong,
+  .git-status-row span,
+  .git-status-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-status-row strong {
+    color: #6fdfcf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 860;
+  }
+
+  .git-status-row span {
+    font-size: 10px;
+    font-weight: 780;
+  }
+
+  .git-status-row small {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 760;
   }
 
   .git-diff-block {
