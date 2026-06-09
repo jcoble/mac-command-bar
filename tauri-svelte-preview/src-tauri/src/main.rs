@@ -82,6 +82,12 @@ fn list_source_files_sync(
             .cmp(&right.relative_path.to_lowercase())
     });
     records.truncate(limit);
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "mcb tauri source.list root={} count={}",
+        root.display(),
+        records.len()
+    );
     Ok(records)
 }
 
@@ -168,7 +174,7 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         .unwrap_or("source")
         .to_string();
 
-    Ok(SourcePreview {
+    let preview = SourcePreview {
         path: path_ref.display().to_string(),
         relative_path: file_name.clone(),
         file_name,
@@ -176,7 +182,13 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         byte_count: metadata.len(),
         line_count: content.lines().count(),
         content,
-    })
+    };
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "mcb tauri source.preview path={} language={} lines={}",
+        preview.path, preview.language, preview.line_count
+    );
+    Ok(preview)
 }
 
 fn detect_language(path: &Path) -> String {
