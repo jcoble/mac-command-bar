@@ -2,36 +2,104 @@
   import {
     Activity,
     Braces,
+    ChevronDown,
     ChevronRight,
     FileCode2,
+    Folder,
     FolderGit2,
+    FolderOpen,
+    RefreshCw,
     Search,
     SplitSquareHorizontal
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
-  import { demoPreviewFor, sourceRecords, type SourcePreview, type SourceRecord } from '$lib/sourceData';
-  import { readSourceFromTauri } from '$lib/tauriSource';
+  import {
+    buildSourceTree,
+    demoPreviewFor,
+    demoRecordsForProject,
+    filterSourceRecords,
+    flattenSourceTree,
+    previewFromContent,
+    projectRoots,
+    type ProjectRoot,
+    type SourcePreview,
+    type SourceRecord,
+    type SourceTreeNode
+  } from '$lib/sourceData';
+  import { listSourceFilesFromTauri, readSourceFromTauri } from '$lib/tauriSource';
 
-  let selectedRecord = $state<SourceRecord>(sourceRecords[0]);
-  let preview = $state<SourcePreview>(demoPreviewFor(sourceRecords[0]));
+  const initialRecords = demoRecordsForProject(projectRoots[0]);
+
+  let selectedProjectID = $state(projectRoots[0].id);
+  let records = $state<SourceRecord[]>(initialRecords);
+  let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
+  let preview = $state<SourcePreview | null>(
+    initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null
+  );
   let query = $state('');
-  let loading = $state(true);
+  let expandedFolderIds = $state<Set<string>>(new Set());
+  let loading = $state(false);
+  let scanning = $state(false);
   let runtime = $state('browser preview');
   let error = $state('');
+  let scanGeneration = 0;
 
-  let filteredRecords = $derived(sourceRecords.filter((record) => {
-    const value = query.trim().toLowerCase();
-    if (!value) return true;
-    return `${record.relativePath} ${record.fileName} ${record.language}`.toLowerCase().includes(value);
-  }));
+  let selectedProject = $derived(
+    projectRoots.find((project) => project.id === selectedProjectID) ?? projectRoots[0]
+  );
+  let filteredRecords = $derived(filterSourceRecords(records, query));
+  let sourceTree = $derived(buildSourceTree(filteredRecords));
+  let autoExpandFolders = $derived(query.trim().length > 0);
+  let visibleTreeRows = $derived(flattenSourceTree(sourceTree, expandedFolderIds, autoExpandFolders));
+  let selectedIndex = $derived(
+    selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
+  );
+  let recordCountLabel = $derived(
+    filteredRecords.length === records.length
+      ? `${records.length}`
+      : `${filteredRecords.length} / ${records.length}`
+  );
 
-  let selectedIndex = $derived(sourceRecords.findIndex((record) => record.path === selectedRecord.path) + 1);
+  async function scanProject(project: ProjectRoot) {
+    const generation = ++scanGeneration;
+    scanning = true;
+    loading = true;
+    error = '';
+    runtime = 'scanning source files';
 
-  async function selectRecord(record: SourceRecord) {
-    selectedRecord = record;
-    await loadRecord(record);
+    try {
+      const tauriRecords = await listSourceFilesFromTauri(project.path);
+      if (generation !== scanGeneration) return;
+
+      const nextRecords = tauriRecords ?? demoRecordsForProject(project);
+      records = nextRecords;
+      expandedFolderIds = new Set();
+      runtime = tauriRecords ? 'tauri source scan' : 'browser preview';
+
+      const nextSelection = nextRecords[0] ?? null;
+      selectedRecord = nextSelection;
+      preview = nextSelection ? previewFromContent(nextSelection, '') : null;
+
+      if (nextSelection) {
+        await loadRecord(nextSelection);
+      } else {
+        loading = false;
+      }
+    } catch (scanError) {
+      if (generation !== scanGeneration) return;
+      records = demoRecordsForProject(project);
+      selectedRecord = records[0] ?? null;
+      preview = selectedRecord ? demoPreviewFor(selectedRecord) : null;
+      runtime = 'browser preview';
+      error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
+      loading = false;
+    } finally {
+      if (generation === scanGeneration) {
+        scanning = false;
+      }
+    }
   }
 
   async function loadRecord(record: SourceRecord) {
@@ -51,8 +119,39 @@
     }
   }
 
+  async function selectRecord(record: SourceRecord) {
+    selectedRecord = record;
+    await loadRecord(record);
+  }
+
+  async function handleProjectChange() {
+    await scanProject(selectedProject);
+  }
+
+  function isFolderExpanded(node: SourceTreeNode): boolean {
+    return autoExpandFolders || expandedFolderIds.has(node.id);
+  }
+
+  function toggleFolder(node: SourceTreeNode) {
+    const nextFolderIds = new Set(expandedFolderIds);
+    if (nextFolderIds.has(node.id)) {
+      nextFolderIds.delete(node.id);
+    } else {
+      nextFolderIds.add(node.id);
+    }
+    expandedFolderIds = nextFolderIds;
+  }
+
+  function selectTreeNode(node: SourceTreeNode) {
+    if (node.file) {
+      void selectRecord(node.file);
+      return;
+    }
+    toggleFolder(node);
+  }
+
   onMount(() => {
-    void loadRecord(selectedRecord);
+    void scanProject(selectedProject);
   });
 </script>
 
@@ -68,8 +167,20 @@
       </div>
       <div>
         <p class="eyebrow">MacCommandBar</p>
-        <h1>Webview Source</h1>
+        <h1>Source Browser</h1>
       </div>
+    </div>
+
+    <div class="project-row">
+      <select bind:value={selectedProjectID} onchange={handleProjectChange} aria-label="Project">
+        {#each projectRoots as project}
+          <option value={project.id}>{project.name}</option>
+        {/each}
+      </select>
+      <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject)}>
+        <RefreshCw size={15} strokeWidth={1.8} />
+        <span>{scanning ? 'Scanning' : 'Scan'}</span>
+      </button>
     </div>
 
     <label class="search-box">
@@ -79,25 +190,61 @@
 
     <div class="tree-heading">
       <FolderGit2 size={15} strokeWidth={1.8} />
-      <span>EdiPlatform</span>
-      <strong>{sourceRecords.length}</strong>
+      <span>{selectedProject.name}</span>
+      <strong>{recordCountLabel}</strong>
     </div>
 
-    <div class="file-list">
-      {#each filteredRecords as record}
+    <div class="file-tree" aria-label="Files in selected project">
+      {#if scanning && records.length === 0}
+        {#each Array.from({ length: 8 }) as _, index}
+          <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
+        {/each}
+      {:else if visibleTreeRows.length === 0}
+        <div class="empty-tree">
+          <FileCode2 size={17} strokeWidth={1.8} />
+          <span>No source files found</span>
+        </div>
+      {:else}
+        {#each visibleTreeRows as row (row.node.id)}
+          {@const node = row.node}
+          {@const isFolder = node.file === null}
+          {@const isExpanded = isFolderExpanded(node)}
         <button
-          class:active={record.path === selectedRecord.path}
+          class:active={!isFolder && node.file?.path === selectedRecord?.path}
+          class:folder-row={isFolder}
+          class:file-row={!isFolder}
           type="button"
-          onclick={() => selectRecord(record)}
+          style={`--tree-level: ${row.level}`}
+          title={node.relativePath}
+          aria-expanded={isFolder ? isExpanded : undefined}
+          onclick={() => selectTreeNode(node)}
         >
-          <FileCode2 size={16} strokeWidth={1.8} />
-          <span>
-            <strong>{record.fileName}</strong>
-            <small>{record.relativePath}</small>
+          <span class="tree-indent"></span>
+          <span class="tree-chevron">
+            {#if isFolder}
+              {#if isExpanded}
+                <ChevronDown size={13} strokeWidth={2} />
+              {:else}
+                <ChevronRight size={13} strokeWidth={2} />
+              {/if}
+            {/if}
           </span>
-          <ChevronRight size={15} strokeWidth={1.8} />
+          <span class="tree-icon">
+            {#if isFolder}
+              {#if isExpanded}
+                <FolderOpen size={15} strokeWidth={1.8} />
+              {:else}
+                <Folder size={15} strokeWidth={1.8} />
+              {/if}
+            {:else}
+              <FileCode2 size={15} strokeWidth={1.8} />
+            {/if}
+          </span>
+          <strong>{node.name}</strong>
+          <small>{isFolder ? node.children.length : node.file?.language}</small>
         </button>
-      {/each}
+        {/each}
+      {/if}
     </div>
   </aside>
 
@@ -105,19 +252,23 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Source Preview</p>
-        <h2>{preview.fileName}</h2>
+        <h2>{preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="status-strip">
         <span>{runtime}</span>
-        <span>{preview.language}</span>
-        <span>{preview.lineCount} lines</span>
+        {#if preview}
+          <span>{preview.language}</span>
+          <span>{preview.lineCount} lines</span>
+        {/if}
       </div>
     </header>
 
-    <div class="path-row">
-      <span>{preview.relativePath}</span>
-      <strong>{selectedIndex} / {sourceRecords.length}</strong>
-    </div>
+    {#if preview}
+      <div class="path-row">
+        <span>{preview.relativePath}</span>
+        <strong>{selectedIndex} / {records.length}</strong>
+      </div>
+    {/if}
 
     {#if error}
       <div class="inline-error">
@@ -126,36 +277,44 @@
       </div>
     {/if}
 
-    <div class="editor-frame" class:is-loading={loading}>
-      <div class="editor-toolbar" aria-label="Editor controls">
-        <div class="traffic">
-          <span></span>
-          <span></span>
-          <span></span>
+    {#if preview}
+      <div class="editor-frame" class:is-loading={loading}>
+        <div class="editor-toolbar" aria-label="Editor controls">
+          <div class="traffic">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="mode-pill">
+            <SplitSquareHorizontal size={14} strokeWidth={1.8} />
+            <span>Read only</span>
+          </div>
+          <div class="quality-pill">
+            <span>{sourcePreviewAppearance.theme.id}</span>
+          </div>
+          <div class="quality-pill font-pill">
+            <span>{sourcePreviewAppearance.fontFamily.split(',')[0].replaceAll('"', '')}</span>
+          </div>
         </div>
-        <div class="mode-pill">
-          <SplitSquareHorizontal size={14} strokeWidth={1.8} />
-          <span>Read only</span>
-        </div>
-        <div class="quality-pill">
-          <span>{sourcePreviewAppearance.theme.id}</span>
-        </div>
-        <div class="quality-pill font-pill">
-          <span>{sourcePreviewAppearance.fontFamily.split(',')[0].replaceAll('"', '')}</span>
-        </div>
-      </div>
 
-      {#key sourcePreviewAppearanceKey}
-        <MonacoSourceEditor {preview} {loading} />
-      {/key}
-    </div>
+        {#key sourcePreviewAppearanceKey}
+          <MonacoSourceEditor {preview} {loading} />
+        {/key}
+      </div>
+    {:else}
+      <div class="empty-preview">
+        <FileCode2 size={34} strokeWidth={1.55} />
+        <strong>No source file loaded</strong>
+        <span>Scan a project or choose a file from the tree.</span>
+      </div>
+    {/if}
   </section>
 </main>
 
 <style>
   .shell {
     display: grid;
-    grid-template-columns: 300px minmax(0, 1fr);
+    grid-template-columns: 340px minmax(0, 1fr);
     gap: 1px;
     width: min(1180px, calc(100vw - 32px));
     height: min(760px, calc(100dvh - 32px));
@@ -170,6 +329,8 @@
   }
 
   .sidebar {
+    display: grid;
+    grid-template-rows: auto auto auto auto minmax(0, 1fr);
     min-width: 0;
     padding: 22px 18px;
     background: rgba(19, 21, 21, 0.94);
@@ -214,11 +375,65 @@
   }
 
   h1 {
-    font-size: 22px;
+    font-size: 21px;
   }
 
   h2 {
     font-size: 28px;
+  }
+
+  .project-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  select,
+  .scan-button {
+    height: 36px;
+    min-width: 0;
+    color: #f3f5f4;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.055);
+  }
+
+  select {
+    width: 100%;
+    padding: 0 12px;
+    outline: 0;
+  }
+
+  select:focus,
+  .scan-button:focus-visible {
+    border-color: rgba(92, 226, 207, 0.58);
+    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+  }
+
+  .scan-button {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    color: #cbd3d1;
+    font-size: 12px;
+    font-weight: 760;
+    cursor: pointer;
+  }
+
+  .scan-button:disabled {
+    cursor: default;
+    opacity: 0.58;
+  }
+
+  .scan-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .search-box {
@@ -269,22 +484,23 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
   }
 
-  .file-list {
-    display: grid;
-    gap: 4px;
+  .file-tree {
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 2px 4px 0;
   }
 
-  .file-list button {
+  .file-tree button {
     display: grid;
-    grid-template-columns: 20px minmax(0, 1fr) 16px;
+    grid-template-columns: calc(var(--tree-level, 0) * 14px) 14px 18px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
     width: 100%;
-    min-height: 50px;
-    padding: 8px 10px;
+    height: 30px;
+    padding: 0 7px;
     color: #cbd3d1;
     text-align: left;
-    border-radius: 8px;
+    border-radius: 7px;
     background: transparent;
     transition:
       background 150ms ease,
@@ -292,33 +508,93 @@
       transform 150ms ease;
   }
 
-  .file-list button:hover,
-  .file-list button.active {
+  .file-tree button:hover,
+  .file-tree button.active {
     color: #f2f6f5;
     background: rgba(92, 226, 207, 0.12);
   }
 
-  .file-list button:active {
+  .file-tree button:active {
     transform: translateY(1px);
   }
 
-  .file-list strong,
-  .file-list small {
-    display: block;
+  .file-tree button.folder-row {
+    color: #d7dddb;
+    font-weight: 700;
+  }
+
+  .tree-chevron,
+  .tree-icon {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    min-width: 0;
+    color: #8d9995;
+  }
+
+  .tree-icon {
+    color: #5fa7e8;
+  }
+
+  .folder-row .tree-icon {
+    color: #d0a94f;
+  }
+
+  .file-tree strong,
+  .file-tree small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .file-list strong {
-    font-size: 13px;
+  .file-tree strong {
+    font-size: 12px;
   }
 
-  .file-list small {
-    margin-top: 2px;
+  .file-tree small {
     color: #7f8b87;
     font-size: 10px;
+    font-weight: 700;
+  }
+
+  .tree-skeleton {
+    width: var(--line-width);
+    height: 22px;
+    margin: 5px 8px;
+    border-radius: 7px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.045));
+    background-size: 180% 100%;
+    animation: shimmer 1.2s ease-in-out infinite;
+  }
+
+  .empty-tree,
+  .empty-preview {
+    display: grid;
+    place-items: center;
+    gap: 8px;
+    min-height: 128px;
+    color: #9aa5a1;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .empty-preview {
+    min-height: 520px;
+    border: 1px dashed rgba(255, 255, 255, 0.13);
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .empty-preview strong {
+    color: #f3f6f5;
+    font-size: 16px;
+  }
+
+  .empty-preview span {
+    color: #9aa5a1;
+    font-weight: 650;
   }
 
   .workspace {
@@ -398,7 +674,7 @@
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.11);
     border-radius: 13px;
-    background: #101212;
+    background: #17191e;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.07),
       0 18px 45px rgba(0, 0, 0, 0.2);
@@ -442,6 +718,15 @@
 
   .quality-pill {
     color: #7ce5d5;
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: -80% 0;
+    }
   }
 
   @media (max-width: 980px) {

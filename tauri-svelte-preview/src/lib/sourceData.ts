@@ -1,4 +1,10 @@
-export type SourceLanguage = 'csharp' | 'swift' | 'rust';
+export type SourceLanguage = string;
+
+export type ProjectRoot = {
+  id: string;
+  name: string;
+  path: string;
+};
 
 export type SourceRecord = {
   path: string;
@@ -12,6 +18,32 @@ export type SourcePreview = SourceRecord & {
   content: string;
   lineCount: number;
 };
+
+export type SourceTreeNode = {
+  id: string;
+  name: string;
+  relativePath: string;
+  file: SourceRecord | null;
+  children: SourceTreeNode[];
+};
+
+export type SourceTreeRow = {
+  node: SourceTreeNode;
+  level: number;
+};
+
+export const projectRoots: ProjectRoot[] = [
+  {
+    id: 'ediplatform',
+    name: 'EdiPlatform',
+    path: '/Users/blackcolours/dev/work/EdiPlatform'
+  },
+  {
+    id: 'mac-command-bar',
+    name: 'MacCommandBar',
+    path: '/Users/blackcolours/dev/work/mac-command-bar'
+  }
+];
 
 const formatResolverContent = String.raw`using EdiPlatform.Core.Entities;
 using EdiPlatform.Core.Models.RetailerRuntime;
@@ -148,9 +180,112 @@ const demoContentByPath = new Map<string, string>([
 
 export function demoPreviewFor(record: SourceRecord): SourcePreview {
   const content = demoContentByPath.get(record.path) ?? '';
+  return previewFromContent(record, content);
+}
+
+export function demoRecordsForProject(project: ProjectRoot): SourceRecord[] {
+  const matches = sourceRecords.filter((record) => record.path.startsWith(`${project.path}/`));
+  return matches.length > 0 ? matches : sourceRecords;
+}
+
+export function previewFromContent(record: SourceRecord, content: string): SourcePreview {
   return {
     ...record,
     content,
-    lineCount: content.split(/\r\n|\r|\n/).length
+    lineCount: content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length
   };
+}
+
+export function filterSourceRecords(records: SourceRecord[], query: string): SourceRecord[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return records;
+
+  return records.filter((record) =>
+    `${record.relativePath} ${record.fileName} ${record.language}`.toLowerCase().includes(normalizedQuery)
+  );
+}
+
+export function buildSourceTree(records: SourceRecord[]): SourceTreeNode[] {
+  const entries = records.map((record) => ({
+    components: record.relativePath.split('/').filter(Boolean),
+    record
+  }));
+
+  return buildTreeNodes(entries, []);
+}
+
+export function flattenSourceTree(
+  nodes: SourceTreeNode[],
+  expandedFolderIds: Set<string>,
+  autoExpandFolders: boolean
+): SourceTreeRow[] {
+  const rows: SourceTreeRow[] = [];
+
+  function visit(nodeList: SourceTreeNode[], level: number) {
+    for (const node of nodeList) {
+      rows.push({ node, level });
+      if (node.file === null && (autoExpandFolders || expandedFolderIds.has(node.id))) {
+        visit(node.children, level + 1);
+      }
+    }
+  }
+
+  visit(nodes, 0);
+  return rows;
+}
+
+type SourceTreeEntry = {
+  components: string[];
+  record: SourceRecord;
+};
+
+function buildTreeNodes(entries: SourceTreeEntry[], prefix: string[]): SourceTreeNode[] {
+  const folderEntries = new Map<string, SourceTreeEntry[]>();
+  const fileEntries: SourceTreeEntry[] = [];
+
+  for (const entry of entries) {
+    const firstComponent = entry.components[0];
+    if (!firstComponent) continue;
+
+    if (entry.components.length === 1) {
+      fileEntries.push(entry);
+      continue;
+    }
+
+    const existing = folderEntries.get(firstComponent) ?? [];
+    existing.push({
+      components: entry.components.slice(1),
+      record: entry.record
+    });
+    folderEntries.set(firstComponent, existing);
+  }
+
+  const folderNodes = [...folderEntries.keys()]
+    .sort(localizedAscending)
+    .map((folderName) => {
+      const relativePath = [...prefix, folderName].join('/');
+      return {
+        id: `folder:${relativePath}`,
+        name: folderName,
+        relativePath,
+        file: null,
+        children: buildTreeNodes(folderEntries.get(folderName) ?? [], [...prefix, folderName])
+      };
+    });
+
+  const fileNodes = fileEntries
+    .sort((left, right) => localizedAscending(left.record.fileName, right.record.fileName))
+    .map((entry) => ({
+      id: `file:${entry.record.path}`,
+      name: entry.record.fileName,
+      relativePath: entry.record.relativePath,
+      file: entry.record,
+      children: []
+    }));
+
+  return [...folderNodes, ...fileNodes];
+}
+
+function localizedAscending(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: 'base', numeric: true });
 }
