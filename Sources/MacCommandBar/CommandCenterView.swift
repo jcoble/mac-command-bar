@@ -283,15 +283,34 @@ private struct ClipboardRow: View {
 
 private struct ProjectsPanel: View {
     @EnvironmentObject private var state: AppState
+    @State private var editingDraft: ProjectProfileDraft?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Project profiles")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button {
+                    editingDraft = ProjectProfileDraft()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+            }
+
             ForEach(state.profiles) { profile in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text(profile.name)
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
+                        Button {
+                            editingDraft = ProjectProfileDraft(profile: profile)
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Edit")
                         Button {
                             state.openProjectFolder(profile.repoPath)
                         } label: {
@@ -302,6 +321,14 @@ private struct ProjectsPanel: View {
                         Text(profile.ports.map(String.init).joined(separator: ", "))
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
+                        Button {
+                            state.deleteProfile(profile.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.red)
+                        .help("Delete")
                     }
                     Text(profile.repoPath)
                         .font(.system(size: 11, design: .monospaced))
@@ -332,11 +359,80 @@ private struct ProjectsPanel: View {
                 Divider()
             }
         }
+        .sheet(item: $editingDraft) { draft in
+            ProfileEditorSheet(initialDraft: draft)
+                .environmentObject(state)
+        }
     }
 }
 
 private func projectURLLabel(_ rawURL: String) -> String {
     URL(string: rawURL)?.host ?? rawURL
+}
+
+private struct ProfileEditorSheet: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: ProjectProfileDraft
+
+    init(initialDraft: ProjectProfileDraft) {
+        _draft = State(initialValue: initialDraft)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(draft.profileID == nil ? "Add Profile" : "Edit Profile", systemImage: "rectangle.stack.badge.plus")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+            }
+
+            Form {
+                Section("Project") {
+                    TextField("Name", text: $draft.name)
+                    TextField("Repository path", text: $draft.repoPath)
+                }
+
+                Section("Local") {
+                    TextField("Ports", text: $draft.portsText)
+                    labeledEditor("Worktree roots", text: $draft.worktreeRootsText, height: 66)
+                }
+
+                Section("URLs") {
+                    labeledEditor("URLs", text: $draft.urlsText, height: 66)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    dismiss()
+                }
+                Button("Save") {
+                    if state.saveProfileDraft(draft) {
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private func labeledEditor(_ title: String, text: Binding<String>, height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextEditor(text: text)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(minHeight: height, maxHeight: height)
+                .scrollContentBackground(.hidden)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
 }
 
 private struct ProcessesPanel: View {

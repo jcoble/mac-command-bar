@@ -214,6 +214,76 @@ public final class AppState: ObservableObject {
         }
     }
 
+    @discardableResult
+    public func saveProfileDraft(_ draft: ProjectProfileDraft) -> Bool {
+        let name = draft.trimmedName
+        guard !name.isEmpty else {
+            statusMessage = "Profile name required"
+            return false
+        }
+
+        let repoPath = draft.trimmedRepoPath
+        guard !repoPath.isEmpty else {
+            statusMessage = "Repo path required"
+            return false
+        }
+
+        guard let ports = draft.parsedPorts() else {
+            statusMessage = "Invalid ports"
+            return false
+        }
+
+        let commands: [ProfileCommand]
+        if
+            let profileID = draft.profileID,
+            let existing = profiles.first(where: { $0.id == profileID })
+        {
+            commands = existing.commands
+        } else {
+            commands = [
+                ProfileCommand(
+                    label: "Open repo",
+                    command: "cd \(shellQuote(repoPath))",
+                    target: .terminal
+                )
+            ]
+        }
+
+        let profile = ProjectProfile(
+            id: draft.profileID ?? UUID(),
+            name: name,
+            repoPath: repoPath,
+            worktreeRoots: draft.worktreeRoots,
+            ports: ports,
+            urls: draft.urls,
+            commands: commands
+        )
+
+        if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
+            profiles[index] = profile
+        } else {
+            profiles.append(profile)
+        }
+        profiles.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        updateModule("projects", count: profiles.count, status: "Profiles")
+        statusMessage = "Profile saved"
+        persistState()
+        return true
+    }
+
+    public func deleteProfile(_ id: UUID) {
+        let beforeCount = profiles.count
+        profiles.removeAll { $0.id == id }
+        guard profiles.count != beforeCount else {
+            statusMessage = "Profile missing"
+            return
+        }
+
+        updateModule("projects", count: profiles.count, status: "Profiles")
+        statusMessage = "Profile deleted"
+        persistState()
+    }
+
     public func refreshSnapshots() async {
         guard coreClient != nil else {
             lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"
