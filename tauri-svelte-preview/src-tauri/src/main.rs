@@ -534,27 +534,39 @@ fn is_source_file(path: &Path) -> bool {
 }
 
 fn should_skip_dir(name: &str) -> bool {
-    if name.ends_with("_files") {
+    let normalized = name.to_ascii_lowercase();
+    if normalized.ends_with("_files") {
         return true;
     }
 
     matches!(
-        name,
-        ".git"
+        normalized.as_str(),
+        "__pycache__"
+            | ".cache"
+            | ".git"
             | ".hg"
             | ".svn"
             | ".agents"
             | ".build"
             | ".claude"
             | ".codex"
+            | ".gradle"
             | ".next"
+            | ".nuxt"
+            | ".parcel-cache"
             | ".svelte-kit"
+            | ".turbo"
+            | ".vite"
             | "bin"
             | "build"
+            | "coverage"
+            | "deriveddata"
             | "dist"
             | "node_modules"
             | "obj"
+            | "pods"
             | "target"
+            | "testresults"
             | "vendor"
             | "worktrees"
     )
@@ -618,6 +630,41 @@ mod tests {
                 "src/Workers/Worker.cs"
             ]
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_skips_tool_cache_and_coverage_dirs() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".cache/generated")).unwrap();
+        std::fs::create_dir_all(root.join(".turbo/cache")).unwrap();
+        std::fs::create_dir_all(root.join(".parcel-cache")).unwrap();
+        std::fs::create_dir_all(root.join(".nuxt")).unwrap();
+        std::fs::create_dir_all(root.join(".vite/deps")).unwrap();
+        std::fs::create_dir_all(root.join("coverage/lcov-report")).unwrap();
+        std::fs::create_dir_all(root.join("DerivedData/Build")).unwrap();
+        std::fs::create_dir_all(root.join("TestResults/run")).unwrap();
+        std::fs::create_dir_all(root.join("Pods/SomeDependency")).unwrap();
+        std::fs::write(root.join("src/Keep.ts"), "export const keep = true;").unwrap();
+        std::fs::write(root.join(".cache/generated/Cache.ts"), "export const cache = true;").unwrap();
+        std::fs::write(root.join(".turbo/cache/Turbo.ts"), "export const turbo = true;").unwrap();
+        std::fs::write(root.join(".parcel-cache/Parcel.ts"), "export const parcel = true;").unwrap();
+        std::fs::write(root.join(".nuxt/App.vue"), "<template></template>").unwrap();
+        std::fs::write(root.join(".vite/deps/Vite.ts"), "export const vite = true;").unwrap();
+        std::fs::write(root.join("coverage/lcov-report/Coverage.ts"), "export const covered = true;").unwrap();
+        std::fs::write(root.join("DerivedData/Build/Generated.swift"), "let generated = true").unwrap();
+        std::fs::write(root.join("TestResults/run/TestLog.cs"), "public class TestLog {}").unwrap();
+        std::fs::write(root.join("Pods/SomeDependency/Dependency.swift"), "let dependency = true").unwrap();
+
+        let scan = list_source_files_sync(root.clone(), 20, None).unwrap();
+        let relative_paths = scan.records
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(relative_paths, vec!["src/Keep.ts"]);
 
         std::fs::remove_dir_all(root).unwrap();
     }
