@@ -299,6 +299,30 @@ export function formatSourceRecordCount(
   return filteredCount === totalCount ? totalLabel : `${formatCount(filteredCount)} / ${totalLabel}`;
 }
 
+export function formatSourceScanSummary(
+  filteredCount: number,
+  totalCount: number,
+  truncated: boolean,
+  query: string
+): string {
+  const safeFilteredCount = Math.max(0, Math.floor(filteredCount));
+  const safeTotalCount = Math.max(0, Math.floor(totalCount));
+  const normalizedQuery = query.trim();
+  const totalScope = truncated
+    ? `first ${formatCount(safeTotalCount)} files`
+    : `${formatCount(safeTotalCount)} ${safeTotalCount === 1 ? 'file' : 'files'}`;
+
+  if (normalizedQuery.length === 0) {
+    return truncated
+      ? `${formatCount(safeTotalCount)} indexed files; scan limit reached`
+      : `${formatCount(safeTotalCount)} indexed ${safeTotalCount === 1 ? 'file' : 'files'}`;
+  }
+
+  return `${formatCount(safeFilteredCount)} ${
+    safeFilteredCount === 1 ? 'match' : 'matches'
+  } for "${normalizedQuery}" across ${totalScope}`;
+}
+
 export function monacoLanguageForSource(language: SourceLanguage): string {
   switch (language) {
     case 'tsx':

@@ -45,3 +45,7 @@ assert.ok(pageSource.includes('onkeydown={(event) => handleTreeRowKeydown(row, e
 assert.ok(pageSource.includes('cancelSourceScanFromTauri'), 'Stop should call the native scan cancellation command');
 assert.ok(pageSource.includes('sourceScanProgress'), 'Source preview should track native scan progress');
 assert.ok(pageSource.includes('nativeSourceScanProgressEvent'), 'Source preview should subscribe to native scan progress events');
+assert.ok(pageSource.includes('scanSummaryLabel'), 'Source tree should expose an explicit scan summary label');
+assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
+assertDeclaration('.scan-summary', 'overflow: hidden');
+assertDeclaration('.scan-summary', 'text-overflow: ellipsis');

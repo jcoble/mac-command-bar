@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   closeOpenSourceTab,
   formatSourceRecordCount,
+  formatSourceScanSummary,
   folderIdsForSourceRecord,
   getSourceScanCacheEntry,
   monacoLanguageForSource,
@@ -85,6 +86,12 @@ assert.deepEqual(
 assert.equal(formatSourceRecordCount(2, 2, false), '2');
 assert.equal(formatSourceRecordCount(2_000, 2_000, true), '2,000+');
 assert.equal(formatSourceRecordCount(12, 2_000, true), '12 / 2,000+');
+assert.equal(formatSourceScanSummary(2, 2, false, ''), '2 indexed files');
+assert.equal(formatSourceScanSummary(1, 2, false, 'b'), '1 match for "b" across 2 files');
+assert.equal(
+  formatSourceScanSummary(12, 2_000, true, 'service'),
+  '12 matches for "service" across first 2,000 files'
+);
 
 const scanCache = upsertSourceScanCacheEntry({}, project, records, 2_000, 10_000);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.records.length, 2);

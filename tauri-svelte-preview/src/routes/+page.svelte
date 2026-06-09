@@ -35,6 +35,7 @@
     filterSourceRecords,
     flattenSourceTree,
     formatSourceRecordCount,
+    formatSourceScanSummary,
     folderIdsForSourceRecord,
     getSourceScanCacheEntry,
     mergeProjectRoots,
@@ -167,6 +168,9 @@
   );
   let recordCountLabel = $derived(
     formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
+  );
+  let scanSummaryLabel = $derived(
+    formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
   );
 
   $effect(() => {
@@ -1181,6 +1185,7 @@
           <span>{selectedProject.name}</span>
           <strong>{recordCountLabel}</strong>
         </div>
+        <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
 
         <div
           class="file-tree"
@@ -1854,6 +1859,18 @@
   .tree-heading strong {
     color: #6fdfcf;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  }
+
+  .scan-summary {
+    min-width: 0;
+    margin: -3px 0 7px;
+    overflow: hidden;
+    color: #7f8b87;
+    font-size: 10px;
+    font-weight: 720;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .file-tree {
