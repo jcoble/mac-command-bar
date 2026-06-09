@@ -6,6 +6,10 @@ import {
   findSourceDefinitionTargets,
   findSourceReferenceTargets,
   findSourceSearchMatches,
+  formatSourceContextGitSummary,
+  formatSourceContextIdentity,
+  formatSourceContextRootLabel,
+  formatSourceContextRuntime,
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
   formatSourceRecordCount,
@@ -96,6 +100,54 @@ assert.deepEqual(
 assert.equal(formatSourceRecordCount(2, 2, false), '2');
 assert.equal(formatSourceRecordCount(2_000, 2_000, true), '2,000+');
 assert.equal(formatSourceRecordCount(12, 2_000, true), '12 / 2,000+');
+assert.equal(
+  formatSourceContextRootLabel('/Users/blackcolours/dev/work/EdiPlatform'),
+  'main checkout'
+);
+assert.equal(
+  formatSourceContextRootLabel(
+    '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-126-m3-design-polish'
+  ),
+  'worktree:tsk-126-m3-design-polish'
+);
+assert.equal(formatSourceContextRootLabel('/tmp/scratch'), 'scratch');
+assert.equal(formatSourceContextRuntime(''), 'browser preview');
+assert.equal(formatSourceContextRuntime('  tauri source scan  '), 'tauri source scan');
+assert.equal(formatSourceContextGitSummary(null, true, ''), 'git loading');
+assert.equal(formatSourceContextGitSummary(null, false, 'permission denied'), 'git unavailable');
+assert.equal(
+  formatSourceContextGitSummary(
+    {
+      branch: 'cdx/tsk-89-practice-playwright-cli-tests',
+      ahead: 1,
+      behind: 2,
+      files: [{ relativePath: 'src/A.ts' }, { relativePath: 'src/B.ts' }]
+    },
+    false,
+    ''
+  ),
+  'cdx/tsk-89-practice-playwright-cli-tests · ahead 1 · behind 2 · 2 changes'
+);
+assert.deepEqual(
+  formatSourceContextIdentity(
+    {
+      id: 'ediplatform-worktree',
+      name: 'EdiPlatform',
+      path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-126-m3-design-polish'
+    },
+    'cdx/tsk-126-m3-design-polish · 4 changes',
+    'tauri source scan'
+  ),
+  {
+    projectName: 'EdiPlatform',
+    rootLabel: 'worktree:tsk-126-m3-design-polish',
+    rootPath: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-126-m3-design-polish',
+    gitSummary: 'cdx/tsk-126-m3-design-polish · 4 changes',
+    runtime: 'tauri source scan',
+    summary:
+      'EdiPlatform · worktree:tsk-126-m3-design-polish · cdx/tsk-126-m3-design-polish · 4 changes · tauri source scan'
+  }
+);
 assert.equal(formatSourceScanSummary(2, 2, false, ''), '2 indexed files');
 assert.equal(formatSourceScanSummary(1, 2, false, 'b'), '1 match for "b" across 2 files');
 assert.equal(

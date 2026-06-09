@@ -37,6 +37,8 @@
     findSourceDefinitionTargets,
     findSourceReferenceTargets,
     findSourceSearchMatches,
+    formatSourceContextGitSummary,
+    formatSourceContextIdentity,
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
     flattenSourceTree,
@@ -258,7 +260,10 @@
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
   let projectGitSummary = $derived(
-    formatProjectGitSummary(projectGitStatus, projectGitLoading, projectGitError)
+    formatSourceContextGitSummary(projectGitStatus, projectGitLoading, projectGitError)
+  );
+  let sourceContextIdentity = $derived(
+    formatSourceContextIdentity(selectedProject, projectGitSummary, runtime)
   );
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
@@ -528,27 +533,6 @@
         projectGitLoading = false;
       }
     }
-  }
-
-  function formatProjectGitSummary(
-    status: ProjectGitStatus | null,
-    loadingGit: boolean,
-    gitError: string
-  ) {
-    if (loadingGit) return 'git loading';
-    if (!status) return gitError ? 'git unavailable' : 'git clean';
-
-    const branch = status.branch ?? 'detached';
-    const syncParts = [
-      status.ahead > 0 ? `ahead ${status.ahead}` : '',
-      status.behind > 0 ? `behind ${status.behind}` : ''
-    ].filter(Boolean);
-    const changeLabel =
-      status.files.length === 0
-        ? 'clean'
-        : `${status.files.length} change${status.files.length === 1 ? '' : 's'}`;
-
-    return [branch, ...syncParts, changeLabel].join(' · ');
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -1910,6 +1894,25 @@
       </div>
     </header>
 
+    <div class="context-identity-strip" aria-label="Current source context" title={sourceContextIdentity.summary}>
+      <div class="context-identity-pill">
+        <span>Project</span>
+        <strong>{sourceContextIdentity.projectName}</strong>
+      </div>
+      <div class="context-identity-pill" title={sourceContextIdentity.rootPath}>
+        <span>Root</span>
+        <strong>{sourceContextIdentity.rootLabel}</strong>
+      </div>
+      <div class="context-identity-pill" title={sourceContextIdentity.gitSummary}>
+        <span>Branch</span>
+        <strong>{sourceContextIdentity.gitSummary}</strong>
+      </div>
+      <div class="context-identity-pill">
+        <span>Runtime</span>
+        <strong>{sourceContextIdentity.runtime}</strong>
+      </div>
+    </div>
+
     {#if projectOpenSourceTabs.length > 0}
       <div class="tab-strip" aria-label="Open source files">
         {#each projectOpenSourceTabs as tab (tab.path)}
@@ -3067,6 +3070,50 @@
     white-space: nowrap;
   }
 
+  .context-identity-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+    margin: -2px 0 14px;
+  }
+
+  .context-identity-pill {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 34px;
+    padding: 0 10px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .context-identity-pill span,
+  .context-identity-pill strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .context-identity-pill span {
+    color: #87918e;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .context-identity-pill strong {
+    color: #f0f4f3;
+    font-size: 11px;
+    font-weight: 760;
+  }
+
   .tab-strip {
     display: flex;
     gap: 6px;
@@ -3746,6 +3793,10 @@
     .topbar {
       grid-template-columns: 1fr;
       align-items: start;
+    }
+
+    .context-identity-strip {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .editor-frame {

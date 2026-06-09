@@ -107,6 +107,22 @@ export type SourceScanCacheEntry = {
 
 export type SourceScanCache = Record<string, SourceScanCacheEntry>;
 
+export type SourceContextGitStatus = {
+  branch?: string | null;
+  ahead: number;
+  behind: number;
+  files: Array<unknown>;
+};
+
+export type SourceContextIdentity = {
+  projectName: string;
+  rootLabel: string;
+  rootPath: string;
+  gitSummary: string;
+  runtime: string;
+  summary: string;
+};
+
 export type CloseOpenSourceTabResult = {
   tabs: SourceOpenTab[];
   nextActivePath: string | null;
@@ -169,6 +185,68 @@ export function createProjectRoot(name: string, path: string): ProjectRoot {
     id: `custom-${stableIDFor(normalizedPath)}`,
     name: name.trim() || projectRootNameFromPath(normalizedPath),
     path: normalizedPath
+  };
+}
+
+export function formatSourceContextRootLabel(path: string): string {
+  const normalizedPath = normalizeProjectPath(path);
+  const segments = normalizedPath.split('/').filter(Boolean);
+  const worktreesIndex = segments.findIndex((segment) => segment === 'worktrees');
+
+  if (worktreesIndex >= 0 && segments[worktreesIndex + 2]) {
+    return `worktree:${segments[worktreesIndex + 2]}`;
+  }
+
+  if (segments.at(-2) === 'work') {
+    return 'main checkout';
+  }
+
+  return projectRootNameFromPath(normalizedPath);
+}
+
+export function formatSourceContextRuntime(runtime: string): string {
+  return runtime.trim() || 'browser preview';
+}
+
+export function formatSourceContextGitSummary(
+  status: SourceContextGitStatus | null,
+  loadingGit: boolean,
+  gitError: string
+): string {
+  if (loadingGit) return 'git loading';
+  if (!status) return gitError ? 'git unavailable' : 'git clean';
+
+  const branch = status.branch ?? 'detached';
+  const syncParts = [
+    status.ahead > 0 ? `ahead ${status.ahead}` : '',
+    status.behind > 0 ? `behind ${status.behind}` : ''
+  ].filter(Boolean);
+  const changeLabel =
+    status.files.length === 0
+      ? 'clean'
+      : `${status.files.length} change${status.files.length === 1 ? '' : 's'}`;
+
+  return [branch, ...syncParts, changeLabel].join(' · ');
+}
+
+export function formatSourceContextIdentity(
+  project: ProjectRoot,
+  gitSummary: string,
+  runtime: string
+): SourceContextIdentity {
+  const projectName = project.name.trim() || projectRootNameFromPath(project.path);
+  const rootPath = normalizeProjectPath(project.path);
+  const rootLabel = formatSourceContextRootLabel(rootPath);
+  const normalizedGitSummary = gitSummary.trim() || 'git clean';
+  const normalizedRuntime = formatSourceContextRuntime(runtime);
+
+  return {
+    projectName,
+    rootLabel,
+    rootPath,
+    gitSummary: normalizedGitSummary,
+    runtime: normalizedRuntime,
+    summary: [projectName, rootLabel, normalizedGitSummary, normalizedRuntime].join(' · ')
   };
 }
 
