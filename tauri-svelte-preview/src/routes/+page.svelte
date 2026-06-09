@@ -178,7 +178,7 @@
         cachedScan.truncated
       );
       if (nextSelection) {
-        await loadRecord(nextSelection);
+        await loadRecord(nextSelection, generation);
       } else {
         loading = false;
       }
@@ -215,7 +215,7 @@
       );
 
       if (nextSelection) {
-        await loadRecord(nextSelection);
+        await loadRecord(nextSelection, generation);
       } else {
         loading = false;
       }
@@ -235,6 +235,17 @@
         scanning = false;
       }
     }
+  }
+
+  function cancelSourceScan() {
+    if (!scanning) return;
+
+    scanGeneration += 1;
+    scanning = false;
+    loading = false;
+    runtime = 'source scan stopped';
+    error = '';
+    fileActionStatus = 'Scan stopped';
   }
 
   function applySourceRecords(
@@ -259,21 +270,27 @@
     return nextSelection;
   }
 
-  async function loadRecord(record: SourceRecord) {
+  async function loadRecord(record: SourceRecord, expectedScanGeneration: number | null = null) {
     loading = true;
     error = '';
     fileActionStatus = '';
 
     try {
       const tauriPreview = await readSourceFromTauri(record);
+      if (expectedScanGeneration !== null && expectedScanGeneration !== scanGeneration) return;
+
       runtime = tauriPreview ? 'tauri file read' : 'browser preview';
       preview = tauriPreview ?? demoPreviewFor(record);
     } catch (previewError) {
+      if (expectedScanGeneration !== null && expectedScanGeneration !== scanGeneration) return;
+
       runtime = 'browser preview';
       error = previewError instanceof Error ? previewError.message : 'Could not read source file';
       preview = demoPreviewFor(record);
     } finally {
-      loading = false;
+      if (expectedScanGeneration === null || expectedScanGeneration === scanGeneration) {
+        loading = false;
+      }
     }
   }
 
@@ -842,9 +859,19 @@
         <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot} onclick={chooseProjectRoot}>
           <Plus size={16} strokeWidth={2} />
         </button>
-        <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject, undefined, { force: true })}>
-          <RefreshCw size={15} strokeWidth={1.8} />
-          <span>{scanning ? 'Scanning' : 'Scan'}</span>
+        <button
+          class="scan-button"
+          type="button"
+          aria-label={scanning ? 'Stop source scan' : 'Scan source files'}
+          title={scanning ? 'Stop source scan' : 'Scan source files'}
+          onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true })}
+        >
+          {#if scanning}
+            <X size={15} strokeWidth={2} />
+          {:else}
+            <RefreshCw size={15} strokeWidth={1.8} />
+          {/if}
+          <span>{scanning ? 'Stop' : 'Scan'}</span>
         </button>
       </div>
 

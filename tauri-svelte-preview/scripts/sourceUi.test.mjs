@@ -21,3 +21,10 @@ assertDeclaration('.file-tree', 'overflow-x: hidden');
 assertDeclaration('.file-tree', 'scrollbar-gutter: stable');
 assertDeclaration('.file-tree', 'scrollbar-width: thin');
 assert.ok(pageSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
+assert.ok(pageSource.includes('function cancelSourceScan()'), 'Source scans should expose a cancel action');
+assert.ok(
+  pageSource.includes('onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true })}'),
+  'Scan button should become a cancel button while a scan is running'
+);
+assert.ok(pageSource.includes("aria-label={scanning ? 'Stop source scan' : 'Scan source files'}"), 'Scan button should announce stop state');
+assert.ok(pageSource.includes("<span>{scanning ? 'Stop' : 'Scan'}</span>"), 'Scan button label should switch to Stop while scanning');
