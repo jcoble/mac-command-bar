@@ -12,6 +12,7 @@
     FolderGit2,
     FolderOpen,
     FolderSearch,
+    History,
     Plus,
     RefreshCw,
     Save,
@@ -35,8 +36,11 @@
     mergeProjectRoots,
     normalizeProjectPath,
     previewFromContent,
+    selectPreferredSourceRecord,
+    upsertRecentSourceRecord,
     type ProjectRoot,
     type SourcePreview,
+    type SourceRecentRecord,
     type SourceRecord,
     type SourceTreeNode
   } from '$lib/sourceData';
@@ -49,10 +53,16 @@
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
   const selectedProjectStorageKey = 'mac-command-bar.source-browser.selected-project';
+  const selectedSourcePathStorageKey = 'mac-command-bar.source-browser.selected-source-paths';
+  const recentSourceRecordsStorageKey = 'mac-command-bar.source-browser.recent-source-records';
+  const maxRecentSourceRecords = 24;
+  const maxProjectRecentRecords = 5;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
+  let selectedSourcePaths = $state<Record<string, string>>({});
+  let recentSourceRecords = $state<SourceRecentRecord[]>([]);
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -85,6 +95,11 @@
   let sourceTree = $derived(buildSourceTree(filteredRecords));
   let autoExpandFolders = $derived(query.trim().length > 0);
   let visibleTreeRows = $derived(flattenSourceTree(sourceTree, expandedFolderIds, autoExpandFolders));
+  let projectRecentRecords = $derived(
+    recentSourceRecords
+      .filter((record) => record.projectID === selectedProject.id)
+      .slice(0, maxProjectRecentRecords)
+  );
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
@@ -94,7 +109,10 @@
       : `${filteredRecords.length} / ${records.length}`
   );
 
-  async function scanProject(project: ProjectRoot) {
+  async function scanProject(
+    project: ProjectRoot,
+    preferredPath = selectedSourcePaths[project.id] ?? selectedRecord?.path ?? null
+  ) {
     const generation = ++scanGeneration;
     scanning = true;
     loading = true;
@@ -110,7 +128,11 @@
       expandedFolderIds = new Set();
       runtime = tauriRecords ? 'tauri source scan' : 'browser preview';
 
-      const nextSelection = nextRecords[0] ?? null;
+      const nextSelection = selectPreferredSourceRecord(
+        nextRecords,
+        preferredPath,
+        selectedRecord?.path
+      );
       selectedRecord = nextSelection;
       preview = nextSelection ? previewFromContent(nextSelection, '') : null;
 
@@ -154,7 +176,32 @@
 
   async function selectRecord(record: SourceRecord) {
     selectedRecord = record;
+    trackSelectedSourceRecord(record, selectedProject);
     await loadRecord(record);
+  }
+
+  async function selectRecentRecord(recentRecord: SourceRecentRecord) {
+    const record = records.find((sourceRecord) => sourceRecord.path === recentRecord.path) ?? recentRecord;
+    await selectRecord(record);
+  }
+
+  function trackSelectedSourceRecord(record: SourceRecord, project: ProjectRoot) {
+    const nextSelectedSourcePaths = {
+      ...selectedSourcePaths,
+      [project.id]: record.path
+    };
+    const nextRecentSourceRecords = upsertRecentSourceRecord(
+      recentSourceRecords,
+      record,
+      project,
+      Date.now(),
+      maxRecentSourceRecords
+    );
+
+    selectedSourcePaths = nextSelectedSourcePaths;
+    recentSourceRecords = nextRecentSourceRecords;
+    persistSelectedSourcePaths(nextSelectedSourcePaths);
+    persistRecentSourceRecords(nextRecentSourceRecords);
   }
 
   async function copySelectedPath() {
@@ -213,7 +260,7 @@
       projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
     selectedProjectID = nextProject.id;
     persistSelectedProjectID(nextProject.id);
-    await scanProject(nextProject);
+    await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
   }
 
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
@@ -260,6 +307,16 @@
     window.localStorage.setItem(selectedProjectStorageKey, projectID);
   }
 
+  function persistSelectedSourcePaths(paths: Record<string, string>) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(selectedSourcePathStorageKey, JSON.stringify(paths));
+  }
+
+  function persistRecentSourceRecords(recentRecords: SourceRecentRecord[]) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
+  }
+
   function loadStoredSelectedProjectID(roots: ProjectRoot[]): string {
     if (typeof window === 'undefined') return initialProject.id;
 
@@ -267,6 +324,81 @@
     return roots.some((project) => project.id === storedProjectID)
       ? storedProjectID ?? initialProject.id
       : roots[0]?.id ?? initialProject.id;
+  }
+
+  function loadStoredSelectedSourcePaths(): Record<string, string> {
+    if (typeof window === 'undefined') return {};
+
+    try {
+      const storedValue = window.localStorage.getItem(selectedSourcePathStorageKey);
+      if (!storedValue) return {};
+
+      const parsedValue: unknown = JSON.parse(storedValue);
+      if (typeof parsedValue !== 'object' || parsedValue === null || Array.isArray(parsedValue)) {
+        return {};
+      }
+
+      return Object.fromEntries(
+        Object.entries(parsedValue).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[0] === 'string' &&
+            typeof entry[1] === 'string' &&
+            entry[1].trim().length > 0
+        )
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  function loadStoredRecentSourceRecords(): SourceRecentRecord[] {
+    if (typeof window === 'undefined') return [];
+
+    try {
+      const storedValue = window.localStorage.getItem(recentSourceRecordsStorageKey);
+      if (!storedValue) return [];
+
+      const parsedValue: unknown = JSON.parse(storedValue);
+      if (!Array.isArray(parsedValue)) return [];
+
+      return parsedValue
+        .map(parseStoredRecentSourceRecord)
+        .filter((record): record is SourceRecentRecord => record !== null)
+        .slice(0, maxRecentSourceRecords);
+    } catch {
+      return [];
+    }
+  }
+
+  function parseStoredRecentSourceRecord(value: unknown): SourceRecentRecord | null {
+    if (typeof value !== 'object' || value === null) return null;
+
+    const recentRecord = value as Partial<SourceRecentRecord>;
+    if (
+      typeof recentRecord.path !== 'string' ||
+      typeof recentRecord.relativePath !== 'string' ||
+      typeof recentRecord.fileName !== 'string' ||
+      typeof recentRecord.language !== 'string' ||
+      typeof recentRecord.projectID !== 'string' ||
+      typeof recentRecord.projectName !== 'string' ||
+      typeof recentRecord.byteCount !== 'number' ||
+      typeof recentRecord.openedAt !== 'number' ||
+      !Number.isFinite(recentRecord.byteCount) ||
+      !Number.isFinite(recentRecord.openedAt)
+    ) {
+      return null;
+    }
+
+    return {
+      path: recentRecord.path,
+      relativePath: recentRecord.relativePath,
+      fileName: recentRecord.fileName,
+      language: recentRecord.language,
+      byteCount: recentRecord.byteCount,
+      projectID: recentRecord.projectID,
+      projectName: recentRecord.projectName,
+      openedAt: recentRecord.openedAt
+    };
   }
 
   function startAddingProject() {
@@ -346,7 +478,7 @@
   async function activateProject(project: ProjectRoot) {
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
-    await scanProject(project);
+    await scanProject(project, selectedSourcePaths[project.id]);
   }
 
   function removeSelectedProject() {
@@ -359,11 +491,22 @@
     customProjectRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
 
+    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    delete nextSelectedSourcePaths[removedProjectID];
+    selectedSourcePaths = nextSelectedSourcePaths;
+    persistSelectedSourcePaths(nextSelectedSourcePaths);
+
+    const nextRecentSourceRecords = recentSourceRecords.filter(
+      (record) => record.projectID !== removedProjectID
+    );
+    recentSourceRecords = nextRecentSourceRecords;
+    persistRecentSourceRecords(nextRecentSourceRecords);
+
     if (selectedProjectID === removedProjectID) {
       const fallbackProject = defaultProjectRoots[0];
       selectedProjectID = fallbackProject.id;
       persistSelectedProjectID(fallbackProject.id);
-      void scanProject(fallbackProject);
+      void scanProject(fallbackProject, nextSelectedSourcePaths[fallbackProject.id]);
     }
   }
 
@@ -393,15 +536,19 @@
     const storedCustomProjectRoots = loadStoredCustomProjectRoots();
     const storedProjectOptions = mergeProjectRoots(defaultProjectRoots, storedCustomProjectRoots);
     const storedProjectID = loadStoredSelectedProjectID(storedProjectOptions);
+    const storedSelectedSourcePaths = loadStoredSelectedSourcePaths();
+    const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedProject =
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
       initialProject;
 
     customProjectRoots = storedCustomProjectRoots;
+    selectedSourcePaths = storedSelectedSourcePaths;
+    recentSourceRecords = storedRecentSourceRecords;
     selectedProjectID = storedProject.id;
     persistSelectedProjectID(storedProject.id);
-    void scanProject(storedProject);
+    void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]);
   });
 </script>
 
@@ -473,68 +620,101 @@
       {/if}
     </div>
 
-    <label class="search-box">
-      <Search size={16} strokeWidth={1.8} />
-      <input bind:value={query} placeholder="Filter source files" />
-    </label>
+    <div class="source-browser-stack">
+      <label class="search-box">
+        <Search size={16} strokeWidth={1.8} />
+        <input bind:value={query} placeholder="Filter source files" />
+      </label>
 
-    <div class="tree-heading">
-      <FolderGit2 size={15} strokeWidth={1.8} />
-      <span>{selectedProject.name}</span>
-      <strong>{recordCountLabel}</strong>
-    </div>
-
-    <div class="file-tree" aria-label="Files in selected project">
-      {#if scanning && records.length === 0}
-        {#each Array.from({ length: 8 }) as _, index}
-          <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
-        {/each}
-      {:else if visibleTreeRows.length === 0}
-        <div class="empty-tree">
-          <FileCode2 size={17} strokeWidth={1.8} />
-          <span>No source files found</span>
+      {#if projectRecentRecords.length > 0}
+        <div class="recent-panel" aria-label="Recent source files">
+          <div class="recent-heading">
+            <span class="recent-heading-icon">
+              <History size={15} strokeWidth={1.8} />
+            </span>
+            <span>Recent</span>
+          </div>
+          <div class="recent-list">
+            {#each projectRecentRecords as recentRecord (recentRecord.path)}
+              <button
+                class:active={recentRecord.path === selectedRecord?.path}
+                type="button"
+                title={recentRecord.relativePath}
+                onclick={() => selectRecentRecord(recentRecord)}
+              >
+                <span class="recent-file-icon">
+                  <FileCode2 size={14} strokeWidth={1.8} />
+                </span>
+                <span>
+                  <strong>{recentRecord.fileName}</strong>
+                  <small>{recentRecord.relativePath}</small>
+                </span>
+              </button>
+            {/each}
+          </div>
         </div>
-      {:else}
-        {#each visibleTreeRows as row (row.node.id)}
-          {@const node = row.node}
-          {@const isFolder = node.file === null}
-          {@const isExpanded = isFolderExpanded(node)}
-        <button
-          class:active={!isFolder && node.file?.path === selectedRecord?.path}
-          class:folder-row={isFolder}
-          class:file-row={!isFolder}
-          type="button"
-          style={`--tree-level: ${row.level}`}
-          title={node.relativePath}
-          aria-expanded={isFolder ? isExpanded : undefined}
-          onclick={() => selectTreeNode(node)}
-        >
-          <span class="tree-indent"></span>
-          <span class="tree-chevron">
-            {#if isFolder}
-              {#if isExpanded}
-                <ChevronDown size={13} strokeWidth={2} />
-              {:else}
-                <ChevronRight size={13} strokeWidth={2} />
-              {/if}
-            {/if}
-          </span>
-          <span class="tree-icon">
-            {#if isFolder}
-              {#if isExpanded}
-                <FolderOpen size={15} strokeWidth={1.8} />
-              {:else}
-                <Folder size={15} strokeWidth={1.8} />
-              {/if}
-            {:else}
-              <FileCode2 size={15} strokeWidth={1.8} />
-            {/if}
-          </span>
-          <strong>{node.name}</strong>
-          <small>{isFolder ? node.children.length : node.file?.language}</small>
-        </button>
-        {/each}
       {/if}
+
+      <div class="source-list-panel">
+        <div class="tree-heading">
+          <FolderGit2 size={15} strokeWidth={1.8} />
+          <span>{selectedProject.name}</span>
+          <strong>{recordCountLabel}</strong>
+        </div>
+
+        <div class="file-tree" aria-label="Files in selected project">
+          {#if scanning && records.length === 0}
+            {#each Array.from({ length: 8 }) as _, index}
+              <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
+            {/each}
+          {:else if visibleTreeRows.length === 0}
+            <div class="empty-tree">
+              <FileCode2 size={17} strokeWidth={1.8} />
+              <span>No source files found</span>
+            </div>
+          {:else}
+            {#each visibleTreeRows as row (row.node.id)}
+              {@const node = row.node}
+              {@const isFolder = node.file === null}
+              {@const isExpanded = isFolderExpanded(node)}
+              <button
+                class:active={!isFolder && node.file?.path === selectedRecord?.path}
+                class:folder-row={isFolder}
+                class:file-row={!isFolder}
+                type="button"
+                style={`--tree-level: ${row.level}`}
+                title={node.relativePath}
+                aria-expanded={isFolder ? isExpanded : undefined}
+                onclick={() => selectTreeNode(node)}
+              >
+                <span class="tree-indent"></span>
+                <span class="tree-chevron">
+                  {#if isFolder}
+                    {#if isExpanded}
+                      <ChevronDown size={13} strokeWidth={2} />
+                    {:else}
+                      <ChevronRight size={13} strokeWidth={2} />
+                    {/if}
+                  {/if}
+                </span>
+                <span class="tree-icon">
+                  {#if isFolder}
+                    {#if isExpanded}
+                      <FolderOpen size={15} strokeWidth={1.8} />
+                    {:else}
+                      <Folder size={15} strokeWidth={1.8} />
+                    {/if}
+                  {:else}
+                    <FileCode2 size={15} strokeWidth={1.8} />
+                  {/if}
+                </span>
+                <strong>{node.name}</strong>
+                <small>{isFolder ? node.children.length : node.file?.language}</small>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -639,7 +819,7 @@
 
   .sidebar {
     display: grid;
-    grid-template-rows: auto auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     min-width: 0;
     padding: 22px 18px;
     background: rgba(19, 21, 21, 0.94);
@@ -693,6 +873,12 @@
 
   .project-controls {
     margin-bottom: 12px;
+  }
+
+  .source-browser-stack {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .project-row {
@@ -878,7 +1064,7 @@
     gap: 8px;
     height: 38px;
     padding: 0 12px;
-    margin-bottom: 18px;
+    margin-bottom: 12px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 9px;
     color: #9aa5a1;
@@ -901,6 +1087,101 @@
 
   input::placeholder {
     color: #6f7976;
+  }
+
+  .recent-panel {
+    display: grid;
+    gap: 7px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .recent-heading {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    color: #aeb8b5;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .recent-heading-icon,
+  .recent-file-icon {
+    display: grid;
+    place-items: center;
+    min-width: 0;
+  }
+
+  .recent-heading-icon {
+    color: #6fdfcf;
+  }
+
+  .recent-list {
+    display: grid;
+    gap: 4px;
+  }
+
+  .recent-list button {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 38px;
+    padding: 0 8px;
+    color: #cbd3d1;
+    text-align: left;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .recent-list button:hover,
+  .recent-list button.active {
+    color: #f2f6f5;
+    background: rgba(92, 226, 207, 0.11);
+  }
+
+  .recent-file-icon {
+    color: #8d9995;
+  }
+
+  .recent-list button.active .recent-file-icon {
+    color: #6fdfcf;
+  }
+
+  .recent-list span {
+    display: grid;
+    min-width: 0;
+  }
+
+  .recent-list strong,
+  .recent-list small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .recent-list strong {
+    font-size: 12px;
+    line-height: 1.15;
+  }
+
+  .recent-list small {
+    color: #7f8b87;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .source-list-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    flex: 1;
+    min-height: 0;
   }
 
   .tree-heading {

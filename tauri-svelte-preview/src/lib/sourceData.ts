@@ -19,6 +19,12 @@ export type SourcePreview = SourceRecord & {
   lineCount: number;
 };
 
+export type SourceRecentRecord = SourceRecord & {
+  projectID: string;
+  projectName: string;
+  openedAt: number;
+};
+
 export type SourceTreeNode = {
   id: string;
   name: string;
@@ -243,6 +249,43 @@ export function previewFromContent(record: SourceRecord, content: string): Sourc
     content,
     lineCount: content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length
   };
+}
+
+export function selectPreferredSourceRecord(
+  records: SourceRecord[],
+  preferredPath: string | null | undefined,
+  fallbackPath: string | null | undefined = null
+): SourceRecord | null {
+  const preferredRecord = preferredPath
+    ? records.find((record) => record.path === preferredPath)
+    : null;
+  if (preferredRecord) return preferredRecord;
+
+  const fallbackRecord = fallbackPath
+    ? records.find((record) => record.path === fallbackPath)
+    : null;
+  return fallbackRecord ?? records[0] ?? null;
+}
+
+export function upsertRecentSourceRecord(
+  recents: SourceRecentRecord[],
+  record: SourceRecord,
+  project: ProjectRoot,
+  openedAt = Date.now(),
+  limit = 10
+): SourceRecentRecord[] {
+  const cappedLimit = Math.max(0, Math.floor(limit));
+  if (cappedLimit === 0) return [];
+
+  return [
+    {
+      ...record,
+      projectID: project.id,
+      projectName: project.name,
+      openedAt
+    },
+    ...recents.filter((recentRecord) => recentRecord.path !== record.path)
+  ].slice(0, cappedLimit);
 }
 
 export function filterSourceRecords(records: SourceRecord[], query: string): SourceRecord[] {
