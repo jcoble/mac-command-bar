@@ -68,13 +68,18 @@ public struct CoreClient: CoreSending {
         process.standardError = stderr
 
         try process.run()
+        let stdoutReader = PipeReader(fileHandle: stdout.fileHandleForReading)
+        let stderrReader = PipeReader(fileHandle: stderr.fileHandleForReading)
+        stdoutReader.start()
+        stderrReader.start()
+
         stdin.fileHandleForWriting.write(input)
         try stdin.fileHandleForWriting.close()
         process.waitUntilExit()
 
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let output = stdoutReader.waitForData()
+        let errorData = stderrReader.waitForData()
         if output.isEmpty {
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
             let error = String(decoding: errorData, as: UTF8.self)
             throw CoreClientError.failed(error.isEmpty ? "mcb-core exited without output" : error)
         }
@@ -84,5 +89,35 @@ public struct CoreClient: CoreSending {
             return response
         }
         return response
+    }
+}
+
+private final class PipeReader: @unchecked Sendable {
+    private let fileHandle: FileHandle
+    private let queue = DispatchQueue(label: "dev.blackcolours.MacCommandBar.pipe-reader")
+    private let group = DispatchGroup()
+    private let lock = NSLock()
+    private var capturedData = Data()
+
+    init(fileHandle: FileHandle) {
+        self.fileHandle = fileHandle
+    }
+
+    func start() {
+        group.enter()
+        queue.async {
+            let data = self.fileHandle.readDataToEndOfFile()
+            self.lock.withLock {
+                self.capturedData = data
+            }
+            self.group.leave()
+        }
+    }
+
+    func waitForData() -> Data {
+        group.wait()
+        return lock.withLock {
+            capturedData
+        }
     }
 }
