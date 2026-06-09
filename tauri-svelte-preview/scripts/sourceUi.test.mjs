@@ -244,3 +244,13 @@ assert.ok(pageSource.includes('class="runtime-port"'), 'Runtime context rows sho
 assert.ok(pageSource.includes('Runtime Contexts'), 'Runtime context panel should have a clear heading');
 assertDeclaration('.runtime-context-list', 'overflow-y: auto');
 assertDeclaration('.runtime-context-list', 'scrollbar-width: thin');
+assert.ok(pageSource.includes('listProjectWorktreesFromTauri'), 'Source page should load native project worktrees');
+assert.ok(pageSource.includes('projectWorktrees'), 'Source page should track project worktrees');
+assert.ok(pageSource.includes('function loadProjectWorktrees'), 'Source page should expose a worktree refresh action');
+assert.ok(pageSource.includes('aria-label="Refresh worktrees"'), 'Worktree panel should expose a refresh action');
+assert.ok(pageSource.includes('class="worktree-context-panel"'), 'Source page should render a worktree safety panel');
+assert.ok(pageSource.includes('class="worktree-context-list"'), 'Worktree panel should render a scrollable list');
+assert.ok(pageSource.includes('class="worktree-status-badge"'), 'Worktree rows should show delete eligibility');
+assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');
+assertDeclaration('.worktree-context-list', 'overflow-y: auto');
+assertDeclaration('.worktree-context-list', 'scrollbar-width: thin');

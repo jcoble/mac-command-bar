@@ -81,6 +81,7 @@
     expandedSourceScanLimit,
     findSourceDefinitionsFromTauri,
     findSourceReferencesFromTauri,
+    listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
@@ -94,6 +95,7 @@
     type NativeSourceScanProgress,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
+    type ProjectWorktree,
     type RuntimeContext
   } from '$lib/tauriSource';
 
@@ -139,6 +141,10 @@
   let runtimeContextsLoading = $state(false);
   let runtimeContextError = $state('');
   let runtimeContextSource = $state('browser preview');
+  let projectWorktrees = $state<ProjectWorktree[]>([]);
+  let projectWorktreesLoading = $state(false);
+  let projectWorktreeError = $state('');
+  let projectWorktreeSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -284,6 +290,14 @@
       runtimeContextsLoading,
       runtimeContextError,
       runtimeContextSource
+    )
+  );
+  let projectWorktreeSummary = $derived(
+    formatProjectWorktreeSummary(
+      projectWorktrees.length,
+      projectWorktreesLoading,
+      projectWorktreeError,
+      projectWorktreeSource
     )
   );
   let sourceSearchSummary = $derived(
@@ -580,6 +594,30 @@
     }
   }
 
+  async function loadProjectWorktrees(project: ProjectRoot = selectedProject) {
+    projectWorktreesLoading = true;
+    projectWorktreeError = '';
+
+    try {
+      const nativeWorktrees = await listProjectWorktreesFromTauri(project.path);
+      if (nativeWorktrees) {
+        projectWorktrees = nativeWorktrees;
+        projectWorktreeSource = 'native git scan';
+        return;
+      }
+
+      projectWorktrees = demoProjectWorktreesForProject(project);
+      projectWorktreeSource = 'browser preview';
+    } catch (worktreeError) {
+      projectWorktrees = demoProjectWorktreesForProject(project);
+      projectWorktreeSource = 'browser preview';
+      projectWorktreeError =
+        worktreeError instanceof Error ? worktreeError.message : 'Could not scan worktrees';
+    } finally {
+      projectWorktreesLoading = false;
+    }
+  }
+
   function demoRuntimeContextsForProject(project: ProjectRoot): RuntimeContext[] {
     return [
       {
@@ -594,6 +632,20 @@
     ];
   }
 
+  function demoProjectWorktreesForProject(project: ProjectRoot): ProjectWorktree[] {
+    return [
+      {
+        repo: project.name,
+        path: project.path,
+        branch: 'main',
+        isDirty: false,
+        hasUnmergedCommits: false,
+        lastActivity: null,
+        deleteEligibility: 'requires-confirmation'
+      }
+    ];
+  }
+
   function formatRuntimeContextSummary(
     contextCount: number,
     loadingContexts: boolean,
@@ -604,6 +656,24 @@
     if (contextError) return contextError;
     if (contextCount === 0) return `No listeners from this project · ${contextSource}`;
     return `${contextCount} ${contextCount === 1 ? 'listener' : 'listeners'} · ${contextSource}`;
+  }
+
+  function formatProjectWorktreeSummary(
+    worktreeCount: number,
+    loadingWorktrees: boolean,
+    worktreeError: string,
+    worktreeSource: string
+  ) {
+    if (loadingWorktrees) return 'Scanning selected project';
+    if (worktreeError) return worktreeError;
+    if (worktreeCount === 0) return `No worktrees found · ${worktreeSource}`;
+    return `${worktreeCount} ${worktreeCount === 1 ? 'worktree' : 'worktrees'} · ${worktreeSource}`;
+  }
+
+  function projectWorktreeEligibilityKind(worktree: ProjectWorktree) {
+    if (worktree.deleteEligibility.startsWith('blocked')) return 'blocked';
+    if (worktree.isDirty || worktree.hasUnmergedCommits) return 'blocked';
+    return 'ready';
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -1231,6 +1301,7 @@
     persistSelectedProjectID(nextProject.id);
     void loadProjectGitStatus(nextProject);
     void loadRuntimeContexts(projectOptions);
+    void loadProjectWorktrees(nextProject);
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -1674,6 +1745,7 @@
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
     void loadRuntimeContexts(storedProjectOptions);
+    void loadProjectWorktrees(storedProject);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
       indexProjectsInBackground(storedProjectOptions)
     );
@@ -2011,6 +2083,39 @@
               <strong>{context.command}</strong>
               <span>{context.rootLabel}</span>
               <small title={context.cwd}>{context.cwd}</small>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    <section class="worktree-context-panel" aria-label="Worktree safety">
+      <div class="worktree-context-header">
+        <div>
+          <strong>Worktree Safety</strong>
+          <span>{projectWorktreeSummary}</span>
+        </div>
+        <button
+          class="file-action-button"
+          type="button"
+          aria-label="Refresh worktrees"
+          title="Refresh worktrees"
+          disabled={projectWorktreesLoading}
+          onclick={() => loadProjectWorktrees(selectedProject)}
+        >
+          <RefreshCw size={14} strokeWidth={1.9} />
+        </button>
+      </div>
+      {#if projectWorktrees.length > 0}
+        <div class="worktree-context-list">
+          {#each projectWorktrees as worktree (worktree.path)}
+            {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
+            <div class="worktree-context-row" class:blocked={eligibilityKind === 'blocked'}>
+              <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
+              <strong>{worktree.branch}</strong>
+              <span>{worktree.repo}</span>
+              <small title={worktree.path}>{worktree.path}</small>
+              <em>{worktree.deleteEligibility}</em>
             </div>
           {/each}
         </div>
@@ -3218,7 +3323,8 @@
     font-weight: 760;
   }
 
-  .runtime-context-panel {
+  .runtime-context-panel,
+  .worktree-context-panel {
     display: grid;
     gap: 8px;
     min-width: 0;
@@ -3229,7 +3335,8 @@
     background: rgba(255, 255, 255, 0.035);
   }
 
-  .runtime-context-header {
+  .runtime-context-header,
+  .worktree-context-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -3237,33 +3344,39 @@
     min-width: 0;
   }
 
-  .runtime-context-header div {
+  .runtime-context-header div,
+  .worktree-context-header div {
     display: grid;
     gap: 2px;
     min-width: 0;
   }
 
   .runtime-context-header strong,
-  .runtime-context-header span {
+  .runtime-context-header span,
+  .worktree-context-header strong,
+  .worktree-context-header span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .runtime-context-header strong {
+  .runtime-context-header strong,
+  .worktree-context-header strong {
     color: #f0f4f3;
     font-size: 12px;
     font-weight: 800;
   }
 
-  .runtime-context-header span {
+  .runtime-context-header span,
+  .worktree-context-header span {
     color: #8d9995;
     font-size: 10px;
     font-weight: 740;
   }
 
-  .runtime-context-list {
+  .runtime-context-list,
+  .worktree-context-list {
     display: grid;
     gap: 5px;
     max-height: 108px;
@@ -3275,9 +3388,19 @@
     scrollbar-width: thin;
   }
 
-  .runtime-context-row {
+  .runtime-context-list {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .worktree-context-list {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .runtime-context-row,
+  .worktree-context-row {
     display: grid;
-    grid-template-columns: auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
     align-items: center;
     gap: 8px;
     min-width: 0;
@@ -3287,10 +3410,27 @@
     background: rgba(0, 0, 0, 0.14);
   }
 
+  .runtime-context-row {
+    grid-template-columns: auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
+  }
+
+  .worktree-context-row {
+    grid-template-columns: auto minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1fr);
+  }
+
+  .worktree-context-row.blocked {
+    background: rgba(216, 170, 85, 0.09);
+  }
+
   .runtime-port,
+  .worktree-status-badge,
   .runtime-context-row strong,
   .runtime-context-row span,
-  .runtime-context-row small {
+  .runtime-context-row small,
+  .worktree-context-row strong,
+  .worktree-context-row span,
+  .worktree-context-row small,
+  .worktree-context-row em {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3304,16 +3444,43 @@
     font-weight: 820;
   }
 
+  .worktree-status-badge {
+    display: inline-grid;
+    place-items: center;
+    height: 20px;
+    padding: 0 7px;
+    color: #071b18;
+    border-radius: 999px;
+    background: #6fdfcf;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .worktree-context-row.blocked .worktree-status-badge {
+    color: #211606;
+    background: #d8aa55;
+  }
+
   .runtime-context-row strong {
     color: #f0f4f3;
     font-size: 11px;
     font-weight: 780;
   }
 
+  .worktree-context-row strong {
+    color: #f0f4f3;
+    font-size: 11px;
+    font-weight: 780;
+  }
+
   .runtime-context-row span,
-  .runtime-context-row small {
+  .runtime-context-row small,
+  .worktree-context-row span,
+  .worktree-context-row small,
+  .worktree-context-row em {
     color: #8d9995;
     font-size: 10px;
+    font-style: normal;
     font-weight: 720;
   }
 
@@ -4003,6 +4170,10 @@
     }
 
     .runtime-context-row {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .worktree-context-row {
       grid-template-columns: auto minmax(0, 1fr);
     }
 

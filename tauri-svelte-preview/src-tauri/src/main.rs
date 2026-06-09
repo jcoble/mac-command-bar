@@ -123,6 +123,18 @@ struct GitFileStatus {
     badge: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ProjectWorktree {
+    repo: String,
+    path: String,
+    branch: String,
+    is_dirty: bool,
+    has_unmerged_commits: bool,
+    last_activity: Option<String>,
+    delete_eligibility: String,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeContextProject {
@@ -423,6 +435,13 @@ async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Git status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Worktree scan task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1117,6 +1136,130 @@ fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
+fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, String> {
+    let metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read worktree root metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Worktree root is not a directory".to_string());
+    }
+
+    let root_arg = root.display().to_string();
+    let output = Command::new("git")
+        .args(["-C", root_arg.as_str(), "worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|error| format!("Could not run git worktree list: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git worktree list exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+
+    let repo = path_last_segment(&root).unwrap_or_else(|| "repo".to_string());
+    Ok(
+        parse_project_worktree_porcelain(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .map(|mut record| {
+                record.repo = repo.clone();
+                record.is_dirty = project_worktree_is_dirty(&record.path);
+                record.has_unmerged_commits = project_worktree_has_unmerged_commits(&record.path);
+                record.last_activity = project_worktree_last_activity(&record.path);
+                record.delete_eligibility = project_worktree_delete_eligibility(
+                    record.is_dirty,
+                    record.has_unmerged_commits,
+                );
+                record
+            })
+            .collect(),
+    )
+}
+
+fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
+    output
+        .split("\n\n")
+        .filter_map(|block| {
+            let mut path = None;
+            let mut branch = None;
+
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("worktree ") {
+                    path = Some(value.to_string());
+                } else if let Some(value) = line.strip_prefix("branch ") {
+                    branch = Some(value.trim_start_matches("refs/heads/").to_string());
+                } else if line == "detached" {
+                    branch = Some("detached".to_string());
+                }
+            }
+
+            path.map(|path| ProjectWorktree {
+                repo: String::new(),
+                path,
+                branch: branch.unwrap_or_else(|| "unknown".to_string()),
+                is_dirty: false,
+                has_unmerged_commits: false,
+                last_activity: None,
+                delete_eligibility: "unknown".to_string(),
+            })
+        })
+        .collect()
+}
+
+fn project_worktree_delete_eligibility(is_dirty: bool, has_unmerged_commits: bool) -> String {
+    if is_dirty {
+        "blocked: dirty worktree".to_string()
+    } else if has_unmerged_commits {
+        "blocked: unmerged commits".to_string()
+    } else {
+        "requires-confirmation".to_string()
+    }
+}
+
+fn project_worktree_is_dirty(path: &str) -> bool {
+    let output = Command::new("git")
+        .args(["-C", path, "status", "--short"])
+        .output();
+    output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| !output.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+fn project_worktree_has_unmerged_commits(path: &str) -> bool {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            path,
+            "log",
+            "--branches",
+            "--not",
+            "--remotes",
+            "--oneline",
+        ])
+        .output();
+    output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| !output.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+fn project_worktree_last_activity(path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", path, "log", "-1", "--format=%cI"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 fn list_runtime_contexts_sync(
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<RuntimeContext>, String> {
@@ -1576,6 +1719,7 @@ fn main() {
             find_source_definitions,
             find_source_references,
             project_git_status,
+            list_project_worktrees,
             list_runtime_contexts
         ])
         .run(tauri::generate_context!())
@@ -1995,6 +2139,41 @@ mod tests {
 
         assert!(
             runtime_context_project_for_cwd(Path::new("/tmp/other-project"), &projects).is_none()
+        );
+    }
+
+    #[test]
+    fn project_worktree_parser_reads_porcelain_branches() {
+        let records = parse_project_worktree_porcelain(
+            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feature\nHEAD def\nbranch refs/heads/cdx/feature\n\nworktree /detached\nHEAD fed\ndetached\n",
+        );
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| (record.path.as_str(), record.branch.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("/repo", "main"),
+                ("/worktrees/feature", "cdx/feature"),
+                ("/detached", "detached")
+            ]
+        );
+    }
+
+    #[test]
+    fn project_worktree_delete_eligibility_prioritizes_dirty_then_unmerged() {
+        assert_eq!(
+            project_worktree_delete_eligibility(true, true),
+            "blocked: dirty worktree"
+        );
+        assert_eq!(
+            project_worktree_delete_eligibility(false, true),
+            "blocked: unmerged commits"
+        );
+        assert_eq!(
+            project_worktree_delete_eligibility(false, false),
+            "requires-confirmation"
         );
     }
 

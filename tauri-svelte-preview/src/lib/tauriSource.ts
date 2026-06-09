@@ -33,6 +33,16 @@ export type ProjectGitStatus = {
   files: ProjectGitFileStatus[];
 };
 
+export type ProjectWorktree = {
+  repo: string;
+  path: string;
+  branch: string;
+  isDirty: boolean;
+  hasUnmergedCommits: boolean;
+  lastActivity: string | null;
+  deleteEligibility: string;
+};
+
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
 
 export type RuntimeContext = {
@@ -142,6 +152,17 @@ export async function readProjectGitStatusFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectGitStatus>('project_git_status', { root });
+}
+
+export async function listProjectWorktreesFromTauri(
+  root: string
+): Promise<ProjectWorktree[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProjectWorktree[]>('list_project_worktrees', { root });
 }
 
 export async function listRuntimeContextsFromTauri(
