@@ -33,6 +33,13 @@ export type ProjectGitStatus = {
   files: ProjectGitFileStatus[];
 };
 
+export type SourceGitDiff = {
+  relativePath: string;
+  status: string;
+  diff: string;
+  isBinary: boolean;
+};
+
 export type ProjectWorktree = {
   repo: string;
   path: string;
@@ -161,6 +168,18 @@ export async function readProjectGitStatusFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectGitStatus>('project_git_status', { root });
+}
+
+export async function readSourceGitDiffFromTauri(
+  root: string,
+  path: string
+): Promise<SourceGitDiff | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceGitDiff>('read_source_git_diff', { root, path });
 }
 
 export async function listProjectWorktreesFromTauri(

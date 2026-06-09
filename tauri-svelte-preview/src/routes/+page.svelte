@@ -89,6 +89,7 @@
     nativeSourceScanProgressEvent,
     openSourceFileFromTauri,
     readProjectGitStatusFromTauri,
+    readSourceGitDiffFromTauri,
     readSourceFromTauri,
     revealSourceFileFromTauri,
     searchSourceFilesFromTauri,
@@ -98,7 +99,8 @@
     type ProjectGitFileStatus,
     type ProjectGitStatus,
     type ProjectWorktree,
-    type RuntimeContext
+    type RuntimeContext,
+    type SourceGitDiff
   } from '$lib/tauriSource';
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
@@ -127,7 +129,7 @@
     id: number;
     action: SourceIntelligenceAction;
   };
-  type SourceIntelligencePanel = 'problems' | 'symbols';
+  type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
@@ -173,6 +175,9 @@
   let sourceReferenceQuery = $state('');
   let sourceReferenceLoading = $state(false);
   let sourceReferenceError = $state('');
+  let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
+  let selectedSourceGitDiffLoading = $state(false);
+  let selectedSourceGitDiffError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
   let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
   let sourceSearchQuery = $state('');
@@ -277,6 +282,15 @@
   );
   let gitStatusByRelativePath = $derived(
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
+  );
+  let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(selectedRecord));
+  let selectedSourceGitSummary = $derived(
+    formatSelectedSourceGitSummary(
+      selectedRecordGitStatus,
+      selectedSourceGitDiff,
+      selectedSourceGitDiffLoading,
+      selectedSourceGitDiffError
+    )
   );
   let projectGitSummary = $derived(
     formatSourceContextGitSummary(projectGitStatus, projectGitLoading, projectGitError)
@@ -769,6 +783,69 @@
     return record ? gitStatusByRelativePath.get(record.relativePath) ?? null : null;
   }
 
+  function selectedSourceGitBadge() {
+    if (selectedSourceGitDiffLoading) return '...';
+    if (selectedRecordGitStatus?.badge) return selectedRecordGitStatus.badge;
+    if (selectedSourceGitDiff?.status && selectedSourceGitDiff.status !== 'clean') return 'M';
+    return '0';
+  }
+
+  function formatSelectedSourceGitSummary(
+    status: ProjectGitFileStatus | null,
+    diff: SourceGitDiff | null,
+    loadingDiff: boolean,
+    diffError: string
+  ) {
+    if (loadingDiff) return 'Loading selected file diff';
+    if (diffError) return 'Selected file Git diff';
+    if (diff?.isBinary) return `${diff.relativePath} · ${diff.status} · binary file`;
+    if (diff?.diff) {
+      const lineCount = diff.diff.split('\n').length;
+      return `${diff.relativePath} · ${diff.status} · ${lineCount} diff lines`;
+    }
+    if (status) return `${status.relativePath} · ${status.status}`;
+    return 'No Git changes for selected file';
+  }
+
+  function clearSelectedSourceGitDiff() {
+    selectedSourceGitDiff = null;
+    selectedSourceGitDiffLoading = false;
+    selectedSourceGitDiffError = '';
+  }
+
+  async function loadSelectedSourceGitDiff(
+    record: SourceRecord | null = selectedRecord,
+    project: ProjectRoot = selectedProject
+  ) {
+    if (!record || selectedRecord?.path !== record.path) {
+      clearSelectedSourceGitDiff();
+      return;
+    }
+
+    const expectedPath = record.path;
+    const expectedProjectPath = project.path;
+    selectedSourceGitDiff = null;
+    selectedSourceGitDiffError = '';
+    selectedSourceGitDiffLoading = true;
+
+    try {
+      const diff = await readSourceGitDiffFromTauri(expectedProjectPath, expectedPath);
+      if (selectedRecord?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+
+      selectedSourceGitDiff = diff;
+      if (!diff) selectedSourceGitDiffError = 'Native Git diff unavailable';
+    } catch (gitDiffError) {
+      if (selectedRecord?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+
+      selectedSourceGitDiffError =
+        gitDiffError instanceof Error ? gitDiffError.message : 'Could not read Git diff';
+    } finally {
+      if (selectedRecord?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+        selectedSourceGitDiffLoading = false;
+      }
+    }
+  }
+
   async function runGlobalSourceSearch() {
     const normalizedQuery = sourceSearchQuery.trim();
     sourceSearchError = '';
@@ -1021,6 +1098,7 @@
     error = '';
     fileActionStatus = '';
     resetSourceIntelligence();
+    clearSelectedSourceGitDiff();
 
     try {
       const tauriPreview = await readSourceFromTauri(record);
@@ -1041,6 +1119,7 @@
     } finally {
       if (expectedScanGeneration === null || expectedScanGeneration === scanGeneration) {
         loading = false;
+        void loadSelectedSourceGitDiff(record);
       }
     }
   }
@@ -1192,6 +1271,7 @@
     scanLimitReached = false;
     preview = null;
     resetSourceIntelligence();
+    clearSelectedSourceGitDiff();
     loading = false;
     error = '';
     fileActionStatus = '';
@@ -1278,6 +1358,8 @@
       if (selectedRecord?.path === record.path) {
         preview = savedPreview;
       }
+      void loadProjectGitStatus(selectedProject);
+      void loadSelectedSourceGitDiff(record);
       fileActionStatus = 'Saved file';
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save source file';
@@ -2448,6 +2530,17 @@
                 <span>Symbols</span>
                 <strong>{sourceSymbols.length}</strong>
               </button>
+              <button
+                class:active={sourceIntelligencePanel === 'git'}
+                type="button"
+                role="tab"
+                aria-selected={sourceIntelligencePanel === 'git'}
+                onclick={() => sourceIntelligencePanel = 'git'}
+              >
+                <FolderGit2 size={13} strokeWidth={1.9} />
+                <span>Git</span>
+                <strong>{selectedSourceGitBadge()}</strong>
+              </button>
             </div>
 
             {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
@@ -2514,6 +2607,19 @@
                       <small>{diagnostic.line}:{diagnostic.column}</small>
                     </button>
                   {/each}
+                {/if}
+              </div>
+            {:else if sourceIntelligencePanel === 'git'}
+              <div class="git-diff-panel" aria-label="Selected file Git diff">
+                <div class="intelligence-summary">{selectedSourceGitSummary}</div>
+                {#if selectedSourceGitDiffLoading}
+                  <div class="intelligence-empty">Loading Git diff</div>
+                {:else if selectedSourceGitDiffError}
+                  <div class="intelligence-empty">{selectedSourceGitDiffError}</div>
+                {:else if selectedSourceGitDiff?.diff}
+                  <pre class="git-diff-block">{selectedSourceGitDiff.diff}</pre>
+                {:else}
+                  <div class="intelligence-empty">No diff for selected file</div>
                 {/if}
               </div>
             {:else}
@@ -3971,7 +4077,7 @@
 
   .intelligence-tabs {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
     padding: 10px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -4049,6 +4155,33 @@
     border: 2px solid rgba(20, 23, 24, 0.86);
     border-radius: 999px;
     background: rgba(174, 184, 181, 0.54);
+  }
+
+  .git-diff-panel {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .git-diff-block {
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: 8px;
+    padding: 10px;
+    overflow: auto;
+    color: #cfd8d5;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.24);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10.5px;
+    line-height: 1.45;
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    white-space: pre;
   }
 
   .intelligence-empty {

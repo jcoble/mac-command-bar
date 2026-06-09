@@ -10,6 +10,7 @@ import {
   listProjectWorktreesFromTauri,
   listRuntimeContextsFromTauri,
   readProjectGitStatusFromTauri,
+  readSourceGitDiffFromTauri,
   searchSourceFilesFromTauri,
   writeSourceToTauri
 } from '../src/lib/tauriSource.ts';
@@ -32,6 +33,7 @@ assert.equal(
   null
 );
 assert.equal(await readProjectGitStatusFromTauri('/tmp/repo'), null);
+assert.equal(await readSourceGitDiffFromTauri('/tmp/repo', '/tmp/repo/src/App.ts'), null);
 assert.equal(await listAgentSessionsFromTauri(), null);
 assert.equal(await listProjectWorktreesFromTauri('/tmp/repo'), null);
 assert.equal(

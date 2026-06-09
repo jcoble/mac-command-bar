@@ -205,8 +205,11 @@ assert.ok(pageSource.includes('class="index-summary"'), 'Source Browser should r
 assertDeclaration('.index-summary', 'overflow: hidden');
 assertDeclaration('.index-summary', 'text-overflow: ellipsis');
 assert.ok(pageSource.includes('readProjectGitStatusFromTauri'), 'Source page should load native project Git status');
+assert.ok(pageSource.includes('readSourceGitDiffFromTauri'), 'Source page should load native selected-file Git diff');
 assert.ok(pageSource.includes('projectGitStatus'), 'Source page should track selected project Git status');
 assert.ok(pageSource.includes('gitStatusByRelativePath'), 'Source page should map Git file status by relative path');
+assert.ok(pageSource.includes('selectedSourceGitDiff'), 'Source page should track selected source Git diff');
+assert.ok(pageSource.includes('function loadSelectedSourceGitDiff'), 'Source page should expose a selected-file Git diff loader');
 assert.ok(pageSource.includes('formatSourceContextIdentity'), 'Source page should format a visible context identity');
 assert.ok(pageSource.includes('formatSourceContextGitSummary'), 'Source page should use the shared Git context summary');
 assert.ok(pageSource.includes('sourceContextIdentity'), 'Source page should derive the current source context identity');
@@ -219,8 +222,14 @@ assert.ok(pageSource.includes('<span>Branch</span>'), 'Context strip should labe
 assert.ok(pageSource.includes('<span>Runtime</span>'), 'Context strip should label the runtime surface');
 assert.ok(pageSource.includes('class="project-git-pill"'), 'Topbar should render a compact project Git branch/status pill');
 assert.ok(pageSource.includes('class="git-status-badge"'), 'Tree and tabs should render file-level Git status badges');
+assert.ok(pageSource.includes('<span>Git</span>'), 'Language panel should include a Git tab');
+assert.ok(pageSource.includes('class="git-diff-panel"'), 'Source page should render a selected-file Git diff panel');
+assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.project-git-pill', 'overflow: hidden');
+assertDeclaration('.git-diff-panel', 'overflow: hidden');
+assertDeclaration('.git-diff-block', 'overflow: auto');
+assertDeclaration('.git-diff-block', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.context-identity-strip', 'overflow: hidden');
 assertDeclaration('.context-identity-pill', 'min-width: 0');
 assertDeclaration('.context-identity-pill strong', 'overflow: hidden');

@@ -124,6 +124,15 @@ struct GitFileStatus {
     badge: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceGitDiff {
+    relative_path: String,
+    status: String,
+    diff: String,
+    is_binary: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ProjectWorktree {
@@ -436,6 +445,15 @@ async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Git status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_source_git_diff(root: String, path: String) -> Result<SourceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_source_git_diff_sync(PathBuf::from(root), PathBuf::from(path))
+    })
+    .await
+    .map_err(|error| format!("Git diff task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1144,6 +1162,121 @@ fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
+fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDiff, String> {
+    let root_metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
+    if !root_metadata.is_dir() {
+        return Err("Git root is not a directory".to_string());
+    }
+
+    let path_metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read source path metadata: {error}"))?;
+    if !path_metadata.is_file() {
+        return Err("Source path is not a file".to_string());
+    }
+
+    let canonical_root = std::fs::canonicalize(&root)
+        .map_err(|error| format!("Could not resolve Git root: {error}"))?;
+    let canonical_path = std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not resolve source path: {error}"))?;
+    let root_string = normalized_path_string(&canonical_root);
+    let path_string = normalized_path_string(&canonical_path);
+    if !path_is_within(&path_string, &root_string) {
+        return Err("Source path is outside Git root".to_string());
+    }
+
+    let relative_path = canonical_path
+        .strip_prefix(&canonical_root)
+        .map_err(|error| format!("Could not derive source relative path: {error}"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let status = read_source_git_status(&canonical_root, &relative_path)?;
+    let staged_diff = run_git_text(
+        &canonical_root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--cached",
+            "--",
+            relative_path.as_str(),
+        ],
+    )?;
+    let working_diff = run_git_text(
+        &canonical_root,
+        &["diff", "--no-ext-diff", "--", relative_path.as_str()],
+    )?;
+    let diff = combine_source_git_diffs(&staged_diff, &working_diff);
+    let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
+    let status = if status.is_empty() && !diff.is_empty() {
+        "modified".to_string()
+    } else if status.is_empty() {
+        "clean".to_string()
+    } else {
+        status
+    };
+
+    Ok(SourceGitDiff {
+        relative_path,
+        status,
+        diff,
+        is_binary,
+    })
+}
+
+fn read_source_git_status(root: &Path, relative_path: &str) -> Result<String, String> {
+    let output = run_git_text(
+        root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=normal",
+            "--",
+            relative_path,
+        ],
+    )?;
+    Ok(parse_project_git_status(&output)?
+        .files
+        .into_iter()
+        .next()
+        .map(|file| file.status)
+        .unwrap_or_default())
+}
+
+fn run_git_text(root: &Path, args: &[&str]) -> Result<String, String> {
+    let root_arg = root.display().to_string();
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root_arg)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run git {}: {error}", args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git {} exited with {}", args.join(" "), output.status)
+        } else {
+            stderr
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn combine_source_git_diffs(staged_diff: &str, working_diff: &str) -> String {
+    let staged_diff = staged_diff.trim_end();
+    let working_diff = working_diff.trim_end();
+
+    match (staged_diff.is_empty(), working_diff.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => staged_diff.to_string(),
+        (true, false) => working_diff.to_string(),
+        (false, false) => {
+            format!("## Staged\n{staged_diff}\n\n## Working tree\n{working_diff}")
+        }
+    }
+}
+
 fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, String> {
     let metadata = std::fs::metadata(&root)
         .map_err(|error| format!("Could not read worktree root metadata: {error}"))?;
@@ -1727,6 +1860,7 @@ fn main() {
             find_source_definitions,
             find_source_references,
             project_git_status,
+            read_source_git_diff,
             list_project_worktrees,
             list_agent_sessions,
             list_runtime_contexts
@@ -2088,6 +2222,40 @@ mod tests {
     }
 
     #[test]
+    fn source_git_diff_reads_selected_file_worktree_diff() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file_path = root.join("src/App.ts");
+        std::fs::write(&file_path, "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(
+            &root,
+            &[
+                "-c",
+                "user.name=MacCommandBar Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        std::fs::write(&file_path, "export const value = 2;\n").unwrap();
+
+        let diff = read_source_git_diff_sync(root.clone(), file_path).unwrap();
+
+        assert_eq!(diff.relative_path, "src/App.ts");
+        assert_eq!(diff.status, "modified");
+        assert!(!diff.is_binary);
+        assert!(diff.diff.contains("-export const value = 1;"));
+        assert!(diff.diff.contains("+export const value = 2;"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn lsof_listener_parser_reads_pid_command_and_ports() {
         let listeners = parse_lsof_tcp_listeners(
             "p123\ncnode\nn*:5177\nn127.0.0.1:24678\np456\ncdotnet\nn[::1]:5001\n",
@@ -2409,5 +2577,18 @@ mod tests {
             "mac-command-bar-tauri-source-test-{}-{unique}-{counter}",
             std::process::id()
         ))
+    }
+
+    fn run_git_for_test(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(["-C", root.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("could not run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
