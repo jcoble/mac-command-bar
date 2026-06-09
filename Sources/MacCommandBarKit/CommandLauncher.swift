@@ -10,6 +10,28 @@ public struct CommandLaunch: Equatable, Sendable {
     }
 }
 
+public struct CommandPaletteItem: Equatable, Identifiable, Sendable {
+    public var id: String
+    public var title: String
+    public var source: String
+    public var command: String
+    public var target: ProfileLaunchTarget
+
+    public init(
+        id: String,
+        title: String,
+        source: String,
+        command: String,
+        target: ProfileLaunchTarget
+    ) {
+        self.id = id
+        self.title = title
+        self.source = source
+        self.command = command
+        self.target = target
+    }
+}
+
 public protocol CommandLaunching {
     func launch(_ command: String, target: ProfileLaunchTarget) throws
 }

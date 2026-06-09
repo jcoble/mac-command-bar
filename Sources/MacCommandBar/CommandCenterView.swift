@@ -713,16 +713,69 @@ private struct HealthPanel: View {
 }
 
 private struct CommandPalettePanel: View {
+    @EnvironmentObject private var state: AppState
     @State private var commandQuery = ""
 
     var body: some View {
+        let items = state.commandPaletteItems(matching: commandQuery)
+
         VStack(alignment: .leading, spacing: 10) {
             TextField("Search commands", text: $commandQuery)
                 .textFieldStyle(.roundedBorder)
-            CommandExampleRow(label: "Refresh everything", command: "mcb-core health.snapshot")
-            CommandExampleRow(label: "Open active repo", command: "cd <repo>")
-            CommandExampleRow(label: "Resume latest agent", command: "codex resume --last")
+            if items.isEmpty {
+                EmptyModuleState(
+                    symbol: "command",
+                    title: "No commands found",
+                    detail: "Profile commands and scanned agent sessions appear here."
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(items) { item in
+                            CommandPaletteRow(item: item)
+                            Divider()
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+private struct CommandPaletteRow: View {
+    @EnvironmentObject private var state: AppState
+    let item: CommandPaletteItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: item.source == "Codex" || item.source == "Claude" ? "terminal" : "command")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Text(item.source)
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text(item.command)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button {
+                state.launchCommandPaletteItem(item)
+            } label: {
+                Image(systemName: "play")
+            }
+            .buttonStyle(.borderless)
+            .help("Run")
+        }
+        .padding(.vertical, 9)
     }
 }
 

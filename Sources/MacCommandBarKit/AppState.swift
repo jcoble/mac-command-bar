@@ -181,6 +181,54 @@ public final class AppState: ObservableObject {
         launchCommand(command, target: .terminal, label: label)
     }
 
+    public func commandPaletteItems(matching query: String) -> [CommandPaletteItem] {
+        var items: [CommandPaletteItem] = []
+
+        for profile in profiles {
+            for command in profile.commands {
+                items.append(
+                    CommandPaletteItem(
+                        id: "profile:\(profile.id.uuidString):\(command.id.uuidString)",
+                        title: command.label,
+                        source: profile.name,
+                        command: command.command,
+                        target: command.target
+                    )
+                )
+            }
+        }
+
+        for session in sessions {
+            guard let command = session.resumeCommands.first else {
+                continue
+            }
+            items.append(
+                CommandPaletteItem(
+                    id: "session:\(session.provider.rawValue):\(session.id)",
+                    title: "Resume \(session.title)",
+                    source: session.provider.displayName,
+                    command: command,
+                    target: .terminal
+                )
+            )
+        }
+
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return items
+        }
+
+        return items.filter { item in
+            item.title.localizedCaseInsensitiveContains(trimmed)
+                || item.source.localizedCaseInsensitiveContains(trimmed)
+                || item.command.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    public func launchCommandPaletteItem(_ item: CommandPaletteItem) {
+        launchCommand(item.command, target: item.target, label: item.title)
+    }
+
     public func openProjectURL(_ rawURL: String) {
         guard
             let url = URL(string: rawURL),
@@ -479,4 +527,15 @@ public final class AppState: ObservableObject {
 
 private func shellQuote(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
+private extension AgentProvider {
+    var displayName: String {
+        switch self {
+        case .codex:
+            return "Codex"
+        case .claude:
+            return "Claude"
+        }
+    }
 }
