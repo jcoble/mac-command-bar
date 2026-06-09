@@ -44,6 +44,7 @@ public final class AppState: ObservableObject {
     @Published public var sessions: [AgentSessionRecord]
     @Published public var healthSnapshot: HealthSnapshot?
     @Published public var sourcePreview: SourcePreview?
+    @Published public var sourceFiles: [SourceFileRecord]
     @Published public var pendingAction: ConfirmableAction?
     @Published public var statusMessage: String
     @Published public var searchText: String
@@ -76,6 +77,7 @@ public final class AppState: ObservableObject {
         self.sessions = []
         self.healthSnapshot = nil
         self.sourcePreview = nil
+        self.sourceFiles = []
         self.pendingAction = nil
         self.statusMessage = statusMessage
         self.searchText = ""
@@ -429,6 +431,31 @@ public final class AppState: ObservableObject {
         }
     }
 
+    public func refreshSourceFiles(rootPath rawRootPath: String) async {
+        let rootPath = rawRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rootPath.isEmpty else {
+            statusMessage = "Source root required"
+            return
+        }
+        guard coreClient != nil else {
+            lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"
+            statusMessage = "Core helper unavailable"
+            return
+        }
+
+        statusMessage = "Scanning source files"
+        await refresh(
+            .sourceList,
+            moduleID: "source",
+            payload: [
+                "rootPath": .string(rootPath),
+                "limit": .number(250)
+            ]
+        )
+        updateModule("source", count: sourceFiles.count, status: "Files")
+        statusMessage = "Loaded source files"
+    }
+
     public func planKill(pid: Int) -> ConfirmableAction {
         ConfirmableAction(
             actionId: "kill-\(pid)",
@@ -532,6 +559,8 @@ public final class AppState: ObservableObject {
                 worktrees = try response.data["worktrees"]?.decode() ?? []
             case .healthSnapshot:
                 healthSnapshot = try JSONValue.object(response.data).decode(HealthSnapshot.self)
+            case .sourceList:
+                sourceFiles = try response.data["files"]?.decode() ?? []
             case .sourcePreview:
                 sourcePreview = try JSONValue.object(response.data).decode(SourcePreview.self)
             case .planKillProcess:
@@ -554,6 +583,8 @@ public final class AppState: ObservableObject {
             }.count
         case .sourcePreview:
             return response.data["lineCount"]?.intValue ?? 0
+        case .sourceList:
+            return response.data["count"]?.intValue ?? 0
         default:
             return response.data["count"]?.intValue ?? 0
         }

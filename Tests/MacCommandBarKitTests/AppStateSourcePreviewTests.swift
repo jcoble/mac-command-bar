@@ -3,6 +3,39 @@ import XCTest
 
 @MainActor
 final class AppStateSourcePreviewTests: XCTestCase {
+    func testRefreshSourceFilesSendsProjectRootAndDecodesFiles() async throws {
+        let spy = SourcePreviewCoreClientSpy(responseData: [
+            "count": .number(2),
+            "files": .array([
+                .object([
+                    "path": .string("/repo/src/App.svelte"),
+                    "relativePath": .string("src/App.svelte"),
+                    "fileName": .string("App.svelte"),
+                    "language": .string("svelte"),
+                    "byteCount": .number(31)
+                ]),
+                .object([
+                    "path": .string("/repo/src/ExternalLogin.cs"),
+                    "relativePath": .string("src/ExternalLogin.cs"),
+                    "fileName": .string("ExternalLogin.cs"),
+                    "language": .string("csharp"),
+                    "byteCount": .number(29)
+                ])
+            ])
+        ])
+        let state = AppState.sourcePreviewTestState(coreClient: spy)
+
+        await state.refreshSourceFiles(rootPath: "/repo")
+
+        let requests = await spy.recordedRequests()
+        XCTAssertEqual(requests.map(\.action), [.sourceList])
+        XCTAssertEqual(requests.first?.payload["rootPath"]?.stringValue, "/repo")
+        XCTAssertEqual(state.sourceFiles.count, 2)
+        XCTAssertEqual(state.sourceFiles.map(\.relativePath), ["src/App.svelte", "src/ExternalLogin.cs"])
+        XCTAssertEqual(state.modules.first(where: { $0.id == "source" })?.count, 2)
+        XCTAssertEqual(state.modules.first(where: { $0.id == "source" })?.status, "Files")
+    }
+
     func testPreviewSourceFileSendsRequestAndDecodesPreview() async throws {
         let spy = SourcePreviewCoreClientSpy(responseData: [
             "path": .string("/repo/Example.cs"),
@@ -21,6 +54,16 @@ final class AppStateSourcePreviewTests: XCTestCase {
                     "start": .number(13),
                     "end": .number(20),
                     "role": .string("type")
+                ]),
+                .object([
+                    "start": .number(21),
+                    "end": .number(24),
+                    "role": .string("function")
+                ]),
+                .object([
+                    "start": .number(25),
+                    "end": .number(30),
+                    "role": .string("parameter")
                 ])
             ])
         ])
@@ -40,7 +83,9 @@ final class AppStateSourcePreviewTests: XCTestCase {
                 content: "public class Example {}",
                 spans: [
                     SourceSyntaxSpan(start: 0, end: 6, role: .keyword),
-                    SourceSyntaxSpan(start: 13, end: 20, role: .type)
+                    SourceSyntaxSpan(start: 13, end: 20, role: .type),
+                    SourceSyntaxSpan(start: 21, end: 24, role: .function),
+                    SourceSyntaxSpan(start: 25, end: 30, role: .parameter)
                 ],
                 lineCount: 1,
                 byteCount: 23

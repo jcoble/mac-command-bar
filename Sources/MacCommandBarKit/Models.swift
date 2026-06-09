@@ -67,6 +67,7 @@ public enum CoreAction: String, Codable, Sendable {
     case scanProcesses = "scan.processes"
     case scanSessions = "scan.sessions"
     case healthSnapshot = "health.snapshot"
+    case sourceList = "source.list"
     case sourcePreview = "source.preview"
     case planKillProcess = "plan.killProcess"
 }
@@ -313,6 +314,30 @@ public struct SourcePreview: Codable, Equatable, Sendable {
     }
 }
 
+public struct SourceFileRecord: Codable, Equatable, Identifiable, Sendable {
+    public var path: String
+    public var relativePath: String
+    public var fileName: String
+    public var language: String
+    public var byteCount: UInt64
+
+    public var id: String { path }
+
+    public init(
+        path: String,
+        relativePath: String,
+        fileName: String,
+        language: String,
+        byteCount: UInt64
+    ) {
+        self.path = path
+        self.relativePath = relativePath
+        self.fileName = fileName
+        self.language = language
+        self.byteCount = byteCount
+    }
+}
+
 public struct SourceSyntaxSpan: Codable, Equatable, Sendable {
     public var start: Int
     public var end: Int
@@ -328,9 +353,19 @@ public struct SourceSyntaxSpan: Codable, Equatable, Sendable {
 public enum SourceSyntaxRole: String, Codable, Sendable {
     case keyword
     case type
+    case function
+    case parameter
+    case module
+    case attribute
+    case variable
+    case property
+    case constructor
+    case constant
     case string
     case comment
     case number
+    case `operator`
+    case punctuation
 }
 
 public enum ClipboardItemKind: String, Codable, Sendable {

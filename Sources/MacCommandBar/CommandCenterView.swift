@@ -441,6 +441,18 @@ private struct SourcePreviewPanel: View {
         return URL(fileURLWithPath: repoPath).appendingPathComponent(trimmed).path
     }
 
+    private var filteredSourceFiles: [SourceFileRecord] {
+        let query = pathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return state.sourceFiles
+        }
+        return state.sourceFiles.filter { file in
+            file.relativePath.localizedCaseInsensitiveContains(query)
+                || file.fileName.localizedCaseInsensitiveContains(query)
+                || file.language.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -453,17 +465,69 @@ private struct SourcePreviewPanel: View {
                 .frame(width: 150)
                 .disabled(state.profiles.isEmpty)
 
+                Button {
+                    scanSelectedProject()
+                } label: {
+                    Label("Scan", systemImage: "folder.badge.gearshape")
+                }
+                .disabled(selectedProfile == nil)
+
                 TextField("Relative or absolute source path", text: $pathText)
                     .textFieldStyle(.roundedBorder)
 
                 Button {
-                    Task {
-                        await state.previewSourceFile(path: resolvedPath)
-                    }
+                    preview(path: resolvedPath)
                 } label: {
                     Label("Preview", systemImage: "doc.text.magnifyingglass")
                 }
                 .disabled(resolvedPath.isEmpty)
+            }
+
+            if !state.sourceFiles.isEmpty {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filteredSourceFiles) { file in
+                            Button {
+                                pathText = file.relativePath
+                                preview(path: file.path)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: file.language == "csharp" ? "curlybraces" : "doc.text")
+                                        .foregroundStyle(.blue)
+                                        .frame(width: 16)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(file.fileName)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .lineLimit(1)
+                                        Text(file.relativePath)
+                                            .font(.system(size: 9, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Text(file.language)
+                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                                .padding(.vertical, 5)
+                            }
+                            .buttonStyle(.plain)
+                            Divider()
+                        }
+
+                        if filteredSourceFiles.isEmpty {
+                            Text("No scanned files match")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 8)
+                        }
+                    }
+                }
+                .frame(height: 92)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
             }
 
             if let preview = state.sourcePreview {
@@ -495,6 +559,24 @@ private struct SourcePreviewPanel: View {
         }
         .onAppear {
             selectedProfileID = selectedProfileID ?? state.profiles.first?.id
+        }
+        .onChange(of: selectedProfileID) { _, _ in
+            pathText = ""
+        }
+    }
+
+    private func scanSelectedProject() {
+        guard let repoPath = selectedProfile?.repoPath else {
+            return
+        }
+        Task {
+            await state.refreshSourceFiles(rootPath: repoPath)
+        }
+    }
+
+    private func preview(path: String) {
+        Task {
+            await state.previewSourceFile(path: path)
         }
     }
 }
@@ -575,12 +657,30 @@ private enum SourceCodeAttributedStringBuilder {
             ]
         case .type:
             return [.foregroundColor: NSColor.systemTeal]
+        case .function, .constructor:
+            return [.foregroundColor: NSColor.systemBlue]
+        case .parameter:
+            return [.foregroundColor: NSColor.systemMint]
+        case .module:
+            return [.foregroundColor: NSColor.systemPurple]
+        case .attribute:
+            return [.foregroundColor: NSColor.systemIndigo]
+        case .variable:
+            return [.foregroundColor: NSColor.labelColor]
+        case .property:
+            return [.foregroundColor: NSColor.systemCyan]
+        case .constant:
+            return [.foregroundColor: NSColor.systemOrange]
         case .string:
             return [.foregroundColor: NSColor.systemGreen]
         case .comment:
             return [.foregroundColor: NSColor.secondaryLabelColor]
         case .number:
             return [.foregroundColor: NSColor.systemOrange]
+        case .operator:
+            return [.foregroundColor: NSColor.systemRed]
+        case .punctuation:
+            return [.foregroundColor: NSColor.tertiaryLabelColor]
         }
     }
 

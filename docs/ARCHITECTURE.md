@@ -39,6 +39,7 @@ Responses use this shape:
 - `scan.processes`: parses `lsof -nP -iTCP -sTCP:LISTEN`.
 - `scan.sessions`: reads Codex and Claude session indexes from local home directories.
 - `health.snapshot`: returns basic host/cwd/home state.
+- `source.list`: scans a project directory for source-like files while skipping build and dependency folders.
 - `source.preview`: reads a UTF-8 source file and returns text plus syntax spans. C# uses tree-sitter; other detected languages currently fall back to plain text.
 - `plan.killProcess`: returns a confirmable kill plan without executing it.
 

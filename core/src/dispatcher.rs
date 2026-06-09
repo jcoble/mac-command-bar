@@ -2,7 +2,7 @@ use crate::protocol::{ConfirmableAction, CoreRequest, CoreResponse};
 use crate::scanners::processes::scan_lsof_listeners;
 use crate::scanners::sessions::scan_sessions;
 use crate::scanners::worktrees::{scan_worktrees_with_options, WorktreeScanOptions};
-use crate::source::preview_source_file;
+use crate::source::{list_source_files, preview_source_file};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -12,12 +12,42 @@ pub fn dispatch(request: CoreRequest) -> CoreResponse {
         "scan.processes" => scan_processes_action(request),
         "scan.sessions" => scan_sessions_action(request),
         "health.snapshot" => health_snapshot_action(request),
+        "source.list" => source_list_action(request),
         "source.preview" => source_preview_action(request),
         "plan.killProcess" => plan_kill_process_action(request),
         action => CoreResponse::error(
             request.id,
             format!("unknown action: {action}"),
             vec![format!("No dispatcher is registered for {action}")],
+        ),
+    }
+}
+
+fn source_list_action(request: CoreRequest) -> CoreResponse {
+    let Some(root_path) = request.payload.get("rootPath").and_then(Value::as_str) else {
+        return CoreResponse::error(
+            request.id,
+            "missing root path",
+            vec!["payload.rootPath must be a project directory".to_string()],
+        );
+    };
+    let limit = request
+        .payload
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(200);
+
+    match list_source_files(Path::new(root_path), limit) {
+        Ok(files) => CoreResponse::ok(
+            request.id,
+            format!("found {} source files", files.len()),
+            json!({ "files": files, "count": files.len() }),
+        ),
+        Err(error) => CoreResponse::error(
+            request.id,
+            "source list failed",
+            vec![format!("{error:#}")],
         ),
     }
 }
