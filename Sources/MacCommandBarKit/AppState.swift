@@ -42,6 +42,7 @@ public final class AppState: ObservableObject {
     @Published public var processes: [ProcessRecord]
     @Published public var worktrees: [WorktreeRecord]
     @Published public var sessions: [AgentSessionRecord]
+    @Published public var healthSnapshot: HealthSnapshot?
     @Published public var pendingAction: ConfirmableAction?
     @Published public var statusMessage: String
     @Published public var searchText: String
@@ -72,6 +73,7 @@ public final class AppState: ObservableObject {
         self.processes = []
         self.worktrees = []
         self.sessions = []
+        self.healthSnapshot = nil
         self.pendingAction = nil
         self.statusMessage = statusMessage
         self.searchText = ""
@@ -378,6 +380,12 @@ public final class AppState: ObservableObject {
         statusMessage = "Refreshed worktrees"
     }
 
+    public func refreshHealth() async {
+        statusMessage = "Checking health"
+        await refresh(.healthSnapshot, moduleID: "health")
+        statusMessage = "Refreshed health"
+    }
+
     public func planKill(pid: Int) -> ConfirmableAction {
         ConfirmableAction(
             actionId: "kill-\(pid)",
@@ -451,7 +459,7 @@ public final class AppState: ObservableObject {
                 CoreRequest(action: action, dryRun: true, payload: payload)
             )
             guard let response else { return }
-            let count = response.data["count"]?.intValue ?? 0
+            let count = recordCount(for: action, response: response)
             updateRecords(action: action, response: response)
             updateModule(moduleID, count: count, status: response.ok ? "Live" : "Check")
             lastCoreWarning = response.warnings.first
@@ -479,7 +487,9 @@ public final class AppState: ObservableObject {
                 updateCommandModuleCount()
             case .scanWorktrees:
                 worktrees = try response.data["worktrees"]?.decode() ?? []
-            case .healthSnapshot, .planKillProcess:
+            case .healthSnapshot:
+                healthSnapshot = try JSONValue.object(response.data).decode(HealthSnapshot.self)
+            case .planKillProcess:
                 break
             }
         } catch {
@@ -489,6 +499,17 @@ public final class AppState: ObservableObject {
 
     private func updateCommandModuleCount() {
         updateModule("commands", count: commandPaletteItems(matching: "").count, status: "Palette")
+    }
+
+    private func recordCount(for action: CoreAction, response: CoreResponse) -> Int {
+        switch action {
+        case .healthSnapshot:
+            return ["hostname", "cwd", "home"].filter { key in
+                response.data[key]?.stringValue?.isEmpty == false
+            }.count
+        default:
+            return response.data["count"]?.intValue ?? 0
+        }
     }
 
     private func persistState() {

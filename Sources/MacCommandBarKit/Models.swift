@@ -263,6 +263,27 @@ public struct AgentSessionRecord: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct HealthSnapshot: Codable, Equatable, Sendable {
+    public var hostname: String?
+    public var cwd: String?
+    public var home: String?
+
+    public init(hostname: String?, cwd: String?, home: String?) {
+        self.hostname = hostname
+        self.cwd = cwd
+        self.home = home
+    }
+
+    public var populatedFieldCount: Int {
+        [hostname, cwd, home].filter { value in
+            guard let value else {
+                return false
+            }
+            return !value.isEmpty
+        }.count
+    }
+}
+
 public enum ClipboardItemKind: String, Codable, Sendable {
     case text
     case file

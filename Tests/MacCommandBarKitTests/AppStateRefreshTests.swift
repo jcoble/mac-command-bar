@@ -38,6 +38,29 @@ final class AppStateRefreshTests: XCTestCase {
         let actions = await spy.recordedActions()
         XCTAssertEqual(actions, [.scanProcesses, .scanSessions, .scanWorktrees])
     }
+
+    func testRefreshHealthOnlyCallsHealthSnapshotAndDecodesSnapshot() async throws {
+        let spy = CoreClientSpy(responseData: [
+            "hostname": .string("work-mac"),
+            "cwd": .string("/Users/blackcolours/dev/work/mac-command-bar"),
+            "home": .string("/Users/blackcolours")
+        ])
+        let state = AppState.testState(coreClient: spy)
+
+        await state.refreshHealth()
+
+        let actions = await spy.recordedActions()
+        XCTAssertEqual(actions, [.healthSnapshot])
+        XCTAssertEqual(
+            state.healthSnapshot,
+            HealthSnapshot(
+                hostname: "work-mac",
+                cwd: "/Users/blackcolours/dev/work/mac-command-bar",
+                home: "/Users/blackcolours"
+            )
+        )
+        XCTAssertEqual(state.modules.first(where: { $0.id == "health" })?.count, 3)
+    }
 }
 
 private actor CoreClientSpy: CoreSending {
@@ -72,7 +95,8 @@ private extension AppState {
                 DashboardModule(id: "processes", title: "Processes", symbol: "cpu", count: 0, status: "Ready", accent: .orange),
                 DashboardModule(id: "sessions", title: "Sessions", symbol: "terminal", count: 0, status: "Ready", accent: .green),
                 DashboardModule(id: "worktrees", title: "Worktrees", symbol: "point.3.connected.trianglepath.dotted", count: 0, status: "Ready", accent: .slate),
-                DashboardModule(id: "commands", title: "Commands", symbol: "command", count: 0, status: "Palette", accent: .slate)
+                DashboardModule(id: "commands", title: "Commands", symbol: "command", count: 0, status: "Palette", accent: .slate),
+                DashboardModule(id: "health", title: "Health", symbol: "gauge.with.dots.needle.67percent", count: 0, status: "Local", accent: .orange)
             ],
             selectedModuleID: "sessions",
             clipboardVault: ClipboardVaultModel(),

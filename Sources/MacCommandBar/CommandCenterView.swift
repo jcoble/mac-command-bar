@@ -4,37 +4,85 @@ import SwiftUI
 
 struct CommandCenterView: View {
     @EnvironmentObject private var state: AppState
+    @State private var editingProfileDraft: ProjectProfileDraft?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HeaderView()
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
-
-            Divider()
-
-            HStack(spacing: 0) {
-                ModuleSidebar()
-                    .frame(width: 184)
+        ZStack {
+            VStack(spacing: 0) {
+                HeaderView()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
 
                 Divider()
 
-                ModuleDetailView()
+                HStack(spacing: 0) {
+                    ModuleSidebar()
+                        .frame(width: 184)
+
+                    Divider()
+
+                    ModuleDetailView { draft in
+                        editingProfileDraft = draft
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+
+            if let draft = editingProfileDraft {
+                InWindowModalLayer {
+                    ProfileEditorPanel(
+                        initialDraft: draft,
+                        onCancel: {
+                            editingProfileDraft = nil
+                        },
+                        onSave: { savedDraft in
+                            if state.saveProfileDraft(savedDraft) {
+                                editingProfileDraft = nil
+                            }
+                        }
+                    )
+                    .id(draft.id)
+                }
+            }
+
+            if let action = state.pendingAction {
+                InWindowModalLayer {
+                    ConfirmActionPanel(action: action)
+                        .environmentObject(state)
+                }
             }
         }
         .frame(width: 660, height: 620)
         .background(Color(nsColor: .windowBackgroundColor))
-        .sheet(
-            item: Binding<ConfirmableAction?>(
-                get: { state.pendingAction },
-                set: { state.pendingAction = $0 }
-            )
-        ) { action in
-            ConfirmActionSheet(action: action)
-                .environmentObject(state)
+    }
+}
+
+private struct InWindowModalLayer<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.42)
+                .contentShape(Rectangle())
+                .onTapGesture {}
+
+            content
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 14)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(.opacity)
+        .zIndex(10)
     }
 }
 
@@ -131,6 +179,7 @@ private struct ModuleSidebar: View {
 
 private struct ModuleDetailView: View {
     @EnvironmentObject private var state: AppState
+    let onEditProfile: (ProjectProfileDraft) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -158,7 +207,7 @@ private struct ModuleDetailView: View {
         case "clipboard":
             ClipboardPanel()
         case "projects":
-            ProjectsPanel()
+            ProjectsPanel(onEditProfile: onEditProfile)
         case "processes":
             ProcessesPanel()
         case "sessions":
@@ -171,7 +220,7 @@ private struct ModuleDetailView: View {
             ConfirmationPanel(
                 title: "Cleanup queue",
                 command: "rm -rf selected build artifacts",
-                note: "Every cleanup action opens a confirmation sheet before execution."
+                note: "Every cleanup action opens a confirmation panel before execution."
             )
         case "health":
             HealthPanel()
@@ -283,7 +332,7 @@ private struct ClipboardRow: View {
 
 private struct ProjectsPanel: View {
     @EnvironmentObject private var state: AppState
-    @State private var editingDraft: ProjectProfileDraft?
+    let onEditProfile: (ProjectProfileDraft) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -292,7 +341,7 @@ private struct ProjectsPanel: View {
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button {
-                    editingDraft = ProjectProfileDraft()
+                    onEditProfile(ProjectProfileDraft())
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
@@ -305,7 +354,7 @@ private struct ProjectsPanel: View {
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
                         Button {
-                            editingDraft = ProjectProfileDraft(profile: profile)
+                            onEditProfile(ProjectProfileDraft(profile: profile))
                         } label: {
                             Image(systemName: "pencil")
                         }
@@ -359,10 +408,6 @@ private struct ProjectsPanel: View {
                 Divider()
             }
         }
-        .sheet(item: $editingDraft) { draft in
-            ProfileEditorSheet(initialDraft: draft)
-                .environmentObject(state)
-        }
     }
 }
 
@@ -370,12 +415,18 @@ private func projectURLLabel(_ rawURL: String) -> String {
     URL(string: rawURL)?.host ?? rawURL
 }
 
-private struct ProfileEditorSheet: View {
-    @EnvironmentObject private var state: AppState
-    @Environment(\.dismiss) private var dismiss
+private struct ProfileEditorPanel: View {
+    let onCancel: () -> Void
+    let onSave: (ProjectProfileDraft) -> Void
     @State private var draft: ProjectProfileDraft
 
-    init(initialDraft: ProjectProfileDraft) {
+    init(
+        initialDraft: ProjectProfileDraft,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (ProjectProfileDraft) -> Void
+    ) {
+        self.onCancel = onCancel
+        self.onSave = onSave
         _draft = State(initialValue: initialDraft)
     }
 
@@ -406,12 +457,10 @@ private struct ProfileEditorSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    dismiss()
+                    onCancel()
                 }
                 Button("Save") {
-                    if state.saveProfileDraft(draft) {
-                        dismiss()
-                    }
+                    onSave(draft)
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -703,12 +752,55 @@ private struct ArtifactPanel: View {
 }
 
 private struct HealthPanel: View {
+    @EnvironmentObject private var state: AppState
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CommandExampleRow(label: "CPU and RAM", command: "ps and system_profiler summary")
-            CommandExampleRow(label: "Disk pressure", command: "du summaries by repo")
-            CommandExampleRow(label: "Docker state", command: "docker ps when available")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Local environment")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button {
+                    Task {
+                        await state.refreshHealth()
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+
+            if let snapshot = state.healthSnapshot {
+                HealthValueRow(label: "Hostname", value: snapshot.hostname)
+                HealthValueRow(label: "Current directory", value: snapshot.cwd)
+                HealthValueRow(label: "Home", value: snapshot.home)
+            } else {
+                EmptyModuleState(
+                    symbol: "gauge.with.dots.needle.67percent",
+                    title: "No health snapshot loaded",
+                    detail: "Refresh asks mcb-core for the local environment snapshot."
+                )
+            }
         }
+    }
+}
+
+private struct HealthValueRow: View {
+    let label: String
+    let value: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 112, alignment: .leading)
+            Text(value ?? "Unavailable")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(value == nil ? .secondary : .primary)
+                .lineLimit(2)
+            Spacer()
+        }
+        .padding(.vertical, 6)
+        Divider()
     }
 }
 
@@ -806,7 +898,7 @@ private struct ConfirmationPanel: View {
     }
 }
 
-private struct ConfirmActionSheet: View {
+private struct ConfirmActionPanel: View {
     @EnvironmentObject private var state: AppState
     let action: ConfirmableAction
 
