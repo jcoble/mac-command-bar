@@ -68,6 +68,15 @@ export type SourceTreeRow = {
   level: number;
 };
 
+export type VirtualSourceTreeRows = {
+  rows: SourceTreeRow[];
+  startIndex: number;
+  endIndex: number;
+  topSpacerHeight: number;
+  bottomSpacerHeight: number;
+  totalHeight: number;
+};
+
 export const defaultProjectRoots: ProjectRoot[] = [
   {
     id: 'ediplatform',
@@ -530,6 +539,45 @@ export function flattenSourceTree(
 
   visit(nodes, 0);
   return rows;
+}
+
+export function virtualizeSourceTreeRows(
+  rows: SourceTreeRow[],
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  overscanRows: number
+): VirtualSourceTreeRows {
+  if (rows.length === 0) {
+    return {
+      rows: [],
+      startIndex: 0,
+      endIndex: 0,
+      topSpacerHeight: 0,
+      bottomSpacerHeight: 0,
+      totalHeight: 0
+    };
+  }
+
+  const safeRowHeight = Math.max(1, rowHeight);
+  const safeOverscanRows = Math.max(0, Math.floor(overscanRows));
+  const visibleRowCount = Math.max(1, Math.ceil(Math.max(0, viewportHeight) / safeRowHeight));
+  const maxFirstVisibleIndex = Math.max(0, rows.length - visibleRowCount);
+  const firstVisibleIndex = Math.min(
+    maxFirstVisibleIndex,
+    Math.max(0, Math.floor(Math.max(0, scrollTop) / safeRowHeight))
+  );
+  const startIndex = Math.max(0, firstVisibleIndex - safeOverscanRows);
+  const endIndex = Math.min(rows.length, firstVisibleIndex + visibleRowCount + safeOverscanRows);
+
+  return {
+    rows: rows.slice(startIndex, endIndex),
+    startIndex,
+    endIndex,
+    topSpacerHeight: startIndex * safeRowHeight,
+    bottomSpacerHeight: Math.max(0, (rows.length - endIndex) * safeRowHeight),
+    totalHeight: rows.length * safeRowHeight
+  };
 }
 
 type SourceTreeEntry = {

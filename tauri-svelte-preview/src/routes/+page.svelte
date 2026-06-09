@@ -46,6 +46,7 @@
     upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
+    virtualizeSourceTreeRows,
     type ProjectRoot,
     type SourceScanCache,
     type SourceOpenTab,
@@ -73,6 +74,9 @@
   const maxStoredOpenSourceTabs = 64;
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
+  const sourceTreeRowHeight = 30;
+  const sourceTreeOverscanRows = 8;
+  const sourceTreeFallbackViewportHeight = 420;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
 
@@ -104,6 +108,9 @@
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
   let quickOpenInput = $state<HTMLInputElement | null>(null);
+  let fileTreeElement = $state<HTMLDivElement | null>(null);
+  let fileTreeScrollTop = $state(0);
+  let fileTreeViewportHeight = $state(sourceTreeFallbackViewportHeight);
   let projectNameInput = $state('');
   let projectPathInput = $state('');
   let projectFormError = $state('');
@@ -124,6 +131,15 @@
   let sourceTree = $derived(buildSourceTree(filteredRecords));
   let autoExpandFolders = $derived(query.trim().length > 0);
   let visibleTreeRows = $derived(flattenSourceTree(sourceTree, expandedFolderIds, autoExpandFolders));
+  let virtualizedTreeRows = $derived(
+    virtualizeSourceTreeRows(
+      visibleTreeRows,
+      fileTreeScrollTop,
+      fileTreeViewportHeight,
+      sourceTreeRowHeight,
+      sourceTreeOverscanRows
+    )
+  );
   let projectRecentRecords = $derived(
     recentSourceRecords
       .filter((record) => record.projectID === selectedProject.id)
@@ -147,6 +163,19 @@
     if (quickOpenIndex > lastResultIndex) {
       quickOpenIndex = lastResultIndex;
     }
+  });
+
+  $effect(() => {
+    const element = fileTreeElement;
+    if (!element) return;
+
+    measureFileTreeViewport();
+
+    if (typeof ResizeObserver === 'undefined') return;
+
+    const resizeObserver = new ResizeObserver(measureFileTreeViewport);
+    resizeObserver.observe(element);
+    return () => resizeObserver.disconnect();
   });
 
   async function scanProject(
@@ -787,6 +816,21 @@
     }
   }
 
+  function measureFileTreeViewport() {
+    if (!fileTreeElement) return;
+
+    fileTreeViewportHeight = fileTreeElement.clientHeight || sourceTreeFallbackViewportHeight;
+    fileTreeScrollTop = fileTreeElement.scrollTop;
+  }
+
+  function handleFileTreeScroll(event: Event) {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLDivElement)) return;
+
+    fileTreeScrollTop = target.scrollTop;
+    fileTreeViewportHeight = target.clientHeight || sourceTreeFallbackViewportHeight;
+  }
+
   function isFolderExpanded(node: SourceTreeNode): boolean {
     return autoExpandFolders || expandedFolderIds.has(node.id);
   }
@@ -827,6 +871,7 @@
     openSourceTabs = storedOpenSourceTabs;
     selectedProjectID = storedProject.id;
     persistSelectedProjectID(storedProject.id);
+    window.setTimeout(measureFileTreeViewport, 0);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]);
   });
 </script>
@@ -953,7 +998,12 @@
           <strong>{recordCountLabel}</strong>
         </div>
 
-        <div class="file-tree" aria-label="Files in selected project">
+        <div
+          class="file-tree"
+          bind:this={fileTreeElement}
+          onscroll={handleFileTreeScroll}
+          aria-label="Files in selected project"
+        >
           {#if scanning && records.length === 0}
             {#each Array.from({ length: 8 }) as _, index}
               <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
@@ -964,7 +1014,12 @@
               <span>No source files found</span>
             </div>
           {:else}
-            {#each visibleTreeRows as row (row.node.id)}
+            <div
+              class="tree-virtual-spacer"
+              aria-hidden="true"
+              style={`--tree-spacer-height: ${virtualizedTreeRows.topSpacerHeight}px`}
+            ></div>
+            {#each virtualizedTreeRows.rows as row (row.node.id)}
               {@const node = row.node}
               {@const isFolder = node.file === null}
               {@const isExpanded = isFolderExpanded(node)}
@@ -1003,6 +1058,11 @@
                 <small>{isFolder ? node.children.length : node.file?.language}</small>
               </button>
             {/each}
+            <div
+              class="tree-virtual-spacer"
+              aria-hidden="true"
+              style={`--tree-spacer-height: ${virtualizedTreeRows.bottomSpacerHeight}px`}
+            ></div>
           {/if}
         </div>
       </div>
@@ -1619,6 +1679,12 @@
 
   .file-tree::-webkit-scrollbar-thumb:hover {
     background: rgba(218, 225, 223, 0.72);
+  }
+
+  .tree-virtual-spacer {
+    height: var(--tree-spacer-height);
+    min-height: var(--tree-spacer-height);
+    pointer-events: none;
   }
 
   .file-tree button {

@@ -10,7 +10,8 @@ import {
   selectPreferredSourceRecord,
   upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
-  upsertRecentSourceRecord
+  upsertRecentSourceRecord,
+  virtualizeSourceTreeRows
 } from '../src/lib/sourceData.ts';
 
 const project = {
@@ -215,3 +216,33 @@ assert.deepEqual(
   }),
   ['folder:apps', 'folder:apps/web', 'folder:apps/web/src', 'folder:apps/web/src/routes']
 );
+
+const virtualRows = Array.from({ length: 100 }, (_, index) => ({
+  level: 0,
+  node: {
+    id: `file:${index}`,
+    name: `${index}.ts`,
+    relativePath: `${index}.ts`,
+    file: null,
+    children: []
+  }
+}));
+
+const firstVirtualWindow = virtualizeSourceTreeRows(virtualRows, 0, 90, 30, 2);
+assert.equal(firstVirtualWindow.startIndex, 0);
+assert.equal(firstVirtualWindow.endIndex, 5);
+assert.equal(firstVirtualWindow.topSpacerHeight, 0);
+assert.equal(firstVirtualWindow.bottomSpacerHeight, 2_850);
+assert.equal(firstVirtualWindow.rows.length, 5);
+
+const middleVirtualWindow = virtualizeSourceTreeRows(virtualRows, 1_500, 90, 30, 2);
+assert.equal(middleVirtualWindow.startIndex, 48);
+assert.equal(middleVirtualWindow.endIndex, 55);
+assert.equal(middleVirtualWindow.topSpacerHeight, 1_440);
+assert.equal(middleVirtualWindow.bottomSpacerHeight, 1_350);
+assert.equal(middleVirtualWindow.rows[0].node.id, 'file:48');
+
+const clampedVirtualWindow = virtualizeSourceTreeRows(virtualRows, 9_000, 90, 30, 2);
+assert.equal(clampedVirtualWindow.startIndex, 95);
+assert.equal(clampedVirtualWindow.endIndex, 100);
+assert.equal(clampedVirtualWindow.bottomSpacerHeight, 0);
