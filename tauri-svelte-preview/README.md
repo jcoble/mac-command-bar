@@ -7,8 +7,8 @@ The SvelteKit app follows Tauri's current SvelteKit guidance: static adapter, SP
 ## Run
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Open `http://127.0.0.1:5177` for the browser preview.
@@ -16,7 +16,7 @@ Open `http://127.0.0.1:5177` for the browser preview.
 For the Tauri shell:
 
 ```bash
-npm run tauri:dev
+pnpm tauri:dev
 ```
 
 The browser preview uses embedded demo source. The Tauri shell can call `read_source_file` from Rust to load the listed local files.
@@ -24,9 +24,9 @@ The browser preview uses embedded demo source. The Tauri shell can call `read_so
 ## Verify
 
 ```bash
-npm run check
-npm run build
+pnpm check
+pnpm build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-Shiki gives the source surface TextMate-style highlighting. The current build intentionally accepts Shiki's large syntax chunks for this visual comparison; production would narrow loaded languages/themes or move highlighting to the Rust helper.
+Monaco is the default source surface, so the prototype now exercises a real editor viewport instead of static highlighted HTML. The current build intentionally accepts Monaco's large editor chunks for this visual comparison; production would lazy-load the editor route and add language intelligence only where needed.

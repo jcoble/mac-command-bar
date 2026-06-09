@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.28.2",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
@@ -15,7 +16,7 @@
   "dependencies": {
     "@lucide/svelte": "^1.17.0",
     "@tauri-apps/api": "^2.11.0",
-    "shiki": "^4.2.0"
+    "monaco-editor": "^0.55.1"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",

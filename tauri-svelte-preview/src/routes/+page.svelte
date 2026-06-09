@@ -6,16 +6,15 @@
     FileCode2,
     FolderGit2,
     Search,
-    Sparkles,
     SplitSquareHorizontal
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
+  import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import { demoPreviewFor, sourceRecords, type SourcePreview, type SourceRecord } from '$lib/sourceData';
   import { readSourceFromTauri } from '$lib/tauriSource';
 
   let selectedRecord = $state<SourceRecord>(sourceRecords[0]);
   let preview = $state<SourcePreview>(demoPreviewFor(sourceRecords[0]));
-  let highlighted = $state('');
   let query = $state('');
   let loading = $state(true);
   let runtime = $state('browser preview');
@@ -28,14 +27,6 @@
   }));
 
   let selectedIndex = $derived(sourceRecords.findIndex((record) => record.path === selectedRecord.path) + 1);
-
-  async function renderPreview(nextPreview: SourcePreview) {
-    const { codeToHtml } = await import('shiki');
-    highlighted = await codeToHtml(nextPreview.content, {
-      lang: nextPreview.language,
-      theme: 'github-dark-default'
-    });
-  }
 
   async function selectRecord(record: SourceRecord) {
     selectedRecord = record;
@@ -50,12 +41,10 @@
       const tauriPreview = await readSourceFromTauri(record);
       runtime = tauriPreview ? 'tauri file read' : 'browser preview';
       preview = tauriPreview ?? demoPreviewFor(record);
-      await renderPreview(preview);
     } catch (previewError) {
       runtime = 'browser preview';
       error = previewError instanceof Error ? previewError.message : 'Could not read source file';
       preview = demoPreviewFor(record);
-      await renderPreview(preview);
     } finally {
       loading = false;
     }
@@ -148,22 +137,11 @@
           <span>Read only</span>
         </div>
         <div class="quality-pill">
-          <Sparkles size={14} strokeWidth={1.8} />
-          <span>Shiki</span>
+          <span>Monaco</span>
         </div>
       </div>
 
-      {#if loading}
-        <div class="skeleton-code" aria-label="Loading source preview">
-          {#each Array.from({ length: 13 }) as _, index}
-            <span style={`--line-width: ${index % 4 === 0 ? 48 : index % 3 === 0 ? 66 : 86}%`}></span>
-          {/each}
-        </div>
-      {:else}
-        <div class="code-scroll" data-testid="highlighted-source">
-          {@html highlighted}
-        </div>
-      {/if}
+      <MonacoSourceEditor {preview} {loading} />
     </div>
   </section>
 </main>
@@ -458,79 +436,6 @@
 
   .quality-pill {
     color: #7ce5d5;
-  }
-
-  .code-scroll {
-    height: calc(100% - 42px);
-    overflow: auto;
-    background: #111313;
-  }
-
-  .code-scroll :global(.shiki) {
-    min-width: max-content;
-    min-height: 100%;
-    margin: 0;
-    padding: 18px 0 22px;
-    background: transparent !important;
-    color: #dce5e2;
-    font-family:
-      "SF Mono",
-      ui-monospace,
-      Menlo,
-      Monaco,
-      Consolas,
-      monospace;
-    font-size: 13px;
-    line-height: 1.58;
-    letter-spacing: 0;
-    tab-size: 4;
-  }
-
-  .code-scroll :global(.shiki code) {
-    counter-reset: line;
-  }
-
-  .code-scroll :global(.shiki .line) {
-    display: block;
-    min-height: 20px;
-    padding-right: 28px;
-    white-space: pre;
-    counter-increment: line;
-  }
-
-  .code-scroll :global(.shiki .line::before) {
-    display: inline-block;
-    width: 46px;
-    margin-right: 16px;
-    color: #52605c;
-    text-align: right;
-    content: counter(line);
-    user-select: none;
-  }
-
-  .skeleton-code {
-    display: grid;
-    gap: 12px;
-    padding: 22px;
-  }
-
-  .skeleton-code span {
-    display: block;
-    width: var(--line-width);
-    height: 13px;
-    border-radius: 999px;
-    background: linear-gradient(90deg, #242929, #333a38, #242929);
-    background-size: 180% 100%;
-    animation: shimmer 1.2s ease-in-out infinite;
-  }
-
-  @keyframes shimmer {
-    from {
-      background-position: 100% 0;
-    }
-    to {
-      background-position: -80% 0;
-    }
   }
 
   @media (max-width: 980px) {
