@@ -1,0 +1,219 @@
+import AppKit
+import Combine
+import Foundation
+
+@MainActor
+public final class AppState: ObservableObject {
+    @Published public var modules: [DashboardModule]
+    @Published public var selectedModuleID: String
+    @Published public var clipboardVault: ClipboardVaultModel
+    @Published public var profiles: [ProjectProfile]
+    @Published public var processes: [ProcessRecord]
+    @Published public var worktrees: [WorktreeRecord]
+    @Published public var sessions: [AgentSessionRecord]
+    @Published public var pendingAction: ConfirmableAction?
+    @Published public var statusMessage: String
+    @Published public var searchText: String
+    @Published public var lastCoreWarning: String?
+
+    private var coreClient: CoreClient?
+
+    public init(
+        modules: [DashboardModule],
+        selectedModuleID: String,
+        clipboardVault: ClipboardVaultModel,
+        profiles: [ProjectProfile],
+        statusMessage: String,
+        coreClient: CoreClient?
+    ) {
+        self.modules = modules
+        self.selectedModuleID = selectedModuleID
+        self.clipboardVault = clipboardVault
+        self.profiles = profiles
+        self.processes = []
+        self.worktrees = []
+        self.sessions = []
+        self.pendingAction = nil
+        self.statusMessage = statusMessage
+        self.searchText = ""
+        self.coreClient = coreClient
+    }
+
+    public static func bootstrap() -> AppState {
+        let profiles = ProfileStore.defaultProfiles()
+        let client = try? CoreClient.discover()
+        return AppState(
+            modules: defaultModules(profileCount: profiles.count),
+            selectedModuleID: "projects",
+            clipboardVault: ClipboardVaultModel(),
+            profiles: profiles,
+            statusMessage: client == nil ? "Core helper not built yet" : "Ready",
+            coreClient: client
+        )
+    }
+
+    public var selectedModule: DashboardModule? {
+        modules.first { $0.id == selectedModuleID }
+    }
+
+    public func captureClipboardText() {
+        guard let text = NSPasteboard.general.string(forType: .string) else {
+            statusMessage = "Clipboard has no text"
+            return
+        }
+
+        clipboardVault.addText(text)
+        updateModule("clipboard", count: clipboardVault.items.count, status: "Captured")
+        statusMessage = "Clipboard text saved"
+    }
+
+    public func togglePinnedClipboardItem(_ id: UUID) {
+        clipboardVault.togglePinned(id)
+    }
+
+    public func refreshSnapshots() {
+        guard coreClient != nil else {
+            lastCoreWarning = "Build mcb-core or set MCB_CORE_PATH"
+            statusMessage = "Core helper unavailable"
+            return
+        }
+
+        statusMessage = "Refreshing"
+        refresh(.scanProcesses, moduleID: "processes")
+        refresh(.scanSessions, moduleID: "sessions")
+        if let firstProfile = profiles.first {
+            refresh(
+                .scanWorktrees,
+                moduleID: "worktrees",
+                payload: ["repoPath": .string(firstProfile.repoPath)]
+            )
+        }
+        statusMessage = "Refreshed"
+    }
+
+    public func planKill(pid: Int) -> ConfirmableAction {
+        ConfirmableAction(
+            actionId: "kill-\(pid)",
+            kind: .killProcess,
+            targetLabel: "pid \(pid)",
+            risk: .high,
+            commandPreview: "kill -TERM \(pid)"
+        )
+    }
+
+    public func requestKill(_ process: ProcessRecord) {
+        pendingAction = ConfirmableAction(
+            actionId: "kill-\(process.pid)",
+            kind: .killProcess,
+            targetLabel: "\(process.name) pid \(process.pid)",
+            risk: .high,
+            commandPreview: "kill -TERM \(process.pid)"
+        )
+    }
+
+    public func requestDelete(_ worktree: WorktreeRecord) {
+        switch ConfirmationPolicy().deletionDecision(for: worktree) {
+        case .blocked(let reason):
+            statusMessage = "Delete blocked: \(reason)"
+            pendingAction = nil
+        case .allowed, .requiresConfirmation, .unknown:
+            pendingAction = ConfirmableAction(
+                actionId: "delete-\(worktree.path.hashValue)",
+                kind: .deleteWorktree,
+                targetLabel: worktree.path,
+                risk: .high,
+                commandPreview: "git worktree remove \(shellQuote(worktree.path))"
+            )
+        }
+    }
+
+    public func executePendingAction() {
+        guard let action = pendingAction else {
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", action.commandPreview]
+        do {
+            try process.run()
+            process.waitUntilExit()
+            statusMessage = process.terminationStatus == 0
+                ? "Action completed"
+                : "Action exited \(process.terminationStatus)"
+        } catch {
+            statusMessage = "Action failed: \(error.localizedDescription)"
+        }
+
+        pendingAction = nil
+        refreshSnapshots()
+    }
+
+    public func cancelPendingAction() {
+        pendingAction = nil
+    }
+
+    private func refresh(
+        _ action: CoreAction,
+        moduleID: String,
+        payload: [String: JSONValue] = [:]
+    ) {
+        do {
+            let response = try coreClient?.send(
+                CoreRequest(action: action, dryRun: true, payload: payload)
+            )
+            guard let response else { return }
+            let count = response.data["count"]?.intValue ?? 0
+            updateRecords(action: action, response: response)
+            updateModule(moduleID, count: count, status: response.ok ? "Live" : "Check")
+            lastCoreWarning = response.warnings.first
+        } catch {
+            updateModule(moduleID, count: 0, status: "Unavailable")
+            lastCoreWarning = error.localizedDescription
+        }
+    }
+
+    private func updateModule(_ id: String, count: Int, status: String) {
+        guard let index = modules.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        modules[index].count = count
+        modules[index].status = status
+    }
+
+    private func updateRecords(action: CoreAction, response: CoreResponse) {
+        do {
+            switch action {
+            case .scanProcesses:
+                processes = try response.data["processes"]?.decode() ?? []
+            case .scanSessions:
+                sessions = try response.data["sessions"]?.decode() ?? []
+            case .scanWorktrees:
+                worktrees = try response.data["worktrees"]?.decode() ?? []
+            case .healthSnapshot, .planKillProcess:
+                break
+            }
+        } catch {
+            lastCoreWarning = "Could not decode \(action.rawValue): \(error.localizedDescription)"
+        }
+    }
+
+    private static func defaultModules(profileCount: Int) -> [DashboardModule] {
+        [
+            DashboardModule(id: "projects", title: "Projects", symbol: "rectangle.stack", count: profileCount, status: "Profiles", accent: .blue),
+            DashboardModule(id: "processes", title: "Processes", symbol: "cpu", count: 0, status: "Scan ready", accent: .orange),
+            DashboardModule(id: "sessions", title: "Agent Sessions", symbol: "terminal", count: 0, status: "Scan ready", accent: .green),
+            DashboardModule(id: "worktrees", title: "Worktrees", symbol: "point.3.connected.trianglepath.dotted", count: 0, status: "Scan ready", accent: .slate),
+            DashboardModule(id: "clipboard", title: "Clipboard Vault", symbol: "doc.on.clipboard", count: 0, status: "Local", accent: .blue),
+            DashboardModule(id: "artifacts", title: "Artifacts", symbol: "doc.badge.plus", count: 6, status: "Templates", accent: .green),
+            DashboardModule(id: "cleanup", title: "Repo Cleanup", symbol: "externaldrive.badge.minus", count: 0, status: "Confirm only", accent: .red),
+            DashboardModule(id: "health", title: "Dev Health", symbol: "gauge.with.dots.needle.67percent", count: 0, status: "Local", accent: .orange),
+            DashboardModule(id: "commands", title: "Commands", symbol: "command", count: 0, status: "Palette", accent: .slate),
+            DashboardModule(id: "focus", title: "Focus", symbol: "sparkle.magnifyingglass", count: 0, status: "Reversible", accent: .green)
+        ]
+    }
+}
+
+private func shellQuote(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
