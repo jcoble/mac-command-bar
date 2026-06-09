@@ -246,6 +246,7 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_source_files,
             read_source_file

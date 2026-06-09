@@ -16,6 +16,7 @@
     Trash2,
     X
   } from '@lucide/svelte';
+  import { open } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
@@ -56,6 +57,7 @@
   let runtime = $state('browser preview');
   let error = $state('');
   let addingProject = $state(false);
+  let choosingProjectRoot = $state(false);
   let projectNameInput = $state('');
   let projectPathInput = $state('');
   let projectFormError = $state('');
@@ -211,6 +213,31 @@
     projectFormError = '';
   }
 
+  async function chooseProjectRoot() {
+    choosingProjectRoot = true;
+    projectFormError = '';
+
+    try {
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+        title: 'Choose project folder'
+      });
+      const selectedFolder = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
+
+      if (typeof selectedFolder !== 'string' || selectedFolder.trim().length === 0) {
+        return;
+      }
+
+      addCustomProjectRoot('', selectedFolder, false);
+    } catch {
+      startAddingProject();
+      projectFormError = 'Folder picker unavailable';
+    } finally {
+      choosingProjectRoot = false;
+    }
+  }
+
   function cancelAddingProject() {
     addingProject = false;
     projectFormError = '';
@@ -218,30 +245,45 @@
 
   function saveProject(event: SubmitEvent) {
     event.preventDefault();
-    const nextProject = createProjectRoot(projectNameInput, projectPathInput);
+    addCustomProjectRoot(projectNameInput, projectPathInput, true);
+  }
+
+  function addCustomProjectRoot(name: string, path: string, reportDuplicate: boolean) {
+    const nextProject = createProjectRoot(name, path);
 
     if (!nextProject.path) {
       projectFormError = 'Path is required';
-      return;
+      return false;
     }
 
-    const duplicatePath = projectOptions.some(
+    const duplicateProject = projectOptions.find(
       (project) => normalizeProjectPath(project.path) === nextProject.path
     );
 
-    if (duplicatePath) {
-      projectFormError = 'That path is already listed';
-      return;
+    if (duplicateProject) {
+      if (reportDuplicate) {
+        projectFormError = 'That path is already listed';
+      } else {
+        addingProject = false;
+        projectFormError = '';
+        void activateProject(duplicateProject);
+      }
+      return false;
     }
 
     const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
     customProjectRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
-    selectedProjectID = nextProject.id;
-    persistSelectedProjectID(nextProject.id);
     addingProject = false;
     projectFormError = '';
-    void scanProject(nextProject);
+    void activateProject(nextProject);
+    return true;
+  }
+
+  async function activateProject(project: ProjectRoot) {
+    selectedProjectID = project.id;
+    persistSelectedProjectID(project.id);
+    await scanProject(project);
   }
 
   function removeSelectedProject() {
@@ -323,7 +365,7 @@
             <option value={project.id}>{project.name}</option>
           {/each}
         </select>
-        <button class="icon-button" type="button" aria-label="Add project root" title="Add project root" onclick={startAddingProject}>
+        <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot} onclick={chooseProjectRoot}>
           <Plus size={16} strokeWidth={2} />
         </button>
         <button class="scan-button" type="button" disabled={scanning} onclick={() => scanProject(selectedProject)}>
