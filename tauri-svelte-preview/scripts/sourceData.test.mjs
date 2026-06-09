@@ -3,6 +3,7 @@ import {
   closeOpenSourceTab,
   extractSourceSemanticTokens,
   extractSourceSymbols,
+  formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
   formatSourceRecordCount,
   formatSourceScanSummary,
@@ -13,6 +14,7 @@ import {
   rankSourceRecords,
   scrollTopForSourceTreeReveal,
   selectPreferredSourceRecord,
+  selectBackgroundIndexProjects,
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
   upsertSourceScanCacheEntry,
@@ -103,6 +105,30 @@ assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.
 assert.equal(getSourceScanCacheEntry(scanCache, project, 1_000, 10_500, 1_000), null);
 assert.equal(getSourceScanCacheEntry(scanCache, otherProject, 2_000, 10_500, 1_000), null);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 12_000, 1_000), null);
+
+assert.deepEqual(
+  selectBackgroundIndexProjects([project, otherProject], 'project-1', scanCache, 10_500, 1_000, 2_000).map(
+    (indexProject) => indexProject.id
+  ),
+  ['project-2']
+);
+assert.deepEqual(
+  selectBackgroundIndexProjects([project, otherProject], 'project-1', scanCache, 12_000, 1_000, 2_000).map(
+    (indexProject) => indexProject.id
+  ),
+  ['project-2']
+);
+assert.equal(
+  formatSourceIndexSummary(scanCache['/repo::2000'], false, ''),
+  'Index ready: 2 files'
+);
+assert.equal(
+  formatSourceIndexSummary({ ...scanCache['/repo::2000'], truncated: true, records }, false, ''),
+  'Index ready: 2+ files'
+);
+assert.equal(formatSourceIndexSummary(null, true, ''), 'Indexing in background');
+assert.equal(formatSourceIndexSummary(null, false, 'No access'), 'Index failed: No access');
+assert.equal(formatSourceIndexSummary(null, false, ''), 'Index not ready');
 
 const boundedScanCache = upsertSourceScanCacheEntry(
   upsertSourceScanCacheEntry(

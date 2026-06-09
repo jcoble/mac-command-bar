@@ -169,3 +169,10 @@ assert.ok(
   /["']semanticHighlighting\.enabled["']:\s*true/.test(editorSource),
   'Editor should enable semantic highlighting explicitly'
 );
+assert.ok(pageSource.includes('backgroundIndexingProjectIDs'), 'Source page should track projects indexing in the background');
+assert.ok(pageSource.includes('function indexProjectsInBackground'), 'Source page should start background project indexing');
+assert.ok(pageSource.includes('selectBackgroundIndexProjects'), 'Source page should use the background index selection helper');
+assert.ok(pageSource.includes('formatSourceIndexSummary'), 'Source page should format visible project index status');
+assert.ok(pageSource.includes('class="index-summary"'), 'Source Browser should render an index status line');
+assertDeclaration('.index-summary', 'overflow: hidden');
+assertDeclaration('.index-summary', 'text-overflow: ellipsis');

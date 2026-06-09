@@ -395,6 +395,38 @@ export function formatSourceScanSummary(
   } for "${normalizedQuery}" across ${totalScope}`;
 }
 
+export function selectBackgroundIndexProjects(
+  projects: ProjectRoot[],
+  activeProjectID: string,
+  cache: SourceScanCache,
+  now: number,
+  maxAgeMs: number,
+  limit: number
+): ProjectRoot[] {
+  return projects.filter(
+    (project) =>
+      project.id !== activeProjectID &&
+      getSourceScanCacheEntry(cache, project, limit, now, maxAgeMs) === null
+  );
+}
+
+export function formatSourceIndexSummary(
+  entry: SourceScanCacheEntry | null,
+  indexing: boolean,
+  error: string
+): string {
+  if (indexing) return 'Indexing in background';
+
+  const normalizedError = error.trim();
+  if (normalizedError) return `Index failed: ${normalizedError}`;
+
+  if (!entry) return 'Index not ready';
+
+  return `Index ready: ${formatCount(entry.records.length)}${entry.truncated ? '+' : ''} ${
+    entry.records.length === 1 && !entry.truncated ? 'file' : 'files'
+  }`;
+}
+
 export function monacoLanguageForSource(language: SourceLanguage): string {
   switch (language) {
     case 'tsx':

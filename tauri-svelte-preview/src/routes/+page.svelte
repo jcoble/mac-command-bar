@@ -35,6 +35,7 @@
     demoRecordsForProject,
     filterSourceRecords,
     formatSourceDiagnosticSummary,
+    formatSourceIndexSummary,
     flattenSourceTree,
     formatSourceRecordCount,
     formatSourceScanSummary,
@@ -46,6 +47,7 @@
     previewFromContent,
     rankSourceRecords,
     scrollTopForSourceTreeReveal,
+    selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
     sourceSupportsLanguageIntelligence,
     upsertSourceScanCacheEntry,
@@ -109,6 +111,8 @@
   let recentSourceRecords = $state<SourceRecentRecord[]>([]);
   let openSourceTabs = $state<SourceOpenTab[]>([]);
   let sourceScanCache = $state<SourceScanCache>({});
+  let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
+  let backgroundIndexErrorByProject = $state<Record<string, string>>({});
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -205,6 +209,22 @@
   let scanSummaryLabel = $derived(
     formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
   );
+  let selectedProjectIndexEntry = $derived(
+    getSourceScanCacheEntry(
+      sourceScanCache,
+      selectedProject,
+      defaultSourceScanLimit,
+      Date.now(),
+      sourceScanCacheMaxAgeMs
+    )
+  );
+  let selectedProjectIndexSummary = $derived(
+    formatSourceIndexSummary(
+      selectedProjectIndexEntry,
+      backgroundIndexingProjectIDs.has(selectedProject.id),
+      backgroundIndexErrorByProject[selectedProject.id] ?? ''
+    )
+  );
 
   $effect(() => {
     if (!quickOpenVisible) return;
@@ -292,6 +312,7 @@
       loading = true;
       error = '';
       runtime = 'cached source scan';
+      clearBackgroundIndexError(project.id);
 
       const nextSelection = applySourceRecords(
         cachedScan.records,
@@ -320,17 +341,16 @@
       if (generation !== scanGeneration) return;
 
       const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
-      if (tauriScan) {
-        sourceScanCache = upsertSourceScanCacheEntry(
-          sourceScanCache,
-          project,
-          tauriScan.records,
-          tauriScan.limit,
-          Date.now(),
-          maxSourceScanCacheEntries,
-          tauriScan.truncated
-        );
-      }
+      sourceScanCache = upsertSourceScanCacheEntry(
+        sourceScanCache,
+        project,
+        nextRecords,
+        tauriScan?.limit ?? scanLimit,
+        Date.now(),
+        maxSourceScanCacheEntries,
+        tauriScan?.truncated ?? false
+      );
+      clearBackgroundIndexError(project.id);
 
       const nextSelection = applySourceRecords(
         nextRecords,
@@ -381,6 +401,73 @@
     runtime = 'source scan stopped';
     error = '';
     fileActionStatus = 'Scan stopped';
+  }
+
+  async function indexProjectsInBackground(projects: ProjectRoot[]) {
+    const projectsToIndex = selectBackgroundIndexProjects(
+      projects,
+      selectedProject.id,
+      sourceScanCache,
+      Date.now(),
+      sourceScanCacheMaxAgeMs,
+      defaultSourceScanLimit
+    );
+
+    for (const project of projectsToIndex) {
+      void indexProjectInBackground(project);
+    }
+  }
+
+  async function indexProjectInBackground(project: ProjectRoot) {
+    if (project.id === selectedProject.id || backgroundIndexingProjectIDs.has(project.id)) return;
+
+    setBackgroundProjectIndexing(project.id, true);
+    clearBackgroundIndexError(project.id);
+
+    try {
+      const tauriScan = await listSourceFilesFromTauri(
+        project.path,
+        '',
+        defaultSourceScanLimit,
+        createSourceScanId()
+      );
+      const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
+      sourceScanCache = upsertSourceScanCacheEntry(
+        sourceScanCache,
+        project,
+        nextRecords,
+        tauriScan?.limit ?? defaultSourceScanLimit,
+        Date.now(),
+        maxSourceScanCacheEntries,
+        tauriScan?.truncated ?? false
+      );
+      clearBackgroundIndexError(project.id);
+    } catch (indexError) {
+      backgroundIndexErrorByProject = {
+        ...backgroundIndexErrorByProject,
+        [project.id]: indexError instanceof Error ? indexError.message : 'Could not index project'
+      };
+    } finally {
+      setBackgroundProjectIndexing(project.id, false);
+    }
+  }
+
+  function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
+    const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
+    if (indexing) {
+      nextProjectIDs.add(projectID);
+    } else {
+      nextProjectIDs.delete(projectID);
+    }
+    backgroundIndexingProjectIDs = nextProjectIDs;
+  }
+
+  function clearBackgroundIndexError(projectID: string) {
+    if (!(projectID in backgroundIndexErrorByProject)) return;
+
+    const nextErrors = { ...backgroundIndexErrorByProject };
+    delete nextErrors[projectID];
+    backgroundIndexErrorByProject = nextErrors;
   }
 
   function applySourceRecords(
@@ -770,6 +857,7 @@
     selectedProjectID = nextProject.id;
     persistSelectedProjectID(nextProject.id);
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
+    void indexProjectsInBackground(projectOptions);
   }
 
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
@@ -1012,6 +1100,7 @@
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     await scanProject(project, selectedSourcePaths[project.id]);
+    void indexProjectsInBackground(projectOptions);
   }
 
   function removeSelectedProject() {
@@ -1207,7 +1296,9 @@
     selectedProjectID = storedProject.id;
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
-    void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]);
+    void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
+      indexProjectsInBackground(storedProjectOptions)
+    );
 
     return () => {
       unlistenSourceScanProgress?.();
@@ -1348,6 +1439,7 @@
             <strong>{recordCountLabel}</strong>
           </div>
           <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
+          <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
           {#if scanLimitReached && !scanning}
             <button
               class="scan-more-button"
@@ -2181,6 +2273,18 @@
     color: #7f8b87;
     font-size: 10px;
     font-weight: 720;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .index-summary {
+    min-width: 0;
+    margin: -4px 0 8px;
+    overflow: hidden;
+    color: #8fd8cf;
+    font-size: 10px;
+    font-weight: 760;
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
