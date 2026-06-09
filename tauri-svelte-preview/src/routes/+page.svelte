@@ -54,7 +54,8 @@
     type SourcePreview,
     type SourceRecentRecord,
     type SourceRecord,
-    type SourceTreeNode
+    type SourceTreeNode,
+    type SourceTreeRow
   } from '$lib/sourceData';
   import {
     defaultSourceScanLimit,
@@ -113,6 +114,7 @@
   let fileTreeScrollTop = $state(0);
   let fileTreeViewportHeight = $state(sourceTreeFallbackViewportHeight);
   let pendingTreeRevealPath = $state<string | null>(null);
+  let pendingTreeFocusRowIndex = $state<number | null>(null);
   let projectNameInput = $state('');
   let projectPathInput = $state('');
   let projectFormError = $state('');
@@ -200,6 +202,25 @@
       element.scrollTop = nextScrollTop;
     }
     fileTreeScrollTop = element.scrollTop;
+  });
+
+  $effect(() => {
+    const rowIndex = pendingTreeFocusRowIndex;
+    const element = fileTreeElement;
+    if (rowIndex === null || !element) return;
+
+    if (rowIndex < 0 || rowIndex >= visibleTreeRows.length) {
+      pendingTreeFocusRowIndex = null;
+      return;
+    }
+
+    const button = element.querySelector<HTMLButtonElement>(
+      `button[data-tree-row-index="${rowIndex}"]`
+    );
+    if (!button) return;
+
+    pendingTreeFocusRowIndex = null;
+    button.focus();
   });
 
   async function scanProject(
@@ -491,6 +512,7 @@
     selectedRecord = null;
     selectedSourceLine = null;
     pendingTreeRevealPath = null;
+    pendingTreeFocusRowIndex = null;
     scanLimitReached = false;
     preview = null;
     loading = false;
@@ -862,6 +884,91 @@
     pendingTreeRevealPath = record.path;
   }
 
+  function focusTreeRowAtIndex(rowIndex: number) {
+    if (visibleTreeRows.length === 0) return;
+
+    const nextRowIndex = Math.min(Math.max(rowIndex, 0), visibleTreeRows.length - 1);
+    pendingTreeFocusRowIndex = nextRowIndex;
+
+    if (!fileTreeElement) return;
+
+    const nextScrollTop = scrollTopForSourceTreeReveal(
+      nextRowIndex,
+      fileTreeElement.scrollTop,
+      fileTreeElement.clientHeight || sourceTreeFallbackViewportHeight,
+      sourceTreeRowHeight
+    );
+
+    if (Math.abs(fileTreeElement.scrollTop - nextScrollTop) > 0.5) {
+      fileTreeElement.scrollTop = nextScrollTop;
+    }
+    fileTreeScrollTop = fileTreeElement.scrollTop;
+  }
+
+  function parentTreeRowIndex(row: SourceTreeRow, rowIndex: number): number {
+    if (row.level === 0) return rowIndex;
+
+    for (let index = rowIndex - 1; index >= 0; index -= 1) {
+      if (visibleTreeRows[index]?.level === row.level - 1) return index;
+    }
+    return rowIndex;
+  }
+
+  function handleTreeRowKeydown(row: SourceTreeRow, event: KeyboardEvent) {
+    const rowIndex = visibleTreeRows.findIndex((treeRow) => treeRow.node.id === row.node.id);
+    if (rowIndex < 0) return;
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusTreeRowAtIndex(rowIndex + 1);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusTreeRowAtIndex(rowIndex - 1);
+      return;
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      focusTreeRowAtIndex(0);
+      return;
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      focusTreeRowAtIndex(visibleTreeRows.length - 1);
+      return;
+    }
+
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      selectTreeNode(row.node);
+      return;
+    }
+
+    const isFolder = row.node.file === null;
+    if (event.key === 'ArrowRight' && isFolder) {
+      event.preventDefault();
+      if (isFolderExpanded(row.node)) {
+        focusTreeRowAtIndex(rowIndex + 1);
+      } else {
+        toggleFolder(row.node);
+      }
+      return;
+    }
+
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      if (isFolder && isFolderExpanded(row.node)) {
+        toggleFolder(row.node);
+      } else {
+        focusTreeRowAtIndex(parentTreeRowIndex(row, rowIndex));
+      }
+    }
+  }
+
   function isFolderExpanded(node: SourceTreeNode): boolean {
     return autoExpandFolders || expandedFolderIds.has(node.id);
   }
@@ -1050,7 +1157,7 @@
               aria-hidden="true"
               style={`--tree-spacer-height: ${virtualizedTreeRows.topSpacerHeight}px`}
             ></div>
-            {#each virtualizedTreeRows.rows as row (row.node.id)}
+            {#each virtualizedTreeRows.rows as row, virtualTreeRowIndex (row.node.id)}
               {@const node = row.node}
               {@const isFolder = node.file === null}
               {@const isExpanded = isFolderExpanded(node)}
@@ -1062,7 +1169,9 @@
                 style={`--tree-level: ${row.level}`}
                 title={node.relativePath}
                 aria-expanded={isFolder ? isExpanded : undefined}
+                data-tree-row-index={virtualizedTreeRows.startIndex + virtualTreeRowIndex}
                 onclick={() => selectTreeNode(node)}
+                onkeydown={(event) => handleTreeRowKeydown(row, event)}
               >
                 <span class="tree-indent"></span>
                 <span class="tree-chevron">
