@@ -7,6 +7,7 @@ import {
   monacoLanguageForSource,
   parseQuickOpenQuery,
   rankSourceRecords,
+  scrollTopForSourceTreeReveal,
   selectPreferredSourceRecord,
   upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
@@ -246,3 +247,8 @@ const clampedVirtualWindow = virtualizeSourceTreeRows(virtualRows, 9_000, 90, 30
 assert.equal(clampedVirtualWindow.startIndex, 95);
 assert.equal(clampedVirtualWindow.endIndex, 100);
 assert.equal(clampedVirtualWindow.bottomSpacerHeight, 0);
+
+assert.equal(scrollTopForSourceTreeReveal(2, 0, 90, 30), 0);
+assert.equal(scrollTopForSourceTreeReveal(10, 0, 90, 30), 240);
+assert.equal(scrollTopForSourceTreeReveal(1, 240, 90, 30), 30);
+assert.equal(scrollTopForSourceTreeReveal(-1, 240, 90, 30), 240);

@@ -42,6 +42,7 @@
     parseQuickOpenQuery,
     previewFromContent,
     rankSourceRecords,
+    scrollTopForSourceTreeReveal,
     selectPreferredSourceRecord,
     upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
@@ -111,6 +112,7 @@
   let fileTreeElement = $state<HTMLDivElement | null>(null);
   let fileTreeScrollTop = $state(0);
   let fileTreeViewportHeight = $state(sourceTreeFallbackViewportHeight);
+  let pendingTreeRevealPath = $state<string | null>(null);
   let projectNameInput = $state('');
   let projectPathInput = $state('');
   let projectFormError = $state('');
@@ -176,6 +178,28 @@
     const resizeObserver = new ResizeObserver(measureFileTreeViewport);
     resizeObserver.observe(element);
     return () => resizeObserver.disconnect();
+  });
+
+  $effect(() => {
+    const revealPath = pendingTreeRevealPath;
+    const element = fileTreeElement;
+    if (!revealPath || !element) return;
+
+    const rowIndex = visibleTreeRows.findIndex((row) => row.node.file?.path === revealPath);
+    if (rowIndex < 0) return;
+
+    const nextScrollTop = scrollTopForSourceTreeReveal(
+      rowIndex,
+      element.scrollTop,
+      element.clientHeight || sourceTreeFallbackViewportHeight,
+      sourceTreeRowHeight
+    );
+    pendingTreeRevealPath = null;
+
+    if (Math.abs(element.scrollTop - nextScrollTop) > 0.5) {
+      element.scrollTop = nextScrollTop;
+    }
+    fileTreeScrollTop = element.scrollTop;
   });
 
   async function scanProject(
@@ -296,6 +320,7 @@
     selectedSourceLine = null;
     preview = nextSelection ? previewFromContent(nextSelection, '') : null;
     expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
+    if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
 
@@ -328,6 +353,7 @@
     selectedSourceLine = targetLine;
     if (targetLine) selectedSourceLineRequestId += 1;
     expandFoldersForRecord(record);
+    requestSourceTreeReveal(record);
     trackSelectedSourceRecord(record, selectedProject);
     await loadRecord(record);
   }
@@ -464,6 +490,7 @@
     selectedSourcePaths = nextSelectedSourcePaths;
     selectedRecord = null;
     selectedSourceLine = null;
+    pendingTreeRevealPath = null;
     scanLimitReached = false;
     preview = null;
     loading = false;
@@ -829,6 +856,10 @@
 
     fileTreeScrollTop = target.scrollTop;
     fileTreeViewportHeight = target.clientHeight || sourceTreeFallbackViewportHeight;
+  }
+
+  function requestSourceTreeReveal(record: SourceRecord) {
+    pendingTreeRevealPath = record.path;
   }
 
   function isFolderExpanded(node: SourceTreeNode): boolean {

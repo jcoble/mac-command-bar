@@ -580,6 +580,26 @@ export function virtualizeSourceTreeRows(
   };
 }
 
+export function scrollTopForSourceTreeReveal(
+  rowIndex: number,
+  currentScrollTop: number,
+  viewportHeight: number,
+  rowHeight: number
+): number {
+  if (rowIndex < 0) return currentScrollTop;
+
+  const safeRowHeight = Math.max(1, rowHeight);
+  const safeViewportHeight = Math.max(safeRowHeight, viewportHeight);
+  const safeScrollTop = Math.max(0, currentScrollTop);
+  const rowTop = rowIndex * safeRowHeight;
+  const rowBottom = rowTop + safeRowHeight;
+  const viewportBottom = safeScrollTop + safeViewportHeight;
+
+  if (rowTop < safeScrollTop) return rowTop;
+  if (rowBottom > viewportBottom) return rowBottom - safeViewportHeight;
+  return safeScrollTop;
+}
+
 type SourceTreeEntry = {
   components: string[];
   record: SourceRecord;
