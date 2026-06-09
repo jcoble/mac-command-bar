@@ -6,6 +6,7 @@ import {
   createSourceScanId,
   findSourceDefinitionsFromTauri,
   findSourceReferencesFromTauri,
+  listRuntimeContextsFromTauri,
   readProjectGitStatusFromTauri,
   searchSourceFilesFromTauri,
   writeSourceToTauri
@@ -29,6 +30,16 @@ assert.equal(
   null
 );
 assert.equal(await readProjectGitStatusFromTauri('/tmp/repo'), null);
+assert.equal(
+  await listRuntimeContextsFromTauri([
+    {
+      id: 'repo',
+      name: 'Repo',
+      path: '/tmp/repo'
+    }
+  ]),
+  null
+);
 assert.equal(
   await findSourceDefinitionsFromTauri(
     [

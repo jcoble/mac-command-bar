@@ -233,3 +233,14 @@ assert.ok(pageSource.includes('class="global-search-panel"'), 'Source page shoul
 assert.ok(pageSource.includes('class="source-search-results"'), 'Source page should render source search results');
 assertDeclaration('.source-search-results', 'overflow-y: auto');
 assertDeclaration('.source-search-results', 'scrollbar-width: thin');
+assert.ok(pageSource.includes('listRuntimeContextsFromTauri'), 'Source page should load native runtime contexts');
+assert.ok(pageSource.includes('runtimeContexts'), 'Source page should track local runtime contexts');
+assert.ok(pageSource.includes('selectedProjectRuntimeContexts'), 'Source page should filter contexts to the selected project');
+assert.ok(pageSource.includes('function loadRuntimeContexts'), 'Source page should expose a runtime context refresh action');
+assert.ok(pageSource.includes('aria-label="Refresh runtime contexts"'), 'Runtime context panel should expose a refresh action');
+assert.ok(pageSource.includes('class="runtime-context-panel"'), 'Source page should render a runtime context panel');
+assert.ok(pageSource.includes('class="runtime-context-list"'), 'Runtime context panel should render a scrollable list');
+assert.ok(pageSource.includes('class="runtime-port"'), 'Runtime context rows should show the listening port');
+assert.ok(pageSource.includes('Runtime Contexts'), 'Runtime context panel should have a clear heading');
+assertDeclaration('.runtime-context-list', 'overflow-y: auto');
+assertDeclaration('.runtime-context-list', 'scrollbar-width: thin');

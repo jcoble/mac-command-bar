@@ -1,4 +1,5 @@
 import type {
+  ProjectRoot,
   SourceDefinitionTarget,
   SourcePreview,
   SourceRecord,
@@ -30,6 +31,18 @@ export type ProjectGitStatus = {
   ahead: number;
   behind: number;
   files: ProjectGitFileStatus[];
+};
+
+export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
+
+export type RuntimeContext = {
+  pid: number;
+  command: string;
+  port: number;
+  cwd: string;
+  projectID: string | null;
+  projectName: string;
+  rootLabel: string;
 };
 
 export function createSourceScanId(): string {
@@ -129,6 +142,17 @@ export async function readProjectGitStatusFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectGitStatus>('project_git_status', { root });
+}
+
+export async function listRuntimeContextsFromTauri(
+  projects: RuntimeContextProject[]
+): Promise<RuntimeContext[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RuntimeContext[]>('list_runtime_contexts', { projects });
 }
 
 export async function searchSourceFilesFromTauri(

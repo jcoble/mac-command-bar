@@ -39,6 +39,7 @@
     findSourceSearchMatches,
     formatSourceContextGitSummary,
     formatSourceContextIdentity,
+    formatSourceContextRootLabel,
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
     flattenSourceTree,
@@ -80,6 +81,7 @@
     expandedSourceScanLimit,
     findSourceDefinitionsFromTauri,
     findSourceReferencesFromTauri,
+    listRuntimeContextsFromTauri,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
@@ -91,7 +93,8 @@
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type ProjectGitFileStatus,
-    type ProjectGitStatus
+    type ProjectGitStatus,
+    type RuntimeContext
   } from '$lib/tauriSource';
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
@@ -132,6 +135,10 @@
   let projectGitStatus = $state<ProjectGitStatus | null>(null);
   let projectGitLoading = $state(false);
   let projectGitError = $state('');
+  let runtimeContexts = $state<RuntimeContext[]>([]);
+  let runtimeContextsLoading = $state(false);
+  let runtimeContextError = $state('');
+  let runtimeContextSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
   let records = $state<SourceRecord[]>(initialRecords);
   let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
@@ -264,6 +271,20 @@
   );
   let sourceContextIdentity = $derived(
     formatSourceContextIdentity(selectedProject, projectGitSummary, runtime)
+  );
+  let selectedProjectRuntimeContexts = $derived(
+    runtimeContexts.filter(
+      (context) =>
+        context.projectID === selectedProject.id || context.projectName === selectedProject.name
+    )
+  );
+  let runtimeContextSummary = $derived(
+    formatRuntimeContextSummary(
+      selectedProjectRuntimeContexts.length,
+      runtimeContextsLoading,
+      runtimeContextError,
+      runtimeContextSource
+    )
   );
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
@@ -533,6 +554,56 @@
         projectGitLoading = false;
       }
     }
+  }
+
+  async function loadRuntimeContexts(projects: ProjectRoot[] = projectOptions) {
+    runtimeContextsLoading = true;
+    runtimeContextError = '';
+
+    try {
+      const nativeContexts = await listRuntimeContextsFromTauri(projects);
+      if (nativeContexts) {
+        runtimeContexts = nativeContexts;
+        runtimeContextSource = 'native process scan';
+        return;
+      }
+
+      runtimeContexts = projects.flatMap((project) => demoRuntimeContextsForProject(project));
+      runtimeContextSource = 'browser preview';
+    } catch (contextError) {
+      runtimeContexts = projects.flatMap((project) => demoRuntimeContextsForProject(project));
+      runtimeContextSource = 'browser preview';
+      runtimeContextError =
+        contextError instanceof Error ? contextError.message : 'Could not read runtime contexts';
+    } finally {
+      runtimeContextsLoading = false;
+    }
+  }
+
+  function demoRuntimeContextsForProject(project: ProjectRoot): RuntimeContext[] {
+    return [
+      {
+        pid: 0,
+        command: 'vite',
+        port: 5177,
+        cwd: project.path,
+        projectID: project.id,
+        projectName: project.name,
+        rootLabel: formatSourceContextRootLabel(project.path)
+      }
+    ];
+  }
+
+  function formatRuntimeContextSummary(
+    contextCount: number,
+    loadingContexts: boolean,
+    contextError: string,
+    contextSource: string
+  ) {
+    if (loadingContexts) return 'Scanning local listeners';
+    if (contextError) return contextError;
+    if (contextCount === 0) return `No listeners from this project · ${contextSource}`;
+    return `${contextCount} ${contextCount === 1 ? 'listener' : 'listeners'} · ${contextSource}`;
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -1159,6 +1230,7 @@
     selectedProjectID = nextProject.id;
     persistSelectedProjectID(nextProject.id);
     void loadProjectGitStatus(nextProject);
+    void loadRuntimeContexts(projectOptions);
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -1601,6 +1673,7 @@
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
+    void loadRuntimeContexts(storedProjectOptions);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
       indexProjectsInBackground(storedProjectOptions)
     );
@@ -1912,6 +1985,37 @@
         <strong>{sourceContextIdentity.runtime}</strong>
       </div>
     </div>
+
+    <section class="runtime-context-panel" aria-label="Runtime contexts">
+      <div class="runtime-context-header">
+        <div>
+          <strong>Runtime Contexts</strong>
+          <span>{runtimeContextSummary}</span>
+        </div>
+        <button
+          class="file-action-button"
+          type="button"
+          aria-label="Refresh runtime contexts"
+          title="Refresh runtime contexts"
+          disabled={runtimeContextsLoading}
+          onclick={() => loadRuntimeContexts(projectOptions)}
+        >
+          <RefreshCw size={14} strokeWidth={1.9} />
+        </button>
+      </div>
+      {#if selectedProjectRuntimeContexts.length > 0}
+        <div class="runtime-context-list">
+          {#each selectedProjectRuntimeContexts as context (`${context.pid}:${context.port}:${context.cwd}`)}
+            <div class="runtime-context-row">
+              <span class="runtime-port">:{context.port}</span>
+              <strong>{context.command}</strong>
+              <span>{context.rootLabel}</span>
+              <small title={context.cwd}>{context.cwd}</small>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
 
     {#if projectOpenSourceTabs.length > 0}
       <div class="tab-strip" aria-label="Open source files">
@@ -3114,6 +3218,105 @@
     font-weight: 760;
   }
 
+  .runtime-context-panel {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+    padding: 10px;
+    margin: -4px 0 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .runtime-context-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .runtime-context-header div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .runtime-context-header strong,
+  .runtime-context-header span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .runtime-context-header strong {
+    color: #f0f4f3;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .runtime-context-header span {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 740;
+  }
+
+  .runtime-context-list {
+    display: grid;
+    gap: 5px;
+    max-height: 108px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .runtime-context-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 7px 8px;
+    color: #cbd3d1;
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.14);
+  }
+
+  .runtime-port,
+  .runtime-context-row strong,
+  .runtime-context-row span,
+  .runtime-context-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .runtime-port {
+    color: #6fdfcf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 820;
+  }
+
+  .runtime-context-row strong {
+    color: #f0f4f3;
+    font-size: 11px;
+    font-weight: 780;
+  }
+
+  .runtime-context-row span,
+  .runtime-context-row small {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 720;
+  }
+
   .tab-strip {
     display: flex;
     gap: 6px;
@@ -3797,6 +4000,10 @@
 
     .context-identity-strip {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .runtime-context-row {
+      grid-template-columns: auto minmax(0, 1fr);
     }
 
     .editor-frame {

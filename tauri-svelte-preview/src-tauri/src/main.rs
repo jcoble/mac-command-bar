@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -121,6 +121,41 @@ struct GitFileStatus {
     worktree_status: String,
     status: String,
     badge: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeContextProject {
+    id: String,
+    name: String,
+    path: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeContext {
+    pid: u32,
+    command: String,
+    port: u16,
+    cwd: String,
+    #[serde(rename = "projectID")]
+    project_id: Option<String>,
+    project_name: String,
+    root_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessListener {
+    pid: u32,
+    command: String,
+    port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeContextProjectMatch {
+    project_id: Option<String>,
+    project_name: String,
+    root_label: String,
 }
 
 #[derive(Clone, Copy)]
@@ -388,6 +423,15 @@ async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Git status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_runtime_contexts(
+    projects: Vec<RuntimeContextProject>,
+) -> Result<Vec<RuntimeContext>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_runtime_contexts_sync(projects))
+        .await
+        .map_err(|error| format!("Runtime context task failed: {error}"))?
 }
 
 fn list_source_files_sync(
@@ -1073,6 +1117,219 @@ fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
+fn list_runtime_contexts_sync(
+    projects: Vec<RuntimeContextProject>,
+) -> Result<Vec<RuntimeContext>, String> {
+    let output = Command::new("lsof")
+        .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"])
+        .output()
+        .map_err(|error| format!("Could not run lsof: {error}"))?;
+
+    if !output.status.success() && output.stdout.is_empty() {
+        return Err(format!(
+            "Could not list listening processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let listeners = parse_lsof_tcp_listeners(&String::from_utf8_lossy(&output.stdout));
+    let mut cwd_by_pid: HashMap<u32, Option<PathBuf>> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut contexts = Vec::new();
+
+    for listener in listeners {
+        if !seen.insert((listener.pid, listener.port)) {
+            continue;
+        }
+
+        let cwd = cwd_by_pid
+            .entry(listener.pid)
+            .or_insert_with(|| process_cwd(listener.pid));
+        let Some(cwd) = cwd.as_ref() else {
+            continue;
+        };
+        let Some(project_match) = runtime_context_project_for_cwd(cwd, &projects) else {
+            continue;
+        };
+
+        contexts.push(RuntimeContext {
+            pid: listener.pid,
+            command: listener.command,
+            port: listener.port,
+            cwd: cwd.display().to_string(),
+            project_id: project_match.project_id,
+            project_name: project_match.project_name,
+            root_label: project_match.root_label,
+        });
+    }
+
+    contexts.sort_by(|left, right| {
+        left.project_name
+            .cmp(&right.project_name)
+            .then(left.root_label.cmp(&right.root_label))
+            .then(left.port.cmp(&right.port))
+            .then(left.command.cmp(&right.command))
+    });
+    Ok(contexts)
+}
+
+fn parse_lsof_tcp_listeners(output: &str) -> Vec<ProcessListener> {
+    let mut listeners = Vec::new();
+    let mut current_pid: Option<u32> = None;
+    let mut current_command = String::new();
+
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let (field, value) = line.split_at(1);
+        match field {
+            "p" => {
+                current_pid = value.parse::<u32>().ok();
+                current_command.clear();
+            }
+            "c" => {
+                current_command = value.to_string();
+            }
+            "n" => {
+                let Some(pid) = current_pid else {
+                    continue;
+                };
+                let Some(port) = parse_lsof_tcp_port(value) else {
+                    continue;
+                };
+
+                listeners.push(ProcessListener {
+                    pid,
+                    command: current_command.clone(),
+                    port,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    listeners
+}
+
+fn parse_lsof_tcp_port(name: &str) -> Option<u16> {
+    let endpoint = name.split("->").next().unwrap_or(name).trim();
+    let port_text = endpoint.rsplit(':').next()?.trim();
+    let digits: String = port_text
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+
+    if digits.is_empty() {
+        return None;
+    }
+
+    digits.parse::<u16>().ok()
+}
+
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    let output = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() && output.stdout.is_empty() {
+        return None;
+    }
+
+    parse_lsof_cwd(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_lsof_cwd(output: &str) -> Option<PathBuf> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix('n'))
+        .map(str::trim)
+        .find(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn runtime_context_project_for_cwd(
+    cwd: &Path,
+    projects: &[RuntimeContextProject],
+) -> Option<RuntimeContextProjectMatch> {
+    let cwd_path = normalized_path_string(cwd);
+
+    for project in projects {
+        let project_path = normalized_path_string(Path::new(&project.path));
+        if path_is_within(&cwd_path, &project_path) {
+            return Some(RuntimeContextProjectMatch {
+                project_id: Some(project.id.clone()),
+                project_name: project.name.clone(),
+                root_label: runtime_context_root_label(Path::new(&project.path)),
+            });
+        }
+    }
+
+    let (worktree_repo, _) = worktree_repo_and_slug(cwd)?;
+    projects
+        .iter()
+        .find(|project| {
+            project.name.eq_ignore_ascii_case(&worktree_repo)
+                || path_last_segment(Path::new(&project.path))
+                    .is_some_and(|segment| segment.eq_ignore_ascii_case(&worktree_repo))
+        })
+        .map(|project| RuntimeContextProjectMatch {
+            project_id: Some(project.id.clone()),
+            project_name: project.name.clone(),
+            root_label: runtime_context_root_label(cwd),
+        })
+}
+
+fn runtime_context_root_label(path: &Path) -> String {
+    if let Some((_, slug)) = worktree_repo_and_slug(path) {
+        return format!("worktree:{slug}");
+    }
+
+    let segments = path_segments(path);
+    if segments
+        .len()
+        .checked_sub(2)
+        .and_then(|index| segments.get(index))
+        .is_some_and(|segment| segment == "work")
+    {
+        return "main checkout".to_string();
+    }
+
+    path_last_segment(path).unwrap_or_else(|| "unknown".to_string())
+}
+
+fn worktree_repo_and_slug(path: &Path) -> Option<(String, String)> {
+    let segments = path_segments(path);
+    let worktrees_index = segments.iter().position(|segment| segment == "worktrees")?;
+    let repo = segments.get(worktrees_index + 1)?.clone();
+    let slug = segments.get(worktrees_index + 2)?.clone();
+    Some((repo, slug))
+}
+
+fn path_segments(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .filter(|segment| !segment.is_empty() && *segment != "/")
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn path_last_segment(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|segment| segment.to_str())
+        .filter(|segment| !segment.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalized_path_string(path: &Path) -> String {
+    path.to_string_lossy().trim_end_matches('/').to_string()
+}
+
+fn path_is_within(path: &str, root: &str) -> bool {
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
     let mut git_status = ProjectGitStatus {
         branch: None,
@@ -1318,7 +1575,8 @@ fn main() {
             search_source_files,
             find_source_definitions,
             find_source_references,
-            project_git_status
+            project_git_status,
+            list_runtime_contexts
         ])
         .run(tauri::generate_context!())
         .expect("failed to run MacCommandBar webview preview");
@@ -1674,6 +1932,70 @@ mod tests {
         assert_eq!(status.ahead, 0);
         assert_eq!(status.behind, 0);
         assert!(status.files.is_empty());
+    }
+
+    #[test]
+    fn lsof_listener_parser_reads_pid_command_and_ports() {
+        let listeners = parse_lsof_tcp_listeners(
+            "p123\ncnode\nn*:5177\nn127.0.0.1:24678\np456\ncdotnet\nn[::1]:5001\n",
+        );
+
+        assert_eq!(
+            listeners,
+            vec![
+                ProcessListener {
+                    pid: 123,
+                    command: "node".to_string(),
+                    port: 5177,
+                },
+                ProcessListener {
+                    pid: 123,
+                    command: "node".to_string(),
+                    port: 24678,
+                },
+                ProcessListener {
+                    pid: 456,
+                    command: "dotnet".to_string(),
+                    port: 5001,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_context_project_matching_uses_main_and_worktree_roots() {
+        let projects = vec![RuntimeContextProject {
+            id: "ediplatform".to_string(),
+            name: "EdiPlatform".to_string(),
+            path: "/Users/blackcolours/dev/work/EdiPlatform".to_string(),
+        }];
+
+        let main_context = runtime_context_project_for_cwd(
+            Path::new("/Users/blackcolours/dev/work/EdiPlatform/EdiPlatform.Api"),
+            &projects,
+        )
+        .unwrap();
+        assert_eq!(main_context.project_id.as_deref(), Some("ediplatform"));
+        assert_eq!(main_context.project_name, "EdiPlatform");
+        assert_eq!(main_context.root_label, "main checkout");
+
+        let worktree_context = runtime_context_project_for_cwd(
+            Path::new(
+                "/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-126-m3-design-polish/ediplatform-web",
+            ),
+            &projects,
+        )
+        .unwrap();
+        assert_eq!(worktree_context.project_id.as_deref(), Some("ediplatform"));
+        assert_eq!(worktree_context.project_name, "EdiPlatform");
+        assert_eq!(
+            worktree_context.root_label,
+            "worktree:tsk-126-m3-design-polish"
+        );
+
+        assert!(
+            runtime_context_project_for_cwd(Path::new("/tmp/other-project"), &projects).is_none()
+        );
     }
 
     #[test]
