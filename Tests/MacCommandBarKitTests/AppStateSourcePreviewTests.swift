@@ -30,6 +30,7 @@ final class AppStateSourcePreviewTests: XCTestCase {
         let requests = await spy.recordedRequests()
         XCTAssertEqual(requests.map(\.action), [.sourceList])
         XCTAssertEqual(requests.first?.payload["rootPath"]?.stringValue, "/repo")
+        XCTAssertEqual(requests.first?.payload["limit"]?.intValue, 1000)
         XCTAssertEqual(state.sourceFiles.count, 2)
         XCTAssertEqual(state.sourceFiles.map(\.relativePath), ["src/App.svelte", "src/ExternalLogin.cs"])
         XCTAssertEqual(state.modules.first(where: { $0.id == "source" })?.count, 2)

@@ -445,7 +445,7 @@ public final class AppState: ObservableObject {
 
         var payload: [String: JSONValue] = [
             "rootPath": .string(rootPath),
-            "limit": .number(250)
+            "limit": .number(1000)
         ]
         if let query = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
            !query.isEmpty {

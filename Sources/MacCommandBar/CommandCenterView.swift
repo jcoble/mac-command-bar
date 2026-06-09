@@ -420,7 +420,7 @@ private func projectURLLabel(_ rawURL: String) -> String {
 private struct SourcePreviewPanel: View {
     @EnvironmentObject private var state: AppState
     @State private var selectedProfileID: UUID?
-    @State private var pathText = ""
+    @State private var browser = SourcePreviewBrowserState()
     @State private var expandedFolderIDs: Set<String> = []
 
     private var selectedProfile: ProjectProfile? {
@@ -431,29 +431,8 @@ private struct SourcePreviewPanel: View {
         return state.profiles.first
     }
 
-    private var resolvedPath: String {
-        guard !trimmedPathText.isEmpty else {
-            return ""
-        }
-        guard !trimmedPathText.hasPrefix("/"), let repoPath = selectedProfile?.repoPath else {
-            return trimmedPathText
-        }
-        return URL(fileURLWithPath: repoPath).appendingPathComponent(trimmedPathText).path
-    }
-
-    private var trimmedPathText: String {
-        pathText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var filteredSourceFiles: [SourceFileRecord] {
-        guard !trimmedPathText.isEmpty else {
-            return state.sourceFiles
-        }
-        return state.sourceFiles.filter { file in
-            file.relativePath.localizedCaseInsensitiveContains(trimmedPathText)
-                || file.fileName.localizedCaseInsensitiveContains(trimmedPathText)
-                || file.language.localizedCaseInsensitiveContains(trimmedPathText)
-        }
+        browser.filteredFiles(from: state.sourceFiles)
     }
 
     private var sourceTree: [SourceFileTreeNode] {
@@ -461,23 +440,11 @@ private struct SourcePreviewPanel: View {
     }
 
     private var autoExpandFolders: Bool {
-        !trimmedPathText.isEmpty
-    }
-
-    private var bestSourceFileMatch: SourceFileRecord? {
-        guard !trimmedPathText.isEmpty else {
-            return nil
-        }
-
-        return state.sourceFiles.first { file in
-            file.path.localizedCaseInsensitiveCompare(trimmedPathText) == .orderedSame
-                || file.relativePath.localizedCaseInsensitiveCompare(trimmedPathText) == .orderedSame
-                || file.fileName.localizedCaseInsensitiveCompare(trimmedPathText) == .orderedSame
-        } ?? (filteredSourceFiles.count == 1 ? filteredSourceFiles.first : nil)
+        !browser.trimmedFilterText.isEmpty
     }
 
     private var previewTargetPath: String {
-        bestSourceFileMatch?.path ?? resolvedPath
+        browser.previewTargetPath(repoPath: selectedProfile?.repoPath, files: state.sourceFiles)
     }
 
     var body: some View {
@@ -499,7 +466,7 @@ private struct SourcePreviewPanel: View {
                 }
                 .disabled(selectedProfile == nil)
 
-                TextField("Search file or paste source path", text: $pathText)
+                TextField("Search file or paste source path", text: $browser.filterText)
                     .textFieldStyle(.roundedBorder)
 
                 Button {
@@ -527,7 +494,7 @@ private struct SourcePreviewPanel: View {
                             autoExpandFolders: autoExpandFolders,
                             expandedFolderIDs: $expandedFolderIDs
                         ) { file in
-                            pathText = file.relativePath
+                            browser.select(file)
                             preview(path: file.path)
                         }
                     }
@@ -568,7 +535,7 @@ private struct SourcePreviewPanel: View {
             selectedProfileID = selectedProfileID ?? state.profiles.first?.id
         }
         .onChange(of: selectedProfileID) { _, _ in
-            pathText = ""
+            browser.reset()
         }
     }
 
@@ -576,8 +543,9 @@ private struct SourcePreviewPanel: View {
         guard let repoPath = selectedProfile?.repoPath else {
             return
         }
+        browser.selectedFile = nil
         Task {
-            await state.refreshSourceFiles(rootPath: repoPath, query: pathText)
+            await state.refreshSourceFiles(rootPath: repoPath)
         }
     }
 

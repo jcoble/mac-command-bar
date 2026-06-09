@@ -425,6 +425,66 @@ public struct SourceFileTreeNode: Equatable, Identifiable, Sendable {
     }
 }
 
+public struct SourcePreviewBrowserState: Equatable, Sendable {
+    public var filterText: String
+    public var selectedFile: SourceFileRecord?
+
+    public init(filterText: String = "", selectedFile: SourceFileRecord? = nil) {
+        self.filterText = filterText
+        self.selectedFile = selectedFile
+    }
+
+    public var trimmedFilterText: String {
+        filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public mutating func select(_ file: SourceFileRecord) {
+        selectedFile = file
+    }
+
+    public mutating func reset() {
+        filterText = ""
+        selectedFile = nil
+    }
+
+    public func filteredFiles(from files: [SourceFileRecord]) -> [SourceFileRecord] {
+        guard !trimmedFilterText.isEmpty else {
+            return files
+        }
+        return files.filter { file in
+            file.relativePath.localizedCaseInsensitiveContains(trimmedFilterText)
+                || file.fileName.localizedCaseInsensitiveContains(trimmedFilterText)
+                || file.language.localizedCaseInsensitiveContains(trimmedFilterText)
+        }
+    }
+
+    public func previewTargetPath(repoPath: String?, files: [SourceFileRecord]) -> String {
+        if let match = bestSourceFileMatch(in: files) {
+            return match.path
+        }
+        if trimmedFilterText.isEmpty {
+            return selectedFile?.path ?? ""
+        }
+        guard !trimmedFilterText.hasPrefix("/"), let repoPath else {
+            return trimmedFilterText
+        }
+        return URL(fileURLWithPath: repoPath).appendingPathComponent(trimmedFilterText).path
+    }
+
+    private func bestSourceFileMatch(in files: [SourceFileRecord]) -> SourceFileRecord? {
+        guard !trimmedFilterText.isEmpty else {
+            return nil
+        }
+
+        let filtered = filteredFiles(from: files)
+        return files.first { file in
+            file.path.localizedCaseInsensitiveCompare(trimmedFilterText) == .orderedSame
+                || file.relativePath.localizedCaseInsensitiveCompare(trimmedFilterText) == .orderedSame
+                || file.fileName.localizedCaseInsensitiveCompare(trimmedFilterText) == .orderedSame
+        } ?? (filtered.count == 1 ? filtered.first : nil)
+    }
+}
+
 private struct SourceFileTreeEntry {
     var components: [String]
     var file: SourceFileRecord
