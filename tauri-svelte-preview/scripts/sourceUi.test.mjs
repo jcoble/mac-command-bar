@@ -56,6 +56,7 @@ assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows sh
 assert.ok(pageSource.includes('function copyActivityCommand'), 'Activity rows should copy resume commands and paths');
 assert.ok(pageSource.includes('function openActivityPath'), 'Activity rows should open repo and worktree paths');
 assert.ok(pageSource.includes('function revealActivityPath'), 'Activity rows should reveal repo and worktree paths');
+assert.ok(pageSource.includes('function openActivityTerminalPath'), 'Activity rows should open repo and worktree paths in a terminal');
 assert.ok(pageSource.includes('function activityTextMatchesFilter'), 'Activity rows should share filter matching logic');
 assert.ok(pageSource.includes('function sourceActivityFilterPlaceholder'), 'Activity filter placeholder should match the active panel');
 assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
@@ -96,6 +97,9 @@ assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panel
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
+assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
+assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
+assert.ok(pageSource.includes('aria-label="Open active session in terminal"'), 'Active session rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Reveal repository path"'), 'Repository rows should expose native reveal');
 assert.ok(pageSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
 assert.ok(pageSource.includes('function cancelSourceScan()'), 'Source scans should expose a cancel action');

@@ -477,6 +477,15 @@ async fn reveal_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_terminal_path(path: String, terminal: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_terminal_path_action(PathBuf::from(path), terminal)
+    })
+    .await
+    .map_err(|error| format!("Terminal open task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn search_source_files(
     records: Vec<SourceRecord>,
     query: String,
@@ -1260,6 +1269,20 @@ fn run_path_action(path: PathBuf, action: PathAction) -> Result<(), String> {
     }
 }
 
+fn run_terminal_path_action(path: PathBuf, terminal: Option<String>) -> Result<(), String> {
+    let command = terminal_path_action_command(&path, terminal)?;
+    let status = Command::new(&command.program)
+        .args(&command.args)
+        .status()
+        .map_err(|error| format!("Could not run terminal action: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Terminal action exited with {status}"))
+    }
+}
+
 fn source_file_action_command(
     path: &Path,
     action: SourceFileAction,
@@ -1299,6 +1322,52 @@ fn path_action_command(path: &Path, action: PathAction) -> Result<SourceFileActi
         program: "open".to_string(),
         args,
     })
+}
+
+fn terminal_path_action_command(
+    path: &Path,
+    terminal: Option<String>,
+) -> Result<SourceFileActionCommand, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Could not read terminal path metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Terminal path is not a directory".to_string());
+    }
+
+    let terminal_app = normalize_terminal_app(terminal.as_deref())?;
+    Ok(SourceFileActionCommand {
+        program: "open".to_string(),
+        args: vec!["-a".to_string(), terminal_app, path.display().to_string()],
+    })
+}
+
+fn normalize_terminal_app(terminal: Option<&str>) -> Result<String, String> {
+    let requested = terminal
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Terminal");
+    let allowlisted = [
+        ("terminal", "Terminal"),
+        ("terminal.app", "Terminal"),
+        ("warp", "Warp"),
+        ("warp.app", "Warp"),
+        ("iterm", "iTerm"),
+        ("iterm.app", "iTerm"),
+        ("iterm2", "iTerm2"),
+        ("iterm2.app", "iTerm2"),
+        ("wezterm", "WezTerm"),
+        ("wezterm.app", "WezTerm"),
+        ("ghostty", "Ghostty"),
+        ("ghostty.app", "Ghostty"),
+        ("alacritty", "Alacritty"),
+        ("alacritty.app", "Alacritty"),
+    ];
+
+    allowlisted
+        .iter()
+        .find(|(alias, _)| alias.eq_ignore_ascii_case(requested))
+        .map(|(_, app)| (*app).to_string())
+        .ok_or_else(|| format!("Unsupported terminal app: {requested}"))
 }
 
 fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
@@ -2445,6 +2514,7 @@ fn main() {
             reveal_source_file,
             open_path,
             reveal_path,
+            open_terminal_path,
             search_source_files,
             find_source_definitions,
             find_source_references,
@@ -2798,7 +2868,10 @@ mod tests {
 
         let open_file_command = path_action_command(&file_path, PathAction::Open).unwrap();
         assert_eq!(open_file_command.program, "open");
-        assert_eq!(open_file_command.args, vec![file_path.display().to_string()]);
+        assert_eq!(
+            open_file_command.args,
+            vec![file_path.display().to_string()]
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2809,6 +2882,58 @@ mod tests {
         let error = path_action_command(&root.join("missing"), PathAction::Open).unwrap_err();
 
         assert!(error.contains("Could not read path metadata"));
+    }
+
+    #[test]
+    fn terminal_path_action_builds_allowlisted_terminal_commands_for_directories() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        let warp_command = terminal_path_action_command(&root, Some("Warp".to_string())).unwrap();
+        assert_eq!(warp_command.program, "open");
+        assert_eq!(
+            warp_command.args,
+            vec![
+                "-a".to_string(),
+                "Warp".to_string(),
+                root.display().to_string()
+            ]
+        );
+
+        let default_command = terminal_path_action_command(&root, None).unwrap();
+        assert_eq!(
+            default_command.args,
+            vec![
+                "-a".to_string(),
+                "Terminal".to_string(),
+                root.display().to_string()
+            ]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_path_action_rejects_files_missing_paths_and_unknown_apps() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file_path = root.join("src/App.svelte");
+        std::fs::write(&file_path, "<script></script>").unwrap();
+
+        let file_error =
+            terminal_path_action_command(&file_path, Some("Warp".to_string())).unwrap_err();
+        assert!(file_error.contains("Terminal path is not a directory"));
+
+        let missing_error =
+            terminal_path_action_command(&root.join("missing"), Some("Warp".to_string()))
+                .unwrap_err();
+        assert!(missing_error.contains("Could not read terminal path metadata"));
+
+        let app_error =
+            terminal_path_action_command(&root, Some("UnknownTerminal".to_string())).unwrap_err();
+        assert!(app_error.contains("Unsupported terminal app"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

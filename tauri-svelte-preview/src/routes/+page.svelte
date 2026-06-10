@@ -19,6 +19,7 @@
     Save,
     Search,
     SplitSquareHorizontal,
+    Terminal,
     Trash2,
     X
   } from '@lucide/svelte';
@@ -92,6 +93,7 @@
     nativeSourceScanProgressEvent,
     openPathFromTauri,
     openSourceFileFromTauri,
+    openTerminalPathFromTauri,
     readProjectGitStatusFromTauri,
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
@@ -1878,6 +1880,23 @@
     }
   }
 
+  async function openActivityTerminalPath(path: string) {
+    if (!path.trim()) return;
+
+    fileActionBusy = `activity-terminal:${path}`;
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const opened = await openTerminalPathFromTauri(path, 'Warp');
+      fileActionStatus = opened ? 'Opened terminal' : 'Native action unavailable';
+    } catch (terminalError) {
+      error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
   async function openSelectedFile() {
     if (!preview) return;
 
@@ -3238,6 +3257,14 @@
                       >
                         <ExternalLink size={12} strokeWidth={2} />
                       </button>
+                      <button
+                        type="button"
+                        aria-label="Open agent project in terminal"
+                        title="Open project in terminal"
+                        onclick={() => openActivityTerminalPath(session.projectPath ?? '')}
+                      >
+                        <Terminal size={12} strokeWidth={2} />
+                      </button>
                     {/if}
                   </div>
                 </div>
@@ -3272,6 +3299,14 @@
                       onclick={() => openActivityPath(context.cwd)}
                     >
                       <ExternalLink size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Open active session in terminal"
+                      title="Open session in terminal"
+                      onclick={() => openActivityTerminalPath(context.cwd)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
                     </button>
                   </div>
                 </div>
@@ -3308,6 +3343,14 @@
                       >
                         <FolderSearch size={12} strokeWidth={2} />
                       </button>
+                      <button
+                        type="button"
+                        aria-label="Open agent project in terminal"
+                        title="Open project in terminal"
+                        onclick={() => openActivityTerminalPath(session.projectPath ?? '')}
+                      >
+                        <Terminal size={12} strokeWidth={2} />
+                      </button>
                     {/if}
                   </div>
                 </div>
@@ -3343,6 +3386,14 @@
                       onclick={() => openActivityPath(worktree.path)}
                     >
                       <ExternalLink size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Open worktree in terminal"
+                      title="Open worktree in terminal"
+                      onclick={() => openActivityTerminalPath(worktree.path)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
                     </button>
                     <button
                       type="button"
@@ -3402,6 +3453,14 @@
                       onclick={() => openActivityPath(summary.path)}
                     >
                       <ExternalLink size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Open repository in terminal"
+                      title="Open repository in terminal"
+                      onclick={() => openActivityTerminalPath(summary.path)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
                     </button>
                     <button
                       type="button"

@@ -205,6 +205,22 @@ export async function revealPathFromTauri(path: string): Promise<boolean> {
   return runPathCommand('reveal_path', path);
 }
 
+export async function openTerminalPathFromTauri(
+  path: string,
+  terminal = 'Warp'
+): Promise<boolean> {
+  if (!isTauriRuntime() || !path.trim()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_terminal_path', {
+    path,
+    terminal: terminal.trim() || null
+  });
+  return true;
+}
+
 export async function readProjectGitStatusFromTauri(
   root: string
 ): Promise<ProjectGitStatus | null> {
