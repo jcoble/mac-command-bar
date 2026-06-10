@@ -23,11 +23,35 @@ function assertDeclaration(selector, declaration) {
 }
 
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
+assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 8px minmax(0, 1fr)');
+assertDeclaration('.activity-shell', 'min-width: 0');
+assertDeclaration('.activity-rail', 'width: 54px');
+assertDeclaration('.side-pane-resizer', 'cursor: col-resize');
+assertDeclaration('.activity-panel-list', 'overflow-y: auto');
 assertDeclaration('.source-list-panel', 'overflow: hidden');
 assertDeclaration('.file-tree', 'overflow-y: auto');
 assertDeclaration('.file-tree', 'overflow-x: hidden');
 assertDeclaration('.file-tree', 'scrollbar-gutter: stable');
 assertDeclaration('.file-tree', 'scrollbar-width: thin');
+assert.ok(pageSource.includes("type SourceActivityMode = 'files' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git'"), 'Source shell should define switchable activity modes');
+assert.ok(pageSource.includes('sourceActivityModeStorageKey'), 'Source shell should persist the active activity mode');
+assert.ok(pageSource.includes('sidePaneWidthStorageKey'), 'Source shell should persist the side pane width');
+assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
+assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
+assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
+assert.ok(pageSource.includes('function beginSidePaneResize'), 'Source shell should expose side pane drag resizing');
+assert.ok(pageSource.includes('class="activity-rail"'), 'Source shell should render an activity rail');
+assert.ok(pageSource.includes('aria-label="Workspace views"'), 'Activity rail should be labeled');
+assert.ok(pageSource.includes('aria-label="Files"'), 'Activity rail should expose files');
+assert.ok(pageSource.includes('aria-label="Conversations"'), 'Activity rail should expose conversations');
+assert.ok(pageSource.includes('aria-label="Active sessions"'), 'Activity rail should expose active sessions');
+assert.ok(pageSource.includes('aria-label="Agents"'), 'Activity rail should expose agents');
+assert.ok(pageSource.includes('aria-label="Worktrees"'), 'Activity rail should expose worktrees');
+assert.ok(pageSource.includes('aria-label="Git and tasks"'), 'Activity rail should expose Git and tasks');
+assert.ok(pageSource.includes('class="side-pane-resizer"'), 'Source shell should render a side pane resizer');
+assert.ok(pageSource.includes('aria-label="Resize side pane"'), 'Side pane resizer should be labeled');
+assert.ok(pageSource.includes('class="activity-panel"'), 'Non-file side modes should render activity panels');
+assert.ok(pageSource.includes('class="activity-panel-list"'), 'Activity panels should render scrollable lists');
 assert.ok(pageSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
 assert.ok(pageSource.includes('function cancelSourceScan()'), 'Source scans should expose a cancel action');
 assert.ok(

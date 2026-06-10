@@ -118,6 +118,8 @@
   const selectedSourcePathStorageKey = 'mac-command-bar.source-browser.selected-source-paths';
   const recentSourceRecordsStorageKey = 'mac-command-bar.source-browser.recent-source-records';
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
+  const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
+  const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
   const maxRecentSourceRecords = 24;
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
@@ -134,6 +136,9 @@
   const sourceTreeRowHeight = 30;
   const sourceTreeOverscanRows = 8;
   const sourceTreeFallbackViewportHeight = 420;
+  const sidePaneDefaultWidth = 407;
+  const sidePaneMinWidth = 320;
+  const sidePaneMaxWidth = 620;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
@@ -145,6 +150,7 @@
     action: SourceIntelligenceAction;
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
+  type SourceActivityMode = 'files' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
@@ -211,6 +217,8 @@
   let sourceSearchResults = $state<SourceSearchMatch[]>([]);
   let sourceSearchLoading = $state(false);
   let sourceSearchError = $state('');
+  let sourceActivityMode = $state<SourceActivityMode>('files');
+  let sidePaneWidth = $state(sidePaneDefaultWidth);
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
@@ -405,6 +413,7 @@
       sourceReferenceQuery
     )
   );
+  let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
 
   $effect(() => {
     if (!quickOpenVisible) return;
@@ -1862,6 +1871,174 @@
     void indexProjectsInBackground(projectOptions);
   }
 
+  function selectSourceActivityMode(mode: SourceActivityMode) {
+    sourceActivityMode = mode;
+    persistSourceActivityMode(mode);
+    window.setTimeout(measureFileTreeViewport, 0);
+  }
+
+  function sourceActivityLabel(mode: SourceActivityMode) {
+    switch (mode) {
+      case 'files':
+        return 'Files';
+      case 'conversations':
+        return 'Conversations';
+      case 'sessions':
+        return 'Active sessions';
+      case 'agents':
+        return 'Agents';
+      case 'worktrees':
+        return 'Worktrees';
+      case 'git':
+        return 'Git and tasks';
+    }
+  }
+
+  function sourceActivityCount(mode: SourceActivityMode) {
+    switch (mode) {
+      case 'files':
+        return filteredRecords.length;
+      case 'conversations':
+      case 'agents':
+        return selectedProjectAgentSessions.length;
+      case 'sessions':
+        return selectedProjectRuntimeContexts.length;
+      case 'worktrees':
+        return projectWorktrees.length;
+      case 'git':
+        return gitRepositorySummaries.length;
+    }
+  }
+
+  function sourceActivitySummary(mode: SourceActivityMode) {
+    switch (mode) {
+      case 'files':
+        return scanSummaryLabel;
+      case 'conversations':
+      case 'agents':
+        return agentSessionSummary;
+      case 'sessions':
+        return runtimeContextSummary;
+      case 'worktrees':
+        return projectWorktreeSummary;
+      case 'git':
+        return repoDashboardSummary;
+    }
+  }
+
+  function refreshSourceActivityMode(mode: SourceActivityMode = sourceActivityMode) {
+    switch (mode) {
+      case 'files':
+        void scanProject(selectedProject, selectedRecord?.path, { force: true });
+        break;
+      case 'conversations':
+      case 'agents':
+        void loadAgentSessions();
+        break;
+      case 'sessions':
+        void loadRuntimeContexts(projectOptions);
+        break;
+      case 'worktrees':
+        void loadProjectWorktrees(selectedProject);
+        break;
+      case 'git':
+        void loadGitRepositorySummaries(projectOptions);
+        void loadGitCommitHistory(selectedProject);
+        break;
+    }
+  }
+
+  function sourceActivityRefreshing(mode: SourceActivityMode) {
+    switch (mode) {
+      case 'files':
+        return scanning;
+      case 'conversations':
+      case 'agents':
+        return agentSessionsLoading;
+      case 'sessions':
+        return runtimeContextsLoading;
+      case 'worktrees':
+        return projectWorktreesLoading;
+      case 'git':
+        return gitRepositorySummariesLoading || gitCommitHistoryLoading;
+    }
+  }
+
+  function loadStoredSourceActivityMode(): SourceActivityMode {
+    if (typeof window === 'undefined') return 'files';
+
+    const storedMode = window.localStorage.getItem(sourceActivityModeStorageKey);
+    return isSourceActivityMode(storedMode) ? storedMode : 'files';
+  }
+
+  function isSourceActivityMode(value: unknown): value is SourceActivityMode {
+    return (
+      value === 'files' ||
+      value === 'conversations' ||
+      value === 'sessions' ||
+      value === 'agents' ||
+      value === 'worktrees' ||
+      value === 'git'
+    );
+  }
+
+  function persistSourceActivityMode(mode: SourceActivityMode) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceActivityModeStorageKey, mode);
+  }
+
+  function loadStoredSidePaneWidth() {
+    if (typeof window === 'undefined') return sidePaneDefaultWidth;
+
+    const storedWidth = Number(window.localStorage.getItem(sidePaneWidthStorageKey));
+    return clampSidePaneWidth(storedWidth);
+  }
+
+  function persistSidePaneWidth(width: number) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sidePaneWidthStorageKey, String(clampSidePaneWidth(width)));
+  }
+
+  function clampSidePaneWidth(width: number) {
+    if (!Number.isFinite(width)) return sidePaneDefaultWidth;
+    return Math.min(sidePaneMaxWidth, Math.max(sidePaneMinWidth, Math.round(width)));
+  }
+
+  function beginSidePaneResize(event: PointerEvent) {
+    if (event.button !== 0 || typeof window === 'undefined') return;
+
+    const startX = event.clientX;
+    const startWidth = sidePaneWidth;
+    event.preventDefault();
+    window.document.body.classList.add('resizing-source-pane');
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      sidePaneWidth = clampSidePaneWidth(startWidth + moveEvent.clientX - startX);
+      window.setTimeout(measureFileTreeViewport, 0);
+    };
+    const finishResize = () => {
+      persistSidePaneWidth(sidePaneWidth);
+      window.document.body.classList.remove('resizing-source-pane');
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+  }
+
+  function handleSidePaneResizerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+
+    event.preventDefault();
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    sidePaneWidth = clampSidePaneWidth(sidePaneWidth + direction * 24);
+    persistSidePaneWidth(sidePaneWidth);
+    window.setTimeout(measureFileTreeViewport, 0);
+  }
+
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
     if (typeof window === 'undefined') return [];
 
@@ -2292,6 +2469,8 @@
     const storedSelectedSourcePaths = loadStoredSelectedSourcePaths();
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
+    const storedSourceActivityMode = loadStoredSourceActivityMode();
+    const storedSidePaneWidth = loadStoredSidePaneWidth();
     const storedProject =
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
@@ -2302,6 +2481,8 @@
     recentSourceRecords = storedRecentSourceRecords;
     openSourceTabs = storedOpenSourceTabs;
     selectedProjectID = storedProject.id;
+    sourceActivityMode = storedSourceActivityMode;
+    sidePaneWidth = storedSidePaneWidth;
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
@@ -2326,8 +2507,78 @@
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
-<main class="shell">
-  <aside class="sidebar" aria-label="Project source files">
+<main class="shell" style={`--side-pane-width: ${sidePaneWidth}px`}>
+  <aside class="activity-shell" aria-label="Workspace browser">
+    <nav class="activity-rail" aria-label="Workspace views">
+      <button
+        class:active={sourceActivityMode === 'files'}
+        type="button"
+        aria-label="Files"
+        title="Files"
+        onclick={() => selectSourceActivityMode('files')}
+      >
+        <FolderGit2 size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Files</span>
+        <strong>{sourceActivityCount('files')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'conversations'}
+        type="button"
+        aria-label="Conversations"
+        title="Conversations"
+        onclick={() => selectSourceActivityMode('conversations')}
+      >
+        <History size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Conversations</span>
+        <strong>{sourceActivityCount('conversations')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'sessions'}
+        type="button"
+        aria-label="Active sessions"
+        title="Active sessions"
+        onclick={() => selectSourceActivityMode('sessions')}
+      >
+        <SplitSquareHorizontal size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Active sessions</span>
+        <strong>{sourceActivityCount('sessions')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'agents'}
+        type="button"
+        aria-label="Agents"
+        title="Agents"
+        onclick={() => selectSourceActivityMode('agents')}
+      >
+        <Activity size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Agents</span>
+        <strong>{sourceActivityCount('agents')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'worktrees'}
+        type="button"
+        aria-label="Worktrees"
+        title="Worktrees"
+        onclick={() => selectSourceActivityMode('worktrees')}
+      >
+        <FolderSearch size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Worktrees</span>
+        <strong>{sourceActivityCount('worktrees')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'git'}
+        type="button"
+        aria-label="Git and tasks"
+        title="Git and tasks"
+        onclick={() => selectSourceActivityMode('git')}
+      >
+        <Braces size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Git and tasks</span>
+        <strong>{sourceActivityCount('git')}</strong>
+      </button>
+    </nav>
+
+    <div class="sidebar" aria-label={sourceActivityPanelLabel}>
     <div class="brand-row">
       <div class="brand-mark">
         <Braces size={22} strokeWidth={1.8} />
@@ -2410,7 +2661,8 @@
       {/if}
     </div>
 
-    <div class="source-browser-stack">
+    {#if sourceActivityMode === 'files'}
+      <div class="source-browser-stack">
       <label class="search-box">
         <Search size={16} strokeWidth={1.8} />
         <input bind:value={query} placeholder="Filter source files" />
@@ -2584,8 +2836,163 @@
           {/if}
         </div>
       </div>
+      </div>
+    {:else}
+      <div class="activity-panel" aria-label={sourceActivityPanelLabel}>
+        <div class="activity-panel-header">
+          <div>
+            <strong>{sourceActivityPanelLabel}</strong>
+            <span>{sourceActivitySummary(sourceActivityMode)}</span>
+          </div>
+          <button
+            class="file-action-button"
+            type="button"
+            aria-label={`Refresh ${sourceActivityPanelLabel}`}
+            title={`Refresh ${sourceActivityPanelLabel}`}
+            disabled={sourceActivityRefreshing(sourceActivityMode)}
+            onclick={() => refreshSourceActivityMode(sourceActivityMode)}
+          >
+            <RefreshCw size={14} strokeWidth={1.9} />
+          </button>
+        </div>
+
+        {#if sourceActivityMode === 'conversations'}
+          <div class="activity-panel-list" aria-label="Conversation list">
+            {#if selectedProjectAgentSessions.length === 0}
+              <div class="activity-empty">No conversations</div>
+            {:else}
+              {#each selectedProjectAgentSessions as session (`conversation:${session.provider}:${session.id}`)}
+                <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
+                  <span class="agent-provider-badge">{session.provider}</span>
+                  <div class="activity-row-main">
+                    <strong>{session.title}</strong>
+                    <small>{agentSessionProjectLabel(session)} · {agentSessionActivityLabel(session)}</small>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {:else if sourceActivityMode === 'sessions'}
+          <div class="activity-panel-list" aria-label="Active session list">
+            {#if selectedProjectRuntimeContexts.length === 0}
+              <div class="activity-empty">No active sessions</div>
+            {:else}
+              {#each selectedProjectRuntimeContexts as context (`activity:${context.pid}:${context.port}:${context.cwd}`)}
+                <div class="activity-runtime-row" title={context.cwd}>
+                  <span class="runtime-port">:{context.port}</span>
+                  <div class="activity-row-main">
+                    <strong>{context.command}</strong>
+                    <small>{context.rootLabel} · {context.cwd}</small>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {:else if sourceActivityMode === 'agents'}
+          <div class="activity-panel-list" aria-label="Agent session list">
+            {#if selectedProjectAgentSessions.length === 0}
+              <div class="activity-empty">No agents</div>
+            {:else}
+              {#each selectedProjectAgentSessions as session (`agent:${session.provider}:${session.id}`)}
+                <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
+                  <span class="agent-provider-badge">{session.provider}</span>
+                  <div class="activity-row-main">
+                    <strong>{session.title}</strong>
+                    <small>{agentSessionResumeCommand(session)}</small>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {:else if sourceActivityMode === 'worktrees'}
+          <div class="activity-panel-list" aria-label="Worktree list">
+            {#if projectWorktrees.length === 0}
+              <div class="activity-empty">No worktrees</div>
+            {:else}
+              {#each projectWorktrees as worktree (`activity:${worktree.path}`)}
+                {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
+                <div class="activity-worktree-row" class:blocked={eligibilityKind === 'blocked'} title={worktree.path}>
+                  <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
+                  <div class="activity-row-main">
+                    <strong>{worktree.branch}</strong>
+                    <small>{worktree.repo} · {worktree.deleteEligibility}</small>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {:else if sourceActivityMode === 'git'}
+          <div class="activity-panel-list" aria-label="Git and task list">
+            {#if gitRepositorySummaries.length === 0}
+              <div class="activity-empty">No repositories</div>
+            {:else}
+              {#each gitRepositorySummaries as summary (`activity:${summary.projectID}:${summary.path}`)}
+                <div
+                  class="activity-repo-row"
+                  class:dirty={summary.isDirty || summary.error}
+                  title={repoDashboardTitle(summary)}
+                >
+                  <div class="activity-row-main">
+                    <strong>{summary.projectName}</strong>
+                    <small>{summary.rootLabel}</small>
+                  </div>
+                  <span class="repo-branch-badge">{summary.branch}</span>
+                  {#if summary.taskID && repoDashboardTaskUrl(summary)}
+                    <a
+                      class="repo-task-link"
+                      href={repoDashboardTaskUrl(summary) ?? ''}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {summary.taskID}
+                    </a>
+                  {:else}
+                    <span class="repo-branch-badge">{repoDashboardTaskLabel(summary)}</span>
+                  {/if}
+                  <small>{repoDashboardDirtyLabel(summary)} · {repoDashboardRemoteLabel(summary)}</small>
+                </div>
+              {/each}
+            {/if}
+
+            <div class="activity-subheading">Recent commits</div>
+            {#if gitCommitHistory.length === 0}
+              <div class="activity-empty">No commits</div>
+            {:else}
+              {#each gitCommitHistory.slice(0, 8) as entry (entry.sha)}
+                <div class="activity-commit-row" title={gitCommitTitle(entry)}>
+                  <span class="git-graph-marker" aria-hidden="true"></span>
+                  <div class="activity-row-main">
+                    <strong>{entry.subject}</strong>
+                    <small>{entry.shortSha} · {formatGitCommitTime(entry.committedAt)}</small>
+                  </div>
+                  {#if entry.taskID && gitTaskUrl(entry.taskID)}
+                    <a
+                      class="git-task-link"
+                      href={gitTaskUrl(entry.taskID) ?? ''}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {entry.taskID}
+                    </a>
+                  {/if}
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
     </div>
   </aside>
+
+  <button
+    class="side-pane-resizer"
+    type="button"
+    aria-label="Resize side pane"
+    title="Resize side pane"
+    onpointerdown={beginSidePaneResize}
+    onkeydown={handleSidePaneResizerKeydown}
+  ></button>
 
   <section class="workspace" aria-label="Source preview">
     <header class="topbar">
@@ -3314,9 +3721,9 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: 340px minmax(0, 1fr);
-    gap: 1px;
-    width: min(1180px, calc(100vw - 32px));
+    grid-template-columns: var(--side-pane-width) 8px minmax(0, 1fr);
+    gap: 0;
+    width: min(1520px, calc(100vw - 32px));
     height: min(760px, calc(100dvh - 32px));
     margin: 16px auto;
     overflow: hidden;
@@ -3328,14 +3735,116 @@
       inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
+  .activity-shell {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr);
+    min-width: 0;
+    overflow: hidden;
+    background: rgba(19, 21, 21, 0.94);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .activity-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: 54px;
+    min-width: 0;
+    padding: 16px 6px;
+    overflow: hidden;
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(9, 12, 12, 0.42);
+  }
+
+  .activity-rail button {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    min-width: 0;
+    color: #99a5a1;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .activity-rail button:hover,
+  .activity-rail button:focus-visible,
+  .activity-rail button.active {
+    color: #f2f6f5;
+    border-color: rgba(92, 226, 207, 0.24);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .activity-rail button.active {
+    color: #6fdfcf;
+  }
+
+  .activity-rail button strong {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    min-width: 16px;
+    max-width: 30px;
+    height: 16px;
+    padding: 0 4px;
+    overflow: hidden;
+    color: #071b18;
+    border-radius: 999px;
+    background: #6fdfcf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9px;
+    font-weight: 850;
+    line-height: 16px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-rail-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .side-pane-resizer {
+    width: 8px;
+    min-width: 0;
+    padding: 0;
+    cursor: col-resize;
+    border: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.045);
+    border-right: 1px solid rgba(255, 255, 255, 0.045);
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .side-pane-resizer:hover,
+  .side-pane-resizer:focus-visible {
+    outline: 0;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
+  :global(body.resizing-source-pane) {
+    cursor: col-resize;
+    user-select: none;
+  }
+
   .sidebar {
     display: grid;
     grid-template-rows: auto auto minmax(0, 1fr);
     min-width: 0;
     overflow: hidden;
     padding: 22px 18px;
-    background: rgba(19, 21, 21, 0.94);
-    border-right: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .brand-row {
@@ -3392,6 +3901,146 @@
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .activity-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .activity-panel-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding-bottom: 10px;
+  }
+
+  .activity-panel-header div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .activity-panel-header strong,
+  .activity-panel-header span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-panel-header strong {
+    color: #f0f4f3;
+    font-size: 13px;
+    font-weight: 820;
+  }
+
+  .activity-panel-header span {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .activity-panel-list {
+    display: grid;
+    align-content: start;
+    gap: 7px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 3px;
+    scrollbar-color: rgba(174, 184, 181, 0.52) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .activity-session-row,
+  .activity-runtime-row,
+  .activity-worktree-row,
+  .activity-repo-row,
+  .activity-commit-row {
+    display: grid;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 40px;
+    padding: 8px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.14);
+  }
+
+  .activity-session-row,
+  .activity-runtime-row,
+  .activity-worktree-row,
+  .activity-commit-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .activity-repo-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .activity-worktree-row.blocked,
+  .activity-repo-row.dirty {
+    background: rgba(216, 170, 85, 0.09);
+  }
+
+  .activity-row-main {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .activity-row-main strong,
+  .activity-row-main small,
+  .activity-repo-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-row-main strong {
+    color: #f0f4f3;
+    font-size: 11px;
+    font-weight: 790;
+  }
+
+  .activity-row-main small,
+  .activity-repo-row small {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 720;
+  }
+
+  .activity-repo-row small {
+    grid-column: 1 / -1;
+  }
+
+  .activity-subheading {
+    margin-top: 8px;
+    color: #6fdfcf;
+    font-size: 10px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .activity-empty {
+    display: grid;
+    place-items: center;
+    min-height: 88px;
+    color: #75817d;
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+    font-size: 12px;
+    font-weight: 750;
   }
 
   .project-row {
@@ -5458,9 +6107,24 @@
       margin: 10px;
     }
 
-    .sidebar {
+    .activity-shell {
+      grid-template-columns: 48px minmax(0, 1fr);
+      min-height: 620px;
       border-right: 0;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .activity-rail {
+      width: 48px;
+      padding: 12px 4px;
+    }
+
+    .side-pane-resizer {
+      display: none;
+    }
+
+    .sidebar {
+      padding: 18px 14px;
     }
 
     .topbar {
