@@ -198,6 +198,7 @@
   const contextPaneMinHeight = 180;
   const contextPaneMaxHeight = 520;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
+  const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-editor-canvas';
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
@@ -4833,7 +4834,7 @@
               onclick={() => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })}
             >
               <Plus size={13} strokeWidth={2} />
-              <span>Scan 5K</span>
+              <span>Scan {expandedSourceScanLimitShortLabel}</span>
             </button>
           {/if}
         </div>

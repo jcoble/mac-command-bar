@@ -293,6 +293,11 @@ assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should rende
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
 assert.ok(pageSource.includes('expandedSourceScanLimit'), 'Source preview should expose an expanded scan limit');
+assert.ok(
+  pageSource.includes('expandedSourceScanLimitShortLabel'),
+  'Expanded scan button should derive its compact label from the scan limit'
+);
+assert.ok(!pageSource.includes('Scan 5K'), 'Expanded scan button should not hard-code the old scan cap');
 assert.ok(pageSource.includes('{#if scanLimitReached && !scanning}'), 'Truncated source scans should expose a rescan-more action');
 assert.ok(pageSource.includes('class="scan-more-button"'), 'Expanded source scans should use a compact action button');
 assert.ok(
