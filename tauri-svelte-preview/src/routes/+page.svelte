@@ -1075,6 +1075,25 @@
       perform: () => selectSourceActivityMode('git')
     },
     {
+      id: 'git-refresh-history',
+      label: 'Refresh Git history',
+      detail: selectedProject.name,
+      disabled: gitCommitHistoryLoading,
+      perform: () => loadGitCommitHistory(selectedProject)
+    },
+    ...selectedProjectGitTaskIDs.slice(0, 8).map((taskID) => ({
+      id: `git-copy-task-${taskID}`,
+      label: `Copy task link: ${taskID}`,
+      detail: gitTaskUrl(taskID) ?? 'Task ID only',
+      perform: () => copyGitTaskReference(taskID)
+    })),
+    ...gitCommitHistory.slice(0, 8).map((entry) => ({
+      id: `git-copy-commit-${entry.sha}`,
+      label: `Copy commit: ${entry.shortSha}`,
+      detail: entry.subject,
+      perform: () => copyGitCommitSummary(entry)
+    })),
+    {
       id: 'activity-refresh',
       label: `Refresh ${sourceActivityPanelLabel}`,
       detail: sourceActivitySummary(sourceActivityMode),
@@ -1977,6 +1996,20 @@
     return [entry.sha, entry.refs, entry.subject].filter(Boolean).join('\n');
   }
 
+  function gitCommitSummaryText(entry: GitCommitHistoryEntry) {
+    const refs = gitCommitRefChips(entry).join(', ');
+    const task = entry.taskID ? `Task ${entry.taskID}` : '';
+
+    return [
+      entry.shortSha,
+      entry.subject,
+      refs,
+      task,
+      entry.author,
+      formatGitCommitTime(entry.committedAt)
+    ].filter(Boolean).join(' · ');
+  }
+
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
     return gitRefLabels(entry.refs);
   }
@@ -1987,6 +2020,24 @@
 
   function gitTaskUrl(taskID: string | null) {
     return taskID ? commandCenterTaskUrls[taskID] ?? null : null;
+  }
+
+  function gitTaskReferenceText(taskID: string) {
+    return gitTaskUrl(taskID) ?? taskID;
+  }
+
+  async function copyGitCommitSha(entry: GitCommitHistoryEntry) {
+    await copyActivityCommand(entry.sha, 'Commit SHA copied');
+  }
+
+  async function copyGitCommitSummary(entry: GitCommitHistoryEntry) {
+    await copyActivityCommand(gitCommitSummaryText(entry), 'Commit summary copied');
+  }
+
+  async function copyGitTaskReference(taskID: string | null) {
+    if (!taskID) return;
+
+    await copyActivityCommand(gitTaskReferenceText(taskID), gitTaskUrl(taskID) ? 'Task link copied' : 'Task ID copied');
   }
 
   function repoDashboardTaskLabel(summary: GitRepositorySummary) {
@@ -5709,16 +5760,46 @@
                     <strong>{entry.subject}</strong>
                     <small>{entry.shortSha} · {formatGitCommitTime(entry.committedAt)}</small>
                   </div>
-                  {#if entry.taskID && gitTaskUrl(entry.taskID)}
-                    <a
-                      class="git-task-link"
-                      href={gitTaskUrl(entry.taskID) ?? ''}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {entry.taskID}
-                    </a>
-                  {/if}
+                  <div class="activity-commit-meta">
+                    {#if entry.taskID && gitTaskUrl(entry.taskID)}
+                      <a
+                        class="git-task-link"
+                        href={gitTaskUrl(entry.taskID) ?? ''}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {entry.taskID}
+                      </a>
+                    {/if}
+                    <div class="activity-row-actions" aria-label="Commit actions">
+                      <button
+                        type="button"
+                        aria-label="Copy commit SHA"
+                        title="Copy commit SHA"
+                        onclick={() => copyGitCommitSha(entry)}
+                      >
+                        <Copy size={12} strokeWidth={2} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Copy commit summary"
+                        title="Copy commit summary"
+                        onclick={() => copyGitCommitSummary(entry)}
+                      >
+                        <History size={12} strokeWidth={2} />
+                      </button>
+                      {#if entry.taskID}
+                        <button
+                          type="button"
+                          aria-label="Copy task reference"
+                          title="Copy task reference"
+                          onclick={() => copyGitTaskReference(entry.taskID)}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                        </button>
+                      {/if}
+                    </div>
+                  </div>
                 </div>
               {/each}
             {/if}
@@ -6926,6 +7007,34 @@
                                 <span class="git-task-link">{entry.taskID}</span>
                               {/if}
                             {/if}
+                            <div class="git-history-actions" aria-label="Commit quick actions">
+                              <button
+                                type="button"
+                                aria-label="Copy commit SHA"
+                                title="Copy commit SHA"
+                                onclick={() => copyGitCommitSha(entry)}
+                              >
+                                <Copy size={11} strokeWidth={2} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Copy commit summary"
+                                title="Copy commit summary"
+                                onclick={() => copyGitCommitSummary(entry)}
+                              >
+                                <History size={11} strokeWidth={2} />
+                              </button>
+                              {#if entry.taskID}
+                                <button
+                                  type="button"
+                                  aria-label="Copy task reference"
+                                  title="Copy task reference"
+                                  onclick={() => copyGitTaskReference(entry.taskID)}
+                                >
+                                  <ExternalLink size={11} strokeWidth={2} />
+                                </button>
+                              {/if}
+                            </div>
                           </div>
                         </div>
                       {/each}
@@ -7518,7 +7627,7 @@
   }
 
   .activity-commit-row {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .activity-repo-row {
@@ -7858,6 +7967,14 @@
 
   .activity-repo-row > small {
     grid-column: 1 / 4;
+  }
+
+  .activity-commit-meta {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 5px;
+    min-width: 0;
   }
 
   .activity-row-actions {
@@ -10410,6 +10527,34 @@
     justify-items: end;
     gap: 4px;
     max-width: 112px;
+  }
+
+  .git-history-actions {
+    display: inline-flex;
+    justify-content: flex-end;
+    gap: 3px;
+    max-width: 112px;
+  }
+
+  .git-history-actions button {
+    display: grid;
+    place-items: center;
+    width: 21px;
+    height: 21px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .git-history-actions button:hover,
+  .git-history-actions button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.34);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.11);
   }
 
   .git-ref-label {

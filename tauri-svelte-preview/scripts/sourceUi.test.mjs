@@ -555,6 +555,10 @@ assert.ok(pageSource.includes('gitStatusByRelativePath'), 'Source page should ma
 assert.ok(pageSource.includes('gitCommitHistory'), 'Source page should track selected project commit history');
 assert.ok(pageSource.includes('function loadGitCommitHistory'), 'Source page should expose a Git commit history loader');
 assert.ok(pageSource.includes('function gitTaskUrl'), 'Source page should expose Notion task links for recognized task IDs');
+assert.ok(pageSource.includes('function gitCommitSummaryText'), 'Git history should create a copyable commit summary');
+assert.ok(pageSource.includes('function copyGitCommitSha'), 'Git history should expose quick SHA copy');
+assert.ok(pageSource.includes('function copyGitCommitSummary'), 'Git history should expose quick summary copy');
+assert.ok(pageSource.includes('function copyGitTaskReference'), 'Git task links should expose quick task reference copy');
 assert.ok(pageSource.includes('selectedProjectGitTaskIDs'), 'Git panel should derive a selected-project task trail');
 assert.ok(
   pageSource.includes('uniqueTaskIDsFromGitMetadata'),
@@ -597,19 +601,34 @@ assert.ok(pageSource.includes('aria-label="Pull selected repository"'), 'Git tab
 assert.ok(pageSource.includes('aria-label="Push selected repository"'), 'Git tab should expose repository push');
 assert.ok(pageSource.includes('aria-label="Commit staged Git changes"'), 'Git tab should expose a guarded commit action');
 assert.ok(pageSource.includes('aria-label="Git commit history"'), 'Git tab should expose commit history');
+assert.ok(pageSource.includes("id: 'git-refresh-history'"), 'Command palette should refresh Git history directly');
+assert.ok(pageSource.includes('id: `git-copy-task-${taskID}`'), 'Command palette should copy task links from Git metadata');
+assert.ok(pageSource.includes('id: `git-copy-commit-${entry.sha}`'), 'Command palette should copy recent commit summaries');
 assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should render commit history rows');
 assert.ok(
   pageSource.includes('git-history-row ${gitCommitGraphClass(entry, index)}'),
   'Git tab should render individual commit history rows with graph styling'
 );
 assert.ok(pageSource.includes('class="git-task-link"'), 'Git history should render task links when task metadata is present');
+assert.ok(pageSource.includes('class="activity-commit-meta"'), 'Activity Git commit rows should group task links with quick actions');
+assert.ok(pageSource.includes('class="git-history-actions"'), 'Git history rows should render compact quick actions');
+assert.ok(pageSource.includes('aria-label="Copy commit SHA"'), 'Git rows should expose copy SHA actions');
+assert.ok(pageSource.includes('aria-label="Copy commit summary"'), 'Git rows should expose copy summary actions');
+assert.ok(pageSource.includes('aria-label="Copy task reference"'), 'Git rows should expose copy task reference actions');
 assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.git-diff-panel', 'overflow: hidden');
 assertDeclaration('.git-status-list', 'overflow-y: auto');
 assertDeclaration('.git-history-list', 'overflow-y: auto');
 assertDeclaration('.git-task-trail', 'display: flex');
+assert.match(
+  pageSource,
+  /\.activity-commit-row\s*\{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;/,
+  'Activity commit rows should reserve a compact action column'
+);
+assertDeclaration('.activity-commit-meta', 'display: inline-flex');
 assertDeclaration('.git-history-row.head', 'background: rgba(111, 223, 207, 0.07)');
+assertDeclaration('.git-history-actions', 'display: inline-flex');
 assertDeclaration('.git-graph-marker.head::after', 'background: #6fdfcf');
 assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0, 1fr)');
 assertDeclaration('.run-timeline-item', 'grid-template-columns: 18px minmax(0, 1fr) auto');
