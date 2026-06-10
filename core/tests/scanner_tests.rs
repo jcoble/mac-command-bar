@@ -2,7 +2,8 @@ use mcb_core::crypto::SecretBox;
 use mcb_core::scanners::processes::parse_lsof_listeners;
 use mcb_core::scanners::sessions::{
     decode_claude_project_dir_with_users_root, merge_codex_session_metadata, parse_claude_jsonl,
-    parse_codex_index_jsonl, parse_codex_rollout_jsonl, read_tail_utf8,
+    parse_cmux_hook_sessions_json, parse_codex_index_jsonl, parse_codex_rollout_jsonl,
+    read_tail_utf8,
 };
 use mcb_core::scanners::worktrees::parse_worktree_porcelain;
 use mcb_core::scanners::worktrees::WorktreeScanOptions;
@@ -62,7 +63,10 @@ fn parses_codex_rollout_metadata_without_transcript_content() {
         records[0].project_path.as_deref(),
         Some("/Users/blackcolours/dev/work/mac-command-bar")
     );
-    assert_eq!(records[0].last_activity.as_deref(), Some("2026-06-09T01:00:00Z"));
+    assert_eq!(
+        records[0].last_activity.as_deref(),
+        Some("2026-06-09T01:00:00Z")
+    );
     assert_eq!(records[0].title, "Codex session");
     assert_eq!(records[0].resume_commands, vec!["codex resume 019e"]);
 }
@@ -80,10 +84,42 @@ fn merges_codex_rollout_project_path_into_index_record() {
 
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].title, "Build command bar");
-    assert_eq!(merged[0].last_activity.as_deref(), Some("2026-06-09T01:05:00Z"));
+    assert_eq!(
+        merged[0].last_activity.as_deref(),
+        Some("2026-06-09T01:05:00Z")
+    );
     assert_eq!(
         merged[0].project_path.as_deref(),
         Some("/Users/blackcolours/dev/work/mac-command-bar")
+    );
+}
+
+#[test]
+fn parses_cmux_hook_sessions_without_body_content() {
+    let records = parse_cmux_hook_sessions_json(
+        "codex",
+        "{\"version\":1,\"sessions\":{\"019e\":{\"sessionId\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\",\"updatedAt\":\"2026-06-09T01:07:00Z\",\"runtimeStatus\":\"running\",\"lastSubtitle\":\"main · context 42%\",\"lastBody\":\"do not use this transcript body\"}}}\n",
+    );
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider, "cmux-codex");
+    assert_eq!(records[0].id, "019e");
+    assert_eq!(records[0].title, "cmux codex · running");
+    assert!(!records[0].title.contains("transcript"));
+    assert_eq!(
+        records[0].project_path.as_deref(),
+        Some("/Users/blackcolours/dev/work/mac-command-bar")
+    );
+    assert_eq!(
+        records[0].last_activity.as_deref(),
+        Some("2026-06-09T01:07:00Z")
+    );
+    assert_eq!(
+        records[0].resume_commands,
+        vec![
+            "cd '/Users/blackcolours/dev/work/mac-command-bar' && codex resume 019e",
+            "codex resume 019e"
+        ]
     );
 }
 

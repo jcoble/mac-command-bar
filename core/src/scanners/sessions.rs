@@ -43,6 +43,13 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     }
     records.extend(merge_codex_session_metadata(codex_records, codex_metadata));
 
+    let cmux_term = home.join(".cmuxterm");
+    for (agent, file) in cmux_hook_session_files(&cmux_term) {
+        if let Ok(contents) = fs::read_to_string(file) {
+            records.extend(parse_cmux_hook_sessions_json(&agent, &contents));
+        }
+    }
+
     let claude_projects = home.join(".claude/projects");
     let mut files = jsonl_files(&claude_projects);
     files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
@@ -160,6 +167,74 @@ pub fn merge_codex_session_metadata(
     indexed
 }
 
+pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessionRecord> {
+    let Ok(value) = serde_json::from_str::<Value>(input) else {
+        return Vec::new();
+    };
+    let Some(sessions) = value.get("sessions").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+
+    let agent = agent.trim().to_lowercase();
+    if agent.is_empty() {
+        return Vec::new();
+    }
+
+    sessions
+        .iter()
+        .filter_map(|(key, value)| {
+            let id = value
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or(key)
+                .trim();
+            if id.is_empty() {
+                return None;
+            }
+
+            let cwd = value
+                .get("cwd")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    value
+                        .get("launchCommand")
+                        .and_then(|launch| launch.get("workingDirectory"))
+                        .and_then(Value::as_str)
+                })
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned);
+            let last_activity = value
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("startedAt").and_then(Value::as_str))
+                .or_else(|| {
+                    value
+                        .get("launchCommand")
+                        .and_then(|launch| launch.get("capturedAt"))
+                        .and_then(Value::as_str)
+                })
+                .map(ToOwned::to_owned);
+            let status = value
+                .get("runtimeStatus")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("agentLifecycle").and_then(Value::as_str))
+                .filter(|value| !value.trim().is_empty());
+            let title = status
+                .map(|status| format!("cmux {agent} · {status}"))
+                .unwrap_or_else(|| format!("cmux {agent} session"));
+
+            Some(AgentSessionRecord {
+                provider: format!("cmux-{agent}"),
+                id: id.to_string(),
+                title,
+                project_path: cwd.clone(),
+                last_activity,
+                resume_commands: cmux_resume_commands(&agent, id, cwd.as_deref()),
+            })
+        })
+        .collect()
+}
+
 pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRecord> {
     let mut latest: Option<AgentSessionRecord> = None;
 
@@ -205,6 +280,26 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
     latest.into_iter().collect()
 }
 
+fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String> {
+    let command = match agent {
+        "codex" => format!("codex resume {id}"),
+        "claude" => format!("claude --resume {id}"),
+        "gemini" => format!("gemini --resume {id}"),
+        "opencode" => format!("opencode --session {id}"),
+        "omp" | "pi" => format!("{agent} --session {id}"),
+        "amp" => format!("amp threads continue {id}"),
+        "antigravity" | "agy" => format!("agy --conversation {id}"),
+        "rovo" | "acli" => format!("acli rovodev run --restore {id}"),
+        "cursor" | "cursor-agent" => format!("cursor-agent --resume {id}"),
+        other => format!("{other} --resume {id}"),
+    };
+
+    match cwd.filter(|value| !value.trim().is_empty()) {
+        Some(cwd) => vec![format!("cd {} && {command}", shell_quote(cwd)), command],
+        None => vec![command],
+    }
+}
+
 fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
     if existing.project_path.is_none() {
         existing.project_path = candidate.project_path;
@@ -217,7 +312,9 @@ fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSession
             existing
                 .last_activity
                 .as_ref()
-                .map_or(true, |existing_activity| candidate_activity > existing_activity)
+                .map_or(true, |existing_activity| {
+                    candidate_activity > existing_activity
+                })
         })
     {
         existing.last_activity = candidate.last_activity;
@@ -273,6 +370,34 @@ fn jsonl_files(root: &Path) -> Vec<PathBuf> {
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             files.push(path);
         }
+    }
+
+    files
+}
+
+fn cmux_hook_session_files(root: &Path) -> Vec<(String, PathBuf)> {
+    let mut files = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return files;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(agent) = name.strip_suffix("-hook-sessions.json") else {
+            continue;
+        };
+        if agent.is_empty() {
+            continue;
+        }
+
+        files.push((agent.to_string(), path));
     }
 
     files
