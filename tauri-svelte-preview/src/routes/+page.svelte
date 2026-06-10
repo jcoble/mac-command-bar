@@ -44,6 +44,7 @@
     type OrchestrationTimelineItem
   } from '$lib/orchestrationView';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
+  import { buildWorktreeSafetySummary } from '$lib/worktreeSafety';
   import {
     createDefaultSourceDockLayout,
     hideSourceDockPanel,
@@ -643,17 +644,22 @@
     )
   );
   let filteredProjectWorktrees = $derived(
-    projectWorktrees.filter((worktree) =>
-      activityTextMatchesFilter(
+    projectWorktrees.filter((worktree) => {
+      const safety = projectWorktreeSafety(worktree);
+      return activityTextMatchesFilter(
         sourceActivityFilter,
         worktree.repo,
         worktree.path,
         worktree.branch,
         worktree.taskID,
         worktree.deleteEligibility,
-        worktree.lastActivity
-      )
-    )
+        worktree.lastActivity,
+        safety.badge,
+        safety.reason,
+        safety.recommendation,
+        safety.activityLabel
+      );
+    })
   );
   let filteredGitRepositorySummaries = $derived(
     gitRepositorySummaries.filter((summary) =>
@@ -714,6 +720,7 @@
       projectWorktreeSource
     )
   );
+  let projectWorktreeSafetyStats = $derived(formatProjectWorktreeSafetyStats(projectWorktrees));
   let repoDashboardSummary = $derived(
     formatRepoDashboardSummary(
       gitRepositorySummaries,
@@ -1062,6 +1069,20 @@
       disabled: sourceActivityRefreshing(sourceActivityMode),
       perform: () => refreshSourceActivityMode(sourceActivityMode)
     },
+    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+      id: `worktree-cleanup-plan-${worktree.path}`,
+      label: `Copy cleanup plan: ${worktree.branch}`,
+      detail: projectWorktreeSafety(worktree).recommendation,
+      disabled: false,
+      perform: () => copyWorktreeCleanupPlan(worktree)
+    })),
+    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+      id: `worktree-backup-command-${worktree.path}`,
+      label: `Copy backup command: ${worktree.branch}`,
+      detail: projectWorktreeSafety(worktree).reason,
+      disabled: projectWorktreeSafety(worktree).kind === 'protected',
+      perform: () => copyWorktreeBackupCommand(worktree)
+    })),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-resume-${session.provider}-${session.id}`,
       label: `Resume ${session.provider}: ${session.title}`,
@@ -2212,20 +2233,48 @@
     return `http://localhost:${context.port}`;
   }
 
+  function projectWorktreeSafety(worktree: ProjectWorktree) {
+    return buildWorktreeSafetySummary(worktree, { primaryPath: selectedProject.path });
+  }
+
+  function formatProjectWorktreeSafetyStats(worktrees: ProjectWorktree[]) {
+    if (projectWorktreesLoading) return 'scanning';
+    if (projectWorktreeError) return 'needs refresh';
+    if (worktrees.length === 0) return 'none';
+
+    const counts = worktrees.reduce(
+      (summary, worktree) => {
+        const safety = projectWorktreeSafety(worktree);
+        summary[safety.kind] += 1;
+        if (safety.ageBucket === 'stale') summary.stale += 1;
+        return summary;
+      },
+      { protected: 0, blocked: 0, ready: 0, review: 0, stale: 0 }
+    );
+    const parts = [
+      counts.blocked ? `${counts.blocked} blocked` : '',
+      counts.ready ? `${counts.ready} ready` : '',
+      counts.review ? `${counts.review} review` : '',
+      counts.stale ? `${counts.stale} stale` : '',
+      counts.protected ? `${counts.protected} main` : ''
+    ].filter(Boolean);
+    return parts.join(' · ') || 'clean';
+  }
+
   function projectWorktreeEligibilityKind(worktree: ProjectWorktree) {
-    if (worktree.deleteEligibility.startsWith('blocked')) return 'blocked';
-    if (worktree.isDirty || worktree.hasUnmergedCommits) return 'blocked';
-    return 'ready';
+    return projectWorktreeSafety(worktree).kind;
   }
 
   function projectWorktreeActivityLabel(worktree: ProjectWorktree) {
-    if (!worktree.lastActivity) return 'activity unknown';
+    return projectWorktreeSafety(worktree).activityLabel;
+  }
 
-    const epochMs = new Date(worktree.lastActivity).getTime();
-    if (Number.isNaN(epochMs)) return worktree.lastActivity;
+  function copyWorktreeCleanupPlan(worktree: ProjectWorktree) {
+    return copyActivityCommand(projectWorktreeSafety(worktree).cleanupPlan, 'Worktree cleanup plan copied');
+  }
 
-    const age = formatRelativeAge(epochMs);
-    return age === 'just now' ? 'active just now' : `active ${age} ago`;
+  function copyWorktreeBackupCommand(worktree: ProjectWorktree) {
+    return copyActivityCommand(projectWorktreeSafety(worktree).backupCommand, 'Worktree backup command copied');
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -5457,25 +5506,55 @@
               <div class="activity-empty">No worktrees</div>
             {:else}
               {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
+                {@const safety = projectWorktreeSafety(worktree)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
-                <div class="activity-worktree-row" class:blocked={eligibilityKind === 'blocked'} title={worktree.path}>
-                  <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
-                  <div class="activity-row-main">
-                    <strong>{worktree.branch}</strong>
-                    <small>{worktree.repo} · {worktree.deleteEligibility} · {projectWorktreeActivityLabel(worktree)}</small>
+                <div
+                  class="activity-worktree-row"
+                  class:blocked={eligibilityKind === 'blocked'}
+                  class:protected={eligibilityKind === 'protected'}
+                  class:ready={eligibilityKind === 'ready'}
+                  title={safety.cleanupPlan}
+                >
+                  <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
+                  <div class="activity-row-main worktree-row-main">
+                    <strong>
+                      <span>{worktree.branch}</span>
+                      {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
+                        <a
+                          class="git-task-link"
+                          href={gitTaskUrl(worktree.taskID) ?? ''}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label="Open worktree task"
+                        >
+                          {worktree.taskID}
+                        </a>
+                      {/if}
+                    </strong>
+                    <small class="worktree-safety-line">
+                      <span>{safety.reason}</span>
+                      <span>{projectWorktreeActivityLabel(worktree)}</span>
+                    </small>
+                    <small class="worktree-recommendation">{safety.recommendation}</small>
                   </div>
-                  {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
-                    <a
-                      class="git-task-link"
-                      href={gitTaskUrl(worktree.taskID) ?? ''}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label="Open worktree task"
-                    >
-                      {worktree.taskID}
-                    </a>
-                  {/if}
                   <div class="activity-row-actions" aria-label="Worktree actions">
+                    <button
+                      type="button"
+                      aria-label="Copy worktree cleanup plan"
+                      title="Copy cleanup plan"
+                      onclick={() => copyWorktreeCleanupPlan(worktree)}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Copy worktree backup command"
+                      title="Copy backup command"
+                      disabled={safety.kind === 'protected'}
+                      onclick={() => copyWorktreeBackupCommand(worktree)}
+                    >
+                      <Save size={12} strokeWidth={2} />
+                    </button>
                     <button
                       type="button"
                       aria-label="Copy worktree path"
@@ -6006,7 +6085,7 @@
         <div class="worktree-context-header">
           <div>
             <strong>Worktree Safety</strong>
-            <span>{projectWorktreeSummary}</span>
+            <span>{projectWorktreeSummary} · {projectWorktreeSafetyStats}</span>
           </div>
           <div class="context-card-actions">
             <button
@@ -6033,10 +6112,21 @@
         {#if projectWorktrees.length > 0}
           <div class="worktree-context-list">
             {#each projectWorktrees as worktree (worktree.path)}
+              {@const safety = projectWorktreeSafety(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
-              <div class="worktree-context-row" class:blocked={eligibilityKind === 'blocked'}>
-                <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
-                <strong>{worktree.branch}</strong>
+              <div
+                class="worktree-context-row"
+                class:blocked={eligibilityKind === 'blocked'}
+                class:protected={eligibilityKind === 'protected'}
+                class:ready={eligibilityKind === 'ready'}
+                title={safety.cleanupPlan}
+              >
+                <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
+                <div class="worktree-context-main">
+                  <strong>{worktree.branch}</strong>
+                  <small title={worktree.path}>{worktree.path}</small>
+                </div>
+                <span>{worktree.repo}</span>
                 {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
                   <a
                     class="git-task-link"
@@ -6047,10 +6137,30 @@
                   >
                     {worktree.taskID}
                   </a>
+                {:else}
+                  <span class="worktree-task-empty">no task</span>
                 {/if}
-                <span>{worktree.repo}</span>
-                <small title={worktree.path}>{worktree.path}</small>
-                <em>{worktree.deleteEligibility} · {projectWorktreeActivityLabel(worktree)}</em>
+                <em>{safety.reason} · {projectWorktreeActivityLabel(worktree)}</em>
+                <small class="worktree-recommendation">{safety.recommendation}</small>
+                <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
+                  <button
+                    type="button"
+                    aria-label="Copy worktree cleanup plan"
+                    title="Copy cleanup plan"
+                    onclick={() => copyWorktreeCleanupPlan(worktree)}
+                  >
+                    <Copy size={12} strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Copy worktree backup command"
+                    title="Copy backup command"
+                    disabled={safety.kind === 'protected'}
+                    onclick={() => copyWorktreeBackupCommand(worktree)}
+                  >
+                    <Save size={12} strokeWidth={2} />
+                  </button>
+                </div>
               </div>
             {/each}
           </div>
@@ -7362,6 +7472,12 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
+  .activity-worktree-row {
+    align-items: start;
+    min-height: 58px;
+    padding: 7px;
+  }
+
   .activity-commit-row {
     grid-template-columns: auto minmax(0, 1fr);
   }
@@ -7379,6 +7495,14 @@
   .activity-run-row.bad,
   .activity-repo-row.dirty {
     background: rgba(216, 170, 85, 0.09);
+  }
+
+  .activity-worktree-row.protected {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .activity-worktree-row.ready {
+    background: rgba(92, 226, 207, 0.06);
   }
 
   .activity-run-row.attention {
@@ -7635,6 +7759,10 @@
     min-width: 0;
   }
 
+  .worktree-row-main {
+    gap: 2px;
+  }
+
   .activity-row-main strong,
   .activity-row-main small,
   .activity-repo-row small {
@@ -7650,11 +7778,43 @@
     font-weight: 790;
   }
 
+  .worktree-row-main strong {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .worktree-row-main strong > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .activity-row-main small,
   .activity-repo-row small {
     color: #8d9995;
     font-size: 10px;
     font-weight: 720;
+  }
+
+  .worktree-safety-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 7px;
+    line-height: 1.25;
+  }
+
+  .worktree-safety-line span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worktree-recommendation {
+    color: #78837f;
   }
 
   .activity-repo-row > small {
@@ -7681,6 +7841,11 @@
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.035);
     cursor: pointer;
+  }
+
+  .activity-row-actions button:disabled {
+    opacity: 0.38;
+    cursor: default;
   }
 
   .activity-row-actions button:hover,
@@ -8994,7 +9159,9 @@
   }
 
   .worktree-context-row {
-    grid-template-columns: auto minmax(0, 0.9fr) auto minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1fr);
+    grid-template-columns:
+      auto minmax(0, 0.95fr) minmax(0, 0.5fr) auto minmax(0, 1fr) minmax(0, 1.1fr)
+      auto;
   }
 
   .repo-dashboard-row {
@@ -9015,6 +9182,14 @@
 
   .worktree-context-row.blocked {
     background: rgba(216, 170, 85, 0.09);
+  }
+
+  .worktree-context-row.protected {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .worktree-context-row.ready {
+    background: rgba(92, 226, 207, 0.06);
   }
 
   .repo-dashboard-row.dirty {
@@ -9038,6 +9213,9 @@
   .worktree-context-row span,
   .worktree-context-row small,
   .worktree-context-row em,
+  .worktree-context-main,
+  .worktree-context-main strong,
+  .worktree-context-main small,
   .repo-dashboard-main,
   .repo-dashboard-main strong,
   .repo-dashboard-main small,
@@ -9098,6 +9276,26 @@
     font-weight: 820;
   }
 
+  .worktree-status-badge.review {
+    color: #dce5e2;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  .worktree-status-badge.protected {
+    color: #dce5e2;
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .worktree-status-badge.ready {
+    color: #071b18;
+    background: #6fdfcf;
+  }
+
+  .worktree-status-badge.blocked {
+    color: #211606;
+    background: #d8aa55;
+  }
+
   .repo-branch-badge {
     color: #6fdfcf;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
@@ -9108,6 +9306,11 @@
   .worktree-context-row.blocked .worktree-status-badge {
     color: #211606;
     background: #d8aa55;
+  }
+
+  .worktree-context-main {
+    display: grid;
+    gap: 2px;
   }
 
   .runtime-context-row strong {
@@ -9126,6 +9329,45 @@
     color: #f0f4f3;
     font-size: 11px;
     font-weight: 780;
+  }
+
+  .worktree-task-empty {
+    color: #6f7a76;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .worktree-context-actions {
+    display: inline-flex;
+    justify-content: flex-end;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .worktree-context-actions button {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .worktree-context-actions button:hover,
+  .worktree-context-actions button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.36);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .worktree-context-actions button:disabled {
+    opacity: 0.38;
+    cursor: default;
   }
 
   .repo-dashboard-main {
