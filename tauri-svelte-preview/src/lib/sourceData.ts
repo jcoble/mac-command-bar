@@ -938,6 +938,16 @@ export function upsertSourceScanCacheEntry(
   return Object.fromEntries(nextEntries.map((entry) => [entry.key, entry]));
 }
 
+export function removeSourceScanCacheEntries(
+  cache: SourceScanCache,
+  project: ProjectRoot
+): SourceScanCache {
+  const projectPath = normalizeProjectPath(project.path);
+  return Object.fromEntries(
+    Object.entries(cache).filter(([, entry]) => entry.projectPath !== projectPath)
+  );
+}
+
 function sourceScanCacheKey(project: ProjectRoot, limit: number): string {
   return `${normalizeProjectPath(project.path)}::${Math.max(0, Math.floor(limit))}`;
 }

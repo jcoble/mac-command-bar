@@ -21,6 +21,7 @@ import {
   monacoLanguageForSource,
   parseQuickOpenQuery,
   rankSourceRecords,
+  removeSourceScanCacheEntries,
   scrollTopForSourceTreeReveal,
   selectPreferredSourceRecord,
   selectBackgroundIndexProjects,
@@ -207,6 +208,18 @@ const boundedScanCache = upsertSourceScanCacheEntry(
 assert.deepEqual(
   Object.values(boundedScanCache).map((entry) => entry.projectPath),
   ['/repo-other', '/third']
+);
+assert.deepEqual(
+  Object.values(removeSourceScanCacheEntries(boundedScanCache, { ...project, path: '/repo/' })).map(
+    (entry) => entry.projectPath
+  ),
+  ['/repo-other', '/third']
+);
+assert.deepEqual(
+  Object.values(removeSourceScanCacheEntries(boundedScanCache, otherProject)).map(
+    (entry) => entry.projectPath
+  ),
+  ['/third']
 );
 
 const firstTab = upsertOpenSourceTab([], records[0], project, 1000, 3);

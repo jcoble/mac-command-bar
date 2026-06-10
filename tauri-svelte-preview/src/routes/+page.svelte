@@ -83,6 +83,7 @@
     parseQuickOpenQuery,
     previewFromContent,
     rankSourceRecords,
+    removeSourceScanCacheEntries,
     scrollTopForSourceTreeReveal,
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
@@ -479,6 +480,10 @@
     force?: boolean;
     limit?: number;
   };
+  type ProjectActivationOptions = {
+    projects?: ProjectRoot[];
+    forceScan?: boolean;
+  };
   type SourceCommandPaletteItem = {
     id: string;
     label: string;
@@ -794,6 +799,13 @@
       detail: selectedProject.name,
       disabled: scanning,
       perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
+    },
+    {
+      id: 'scan-reset-index',
+      label: 'Reset project index and rescan',
+      detail: selectedProjectIndexSummary,
+      disabled: scanning,
+      perform: () => resetProjectScanCache(selectedProject)
     },
     {
       id: 'scan-stop',
@@ -1263,6 +1275,7 @@
     sourceScanProgress = null;
     error = '';
     runtime = 'scanning source files';
+    clearSourceRecordsForIncomingProject(project);
 
     try {
       const tauriScan = await listSourceFilesFromTauri(project.path, '', scanLimit, scanId);
@@ -1332,6 +1345,37 @@
     runtime = 'source scan stopped';
     error = '';
     fileActionStatus = 'Scan stopped';
+  }
+
+  function clearSourceRecordsForIncomingProject(project: ProjectRoot) {
+    const hasDifferentSelectedRecord =
+      selectedRecord !== null && !sourceRecordBelongsToProject(selectedRecord, project);
+    const hasDifferentRecords =
+      selectedRecord === null &&
+      records.length > 0 &&
+      records.some((record) => !sourceRecordBelongsToProject(record, project));
+
+    if (!hasDifferentSelectedRecord && !hasDifferentRecords) return;
+
+    records = [];
+    selectedRecord = null;
+    selectedSourceLine = null;
+    scanLimitReached = false;
+    preview = null;
+    expandedFolderIds = new Set();
+    syncSourcePreviewContent(null);
+  }
+
+  function sourceRecordBelongsToProject(record: SourceRecord, project: ProjectRoot) {
+    const projectPath = normalizeProjectPath(project.path);
+    const recordPath = normalizeProjectPath(record.path);
+    return recordPath === projectPath || recordPath.startsWith(`${projectPath}/`);
+  }
+
+  function resetProjectScanCache(project: ProjectRoot = selectedProject) {
+    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+    fileActionStatus = `Index reset for ${project.name}`;
+    return scanProject(project, selectedSourcePaths[project.id], { force: true });
   }
 
   async function indexProjectsInBackground(projects: ProjectRoot[]) {
@@ -3416,17 +3460,7 @@
   async function handleProjectChange() {
     const nextProject =
       projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
-    selectedProjectID = nextProject.id;
-    persistSelectedProjectID(nextProject.id);
-    void loadProjectGitStatus(nextProject);
-    void loadGitCommitHistory(nextProject);
-    void loadRuntimeContexts(projectOptions);
-    void loadProjectWorktrees(nextProject);
-    void loadGitRepositorySummaries(projectOptions);
-    void loadAgentSessions();
-    void loadOrchestrationRuns(projectOptions);
-    await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
-    void indexProjectsInBackground(projectOptions);
+    await activateProject(nextProject, { projects: projectOptions });
   }
 
   function selectSourceActivityMode(mode: SourceActivityMode) {
@@ -4482,29 +4516,34 @@
       } else {
         addingProject = false;
         projectFormError = '';
-        void activateProject(duplicateProject);
+        void activateProject(duplicateProject, { forceScan: true, projects: projectOptions });
       }
       return false;
     }
 
     const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
+    const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
     customProjectRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
     addingProject = false;
     projectFormError = '';
-    void activateProject(nextProject);
+    void activateProject(nextProject, { forceScan: true, projects: nextProjectOptions });
     return true;
   }
 
-  async function activateProject(project: ProjectRoot) {
+  async function activateProject(project: ProjectRoot, options: ProjectActivationOptions = {}) {
+    const projects = options.projects ?? projectOptions;
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     void loadProjectGitStatus(project);
     void loadGitCommitHistory(project);
-    void loadGitRepositorySummaries(projectOptions);
+    void loadRuntimeContexts(projects);
+    void loadProjectWorktrees(project);
+    void loadGitRepositorySummaries(projects);
     void loadAgentSessions();
-    await scanProject(project, selectedSourcePaths[project.id]);
-    void indexProjectsInBackground(projectOptions);
+    void loadOrchestrationRuns(projects);
+    await scanProject(project, selectedSourcePaths[project.id], { force: options.forceScan });
+    void indexProjectsInBackground(projects);
   }
 
   function removeSelectedProject() {

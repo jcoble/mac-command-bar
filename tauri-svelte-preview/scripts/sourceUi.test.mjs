@@ -136,6 +136,9 @@ assert.ok(pageSource.includes('function selectSidePanePosition'), 'Source shell 
 assert.ok(pageSource.includes('function markSourceLayoutCustom'), 'Manual layout changes should mark the layout as custom');
 assert.ok(pageSource.includes('function shouldMigrateSourceLayout'), 'Source shell should migrate old dense layout storage');
 assert.ok(pageSource.includes('function persistSourceLayoutVersion'), 'Source shell should persist layout migration state');
+assert.ok(pageSource.includes('function resetProjectScanCache'), 'Source shell should reset stale project indexes');
+assert.ok(pageSource.includes('function clearSourceRecordsForIncomingProject'), 'Source shell should clear stale records when switching roots');
+assert.ok(pageSource.includes('function sourceRecordBelongsToProject'), 'Source shell should guard scan records by project path');
 assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows should share clipboard copy behavior');
 assert.ok(pageSource.includes('function copyActivityCommand'), 'Activity rows should copy resume commands and paths');
 assert.ok(pageSource.includes('function openActivityPath'), 'Activity rows should open repo and worktree paths');
@@ -206,6 +209,7 @@ assert.ok(pageSource.includes("id: 'go-to-line'"), 'Command palette should expos
 assert.ok(pageSource.includes('function openCurrentFileGoToLine'), 'Line navigation should reuse quick open');
 assert.ok(pageSource.includes('quickOpenQuery = `${selectedRecord.relativePath}:`'), 'Line navigation should prefill the current file path');
 assert.ok(pageSource.includes("id: 'scan-project-expanded'"), 'Command palette should expose expanded source scans');
+assert.ok(pageSource.includes("id: 'scan-reset-index'"), 'Command palette should expose source index reset');
 assert.ok(pageSource.includes("id: 'scan-stop'"), 'Command palette should expose scan cancellation');
 assert.ok(pageSource.includes("id: 'project-add-folder'"), 'Command palette should expose project folder selection');
 assert.ok(pageSource.includes("id: 'project-open-folder'"), 'Command palette should open the current project folder');
@@ -330,6 +334,9 @@ assert.ok(
   pageSource.includes('scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })'),
   'Expanded source scans should rescan the active project at the larger limit'
 );
+assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Index reset should discard cached scans for the selected project');
+assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');
+assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');
 assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor should load HCL highlighting');
