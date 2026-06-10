@@ -234,6 +234,9 @@ assert.ok(pageSource.includes('agent-resume-${session.provider}-${session.id}'),
 assert.ok(pageSource.includes('agent-copy-plan-${session.provider}-${session.id}'), 'Command palette should copy session resume plans');
 assert.ok(pageSource.includes('agent-copy-shell-command-${session.provider}-${session.id}'), 'Command palette should copy shell-ready session commands');
 assert.ok(pageSource.includes('agent-copy-resume-command-${session.provider}-${session.id}'), 'Command palette should copy raw session resume commands');
+assert.ok(pageSource.includes("id: 'lsp-retry-status'"), 'Command palette should retry LSP status checks');
+assert.ok(pageSource.includes("id: 'lsp-copy-status'"), 'Command palette should copy LSP status reports');
+assert.ok(pageSource.includes("id: 'lsp-copy-install'"), 'Command palette should copy LSP install commands');
 assert.ok(pageSource.includes('Go to symbol: ${symbol.name}'), 'Command palette should expose current-file symbols');
 assert.ok(pageSource.includes('selectSourceSymbol(symbol)'), 'Command palette symbol commands should reveal source lines');
 assert.ok(pageSource.includes('Go to problem: ${diagnostic.message}'), 'Command palette should expose current-file diagnostics');
@@ -507,6 +510,11 @@ assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page shou
 assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
 assert.ok(pageSource.includes('sourceLspStatus'), 'Source page should track LSP availability');
 assert.ok(pageSource.includes('sourceLspDiagnostics'), 'Source page should track native LSP diagnostics separately');
+assert.ok(pageSource.includes('function sourceLspInstallCommand'), 'Source page should expose LSP install command guidance');
+assert.ok(pageSource.includes('function sourceLspStatusReport'), 'Source page should build copyable LSP status reports');
+assert.ok(pageSource.includes('function copySourceLspInstallCommand'), 'Source page should copy LSP install commands');
+assert.ok(pageSource.includes('dotnet tool install --global csharp-ls'), 'C# LSP guidance should install csharp-ls');
+assert.ok(pageSource.includes('npm install -g typescript typescript-language-server'), 'TypeScript LSP guidance should install the TS language server');
 assert.ok(pageSource.includes('function loadSourceLspDiagnostics'), 'Source page should expose native LSP diagnostics loading');
 assert.ok(pageSource.includes('function loadSourceLspSymbols'), 'Source page should expose native LSP symbol loading');
 assert.ok(pageSource.includes('findSourceDefinitionTargets'), 'Source page should fall back to browser definition lookup');
@@ -523,6 +531,9 @@ assert.ok(pageSource.includes('onQuickOpenRequest={openQuickOpen}'), 'Editor Cmd
 assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), 'Editor Cmd+K should call the page command palette');
 assert.ok(pageSource.includes('onGoToLineRequest={openCurrentFileGoToLine}'), 'Editor Cmd+G should call current-file line navigation');
 assert.ok(pageSource.includes("onProblemsRequest={() => showEditorInsightPanel('problems')}"), 'Editor Cmd+Shift+M should show problems');
+assert.ok(pageSource.includes('title={sourceLspStatusTitle()}'), 'LSP badge should explain server or fallback status');
+assert.ok(pageSource.includes('class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}'), 'LSP badge should style fallback status distinctly');
+assertDeclaration('.editor-file-state .editor-lsp-state.unavailable', 'color: #d8aa55');
 assert.ok(pageSource.includes("onSymbolsRequest={() => showEditorInsightPanel('symbols')}"), 'Editor Cmd+Shift+O should show symbols');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');

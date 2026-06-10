@@ -911,6 +911,27 @@
       perform: () => requestSourceIntelligenceAction('hover')
     },
     {
+      id: 'lsp-retry-status',
+      label: 'Retry language server status',
+      detail: sourceLspStatusLabel(),
+      disabled: !preview || !sourceIntelligenceAvailable || sourceLspStatusLoading,
+      perform: () => loadSourceLspStatus(preview, selectedProject)
+    },
+    {
+      id: 'lsp-copy-status',
+      label: 'Copy language server status',
+      detail: sourceLspStatusLabel(),
+      disabled: !preview,
+      perform: copySourceLspStatusReport
+    },
+    {
+      id: 'lsp-copy-install',
+      label: 'Copy language server install command',
+      detail: sourceLspInstallCommand() || 'No install command',
+      disabled: !sourceLspInstallCommand(),
+      perform: copySourceLspInstallCommand
+    },
+    {
       id: 'insights-toggle',
       label: editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights',
       detail: 'Problems, symbols, Git',
@@ -2433,6 +2454,86 @@
 
   function shellQuoteForCommand(value: string) {
     return `'${value.replace(/'/g, "'\\''")}'`;
+  }
+
+  function sourceLspInstallCommand(language: SourcePreview['language'] | null | undefined = preview?.language) {
+    switch (language) {
+      case 'csharp':
+        return 'dotnet tool install --global csharp-ls';
+      case 'typescript':
+      case 'tsx':
+      case 'javascript':
+      case 'jsx':
+        return 'npm install -g typescript typescript-language-server';
+      default:
+        return '';
+    }
+  }
+
+  function sourceLspRuntimeCommand(status: SourceLspStatus | null = sourceLspStatus) {
+    if (!status?.command) return '';
+
+    return [status.command, ...status.args.filter(Boolean)].join(' ');
+  }
+
+  function sourceLspStatusLabel() {
+    if (sourceLspStatusLoading) return 'lsp...';
+    if (!preview) return 'no file';
+    if (!sourceSupportsLanguageIntelligence(preview.language)) return 'syntax only';
+    if (sourceLspStatus?.available) return 'lsp';
+    return 'index fallback';
+  }
+
+  function sourceLspStatusReportLines() {
+    if (!preview) return ['No source file loaded'];
+
+    const supported = sourceSupportsLanguageIntelligence(preview.language);
+    const installCommand = sourceLspInstallCommand(preview.language);
+    const runtimeCommand = sourceLspRuntimeCommand();
+    const statusReason =
+      sourceLspStatusError || sourceLspStatus?.reason || 'Using project index fallback';
+    const lines = [
+      `File: ${preview.relativePath}`,
+      `Language: ${preview.language}`,
+      `Mode: ${sourceLspStatusLabel()}`
+    ];
+
+    if (!supported) {
+      lines.push('Reason: no configured language server for this language');
+      return lines;
+    }
+
+    if (sourceLspStatusLoading) {
+      lines.push('Status: checking language server');
+    } else if (sourceLspStatus?.available) {
+      lines.push(`Status: ${sourceLspStatus.serverName || sourceLspStatus.languageID} available`);
+    } else {
+      lines.push(`Status: ${statusReason}`);
+      lines.push('Fallback: source index definitions and references remain available');
+    }
+
+    if (sourceLspStatus?.languageID) lines.push(`LSP language: ${sourceLspStatus.languageID}`);
+    if (sourceLspStatus?.serverName) lines.push(`Server: ${sourceLspStatus.serverName}`);
+    if (runtimeCommand) lines.push(`Command: ${runtimeCommand}`);
+    if (!sourceLspStatus?.available && installCommand) lines.push(`Install: ${installCommand}`);
+
+    return lines;
+  }
+
+  function sourceLspStatusTitle() {
+    return sourceLspStatusReportLines().join('\n');
+  }
+
+  function sourceLspStatusReport() {
+    return sourceLspStatusReportLines().join('\n');
+  }
+
+  function copySourceLspStatusReport() {
+    return copyActivityCommand(sourceLspStatusReport(), 'Language server status copied');
+  }
+
+  function copySourceLspInstallCommand() {
+    return copyActivityCommand(sourceLspInstallCommand(), 'Language server install command copied');
   }
 
   function agentSessionRowKey(session: AgentSession, index: number, scope: string) {
@@ -6630,9 +6731,10 @@
               <span
                 class="editor-lsp-state"
                 class:ready={sourceLspStatus?.available}
-                title={sourceLspStatusError || sourceLspStatus?.serverName || 'Language server'}
+                class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}
+                title={sourceLspStatusTitle()}
               >
-                {sourceLspStatusLoading ? 'lsp...' : sourceLspStatus?.available ? 'lsp' : 'index'}
+                {sourceLspStatusLabel()}
               </span>
             {/if}
           </div>
@@ -10069,6 +10171,10 @@
 
   .editor-file-state .editor-lsp-state.ready {
     color: #72e2cf;
+  }
+
+  .editor-file-state .editor-lsp-state.unavailable {
+    color: #d8aa55;
   }
 
   .editor-menu-anchor {
