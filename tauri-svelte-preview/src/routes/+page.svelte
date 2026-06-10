@@ -26,6 +26,12 @@
   import { open } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import {
+    cleanupPasteText,
+    formatPasteCleanupStats,
+    pasteCleanupModes,
+    type PasteCleanupMode
+  } from '$lib/pasteCleanup';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import {
     buildSourceTree,
@@ -125,6 +131,7 @@
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
+  const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
   const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
@@ -162,7 +169,7 @@
     action: SourceIntelligenceAction;
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
-  type SourceActivityMode = 'files' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
+  type SourceActivityMode = 'files' | 'clipboard' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
   type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom';
   type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
   type SourceContextPanelMode = 'grid' | 'stack';
@@ -301,6 +308,8 @@
   let sourceSearchError = $state('');
   let sourceActivityMode = $state<SourceActivityMode>('files');
   let sourceActivityFilter = $state('');
+  let pasteCleanupInput = $state('');
+  let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('review');
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
   let contextPanelMode = $state<SourceContextPanelMode>('grid');
@@ -441,6 +450,8 @@
   let sourceContextIdentity = $derived(
     formatSourceContextIdentity(selectedProject, projectGitSummary, runtime)
   );
+  let pasteCleanupOutput = $derived(cleanupPasteText(pasteCleanupInput, pasteCleanupMode));
+  let pasteCleanupStats = $derived(formatPasteCleanupStats(pasteCleanupInput, pasteCleanupOutput));
   let selectedProjectRuntimeContexts = $derived(
     runtimeContexts.filter(
       (context) =>
@@ -1878,6 +1889,42 @@
     }
   }
 
+  async function readPasteCleanupClipboard() {
+    fileActionBusy = 'paste-read';
+
+    try {
+      pasteCleanupInput = await navigator.clipboard.readText();
+      fileActionStatus = 'Clipboard loaded';
+      error = '';
+    } catch (clipboardError) {
+      error = clipboardError instanceof Error ? clipboardError.message : 'Could not read clipboard';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function copyPasteCleanupOutput() {
+    if (!pasteCleanupOutput.trim()) return;
+
+    fileActionBusy = 'paste-copy';
+
+    try {
+      await copyTextToClipboard(pasteCleanupOutput, 'Cleaned text copied');
+    } catch (copyError) {
+      error = copyError instanceof Error ? copyError.message : 'Could not copy cleaned text';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  function selectPasteCleanupMode(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement | null)?.value;
+    if (!isPasteCleanupMode(value)) return;
+
+    pasteCleanupMode = value;
+    persistPasteCleanupMode(value);
+  }
+
   async function openActivityPath(path: string) {
     if (!path.trim()) return;
 
@@ -2141,6 +2188,8 @@
     switch (mode) {
       case 'files':
         return 'Files';
+      case 'clipboard':
+        return 'Clipboard';
       case 'conversations':
         return 'Conversations';
       case 'sessions':
@@ -2158,6 +2207,8 @@
     switch (mode) {
       case 'files':
         return filteredRecords.length;
+      case 'clipboard':
+        return pasteCleanupOutput.length;
       case 'conversations':
       case 'agents':
         return filteredProjectAgentSessions.length;
@@ -2174,6 +2225,8 @@
     switch (mode) {
       case 'files':
         return 'Filter files';
+      case 'clipboard':
+        return 'Filter clipboard';
       case 'conversations':
         return 'Filter conversations';
       case 'sessions':
@@ -2201,6 +2254,8 @@
     switch (mode) {
       case 'files':
         return scanSummaryLabel;
+      case 'clipboard':
+        return pasteCleanupStats;
       case 'conversations':
       case 'agents':
         return agentSessionSummary;
@@ -2217,6 +2272,8 @@
     switch (mode) {
       case 'files':
         void scanProject(selectedProject, selectedRecord?.path, { force: true });
+        break;
+      case 'clipboard':
         break;
       case 'conversations':
       case 'agents':
@@ -2239,6 +2296,8 @@
     switch (mode) {
       case 'files':
         return scanning;
+      case 'clipboard':
+        return fileActionBusy === 'paste-read';
       case 'conversations':
       case 'agents':
         return agentSessionsLoading;
@@ -2261,6 +2320,7 @@
   function isSourceActivityMode(value: unknown): value is SourceActivityMode {
     return (
       value === 'files' ||
+      value === 'clipboard' ||
       value === 'conversations' ||
       value === 'sessions' ||
       value === 'agents' ||
@@ -2272,6 +2332,22 @@
   function persistSourceActivityMode(mode: SourceActivityMode) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceActivityModeStorageKey, mode);
+  }
+
+  function loadStoredPasteCleanupMode(): PasteCleanupMode {
+    if (typeof window === 'undefined') return 'plain';
+
+    const storedMode = window.localStorage.getItem(pasteCleanupModeStorageKey);
+    return isPasteCleanupMode(storedMode) ? storedMode : 'plain';
+  }
+
+  function isPasteCleanupMode(value: unknown): value is PasteCleanupMode {
+    return pasteCleanupModes.includes(value as PasteCleanupMode);
+  }
+
+  function persistPasteCleanupMode(mode: PasteCleanupMode) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(pasteCleanupModeStorageKey, mode);
   }
 
   function markSourceLayoutCustom() {
@@ -2903,6 +2979,7 @@
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
+    const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSourceTerminalApp = loadStoredSourceTerminalApp();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
@@ -2920,6 +2997,7 @@
     openSourceTabs = storedOpenSourceTabs;
     selectedProjectID = storedProject.id;
     sourceActivityMode = storedSourceActivityMode;
+    pasteCleanupMode = storedPasteCleanupMode;
     sourceLayoutPreset = storedSourceLayoutPreset;
     sourceTerminalApp = storedSourceTerminalApp;
     sidePaneWidth = storedSidePaneWidth;
@@ -2963,6 +3041,17 @@
         <FolderGit2 size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Files</span>
         <strong>{sourceActivityCount('files')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'clipboard'}
+        type="button"
+        aria-label="Clipboard"
+        title="Clipboard"
+        onclick={() => selectSourceActivityMode('clipboard')}
+      >
+        <Copy size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Clipboard</span>
+        <strong>{sourceActivityCount('clipboard')}</strong>
       </button>
       <button
         class:active={sourceActivityMode === 'conversations'}
@@ -3299,19 +3388,91 @@
           </button>
         </div>
 
-        <label class="activity-filter-box">
-          <Search size={14} strokeWidth={1.9} />
-          <input
-            bind:value={sourceActivityFilter}
-            type="search"
-            autocomplete="off"
-            spellcheck="false"
-            aria-label="Filter workspace activity"
-            placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}
-          />
-        </label>
+        {#if sourceActivityMode === 'clipboard'}
+          <div class="paste-cleanup-panel">
+            <div class="paste-cleanup-toolbar">
+              <label>
+                <span>Mode</span>
+                <select bind:value={pasteCleanupMode} onchange={selectPasteCleanupMode} aria-label="Paste cleanup mode">
+                  {#each pasteCleanupModes as mode (mode)}
+                    <option value={mode}>{mode}</option>
+                  {/each}
+                </select>
+              </label>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Read clipboard"
+                title="Read clipboard"
+                disabled={fileActionBusy === 'paste-read'}
+                onclick={readPasteCleanupClipboard}
+              >
+                <Copy size={13} strokeWidth={1.9} />
+                <span>{fileActionBusy === 'paste-read' ? 'Reading' : 'Paste'}</span>
+              </button>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Clear paste cleanup text"
+                title="Clear paste cleanup text"
+                disabled={pasteCleanupInput.length === 0}
+                onclick={() => (pasteCleanupInput = '')}
+              >
+                <X size={13} strokeWidth={1.9} />
+                <span>Clear</span>
+              </button>
+            </div>
+            <div class="paste-cleanup-grid">
+              <label>
+                <span>Input</span>
+                <textarea
+                  class="paste-cleanup-textarea"
+                  bind:value={pasteCleanupInput}
+                  aria-label="Paste cleanup input"
+                  spellcheck="true"
+                  placeholder="Paste text to clean"
+                ></textarea>
+              </label>
+              <label>
+                <span>Output</span>
+                <textarea
+                  class="paste-cleanup-textarea"
+                  value={pasteCleanupOutput}
+                  aria-label="Cleaned paste output"
+                  readonly
+                  spellcheck="false"
+                ></textarea>
+              </label>
+            </div>
+            <div class="paste-cleanup-footer">
+              <span>{pasteCleanupStats}</span>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Copy cleaned paste output"
+                title="Copy cleaned paste output"
+                disabled={pasteCleanupOutput.trim().length === 0 || fileActionBusy === 'paste-copy'}
+                onclick={copyPasteCleanupOutput}
+              >
+                <Copy size={13} strokeWidth={1.9} />
+                <span>{fileActionBusy === 'paste-copy' ? 'Copying' : 'Copy'}</span>
+              </button>
+            </div>
+          </div>
+        {:else}
+          <label class="activity-filter-box">
+            <Search size={14} strokeWidth={1.9} />
+            <input
+              bind:value={sourceActivityFilter}
+              type="search"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Filter workspace activity"
+              placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}
+            />
+          </label>
 
-        {#if sourceActivityMode === 'conversations'}
+          {#if sourceActivityMode === 'conversations'}
           <div class="activity-panel-list" aria-label="Conversation list">
             {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No conversations</div>
@@ -3595,6 +3756,7 @@
               {/each}
             {/if}
           </div>
+          {/if}
         {/if}
       </div>
     {/if}
@@ -4673,6 +4835,95 @@
 
   .activity-filter-box input::placeholder {
     color: #7f8a86;
+  }
+
+  .paste-cleanup-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .paste-cleanup-toolbar,
+  .paste-cleanup-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .paste-cleanup-toolbar label {
+    display: inline-grid;
+    grid-template-columns: auto minmax(74px, auto);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    color: #9facaa;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .paste-cleanup-toolbar select {
+    min-width: 0;
+    color: #dffdf8;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    font: inherit;
+  }
+
+  .paste-cleanup-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(150px, 1fr) minmax(150px, 1fr);
+    gap: 9px;
+    min-height: 0;
+  }
+
+  .paste-cleanup-grid label {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 5px;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .paste-cleanup-grid label > span,
+  .paste-cleanup-footer span {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  .paste-cleanup-textarea {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: 10px;
+    resize: none;
+    color: #e7ecea;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 8px;
+    outline: 0;
+    background: rgba(0, 0, 0, 0.18);
+    font: 12px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  }
+
+  .paste-cleanup-textarea:focus {
+    border-color: rgba(92, 226, 207, 0.42);
+    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.08);
+  }
+
+  .paste-cleanup-footer {
+    justify-content: space-between;
   }
 
   .activity-panel-list {
