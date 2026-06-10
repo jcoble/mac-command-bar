@@ -119,6 +119,7 @@
   const recentSourceRecordsStorageKey = 'mac-command-bar.source-browser.recent-source-records';
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
+  const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
@@ -156,6 +157,60 @@
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
   type SourceActivityMode = 'files' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
+  type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom';
+  type SourceLayoutPresetDefinition = {
+    id: Exclude<SourceLayoutPresetID, 'custom'>;
+    label: string;
+    title: string;
+    activityMode: SourceActivityMode;
+    sidePaneWidth: number;
+    editorInsightWidth: number;
+    contextPanelCollapsed: boolean;
+    intelligencePanel: SourceIntelligencePanel;
+  };
+
+  const sourceLayoutPresets: SourceLayoutPresetDefinition[] = [
+    {
+      id: 'review',
+      label: 'Review',
+      title: 'Balanced source review with context visible',
+      activityMode: 'files',
+      sidePaneWidth: sidePaneDefaultWidth,
+      editorInsightWidth: editorInsightDefaultWidth,
+      contextPanelCollapsed: false,
+      intelligencePanel: 'symbols'
+    },
+    {
+      id: 'code',
+      label: 'Code',
+      title: 'Wide editor with the context cards hidden',
+      activityMode: 'files',
+      sidePaneWidth: 360,
+      editorInsightWidth: editorInsightMinWidth,
+      contextPanelCollapsed: true,
+      intelligencePanel: 'symbols'
+    },
+    {
+      id: 'git',
+      label: 'Git',
+      title: 'Repository and task review with the Git inspector open',
+      activityMode: 'git',
+      sidePaneWidth: 440,
+      editorInsightWidth: 340,
+      contextPanelCollapsed: false,
+      intelligencePanel: 'git'
+    },
+    {
+      id: 'sessions',
+      label: 'Sessions',
+      title: 'Live runtime and agent/session review',
+      activityMode: 'sessions',
+      sidePaneWidth: 420,
+      editorInsightWidth: 280,
+      contextPanelCollapsed: false,
+      intelligencePanel: 'problems'
+    }
+  ];
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
@@ -223,6 +278,7 @@
   let sourceSearchLoading = $state(false);
   let sourceSearchError = $state('');
   let sourceActivityMode = $state<SourceActivityMode>('files');
+  let sourceLayoutPreset = $state<SourceLayoutPresetID>('review');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let contextPanelCollapsed = $state(false);
@@ -1879,9 +1935,32 @@
   }
 
   function selectSourceActivityMode(mode: SourceActivityMode) {
+    markSourceLayoutCustom();
     sourceActivityMode = mode;
     persistSourceActivityMode(mode);
     window.setTimeout(measureFileTreeViewport, 0);
+  }
+
+  function applySourceLayoutPreset(presetID: SourceLayoutPresetDefinition['id']) {
+    const preset = sourceLayoutPresets.find((candidate) => candidate.id === presetID);
+    if (!preset) return;
+
+    sourceLayoutPreset = preset.id;
+    sourceActivityMode = preset.activityMode;
+    sidePaneWidth = clampSidePaneWidth(preset.sidePaneWidth);
+    editorInsightWidth = clampEditorInsightWidth(preset.editorInsightWidth);
+    contextPanelCollapsed = preset.contextPanelCollapsed;
+    sourceIntelligencePanel = preset.intelligencePanel;
+
+    persistSourceLayoutPreset(sourceLayoutPreset);
+    persistSourceActivityMode(sourceActivityMode);
+    persistSidePaneWidth(sidePaneWidth);
+    persistEditorInsightWidth(editorInsightWidth);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(measureFileTreeViewport, 0);
+    }
   }
 
   function sourceActivityLabel(mode: SourceActivityMode) {
@@ -1994,6 +2073,34 @@
     window.localStorage.setItem(sourceActivityModeStorageKey, mode);
   }
 
+  function markSourceLayoutCustom() {
+    if (sourceLayoutPreset === 'custom') return;
+    sourceLayoutPreset = 'custom';
+    persistSourceLayoutPreset(sourceLayoutPreset);
+  }
+
+  function loadStoredSourceLayoutPreset(): SourceLayoutPresetID {
+    if (typeof window === 'undefined') return 'review';
+
+    const storedPreset = window.localStorage.getItem(sourceLayoutPresetStorageKey);
+    return isSourceLayoutPresetID(storedPreset) ? storedPreset : 'review';
+  }
+
+  function isSourceLayoutPresetID(value: unknown): value is SourceLayoutPresetID {
+    return (
+      value === 'review' ||
+      value === 'code' ||
+      value === 'git' ||
+      value === 'sessions' ||
+      value === 'custom'
+    );
+  }
+
+  function persistSourceLayoutPreset(presetID: SourceLayoutPresetID) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceLayoutPresetStorageKey, presetID);
+  }
+
   function loadStoredSidePaneWidth() {
     if (typeof window === 'undefined') return sidePaneDefaultWidth;
 
@@ -2018,6 +2125,7 @@
     const startX = event.clientX;
     const startWidth = sidePaneWidth;
     event.preventDefault();
+    markSourceLayoutCustom();
     window.document.body.classList.add('resizing-source-pane');
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
@@ -2041,6 +2149,7 @@
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
 
     event.preventDefault();
+    markSourceLayoutCustom();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
     sidePaneWidth = clampSidePaneWidth(sidePaneWidth + direction * 24);
     persistSidePaneWidth(sidePaneWidth);
@@ -2048,6 +2157,7 @@
   }
 
   function toggleContextPanelCollapsed() {
+    markSourceLayoutCustom();
     contextPanelCollapsed = !contextPanelCollapsed;
     persistContextPanelCollapsed(contextPanelCollapsed);
   }
@@ -2086,6 +2196,7 @@
     const startX = event.clientX;
     const startWidth = editorInsightWidth;
     event.preventDefault();
+    markSourceLayoutCustom();
     window.document.body.classList.add('resizing-editor-insight');
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
@@ -2108,6 +2219,7 @@
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
 
     event.preventDefault();
+    markSourceLayoutCustom();
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
     persistEditorInsightWidth(editorInsightWidth);
@@ -2544,6 +2656,7 @@
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
+    const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
     const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
@@ -2558,6 +2671,7 @@
     openSourceTabs = storedOpenSourceTabs;
     selectedProjectID = storedProject.id;
     sourceActivityMode = storedSourceActivityMode;
+    sourceLayoutPreset = storedSourceLayoutPreset;
     sidePaneWidth = storedSidePaneWidth;
     editorInsightWidth = storedEditorInsightWidth;
     contextPanelCollapsed = storedContextPanelCollapsed;
@@ -3078,28 +3192,44 @@
         <p class="eyebrow">Source Preview</p>
         <h2>{preview?.fileName ?? 'No file selected'}</h2>
       </div>
-      <div class="status-strip">
-        <button
-          class="workspace-context-toggle"
-          type="button"
-          aria-label="Toggle workspace context cards"
-          title={contextPanelCollapsed ? 'Show workspace context cards' : 'Hide workspace context cards'}
-          onclick={toggleContextPanelCollapsed}
-        >
-          {#if contextPanelCollapsed}
-            <ChevronDown size={13} strokeWidth={2} />
-            <span>Context</span>
-          {:else}
-            <ChevronRight size={13} strokeWidth={2} />
-            <span>Context</span>
+      <div class="topbar-tools">
+        <div class="layout-preset-group" role="group" aria-label="Workspace layout presets">
+          {#each sourceLayoutPresets as preset (preset.id)}
+            <button
+              class:active={sourceLayoutPreset === preset.id}
+              type="button"
+              aria-label={`Use ${preset.label} layout`}
+              aria-pressed={sourceLayoutPreset === preset.id}
+              title={preset.title}
+              onclick={() => applySourceLayoutPreset(preset.id)}
+            >
+              {preset.label}
+            </button>
+          {/each}
+        </div>
+        <div class="status-strip">
+          <button
+            class="workspace-context-toggle"
+            type="button"
+            aria-label="Toggle workspace context cards"
+            title={contextPanelCollapsed ? 'Show workspace context cards' : 'Hide workspace context cards'}
+            onclick={toggleContextPanelCollapsed}
+          >
+            {#if contextPanelCollapsed}
+              <ChevronDown size={13} strokeWidth={2} />
+              <span>Context</span>
+            {:else}
+              <ChevronRight size={13} strokeWidth={2} />
+              <span>Context</span>
+            {/if}
+          </button>
+          <span class="project-git-pill" title={projectGitSummary}>{projectGitSummary}</span>
+          <span>{runtime}</span>
+          {#if preview}
+            <span>{preview.language}</span>
+            <span>{preview.lineCount} lines</span>
           {/if}
-        </button>
-        <span class="project-git-pill" title={projectGitSummary}>{projectGitSummary}</span>
-        <span>{runtime}</span>
-        {#if preview}
-          <span>{preview.language}</span>
-          <span>{preview.lineCount} lines</span>
-        {/if}
+        </div>
       </div>
     </header>
 
@@ -4829,6 +4959,51 @@
     margin-bottom: 14px;
   }
 
+  .topbar-tools {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .layout-preset-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    padding: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .layout-preset-group button {
+    height: 22px;
+    min-width: 0;
+    padding: 0 8px;
+    color: #9facaa;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    font-size: 10px;
+    font-weight: 820;
+    cursor: pointer;
+  }
+
+  .layout-preset-group button:hover,
+  .layout-preset-group button:focus-visible {
+    color: #edf4f2;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .layout-preset-group button.active {
+    color: #dffdf8;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
   .status-strip {
     display: flex;
     align-items: center;
@@ -6290,6 +6465,14 @@
     .topbar {
       grid-template-columns: 1fr;
       align-items: start;
+    }
+
+    .topbar-tools {
+      justify-content: flex-start;
+    }
+
+    .status-strip {
+      flex-wrap: wrap;
     }
 
     .context-identity-strip {
