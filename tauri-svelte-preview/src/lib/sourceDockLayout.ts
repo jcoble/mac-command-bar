@@ -174,6 +174,32 @@ export function showSourceDockPanel(
   return moveSourceDockPanel(withoutHiddenPanel, panelID, descriptor.defaultGroupID);
 }
 
+export function resizeSourceDockGroup(
+  layout: SourceDockLayout,
+  groupID: SourceDockGroupID,
+  size: number
+): SourceDockLayout {
+  const normalized = normalizeSourceDockLayout(layout);
+  const groups = normalized.groups.map((group) =>
+    group.id === groupID
+      ? { ...group, size: normalizeGroupSize(size, defaultGroupSize(groupID)) }
+      : group
+  );
+
+  return normalizeSourceDockLayout({
+    ...normalized,
+    preset: 'custom',
+    groups
+  });
+}
+
+export function sourceDockGroupSize(
+  layout: SourceDockLayout,
+  groupID: SourceDockGroupID
+): number {
+  return groupByID(normalizeSourceDockLayout(layout).groups, groupID).size;
+}
+
 export function visibleSourceDockPanelIDs(layout: SourceDockLayout): SourceDockPanelID[] {
   return normalizeSourceDockLayout(layout).groups.flatMap((group) => group.panelIDs);
 }

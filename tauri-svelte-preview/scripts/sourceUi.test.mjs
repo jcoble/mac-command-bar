@@ -168,6 +168,9 @@ assert.ok(pageSource.includes('function sourceActivityFilterPlaceholder'), 'Acti
 assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
 assert.ok(pageSource.includes('function beginSidePaneResize'), 'Source shell should expose side pane drag resizing');
 assert.ok(pageSource.includes('function beginContextPaneResize'), 'Workspace should expose context pane drag resizing');
+assert.ok(pageSource.includes('resizeSourceDockGroup'), 'Workspace should persist pane resize changes into the dock model');
+assert.ok(pageSource.includes('sourceDockGroupSize'), 'Workspace should restore pane sizes from the dock model');
+assert.ok(pageSource.includes('function persistDockGroupSize'), 'Workspace should share dock size persistence across resizers');
 assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');
 assert.ok(pageSource.includes('function projectWorktreeSafety'), 'Worktree rows should derive cleanup safety details');
 assert.ok(pageSource.includes('function formatProjectWorktreeSafetyStats'), 'Worktree context should derive compact safety stats');

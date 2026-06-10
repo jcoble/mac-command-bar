@@ -55,7 +55,9 @@
     hideSourceDockPanel,
     moveSourceDockPanel,
     normalizeSourceDockLayout,
+    resizeSourceDockGroup,
     showSourceDockPanel,
+    sourceDockGroupSize,
     type SourceDockGroupID,
     type SourceDockLayout,
     type SourceDockPanelID
@@ -4349,18 +4351,32 @@
 
     if (activityGroupID === 'left' || activityGroupID === 'right') {
       sidePanePosition = activityGroupID;
+      sidePaneWidth = clampSidePaneWidth(sourceDockGroupSize(normalizedLayout, activityGroupID));
       persistSidePanePosition(sidePanePosition);
+      persistSidePaneWidth(sidePaneWidth);
     }
 
     contextPanelCollapsed = contextGroupID === null;
     persistContextPanelCollapsed(contextPanelCollapsed);
     if (contextGroupID !== null) {
       contextPanelPlacement = contextPanelPlacementForDockGroup(contextGroupID);
+      const contextGroupSize = sourceDockGroupSize(normalizedLayout, contextGroupID);
+      if (contextGroupID === 'bottom') {
+        contextPaneHeight = clampContextPaneHeight(contextGroupSize);
+        persistContextPaneHeight(contextPaneHeight);
+      } else if (contextGroupID === 'left' || contextGroupID === 'right') {
+        contextPaneWidth = clampContextPaneWidth(contextGroupSize);
+        persistContextPaneWidth(contextPaneWidth);
+      }
       persistContextPanelPlacement(contextPanelPlacement);
     }
 
     editorInsightCollapsed = insightsGroupID === null;
     persistEditorInsightCollapsed(editorInsightCollapsed);
+    if (insightsGroupID !== null && insightsGroupID !== contextGroupID) {
+      editorInsightWidth = clampEditorInsightWidth(sourceDockGroupSize(normalizedLayout, insightsGroupID));
+      persistEditorInsightWidth(editorInsightWidth);
+    }
   }
 
   function sourceDockLayoutFromWorkspace(): SourceDockLayout {
@@ -4376,6 +4392,19 @@
     nextLayout = editorInsightCollapsed
       ? hideSourceDockPanel(nextLayout, 'insights')
       : moveSourceDockPanel(nextLayout, 'insights', 'right');
+    nextLayout = resizeSourceDockGroup(nextLayout, sidePanePosition, sidePaneWidth);
+    if (!contextPanelCollapsed) {
+      nextLayout = resizeSourceDockGroup(
+        nextLayout,
+        dockGroupForContextPanelPlacement(contextPanelPlacement),
+        contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
+      );
+    }
+    const contextGroupID = dockGroupIDForPanel(nextLayout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(nextLayout, 'insights');
+    if (!editorInsightCollapsed && insightsGroupID !== null && insightsGroupID !== contextGroupID) {
+      nextLayout = resizeSourceDockGroup(nextLayout, insightsGroupID, editorInsightWidth);
+    }
     return normalizeSourceDockLayout({
       ...nextLayout,
       preset: sourceLayoutPreset
@@ -4421,6 +4450,11 @@
     );
   }
 
+  function persistDockGroupSize(groupID: SourceDockGroupID, size: number) {
+    sourceDockLayout = resizeSourceDockGroup(sourceDockLayout, groupID, size);
+    persistSourceDockLayout(sourceDockLayout);
+  }
+
   function loadStoredSidePanePosition(): SourceSidePanePosition {
     if (typeof window === 'undefined') return 'left';
 
@@ -4437,6 +4471,7 @@
     sidePanePosition = position;
     persistSidePanePosition(position);
     sourceDockLayout = moveSourceDockPanel(sourceDockLayout, 'activity', position);
+    sourceDockLayout = resizeSourceDockGroup(sourceDockLayout, position, sidePaneWidth);
     persistSourceDockLayout(sourceDockLayout);
     window.setTimeout(measureFileTreeViewport, 0);
   }
@@ -4482,6 +4517,7 @@
     };
     const finishResize = () => {
       persistSidePaneWidth(sidePaneWidth);
+      persistDockGroupSize(sidePanePosition, sidePaneWidth);
       window.document.body.classList.remove('resizing-source-pane');
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', finishResize);
@@ -4502,6 +4538,7 @@
     const signedDirection = sidePanePosition === 'left' ? direction : -direction;
     sidePaneWidth = clampSidePaneWidth(sidePaneWidth + signedDirection * 24);
     persistSidePaneWidth(sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, sidePaneWidth);
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
@@ -4615,6 +4652,11 @@
       sourceDockLayout,
       'context',
       dockGroupForContextPanelPlacement(placement)
+    );
+    sourceDockLayout = resizeSourceDockGroup(
+      sourceDockLayout,
+      dockGroupForContextPanelPlacement(placement),
+      placement === 'bottom' ? contextPaneHeight : contextPaneWidth
     );
     persistSourceDockLayout(sourceDockLayout);
   }
@@ -4748,6 +4790,10 @@
     };
     const finishResize = () => {
       persistEditorInsightWidth(editorInsightWidth);
+      const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+      if (insightsGroupID !== null) {
+        persistDockGroupSize(insightsGroupID, editorInsightWidth);
+      }
       window.document.body.classList.remove('resizing-editor-insight');
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', finishResize);
@@ -4769,6 +4815,10 @@
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
     persistEditorInsightWidth(editorInsightWidth);
+    const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+    if (insightsGroupID !== null) {
+      persistDockGroupSize(insightsGroupID, editorInsightWidth);
+    }
   }
 
   function loadStoredContextPaneWidth() {
@@ -4832,8 +4882,10 @@
     const finishResize = () => {
       if (contextPanelPlacement === 'bottom') {
         persistContextPaneHeight(contextPaneHeight);
+        persistDockGroupSize('bottom', contextPaneHeight);
       } else {
         persistContextPaneWidth(contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
       }
       window.document.body.classList.remove(resizingClass);
       window.removeEventListener('pointermove', handlePointerMove);
@@ -4861,12 +4913,14 @@
       if (direction === 0) return;
       contextPaneHeight = clampContextPaneHeight(contextPaneHeight + direction * 24);
       persistContextPaneHeight(contextPaneHeight);
+      persistDockGroupSize('bottom', contextPaneHeight);
       return;
     }
 
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     contextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
     persistContextPaneWidth(contextPaneWidth);
+    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
   }
 
   function loadStoredCustomProjectRoots(): ProjectRoot[] {

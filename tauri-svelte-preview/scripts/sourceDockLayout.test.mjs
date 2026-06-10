@@ -4,7 +4,9 @@ import {
   hideSourceDockPanel,
   moveSourceDockPanel,
   normalizeSourceDockLayout,
+  resizeSourceDockGroup,
   showSourceDockPanel,
+  sourceDockGroupSize,
   sourceDockPanelDescriptors,
   visibleSourceDockPanelIDs
 } from '../src/lib/sourceDockLayout.ts';
@@ -103,6 +105,27 @@ assert.equal(normalized.activePanelByGroup.center, 'editor');
 assert.equal(normalized.activePanelByGroup.right, 'activity');
 
 assert.deepEqual(visibleSourceDockPanelIDs(normalized), ['context', 'editor', 'activity']);
+
+const resizedLayout = resizeSourceDockGroup(defaultLayout, 'left', 444.6);
+assert.equal(
+  sourceDockGroupSize(resizedLayout, 'left'),
+  445,
+  'resizing a dock group should persist a rounded pane size'
+);
+assert.equal(resizedLayout.preset, 'custom');
+assert.equal(
+  sourceDockGroupSize(defaultLayout, 'left'),
+  360,
+  'resizing a dock group should not mutate the input layout'
+);
+
+const invalidResizeLayout = resizeSourceDockGroup(defaultLayout, 'right', -1);
+assert.equal(
+  sourceDockGroupSize(invalidResizeLayout, 'right'),
+  330,
+  'invalid dock group sizes should fall back to the group default'
+);
+
 assert.deepEqual(
   sourceDockPanelDescriptors.map((panel) => [panel.id, panel.defaultGroupID, panel.label]),
   [
