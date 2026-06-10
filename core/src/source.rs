@@ -75,6 +75,8 @@ pub fn preview_source_file(path: &Path) -> Result<SourcePreview> {
     let language = detect_language(path);
     let spans = match language.as_str() {
         "csharp" => csharp_spans(&content)?,
+        "typescript" | "javascript" => typescript_spans(&content, false)?,
+        "tsx" | "jsx" => typescript_spans(&content, true)?,
         _ => Vec::new(),
     };
 
@@ -257,6 +259,26 @@ fn csharp_spans(content: &str) -> Result<Vec<SyntaxSpan>> {
     Ok(normalize_spans(spans))
 }
 
+fn typescript_spans(content: &str, tsx: bool) -> Result<Vec<SyntaxSpan>> {
+    let mut parser = Parser::new();
+    let language = if tsx {
+        tree_sitter_typescript::LANGUAGE_TSX.into()
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    };
+    parser
+        .set_language(&language)
+        .context("failed to load TypeScript grammar")?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| anyhow!("failed to parse TypeScript source"))?;
+
+    let mut spans = Vec::new();
+    collect_typescript_spans(tree.root_node(), &mut spans);
+    collect_typescript_query_spans(&language, tree.root_node(), content, &mut spans)?;
+    Ok(normalize_spans(spans))
+}
+
 const CSHARP_HIGHLIGHT_QUERY: &str = r#"
 (identifier) @variable
 
@@ -289,6 +311,21 @@ const CSHARP_HIGHLIGHT_QUERY: &str = r#"
 (type_parameter_constraints_clause (identifier) @property.definition)
 "#;
 
+const TYPESCRIPT_HIGHLIGHT_QUERY: &str = r#"
+(function_declaration name: (identifier) @function)
+(method_definition name: (property_identifier) @function)
+(call_expression function: (identifier) @function)
+(call_expression function: (member_expression property: (property_identifier) @function))
+
+(class_declaration name: (type_identifier) @type)
+(interface_declaration name: (type_identifier) @type)
+(type_alias_declaration name: (type_identifier) @type)
+(type_identifier) @type
+
+(required_parameter pattern: (identifier) @variable.parameter)
+(optional_parameter pattern: (identifier) @variable.parameter)
+"#;
+
 fn collect_csharp_query_spans(
     language: &tree_sitter::Language,
     root: Node<'_>,
@@ -297,6 +334,42 @@ fn collect_csharp_query_spans(
 ) -> Result<()> {
     let query =
         Query::new(language, CSHARP_HIGHLIGHT_QUERY).context("invalid C# highlight query")?;
+    let capture_names = query.capture_names();
+    let mut cursor = QueryCursor::new();
+    let mut captures = cursor.captures(&query, root, content.as_bytes());
+
+    loop {
+        captures.advance();
+        let Some((query_match, capture_index)) = captures.get() else {
+            break;
+        };
+        let Some(capture) = query_match.captures.get(*capture_index) else {
+            continue;
+        };
+        let Some(capture_name) = capture_names.get(capture.index as usize) else {
+            continue;
+        };
+        let Some(role) = role_for_capture(capture_name) else {
+            continue;
+        };
+        spans.push(SyntaxSpan {
+            start: capture.node.start_byte(),
+            end: capture.node.end_byte(),
+            role,
+        });
+    }
+
+    Ok(())
+}
+
+fn collect_typescript_query_spans(
+    language: &tree_sitter::Language,
+    root: Node<'_>,
+    content: &str,
+    spans: &mut Vec<SyntaxSpan>,
+) -> Result<()> {
+    let query = Query::new(language, TYPESCRIPT_HIGHLIGHT_QUERY)
+        .context("invalid TypeScript highlight query")?;
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut captures = cursor.captures(&query, root, content.as_bytes());
@@ -394,6 +467,21 @@ fn collect_csharp_spans(node: Node<'_>, spans: &mut Vec<SyntaxSpan>) {
     }
 }
 
+fn collect_typescript_spans(node: Node<'_>, spans: &mut Vec<SyntaxSpan>) {
+    if let Some(role) = typescript_role_for_node(node) {
+        spans.push(SyntaxSpan {
+            start: node.start_byte(),
+            end: node.end_byte(),
+            role,
+        });
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_typescript_spans(child, spans);
+    }
+}
+
 fn csharp_role_for_node(node: Node<'_>) -> Option<SyntaxRole> {
     match node.kind() {
         "abstract" | "as" | "base" | "break" | "case" | "catch" | "class" | "const"
@@ -417,6 +505,30 @@ fn csharp_role_for_node(node: Node<'_>) -> Option<SyntaxRole> {
         | "|=" | "||" | "?" | "??" | "??=" | "^" | "^=" | "~" | "*" | "*=" | "/" | "/=" | "%"
         | "%=" | ":" | ".." => Some(SyntaxRole::Operator),
         ";" | "." | "," | "(" | ")" | "[" | "]" | "{" | "}" => Some(SyntaxRole::Punctuation),
+        _ => None,
+    }
+}
+
+fn typescript_role_for_node(node: Node<'_>) -> Option<SyntaxRole> {
+    match node.kind() {
+        "abstract" | "as" | "async" | "await" | "break" | "case" | "catch" | "class" | "const"
+        | "continue" | "debugger" | "declare" | "default" | "delete" | "do" | "else" | "enum"
+        | "export" | "extends" | "finally" | "for" | "from" | "function" | "get" | "if"
+        | "implements" | "import" | "in" | "infer" | "instanceof" | "interface" | "keyof"
+        | "let" | "module" | "namespace" | "new" | "of" | "private" | "protected" | "public"
+        | "readonly" | "require" | "return" | "satisfies" | "set" | "static" | "switch"
+        | "this" | "throw" | "try" | "type" | "typeof" | "var" | "void" | "while" | "with"
+        | "yield" => Some(SyntaxRole::Keyword),
+        "string" | "template_string" | "string_fragment" => Some(SyntaxRole::String),
+        "comment" => Some(SyntaxRole::Comment),
+        "number" => Some(SyntaxRole::Number),
+        "true" | "false" | "null" | "undefined" => Some(SyntaxRole::Constant),
+        "=>" | "=" | "==" | "===" | "!" | "!=" | "!==" | "+" | "++" | "+=" | "-" | "--" | "-="
+        | "*" | "**" | "*=" | "/" | "/=" | "%" | "%=" | "<" | "<=" | ">" | ">=" | "&&" | "||"
+        | "??" | "?" | ":" | "." | "..." | "|" | "|=" | "&" | "&=" | "^" | "^=" | "~" => {
+            Some(SyntaxRole::Operator)
+        }
+        ";" | "," | "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">" => Some(SyntaxRole::Punctuation),
         _ => None,
     }
 }

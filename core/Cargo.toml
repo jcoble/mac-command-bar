@@ -12,6 +12,7 @@ serde_json = "1"
 aes-gcm = "0.10"
 tree-sitter = "0.26"
 tree-sitter-c-sharp = "0.23.5"
+tree-sitter-typescript = "0.23.2"
 
 [dev-dependencies]
 tempfile = "3"

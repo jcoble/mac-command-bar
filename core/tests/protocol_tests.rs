@@ -112,6 +112,83 @@ fn source_preview_returns_richer_csharp_highlight_roles() {
 }
 
 #[test]
+fn source_preview_reads_typescript_file_and_returns_highlight_spans() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_path = temp.path().join("sourcePreview.ts");
+    std::fs::write(
+        &source_path,
+        "import type { SourcePreview } from './sourceData';\n\
+         export class PreviewStore {\n\
+         \tconstructor(private readonly title: string) {}\n\
+         \tload(path: string): SourcePreview {\n\
+         \t\treturn { fileName: path, content: `loaded ${path}` } as SourcePreview;\n\
+         \t}\n\
+         }\n",
+    )
+    .unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-ts".to_string(),
+        action: "source.preview".to_string(),
+        dry_run: true,
+        payload: json!({ "path": source_path }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["language"], "typescript");
+
+    let spans = response.data["spans"].as_array().unwrap();
+    let roles: std::collections::BTreeSet<&str> = spans
+        .iter()
+        .filter_map(|span| span["role"].as_str())
+        .collect();
+
+    for expected in ["keyword", "type", "function", "parameter", "string"] {
+        assert!(
+            roles.contains(expected),
+            "expected role {expected}, got {roles:?}"
+        );
+    }
+}
+
+#[test]
+fn source_preview_reads_tsx_file_and_returns_highlight_spans() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_path = temp.path().join("SourcePreview.tsx");
+    std::fs::write(
+        &source_path,
+        "type Props = { title: string };\n\
+         export function SourcePreview({ title }: Props) {\n\
+         \treturn <section>{title}</section>;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-tsx".to_string(),
+        action: "source.preview".to_string(),
+        dry_run: true,
+        payload: json!({ "path": source_path }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["language"], "tsx");
+
+    let spans = response.data["spans"].as_array().unwrap();
+    let roles: std::collections::BTreeSet<&str> = spans
+        .iter()
+        .filter_map(|span| span["role"].as_str())
+        .collect();
+
+    for expected in ["keyword", "type", "function"] {
+        assert!(
+            roles.contains(expected),
+            "expected role {expected}, got {roles:?}"
+        );
+    }
+}
+
+#[test]
 fn source_preview_rejects_missing_path_payload() {
     let response = dispatch(CoreRequest {
         id: "req-source-missing".to_string(),
