@@ -25,20 +25,38 @@
 		action: SourceEditorIntelligenceAction;
 	};
 
+	type SourceEditorLookupRequest = {
+		symbolName: string;
+		line: number;
+		column: number;
+	};
+
+	type SourceEditorHoverResult = {
+		contents: string[];
+	};
+
 	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
 		preview: SourcePreview;
 		content?: string;
 		editable?: boolean;
+		externalDiagnostics?: SourceDiagnostic[];
 		loading?: boolean;
 		targetLine?: number | null;
 		targetLineRequestId?: number;
 		intelligenceCommand?: SourceEditorIntelligenceCommand | null;
 		onContentChange?: (content: string) => void;
+		onCommandPaletteRequest?: () => void;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
-		onDefinitionLookup?: (symbolName: string) => void;
-		onReferenceLookup?: (symbolName: string) => void;
+		onDefinitionLookup?: (request: SourceEditorLookupRequest) => void;
+		onGoToLineRequest?: () => void;
+		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
+		onProblemsRequest?: () => void;
+		onQuickOpenRequest?: () => void;
+		onReferenceLookup?: (request: SourceEditorLookupRequest) => void;
+		onSaveRequest?: () => void;
+		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 	};
 
@@ -46,14 +64,22 @@
 		preview,
 		content,
 		editable = false,
+		externalDiagnostics = [],
 		loading = false,
 		targetLine = null,
 		targetLineRequestId = 0,
 		intelligenceCommand = null,
 		onContentChange,
+		onCommandPaletteRequest,
 		onDiagnosticsChange,
 		onDefinitionLookup,
+		onGoToLineRequest,
+		onHoverLookup,
+		onProblemsRequest,
+		onQuickOpenRequest,
 		onReferenceLookup,
+		onSaveRequest,
+		onSymbolsRequest,
 		onSymbolsChange,
 	}: Props = $props();
 
@@ -62,13 +88,18 @@
 	let monacoApi: typeof Monaco | null = null;
 	let contentChangeDisposable: Monaco.IDisposable | null = null;
 	let markerChangeDisposable: Monaco.IDisposable | null = null;
+	let mouseDefinitionDisposable: Monaco.IDisposable | null = null;
 	let semanticTokensDisposable: Monaco.IDisposable | null = null;
+	let hoverProviderDisposable: Monaco.IDisposable | null = null;
+	let editorActionDisposables: Monaco.IDisposable[] = [];
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
 	let currentTargetLineRequestId = -1;
 	let handledIntelligenceCommandId = -1;
 	let applyingContent = false;
 	let isReady = $state(false);
+	let layoutObserver: ResizeObserver | null = null;
+	let layoutFrame = 0;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 
@@ -135,6 +166,51 @@
 					),
 				}),
 				releaseDocumentSemanticTokens: () => {},
+			}
+		);
+	}
+
+	function registerSourceHoverProvider(monaco: typeof Monaco) {
+		hoverProviderDisposable?.dispose();
+		hoverProviderDisposable = monaco.languages.registerHoverProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideHover: async (model, position) => {
+					const word = model.getWordAtPosition(position);
+					if (!word) return null;
+
+					const sourcePreview = previewForModel(model);
+					const range = new monaco.Range(
+						position.lineNumber,
+						word.startColumn,
+						position.lineNumber,
+						word.endColumn
+					);
+					const lspHover = await onHoverLookup?.({
+						symbolName: word.word,
+						line: position.lineNumber,
+						column: word.startColumn,
+					});
+					if (lspHover?.contents.length) {
+						return {
+							range,
+							contents: lspHover.contents.map((value) => ({ value })),
+						};
+					}
+
+					const symbol = extractSourceSymbols(sourcePreview, model.getValue()).find(
+						(candidate) => candidate.name === word.word
+					);
+					if (!symbol) return null;
+
+					return {
+						range,
+						contents: [
+							{ value: `**${symbol.kind}** \`${symbol.name}\`` },
+							{ value: `\`\`\`${sourcePreview.language}\n${symbol.detail}\n\`\`\`` },
+						],
+					};
+				},
 			}
 		);
 	}
@@ -218,6 +294,7 @@
 			editor.setModel(model);
 		}
 
+		applyExternalDiagnostics(model);
 		publishDiagnostics();
 		publishSymbols();
 
@@ -285,6 +362,24 @@
 		);
 	}
 
+	function applyExternalDiagnostics(model = editor?.getModel()) {
+		if (!monacoApi || !model) return;
+
+		monacoApi.editor.setModelMarkers(
+			model,
+			"mcb-lsp",
+			externalDiagnostics.map((diagnostic) => ({
+				startLineNumber: Math.max(1, diagnostic.line),
+				startColumn: Math.max(1, diagnostic.column),
+				endLineNumber: Math.max(1, diagnostic.line),
+				endColumn: Math.max(2, diagnostic.column + 1),
+				message: diagnostic.message,
+				severity: sourceDiagnosticToMarkerSeverity(diagnostic.severity),
+				source: diagnostic.source ?? "lsp",
+			}))
+		);
+	}
+
 	function publishSymbols(nextContent = content ?? preview.content) {
 		onSymbolsChange?.(extractSourceSymbols(preview, nextContent));
 	}
@@ -303,6 +398,20 @@
 		}
 	}
 
+	function sourceDiagnosticToMarkerSeverity(severity: SourceDiagnosticSeverity): Monaco.MarkerSeverity {
+		if (!monacoApi) return 2 as Monaco.MarkerSeverity;
+		switch (severity) {
+			case "error":
+				return monacoApi.MarkerSeverity.Error;
+			case "warning":
+				return monacoApi.MarkerSeverity.Warning;
+			case "hint":
+				return monacoApi.MarkerSeverity.Hint;
+			default:
+				return monacoApi.MarkerSeverity.Info;
+		}
+	}
+
 	function runIntelligenceCommand() {
 		if (!editor || !intelligenceCommand || intelligenceCommand.id === handledIntelligenceCommandId) {
 			return;
@@ -310,26 +419,65 @@
 
 		handledIntelligenceCommandId = intelligenceCommand.id;
 		if (intelligenceCommand.action === "definition") {
-			onDefinitionLookup?.(symbolNameAtCursor());
+			requestDefinitionAtCursor();
+			return;
 		}
 		if (intelligenceCommand.action === "references") {
-			onReferenceLookup?.(symbolNameAtCursor());
+			requestReferencesAtCursor();
 			return;
 		}
 
-		const actionId =
-			intelligenceCommand.action === "hover"
-				? "editor.action.showHover"
-				: "editor.action.revealDefinition";
-		void editor.getAction(actionId)?.run();
+		requestHoverAtCursor();
 	}
 
-	function symbolNameAtCursor(): string {
-		const model = editor?.getModel();
-		const position = editor?.getPosition();
-		if (!model || !position) return "";
+	function requestDefinitionAtCursor() {
+		const request = lookupRequestAtCursor();
+		if (!request) return;
 
-		return model.getWordAtPosition(position)?.word ?? "";
+		onDefinitionLookup?.(request);
+		void editor?.getAction("editor.action.revealDefinition")?.run();
+	}
+
+	function requestDefinitionAtPosition(position: Monaco.IPosition) {
+		const request = lookupRequestAtPosition(position);
+		if (!request) return;
+
+		editor?.setPosition(position);
+		onDefinitionLookup?.(request);
+		void editor?.getAction("editor.action.revealDefinition")?.run();
+	}
+
+	function requestReferencesAtCursor() {
+		const request = lookupRequestAtCursor();
+		if (!request) return;
+
+		onReferenceLookup?.(request);
+		void editor?.getAction("editor.action.referenceSearch.trigger")?.run();
+	}
+
+	function requestHoverAtCursor() {
+		void editor?.getAction("editor.action.showHover")?.run();
+	}
+
+	function lookupRequestAtCursor(): SourceEditorLookupRequest | null {
+		const position = editor?.getPosition();
+		if (!position) return null;
+
+		return lookupRequestAtPosition(position);
+	}
+
+	function lookupRequestAtPosition(position: Monaco.IPosition): SourceEditorLookupRequest | null {
+		const model = editor?.getModel();
+		if (!model) return null;
+
+		const word = model.getWordAtPosition(position);
+		if (!word) return null;
+
+		return {
+			symbolName: word.word,
+			line: position.lineNumber,
+			column: word.startColumn,
+		};
 	}
 
 	onMount(async () => {
@@ -381,9 +529,10 @@
 		configureMonaco(monaco);
 		configureTypeScriptLanguageService(typeScriptLanguage);
 		registerSourceSemanticTokens(monaco);
+		registerSourceHoverProvider(monaco);
 
 		editor = monaco.editor.create(host, {
-			automaticLayout: true,
+			automaticLayout: false,
 			bracketPairColorization: { enabled: true },
 			contextmenu: true,
 			cursorBlinking: "solid",
@@ -425,14 +574,110 @@
 			wordWrap: "off",
 		});
 
-		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
-		markerChangeDisposable = monaco.editor.onDidChangeMarkers((uris) => {
-			const modelUri = editor?.getModel()?.uri.toString();
-			if (modelUri && uris.some((uri) => uri.toString() === modelUri)) {
-				publishDiagnostics();
-			}
+		editorActionDisposables = [
+			editor.addAction({
+				id: "mcb.source.goToDefinition",
+				label: "Go to Definition",
+				keybindings: [monaco.KeyCode.F12],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 1,
+				run: () => requestDefinitionAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.findReferences",
+				label: "Find References",
+				keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 2,
+				run: () => requestReferencesAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.showHover",
+				label: "Show Hover",
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 3,
+				run: () => requestHoverAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.save",
+				label: "Save",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+				contextMenuGroupId: "1_modification",
+				contextMenuOrder: 1,
+				run: () => onSaveRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.quickOpen",
+				label: "Open File",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0,
+				run: () => onQuickOpenRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.commandPalette",
+				label: "Command Palette",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.1,
+				run: () => onCommandPaletteRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.goToLine",
+				label: "Go to Line",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyG],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.2,
+				run: () => onGoToLineRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.showSymbols",
+				label: "Show Symbols",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.3,
+				run: () => onSymbolsRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.showProblems",
+				label: "Show Problems",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.4,
+				run: () => onProblemsRequest?.(),
+			}),
+		];
+
+		layoutObserver = new ResizeObserver(() => {
+			if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
+			layoutFrame = window.requestAnimationFrame(() => {
+				layoutFrame = 0;
+				editor?.layout();
+			});
 		});
-		isReady = true;
+		layoutObserver.observe(host);
+
+		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
+			markerChangeDisposable = monaco.editor.onDidChangeMarkers((uris) => {
+				const modelUri = editor?.getModel()?.uri.toString();
+				if (modelUri && uris.some((uri) => uri.toString() === modelUri)) {
+					publishDiagnostics();
+				}
+			});
+			mouseDefinitionDisposable = editor.onMouseDown((event) => {
+				if (
+					event.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT ||
+					!event.target.position ||
+					(!event.event.browserEvent.metaKey && !event.event.browserEvent.ctrlKey)
+				) {
+					return;
+				}
+
+				event.event.preventDefault();
+				event.event.stopPropagation();
+				requestDefinitionAtPosition(event.target.position);
+			});
+			isReady = true;
 		applyAppearance();
 		applyPreview();
 		runIntelligenceCommand();
@@ -446,11 +691,27 @@
 	});
 
 	onDestroy(() => {
+		if (layoutFrame) {
+			window.cancelAnimationFrame(layoutFrame);
+			layoutFrame = 0;
+		}
+		layoutObserver?.disconnect();
+		layoutObserver = null;
 		contentChangeDisposable?.dispose();
 		markerChangeDisposable?.dispose();
+		mouseDefinitionDisposable?.dispose();
 		semanticTokensDisposable?.dispose();
+		hoverProviderDisposable?.dispose();
+		for (const disposable of editorActionDisposables) {
+			disposable.dispose();
+		}
+		editorActionDisposables = [];
 		onDiagnosticsChange?.([]);
 		onSymbolsChange?.([]);
+		if (monacoApi) {
+			const model = editor?.getModel();
+			if (model) monacoApi.editor.setModelMarkers(model, "mcb-lsp", []);
+		}
 		editor?.dispose();
 		for (const model of ownedModels) {
 			model.dispose();

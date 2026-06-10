@@ -65,9 +65,27 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
         }
     }
 
+    records = merge_agent_session_records(records);
     records.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     records.truncate(80);
     records
+}
+
+pub fn merge_agent_session_records(records: Vec<AgentSessionRecord>) -> Vec<AgentSessionRecord> {
+    let mut merged = Vec::<AgentSessionRecord>::new();
+
+    for record in records {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|candidate| candidate.provider == record.provider && candidate.id == record.id)
+        {
+            merge_agent_session_record(existing, record);
+        } else {
+            merged.push(record);
+        }
+    }
+
+    merged
 }
 
 pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
@@ -301,11 +319,15 @@ fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String>
 }
 
 fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
+    merge_agent_session_record(existing, candidate);
+}
+
+fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
     if existing.project_path.is_none() {
-        existing.project_path = candidate.project_path;
+        existing.project_path = candidate.project_path.clone();
     }
 
-    if candidate
+    let candidate_is_newer = candidate
         .last_activity
         .as_ref()
         .is_some_and(|candidate_activity| {
@@ -315,13 +337,18 @@ fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSession
                 .map_or(true, |existing_activity| {
                     candidate_activity > existing_activity
                 })
-        })
-    {
+        });
+
+    if candidate_is_newer {
+        existing.title = candidate.title;
+        existing.project_path = candidate.project_path.or(existing.project_path.take());
         existing.last_activity = candidate.last_activity;
     }
 
-    if existing.resume_commands.is_empty() {
-        existing.resume_commands = candidate.resume_commands;
+    for command in candidate.resume_commands {
+        if !existing.resume_commands.contains(&command) {
+            existing.resume_commands.push(command);
+        }
     }
 }
 

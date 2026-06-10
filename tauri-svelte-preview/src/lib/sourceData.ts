@@ -40,6 +40,27 @@ export type SourceReferenceTarget = SourceRecord & {
   excerpt: string;
 };
 
+export type SourceLspStatus = {
+  language: SourceLanguage;
+  languageID: string;
+  available: boolean;
+  serverName: string;
+  command: string;
+  args: string[];
+  reason: string | null;
+};
+
+export type SourceLspLookupRequest = {
+  root: string;
+  line: number;
+  column: number;
+  limit?: number;
+};
+
+export type SourceLspHover = {
+  contents: string[];
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {
@@ -544,7 +565,7 @@ export function monacoLanguageForSource(language: SourceLanguage): string {
 }
 
 export function sourceSupportsLanguageIntelligence(language: SourceLanguage): boolean {
-  return ['typescript', 'tsx', 'javascript', 'jsx'].includes(language);
+  return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp'].includes(language);
 }
 
 export function formatSourceDiagnosticSummary(diagnostics: SourceDiagnostic[]): string {
@@ -588,7 +609,7 @@ export function extractSourceSemanticTokens(
       if (!tokenType) return null;
 
       const line = lines[symbol.line - 1] ?? '';
-      const startIndex = line.indexOf(symbol.name);
+      const startIndex = line.lastIndexOf(symbol.name);
       if (startIndex < 0) return null;
 
       return {
@@ -617,6 +638,9 @@ function semanticTokenTypeForSourceSymbol(kind: string): SourceSemanticTokenType
     case 'function':
     case 'method':
       return kind;
+    case 'constructor':
+      return 'method';
+    case 'property':
     case 'constant':
     case 'variable':
       return 'variable';
@@ -669,10 +693,29 @@ function extractTypeScriptSymbols(content: string): SourceSymbol[] {
         column,
         detail: trimmed
       });
+      return;
+    }
+
+    const methodDeclaration =
+      /^(?:(?:public|private|protected|static|async|readonly|override)\s+)*([A-Za-z_$][\w$]*)\s*\(/.exec(
+        trimmed
+      );
+    if (methodDeclaration && !isControlFlowKeyword(methodDeclaration[1])) {
+      symbols.push({
+        kind: 'method',
+        name: methodDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
     }
   });
 
   return symbols;
+}
+
+function isControlFlowKeyword(value: string) {
+  return ['for', 'foreach', 'if', 'switch', 'while', 'catch'].includes(value);
 }
 
 function extractCSharpSymbols(content: string): SourceSymbol[] {
@@ -700,6 +743,51 @@ function extractCSharpSymbols(content: string): SourceSymbol[] {
       symbols.push({
         kind: typeDeclaration[1],
         name: typeDeclaration[2],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const fieldDeclaration =
+      /^(?:(?:public|private|protected|internal|static|readonly|const|volatile|required|new)\s+)+[\w<>,.?[\]\s]+\s+([A-Za-z_][\w]*)\s*(?:=|;)/.exec(
+        trimmed
+      );
+    if (fieldDeclaration) {
+      symbols.push({
+        kind: 'variable',
+        name: fieldDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const constructorDeclaration =
+      /^(?:(?:public|private|protected|internal|static|new)\s+)+([A-Z][A-Za-z_0-9]*)\s*\(/.exec(
+        trimmed
+      );
+    if (constructorDeclaration) {
+      symbols.push({
+        kind: 'constructor',
+        name: constructorDeclaration[1],
+        line: lineNumber,
+        column,
+        detail: trimmed
+      });
+      return;
+    }
+
+    const propertyDeclaration =
+      /^(?:(?:public|private|protected|internal|static|virtual|override|sealed|required|new)\s+)+[\w<>,.?[\]\s]+\s+([A-Za-z_][\w]*)\s*\{/.exec(
+        trimmed
+      );
+    if (propertyDeclaration) {
+      symbols.push({
+        kind: 'property',
+        name: propertyDeclaration[1],
         line: lineNumber,
         column,
         detail: trimmed
@@ -1007,10 +1095,17 @@ export function findSourceReferenceTargets(
 
 export function parseQuickOpenQuery(query: string): QuickOpenQuery {
   const trimmedQuery = query.trim();
-  const lineMatch = /^(.*):(\d+)$/.exec(trimmedQuery);
+  const lineMatch = /^(.*):(\d*)$/.exec(trimmedQuery);
   if (!lineMatch) {
     return {
       searchQuery: trimmedQuery,
+      targetLine: null
+    };
+  }
+
+  if (!lineMatch[2]) {
+    return {
+      searchQuery: lineMatch[1].trim(),
       targetLine: null
     };
   }

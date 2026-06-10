@@ -1,9 +1,9 @@
 use mcb_core::crypto::SecretBox;
 use mcb_core::scanners::processes::parse_lsof_listeners;
 use mcb_core::scanners::sessions::{
-    decode_claude_project_dir_with_users_root, merge_codex_session_metadata, parse_claude_jsonl,
-    parse_cmux_hook_sessions_json, parse_codex_index_jsonl, parse_codex_rollout_jsonl,
-    read_tail_utf8,
+    decode_claude_project_dir_with_users_root, merge_agent_session_records,
+    merge_codex_session_metadata, parse_claude_jsonl, parse_cmux_hook_sessions_json,
+    parse_codex_index_jsonl, parse_codex_rollout_jsonl, read_tail_utf8, AgentSessionRecord,
 };
 use mcb_core::scanners::worktrees::parse_worktree_porcelain;
 use mcb_core::scanners::worktrees::WorktreeScanOptions;
@@ -119,6 +119,49 @@ fn parses_cmux_hook_sessions_without_body_content() {
         vec![
             "cd '/Users/blackcolours/dev/work/mac-command-bar' && codex resume 019e",
             "codex resume 019e"
+        ]
+    );
+}
+
+#[test]
+fn merges_duplicate_agent_session_records_by_provider_and_id() {
+    let records = merge_agent_session_records(vec![
+        AgentSessionRecord {
+            provider: "claude".to_string(),
+            id: "abc".to_string(),
+            title: "Older title".to_string(),
+            project_path: Some("/repo".to_string()),
+            last_activity: Some("2026-06-09T01:00:00Z".to_string()),
+            resume_commands: vec!["claude --resume abc".to_string()],
+        },
+        AgentSessionRecord {
+            provider: "claude".to_string(),
+            id: "abc".to_string(),
+            title: "Newer title".to_string(),
+            project_path: Some("/repo/worktree".to_string()),
+            last_activity: Some("2026-06-09T02:00:00Z".to_string()),
+            resume_commands: vec![
+                "claude --resume abc".to_string(),
+                "cd /repo/worktree && claude --resume abc".to_string(),
+            ],
+        },
+    ]);
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].title, "Newer title");
+    assert_eq!(
+        records[0].project_path.as_deref(),
+        Some("/repo/worktree")
+    );
+    assert_eq!(
+        records[0].last_activity.as_deref(),
+        Some("2026-06-09T02:00:00Z")
+    );
+    assert_eq!(
+        records[0].resume_commands,
+        vec![
+            "claude --resume abc".to_string(),
+            "cd /repo/worktree && claude --resume abc".to_string()
         ]
     );
 }

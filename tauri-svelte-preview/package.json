@@ -10,6 +10,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && tsc --noEmit",
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
+    "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
+    "test:local-source-fs": "node --experimental-strip-types scripts/localSourceFs.test.mjs",
     "test:source-data": "node --experimental-strip-types scripts/sourceData.test.mjs",
     "test:source-ui": "node scripts/sourceUi.test.mjs",
     "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",

@@ -13,6 +13,8 @@
     FolderOpen,
     FolderSearch,
     History,
+    MoreHorizontal,
+    Network,
     Plus,
     RefreshCw,
     RotateCcw,
@@ -77,6 +79,8 @@
     type SourceReferenceTarget,
     type SourceSearchMatch,
     type SourceDiagnostic,
+    type SourceLspHover,
+    type SourceLspStatus,
     type SourceSymbol,
     type SourceTreeNode,
     type SourceTreeRow
@@ -89,9 +93,14 @@
     expandedSourceScanLimit,
     fetchGitRepositoryFromTauri,
     findSourceDefinitionsFromTauri,
+    findSourceLspDefinitionsFromTauri,
+    findSourceLspHoverFromTauri,
+    findSourceLspReferencesFromTauri,
+    findSourceLspSymbolsFromTauri,
     findSourceReferencesFromTauri,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
+    listOrchestrationRunsFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
     listenToSourceScanProgress,
@@ -99,8 +108,11 @@
     nativeSourceScanProgressEvent,
     openPathFromTauri,
     openSourceFileFromTauri,
+    openTerminalCommandFromTauri,
     openTerminalPathFromTauri,
     readProjectGitStatusFromTauri,
+    readSourceLspDiagnosticsFromTauri,
+    readSourceLspStatusFromTauri,
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
     revealPathFromTauri,
@@ -116,6 +128,7 @@
     type AgentSession,
     type GitCommitHistoryEntry,
     type GitRepositorySummary,
+    type OrchestrationRun,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
     type ProjectWorktree,
@@ -130,12 +143,19 @@
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
+  const sourceLayoutVersionStorageKey = 'mac-command-bar.source-browser.layout-version';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
   const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
+  const contextPanelPlacementStorageKey = 'mac-command-bar.source-browser.context-panel-placement';
+  const sidePanePositionStorageKey = 'mac-command-bar.source-browser.side-pane-position';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
+  const editorInsightCollapsedStorageKey = 'mac-command-bar.source-browser.editor-insight-collapsed';
+  const contextPaneWidthStorageKey = 'mac-command-bar.source-browser.context-pane-width';
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
+  const hiddenContextCardsStorageKey = 'mac-command-bar.source-browser.hidden-context-cards';
+  const activeContextCardStorageKey = 'mac-command-bar.source-browser.active-context-card';
   const maxRecentSourceRecords = 24;
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
@@ -158,7 +178,11 @@
   const editorInsightDefaultWidth = 260;
   const editorInsightMinWidth = 220;
   const editorInsightMaxWidth = 440;
+  const contextPaneDefaultWidth = 330;
+  const contextPaneMinWidth = 260;
+  const contextPaneMaxWidth = 560;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
+  const sourceLayoutVersion = '2026-06-editor-canvas';
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
   const initialPreview = initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null;
@@ -168,20 +192,39 @@
     id: number;
     action: SourceIntelligenceAction;
   };
+  type SourceEditorLookupRequest = {
+    symbolName: string;
+    line: number;
+    column: number;
+  };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
-  type SourceActivityMode = 'files' | 'clipboard' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
-  type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom';
+  type SourceActivityMode =
+    | 'files'
+    | 'clipboard'
+    | 'conversations'
+    | 'runs'
+    | 'sessions'
+    | 'agents'
+    | 'worktrees'
+    | 'git';
+  type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'runs' | 'sessions' | 'custom';
   type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
   type SourceContextPanelMode = 'grid' | 'stack';
+  type SourceContextPanelPlacement = 'top' | 'side';
+  type SourceSidePanePosition = 'left' | 'right';
+  type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
   type SourceLayoutPresetDefinition = {
     id: Exclude<SourceLayoutPresetID, 'custom'>;
     label: string;
     title: string;
     activityMode: SourceActivityMode;
     sidePaneWidth: number;
+    sidePanePosition: SourceSidePanePosition;
     editorInsightWidth: number;
+    editorInsightCollapsed: boolean;
     contextPanelCollapsed: boolean;
     contextPanelMode: SourceContextPanelMode;
+    contextPanelPlacement: SourceContextPanelPlacement;
     intelligencePanel: SourceIntelligencePanel;
   };
 
@@ -192,9 +235,12 @@
       title: 'Balanced source review with context visible',
       activityMode: 'files',
       sidePaneWidth: sidePaneDefaultWidth,
+      sidePanePosition: 'left',
       editorInsightWidth: editorInsightDefaultWidth,
+      editorInsightCollapsed: false,
       contextPanelCollapsed: false,
       contextPanelMode: 'grid',
+      contextPanelPlacement: 'top',
       intelligencePanel: 'symbols'
     },
     {
@@ -203,9 +249,12 @@
       title: 'Wide editor with the context cards hidden',
       activityMode: 'files',
       sidePaneWidth: 360,
+      sidePanePosition: 'left',
       editorInsightWidth: editorInsightMinWidth,
+      editorInsightCollapsed: true,
       contextPanelCollapsed: true,
       contextPanelMode: 'grid',
+      contextPanelPlacement: 'top',
       intelligencePanel: 'symbols'
     },
     {
@@ -214,10 +263,27 @@
       title: 'Repository and task review with the Git inspector open',
       activityMode: 'git',
       sidePaneWidth: 440,
+      sidePanePosition: 'left',
       editorInsightWidth: 340,
+      editorInsightCollapsed: false,
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
+      contextPanelPlacement: 'side',
       intelligencePanel: 'git'
+    },
+    {
+      id: 'runs',
+      label: 'Runs',
+      title: 'Orchestration runs with agent, test, and artifact context',
+      activityMode: 'runs',
+      sidePaneWidth: 430,
+      sidePanePosition: 'left',
+      editorInsightWidth: 280,
+      editorInsightCollapsed: true,
+      contextPanelCollapsed: false,
+      contextPanelMode: 'stack',
+      contextPanelPlacement: 'side',
+      intelligencePanel: 'problems'
     },
     {
       id: 'sessions',
@@ -225,9 +291,12 @@
       title: 'Live runtime and agent/session review',
       activityMode: 'sessions',
       sidePaneWidth: 420,
+      sidePanePosition: 'left',
       editorInsightWidth: 280,
+      editorInsightCollapsed: true,
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
+      contextPanelPlacement: 'side',
       intelligencePanel: 'problems'
     }
   ];
@@ -240,6 +309,14 @@
     'WezTerm',
     'Alacritty'
   ];
+  const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
+  const contextCardLabels: Record<SourceContextCardID, string> = {
+    orchestration: 'Runs',
+    runtime: 'Runtime',
+    agents: 'Agents',
+    worktrees: 'Worktrees',
+    repo: 'Git'
+  };
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
@@ -267,6 +344,10 @@
   let gitCommitHistoryLoading = $state(false);
   let gitCommitHistoryError = $state('');
   let gitCommitHistorySource = $state('browser preview');
+  let orchestrationRuns = $state<OrchestrationRun[]>([]);
+  let orchestrationRunsLoading = $state(false);
+  let orchestrationRunError = $state('');
+  let orchestrationRunSource = $state('browser preview');
   let agentSessions = $state<AgentSession[]>([]);
   let agentSessionsLoading = $state(false);
   let agentSessionError = $state('');
@@ -284,7 +365,11 @@
     initialPreview ? { [initialPreview.path]: initialPreview.content } : {}
   );
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
+  let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
+  let sourceLspStatus = $state<SourceLspStatus | null>(null);
+  let sourceLspStatusLoading = $state(false);
+  let sourceLspStatusError = $state('');
   let sourceDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
   let sourceDefinitionQuery = $state('');
   let sourceDefinitionLoading = $state(false);
@@ -310,12 +395,20 @@
   let sourceActivityFilter = $state('');
   let pasteCleanupInput = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
-  let sourceLayoutPreset = $state<SourceLayoutPresetID>('review');
+  let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
   let contextPanelMode = $state<SourceContextPanelMode>('grid');
+  let contextPanelPlacement = $state<SourceContextPanelPlacement>('top');
+  let sidePanePosition = $state<SourceSidePanePosition>('left');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
-  let contextPanelCollapsed = $state(false);
+  let editorInsightCollapsed = $state(true);
+  let contextPaneWidth = $state(contextPaneDefaultWidth);
+  let contextPanelCollapsed = $state(true);
+  let hiddenContextCardIDs = $state<Set<SourceContextCardID>>(new Set());
+  let activeContextCardID = $state<SourceContextCardID>('orchestration');
+  let viewMenuOpen = $state(false);
+  let editorActionMenuOpen = $state(false);
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
@@ -333,6 +426,10 @@
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
   let quickOpenInput = $state<HTMLInputElement | null>(null);
+  let commandPaletteVisible = $state(false);
+  let commandPaletteQuery = $state('');
+  let commandPaletteIndex = $state(0);
+  let commandPaletteInput = $state<HTMLInputElement | null>(null);
   let fileTreeElement = $state<HTMLDivElement | null>(null);
   let fileTreeScrollTop = $state(0);
   let fileTreeViewportHeight = $state(sourceTreeFallbackViewportHeight);
@@ -343,10 +440,18 @@
   let projectFormError = $state('');
   let scanGeneration = 0;
   let sourceIntelligenceCommandId = 0;
+  let sourceLspDiagnosticsTimer: number | null = null;
 
   type SourceScanOptions = {
     force?: boolean;
     limit?: number;
+  };
+  type SourceCommandPaletteItem = {
+    id: string;
+    label: string;
+    detail: string;
+    disabled?: boolean;
+    perform: () => void | Promise<void>;
   };
 
   let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
@@ -461,6 +566,26 @@
   let selectedProjectAgentSessions = $derived(
     agentSessions.filter((session) => agentSessionMatchesProject(session, selectedProject))
   );
+  let selectedProjectOrchestrationRuns = $derived(
+    orchestrationRuns.filter((run) => orchestrationRunMatchesProject(run, selectedProject))
+  );
+  let filteredProjectOrchestrationRuns = $derived(
+    selectedProjectOrchestrationRuns.filter((run) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        run.title,
+        run.status,
+        run.phase,
+        run.summary,
+        run.projectName,
+        run.projectPath,
+        run.rootLabel,
+        run.taskID,
+        ...run.agents.map((agent) => `${agent.provider} ${agent.role} ${agent.title}`),
+        ...run.steps.map((step) => `${step.kind} ${step.title} ${step.status} ${step.summary}`)
+      )
+    )
+  );
   let filteredProjectRuntimeContexts = $derived(
     selectedProjectRuntimeContexts.filter((context) =>
       activityTextMatchesFilter(
@@ -559,6 +684,16 @@
       agentSessionSource
     )
   );
+  let orchestrationRunSummary = $derived(
+    formatOrchestrationRunSummary(
+      selectedProjectOrchestrationRuns.length,
+      orchestrationRunsLoading,
+      orchestrationRunError,
+      orchestrationRunSource
+    )
+  );
+  let visibleContextCards = $derived(visibleContextCardIDs());
+  let activeContextCard = $derived(activeVisibleContextCardID());
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
   );
@@ -579,12 +714,361 @@
     )
   );
   let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
+  let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
+    {
+      id: 'quick-open',
+      label: 'Open file',
+      detail: 'Cmd+P',
+      perform: openQuickOpen
+    },
+    {
+      id: 'go-to-line',
+      label: 'Go to line',
+      detail: selectedRecord ? `${selectedRecord.relativePath}:line` : 'No file',
+      disabled: !selectedRecord,
+      perform: openCurrentFileGoToLine
+    },
+    {
+      id: 'scan-project',
+      label: 'Scan current project',
+      detail: selectedProject.name,
+      disabled: scanning,
+      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true })
+    },
+    {
+      id: 'scan-project-expanded',
+      label: `Scan current project up to ${expandedSourceScanLimit.toLocaleString()} files`,
+      detail: selectedProject.name,
+      disabled: scanning,
+      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
+    },
+    {
+      id: 'scan-stop',
+      label: 'Stop source scan',
+      detail: sourceScanProgress?.status ?? 'Cancel the active scanner',
+      disabled: !scanning,
+      perform: cancelSourceScan
+    },
+    {
+      id: 'project-add-folder',
+      label: 'Add project folder',
+      detail: 'Choose a local repository',
+      disabled: choosingProjectRoot,
+      perform: chooseProjectRoot
+    },
+    {
+      id: 'project-open-folder',
+      label: 'Open project folder',
+      detail: selectedProject.path,
+      disabled: !selectedProject.path || fileActionBusy === `activity-open:${selectedProject.path}`,
+      perform: () => openActivityPath(selectedProject.path)
+    },
+    {
+      id: 'project-reveal-folder',
+      label: 'Reveal project folder',
+      detail: selectedProject.path,
+      disabled: !selectedProject.path || fileActionBusy === `activity-reveal:${selectedProject.path}`,
+      perform: () => revealActivityPath(selectedProject.path)
+    },
+    {
+      id: 'project-open-terminal',
+      label: `Open project in ${sourceTerminalApp}`,
+      detail: selectedProject.path,
+      disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
+      perform: () => openActivityTerminalPath(selectedProject.path)
+    },
+    {
+      id: 'save-file',
+      label: 'Save file',
+      detail: 'Cmd+S',
+      disabled: !selectedSourceDirty || fileActionBusy === 'save',
+      perform: saveSelectedSourceFile
+    },
+    {
+      id: 'revert-file',
+      label: 'Revert file',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !selectedSourceDirty || fileActionBusy === 'save',
+      perform: revertSelectedSourceFile
+    },
+    {
+      id: 'copy-path',
+      label: 'Copy file path',
+      detail: preview?.relativePath ?? 'No file',
+      disabled: !preview || fileActionBusy === 'copy',
+      perform: copySelectedPath
+    },
+    {
+      id: 'open-file-native',
+      label: 'Open file in IDE',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || fileActionBusy === 'open',
+      perform: openSelectedFile
+    },
+    {
+      id: 'reveal-file',
+      label: 'Reveal file in Finder',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || fileActionBusy === 'reveal',
+      perform: revealSelectedFile
+    },
+    {
+      id: 'go-definition',
+      label: 'Go to definition',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading,
+      perform: () => requestSourceIntelligenceAction('definition')
+    },
+    {
+      id: 'find-references',
+      label: 'Find references',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading,
+      perform: () => requestSourceIntelligenceAction('references')
+    },
+    {
+      id: 'show-hover',
+      label: 'Show hover',
+      detail: preview?.language ?? 'No language',
+      disabled: !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('hover')
+    },
+    {
+      id: 'insights-toggle',
+      label: editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights',
+      detail: 'Problems, symbols, Git',
+      perform: toggleEditorInsightCollapsed
+    },
+    {
+      id: 'insights-problems',
+      label: 'Show problems',
+      detail: sourceDiagnosticSummary,
+      perform: () => showEditorInsightPanel('problems')
+    },
+    {
+      id: 'insights-symbols',
+      label: 'Show symbols',
+      detail: `${sourceSymbols.length} symbols`,
+      perform: () => showEditorInsightPanel('symbols')
+    },
+    {
+      id: 'insights-git',
+      label: 'Show selected-file Git',
+      detail: selectedSourceGitSummary,
+      perform: () => showEditorInsightPanel('git')
+    },
+    ...sourceSymbols.slice(0, 12).map((symbol) => ({
+      id: `symbol-${symbol.kind}-${symbol.name}-${symbol.line}-${symbol.column}`,
+      label: `Go to symbol: ${symbol.name}`,
+      detail: `${symbol.kind} - line ${symbol.line}`,
+      perform: () => selectSourceSymbol(symbol)
+    })),
+    ...sourceDiagnostics.slice(0, 8).map((diagnostic, index) => ({
+      id: `diagnostic-${diagnostic.severity}-${diagnostic.line}-${diagnostic.column}-${index}`,
+      label: `Go to problem: ${diagnostic.message}`,
+      detail: `${diagnostic.severity} - ${diagnostic.line}:${diagnostic.column}`,
+      perform: () => selectSourceDiagnostic(diagnostic)
+    })),
+    ...sourceLayoutPresets.map((preset) => ({
+      id: `layout-${preset.id}`,
+      label: `Use ${preset.label} layout`,
+      detail: preset.title,
+      perform: () => applySourceLayoutPreset(preset.id)
+    })),
+    {
+      id: 'side-left',
+      label: 'Move explorer left',
+      detail: 'Side pane',
+      disabled: sidePanePosition === 'left',
+      perform: () => selectSidePanePosition('left')
+    },
+    {
+      id: 'side-right',
+      label: 'Move explorer right',
+      detail: 'Side pane',
+      disabled: sidePanePosition === 'right',
+      perform: () => selectSidePanePosition('right')
+    },
+    {
+      id: 'context-side',
+      label: 'Move context to side',
+      detail: 'Context cards',
+      disabled: contextPanelPlacement === 'side',
+      perform: () => selectContextPanelPlacement('side')
+    },
+    {
+      id: 'context-top',
+      label: 'Move context to top',
+      detail: 'Context cards',
+      disabled: contextPanelPlacement === 'top',
+      perform: () => selectContextPanelPlacement('top')
+    },
+    {
+      id: 'context-grid',
+      label: 'Use context grid',
+      detail: 'Context cards',
+      disabled: contextPanelMode === 'grid',
+      perform: () => selectContextPanelMode('grid')
+    },
+    {
+      id: 'context-stack',
+      label: 'Use context stack',
+      detail: 'Context cards',
+      disabled: contextPanelMode === 'stack',
+      perform: () => selectContextPanelMode('stack')
+    },
+    {
+      id: 'context-toggle',
+      label: contextPanelCollapsed ? 'Show context cards' : 'Hide context cards',
+      detail: 'Canvas',
+      perform: toggleContextPanelCollapsed
+    },
+    {
+      id: 'context-restore',
+      label: 'Show hidden context cards',
+      detail: `${hiddenContextCardIDs.size} hidden`,
+      disabled: hiddenContextCardIDs.size === 0,
+      perform: showAllContextCards
+    },
+    ...contextCardOrder.map((cardID) => ({
+      id: `context-card-${cardID}`,
+      label: `Show ${contextCardLabels[cardID]} card`,
+      detail: 'Context cards',
+      disabled:
+        isContextCardVisible(cardID) &&
+        !contextPanelCollapsed &&
+        (contextPanelMode !== 'stack' || activeVisibleContextCardID() === cardID),
+      perform: () => showContextCard(cardID)
+    })),
+    {
+      id: 'activity-files',
+      label: 'Show files',
+      detail: sourceActivitySummary('files'),
+      disabled: sourceActivityMode === 'files',
+      perform: () => selectSourceActivityMode('files')
+    },
+    {
+      id: 'activity-clipboard',
+      label: 'Show clipboard cleanup',
+      detail: sourceActivitySummary('clipboard'),
+      disabled: sourceActivityMode === 'clipboard',
+      perform: () => selectSourceActivityMode('clipboard')
+    },
+    {
+      id: 'activity-conversations',
+      label: 'Show conversations',
+      detail: sourceActivitySummary('conversations'),
+      disabled: sourceActivityMode === 'conversations',
+      perform: () => selectSourceActivityMode('conversations')
+    },
+    {
+      id: 'activity-runs',
+      label: 'Show orchestration runs',
+      detail: sourceActivitySummary('runs'),
+      disabled: sourceActivityMode === 'runs',
+      perform: () => selectSourceActivityMode('runs')
+    },
+    {
+      id: 'activity-sessions',
+      label: 'Show active sessions',
+      detail: sourceActivitySummary('sessions'),
+      disabled: sourceActivityMode === 'sessions',
+      perform: () => selectSourceActivityMode('sessions')
+    },
+    {
+      id: 'activity-agents',
+      label: 'Show agents',
+      detail: sourceActivitySummary('agents'),
+      disabled: sourceActivityMode === 'agents',
+      perform: () => selectSourceActivityMode('agents')
+    },
+    {
+      id: 'activity-worktrees',
+      label: 'Show worktrees',
+      detail: sourceActivitySummary('worktrees'),
+      disabled: sourceActivityMode === 'worktrees',
+      perform: () => selectSourceActivityMode('worktrees')
+    },
+    {
+      id: 'activity-git',
+      label: 'Show Git and tasks',
+      detail: sourceActivitySummary('git'),
+      disabled: sourceActivityMode === 'git',
+      perform: () => selectSourceActivityMode('git')
+    },
+    {
+      id: 'activity-refresh',
+      label: `Refresh ${sourceActivityPanelLabel}`,
+      detail: sourceActivitySummary(sourceActivityMode),
+      disabled: sourceActivityRefreshing(sourceActivityMode),
+      perform: () => refreshSourceActivityMode(sourceActivityMode)
+    },
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `agent-resume-${session.provider}-${session.id}`,
+      label: `Resume ${session.provider}: ${session.title}`,
+      detail: agentSessionProjectLabel(session),
+      disabled: !agentSessionResumeCommand(session).trim(),
+      perform: () => openAgentSessionTerminal(session)
+    })),
+    {
+      id: 'git-stage-file',
+      label: 'Stage selected file',
+      detail: selectedRecord?.relativePath ?? 'No file',
+      disabled: selectedGitPathActionDisabled || !selectedRecord,
+      perform: () => {
+        if (selectedRecord) void runGitPathAction('stage', [selectedRecord.relativePath]);
+      }
+    },
+    {
+      id: 'git-unstage-file',
+      label: 'Unstage selected file',
+      detail: selectedRecord?.relativePath ?? 'No file',
+      disabled: selectedGitUnstageDisabled || !selectedRecord,
+      perform: () => {
+        if (selectedRecord) void runGitPathAction('unstage', [selectedRecord.relativePath]);
+      }
+    },
+    {
+      id: 'git-fetch',
+      label: 'Fetch repository',
+      detail: selectedProject.name,
+      disabled: gitRemoteActionDisabled,
+      perform: () => runGitRemoteAction('fetch')
+    },
+    {
+      id: 'git-pull',
+      label: 'Pull repository',
+      detail: selectedProject.name,
+      disabled: gitRemoteActionDisabled,
+      perform: () => runGitRemoteAction('pull')
+    },
+    {
+      id: 'git-push',
+      label: 'Push repository',
+      detail: selectedProject.name,
+      disabled: gitRemoteActionDisabled,
+      perform: () => runGitRemoteAction('push')
+    }
+  ]);
+  let commandPaletteResults = $derived(
+    sourceCommandPaletteItems.filter((item) =>
+      commandPaletteTextMatches(commandPaletteQuery, item.label, item.detail)
+    ).slice(0, 12)
+  );
 
   $effect(() => {
     if (!quickOpenVisible) return;
     const lastResultIndex = Math.max(0, quickOpenResults.length - 1);
     if (quickOpenIndex > lastResultIndex) {
       quickOpenIndex = lastResultIndex;
+    }
+  });
+
+  $effect(() => {
+    if (!commandPaletteVisible) return;
+    const lastResultIndex = Math.max(0, commandPaletteResults.length - 1);
+    if (commandPaletteIndex > lastResultIndex) {
+      commandPaletteIndex = lastResultIndex;
     }
   });
 
@@ -596,9 +1080,19 @@
 
     if (typeof ResizeObserver === 'undefined') return;
 
-    const resizeObserver = new ResizeObserver(measureFileTreeViewport);
+    let resizeFrame = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0;
+        measureFileTreeViewport();
+      });
+    });
     resizeObserver.observe(element);
-    return () => resizeObserver.disconnect();
+    return () => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeObserver.disconnect();
+    };
   });
 
   $effect(() => {
@@ -693,24 +1187,27 @@
     try {
       const tauriScan = await listSourceFilesFromTauri(project.path, '', scanLimit, scanId);
       if (generation !== scanGeneration) return;
+      if (!tauriScan) {
+        throw new Error('Local source scanner unavailable. Run inside Tauri or use pnpm dev.');
+      }
 
-      const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
+      const nextRecords = tauriScan.records;
       sourceScanCache = upsertSourceScanCacheEntry(
         sourceScanCache,
         project,
         nextRecords,
-        tauriScan?.limit ?? scanLimit,
+        tauriScan.limit,
         Date.now(),
         maxSourceScanCacheEntries,
-        tauriScan?.truncated ?? false
+        tauriScan.truncated
       );
       clearBackgroundIndexError(project.id);
 
       const nextSelection = applySourceRecords(
         nextRecords,
         preferredPath,
-        tauriScan ? 'tauri source scan' : 'browser preview',
-        tauriScan?.truncated ?? false
+        'local source scan',
+        tauriScan.truncated
       );
 
       if (nextSelection) {
@@ -720,14 +1217,14 @@
       }
     } catch (scanError) {
       if (generation !== scanGeneration) return;
-      records = demoRecordsForProject(project);
-      selectedRecord = records[0] ?? null;
+      records = [];
+      selectedRecord = null;
       selectedSourceLine = null;
       scanLimitReached = false;
-      preview = selectedRecord ? demoPreviewFor(selectedRecord) : null;
-      if (preview) syncSourcePreviewContent(preview);
-      expandedFolderIds = selectedRecord ? new Set(folderIdsForSourceRecord(selectedRecord)) : new Set();
-      runtime = 'browser preview';
+      preview = null;
+      expandedFolderIds = new Set();
+      syncSourcePreviewContent(null);
+      runtime = 'source scan unavailable';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
       loading = false;
     } finally {
@@ -785,15 +1282,19 @@
         defaultSourceScanLimit,
         createSourceScanId()
       );
-      const nextRecords = tauriScan?.records ?? demoRecordsForProject(project);
+      if (!tauriScan) {
+        throw new Error('Local source scanner unavailable');
+      }
+
+      const nextRecords = tauriScan.records;
       sourceScanCache = upsertSourceScanCacheEntry(
         sourceScanCache,
         project,
         nextRecords,
-        tauriScan?.limit ?? defaultSourceScanLimit,
+        tauriScan.limit,
         Date.now(),
         maxSourceScanCacheEntries,
-        tauriScan?.truncated ?? false
+        tauriScan.truncated
       );
       clearBackgroundIndexError(project.id);
     } catch (indexError) {
@@ -933,6 +1434,30 @@
     }
   }
 
+  async function loadOrchestrationRuns(projects: ProjectRoot[] = projectOptions) {
+    orchestrationRunsLoading = true;
+    orchestrationRunError = '';
+
+    try {
+      const nativeRuns = await listOrchestrationRunsFromTauri(projects);
+      if (nativeRuns) {
+        orchestrationRuns = nativeRuns;
+        orchestrationRunSource = 'native event store';
+        return;
+      }
+
+      orchestrationRuns = demoOrchestrationRunsForProjects(projects);
+      orchestrationRunSource = 'browser preview';
+    } catch (runError) {
+      orchestrationRuns = demoOrchestrationRunsForProjects(projects);
+      orchestrationRunSource = 'browser preview';
+      orchestrationRunError =
+        runError instanceof Error ? runError.message : 'Could not read orchestration runs';
+    } finally {
+      orchestrationRunsLoading = false;
+    }
+  }
+
   async function loadAgentSessions() {
     agentSessionsLoading = true;
     agentSessionError = '';
@@ -1047,6 +1572,76 @@
         taskID: 'TSK-127'
       }
     ];
+  }
+
+  function demoOrchestrationRunsForProjects(projects: ProjectRoot[]): OrchestrationRun[] {
+    const now = new Date().toISOString();
+
+    return projects.map((project) => {
+      const taskID = project.id === 'mac-command-bar' ? 'TSK-127' : null;
+      const runID = taskID ? `run-${taskID.toLowerCase()}` : `run-${project.id}`;
+      const title = taskID ? `${taskID} orchestration model` : `${project.name} project monitor`;
+      const rootLabel = formatSourceContextRootLabel(project.path);
+
+      return {
+        id: runID,
+        title,
+        status: 'running',
+        phase: 'store',
+        progress: 50,
+        projectID: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        rootLabel,
+        taskID,
+        startedAt: now,
+        updatedAt: now,
+        summary: 'Preview run seeded until real orchestration events exist',
+        agents: [
+          {
+            id: 'controller',
+            provider: 'codex',
+            role: 'orchestrator',
+            status: 'running',
+            title: 'Codex orchestrator',
+            lastActivity: now
+          }
+        ],
+        steps: [
+          {
+            id: 'event-schema',
+            kind: 'model',
+            title: 'Event schema',
+            status: 'succeeded',
+            summary: 'Run, agent, step, artifact, and link records',
+            agentId: 'controller',
+            startedAt: now,
+            finishedAt: now
+          },
+          {
+            id: 'event-store',
+            kind: 'store',
+            title: 'JSONL event store',
+            status: 'running',
+            summary: 'Append-only run events for skills and adapters',
+            agentId: 'controller',
+            startedAt: now,
+            finishedAt: null
+          }
+        ],
+        artifacts: [],
+        links: taskID
+          ? [
+              {
+                kind: 'task',
+                label: taskID,
+                url: commandCenterTaskUrls[taskID]
+              }
+            ]
+          : [],
+        events: []
+      };
+    });
   }
 
   function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
@@ -1295,6 +1890,75 @@
     }
   }
 
+  function formatOrchestrationRunSummary(
+    runCount: number,
+    loadingRuns: boolean,
+    runError: string,
+    runSource: string
+  ) {
+    if (loadingRuns) return 'Reading orchestration events';
+    if (runError) return runError;
+    if (runCount === 0) return `No runs for this project · ${runSource}`;
+    return `${runCount} ${runCount === 1 ? 'run' : 'runs'} · ${runSource}`;
+  }
+
+  function orchestrationRunMatchesProject(run: OrchestrationRun, project: ProjectRoot) {
+    if (run.projectID && run.projectID === project.id) return true;
+    if (run.projectName === project.name) return true;
+    if (!run.projectPath) return true;
+
+    const runPath = normalizeProjectPath(run.projectPath);
+    const projectPath = normalizeProjectPath(project.path);
+    if (runPath === projectPath || runPath.startsWith(`${projectPath}/`)) return true;
+
+    return runPath.toLowerCase().includes(`/worktrees/${project.name.toLowerCase()}/`);
+  }
+
+  function orchestrationStatusClass(status: string) {
+    const normalized = status.toLowerCase();
+    if (normalized === 'failed' || normalized === 'cancelled' || normalized === 'blocked') return 'bad';
+    if (normalized === 'succeeded' || normalized === 'skipped') return 'good';
+    if (normalized === 'running') return 'live';
+    return 'idle';
+  }
+
+  function orchestrationRunTaskUrl(run: OrchestrationRun) {
+    return gitTaskUrl(run.taskID);
+  }
+
+  function orchestrationRunTimeLabel(run: OrchestrationRun) {
+    const value = run.updatedAt ?? run.startedAt;
+    if (!value) return 'unknown activity';
+    const numericValue = Number(value);
+    const date = Number.isFinite(numericValue) ? new Date(numericValue) : new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return formatRelativeAge(date.getTime());
+  }
+
+  function orchestrationRunTitle(run: OrchestrationRun) {
+    return [
+      run.title,
+      run.summary,
+      run.projectPath,
+      run.steps.map((step) => `${step.status}: ${step.title}`).join('\n')
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function orchestrationStepIconLabel(status: string) {
+    switch (orchestrationStatusClass(status)) {
+      case 'good':
+        return '✓';
+      case 'bad':
+        return '!';
+      case 'live':
+        return '…';
+      default:
+        return '•';
+    }
+  }
+
   function formatAgentSessionSummary(
     sessionCount: number,
     loadingSessions: boolean,
@@ -1328,6 +1992,17 @@
 
   function agentSessionResumeCommand(session: AgentSession) {
     return session.resumeCommands[0] ?? `${session.provider} resume ${session.id}`;
+  }
+
+  function agentSessionRowKey(session: AgentSession, index: number, scope: string) {
+    return [
+      scope,
+      session.provider,
+      session.id,
+      session.projectPath ?? '',
+      session.lastActivity ?? '',
+      index
+    ].join(':');
   }
 
   function runtimeContextUrl(context: RuntimeContext) {
@@ -1417,6 +2092,44 @@
     }
   }
 
+  async function loadSourceLspStatus(
+    nextPreview: SourcePreview | null = preview,
+    project: ProjectRoot = selectedProject
+  ) {
+    sourceLspStatus = null;
+    sourceLspStatusError = '';
+
+    if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) {
+      sourceLspStatusLoading = false;
+      return;
+    }
+
+    const expectedPath = nextPreview.path;
+    const expectedProjectPath = project.path;
+    sourceLspStatusLoading = true;
+
+    try {
+      const status = await readSourceLspStatusFromTauri(expectedProjectPath, nextPreview.language);
+      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+
+      sourceLspStatus = status;
+      if (!status) {
+        sourceLspStatusError = 'Browser preview LSP unavailable';
+      } else if (!status.available) {
+        sourceLspStatusError = status.reason ?? 'Language server unavailable';
+      }
+    } catch (lspStatusError) {
+      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+
+      sourceLspStatusError =
+        lspStatusError instanceof Error ? lspStatusError.message : 'Could not read LSP status';
+    } finally {
+      if (preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+        sourceLspStatusLoading = false;
+      }
+    }
+  }
+
   async function runGlobalSourceSearch() {
     const normalizedQuery = sourceSearchQuery.trim();
     sourceSearchError = '';
@@ -1477,8 +2190,8 @@
     sourceSearchLoading = false;
   }
 
-  async function runSourceDefinitionLookup(symbolName: string) {
-    const normalizedSymbolName = symbolName.trim();
+  async function runSourceDefinitionLookup(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
     sourceDefinitionQuery = normalizedSymbolName;
     sourceDefinitionError = '';
 
@@ -1491,11 +2204,24 @@
     sourceDefinitionLoading = true;
     fileActionStatus = `Looking up ${normalizedSymbolName}`;
     try {
-      const nativeTargets = await findSourceDefinitionsFromTauri(
-        records,
-        normalizedSymbolName,
-        maxSourceDefinitionResults
-      );
+      const lspTargets = preview
+        ? await findSourceLspDefinitionsFromTauri(
+            { ...preview, content: selectedSourceDraftContent },
+            {
+              root: selectedProject.path,
+              line: request.line,
+              column: request.column,
+              limit: maxSourceDefinitionResults
+            }
+          ).catch(() => null)
+        : null;
+      const nativeTargets = lspTargets?.length
+        ? lspTargets
+        : await findSourceDefinitionsFromTauri(
+            records,
+            normalizedSymbolName,
+            maxSourceDefinitionResults
+          );
       const nextTargets =
         nativeTargets ??
         findSourceDefinitionTargets(
@@ -1505,7 +2231,11 @@
         );
 
       sourceDefinitionTargets = nextTargets;
-      sourceDefinitionError = nativeTargets ? '' : 'Browser preview definitions';
+      sourceDefinitionError = lspTargets?.length
+        ? ''
+        : nativeTargets
+          ? ''
+          : 'Browser preview definitions';
 
       if (nextTargets.length === 0) {
         fileActionStatus = `No definition for ${normalizedSymbolName}`;
@@ -1555,8 +2285,8 @@
     sourceDefinitionQuery = '';
   }
 
-  async function runSourceReferenceLookup(symbolName: string) {
-    const normalizedSymbolName = symbolName.trim();
+  async function runSourceReferenceLookup(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
     sourceReferenceQuery = normalizedSymbolName;
     sourceReferenceError = '';
 
@@ -1569,19 +2299,38 @@
     sourceReferenceLoading = true;
     fileActionStatus = `Finding references for ${normalizedSymbolName}`;
     try {
-      const nativeTargets = await findSourceReferencesFromTauri(
-        records,
-        normalizedSymbolName,
-        maxSourceSearchResults
-      );
+      const lspTargets = preview
+        ? await findSourceLspReferencesFromTauri(
+            { ...preview, content: selectedSourceDraftContent },
+            {
+              root: selectedProject.path,
+              line: request.line,
+              column: request.column,
+              limit: maxSourceSearchResults
+            }
+          ).catch(() => null)
+        : null;
+      const nativeTargets = lspTargets?.length
+        ? lspTargets
+        : await findSourceReferencesFromTauri(
+            records,
+            normalizedSymbolName,
+            maxSourceSearchResults
+          );
       sourceReferenceTargets =
-        nativeTargets ??
-        findSourceReferenceTargets(
-          records.map((record) => demoPreviewFor(record)),
-          normalizedSymbolName,
-          maxSourceSearchResults
-        );
-      sourceReferenceError = nativeTargets ? '' : 'Browser preview references';
+        lspTargets?.length
+          ? lspTargets
+          : nativeTargets ??
+            findSourceReferenceTargets(
+              records.map((record) => demoPreviewFor(record)),
+              normalizedSymbolName,
+              maxSourceSearchResults
+            );
+      sourceReferenceError = lspTargets?.length
+        ? ''
+        : nativeTargets
+          ? ''
+          : 'Browser preview references';
       fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
     } catch (referenceError) {
       sourceReferenceTargets = findSourceReferenceTargets(
@@ -1679,6 +2428,9 @@
       const nextPreview = tauriPreview ?? demoPreviewFor(record);
       preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
+      void loadSourceLspStatus(nextPreview);
+      void loadSourceLspDiagnostics(nextPreview);
+      void loadSourceLspSymbols(nextPreview);
     } catch (previewError) {
       if (expectedScanGeneration !== null && expectedScanGeneration !== scanGeneration) return;
 
@@ -1687,6 +2439,9 @@
       const nextPreview = demoPreviewFor(record);
       preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
+      void loadSourceLspStatus(nextPreview);
+      void loadSourceLspDiagnostics(nextPreview);
+      void loadSourceLspSymbols(nextPreview);
     } finally {
       if (expectedScanGeneration === null || expectedScanGeneration === scanGeneration) {
         loading = false;
@@ -1716,10 +2471,122 @@
   }
 
   function handleWindowKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && commandPaletteVisible) {
+      event.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+
+    if (event.key === 'Escape' && viewMenuOpen) {
+      event.preventDefault();
+      closeViewMenu();
+      return;
+    }
+
+    if (event.key === 'Escape' && editorActionMenuOpen) {
+      event.preventDefault();
+      closeEditorActionMenu();
+      return;
+    }
+
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key.toLowerCase() === 'k' || (event.shiftKey && event.key.toLowerCase() === 'p'))
+    ) {
+      event.preventDefault();
+      openCommandPalette();
+      return;
+    }
+
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      if (selectedSourceDirty && fileActionBusy !== 'save') {
+        void saveSelectedSourceFile();
+      }
+      return;
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'p') {
       event.preventDefault();
       openQuickOpen();
     }
+  }
+
+  function toggleEditorActionMenu() {
+    editorActionMenuOpen = !editorActionMenuOpen;
+  }
+
+  function closeEditorActionMenu() {
+    editorActionMenuOpen = false;
+  }
+
+  function toggleViewMenu() {
+    viewMenuOpen = !viewMenuOpen;
+    closeEditorActionMenu();
+  }
+
+  function closeViewMenu() {
+    viewMenuOpen = false;
+  }
+
+  function openCommandPalette() {
+    commandPaletteVisible = true;
+    commandPaletteQuery = '';
+    commandPaletteIndex = 0;
+    closeViewMenu();
+    closeEditorActionMenu();
+    window.setTimeout(() => commandPaletteInput?.focus(), 0);
+  }
+
+  function closeCommandPalette() {
+    commandPaletteVisible = false;
+    commandPaletteQuery = '';
+    commandPaletteIndex = 0;
+  }
+
+  function commandPaletteTextMatches(
+    filter: string,
+    ...values: Array<string | number | boolean | null | undefined>
+  ) {
+    const normalizedFilter = filter.trim().toLowerCase();
+    if (!normalizedFilter) return true;
+
+    return values.some((value) => String(value ?? '').toLowerCase().includes(normalizedFilter));
+  }
+
+  function handleCommandPaletteKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      commandPaletteIndex = Math.min(commandPaletteIndex + 1, Math.max(0, commandPaletteResults.length - 1));
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      commandPaletteIndex = Math.max(commandPaletteIndex - 1, 0);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const selectedCommand = commandPaletteResults[commandPaletteIndex];
+      if (selectedCommand && !selectedCommand.disabled) {
+        void runCommandPaletteItem(selectedCommand);
+      }
+    }
+  }
+
+  async function runCommandPaletteItem(item: SourceCommandPaletteItem) {
+    if (item.disabled) return;
+
+    closeCommandPalette();
+    await item.perform();
   }
 
   function openQuickOpen() {
@@ -1727,6 +2594,19 @@
     quickOpenQuery = '';
     quickOpenIndex = 0;
     window.setTimeout(() => quickOpenInput?.focus(), 0);
+  }
+
+  function openCurrentFileGoToLine() {
+    if (!selectedRecord) return;
+
+    quickOpenVisible = true;
+    quickOpenQuery = `${selectedRecord.relativePath}:`;
+    quickOpenIndex = 0;
+    window.setTimeout(() => {
+      quickOpenInput?.focus();
+      const cursor = quickOpenQuery.length;
+      quickOpenInput?.setSelectionRange(cursor, cursor);
+    }, 0);
   }
 
   function closeQuickOpen() {
@@ -1980,6 +2860,46 @@
     }
   }
 
+  async function openAgentSessionTerminal(session: AgentSession) {
+    const command = agentSessionResumeCommand(session);
+    if (!command.trim()) return;
+
+    const path = session.projectPath ?? selectedProject.path;
+    fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const openedCommand = await openTerminalCommandFromTauri(path, command, sourceTerminalApp);
+      if (openedCommand) {
+        fileActionStatus = 'Opened terminal resume command';
+        return;
+      }
+
+      const openedPath = path.trim()
+        ? await openTerminalPathFromTauri(path, sourceTerminalApp)
+        : false;
+      await navigator.clipboard.writeText(command);
+      fileActionStatus = openedPath
+        ? 'Opened terminal and copied resume command'
+        : 'Resume command copied';
+    } catch (terminalError) {
+      try {
+        const openedPath = path.trim()
+          ? await openTerminalPathFromTauri(path, sourceTerminalApp)
+          : false;
+        await navigator.clipboard.writeText(command);
+        fileActionStatus = openedPath
+          ? 'Opened terminal and copied resume command'
+          : 'Resume command copied';
+      } catch {
+        error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal command';
+      }
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
   async function openSelectedFile() {
     if (!preview) return;
 
@@ -2064,13 +2984,21 @@
       ...sourceDraftContentByPath,
       [preview.path]: content
     };
+    scheduleSourceLspDiagnostics();
   }
 
-  function syncSourcePreviewContent(nextPreview: SourcePreview) {
+  function syncSourcePreviewContent(nextPreview: SourcePreview | null) {
+    if (!nextPreview) return;
+
     const existingDraft = sourceDraftContentByPath[nextPreview.path];
+    const existingSaved = savedSourceContentByPath[nextPreview.path];
+    const hasUnsavedDraft =
+      existingDraft !== undefined &&
+      existingSaved !== undefined &&
+      existingDraft !== existingSaved;
     sourceDraftContentByPath = {
       ...sourceDraftContentByPath,
-      [nextPreview.path]: existingDraft ?? nextPreview.content
+      [nextPreview.path]: hasUnsavedDraft ? existingDraft : nextPreview.content
     };
     savedSourceContentByPath = {
       ...savedSourceContentByPath,
@@ -2097,24 +3025,118 @@
 
   function resetSourceIntelligence() {
     sourceDiagnostics = [];
+    sourceLspDiagnostics = [];
     sourceSymbols = [];
     sourceIntelligenceCommand = null;
+    sourceLspStatus = null;
+    sourceLspStatusError = '';
+    sourceLspStatusLoading = false;
+    if (sourceLspDiagnosticsTimer !== null) {
+      window.clearTimeout(sourceLspDiagnosticsTimer);
+      sourceLspDiagnosticsTimer = null;
+    }
   }
 
   function handleEditorDiagnosticsChange(diagnostics: SourceDiagnostic[]) {
     sourceDiagnostics = diagnostics;
   }
 
+  function scheduleSourceLspDiagnostics() {
+    if (!preview || !sourceIntelligenceAvailable) return;
+    if (sourceLspDiagnosticsTimer !== null) {
+      window.clearTimeout(sourceLspDiagnosticsTimer);
+    }
+    sourceLspDiagnosticsTimer = window.setTimeout(() => {
+      sourceLspDiagnosticsTimer = null;
+      void loadSourceLspDiagnostics(preview);
+    }, 650);
+  }
+
+  async function loadSourceLspDiagnostics(
+    nextPreview: SourcePreview | null = preview,
+    project: ProjectRoot = selectedProject
+  ) {
+    if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) {
+      sourceLspDiagnostics = [];
+      return;
+    }
+
+    const expectedPath = nextPreview.path;
+    const expectedProjectPath = project.path;
+    const draftContent = sourceDraftContentByPath[nextPreview.path] ?? nextPreview.content;
+
+    try {
+      const diagnostics = await readSourceLspDiagnosticsFromTauri(
+        { ...nextPreview, content: draftContent },
+        {
+          root: project.path,
+          line: 1,
+          column: 1
+        }
+      );
+      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      sourceLspDiagnostics = diagnostics ?? [];
+    } catch {
+      if (preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+        sourceLspDiagnostics = [];
+      }
+    }
+  }
+
+  async function loadSourceLspSymbols(
+    nextPreview: SourcePreview | null = preview,
+    project: ProjectRoot = selectedProject
+  ) {
+    if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) return;
+
+    const expectedPath = nextPreview.path;
+    const expectedProjectPath = project.path;
+    const draftContent = sourceDraftContentByPath[nextPreview.path] ?? nextPreview.content;
+
+    try {
+      const symbols = await findSourceLspSymbolsFromTauri(
+        { ...nextPreview, content: draftContent },
+        {
+          root: project.path,
+          line: 1,
+          column: 1,
+          limit: 100
+        }
+      );
+      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (symbols?.length) sourceSymbols = symbols;
+    } catch {
+      // Parser-provided Monaco symbols stay in place when native LSP is unavailable.
+    }
+  }
+
   function handleEditorSymbolsChange(symbols: SourceSymbol[]) {
     sourceSymbols = symbols;
   }
 
-  function handleEditorDefinitionLookup(symbolName: string) {
-    void runSourceDefinitionLookup(symbolName);
+  function handleEditorDefinitionLookup(request: SourceEditorLookupRequest) {
+    void runSourceDefinitionLookup(request);
   }
 
-  function handleEditorReferenceLookup(symbolName: string) {
-    void runSourceReferenceLookup(symbolName);
+  async function handleEditorHoverLookup(request: SourceEditorLookupRequest): Promise<SourceLspHover | null> {
+    if (!preview || !sourceIntelligenceAvailable) return null;
+
+    try {
+      return await findSourceLspHoverFromTauri(
+        { ...preview, content: selectedSourceDraftContent },
+        {
+          root: selectedProject.path,
+          line: request.line,
+          column: request.column
+        }
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
+    void runSourceReferenceLookup(request);
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
@@ -2153,6 +3175,7 @@
     void loadProjectWorktrees(nextProject);
     void loadGitRepositorySummaries(projectOptions);
     void loadAgentSessions();
+    void loadOrchestrationRuns(projectOptions);
     await scanProject(nextProject, selectedSourcePaths[nextProject.id]);
     void indexProjectsInBackground(projectOptions);
   }
@@ -2171,17 +3194,23 @@
     sourceLayoutPreset = preset.id;
     sourceActivityMode = preset.activityMode;
     sidePaneWidth = clampSidePaneWidth(preset.sidePaneWidth);
+    sidePanePosition = preset.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(preset.editorInsightWidth);
+    editorInsightCollapsed = preset.editorInsightCollapsed;
     contextPanelCollapsed = preset.contextPanelCollapsed;
     contextPanelMode = preset.contextPanelMode;
+    contextPanelPlacement = preset.contextPanelPlacement;
     sourceIntelligencePanel = preset.intelligencePanel;
 
     persistSourceLayoutPreset(sourceLayoutPreset);
     persistSourceActivityMode(sourceActivityMode);
     persistSidePaneWidth(sidePaneWidth);
+    persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
+    persistEditorInsightCollapsed(editorInsightCollapsed);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
+    persistContextPanelPlacement(contextPanelPlacement);
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -2196,6 +3225,8 @@
         return 'Clipboard';
       case 'conversations':
         return 'Conversations';
+      case 'runs':
+        return 'Runs';
       case 'sessions':
         return 'Active sessions';
       case 'agents':
@@ -2216,6 +3247,8 @@
       case 'conversations':
       case 'agents':
         return filteredProjectAgentSessions.length;
+      case 'runs':
+        return filteredProjectOrchestrationRuns.length;
       case 'sessions':
         return filteredProjectRuntimeContexts.length;
       case 'worktrees':
@@ -2233,6 +3266,8 @@
         return 'Filter clipboard';
       case 'conversations':
         return 'Filter conversations';
+      case 'runs':
+        return 'Filter orchestration runs';
       case 'sessions':
         return 'Filter active sessions';
       case 'agents':
@@ -2263,6 +3298,8 @@
       case 'conversations':
       case 'agents':
         return agentSessionSummary;
+      case 'runs':
+        return orchestrationRunSummary;
       case 'sessions':
         return runtimeContextSummary;
       case 'worktrees':
@@ -2282,6 +3319,9 @@
       case 'conversations':
       case 'agents':
         void loadAgentSessions();
+        break;
+      case 'runs':
+        void loadOrchestrationRuns(projectOptions);
         break;
       case 'sessions':
         void loadRuntimeContexts(projectOptions);
@@ -2305,6 +3345,8 @@
       case 'conversations':
       case 'agents':
         return agentSessionsLoading;
+      case 'runs':
+        return orchestrationRunsLoading;
       case 'sessions':
         return runtimeContextsLoading;
       case 'worktrees':
@@ -2326,6 +3368,7 @@
       value === 'files' ||
       value === 'clipboard' ||
       value === 'conversations' ||
+      value === 'runs' ||
       value === 'sessions' ||
       value === 'agents' ||
       value === 'worktrees' ||
@@ -2361,10 +3404,10 @@
   }
 
   function loadStoredSourceLayoutPreset(): SourceLayoutPresetID {
-    if (typeof window === 'undefined') return 'review';
+    if (typeof window === 'undefined') return 'code';
 
     const storedPreset = window.localStorage.getItem(sourceLayoutPresetStorageKey);
-    return isSourceLayoutPresetID(storedPreset) ? storedPreset : 'review';
+    return isSourceLayoutPresetID(storedPreset) ? storedPreset : 'code';
   }
 
   function isSourceLayoutPresetID(value: unknown): value is SourceLayoutPresetID {
@@ -2372,6 +3415,7 @@
       value === 'review' ||
       value === 'code' ||
       value === 'git' ||
+      value === 'runs' ||
       value === 'sessions' ||
       value === 'custom'
     );
@@ -2380,6 +3424,16 @@
   function persistSourceLayoutPreset(presetID: SourceLayoutPresetID) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutPresetStorageKey, presetID);
+  }
+
+  function shouldMigrateSourceLayout() {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(sourceLayoutVersionStorageKey) !== sourceLayoutVersion;
+  }
+
+  function persistSourceLayoutVersion() {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceLayoutVersionStorageKey, sourceLayoutVersion);
   }
 
   function loadStoredSourceTerminalApp(): SourceTerminalApp {
@@ -2404,6 +3458,29 @@
   function persistSourceTerminalApp(app: SourceTerminalApp) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceTerminalAppStorageKey, app);
+  }
+
+  function loadStoredSidePanePosition(): SourceSidePanePosition {
+    if (typeof window === 'undefined') return 'left';
+
+    const storedPosition = window.localStorage.getItem(sidePanePositionStorageKey);
+    return isSidePanePosition(storedPosition) ? storedPosition : 'left';
+  }
+
+  function isSidePanePosition(value: unknown): value is SourceSidePanePosition {
+    return value === 'left' || value === 'right';
+  }
+
+  function selectSidePanePosition(position: SourceSidePanePosition) {
+    markSourceLayoutCustom();
+    sidePanePosition = position;
+    persistSidePanePosition(position);
+    window.setTimeout(measureFileTreeViewport, 0);
+  }
+
+  function persistSidePanePosition(position: SourceSidePanePosition) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sidePanePositionStorageKey, position);
   }
 
   function loadStoredSidePaneWidth() {
@@ -2434,7 +3511,10 @@
     window.document.body.classList.add('resizing-source-pane');
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      sidePaneWidth = clampSidePaneWidth(startWidth + moveEvent.clientX - startX);
+      const delta = sidePanePosition === 'left'
+        ? moveEvent.clientX - startX
+        : startX - moveEvent.clientX;
+      sidePaneWidth = clampSidePaneWidth(startWidth + delta);
       window.setTimeout(measureFileTreeViewport, 0);
     };
     const finishResize = () => {
@@ -2456,7 +3536,8 @@
     event.preventDefault();
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
-    sidePaneWidth = clampSidePaneWidth(sidePaneWidth + direction * 24);
+    const signedDirection = sidePanePosition === 'left' ? direction : -direction;
+    sidePaneWidth = clampSidePaneWidth(sidePaneWidth + signedDirection * 24);
     persistSidePaneWidth(sidePaneWidth);
     window.setTimeout(measureFileTreeViewport, 0);
   }
@@ -2467,10 +3548,90 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
   }
 
+  function toggleEditorInsightCollapsed() {
+    markSourceLayoutCustom();
+    editorInsightCollapsed = !editorInsightCollapsed;
+    persistEditorInsightCollapsed(editorInsightCollapsed);
+  }
+
+  function showEditorInsightPanel(panel: SourceIntelligencePanel) {
+    markSourceLayoutCustom();
+    sourceIntelligencePanel = panel;
+    editorInsightCollapsed = false;
+    persistEditorInsightCollapsed(editorInsightCollapsed);
+  }
+
+  function clearSourceLookupResults() {
+    sourceDefinitionTargets = [];
+    sourceDefinitionQuery = '';
+    sourceDefinitionError = '';
+    sourceReferenceTargets = [];
+    sourceReferenceQuery = '';
+    sourceReferenceError = '';
+  }
+
+  function isContextCardVisible(cardID: SourceContextCardID) {
+    return !hiddenContextCardIDs.has(cardID);
+  }
+
+  function visibleContextCardIDs() {
+    return contextCardOrder.filter(isContextCardVisible);
+  }
+
+  function activeVisibleContextCardID() {
+    const visibleCardIDs = visibleContextCardIDs();
+    return visibleCardIDs.includes(activeContextCardID) ? activeContextCardID : (visibleCardIDs[0] ?? null);
+  }
+
+  function shouldRenderContextCard(cardID: SourceContextCardID) {
+    if (!isContextCardVisible(cardID)) return false;
+    return contextPanelMode !== 'stack' || activeVisibleContextCardID() === cardID;
+  }
+
+  function selectActiveContextCard(cardID: SourceContextCardID) {
+    markSourceLayoutCustom();
+    activeContextCardID = cardID;
+    persistActiveContextCard(cardID);
+  }
+
+  function hideContextCard(cardID: SourceContextCardID) {
+    markSourceLayoutCustom();
+    const nextCardIDs = new Set(hiddenContextCardIDs);
+    nextCardIDs.add(cardID);
+    hiddenContextCardIDs = nextCardIDs;
+    persistHiddenContextCards(nextCardIDs);
+  }
+
+  function showAllContextCards() {
+    markSourceLayoutCustom();
+    hiddenContextCardIDs = new Set();
+    persistHiddenContextCards(hiddenContextCardIDs);
+    contextPanelCollapsed = false;
+    persistContextPanelCollapsed(contextPanelCollapsed);
+  }
+
+  function showContextCard(cardID: SourceContextCardID) {
+    markSourceLayoutCustom();
+    const nextCardIDs = new Set(hiddenContextCardIDs);
+    nextCardIDs.delete(cardID);
+    hiddenContextCardIDs = nextCardIDs;
+    activeContextCardID = cardID;
+    contextPanelCollapsed = false;
+    persistHiddenContextCards(nextCardIDs);
+    persistActiveContextCard(cardID);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+  }
+
   function selectContextPanelMode(mode: SourceContextPanelMode) {
     markSourceLayoutCustom();
     contextPanelMode = mode;
     persistContextPanelMode(mode);
+  }
+
+  function selectContextPanelPlacement(placement: SourceContextPanelPlacement) {
+    markSourceLayoutCustom();
+    contextPanelPlacement = placement;
+    persistContextPanelPlacement(placement);
   }
 
   function loadStoredContextPanelCollapsed() {
@@ -2499,6 +3660,65 @@
     window.localStorage.setItem(contextPanelModeStorageKey, mode);
   }
 
+  function loadStoredContextPanelPlacement(): SourceContextPanelPlacement {
+    if (typeof window === 'undefined') return 'top';
+
+    const storedPlacement = window.localStorage.getItem(contextPanelPlacementStorageKey);
+    return isContextPanelPlacement(storedPlacement) ? storedPlacement : 'top';
+  }
+
+  function isContextPanelPlacement(value: unknown): value is SourceContextPanelPlacement {
+    return value === 'top' || value === 'side';
+  }
+
+  function persistContextPanelPlacement(placement: SourceContextPanelPlacement) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(contextPanelPlacementStorageKey, placement);
+  }
+
+  function loadStoredHiddenContextCards(): Set<SourceContextCardID> {
+    if (typeof window === 'undefined') return new Set();
+
+    const storedCards = window.localStorage.getItem(hiddenContextCardsStorageKey);
+    if (!storedCards) return new Set();
+
+    try {
+      const parsedCards = JSON.parse(storedCards);
+      if (!Array.isArray(parsedCards)) return new Set();
+
+      return new Set(parsedCards.filter(isSourceContextCardID));
+    } catch {
+      return new Set();
+    }
+  }
+
+  function isSourceContextCardID(value: unknown): value is SourceContextCardID {
+    return (
+      value === 'orchestration' ||
+      value === 'runtime' ||
+      value === 'agents' ||
+      value === 'worktrees' ||
+      value === 'repo'
+    );
+  }
+
+  function persistHiddenContextCards(cardIDs: Set<SourceContextCardID>) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(hiddenContextCardsStorageKey, JSON.stringify([...cardIDs]));
+  }
+
+  function loadStoredActiveContextCard(): SourceContextCardID {
+    if (typeof window === 'undefined') return 'orchestration';
+
+    const storedCardID = window.localStorage.getItem(activeContextCardStorageKey);
+    return isSourceContextCardID(storedCardID) ? storedCardID : 'orchestration';
+  }
+
+  function persistActiveContextCard(cardID: SourceContextCardID) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(activeContextCardStorageKey, cardID);
+  }
+
   function loadStoredEditorInsightWidth() {
     if (typeof window === 'undefined') return editorInsightDefaultWidth;
 
@@ -2510,6 +3730,16 @@
   function persistEditorInsightWidth(width: number) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(editorInsightWidthStorageKey, String(clampEditorInsightWidth(width)));
+  }
+
+  function loadStoredEditorInsightCollapsed() {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(editorInsightCollapsedStorageKey) === 'true';
+  }
+
+  function persistEditorInsightCollapsed(collapsed: boolean) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(editorInsightCollapsedStorageKey, collapsed ? 'true' : 'false');
   }
 
   function clampEditorInsightWidth(width: number) {
@@ -2524,6 +3754,8 @@
     const startWidth = editorInsightWidth;
     event.preventDefault();
     markSourceLayoutCustom();
+    editorInsightCollapsed = false;
+    persistEditorInsightCollapsed(editorInsightCollapsed);
     window.document.body.classList.add('resizing-editor-insight');
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
@@ -2547,9 +3779,64 @@
 
     event.preventDefault();
     markSourceLayoutCustom();
+    editorInsightCollapsed = false;
+    persistEditorInsightCollapsed(editorInsightCollapsed);
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
     persistEditorInsightWidth(editorInsightWidth);
+  }
+
+  function loadStoredContextPaneWidth() {
+    if (typeof window === 'undefined') return contextPaneDefaultWidth;
+
+    const storedWidth = window.localStorage.getItem(contextPaneWidthStorageKey);
+    if (storedWidth === null) return contextPaneDefaultWidth;
+    return clampContextPaneWidth(Number(storedWidth));
+  }
+
+  function persistContextPaneWidth(width: number) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(contextPaneWidthStorageKey, String(clampContextPaneWidth(width)));
+  }
+
+  function clampContextPaneWidth(width: number) {
+    if (!Number.isFinite(width)) return contextPaneDefaultWidth;
+    return Math.min(contextPaneMaxWidth, Math.max(contextPaneMinWidth, Math.round(width)));
+  }
+
+  function beginContextPaneResize(event: PointerEvent) {
+    if (event.button !== 0 || typeof window === 'undefined') return;
+
+    const startX = event.clientX;
+    const startWidth = contextPaneWidth;
+    event.preventDefault();
+    markSourceLayoutCustom();
+    window.document.body.classList.add('resizing-context-pane');
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      contextPaneWidth = clampContextPaneWidth(startWidth - (moveEvent.clientX - startX));
+    };
+    const finishResize = () => {
+      persistContextPaneWidth(contextPaneWidth);
+      window.document.body.classList.remove('resizing-context-pane');
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+  }
+
+  function handleContextPaneResizerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+
+    event.preventDefault();
+    markSourceLayoutCustom();
+    const direction = event.key === 'ArrowLeft' ? 1 : -1;
+    contextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
+    persistContextPaneWidth(contextPaneWidth);
   }
 
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
@@ -2986,10 +4273,19 @@
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSourceTerminalApp = loadStoredSourceTerminalApp();
+    const storedSidePanePosition = loadStoredSidePanePosition();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
+    const storedEditorInsightCollapsed = loadStoredEditorInsightCollapsed();
+    const storedContextPaneWidth = loadStoredContextPaneWidth();
     const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
     const storedContextPanelMode = loadStoredContextPanelMode();
+    const storedContextPanelPlacement = loadStoredContextPanelPlacement();
+    const storedHiddenContextCardIDs = loadStoredHiddenContextCards();
+    const storedActiveContextCardID = loadStoredActiveContextCard();
+    const migrateSourceLayout = shouldMigrateSourceLayout();
+    const compactPreset =
+      sourceLayoutPresets.find((preset) => preset.id === 'code') ?? sourceLayoutPresets[0];
     const storedProject =
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
@@ -3000,15 +4296,33 @@
     recentSourceRecords = storedRecentSourceRecords;
     openSourceTabs = storedOpenSourceTabs;
     selectedProjectID = storedProject.id;
-    sourceActivityMode = storedSourceActivityMode;
+    sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
-    sourceLayoutPreset = storedSourceLayoutPreset;
+    sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceTerminalApp = storedSourceTerminalApp;
-    sidePaneWidth = storedSidePaneWidth;
-    editorInsightWidth = storedEditorInsightWidth;
-    contextPanelCollapsed = storedContextPanelCollapsed;
-    contextPanelMode = storedContextPanelMode;
+    sidePanePosition = migrateSourceLayout ? compactPreset.sidePanePosition : storedSidePanePosition;
+    sidePaneWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneWidth;
+    editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
+    editorInsightCollapsed = migrateSourceLayout ? compactPreset.editorInsightCollapsed : storedEditorInsightCollapsed;
+    contextPaneWidth = storedContextPaneWidth;
+    contextPanelCollapsed = migrateSourceLayout ? compactPreset.contextPanelCollapsed : storedContextPanelCollapsed;
+    contextPanelMode = migrateSourceLayout ? compactPreset.contextPanelMode : storedContextPanelMode;
+    contextPanelPlacement = migrateSourceLayout ? compactPreset.contextPanelPlacement : storedContextPanelPlacement;
+    hiddenContextCardIDs = storedHiddenContextCardIDs;
+    activeContextCardID = storedActiveContextCardID;
     persistSelectedProjectID(storedProject.id);
+    if (migrateSourceLayout) {
+      persistSourceLayoutPreset(sourceLayoutPreset);
+      persistSourceActivityMode(sourceActivityMode);
+      persistSidePanePosition(sidePanePosition);
+      persistSidePaneWidth(sidePaneWidth);
+      persistEditorInsightWidth(editorInsightWidth);
+      persistEditorInsightCollapsed(editorInsightCollapsed);
+      persistContextPanelCollapsed(contextPanelCollapsed);
+      persistContextPanelMode(contextPanelMode);
+      persistContextPanelPlacement(contextPanelPlacement);
+    }
+    persistSourceLayoutVersion();
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
     void loadGitCommitHistory(storedProject);
@@ -3016,6 +4330,7 @@
     void loadProjectWorktrees(storedProject);
     void loadGitRepositorySummaries(storedProjectOptions);
     void loadAgentSessions();
+    void loadOrchestrationRuns(storedProjectOptions);
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
       indexProjectsInBackground(storedProjectOptions)
     );
@@ -3032,7 +4347,11 @@
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
-<main class="shell" style={`--side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px`}>
+<main
+  class="shell"
+  class:side-right={sidePanePosition === 'right'}
+  style={`--side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px`}
+>
   <aside class="activity-shell" aria-label="Workspace browser">
     <nav class="activity-rail" aria-label="Workspace views">
       <button
@@ -3067,6 +4386,17 @@
         <History size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Conversations</span>
         <strong>{sourceActivityCount('conversations')}</strong>
+      </button>
+      <button
+        class:active={sourceActivityMode === 'runs'}
+        type="button"
+        aria-label="Runs"
+        title="Runs"
+        onclick={() => selectSourceActivityMode('runs')}
+      >
+        <Network size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Runs</span>
+        <strong>{sourceActivityCount('runs')}</strong>
       </button>
       <button
         class:active={sourceActivityMode === 'sessions'}
@@ -3476,12 +4806,96 @@
             />
           </label>
 
-          {#if sourceActivityMode === 'conversations'}
+          {#if sourceActivityMode === 'runs'}
+          <div class="activity-panel-list" aria-label="Orchestration run list">
+            {#if filteredProjectOrchestrationRuns.length === 0}
+              <div class="activity-empty">No orchestration runs</div>
+            {:else}
+              {#each filteredProjectOrchestrationRuns as run (run.id)}
+                <div
+                  class="activity-run-row"
+                  class:bad={orchestrationStatusClass(run.status) === 'bad'}
+                  class:live={orchestrationStatusClass(run.status) === 'live'}
+                  title={orchestrationRunTitle(run)}
+                >
+                  <div class="run-row-heading">
+                    <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
+                    {#if run.taskID && orchestrationRunTaskUrl(run)}
+                      <a
+                        class="repo-task-link"
+                        href={orchestrationRunTaskUrl(run) ?? ''}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {run.taskID}
+                      </a>
+                    {/if}
+                  </div>
+                  <div class="activity-row-main">
+                    <strong>{run.title}</strong>
+                    <small>{run.phase} · {run.rootLabel} · {orchestrationRunTimeLabel(run)}</small>
+                  </div>
+                  <div class="run-progress-track" aria-label={`Run progress ${run.progress}%`}>
+                    <span style={`width: ${Math.max(0, Math.min(100, run.progress))}%`}></span>
+                  </div>
+                  <div class="run-metrics-row" aria-label="Run metrics">
+                    <span>{run.agents.length} agents</span>
+                    <span>{run.steps.length} steps</span>
+                    <span>{run.artifacts.length} artifacts</span>
+                  </div>
+                  {#if run.steps.length > 0}
+                    <div class="run-step-list" aria-label="Run steps">
+                      {#each run.steps.slice(0, 4) as step (step.id)}
+                        <div class="run-step-row">
+                          <span class={`run-step-marker ${orchestrationStatusClass(step.status)}`}>
+                            {orchestrationStepIconLabel(step.status)}
+                          </span>
+                          <div>
+                            <strong>{step.title}</strong>
+                            <small>{step.kind} · {step.summary}</small>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                  <div class="activity-row-actions" aria-label="Run actions">
+                    <button
+                      type="button"
+                      aria-label="Copy run id"
+                      title="Copy run id"
+                      onclick={() => copyActivityCommand(run.id, 'Run id copied')}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    {#if run.projectPath}
+                      <button
+                        type="button"
+                        aria-label="Open run project path"
+                        title="Open project path"
+                        onclick={() => openActivityPath(run.projectPath)}
+                      >
+                        <ExternalLink size={12} strokeWidth={2} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Open run project in terminal"
+                        title="Open project in terminal"
+                        onclick={() => openActivityTerminalPath(run.projectPath)}
+                      >
+                        <Terminal size={12} strokeWidth={2} />
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {:else if sourceActivityMode === 'conversations'}
           <div class="activity-panel-list" aria-label="Conversation list">
             {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No conversations</div>
             {:else}
-              {#each filteredProjectAgentSessions as session (`conversation:${session.provider}:${session.id}`)}
+              {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -3506,14 +4920,14 @@
                       >
                         <ExternalLink size={12} strokeWidth={2} />
                       </button>
-                      <button
-                        type="button"
-                        aria-label="Open agent project in terminal"
-                        title="Open project in terminal"
-                        onclick={() => openActivityTerminalPath(session.projectPath ?? '')}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+	                      <button
+	                        type="button"
+	                        aria-label="Resume agent in terminal"
+	                        title="Resume in terminal"
+	                        onclick={() => openAgentSessionTerminal(session)}
+	                      >
+	                        <Terminal size={12} strokeWidth={2} />
+	                      </button>
                     {/if}
                   </div>
                 </div>
@@ -3577,7 +4991,7 @@
             {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No agents</div>
             {:else}
-              {#each filteredProjectAgentSessions as session (`agent:${session.provider}:${session.id}`)}
+              {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'agent'))}
                 <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -3602,14 +5016,14 @@
                       >
                         <FolderSearch size={12} strokeWidth={2} />
                       </button>
-                      <button
-                        type="button"
-                        aria-label="Open agent project in terminal"
-                        title="Open project in terminal"
-                        onclick={() => openActivityTerminalPath(session.projectPath ?? '')}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+	                      <button
+	                        type="button"
+	                        aria-label="Resume agent in terminal"
+	                        title="Resume in terminal"
+	                        onclick={() => openAgentSessionTerminal(session)}
+	                      >
+	                        <Terminal size={12} strokeWidth={2} />
+	                      </button>
                     {/if}
                   </div>
                 </div>
@@ -3786,82 +5200,173 @@
     onkeydown={handleSidePaneResizerKeydown}
   ></button>
 
-  <section class="workspace" aria-label="Source preview">
+  <section
+    class="workspace"
+    class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}
+    aria-label="Source preview"
+  >
     <header class="topbar">
       <div>
         <p class="eyebrow">Source Preview</p>
         <h2>{preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="topbar-tools">
-        <div class="layout-preset-group" role="group" aria-label="Workspace layout presets">
-          {#each sourceLayoutPresets as preset (preset.id)}
-            <button
-              class:active={sourceLayoutPreset === preset.id}
-              type="button"
-              aria-label={`Use ${preset.label} layout`}
-              aria-pressed={sourceLayoutPreset === preset.id}
-              title={preset.title}
-              onclick={() => applySourceLayoutPreset(preset.id)}
-            >
-              {preset.label}
-            </button>
-          {/each}
-        </div>
-        <label class="terminal-picker" title={`Open directories in ${sourceTerminalApp}`}>
-          <Terminal size={13} strokeWidth={2} />
-          <select
-            bind:value={sourceTerminalApp}
-            aria-label="Terminal app"
-            onchange={selectSourceTerminalApp}
-          >
-            {#each sourceTerminalApps as app (app)}
-              <option value={app}>{app}</option>
-            {/each}
-          </select>
-        </label>
-        <div class="status-strip">
+        <button
+          class="topbar-command-button"
+          type="button"
+          aria-label="Open command palette"
+          title="Command palette (Cmd+K)"
+          onclick={openCommandPalette}
+        >
+          <Search size={13} strokeWidth={2} />
+          <span>Cmd+K</span>
+        </button>
+
+        <div class="view-menu-anchor">
           <button
-            class="workspace-context-toggle"
+            class="topbar-command-button view-menu-button"
             type="button"
-            aria-label="Toggle workspace context cards"
-            title={contextPanelCollapsed ? 'Show workspace context cards' : 'Hide workspace context cards'}
-            onclick={toggleContextPanelCollapsed}
+            aria-label="View menu"
+            aria-haspopup="menu"
+            aria-expanded={viewMenuOpen}
+            title="View menu"
+            onclick={toggleViewMenu}
           >
-            {#if contextPanelCollapsed}
-              <ChevronDown size={13} strokeWidth={2} />
-              <span>Context</span>
-            {:else}
-              <ChevronRight size={13} strokeWidth={2} />
-              <span>Context</span>
-            {/if}
+            <MoreHorizontal size={15} strokeWidth={2} />
+            <span>View</span>
           </button>
-          <div class="context-mode-group" role="group" aria-label="Context card layout">
-            <button
-              class:active={contextPanelMode === 'grid'}
-              type="button"
-              aria-label="Use grid context cards"
-              aria-pressed={contextPanelMode === 'grid'}
-              title="Grid context cards"
-              onclick={() => selectContextPanelMode('grid')}
-            >
-              Grid
-            </button>
-            <button
-              class:active={contextPanelMode === 'stack'}
-              type="button"
-              aria-label="Use stacked context cards"
-              aria-pressed={contextPanelMode === 'stack'}
-              title="Stack context cards"
-              onclick={() => selectContextPanelMode('stack')}
-            >
-              Stack
-            </button>
-          </div>
-          <span class="project-git-pill" title={projectGitSummary}>{projectGitSummary}</span>
-          <span>{runtime}</span>
-          {#if preview}
-            <span>{preview.language}</span>
-            <span>{preview.lineCount} lines</span>
+
+          {#if viewMenuOpen}
+            <div class="view-menu" role="menu" aria-label="View options">
+              <section class="view-menu-section" aria-label="Workspace layout presets">
+                <span>Layout</span>
+                <div class="view-menu-button-grid">
+                  {#each sourceLayoutPresets as preset (preset.id)}
+                    <button
+                      class:active={sourceLayoutPreset === preset.id}
+                      type="button"
+                      role="menuitem"
+                      aria-label={`Use ${preset.label} layout`}
+                      title={preset.title}
+                      onclick={() => {
+                        applySourceLayoutPreset(preset.id);
+                        closeViewMenu();
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  {/each}
+                </div>
+              </section>
+
+              <section class="view-menu-section" aria-label="Side pane position">
+                <span>Explorer</span>
+                <div class="view-menu-button-grid two">
+                  <button
+                    class:active={sidePanePosition === 'left'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Put side pane on the left"
+                    onclick={() => {
+                      selectSidePanePosition('left');
+                      closeViewMenu();
+                    }}
+                  >
+                    Left
+                  </button>
+                  <button
+                    class:active={sidePanePosition === 'right'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Put side pane on the right"
+                    onclick={() => {
+                      selectSidePanePosition('right');
+                      closeViewMenu();
+                    }}
+                  >
+                    Right
+                  </button>
+                </div>
+              </section>
+
+              <section class="view-menu-section" aria-label="Context card layout">
+                <span>Context</span>
+                <div class="view-menu-button-grid two">
+                  <button
+                    class:active={contextPanelPlacement === 'top'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Put context above editor"
+                    onclick={() => {
+                      selectContextPanelPlacement('top');
+                      closeViewMenu();
+                    }}
+                  >
+                    Top
+                  </button>
+                  <button
+                    class:active={contextPanelPlacement === 'side'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Put context beside editor"
+                    onclick={() => {
+                      selectContextPanelPlacement('side');
+                      closeViewMenu();
+                    }}
+                  >
+                    Side
+                  </button>
+                  <button
+                    class:active={contextPanelMode === 'grid'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Use grid context cards"
+                    onclick={() => {
+                      selectContextPanelMode('grid');
+                      closeViewMenu();
+                    }}
+                  >
+                    Grid
+                  </button>
+                  <button
+                    class:active={contextPanelMode === 'stack'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Use stacked context cards"
+                    onclick={() => {
+                      selectContextPanelMode('stack');
+                      closeViewMenu();
+                    }}
+                  >
+                    Stack
+                  </button>
+                </div>
+                <button
+                  class="view-menu-wide-button"
+                  type="button"
+                  role="menuitem"
+                  onclick={() => {
+                    toggleContextPanelCollapsed();
+                    closeViewMenu();
+                  }}
+                >
+                  {contextPanelCollapsed ? 'Show context cards' : 'Hide context cards'}
+                </button>
+              </section>
+
+              <label class="view-terminal-picker" title={`Open directories in ${sourceTerminalApp}`}>
+                <span>Terminal</span>
+                <select
+                  bind:value={sourceTerminalApp}
+                  aria-label="Terminal app"
+                  onchange={selectSourceTerminalApp}
+                >
+                  {#each sourceTerminalApps as app (app)}
+                    <option value={app}>{app}</option>
+                  {/each}
+                </select>
+              </label>
+            </div>
           {/if}
         </div>
       </div>
@@ -3886,23 +5391,104 @@
       </div>
     </div>
 
+    <div
+      class="workspace-arrangement"
+      class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}
+    >
+      <div class="workspace-context-column">
     <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextPanelMode === 'stack'}>
+      {#if hiddenContextCardIDs.size > 0}
+        <button class="context-restore-button" type="button" onclick={showAllContextCards}>
+          Show hidden cards
+        </button>
+      {/if}
+      {#if contextPanelMode === 'stack' && visibleContextCards.length > 0}
+        <div class="context-stack-tabs" aria-label="Context card tabs">
+          {#each visibleContextCards as cardID (cardID)}
+            <button
+              class:active={activeContextCard === cardID}
+              type="button"
+              aria-label={`Show ${contextCardLabels[cardID]} context`}
+              title={contextCardLabels[cardID]}
+              onclick={() => selectActiveContextCard(cardID)}
+            >
+              {contextCardLabels[cardID]}
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if shouldRenderContextCard('orchestration')}
+      <section class="orchestration-context-panel" aria-label="Orchestration runs">
+        <div class="orchestration-context-header">
+          <div>
+            <strong>Orchestration Runs</strong>
+            <span>{orchestrationRunSummary}</span>
+          </div>
+          <div class="context-card-actions">
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Refresh orchestration runs"
+              title="Refresh orchestration runs"
+              disabled={orchestrationRunsLoading}
+              onclick={() => loadOrchestrationRuns(projectOptions)}
+            >
+              <RefreshCw size={14} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button context-card-close"
+              type="button"
+              aria-label="Hide orchestration runs"
+              title="Hide orchestration runs"
+              onclick={() => hideContextCard('orchestration')}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
+        </div>
+        {#if selectedProjectOrchestrationRuns.length > 0}
+          <div class="orchestration-context-list">
+            {#each selectedProjectOrchestrationRuns.slice(0, 3) as run (run.id)}
+              <div class="orchestration-context-row" class:bad={orchestrationStatusClass(run.status) === 'bad'}>
+                <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
+                <strong>{run.title}</strong>
+                <span>{run.phase} · {run.progress}%</span>
+                <small>{run.steps.length} steps · {run.agents.length} agents</small>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </section>
+      {/if}
+
+      {#if shouldRenderContextCard('runtime')}
       <section class="runtime-context-panel" aria-label="Runtime contexts">
         <div class="runtime-context-header">
           <div>
             <strong>Runtime Contexts</strong>
             <span>{runtimeContextSummary}</span>
           </div>
-          <button
-            class="file-action-button"
-            type="button"
-            aria-label="Refresh runtime contexts"
-            title="Refresh runtime contexts"
-            disabled={runtimeContextsLoading}
-            onclick={() => loadRuntimeContexts(projectOptions)}
-          >
-            <RefreshCw size={14} strokeWidth={1.9} />
-          </button>
+          <div class="context-card-actions">
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Refresh runtime contexts"
+              title="Refresh runtime contexts"
+              disabled={runtimeContextsLoading}
+              onclick={() => loadRuntimeContexts(projectOptions)}
+            >
+              <RefreshCw size={14} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button context-card-close"
+              type="button"
+              aria-label="Hide runtime contexts"
+              title="Hide runtime contexts"
+              onclick={() => hideContextCard('runtime')}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         {#if selectedProjectRuntimeContexts.length > 0}
           <div class="runtime-context-list">
@@ -3927,27 +5513,40 @@
           </div>
         {/if}
       </section>
+      {/if}
 
+      {#if shouldRenderContextCard('agents')}
       <section class="agent-session-panel" aria-label="Agent sessions">
         <div class="agent-session-header">
           <div>
             <strong>Agent Sessions</strong>
             <span>{agentSessionSummary}</span>
           </div>
-          <button
-            class="file-action-button"
-            type="button"
-            aria-label="Refresh agent sessions"
-            title="Refresh agent sessions"
-            disabled={agentSessionsLoading}
-            onclick={loadAgentSessions}
-          >
-            <RefreshCw size={14} strokeWidth={1.9} />
-          </button>
+          <div class="context-card-actions">
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Refresh agent sessions"
+              title="Refresh agent sessions"
+              disabled={agentSessionsLoading}
+              onclick={loadAgentSessions}
+            >
+              <RefreshCw size={14} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button context-card-close"
+              type="button"
+              aria-label="Hide agent sessions"
+              title="Hide agent sessions"
+              onclick={() => hideContextCard('agents')}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         {#if selectedProjectAgentSessions.length > 0}
           <div class="agent-session-list">
-            {#each selectedProjectAgentSessions as session (`${session.provider}:${session.id}`)}
+            {#each selectedProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'context'))}
               <div class="agent-session-row" title={agentSessionResumeCommand(session)}>
                 <span class="agent-provider-badge">{session.provider}</span>
                 <strong>{session.title}</strong>
@@ -3958,23 +5557,36 @@
           </div>
         {/if}
       </section>
+      {/if}
 
+      {#if shouldRenderContextCard('worktrees')}
       <section class="worktree-context-panel" aria-label="Worktree safety">
         <div class="worktree-context-header">
           <div>
             <strong>Worktree Safety</strong>
             <span>{projectWorktreeSummary}</span>
           </div>
-          <button
-            class="file-action-button"
-            type="button"
-            aria-label="Refresh worktrees"
-            title="Refresh worktrees"
-            disabled={projectWorktreesLoading}
-            onclick={() => loadProjectWorktrees(selectedProject)}
-          >
-            <RefreshCw size={14} strokeWidth={1.9} />
-          </button>
+          <div class="context-card-actions">
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Refresh worktrees"
+              title="Refresh worktrees"
+              disabled={projectWorktreesLoading}
+              onclick={() => loadProjectWorktrees(selectedProject)}
+            >
+              <RefreshCw size={14} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button context-card-close"
+              type="button"
+              aria-label="Hide worktree safety"
+              title="Hide worktree safety"
+              onclick={() => hideContextCard('worktrees')}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         {#if projectWorktrees.length > 0}
           <div class="worktree-context-list">
@@ -4002,23 +5614,36 @@
           </div>
         {/if}
       </section>
+      {/if}
 
+      {#if shouldRenderContextCard('repo')}
       <section class="repo-dashboard-panel" aria-label="Repository dashboard">
         <div class="repo-dashboard-header">
           <div>
             <strong>Repo Dashboard</strong>
             <span>{repoDashboardSummary}</span>
           </div>
-          <button
-            class="file-action-button"
-            type="button"
-            aria-label="Refresh repository dashboard"
-            title="Refresh repository dashboard"
-            disabled={gitRepositorySummariesLoading}
-            onclick={() => loadGitRepositorySummaries(projectOptions)}
-          >
-            <RefreshCw size={14} strokeWidth={1.9} />
-          </button>
+          <div class="context-card-actions">
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Refresh repository dashboard"
+              title="Refresh repository dashboard"
+              disabled={gitRepositorySummariesLoading}
+              onclick={() => loadGitRepositorySummaries(projectOptions)}
+            >
+              <RefreshCw size={14} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button context-card-close"
+              type="button"
+              aria-label="Hide repository dashboard"
+              title="Hide repository dashboard"
+              onclick={() => hideContextCard('repo')}
+            >
+              <X size={13} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         {#if gitRepositorySummaries.length > 0}
           <div class="repo-dashboard-list">
@@ -4058,7 +5683,20 @@
           </div>
         {/if}
       </section>
+      {/if}
     </div>
+      </div>
+
+      <button
+        class="context-pane-resizer"
+        type="button"
+        aria-label="Resize context pane"
+        title="Resize context pane"
+        onpointerdown={beginContextPaneResize}
+        onkeydown={handleContextPaneResizerKeydown}
+      ></button>
+
+      <div class="workspace-main-column">
 
     {#if projectOpenSourceTabs.length > 0}
       <div class="tab-strip" aria-label="Open source files">
@@ -4105,21 +5743,6 @@
     {#if preview}
       <div class="path-row">
         <span>{preview.relativePath}</span>
-        <div class="file-actions" aria-label="Source file actions">
-          <button class="file-action-button" type="button" aria-label="Copy source path" title="Copy source path" disabled={fileActionBusy === 'copy'} onclick={copySelectedPath}>
-            {#if fileActionStatus === 'Path copied'}
-              <Check size={14} strokeWidth={2} />
-            {:else}
-              <Copy size={14} strokeWidth={1.9} />
-            {/if}
-          </button>
-          <button class="file-action-button" type="button" aria-label="Open source file" title="Open source file" disabled={fileActionBusy === 'open'} onclick={openSelectedFile}>
-            <ExternalLink size={14} strokeWidth={1.9} />
-          </button>
-          <button class="file-action-button" type="button" aria-label="Reveal source file" title="Reveal source file" disabled={fileActionBusy === 'reveal'} onclick={revealSelectedFile}>
-            <FolderSearch size={14} strokeWidth={1.9} />
-          </button>
-        </div>
         <strong>
           {selectedIndex} / {records.length}
           {#if selectedSourceLine}
@@ -4143,110 +5766,304 @@
     {#if preview}
       <div class="editor-frame" class:is-loading={loading}>
         <div class="editor-toolbar" aria-label="Editor controls">
-          <div class="traffic">
-            <span></span>
-            <span></span>
-            <span></span>
+          <div class="editor-file-state" title={preview.relativePath}>
+            <FileCode2 size={13} strokeWidth={1.8} />
+            <strong>{preview.fileName}</strong>
+            {#if selectedSourceDirty}
+              <span>modified</span>
+            {/if}
+            {#if sourceIntelligenceAvailable}
+              <span
+                class="editor-lsp-state"
+                class:ready={sourceLspStatus?.available}
+                title={sourceLspStatusError || sourceLspStatus?.serverName || 'Language server'}
+              >
+                {sourceLspStatusLoading ? 'lsp...' : sourceLspStatus?.available ? 'lsp' : 'index'}
+              </span>
+            {/if}
           </div>
-          <div class="mode-pill">
-            <SplitSquareHorizontal size={14} strokeWidth={1.8} />
-            <span>{selectedSourceDirty ? 'Modified' : 'Editable'}</span>
-          </div>
-          <div class="editor-save-actions">
+          <div class="editor-menu-anchor">
             <button
-              class="editor-action-button primary"
+              class="editor-icon-button"
+              class:active={!editorInsightCollapsed}
               type="button"
-              aria-label="Save source file"
-              title="Save source file"
-              disabled={!selectedSourceDirty || fileActionBusy === 'save'}
-              onclick={saveSelectedSourceFile}
+              aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
+              title={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
+              onclick={toggleEditorInsightCollapsed}
             >
-              <Save size={13} strokeWidth={2} />
-              <span>Save</span>
+              <SplitSquareHorizontal size={14} strokeWidth={2} />
             </button>
             <button
-              class="editor-action-button"
+              class="editor-icon-button"
               type="button"
-              aria-label="Revert source file"
-              title="Revert source file"
-              disabled={!selectedSourceDirty || fileActionBusy === 'save'}
-              onclick={revertSelectedSourceFile}
+              aria-label="Editor actions"
+              aria-haspopup="menu"
+              aria-expanded={editorActionMenuOpen}
+              title="Editor actions"
+              onclick={toggleEditorActionMenu}
             >
-              <RotateCcw size={13} strokeWidth={2} />
-              <span>Revert</span>
+              <MoreHorizontal size={15} strokeWidth={2} />
             </button>
-          </div>
-          <div class="editor-intelligence-actions">
-            <button
-              class="editor-action-button"
-              type="button"
-              aria-label="Show hover"
-              title="Show hover"
-              disabled={!sourceIntelligenceAvailable}
-              onclick={() => requestSourceIntelligenceAction('hover')}
-            >
-              <SplitSquareHorizontal size={13} strokeWidth={2} />
-              <span>Hover</span>
-            </button>
-            <button
-              class="editor-action-button"
-              type="button"
-              aria-label="Go to definition"
-              title="Go to definition"
-              disabled={!preview || loading}
-              onclick={() => requestSourceIntelligenceAction('definition')}
-            >
-              <Search size={13} strokeWidth={2} />
-              <span>Definition</span>
-            </button>
-            <button
-              class="editor-action-button"
-              type="button"
-              aria-label="Find references"
-              title="Find references"
-              disabled={!preview || loading}
-              onclick={() => requestSourceIntelligenceAction('references')}
-            >
-              <Braces size={13} strokeWidth={2} />
-              <span>References</span>
-            </button>
-          </div>
-          <div class="quality-pill">
-            <span>{sourcePreviewAppearance.theme.id}</span>
-          </div>
-          <div class="quality-pill font-pill">
-            <span>{sourcePreviewAppearance.fontFamily.split(',')[0].replaceAll('"', '')}</span>
+            {#if editorActionMenuOpen}
+              <div class="editor-action-menu" role="menu" aria-label="Editor actions">
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Save source file"
+                  disabled={!selectedSourceDirty || fileActionBusy === 'save'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void saveSelectedSourceFile();
+                  }}
+                >
+                  <Save size={13} strokeWidth={2} />
+                  <span>Save</span>
+                  <kbd>Cmd+S</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Revert source file"
+                  disabled={!selectedSourceDirty || fileActionBusy === 'save'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    revertSelectedSourceFile();
+                  }}
+                >
+                  <RotateCcw size={13} strokeWidth={2} />
+                  <span>Revert</span>
+                </button>
+                <hr />
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Show hover"
+                  disabled={!sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('hover');
+                  }}
+                >
+                  <SplitSquareHorizontal size={13} strokeWidth={2} />
+                  <span>Hover</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Go to definition"
+                  disabled={!preview || loading}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('definition');
+                  }}
+                >
+                  <Search size={13} strokeWidth={2} />
+                  <span>Go to definition</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Find references"
+                  disabled={!preview || loading}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('references');
+                  }}
+                >
+                  <Braces size={13} strokeWidth={2} />
+                  <span>Find references</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    toggleEditorInsightCollapsed();
+                  }}
+                >
+                  <SplitSquareHorizontal size={13} strokeWidth={2} />
+                  <span>{editorInsightCollapsed ? 'Show insights' : 'Hide insights'}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Show problems panel"
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    showEditorInsightPanel('problems');
+                  }}
+                >
+                  <Activity size={13} strokeWidth={2} />
+                  <span>Problems</span>
+                  <kbd>{sourceDiagnostics.length}</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Show symbols panel"
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    showEditorInsightPanel('symbols');
+                  }}
+                >
+                  <FileCode2 size={13} strokeWidth={2} />
+                  <span>Symbols</span>
+                  <kbd>{sourceSymbols.length}</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Show Git panel"
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    showEditorInsightPanel('git');
+                  }}
+                >
+                  <FolderGit2 size={13} strokeWidth={2} />
+                  <span>Git</span>
+                  <kbd>{selectedSourceGitBadge()}</kbd>
+                </button>
+                <hr />
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={fileActionBusy === 'copy'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void copySelectedPath();
+                  }}
+                >
+                  {#if fileActionStatus === 'Path copied'}
+                    <Check size={13} strokeWidth={2} />
+                  {:else}
+                    <Copy size={13} strokeWidth={2} />
+                  {/if}
+                  <span>Copy path</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={fileActionBusy === 'open'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void openSelectedFile();
+                  }}
+                >
+                  <ExternalLink size={13} strokeWidth={2} />
+                  <span>Open in IDE</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={fileActionBusy === 'reveal'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void revealSelectedFile();
+                  }}
+                >
+                  <FolderSearch size={13} strokeWidth={2} />
+                  <span>Reveal file</span>
+                </button>
+              </div>
+            {/if}
           </div>
         </div>
 
-        <div class="editor-body-grid">
-          {#key sourcePreviewAppearanceKey}
-            <MonacoSourceEditor
-              {preview}
-              content={selectedSourceDraftContent}
-              editable={true}
-              {loading}
-              targetLine={selectedSourceLine}
-              targetLineRequestId={selectedSourceLineRequestId}
-              intelligenceCommand={sourceIntelligenceCommand}
-              onContentChange={updateSelectedSourceDraft}
-              onDiagnosticsChange={handleEditorDiagnosticsChange}
-              onDefinitionLookup={handleEditorDefinitionLookup}
-              onReferenceLookup={handleEditorReferenceLookup}
-              onSymbolsChange={handleEditorSymbolsChange}
-            />
-          {/key}
+        <div class="editor-body-grid" class:insights-hidden={editorInsightCollapsed}>
+          <div class="editor-canvas">
+            {#key sourcePreviewAppearanceKey}
+              <MonacoSourceEditor
+                {preview}
+                content={selectedSourceDraftContent}
+                editable={true}
+                externalDiagnostics={sourceLspDiagnostics}
+                {loading}
+                targetLine={selectedSourceLine}
+                targetLineRequestId={selectedSourceLineRequestId}
+                intelligenceCommand={sourceIntelligenceCommand}
+                onContentChange={updateSelectedSourceDraft}
+                onCommandPaletteRequest={openCommandPalette}
+                onDiagnosticsChange={handleEditorDiagnosticsChange}
+                onDefinitionLookup={handleEditorDefinitionLookup}
+                onGoToLineRequest={openCurrentFileGoToLine}
+                onHoverLookup={handleEditorHoverLookup}
+                onProblemsRequest={() => showEditorInsightPanel('problems')}
+                onQuickOpenRequest={openQuickOpen}
+                onReferenceLookup={handleEditorReferenceLookup}
+                onSaveRequest={saveSelectedSourceFile}
+                onSymbolsRequest={() => showEditorInsightPanel('symbols')}
+                onSymbolsChange={handleEditorSymbolsChange}
+              />
+            {/key}
 
-          <button
-            class="editor-insight-resizer"
-            type="button"
-            aria-label="Resize editor insights"
-            title="Resize editor insights"
-            onpointerdown={beginEditorInsightResize}
-            onkeydown={handleEditorInsightResizerKeydown}
-          ></button>
+            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading)}
+              <div class="editor-lookup-popover" aria-label="Editor lookup results">
+                <div class="editor-lookup-header">
+                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceDefinitionSummary}</strong>
+                  <button
+                    class="editor-lookup-close"
+                    type="button"
+                    aria-label="Close lookup results"
+                    title="Close lookup results"
+                    onclick={clearSourceLookupResults}
+                  >
+                    <X size={13} strokeWidth={2} />
+                  </button>
+                </div>
+                <div class="editor-lookup-list">
+                  {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
+                    {#if sourceDefinitionTargets.length === 0 && !sourceDefinitionLoading}
+                      <div class="intelligence-empty">No definition</div>
+                    {:else}
+                      {#each sourceDefinitionTargets as target (`inline:${target.path}:${target.line}:${target.symbolName}`)}
+                        <button
+                          class="definition-row"
+                          type="button"
+                          title={target.detail}
+                          onclick={() => selectSourceDefinitionTarget(target)}
+                        >
+                          <strong>{target.kind}</strong>
+                          <span>{target.symbolName}</span>
+                          <small>{target.relativePath}:{target.line}</small>
+                        </button>
+                      {/each}
+                    {/if}
+                  {/if}
+                  {#if sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading}
+                    {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
+                      <div class="intelligence-empty">No references</div>
+                    {:else}
+                      {#each sourceReferenceTargets as target (`inline:${target.path}:${target.line}:${target.column}`)}
+                        <button
+                          class="reference-row"
+                          type="button"
+                          title={target.excerpt}
+                          onclick={() => selectSourceReferenceTarget(target)}
+                        >
+                          <strong>{target.line}:{target.column}</strong>
+                          <span>{target.fileName}</span>
+                          <small>{target.excerpt}</small>
+                        </button>
+                      {/each}
+                    {/if}
+                  {/if}
+                </div>
+              </div>
+            {/if}
+          </div>
 
-          <aside class="source-intelligence-panel" aria-label="Language intelligence">
+          {#if !editorInsightCollapsed}
+            <button
+              class="editor-insight-resizer"
+              type="button"
+              aria-label="Resize editor insights"
+              title="Resize editor insights"
+              onpointerdown={beginEditorInsightResize}
+              onkeydown={handleEditorInsightResizerKeydown}
+            ></button>
+
+            <aside class="source-intelligence-panel" aria-label="Language intelligence">
             <div class="intelligence-tabs" role="tablist" aria-label="Source insights">
               <button
                 class:active={sourceIntelligencePanel === 'problems'}
@@ -4351,7 +6168,12 @@
               </div>
             {:else if sourceIntelligencePanel === 'git'}
               <div class="git-diff-panel" aria-label="Selected file Git diff">
-                <div class="git-controls" aria-label="Git working tree controls">
+                <details class="git-command-drawer">
+                  <summary>
+                    <span>Commands</span>
+                    <small>{gitActionError || gitActionStatus || (gitHasStagedChanges ? 'staged changes ready' : 'stage, fetch, pull, push')}</small>
+                  </summary>
+                  <div class="git-controls" aria-label="Git working tree controls">
                   <div class="git-action-row">
                     <button
                       class="git-action-button"
@@ -4436,7 +6258,8 @@
                       {gitActionError || gitActionStatus}
                     </div>
                   {/if}
-                </div>
+                  </div>
+                </details>
                 <div class="git-status-list" aria-label="Changed Git files">
                   {#if projectGitLoading}
                     <div class="intelligence-empty">Loading changed files</div>
@@ -4536,7 +6359,8 @@
                 {/if}
               </div>
             {/if}
-          </aside>
+            </aside>
+          {/if}
         </div>
       </div>
     {:else}
@@ -4546,6 +6370,8 @@
         <span>Scan a project or choose a file from the tree.</span>
       </div>
     {/if}
+      </div>
+    </div>
   </section>
 </main>
 
@@ -4605,26 +6431,119 @@
   </div>
 {/if}
 
+{#if commandPaletteVisible}
+  <div class="command-palette-layer">
+    <button
+      class="command-palette-backdrop"
+      type="button"
+      aria-label="Close command palette"
+      onclick={closeCommandPalette}
+    ></button>
+    <div
+      class="command-palette-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+    >
+      <label class="command-palette-search">
+        <span class="command-palette-icon">
+          <Search size={17} strokeWidth={1.8} />
+        </span>
+        <input
+          bind:this={commandPaletteInput}
+          bind:value={commandPaletteQuery}
+          onkeydown={handleCommandPaletteKeydown}
+          placeholder="Run command"
+          autocomplete="off"
+        />
+        <kbd>Cmd+K</kbd>
+      </label>
+
+      <div class="command-palette-results" role="listbox" aria-label="Matching commands">
+        {#if commandPaletteResults.length === 0}
+          <div class="quick-open-empty">No matching commands</div>
+        {:else}
+          {#each commandPaletteResults as item, index (item.id)}
+            <button
+              class:active={index === commandPaletteIndex}
+              class:disabled={item.disabled}
+              type="button"
+              role="option"
+              aria-selected={index === commandPaletteIndex}
+              disabled={item.disabled}
+              title={item.detail}
+              onclick={() => void runCommandPaletteItem(item)}
+            >
+              <span class="command-palette-result-icon">
+                <MoreHorizontal size={15} strokeWidth={1.8} />
+              </span>
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </span>
+            </button>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .shell {
     display: grid;
-    grid-template-columns: var(--side-pane-width) 8px minmax(0, 1fr);
+    grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr);
     gap: 0;
-    width: min(1520px, calc(100vw - 32px));
-    height: min(760px, calc(100dvh - 32px));
-    margin: 16px auto;
+    width: min(1840px, calc(100vw - 16px));
+    height: min(1040px, calc(100dvh - 16px));
+    min-height: min(680px, calc(100dvh - 16px));
+    margin: 8px auto;
     overflow: hidden;
     border: 1px solid rgba(231, 238, 235, 0.12);
-    border-radius: 18px;
+    border-radius: 12px;
     background: rgba(24, 26, 26, 0.92);
     box-shadow:
       0 32px 90px rgba(0, 0, 0, 0.32),
       inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
+  .shell.side-right {
+    grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width);
+  }
+
+  .shell.side-right .workspace {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .shell.side-right .side-pane-resizer {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .shell.side-right .activity-shell {
+    grid-template-columns: minmax(0, 1fr) 46px;
+    grid-column: 3;
+    grid-row: 1;
+    border-right: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .shell.side-right .activity-rail {
+    grid-column: 2;
+    grid-row: 1;
+    border-right: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .shell.side-right .sidebar {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
   .activity-shell {
     display: grid;
-    grid-template-columns: 54px minmax(0, 1fr);
+    grid-template-columns: 46px minmax(0, 1fr);
     min-width: 0;
     overflow: hidden;
     background: rgba(19, 21, 21, 0.94);
@@ -4635,10 +6554,10 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
-    width: 54px;
+    gap: 5px;
+    width: 46px;
     min-width: 0;
-    padding: 16px 6px;
+    padding: 10px 4px;
     overflow: hidden;
     border-right: 1px solid rgba(255, 255, 255, 0.07);
     background: rgba(9, 12, 12, 0.42);
@@ -4648,8 +6567,8 @@
     position: relative;
     display: grid;
     place-items: center;
-    width: 42px;
-    height: 42px;
+    width: 36px;
+    height: 36px;
     min-width: 0;
     color: #99a5a1;
     border: 1px solid transparent;
@@ -4705,7 +6624,7 @@
   }
 
   .side-pane-resizer {
-    width: 8px;
+    width: 6px;
     min-width: 0;
     padding: 0;
     cursor: col-resize;
@@ -4731,22 +6650,22 @@
     grid-template-rows: auto auto minmax(0, 1fr);
     min-width: 0;
     overflow: hidden;
-    padding: 22px 18px;
+    padding: 14px 12px;
   }
 
   .brand-row {
     display: grid;
-    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-columns: 34px minmax(0, 1fr);
     align-items: center;
-    gap: 12px;
-    margin-bottom: 22px;
+    gap: 9px;
+    margin-bottom: 12px;
   }
 
   .brand-mark {
     display: grid;
     place-items: center;
-    width: 42px;
-    height: 42px;
+    width: 34px;
+    height: 34px;
     border: 1px solid rgba(89, 217, 199, 0.38);
     border-radius: 11px;
     color: #5ce2cf;
@@ -4772,11 +6691,11 @@
   }
 
   h1 {
-    font-size: 21px;
+    font-size: 17px;
   }
 
   h2 {
-    font-size: 28px;
+    font-size: 22px;
   }
 
   .project-controls {
@@ -4967,6 +6886,7 @@
   .activity-runtime-row,
   .activity-worktree-row,
   .activity-repo-row,
+  .activity-run-row,
   .activity-commit-row {
     display: grid;
     align-items: center;
@@ -4994,9 +6914,136 @@
     grid-template-columns: minmax(0, 1fr) auto auto auto;
   }
 
+  .activity-run-row {
+    align-items: stretch;
+    gap: 7px;
+  }
+
   .activity-worktree-row.blocked,
+  .activity-run-row.bad,
   .activity-repo-row.dirty {
     background: rgba(216, 170, 85, 0.09);
+  }
+
+  .activity-run-row.live {
+    background: rgba(92, 226, 207, 0.07);
+  }
+
+  .run-row-heading,
+  .run-metrics-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .run-row-heading {
+    justify-content: space-between;
+  }
+
+  .run-metrics-row {
+    flex-wrap: wrap;
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .run-progress-track {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  .run-progress-track span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #5ce2cf, #78b7ff);
+  }
+
+  .run-step-list {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .run-step-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .run-step-row div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .run-step-row strong,
+  .run-step-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-step-row strong {
+    color: #dfe7e5;
+    font-size: 10px;
+    font-weight: 780;
+  }
+
+  .run-step-row small {
+    color: #87918e;
+    font-size: 9px;
+    font-weight: 720;
+  }
+
+  .run-status-badge,
+  .run-step-marker {
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+    color: #081714;
+    border-radius: 999px;
+    font-weight: 850;
+    line-height: 1;
+  }
+
+  .run-status-badge {
+    height: 20px;
+    padding: 0 8px;
+    font-size: 10px;
+  }
+
+  .run-step-marker {
+    width: 18px;
+    height: 18px;
+    font-size: 10px;
+  }
+
+  .run-status-badge.live,
+  .run-step-marker.live {
+    background: #5ce2cf;
+  }
+
+  .run-status-badge.good,
+  .run-step-marker.good {
+    background: #8bdc9b;
+  }
+
+  .run-status-badge.bad,
+  .run-step-marker.bad {
+    background: #f36f6f;
+  }
+
+  .run-status-badge.idle,
+  .run-step-marker.idle {
+    color: #d8e0dd;
+    background: rgba(255, 255, 255, 0.12);
   }
 
   .activity-row-main {
@@ -5697,6 +7744,10 @@
     font-weight: 700;
   }
 
+  .file-tree button.file-row small {
+    display: none;
+  }
+
   .git-status-badge {
     display: inline-grid;
     place-items: center;
@@ -5735,6 +7786,7 @@
   }
 
   .empty-preview {
+    flex: 1 1 auto;
     min-height: 520px;
     border: 1px dashed rgba(255, 255, 255, 0.13);
     border-radius: 13px;
@@ -5752,8 +7804,12 @@
   }
 
   .workspace {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
     min-width: 0;
-    padding: 26px;
+    min-height: 0;
+    overflow: hidden;
+    padding: 9px;
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 36%),
       rgba(24, 26, 26, 0.96);
@@ -5761,10 +7817,10 @@
 
   .topbar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 18px;
-    margin-bottom: 14px;
+    grid-template-columns: minmax(180px, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
   }
 
   .topbar > div:first-child {
@@ -5773,202 +7829,183 @@
 
   .topbar h2 {
     min-width: 0;
+    margin: 0;
     overflow: hidden;
+    font-size: 18px;
+    line-height: 1.1;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .topbar .eyebrow {
+    display: none;
+  }
+
   .topbar-tools {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .layout-preset-group {
     display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    padding: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .layout-preset-group button {
-    height: 22px;
-    min-width: 0;
-    padding: 0 8px;
-    color: #9facaa;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    font-size: 10px;
-    font-weight: 820;
-    cursor: pointer;
-  }
-
-  .layout-preset-group button:hover,
-  .layout-preset-group button:focus-visible {
-    color: #edf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .layout-preset-group button.active {
-    color: #dffdf8;
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  .terminal-picker {
-    display: inline-grid;
-    grid-template-columns: 13px minmax(86px, auto);
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    height: 30px;
-    padding: 0 7px;
-    color: #9facaa;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .terminal-picker select {
-    width: 100%;
-    height: 22px;
-    padding: 0 4px;
-    color: #dffdf8;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .status-strip {
-    display: flex;
+    justify-content: flex-end;
     align-items: center;
     gap: 6px;
     min-width: 0;
   }
 
-  .workspace-context-toggle {
+  .topbar-command-button {
     display: inline-grid;
-    grid-template-columns: 13px minmax(0, auto);
+    grid-auto-flow: column;
     align-items: center;
-    gap: 5px;
-    height: 28px;
+    justify-content: center;
+    gap: 6px;
     min-width: 0;
-    padding: 0 9px;
-    color: #b9c5c1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
+    height: 26px;
+    padding: 0 8px;
+    color: #aab6b2;
+    border: 1px solid rgba(255, 255, 255, 0.105);
+    border-radius: 6px;
     background: rgba(255, 255, 255, 0.045);
-    font-size: 11px;
-    font-weight: 760;
+    font-size: 10px;
+    font-weight: 820;
     cursor: pointer;
   }
 
-  .workspace-context-toggle:hover,
-  .workspace-context-toggle:focus-visible {
+  .topbar-command-button:hover,
+  .topbar-command-button:focus-visible,
+  .topbar-command-button[aria-expanded='true'] {
     color: #f2f6f5;
-    border-color: rgba(92, 226, 207, 0.42);
+    border-color: rgba(92, 226, 207, 0.34);
     outline: 0;
     background: rgba(92, 226, 207, 0.1);
   }
 
-  .workspace-context-toggle span {
+  .topbar-command-button span {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .context-mode-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    height: 28px;
-    padding: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.04);
+  .view-menu-anchor {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
   }
 
-  .context-mode-group button {
-    height: 20px;
+  .view-menu {
+    position: absolute;
+    z-index: 9;
+    top: calc(100% + 6px);
+    right: 0;
+    display: grid;
+    gap: 8px;
+    width: 270px;
     min-width: 0;
+    padding: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 9px;
+    background: rgba(22, 25, 25, 0.98);
+    box-shadow: 0 20px 54px rgba(0, 0, 0, 0.36);
+  }
+
+  .view-menu-section {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .view-menu-section > span,
+  .view-terminal-picker > span {
+    color: #7f8b88;
+    font-size: 9px;
+    font-weight: 850;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .view-menu-button-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .view-menu-button-grid.two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .view-menu-button-grid button,
+  .view-menu-wide-button {
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+    height: 25px;
     padding: 0 7px;
-    color: #9facaa;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
+    color: #aab6b2;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
     font-size: 10px;
     font-weight: 820;
+    white-space: nowrap;
     cursor: pointer;
   }
 
-  .context-mode-group button:hover,
-  .context-mode-group button:focus-visible {
+  .view-menu-button-grid button:hover,
+  .view-menu-button-grid button:focus-visible,
+  .view-menu-wide-button:hover,
+  .view-menu-wide-button:focus-visible {
     color: #edf4f2;
     outline: 0;
     background: rgba(255, 255, 255, 0.08);
   }
 
-  .context-mode-group button.active {
+  .view-menu-button-grid button.active {
     color: #dffdf8;
     background: rgba(92, 226, 207, 0.18);
   }
 
-  .status-strip span,
-  .mode-pill,
-  .quality-pill {
-    display: inline-grid;
-    grid-auto-flow: column;
-    align-items: center;
-    gap: 6px;
-    height: 28px;
-    padding: 0 10px;
-    color: #b9c5c1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 11px;
-    font-weight: 700;
+  .view-menu-wide-button {
+    width: 100%;
+    justify-content: start;
   }
 
-  .project-git-pill {
-    max-width: 180px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .view-terminal-picker {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding-top: 2px;
+  }
+
+  .view-terminal-picker select {
+    width: 100%;
+    height: 26px;
+    min-width: 0;
+    color: #dffdf8;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 10px;
+    font-weight: 820;
   }
 
   .context-identity-strip {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
+    gap: 4px;
     min-width: 0;
     overflow: hidden;
-    margin: -2px 0 14px;
+    margin: 0 0 5px;
   }
 
   .context-identity-pill {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-    gap: 8px;
+    gap: 5px;
     min-width: 0;
-    height: 34px;
-    padding: 0 10px;
+    height: 20px;
+    padding: 0 6px;
     color: #cbd3d1;
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 8px;
+    border-radius: 5px;
     background: rgba(255, 255, 255, 0.04);
   }
 
@@ -5982,23 +8019,94 @@
 
   .context-identity-pill span {
     color: #87918e;
-    font-size: 10px;
+    font-size: 7px;
     font-weight: 800;
     text-transform: uppercase;
   }
 
   .context-identity-pill strong {
     color: #f0f4f3;
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 760;
+  }
+
+  .workspace-arrangement {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .workspace-arrangement.context-side {
+    grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .workspace-context-column,
+  .workspace-main-column {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .workspace-context-column {
+    display: grid;
+    min-height: 0;
+  }
+
+  .workspace-main-column {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .workspace-arrangement.context-side .workspace-main-column {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .workspace-arrangement.context-side .workspace-context-column {
+    grid-column: 3;
+    grid-row: 1;
+    padding-left: 6px;
+  }
+
+  .context-pane-resizer {
+    display: none;
+    width: 6px;
+    min-width: 0;
+    padding: 0;
+    cursor: col-resize;
+    border: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.045);
+    border-right: 1px solid rgba(255, 255, 255, 0.045);
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .workspace-arrangement.context-side .context-pane-resizer {
+    display: block;
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .context-pane-resizer:hover,
+  .context-pane-resizer:focus-visible {
+    outline: 0;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
+  :global(body.resizing-context-pane) {
+    cursor: col-resize;
+    user-select: none;
   }
 
   .context-panel-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
-    margin: -4px 0 14px;
+    margin: -2px 0 8px;
   }
 
   .context-panel-grid.collapsed {
@@ -6009,19 +8117,92 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .context-stack-tabs {
+    display: flex;
+    min-width: 0;
+    padding: 2px;
+    gap: 2px;
+    overflow-x: auto;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 8px;
+    background: rgba(10, 12, 12, 0.34);
+    scrollbar-width: none;
+  }
+
+  .context-stack-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .context-stack-tabs button {
+    min-width: max-content;
+    height: 24px;
+    padding: 0 9px;
+    color: #9da8a5;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 800;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+  }
+
+  .context-stack-tabs button:hover,
+  .context-stack-tabs button:focus-visible {
+    color: #ecf4f2;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .context-stack-tabs button.active {
+    color: #0a1816;
+    background: #67dfd1;
+  }
+
+  .workspace-arrangement.context-side .context-panel-grid {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    height: 100%;
+    margin: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .workspace-arrangement.context-side .runtime-context-row,
+  .workspace-arrangement.context-side .agent-session-row,
+  .workspace-arrangement.context-side .worktree-context-row,
+  .workspace-arrangement.context-side .repo-dashboard-row,
+  .workspace-arrangement.context-side .orchestration-context-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-list,
+  .workspace-arrangement.context-side .runtime-context-list,
+  .workspace-arrangement.context-side .agent-session-list,
+  .workspace-arrangement.context-side .worktree-context-list,
+  .workspace-arrangement.context-side .repo-dashboard-list {
+    max-height: 180px;
+  }
+
+  .orchestration-context-panel,
   .runtime-context-panel,
   .agent-session-panel,
   .worktree-context-panel,
   .repo-dashboard-panel {
     display: grid;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
-    padding: 10px;
+    padding: 7px;
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
+    border-radius: 6px;
     background: rgba(255, 255, 255, 0.035);
   }
 
+  .orchestration-context-header,
   .runtime-context-header,
   .agent-session-header,
   .worktree-context-header,
@@ -6029,10 +8210,11 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
     min-width: 0;
   }
 
+  .orchestration-context-header div,
   .runtime-context-header div,
   .agent-session-header div,
   .worktree-context-header div,
@@ -6042,6 +8224,8 @@
     min-width: 0;
   }
 
+  .orchestration-context-header strong,
+  .orchestration-context-header span,
   .runtime-context-header strong,
   .runtime-context-header span,
   .agent-session-header strong,
@@ -6056,31 +8240,72 @@
     white-space: nowrap;
   }
 
+  .orchestration-context-header strong,
   .runtime-context-header strong,
   .agent-session-header strong,
   .worktree-context-header strong,
   .repo-dashboard-header strong {
     color: #f0f4f3;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 800;
   }
 
+  .orchestration-context-header span,
   .runtime-context-header span,
   .agent-session-header span,
   .worktree-context-header span,
   .repo-dashboard-header span {
     color: #8d9995;
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 740;
   }
 
+  .context-card-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .context-card-actions .file-action-button {
+    width: 24px;
+    height: 22px;
+    border-radius: 6px;
+  }
+
+  .context-card-close {
+    color: #8d9995;
+  }
+
+  .context-card-close:hover {
+    color: #f2f6f5;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .context-restore-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    height: 24px;
+    padding: 0 8px;
+    color: #8fd8cf;
+    border: 1px solid rgba(92, 226, 207, 0.22);
+    border-radius: 6px;
+    background: rgba(92, 226, 207, 0.08);
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .orchestration-context-list,
   .runtime-context-list,
   .agent-session-list,
   .worktree-context-list,
   .repo-dashboard-list {
     display: grid;
-    gap: 5px;
-    max-height: 108px;
+    gap: 4px;
+    max-height: 96px;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
@@ -6109,17 +8334,23 @@
     scrollbar-width: thin;
   }
 
+  .orchestration-context-list {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .orchestration-context-row,
   .runtime-context-row,
   .agent-session-row,
   .worktree-context-row,
   .repo-dashboard-row {
     display: grid;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
-    padding: 7px 8px;
+    padding: 5px 6px;
     color: #cbd3d1;
-    border-radius: 7px;
+    border-radius: 5px;
     background: rgba(0, 0, 0, 0.14);
   }
 
@@ -6139,6 +8370,14 @@
     grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.75fr) minmax(0, 0.7fr) minmax(0, 0.82fr) minmax(0, 0.65fr);
   }
 
+  .orchestration-context-row {
+    grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 0.72fr) minmax(0, 0.85fr);
+  }
+
+  .orchestration-context-row.bad {
+    background: rgba(216, 95, 95, 0.1);
+  }
+
   .worktree-context-row.blocked {
     background: rgba(216, 170, 85, 0.09);
   }
@@ -6148,6 +8387,9 @@
   }
 
   .runtime-port,
+  .orchestration-context-row strong,
+  .orchestration-context-row span,
+  .orchestration-context-row small,
   .agent-provider-badge,
   .worktree-status-badge,
   .repo-branch-badge,
@@ -6319,23 +8561,23 @@
 
   .tab-strip {
     display: flex;
-    gap: 6px;
+    gap: 4px;
     min-width: 0;
-    padding-bottom: 4px;
-    margin: -2px 0 12px;
+    padding-bottom: 3px;
+    margin: 0 0 6px;
     overflow-x: auto;
   }
 
   .source-tab {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 28px;
+    grid-template-columns: minmax(0, 1fr) 22px;
     align-items: center;
-    flex: 0 1 228px;
-    min-width: 148px;
-    max-width: 228px;
-    height: 36px;
+    flex: 0 1 190px;
+    min-width: 132px;
+    max-width: 190px;
+    height: 28px;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 9px;
+    border-radius: 6px;
     background: rgba(255, 255, 255, 0.045);
   }
 
@@ -6350,12 +8592,12 @@
 
   .tab-select-button {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto auto 8px;
+    grid-template-columns: 15px minmax(0, 1fr) auto 7px;
     align-items: center;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
     height: 100%;
-    padding: 0 7px 0 9px;
+    padding: 0 5px 0 7px;
     color: #cbd3d1;
     text-align: left;
     border: 0;
@@ -6391,24 +8633,25 @@
   }
 
   .tab-select-button span {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 760;
   }
 
   .tab-select-button small {
     color: #8d9995;
-    font-size: 10px;
+    display: none;
+    font-size: 9px;
     font-weight: 760;
   }
 
   .tab-close-button {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     color: #8d9995;
     border: 0;
-    border-radius: 7px;
+    border-radius: 5px;
     background: transparent;
     cursor: pointer;
   }
@@ -6426,13 +8669,13 @@
 
   .path-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 16px;
-    margin-bottom: 12px;
+    gap: 8px;
+    margin-bottom: 5px;
     color: #87918e;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 12px;
+    font-size: 11px;
   }
 
   .path-row span {
@@ -6500,12 +8743,13 @@
 
   .editor-frame {
     display: grid;
-    grid-template-rows: 42px minmax(0, 1fr);
-    height: 560px;
+    grid-template-rows: 28px minmax(0, 1fr);
+    flex: 1 1 auto;
+    height: auto;
     min-height: 0;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 13px;
+    border-radius: 8px;
     background: #17191e;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.07),
@@ -6514,48 +8758,177 @@
 
   .editor-toolbar {
     display: grid;
-    grid-template-columns: auto auto auto minmax(0, 1fr) auto auto;
+    position: relative;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
-    height: 42px;
-    padding: 0 12px;
+    gap: 6px;
+    height: 28px;
+    padding: 0 6px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.04);
   }
 
-  .traffic {
+  .editor-file-state {
+    display: inline-grid;
+    grid-template-columns: 15px minmax(0, auto) auto auto;
+    align-items: center;
+    justify-self: start;
+    gap: 5px;
+    min-width: 0;
+    max-width: 100%;
+    height: 22px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.16);
+  }
+
+  .editor-file-state strong,
+  .editor-file-state span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-file-state strong {
+    font-size: 11px;
+    font-weight: 760;
+  }
+
+  .editor-file-state span {
+    color: #d8aa55;
+    font-size: 9px;
+    font-weight: 820;
+    text-transform: uppercase;
+  }
+
+  .editor-file-state .editor-lsp-state {
+    color: #9fa7a5;
+  }
+
+  .editor-file-state .editor-lsp-state.ready {
+    color: #72e2cf;
+  }
+
+  .editor-menu-anchor {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .editor-icon-button {
     display: grid;
-    grid-template-columns: repeat(3, 10px);
-    gap: 6px;
+    place-items: center;
+    width: 24px;
+    height: 22px;
+    color: #aeb8b5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
   }
 
-  .traffic span {
-    width: 10px;
-    height: 10px;
-    border-radius: 999px;
-    background: #59635f;
+  .editor-icon-button:hover,
+  .editor-icon-button:focus-visible {
+    color: #f2f6f5;
+    border-color: rgba(92, 226, 207, 0.4);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
   }
 
-  .traffic span:nth-child(1) {
-    background: #e16d5d;
+  .editor-icon-button.active {
+    color: #dffdf8;
+    border-color: rgba(92, 226, 207, 0.32);
+    background: rgba(92, 226, 207, 0.12);
   }
 
-  .traffic span:nth-child(2) {
-    background: #d8aa55;
+  .editor-action-menu {
+    position: absolute;
+    z-index: 8;
+    top: calc(100% + 5px);
+    right: 0;
+    display: grid;
+    width: 230px;
+    min-width: 0;
+    padding: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 8px;
+    background: rgba(22, 25, 25, 0.98);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
   }
 
-  .traffic span:nth-child(3) {
-    background: #67c17d;
+  .editor-action-menu button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    height: 28px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+    cursor: pointer;
   }
 
-  .quality-pill {
-    color: #7ce5d5;
+  .editor-action-menu button:hover:not(:disabled),
+  .editor-action-menu button:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .editor-action-menu button:disabled {
+    cursor: default;
+    opacity: 0.48;
+  }
+
+  .editor-action-menu span,
+  .editor-action-menu kbd {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-action-menu kbd {
+    color: #8d9995;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .editor-action-menu hr {
+    width: 100%;
+    height: 1px;
+    margin: 4px 0;
+    border: 0;
+    background: rgba(255, 255, 255, 0.08);
   }
 
   .editor-body-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width);
     min-height: 0;
+  }
+
+  .editor-body-grid.insights-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor-canvas {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .editor-insight-resizer {
@@ -6580,65 +8953,6 @@
     user-select: none;
   }
 
-  .editor-save-actions,
-  .editor-intelligence-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .editor-action-button {
-    display: grid;
-    grid-template-columns: 14px minmax(0, auto);
-    align-items: center;
-    gap: 5px;
-    height: 28px;
-    min-width: 0;
-    padding: 0 9px;
-    color: #b9c5c1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 11px;
-    font-weight: 760;
-    cursor: pointer;
-  }
-
-  .editor-action-button.primary {
-    color: #071b18;
-    border-color: rgba(111, 223, 207, 0.68);
-    background: #6fdfcf;
-  }
-
-  .editor-action-button span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-action-button:hover:not(:disabled) {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .editor-action-button.primary:hover:not(:disabled) {
-    color: #071b18;
-    background: #81eadc;
-  }
-
-  .editor-action-button:focus-visible {
-    border-color: rgba(92, 226, 207, 0.58);
-    outline: 0;
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .editor-action-button:disabled {
-    cursor: default;
-    opacity: 0.52;
-  }
-
   .source-intelligence-panel {
     display: flex;
     flex-direction: column;
@@ -6649,11 +8963,79 @@
     background: rgba(20, 23, 24, 0.86);
   }
 
+  .editor-lookup-popover {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    z-index: 5;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(520px, calc(100% - 24px));
+    max-height: min(280px, calc(100% - 24px));
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid rgba(92, 226, 207, 0.24);
+    border-radius: 8px;
+    background: rgba(18, 21, 21, 0.96);
+    box-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
+  }
+
+  .editor-lookup-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.075);
+  }
+
+  .editor-lookup-header strong {
+    min-width: 0;
+    overflow: hidden;
+    color: #e4efed;
+    font-size: 11px;
+    font-weight: 820;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-lookup-close {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    color: #aab6b2;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .editor-lookup-close:hover,
+  .editor-lookup-close:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .editor-lookup-list {
+    display: grid;
+    gap: 4px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 6px;
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
   .intelligence-tabs {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    padding: 10px;
+    gap: 4px;
+    padding: 6px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   }
 
@@ -6662,14 +9044,14 @@
     grid-template-columns: 14px minmax(0, 1fr) auto;
     align-items: center;
     gap: 5px;
-    height: 28px;
+    height: 24px;
     min-width: 0;
-    padding: 0 7px;
+    padding: 0 5px;
     color: #9fa9a6;
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 7px;
+    border-radius: 5px;
     background: rgba(255, 255, 255, 0.035);
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 800;
     cursor: pointer;
   }
@@ -6739,12 +9121,59 @@
     overflow: hidden;
   }
 
+  .git-command-drawer {
+    flex: 0 0 auto;
+    min-width: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .git-command-drawer summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    color: #dce5e2;
+    list-style: none;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 840;
+  }
+
+  .git-command-drawer summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .git-command-drawer summary::before {
+    width: 0;
+    height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 5px solid #8d9995;
+    content: "";
+  }
+
+  .git-command-drawer[open] summary::before {
+    transform: rotate(90deg);
+  }
+
+  .git-command-drawer summary small {
+    min-width: 0;
+    overflow: hidden;
+    color: #899591;
+    font-size: 9px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .git-controls {
     display: grid;
     flex: 0 0 auto;
-    gap: 8px;
-    padding: 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    gap: 5px;
+    padding: 0 6px 6px;
   }
 
   .git-action-row,
@@ -6752,7 +9181,7 @@
   .git-commit-row {
     display: grid;
     min-width: 0;
-    gap: 6px;
+    gap: 5px;
   }
 
   .git-action-row {
@@ -6775,13 +9204,13 @@
     justify-content: center;
     gap: 5px;
     min-width: 0;
-    min-height: 30px;
-    padding: 0 8px;
+    min-height: 24px;
+    padding: 0 6px;
     color: #cfd8d5;
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 7px;
+    border-radius: 5px;
     background: rgba(255, 255, 255, 0.045);
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 820;
     cursor: pointer;
   }
@@ -6807,16 +9236,16 @@
   .git-commit-input {
     width: 100%;
     min-width: 0;
-    min-height: 42px;
-    padding: 8px 9px;
+    min-height: 32px;
+    padding: 6px 7px;
     resize: none;
     color: #e6ecea;
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 7px;
+    border-radius: 5px;
     outline: none;
     background: rgba(0, 0, 0, 0.22);
     font: inherit;
-    font-size: 11px;
+    font-size: 10px;
     line-height: 1.3;
   }
 
@@ -7186,7 +9615,8 @@
     color: #d8aa55;
   }
 
-  .quick-open-layer {
+  .quick-open-layer,
+  .command-palette-layer {
     position: fixed;
     inset: 0;
     z-index: 40;
@@ -7195,7 +9625,8 @@
     padding: 72px 16px 16px;
   }
 
-  .quick-open-backdrop {
+  .quick-open-backdrop,
+  .command-palette-backdrop {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -7206,7 +9637,8 @@
     cursor: default;
   }
 
-  .quick-open-panel {
+  .quick-open-panel,
+  .command-palette-panel {
     position: relative;
     z-index: 1;
     width: min(720px, calc(100vw - 32px));
@@ -7217,7 +9649,8 @@
     box-shadow: 0 28px 80px rgba(0, 0, 0, 0.44);
   }
 
-  .quick-open-search {
+  .quick-open-search,
+  .command-palette-search {
     display: grid;
     grid-template-columns: 22px minmax(0, 1fr);
     align-items: center;
@@ -7229,24 +9662,41 @@
     background: rgba(255, 255, 255, 0.045);
   }
 
+  .command-palette-search {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    height: 46px;
+  }
+
   .quick-open-icon,
-  .quick-open-result-icon {
+  .quick-open-result-icon,
+  .command-palette-icon,
+  .command-palette-result-icon {
     display: grid;
     place-items: center;
     min-width: 0;
   }
 
-  .quick-open-icon {
+  .quick-open-icon,
+  .command-palette-icon {
     color: #6fdfcf;
   }
 
-  .quick-open-search input {
+  .quick-open-search input,
+  .command-palette-search input {
     height: 100%;
     font-size: 15px;
     font-weight: 700;
   }
 
-  .quick-open-results {
+  .command-palette-search kbd {
+    color: #7f8b87;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  .quick-open-results,
+  .command-palette-results {
     display: grid;
     gap: 3px;
     max-height: 368px;
@@ -7254,7 +9704,8 @@
     overflow: auto;
   }
 
-  .quick-open-results button {
+  .quick-open-results button,
+  .command-palette-results button {
     display: grid;
     grid-template-columns: 22px minmax(0, 1fr) auto;
     align-items: center;
@@ -7271,40 +9722,63 @@
     cursor: pointer;
   }
 
+  .command-palette-results button {
+    grid-template-columns: 22px minmax(0, 1fr);
+    height: 38px;
+  }
+
   .quick-open-results button:hover,
-  .quick-open-results button.active {
+  .quick-open-results button.active,
+  .command-palette-results button:hover:not(:disabled),
+  .command-palette-results button.active {
     color: #f2f6f5;
     background: rgba(92, 226, 207, 0.12);
   }
 
-  .quick-open-result-icon {
+  .command-palette-results button:disabled {
+    cursor: default;
+    opacity: 0.44;
+  }
+
+  .quick-open-result-icon,
+  .command-palette-result-icon {
     color: #8d9995;
   }
 
-  .quick-open-results button.active .quick-open-result-icon {
+  .quick-open-results button.active .quick-open-result-icon,
+  .command-palette-results button.active .command-palette-result-icon {
     color: #6fdfcf;
   }
 
-  .quick-open-results button span {
+  .quick-open-results button span,
+  .command-palette-results button span {
     display: grid;
     min-width: 0;
   }
 
   .quick-open-results strong,
-  .quick-open-results small {
+  .quick-open-results small,
+  .command-palette-results strong,
+  .command-palette-results small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .quick-open-results strong {
+  .quick-open-results strong,
+  .command-palette-results strong {
     font-size: 13px;
     line-height: 1.15;
   }
 
+  .command-palette-results strong {
+    font-size: 12px;
+  }
+
   .quick-open-results small,
-  .quick-open-results em {
+  .quick-open-results em,
+  .command-palette-results small {
     color: #7f8b87;
     font-size: 10px;
     font-style: normal;
@@ -7343,6 +9817,10 @@
       margin: 10px;
     }
 
+    .shell.side-right {
+      grid-template-columns: 1fr;
+    }
+
     .activity-shell {
       grid-template-columns: 48px minmax(0, 1fr);
       min-height: 620px;
@@ -7350,12 +9828,33 @@
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
 
+    .shell.side-right .activity-shell {
+      grid-template-columns: 48px minmax(0, 1fr);
+      grid-column: auto;
+      grid-row: auto;
+      border-left: 0;
+    }
+
+    .shell.side-right .workspace,
+    .shell.side-right .side-pane-resizer,
+    .shell.side-right .activity-rail,
+    .shell.side-right .sidebar {
+      grid-column: auto;
+      grid-row: auto;
+    }
+
+    .shell.side-right .activity-rail {
+      border-right: 1px solid rgba(255, 255, 255, 0.07);
+      border-left: 0;
+    }
+
     .activity-rail {
       width: 48px;
       padding: 12px 4px;
     }
 
-    .side-pane-resizer {
+    .side-pane-resizer,
+    .context-pane-resizer {
       display: none;
     }
 
@@ -7372,12 +9871,31 @@
       justify-content: flex-start;
     }
 
-    .status-strip {
-      flex-wrap: wrap;
-    }
-
     .context-identity-strip {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .workspace-arrangement.context-side {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .workspace-arrangement.context-side .workspace-context-column,
+    .workspace-arrangement.context-side .workspace-main-column {
+      grid-column: auto;
+      grid-row: auto;
+    }
+
+    .workspace-arrangement.context-side .workspace-context-column {
+      padding-left: 0;
+    }
+
+    .workspace-arrangement.context-side .context-pane-resizer {
+      display: none;
+    }
+
+    .workspace-arrangement.context-side .context-panel-grid {
+      max-height: 280px;
     }
 
     .runtime-context-row {

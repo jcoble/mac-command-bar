@@ -13,7 +13,7 @@ const appearanceSource = await readFile(
 
 function blockFor(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`, 'm').exec(pageSource);
+  const match = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`, 'm').exec(pageSource);
   assert.ok(match?.groups?.body, `Missing style block for ${selector}`);
   return match.groups.body;
 }
@@ -23,16 +23,23 @@ function assertDeclaration(selector, declaration) {
 }
 
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
-assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 8px minmax(0, 1fr)');
+assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
+assertDeclaration('.shell.side-right', 'grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width)');
 assertDeclaration('.activity-shell', 'min-width: 0');
 assertDeclaration('.topbar > div:first-child', 'min-width: 0');
 assertDeclaration('.topbar h2', 'text-overflow: ellipsis');
-assertDeclaration('.activity-rail', 'width: 54px');
-assertDeclaration('.layout-preset-group', 'display: inline-flex');
-assertDeclaration('.layout-preset-group button.active', 'background: rgba(92, 226, 207, 0.18)');
-assertDeclaration('.context-mode-group', 'display: inline-flex');
+assertDeclaration('.activity-rail', 'width: 46px');
+assertDeclaration('.topbar-command-button', 'height: 26px');
+assertDeclaration('.view-menu', 'position: absolute');
+assertDeclaration('.view-menu-button-grid', 'grid-template-columns: repeat(3, minmax(0, 1fr))');
+assertDeclaration('.workspace-arrangement', 'grid-template-rows: auto minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width)');
 assertDeclaration('.context-panel-grid.stacked', 'grid-template-columns: minmax(0, 1fr)');
+assertDeclaration('.context-stack-tabs', 'display: flex');
+assertDeclaration('.context-stack-tabs button', 'height: 24px');
+assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'overflow-y: auto');
 assertDeclaration('.side-pane-resizer', 'cursor: col-resize');
+assertDeclaration('.context-pane-resizer', 'cursor: col-resize');
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
 assertDeclaration('.activity-filter-box', 'grid-template-columns: 18px minmax(0, 1fr)');
@@ -40,25 +47,45 @@ assertDeclaration('.paste-cleanup-panel', 'overflow: hidden');
 assertDeclaration('.paste-cleanup-grid', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.paste-cleanup-textarea', 'resize: none');
 assertDeclaration('.editor-body-grid', 'grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width)');
+assertDeclaration('.editor-body-grid.insights-hidden', 'grid-template-columns: minmax(0, 1fr)');
+assertDeclaration('.editor-canvas', 'position: relative');
 assertDeclaration('.editor-insight-resizer', 'cursor: col-resize');
+assertDeclaration('.editor-lookup-popover', 'position: absolute');
+assertDeclaration('.git-command-drawer', 'flex: 0 0 auto');
 assertDeclaration('.context-panel-grid.collapsed', 'display: none');
+assertDeclaration('.editor-frame', 'height: auto');
 assertDeclaration('.source-list-panel', 'overflow: hidden');
 assertDeclaration('.file-tree', 'overflow-y: auto');
 assertDeclaration('.file-tree', 'overflow-x: hidden');
 assertDeclaration('.file-tree', 'scrollbar-gutter: stable');
 assertDeclaration('.file-tree', 'scrollbar-width: thin');
-assert.ok(pageSource.includes("type SourceActivityMode = 'files' | 'clipboard' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git'"), 'Source shell should define switchable activity modes');
+assertDeclaration('.file-tree button.file-row small', 'display: none');
+assert.ok(pageSource.includes("| 'runs'"), 'Source shell should define an orchestration runs activity mode');
 assert.ok(pageSource.includes('sourceActivityModeStorageKey'), 'Source shell should persist the active activity mode');
 assert.ok(pageSource.includes('pasteCleanupModeStorageKey'), 'Clipboard cleanup should persist its cleanup mode');
 assert.ok(pageSource.includes('sidePaneWidthStorageKey'), 'Source shell should persist the side pane width');
+assert.ok(pageSource.includes('contextPaneWidthStorageKey'), 'Workspace should persist the side context pane width');
+assert.ok(pageSource.includes('sidePanePositionStorageKey'), 'Source shell should persist the side pane position');
 assert.ok(pageSource.includes('sourceLayoutPresetStorageKey'), 'Source shell should persist the selected layout preset');
+assert.ok(pageSource.includes('sourceLayoutVersionStorageKey'), 'Source shell should version layout storage migrations');
 assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes('contextPanelModeStorageKey'), 'Workspace should persist the context card layout mode');
-assert.ok(pageSource.includes("type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom'"), 'Source shell should define named layout presets plus custom');
+assert.ok(pageSource.includes('contextPanelPlacementStorageKey'), 'Workspace should persist the context card placement');
+assert.ok(pageSource.includes('hiddenContextCardsStorageKey'), 'Workspace should persist hidden context cards');
+assert.ok(pageSource.includes('activeContextCardStorageKey'), 'Workspace should persist the active stacked context card');
+assert.ok(pageSource.includes("type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'runs' | 'sessions' | 'custom'"), 'Source shell should define named layout presets plus custom');
 assert.ok(pageSource.includes("type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty'"), 'Source shell should define supported terminal apps');
 assert.ok(pageSource.includes("type SourceContextPanelMode = 'grid' | 'stack'"), 'Workspace should define context card layout modes');
+assert.ok(pageSource.includes("type SourceContextPanelPlacement = 'top' | 'side'"), 'Workspace should define context card placement modes');
+assert.ok(pageSource.includes("type SourceSidePanePosition = 'left' | 'right'"), 'Source shell should define side pane positions');
+assert.ok(pageSource.includes("type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo'"), 'Workspace should define hideable context cards');
+assert.ok(pageSource.includes('const contextCardOrder'), 'Workspace should define a stable context card order');
+assert.ok(pageSource.includes('const contextCardLabels'), 'Workspace should define compact context card labels');
 assert.ok(pageSource.includes('contextPanelMode: SourceContextPanelMode'), 'Layout presets should include context card layout mode');
+assert.ok(pageSource.includes('contextPanelPlacement: SourceContextPanelPlacement'), 'Layout presets should include context card placement');
+assert.ok(pageSource.includes('sidePanePosition: SourceSidePanePosition'), 'Layout presets should include side pane position');
 assert.ok(pageSource.includes('const sourceLayoutPresets'), 'Source shell should define reusable layout presets');
+assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-editor-canvas'"), 'Source shell should define the compact layout migration version');
 assert.ok(pageSource.includes('const sourceTerminalApps'), 'Source shell should define reusable terminal app choices');
 assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
 assert.ok(pageSource.includes('let sourceActivityFilter'), 'Source shell should track the side pane activity filter');
@@ -66,55 +93,127 @@ assert.ok(pageSource.includes('let pasteCleanupInput'), 'Clipboard cleanup shoul
 assert.ok(pageSource.includes('let pasteCleanupMode'), 'Clipboard cleanup should track the cleanup mode');
 assert.ok(pageSource.includes('pasteCleanupOutput'), 'Clipboard cleanup should derive cleaned output');
 assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
+assert.ok(pageSource.includes('let contextPaneWidth'), 'Workspace should track the resizable side context pane width');
+assert.ok(pageSource.includes('let sidePanePosition'), 'Source shell should track the side pane position');
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
 assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('let contextPanelMode'), 'Workspace should track the context card layout mode');
+assert.ok(pageSource.includes('let contextPanelPlacement'), 'Workspace should track context card placement');
+assert.ok(pageSource.includes('let hiddenContextCardIDs'), 'Workspace should track hidden context cards');
+assert.ok(pageSource.includes('let activeContextCardID'), 'Workspace should track the active stacked context card');
+assert.ok(pageSource.includes('let viewMenuOpen'), 'Source shell should track the compact view menu');
+assert.ok(pageSource.includes('let commandPaletteVisible'), 'Source shell should track command palette visibility');
 assert.ok(pageSource.includes('function applySourceLayoutPreset'), 'Source shell should expose layout preset application');
 assert.ok(pageSource.includes('function selectSourceTerminalApp'), 'Source shell should expose terminal app selection');
 assert.ok(pageSource.includes('function selectContextPanelMode'), 'Workspace should expose context card layout selection');
+assert.ok(pageSource.includes('function selectContextPanelPlacement'), 'Workspace should expose context card placement selection');
+assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
+assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
+assert.ok(pageSource.includes('function shouldRenderContextCard'), 'Workspace should render stacked context cards through one predicate');
+assert.ok(pageSource.includes('function selectActiveContextCard'), 'Workspace should expose stacked context card selection');
+assert.ok(pageSource.includes('function toggleViewMenu'), 'Source shell should expose a compact view menu');
+assert.ok(pageSource.includes('function closeViewMenu'), 'Source shell should close the compact view menu');
+assert.ok(pageSource.includes('function openCommandPalette'), 'Source shell should expose a command palette');
+assert.ok(pageSource.includes('function runCommandPaletteItem'), 'Command palette should execute selected commands');
+assert.ok(pageSource.includes('function selectSidePanePosition'), 'Source shell should expose side pane placement selection');
 assert.ok(pageSource.includes('function markSourceLayoutCustom'), 'Manual layout changes should mark the layout as custom');
+assert.ok(pageSource.includes('function shouldMigrateSourceLayout'), 'Source shell should migrate old dense layout storage');
+assert.ok(pageSource.includes('function persistSourceLayoutVersion'), 'Source shell should persist layout migration state');
 assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows should share clipboard copy behavior');
 assert.ok(pageSource.includes('function copyActivityCommand'), 'Activity rows should copy resume commands and paths');
 assert.ok(pageSource.includes('function openActivityPath'), 'Activity rows should open repo and worktree paths');
 assert.ok(pageSource.includes('function revealActivityPath'), 'Activity rows should reveal repo and worktree paths');
 assert.ok(pageSource.includes('function openActivityTerminalPath'), 'Activity rows should open repo and worktree paths in a terminal');
+assert.ok(pageSource.includes('function openAgentSessionTerminal'), 'Agent rows should resume sessions in a terminal');
 assert.ok(pageSource.includes('function activityTextMatchesFilter'), 'Activity rows should share filter matching logic');
 assert.ok(pageSource.includes('function sourceActivityFilterPlaceholder'), 'Activity filter placeholder should match the active panel');
 assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
 assert.ok(pageSource.includes('function beginSidePaneResize'), 'Source shell should expose side pane drag resizing');
+assert.ok(pageSource.includes('function beginContextPaneResize'), 'Workspace should expose context pane drag resizing');
 assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');
 assert.ok(pageSource.includes('editorInsightWidthStorageKey'), 'Editor shell should persist the inspector width');
+assert.ok(pageSource.includes('editorInsightCollapsedStorageKey'), 'Editor shell should persist inspector visibility');
 assert.ok(pageSource.includes('contextPanelCollapsedStorageKey'), 'Workspace should persist collapsed context cards');
 assert.ok(pageSource.includes('let editorInsightWidth'), 'Editor shell should track inspector width');
+assert.ok(pageSource.includes('let editorInsightCollapsed'), 'Editor shell should track inspector visibility');
 assert.ok(pageSource.includes('let contextPanelCollapsed'), 'Workspace should track context card collapse state');
 assert.ok(pageSource.includes('function beginEditorInsightResize'), 'Editor shell should expose inspector drag resizing');
+assert.ok(pageSource.includes('function toggleEditorInsightCollapsed'), 'Editor shell should expose inspector collapse');
+assert.ok(pageSource.includes('function showEditorInsightPanel'), 'Editor shell should reopen a requested inspector panel');
+assert.ok(pageSource.includes('function clearSourceLookupResults'), 'Editor shell should clear inline lookup results');
 assert.ok(pageSource.includes('function toggleContextPanelCollapsed'), 'Workspace should expose context card collapse');
+assert.ok(pageSource.includes('function showContextCard'), 'Workspace should expose individual context card restore');
 assert.ok(pageSource.includes('if (storedWidth === null) return sidePaneDefaultWidth'), 'Missing side pane storage should use the designed default width');
 assert.ok(pageSource.includes('if (storedWidth === null) return editorInsightDefaultWidth'), 'Missing editor inspector storage should use the designed default width');
+assert.ok(pageSource.includes('if (storedWidth === null) return contextPaneDefaultWidth'), 'Missing context pane storage should use the designed default width');
 assert.ok(pageSource.includes('class="activity-rail"'), 'Source shell should render an activity rail');
-assert.ok(pageSource.includes('class="layout-preset-group"'), 'Source shell should render layout preset controls');
-assert.ok(pageSource.includes('aria-label="Workspace layout presets"'), 'Layout preset controls should be grouped for assistive tech');
+assert.ok(pageSource.includes("class:side-right={sidePanePosition === 'right'}"), 'Source shell should support moving the side pane to the right');
+assert.ok(pageSource.includes("class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}"), 'Workspace should support side context placement');
+assert.ok(pageSource.includes('class="workspace-arrangement"'), 'Workspace should wrap context and editor into a rearrangeable layout');
+assert.ok(pageSource.includes('class="workspace-main-column"'), 'Workspace should isolate the editor column');
+assert.ok(pageSource.includes('class="workspace-context-column"'), 'Workspace should isolate the context column');
+assert.ok(pageSource.includes('class="topbar-command-button"'), 'Topbar should expose compact command controls');
+assert.ok(pageSource.includes('class="view-menu"'), 'Topbar should tuck layout controls into a view menu');
+assert.ok(pageSource.includes('aria-label="Workspace layout presets"'), 'View menu should group layout presets for assistive tech');
 assert.ok(pageSource.includes('aria-label="Terminal app"'), 'Terminal app picker should be accessible');
 assert.ok(pageSource.includes('openTerminalPathFromTauri(path, sourceTerminalApp)'), 'Terminal open actions should use the selected terminal app');
+assert.ok(pageSource.includes('openTerminalCommandFromTauri(path, command, sourceTerminalApp)'), 'Agent resume actions should use the selected terminal app');
 assert.ok(pageSource.includes('aria-label="Workspace views"'), 'Activity rail should be labeled');
 assert.ok(pageSource.includes('aria-label="Files"'), 'Activity rail should expose files');
 assert.ok(pageSource.includes('aria-label="Clipboard"'), 'Activity rail should expose clipboard cleanup');
 assert.ok(pageSource.includes('aria-label="Conversations"'), 'Activity rail should expose conversations');
+assert.ok(pageSource.includes('aria-label="Runs"'), 'Activity rail should expose orchestration runs');
 assert.ok(pageSource.includes('aria-label="Active sessions"'), 'Activity rail should expose active sessions');
 assert.ok(pageSource.includes('aria-label="Agents"'), 'Activity rail should expose agents');
 assert.ok(pageSource.includes('aria-label="Worktrees"'), 'Activity rail should expose worktrees');
 assert.ok(pageSource.includes('aria-label="Git and tasks"'), 'Activity rail should expose Git and tasks');
 assert.ok(pageSource.includes('class="side-pane-resizer"'), 'Source shell should render a side pane resizer');
 assert.ok(pageSource.includes('aria-label="Resize side pane"'), 'Side pane resizer should be labeled');
-assert.ok(pageSource.includes('class="workspace-context-toggle"'), 'Workspace should render a context card collapse control');
-assert.ok(pageSource.includes('aria-label="Toggle workspace context cards"'), 'Context card collapse control should be labeled');
-assert.ok(pageSource.includes('class="context-mode-group"'), 'Workspace should render context card layout controls');
+assert.ok(pageSource.includes('class="context-pane-resizer"'), 'Workspace should render a context pane resizer');
+assert.ok(pageSource.includes('aria-label="Resize context pane"'), 'Context pane resizer should be labeled');
+assert.ok(pageSource.includes('context-card-close'), 'Workspace context cards should render per-card close controls');
+assert.ok(pageSource.includes('class="context-restore-button"'), 'Workspace should render hidden-card restore when needed');
+assert.ok(pageSource.includes('class="context-stack-tabs"'), 'Workspace should render tabs for stacked context cards');
+assert.ok(pageSource.includes('aria-label="Context card tabs"'), 'Stacked context tabs should be accessible');
+assert.ok(pageSource.includes('class="command-palette-layer"'), 'Source shell should render a command palette overlay');
+assert.ok(pageSource.includes('aria-label="Command palette"'), 'Command palette should be accessible');
+assert.ok(pageSource.includes("event.key.toLowerCase() === 'k'"), 'Command palette should open from Cmd+K');
+assert.ok(pageSource.includes("id: 'go-to-line'"), 'Command palette should expose current-file line navigation');
+assert.ok(pageSource.includes('function openCurrentFileGoToLine'), 'Line navigation should reuse quick open');
+assert.ok(pageSource.includes('quickOpenQuery = `${selectedRecord.relativePath}:`'), 'Line navigation should prefill the current file path');
+assert.ok(pageSource.includes("id: 'scan-project-expanded'"), 'Command palette should expose expanded source scans');
+assert.ok(pageSource.includes("id: 'scan-stop'"), 'Command palette should expose scan cancellation');
+assert.ok(pageSource.includes("id: 'project-add-folder'"), 'Command palette should expose project folder selection');
+assert.ok(pageSource.includes("id: 'project-open-folder'"), 'Command palette should open the current project folder');
+assert.ok(pageSource.includes("id: 'project-reveal-folder'"), 'Command palette should reveal the current project folder');
+assert.ok(pageSource.includes("id: 'project-open-terminal'"), 'Command palette should open the current project in the selected terminal');
+assert.ok(pageSource.includes('showContextCard(cardID)'), 'Command palette should restore individual context cards');
+assert.ok(pageSource.includes("id: 'activity-clipboard'"), 'Command palette should switch to clipboard cleanup');
+assert.ok(pageSource.includes("id: 'activity-conversations'"), 'Command palette should switch to conversations');
+assert.ok(pageSource.includes("id: 'activity-refresh'"), 'Command palette should refresh the current activity lane');
+assert.ok(pageSource.includes('agent-resume-${session.provider}-${session.id}'), 'Command palette should expose agent resume targets');
+assert.ok(pageSource.includes('Go to symbol: ${symbol.name}'), 'Command palette should expose current-file symbols');
+assert.ok(pageSource.includes('selectSourceSymbol(symbol)'), 'Command palette symbol commands should reveal source lines');
+assert.ok(pageSource.includes('Go to problem: ${diagnostic.message}'), 'Command palette should expose current-file diagnostics');
+assert.ok(pageSource.includes('selectSourceDiagnostic(diagnostic)'), 'Command palette diagnostic commands should reveal source lines');
+assert.ok(pageSource.includes('class="view-menu-button-grid"'), 'Workspace should render context card layout controls inside the view menu');
 assert.ok(pageSource.includes('aria-label="Context card layout"'), 'Context card layout controls should be accessible');
-assert.ok(pageSource.includes("onclick={() => selectContextPanelMode('grid')}"), 'Context layout controls should select grid mode');
-assert.ok(pageSource.includes("onclick={() => selectContextPanelMode('stack')}"), 'Context layout controls should select stack mode');
+assert.ok(pageSource.includes('aria-label="Side pane position"'), 'Side pane placement controls should be accessible');
+assert.ok(pageSource.includes('aria-label="Context card layout"'), 'Context placement controls should be accessible');
+assert.ok(pageSource.includes("selectSidePanePosition('left')"), 'Side pane controls should select the left position');
+assert.ok(pageSource.includes("selectSidePanePosition('right')"), 'Side pane controls should select the right position');
+assert.ok(pageSource.includes("selectContextPanelPlacement('top')"), 'Context placement controls should select top placement');
+assert.ok(pageSource.includes("selectContextPanelPlacement('side')"), 'Context placement controls should select side placement');
+assert.ok(pageSource.includes("selectContextPanelMode('grid')"), 'Context layout controls should select grid mode');
+assert.ok(pageSource.includes("selectContextPanelMode('stack')"), 'Context layout controls should select stack mode');
 assert.ok(pageSource.includes("class:stacked={contextPanelMode === 'stack'}"), 'Context card grid should support stacked layout');
 assert.ok(pageSource.includes('class="editor-insight-resizer"'), 'Editor shell should render an inspector resizer');
 assert.ok(pageSource.includes('aria-label="Resize editor insights"'), 'Inspector resizer should be labeled');
+assert.ok(pageSource.includes('class:insights-hidden={editorInsightCollapsed}'), 'Editor shell should remove the inspector from layout when collapsed');
+assert.ok(pageSource.includes('class="editor-canvas"'), 'Editor shell should wrap Monaco in a canvas for overlays');
+assert.ok(pageSource.includes('class="editor-lookup-popover"'), 'Editor shell should render inline lookup results over the editor');
+assert.ok(pageSource.includes("showEditorInsightPanel('git')"), 'Editor actions should reopen the Git inspector');
+assert.ok(pageSource.includes('class="git-command-drawer"'), 'Git inspector should tuck write actions into a compact drawer');
 assert.ok(pageSource.includes('class="activity-panel"'), 'Non-file side modes should render activity panels');
 assert.ok(pageSource.includes('class="activity-filter-box"'), 'Activity panels should render a filter field');
 assert.ok(pageSource.includes('class="activity-panel-list"'), 'Activity panels should render scrollable lists');
@@ -128,6 +227,13 @@ assert.ok(pageSource.includes('class="activity-row-actions"'), 'Activity rows sh
 assert.ok(pageSource.includes('placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}'), 'Activity filter placeholder should be dynamic');
 assert.ok(pageSource.includes('aria-label="Filter workspace activity"'), 'Activity filter should be accessible');
 assert.ok(pageSource.includes('filteredProjectAgentSessions'), 'Activity panels should filter conversation and agent rows');
+assert.ok(pageSource.includes('filteredProjectOrchestrationRuns'), 'Activity panels should filter orchestration run rows');
+assert.ok(pageSource.includes('listOrchestrationRunsFromTauri'), 'Source page should load orchestration runs from the native event store');
+assert.ok(pageSource.includes('class="activity-run-row"'), 'Runs mode should render orchestration run cards');
+assert.ok(pageSource.includes('class="orchestration-context-panel"'), 'Workspace context should include orchestration run status');
+assert.ok(pageSource.includes('run.steps.length'), 'Orchestration run cards should expose step counts');
+assert.ok(pageSource.includes('run.agents.length'), 'Orchestration run cards should expose agent counts');
+assert.ok(pageSource.includes('run.artifacts.length'), 'Orchestration run cards should expose artifact counts');
 assert.ok(pageSource.includes('filteredProjectWorktrees'), 'Activity panels should filter worktree rows');
 assert.ok(pageSource.includes('worktree.taskID'), 'Worktree rows should expose parsed task IDs');
 assert.ok(pageSource.includes('gitTaskUrl(worktree.taskID)'), 'Worktree rows should link parsed task IDs to Notion');
@@ -136,6 +242,7 @@ assert.ok(pageSource.includes('projectWorktreeActivityLabel(worktree)'), 'Worktr
 assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
+assert.ok(pageSource.includes('aria-label="Resume agent in terminal"'), 'Agent rows should expose one-click terminal resume');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
@@ -185,6 +292,8 @@ assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor
 assert.ok(editorSource.includes('basic-languages/lua/lua.contribution'), 'Editor should load Lua highlighting');
 assert.ok(editorSource.includes('basic-languages/php/php.contribution'), 'Editor should load PHP highlighting');
 assert.ok(editorSource.includes('basic-languages/protobuf/protobuf.contribution'), 'Editor should load Protobuf highlighting');
+assert.ok(editorSource.includes('automaticLayout: false'), 'Editor should avoid Monaco automatic ResizeObserver layout');
+assert.ok(editorSource.includes('layoutObserver = new ResizeObserver'), 'Editor should own a deferred layout observer');
 assert.ok(editorSource.includes('editable?: boolean'), 'Editor should expose an editable mode prop');
 assert.ok(editorSource.includes('content?: string'), 'Editor should allow external draft content');
 assert.ok(
@@ -200,6 +309,11 @@ assert.ok(pageSource.includes('savedSourceContentByPath'), 'Source page should t
 assert.ok(pageSource.includes('writeSourceToTauri'), 'Source page should use the native write command');
 assert.ok(pageSource.includes('function saveSelectedSourceFile'), 'Source page should expose a save action');
 assert.ok(pageSource.includes('function revertSelectedSourceFile'), 'Source page should expose a revert action');
+assert.ok(pageSource.includes('const hasUnsavedDraft'), 'Source page should preserve only real unsaved drafts');
+assert.ok(
+  pageSource.includes('existingDraft !== existingSaved'),
+  'Real source loads should replace stale demo drafts instead of marking files dirty'
+);
 assert.ok(
   pageSource.includes('class:dirty={isSourcePathDirty(tab.path)}'),
   'Source tabs should show dirty state per path'
@@ -215,6 +329,10 @@ assert.ok(pageSource.includes('editable={true}'), 'Monaco should run in editable
 assert.ok(
   pageSource.includes('onContentChange={updateSelectedSourceDraft}'),
   'Monaco should update the active draft content'
+);
+assert.ok(
+  pageSource.includes('externalDiagnostics={sourceLspDiagnostics}'),
+  'Monaco should receive native LSP diagnostics from the page'
 );
 assert.ok(
   editorSource.includes('vs/language/typescript/monaco.contribution'),
@@ -237,21 +355,61 @@ assert.ok(
   'Editor should report diagnostics to the parent'
 );
 assert.ok(
+  editorSource.includes('externalDiagnostics?: SourceDiagnostic[]'),
+  'Editor should accept native LSP diagnostics as external markers'
+);
+assert.ok(
+  editorSource.includes('function applyExternalDiagnostics'),
+  'Editor should apply native LSP diagnostics to Monaco markers'
+);
+assert.ok(
+  editorSource.includes('monacoApi.editor.setModelMarkers(model, "mcb-lsp"'),
+  'Editor should keep native LSP diagnostics in a dedicated Monaco marker owner'
+);
+assert.ok(
   editorSource.includes('onSymbolsChange?: (symbols: SourceSymbol[]) => void'),
   'Editor should report symbols to the parent'
 );
 assert.ok(editorSource.includes('intelligenceCommand?: SourceEditorIntelligenceCommand | null'), 'Editor should accept language-intelligence commands');
 assert.ok(
-  editorSource.includes('onDefinitionLookup?: (symbolName: string) => void'),
-  'Editor should report the current word for project definition lookup'
+  editorSource.includes('type SourceEditorLookupRequest'),
+  'Editor should define a position-aware lookup request'
 );
 assert.ok(
-  editorSource.includes('onReferenceLookup?: (symbolName: string) => void'),
-  'Editor should report the current word for project reference lookup'
+  editorSource.includes('onDefinitionLookup?: (request: SourceEditorLookupRequest) => void'),
+  'Editor should report the current word and position for project definition lookup'
+);
+assert.ok(
+  editorSource.includes('onReferenceLookup?: (request: SourceEditorLookupRequest) => void'),
+  'Editor should report the current word and position for project reference lookup'
 );
 assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the symbol under the cursor');
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
+assert.ok(editorSource.includes('editor.action.referenceSearch.trigger'), 'Editor should expose Monaco reference search');
+assert.ok(editorSource.includes('onSaveRequest?: () => void'), 'Editor should accept a native save shortcut callback');
+assert.ok(editorSource.includes('onQuickOpenRequest?: () => void'), 'Editor should accept a native quick-open shortcut callback');
+assert.ok(editorSource.includes('onCommandPaletteRequest?: () => void'), 'Editor should accept a native command-palette shortcut callback');
+assert.ok(editorSource.includes('onGoToLineRequest?: () => void'), 'Editor should accept a native go-to-line shortcut callback');
+assert.ok(editorSource.includes('onProblemsRequest?: () => void'), 'Editor should accept a native problems shortcut callback');
+assert.ok(editorSource.includes('onSymbolsRequest?: () => void'), 'Editor should accept a native symbols shortcut callback');
+assert.ok(editorSource.includes('monaco.KeyCode.F12'), 'Editor should bind F12 for definition lookup');
+assert.ok(editorSource.includes('monaco.KeyMod.Shift | monaco.KeyCode.F12'), 'Editor should bind Shift+F12 for references');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS'), 'Editor should bind Cmd+S inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP'), 'Editor should bind Cmd+P inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK'), 'Editor should bind Cmd+K inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyG'), 'Editor should bind Cmd+G inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO'), 'Editor should bind Cmd+Shift+O inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM'), 'Editor should bind Cmd+Shift+M inside Monaco');
+assert.ok(editorSource.includes('editor.addAction'), 'Editor should register Monaco command-palette/context-menu actions');
+assert.ok(editorSource.includes('registerHoverProvider'), 'Editor should register an in-editor hover provider');
+assert.ok(editorSource.includes('editor.onMouseDown'), 'Editor should handle mouse navigation gestures');
+assert.ok(editorSource.includes('MouseTargetType.CONTENT_TEXT'), 'Editor mouse navigation should only run for text tokens');
+assert.ok(
+  editorSource.includes('browserEvent.metaKey') && editorSource.includes('browserEvent.ctrlKey'),
+  'Editor should support Cmd/Ctrl-click definition lookup'
+);
+assert.ok(editorSource.includes('function requestDefinitionAtPosition'), 'Editor should request definitions from clicked token positions');
 assert.ok(pageSource.includes('sourceDiagnostics'), 'Source page should track diagnostics');
 assert.ok(pageSource.includes('sourceSymbols'), 'Source page should track symbols');
 assert.ok(pageSource.includes('sourceDefinitionTargets'), 'Source page should track project definition lookup targets');
@@ -260,6 +418,15 @@ assert.ok(pageSource.includes('formatSourceDiagnosticSummary'), 'Source page sho
 assert.ok(pageSource.includes('sourceSupportsLanguageIntelligence'), 'Source page should gate Monaco language actions');
 assert.ok(pageSource.includes('requestSourceIntelligenceAction'), 'Source page should dispatch language actions');
 assert.ok(pageSource.includes('findSourceDefinitionsFromTauri'), 'Source page should call native project definition lookup');
+assert.ok(pageSource.includes('findSourceLspDefinitionsFromTauri'), 'Source page should try LSP definition lookup before project index lookup');
+assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page should try LSP reference lookup before project index lookup');
+assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
+assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
+assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
+assert.ok(pageSource.includes('sourceLspStatus'), 'Source page should track LSP availability');
+assert.ok(pageSource.includes('sourceLspDiagnostics'), 'Source page should track native LSP diagnostics separately');
+assert.ok(pageSource.includes('function loadSourceLspDiagnostics'), 'Source page should expose native LSP diagnostics loading');
+assert.ok(pageSource.includes('function loadSourceLspSymbols'), 'Source page should expose native LSP symbol loading');
 assert.ok(pageSource.includes('findSourceDefinitionTargets'), 'Source page should fall back to browser definition lookup');
 assert.ok(pageSource.includes('findSourceReferencesFromTauri'), 'Source page should call native project reference lookup');
 assert.ok(pageSource.includes('findSourceReferenceTargets'), 'Source page should fall back to browser reference lookup');
@@ -269,6 +436,12 @@ assert.ok(pageSource.includes('function handleEditorDefinitionLookup'), 'Source 
 assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source page should receive editor reference lookup requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
+assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
+assert.ok(pageSource.includes('onQuickOpenRequest={openQuickOpen}'), 'Editor Cmd+P should call the page quick-open path');
+assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), 'Editor Cmd+K should call the page command palette');
+assert.ok(pageSource.includes('onGoToLineRequest={openCurrentFileGoToLine}'), 'Editor Cmd+G should call current-file line navigation');
+assert.ok(pageSource.includes("onProblemsRequest={() => showEditorInsightPanel('problems')}"), 'Editor Cmd+Shift+M should show problems');
+assert.ok(pageSource.includes("onSymbolsRequest={() => showEditorInsightPanel('symbols')}"), 'Editor Cmd+Shift+O should show symbols');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
 assert.ok(pageSource.includes('aria-label="Go to definition"'), 'Editor controls should expose definition');
@@ -347,7 +520,7 @@ assert.ok(pageSource.includes('<span>Project</span>'), 'Context strip should lab
 assert.ok(pageSource.includes('<span>Root</span>'), 'Context strip should label the root/worktree');
 assert.ok(pageSource.includes('<span>Branch</span>'), 'Context strip should label the branch/Git state');
 assert.ok(pageSource.includes('<span>Runtime</span>'), 'Context strip should label the runtime surface');
-assert.ok(pageSource.includes('class="project-git-pill"'), 'Topbar should render a compact project Git branch/status pill');
+assert.ok(pageSource.includes('{sourceContextIdentity.gitSummary}'), 'Context strip should render the project Git branch/status summary');
 assert.ok(pageSource.includes('class="git-status-badge"'), 'Tree and tabs should render file-level Git status badges');
 assert.ok(pageSource.includes('<span>Git</span>'), 'Language panel should include a Git tab');
 assert.ok(pageSource.includes('class="git-diff-panel"'), 'Source page should render a selected-file Git diff panel');
@@ -364,7 +537,6 @@ assert.ok(pageSource.includes('class="git-history-row"'), 'Git tab should render
 assert.ok(pageSource.includes('class="git-task-link"'), 'Git history should render task links when task metadata is present');
 assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
-assertDeclaration('.project-git-pill', 'overflow: hidden');
 assertDeclaration('.git-diff-panel', 'overflow: hidden');
 assertDeclaration('.git-status-list', 'overflow-y: auto');
 assertDeclaration('.git-history-list', 'overflow-y: auto');
@@ -432,6 +604,8 @@ assert.ok(pageSource.includes('listAgentSessionsFromTauri'), 'Source page should
 assert.ok(pageSource.includes('agentSessions'), 'Source page should track agent sessions');
 assert.ok(pageSource.includes('selectedProjectAgentSessions'), 'Source page should filter sessions to the selected project');
 assert.ok(pageSource.includes('function loadAgentSessions'), 'Source page should expose an agent session refresh action');
+assert.ok(pageSource.includes('function agentSessionRowKey'), 'Agent session lists should use duplicate-safe row keys');
+assert.ok(pageSource.includes("agentSessionRowKey(session, index, 'context')"), 'Context agent list should not key only by provider and id');
 assert.ok(pageSource.includes('aria-label="Refresh agent sessions"'), 'Agent session panel should expose a refresh action');
 assert.ok(pageSource.includes('class="agent-session-panel"'), 'Source page should render an agent session panel');
 assert.ok(pageSource.includes('class="agent-session-list"'), 'Agent session panel should render a scrollable list');

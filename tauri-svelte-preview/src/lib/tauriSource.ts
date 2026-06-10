@@ -1,11 +1,16 @@
 import type {
   ProjectRoot,
+  SourceDiagnostic,
   SourceDefinitionTarget,
+  SourceLspHover,
+  SourceLspLookupRequest,
+  SourceLspStatus,
   SourcePreview,
   SourceRecord,
   SourceReferenceTarget,
   SourceScanResult,
-  SourceSearchMatch
+  SourceSearchMatch,
+  SourceSymbol
 } from './sourceData';
 
 export const defaultSourceScanLimit = 2_000;
@@ -110,6 +115,90 @@ export type RuntimeContext = {
   rootLabel: string;
 };
 
+export type OrchestrationEvent = {
+  schemaVersion: number;
+  id: string;
+  runId: string;
+  timestamp: string;
+  kind: string;
+  status: string;
+  title: string | null;
+  message: string | null;
+  projectID: string | null;
+  projectName: string | null;
+  projectPath: string | null;
+  rootLabel: string | null;
+  taskID: string | null;
+  agentId: string | null;
+  agentProvider: string | null;
+  agentRole: string | null;
+  stepId: string | null;
+  stepKind: string | null;
+  artifactId: string | null;
+  artifactKind: string | null;
+  artifactPath: string | null;
+  artifactUrl: string | null;
+  linkKind: string | null;
+  linkLabel: string | null;
+  linkUrl: string | null;
+};
+
+export type OrchestrationRun = {
+  id: string;
+  title: string;
+  status: string;
+  phase: string;
+  progress: number;
+  projectID: string | null;
+  projectName: string;
+  projectPath: string;
+  rootLabel: string;
+  taskID: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  summary: string;
+  agents: OrchestrationAgent[];
+  steps: OrchestrationStep[];
+  artifacts: OrchestrationArtifact[];
+  links: OrchestrationLink[];
+  events: OrchestrationEvent[];
+};
+
+export type OrchestrationAgent = {
+  id: string;
+  provider: string;
+  role: string;
+  status: string;
+  title: string;
+  lastActivity: string | null;
+};
+
+export type OrchestrationStep = {
+  id: string;
+  kind: string;
+  title: string;
+  status: string;
+  summary: string;
+  agentId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type OrchestrationArtifact = {
+  id: string;
+  kind: string;
+  title: string;
+  path: string | null;
+  url: string | null;
+  status: string;
+};
+
+export type OrchestrationLink = {
+  kind: string;
+  label: string;
+  url: string;
+};
+
 export function createSourceScanId(): string {
   return `source-scan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -121,7 +210,12 @@ export async function listSourceFilesFromTauri(
   scanId: string | null = null
 ): Promise<SourceScanResult | null> {
   if (!isTauriRuntime()) {
-    return null;
+    return postLocalSourceBridge<SourceScanResult>('list', {
+      root,
+      query: query.trim() || null,
+      limit,
+      scanId
+    });
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
@@ -157,7 +251,15 @@ export async function listenToSourceScanProgress(
 
 export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {
   if (!isTauriRuntime()) {
-    return null;
+    const preview = await postLocalSourceBridge<SourcePreview>('read', { path: record.path });
+    return preview
+      ? {
+          ...preview,
+          relativePath: record.relativePath,
+          language: record.language,
+          byteCount: record.byteCount
+        }
+      : null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
@@ -175,7 +277,17 @@ export async function writeSourceToTauri(
   content: string
 ): Promise<SourcePreview | null> {
   if (!isTauriRuntime()) {
-    return null;
+    const preview = await postLocalSourceBridge<SourcePreview>('write', {
+      path: record.path,
+      content
+    });
+    return preview
+      ? {
+          ...preview,
+          relativePath: record.relativePath,
+          language: record.language
+        }
+      : null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
@@ -217,6 +329,24 @@ export async function openTerminalPathFromTauri(
   const { invoke } = await import('@tauri-apps/api/core');
   await invoke('open_terminal_path', {
     path,
+    terminal: terminal.trim() || null
+  });
+  return true;
+}
+
+export async function openTerminalCommandFromTauri(
+  path: string,
+  command: string,
+  terminal = 'Warp'
+): Promise<boolean> {
+  if (!isTauriRuntime() || !path.trim() || !command.trim()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_terminal_command', {
+    path,
+    command,
     terminal: terminal.trim() || null
   });
   return true;
@@ -368,13 +498,39 @@ export async function listRuntimeContextsFromTauri(
   return invoke<RuntimeContext[]>('list_runtime_contexts', { projects });
 }
 
+export async function listOrchestrationRunsFromTauri(
+  projects: RuntimeContextProject[]
+): Promise<OrchestrationRun[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<OrchestrationRun[]>('list_orchestration_runs', { projects });
+}
+
+export async function recordOrchestrationEventToTauri(
+  event: OrchestrationEvent
+): Promise<OrchestrationRun | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<OrchestrationRun>('record_orchestration_event', { event });
+}
+
 export async function searchSourceFilesFromTauri(
   records: SourceRecord[],
   query: string,
   limit = 50
 ): Promise<SourceSearchMatch[] | null> {
   if (!isTauriRuntime()) {
-    return null;
+    return postLocalSourceBridge<SourceSearchMatch[]>('search', {
+      records,
+      query,
+      limit
+    });
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
@@ -391,7 +547,11 @@ export async function findSourceDefinitionsFromTauri(
   limit = 20
 ): Promise<SourceDefinitionTarget[] | null> {
   if (!isTauriRuntime()) {
-    return null;
+    return postLocalSourceBridge<SourceDefinitionTarget[]>('definitions', {
+      records,
+      symbolName,
+      limit
+    });
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
@@ -402,13 +562,107 @@ export async function findSourceDefinitionsFromTauri(
   });
 }
 
+export async function readSourceLspStatusFromTauri(
+  root: string,
+  language: string
+): Promise<SourceLspStatus | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceLspStatus>('read_source_lsp_status', {
+    root,
+    language
+  });
+}
+
+export async function findSourceLspDefinitionsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceDefinitionTarget[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceDefinitionTarget[]>('find_source_lsp_definitions', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspReferencesFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceReferenceTarget[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceReferenceTarget[]>('find_source_lsp_references', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspHoverFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceLspHover | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceLspHover | null>('find_source_lsp_hover', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspSymbolsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceSymbol[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceSymbol[]>('find_source_lsp_symbols', {
+    preview,
+    request
+  });
+}
+
+export async function readSourceLspDiagnosticsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceDiagnostic[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceDiagnostic[]>('read_source_lsp_diagnostics', {
+    preview,
+    request
+  });
+}
+
 export async function findSourceReferencesFromTauri(
   records: SourceRecord[],
   symbolName: string,
   limit = 50
 ): Promise<SourceReferenceTarget[] | null> {
   if (!isTauriRuntime()) {
-    return null;
+    return postLocalSourceBridge<SourceReferenceTarget[]>('references', {
+      records,
+      symbolName,
+      limit
+    });
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
@@ -431,4 +685,43 @@ async function runPathCommand(command: string, path: string): Promise<boolean> {
 
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+async function postLocalSourceBridge<T>(
+  action: string,
+  payload: Record<string, unknown>
+): Promise<T | null> {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`/__mcb/source/${action}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    return null;
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  const text = await response.text();
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+
+  const body = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : `Local source bridge failed with HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  return body as T;
 }

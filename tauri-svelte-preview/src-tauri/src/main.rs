@@ -5,7 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
+use orchestration::{
+    list_orchestration_runs_sync, record_orchestration_event_sync, OrchestrationEvent,
+    OrchestrationRun,
+};
 use tauri::Emitter;
+
+mod lsp;
+mod orchestration;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 2_000;
@@ -487,6 +494,19 @@ async fn open_terminal_path(path: String, terminal: Option<String>) -> Result<()
 }
 
 #[tauri::command]
+async fn open_terminal_command(
+    path: String,
+    command: String,
+    terminal: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_terminal_command_action(PathBuf::from(path), command, terminal)
+    })
+    .await
+    .map_err(|error| format!("Terminal command task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn search_source_files(
     records: Vec<SourceRecord>,
     query: String,
@@ -521,6 +541,78 @@ async fn find_source_references(
     })
     .await
     .map_err(|error| format!("Source reference task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_source_lsp_status(
+    root: String,
+    language: String,
+) -> Result<lsp::SourceLspStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lsp::read_source_lsp_status_sync(PathBuf::from(root), language)
+    })
+    .await
+    .map_err(|error| format!("Source LSP status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn find_source_lsp_definitions(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspDefinitionTarget>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_definitions(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP definition task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn find_source_lsp_references(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspReferenceTarget>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_references(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP reference task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn find_source_lsp_hover(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Option<lsp::SourceLspHover>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_hover(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP hover task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn find_source_lsp_symbols(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspSymbol>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_symbols(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP symbol task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_source_lsp_diagnostics(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspDiagnostic>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.read_diagnostics(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP diagnostics task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -627,6 +719,23 @@ async fn list_runtime_contexts(
         .map_err(|error| format!("Runtime context task failed: {error}"))?
 }
 
+#[tauri::command]
+async fn list_orchestration_runs(
+    projects: Vec<RuntimeContextProject>,
+) -> Result<Vec<OrchestrationRun>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_orchestration_runs_sync(projects))
+        .await
+        .map_err(|error| format!("Orchestration run task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn record_orchestration_event(event: OrchestrationEvent) -> Result<OrchestrationRun, String> {
+    tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(event))
+        .await
+        .map_err(|error| format!("Orchestration event task failed: {error}"))?
+}
+
+#[cfg(test)]
 fn list_source_files_sync(
     root: PathBuf,
     limit: usize,
@@ -670,11 +779,7 @@ fn list_source_files_sync_with_cancellation(
     )?;
     progress.report(&cancellation);
     cancellation.ensure_active()?;
-    records.sort_by(|left, right| {
-        left.relative_path
-            .to_lowercase()
-            .cmp(&right.relative_path.to_lowercase())
-    });
+    records.sort_by(compare_source_records);
     let truncated = records.len() > limit;
     records.truncate(limit);
     #[cfg(debug_assertions)]
@@ -709,7 +814,7 @@ fn collect_source_files(
         .map_err(|error| format!("Could not read source directory: {error}"))?
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by(|left, right| compare_source_walk_entries(root, left, right));
 
     for entry in entries {
         cancellation.ensure_active()?;
@@ -737,11 +842,7 @@ fn collect_source_files(
             continue;
         }
 
-        let relative_path = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
+        let relative_path = normalized_relative_source_path(root, &path);
         if !source_file_matches_query(&relative_path, &file_name, query) {
             continue;
         }
@@ -1284,6 +1385,24 @@ fn run_terminal_path_action(path: PathBuf, terminal: Option<String>) -> Result<(
     }
 }
 
+fn run_terminal_command_action(
+    path: PathBuf,
+    command: String,
+    terminal: Option<String>,
+) -> Result<(), String> {
+    let command = terminal_command_action_command(&path, &command, terminal)?;
+    let status = Command::new(&command.program)
+        .args(&command.args)
+        .status()
+        .map_err(|error| format!("Could not run terminal command action: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Terminal command action exited with {status}"))
+    }
+}
+
 fn source_file_action_command(
     path: &Path,
     action: SourceFileAction,
@@ -1342,6 +1461,48 @@ fn terminal_path_action_command(
     })
 }
 
+fn terminal_command_action_command(
+    path: &Path,
+    command: &str,
+    terminal: Option<String>,
+) -> Result<SourceFileActionCommand, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Could not read terminal path metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Terminal path is not a directory".to_string());
+    }
+
+    let command = normalize_terminal_command(command)?;
+    let terminal_app = normalize_terminal_app(terminal.as_deref())?;
+    let shell_command = format!(
+        "cd {} && {}",
+        shell_quote(&path.display().to_string()),
+        command
+    );
+    let escaped_shell_command = applescript_string_escape(&shell_command);
+    let script = match terminal_app.as_str() {
+        "Terminal" => format!(
+            "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
+            escaped_shell_command
+        ),
+        "iTerm" | "iTerm2" => format!(
+            "tell application \"{}\"\nactivate\ncreate window with default profile\ntell current session of current window\nwrite text \"{}\"\nend tell\nend tell",
+            terminal_app,
+            escaped_shell_command
+        ),
+        _ => {
+            return Err(format!(
+                "Terminal command execution is not supported for {terminal_app}"
+            ))
+        }
+    };
+
+    Ok(SourceFileActionCommand {
+        program: "osascript".to_string(),
+        args: vec!["-e".to_string(), script],
+    })
+}
+
 fn normalize_terminal_app(terminal: Option<&str>) -> Result<String, String> {
     let requested = terminal
         .map(str::trim)
@@ -1369,6 +1530,29 @@ fn normalize_terminal_app(terminal: Option<&str>) -> Result<String, String> {
         .find(|(alias, _)| alias.eq_ignore_ascii_case(requested))
         .map(|(_, app)| (*app).to_string())
         .ok_or_else(|| format!("Unsupported terminal app: {requested}"))
+}
+
+fn normalize_terminal_command(command: &str) -> Result<String, String> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("Terminal command is empty".to_string());
+    }
+    if command.contains('\0') || command.contains('\n') || command.contains('\r') {
+        return Err("Terminal command must be a single line".to_string());
+    }
+
+    Ok(command.to_string())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn applescript_string_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
@@ -2461,6 +2645,269 @@ fn is_source_file(path: &Path) -> bool {
     !matches!(detect_language(path).as_str(), "plain")
 }
 
+fn compare_source_walk_entries(
+    root: &Path,
+    left: &std::fs::DirEntry,
+    right: &std::fs::DirEntry,
+) -> std::cmp::Ordering {
+    let left_path = left.path();
+    let right_path = right.path();
+    let left_file_type = left.file_type().ok();
+    let right_file_type = right.file_type().ok();
+    let left_is_directory = left_file_type
+        .as_ref()
+        .map(|file_type| file_type.is_dir())
+        .unwrap_or(false);
+    let right_is_directory = right_file_type
+        .as_ref()
+        .map(|file_type| file_type.is_dir())
+        .unwrap_or(false);
+    let left_language = if left_file_type
+        .as_ref()
+        .map(|file_type| file_type.is_file())
+        .unwrap_or(false)
+    {
+        detect_language(&left_path)
+    } else {
+        String::new()
+    };
+    let right_language = if right_file_type
+        .as_ref()
+        .map(|file_type| file_type.is_file())
+        .unwrap_or(false)
+    {
+        detect_language(&right_path)
+    } else {
+        String::new()
+    };
+    let left_relative_path = normalized_relative_source_path(root, &left_path);
+    let right_relative_path = normalized_relative_source_path(root, &right_path);
+
+    source_path_priority(&left_relative_path, &left_language, left_is_directory, root)
+        .cmp(&source_path_priority(
+            &right_relative_path,
+            &right_language,
+            right_is_directory,
+            root,
+        ))
+        .then_with(|| localized_path_compare(&left_relative_path, &right_relative_path))
+}
+
+fn compare_source_records(left: &SourceRecord, right: &SourceRecord) -> std::cmp::Ordering {
+    source_path_priority(&left.relative_path, &left.language, false, Path::new(""))
+        .cmp(&source_path_priority(
+            &right.relative_path,
+            &right.language,
+            false,
+            Path::new(""),
+        ))
+        .then_with(|| localized_path_compare(&left.relative_path, &right.relative_path))
+}
+
+fn normalized_relative_source_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn source_path_priority(
+    relative_path: &str,
+    language: &str,
+    is_directory: bool,
+    root: &Path,
+) -> i32 {
+    let normalized_path = relative_path.replace('\\', "/").to_ascii_lowercase();
+    let segments = normalized_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let first_segment = segments.first().copied().unwrap_or_default();
+    let project_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut score = if is_directory { -6 } else { 0 };
+
+    score += source_root_priority(first_segment, &project_name);
+    score += source_language_priority(language);
+    score += source_path_segment_adjustment(&segments);
+
+    if first_segment.starts_with('.') {
+        score += 80;
+    }
+
+    score
+}
+
+fn source_root_priority(first_segment: &str, project_name: &str) -> i32 {
+    if first_segment.is_empty() {
+        return 100;
+    }
+
+    let project_prefix = if project_name.is_empty() {
+        String::new()
+    } else {
+        format!("{project_name}.")
+    };
+    if !project_name.is_empty()
+        && (first_segment == project_name || first_segment.starts_with(&project_prefix))
+    {
+        return project_root_segment_adjustment(first_segment);
+    }
+
+    if matches!(
+        first_segment,
+        "src" | "source" | "sources" | "lib" | "app" | "apps" | "packages"
+    ) {
+        return 0;
+    }
+
+    if looks_like_source_project_segment(first_segment) {
+        return 8 + project_root_segment_adjustment(first_segment);
+    }
+    if first_segment.contains("test") || first_segment.contains("spec") {
+        return 26;
+    }
+    if matches!(first_segment, "scripts" | "tools") {
+        return 34;
+    }
+    if matches!(
+        first_segment,
+        "config" | "deploy" | "infra" | "infrastructure" | ".config" | ".github"
+    ) {
+        return 60;
+    }
+    if matches!(first_segment, "docs" | "doc" | "documentation") {
+        return 75;
+    }
+
+    45
+}
+
+fn looks_like_source_project_segment(segment: &str) -> bool {
+    segment.contains('.')
+        || segment.ends_with("-web")
+        || segment.ends_with("-api")
+        || segment.ends_with("-core")
+        || segment.ends_with("-engine")
+        || segment.ends_with("-data")
+        || matches!(segment, "web" | "client" | "server")
+}
+
+fn project_root_segment_adjustment(segment: &str) -> i32 {
+    if segment.ends_with(".core") || segment.ends_with("-core") {
+        return -8;
+    }
+    if segment.ends_with(".api") || segment.ends_with("-api") {
+        return -6;
+    }
+    if segment.ends_with(".engine") || segment.ends_with("-engine") {
+        return -5;
+    }
+    if segment.ends_with(".data") || segment.ends_with("-data") {
+        return -4;
+    }
+    if segment.ends_with("-web") || segment == "web" || segment == "client" {
+        return -3;
+    }
+    if segment.contains("test") || segment.contains("spec") {
+        return 18;
+    }
+
+    0
+}
+
+fn source_language_priority(language: &str) -> i32 {
+    if matches!(
+        language,
+        "csharp"
+            | "typescript"
+            | "tsx"
+            | "svelte"
+            | "javascript"
+            | "jsx"
+            | "rust"
+            | "swift"
+            | "go"
+            | "python"
+            | "java"
+            | "kotlin"
+            | "cpp"
+            | "dart"
+            | "fsharp"
+            | "razor"
+    ) {
+        return 0;
+    }
+
+    if matches!(
+        language,
+        "json"
+            | "yaml"
+            | "toml"
+            | "xml"
+            | "shell"
+            | "powershell"
+            | "sql"
+            | "graphql"
+            | "protobuf"
+            | "hcl"
+            | "dockerfile"
+            | "makefile"
+    ) {
+        return 28;
+    }
+
+    if language == "markdown" || language == "mdx" {
+        return 55;
+    }
+
+    80
+}
+
+fn source_path_segment_adjustment(segments: &[&str]) -> i32 {
+    let mut score = 0;
+
+    if [
+        "services",
+        "controllers",
+        "routes",
+        "components",
+        "pages",
+        "models",
+        "entities",
+        "features",
+    ]
+    .iter()
+    .any(|segment| segments.contains(segment))
+    {
+        score -= 7;
+    }
+
+    if [
+        "migrations",
+        "generated",
+        "snapshots",
+        "fixtures",
+        "samples",
+        "docs",
+        "documentation",
+    ]
+    .iter()
+    .any(|segment| segments.contains(segment))
+    {
+        score += 22;
+    }
+
+    score
+}
+
+fn localized_path_compare(left: &str, right: &str) -> std::cmp::Ordering {
+    left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
+}
+
 fn should_skip_dir(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
     if normalized.ends_with("_files") {
@@ -2478,13 +2925,26 @@ fn should_skip_dir(name: &str) -> bool {
             | ".build"
             | ".claude"
             | ".codex"
+            | ".dev"
             | ".gradle"
+            | ".history"
+            | ".idea"
+            | ".merge-backups"
             | ".next"
             | ".nuxt"
+            | ".omx"
             | ".parcel-cache"
+            | ".playwright"
+            | ".playwright-cli"
+            | ".pytest_cache"
+            | ".run"
+            | ".slots"
             | ".svelte-kit"
+            | ".tmp"
             | ".turbo"
             | ".vite"
+            | ".vscode"
+            | ".zed"
             | "bin"
             | "build"
             | "coverage"
@@ -2510,6 +2970,7 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
 fn main() {
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
+        .manage(lsp::SourceLspRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_source_files,
@@ -2521,9 +2982,16 @@ fn main() {
             open_path,
             reveal_path,
             open_terminal_path,
+            open_terminal_command,
             search_source_files,
             find_source_definitions,
             find_source_references,
+            read_source_lsp_status,
+            find_source_lsp_definitions,
+            find_source_lsp_references,
+            find_source_lsp_hover,
+            find_source_lsp_symbols,
+            read_source_lsp_diagnostics,
             project_git_status,
             read_source_git_diff,
             stage_git_paths,
@@ -2536,7 +3004,9 @@ fn main() {
             list_project_worktrees,
             list_git_repository_summaries,
             list_agent_sessions,
-            list_runtime_contexts
+            list_runtime_contexts,
+            list_orchestration_runs,
+            record_orchestration_event
         ])
         .run(tauri::generate_context!())
         .expect("failed to run MacCommandBar webview preview");
@@ -2575,14 +3045,63 @@ mod tests {
         assert_eq!(
             relative_paths,
             vec![
-                "Package.swift",
                 "packages/ui/Button.tsx",
-                "README.md",
                 "src/App.svelte",
+                "src/Workers/Worker.cs",
+                "Package.swift",
                 "src/settings.json",
-                "src/Workers/Worker.cs"
+                "README.md"
             ]
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_prioritizes_app_source_before_docs_when_truncated() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("Docs")).unwrap();
+        std::fs::create_dir_all(root.join("EdiPlatform.Core/Models")).unwrap();
+        std::fs::create_dir_all(root.join("EdiPlatform.Core/Services")).unwrap();
+        std::fs::create_dir_all(root.join("src/Services")).unwrap();
+        std::fs::write(root.join("Docs/A.md"), "# docs").unwrap();
+        std::fs::write(root.join("Docs/B.md"), "# docs").unwrap();
+        std::fs::write(
+            root.join("EdiPlatform.Core/Models/RuntimeModel.cs"),
+            "public sealed class RuntimeModel {}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("EdiPlatform.Core/Services/RuntimeService.cs"),
+            "public sealed class RuntimeService {}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/Services/FormatResolver.cs"),
+            "public sealed class FormatResolver {}",
+        )
+        .unwrap();
+
+        let scan = list_source_files_sync(root.clone(), 3, None).unwrap();
+        let relative_paths = scan
+            .records
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            relative_paths,
+            vec![
+                "EdiPlatform.Core/Models/RuntimeModel.cs",
+                "EdiPlatform.Core/Services/RuntimeService.cs",
+                "src/Services/FormatResolver.cs"
+            ]
+        );
+        assert!(scan.truncated);
+        assert!(scan
+            .records
+            .iter()
+            .all(|record| !record.relative_path.starts_with("Docs/")));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2592,6 +3111,10 @@ mod tests {
         let root = unique_temp_root();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join(".cache/generated")).unwrap();
+        std::fs::create_dir_all(root.join(".history/Docs")).unwrap();
+        std::fs::create_dir_all(root.join(".idea")).unwrap();
+        std::fs::create_dir_all(root.join(".pytest_cache")).unwrap();
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
         std::fs::create_dir_all(root.join(".turbo/cache")).unwrap();
         std::fs::create_dir_all(root.join(".parcel-cache")).unwrap();
         std::fs::create_dir_all(root.join(".nuxt")).unwrap();
@@ -2606,6 +3129,10 @@ mod tests {
             "export const cache = true;",
         )
         .unwrap();
+        std::fs::write(root.join(".history/Docs/Old.md"), "# old").unwrap();
+        std::fs::write(root.join(".idea/workspace.xml"), "<project />").unwrap();
+        std::fs::write(root.join(".pytest_cache/README.md"), "# cache").unwrap();
+        std::fs::write(root.join(".vscode/settings.json"), "{}").unwrap();
         std::fs::write(
             root.join(".turbo/cache/Turbo.ts"),
             "export const turbo = true;",
@@ -2938,6 +3465,67 @@ mod tests {
         let app_error =
             terminal_path_action_command(&root, Some("UnknownTerminal".to_string())).unwrap_err();
         assert!(app_error.contains("Unsupported terminal app"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_command_action_builds_osascript_for_terminal_and_iterm() {
+        let root = unique_temp_root();
+        let quoted_root = shell_quote(&root.display().to_string());
+        std::fs::create_dir_all(&root).unwrap();
+
+        let terminal_command = terminal_command_action_command(
+            &root,
+            "codex resume session-123",
+            Some("Terminal".to_string()),
+        )
+        .unwrap();
+        assert_eq!(terminal_command.program, "osascript");
+        assert_eq!(terminal_command.args[0], "-e");
+        assert!(terminal_command.args[1].contains("tell application \"Terminal\""));
+        assert!(terminal_command.args[1]
+            .contains(&format!("cd {quoted_root} && codex resume session-123")));
+
+        let iterm_command = terminal_command_action_command(
+            &root,
+            "claude --resume abc",
+            Some("iTerm2".to_string()),
+        )
+        .unwrap();
+        assert_eq!(iterm_command.program, "osascript");
+        assert!(iterm_command.args[1].contains("tell application \"iTerm2\""));
+        assert!(iterm_command.args[1].contains("write text"));
+        assert!(iterm_command.args[1].contains(&format!("cd {quoted_root} && claude --resume abc")));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_command_action_rejects_unsafe_or_unsupported_commands() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let empty_error =
+            terminal_command_action_command(&root, "   ", Some("Terminal".to_string()))
+                .unwrap_err();
+        assert!(empty_error.contains("Terminal command is empty"));
+
+        let multiline_error = terminal_command_action_command(
+            &root,
+            "codex resume one\nrm -rf nope",
+            Some("Terminal".to_string()),
+        )
+        .unwrap_err();
+        assert!(multiline_error.contains("single line"));
+
+        let unsupported_error = terminal_command_action_command(
+            &root,
+            "codex resume session-123",
+            Some("Warp".to_string()),
+        )
+        .unwrap_err();
+        assert!(unsupported_error.contains("not supported for Warp"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

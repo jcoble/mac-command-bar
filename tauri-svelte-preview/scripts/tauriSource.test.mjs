@@ -7,10 +7,17 @@ import {
   createSourceScanId,
   findSourceDefinitionsFromTauri,
   findSourceReferencesFromTauri,
+  findSourceLspDefinitionsFromTauri,
+  findSourceLspHoverFromTauri,
+  findSourceLspReferencesFromTauri,
+  findSourceLspSymbolsFromTauri,
+  readSourceLspDiagnosticsFromTauri,
+  readSourceLspStatusFromTauri,
   listAgentSessionsFromTauri,
   listGitRepositorySummariesFromTauri,
   listProjectWorktreesFromTauri,
   listRuntimeContextsFromTauri,
+  openTerminalCommandFromTauri,
   openTerminalPathFromTauri,
   openPathFromTauri,
   readGitCommitHistoryFromTauri,
@@ -55,6 +62,7 @@ assert.equal(await readGitCommitHistoryFromTauri('/tmp/repo'), null);
 assert.equal(await openPathFromTauri('/tmp/repo'), false);
 assert.equal(await revealPathFromTauri('/tmp/repo'), false);
 assert.equal(await openTerminalPathFromTauri('/tmp/repo'), false);
+assert.equal(await openTerminalCommandFromTauri('/tmp/repo', 'codex resume session-123'), false);
 assert.equal(await listAgentSessionsFromTauri(), null);
 assert.equal(
   await listGitRepositorySummariesFromTauri([{ id: 'repo', name: 'Repo', path: '/tmp/repo' }]),
@@ -83,6 +91,108 @@ assert.equal(
       }
     ],
     'App'
+  ),
+  null
+);
+assert.equal(
+  await readSourceLspStatusFromTauri('/tmp/repo', 'typescript'),
+  null
+);
+assert.equal(
+  await findSourceLspDefinitionsFromTauri(
+    {
+      path: '/tmp/App.ts',
+      relativePath: 'App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 12,
+      content: 'export class App {}',
+      lineCount: 1
+    },
+    {
+      root: '/tmp/repo',
+      line: 1,
+      column: 14,
+      limit: 20
+    }
+  ),
+  null
+);
+assert.equal(
+  await findSourceLspReferencesFromTauri(
+    {
+      path: '/tmp/App.ts',
+      relativePath: 'App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 12,
+      content: 'export class App {}',
+      lineCount: 1
+    },
+    {
+      root: '/tmp/repo',
+      line: 1,
+      column: 14,
+      limit: 50
+    }
+  ),
+  null
+);
+assert.equal(
+  await findSourceLspHoverFromTauri(
+    {
+      path: '/tmp/App.ts',
+      relativePath: 'App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 12,
+      content: 'export class App {}',
+      lineCount: 1
+    },
+    {
+      root: '/tmp/repo',
+      line: 1,
+      column: 14
+    }
+  ),
+  null
+);
+assert.equal(
+  await findSourceLspSymbolsFromTauri(
+    {
+      path: '/tmp/App.ts',
+      relativePath: 'App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 12,
+      content: 'export class App {}',
+      lineCount: 1
+    },
+    {
+      root: '/tmp/repo',
+      line: 1,
+      column: 1,
+      limit: 100
+    }
+  ),
+  null
+);
+assert.equal(
+  await readSourceLspDiagnosticsFromTauri(
+    {
+      path: '/tmp/App.ts',
+      relativePath: 'App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 12,
+      content: 'export class App {}',
+      lineCount: 1
+    },
+    {
+      root: '/tmp/repo',
+      line: 1,
+      column: 14
+    }
   ),
   null
 );

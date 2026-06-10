@@ -528,7 +528,7 @@ fn typescript_role_for_node(node: Node<'_>) -> Option<SyntaxRole> {
         | "??" | "?" | ":" | "." | "..." | "|" | "|=" | "&" | "&=" | "^" | "^=" | "~" => {
             Some(SyntaxRole::Operator)
         }
-        ";" | "," | "(" | ")" | "[" | "]" | "{" | "}" | "<" | ">" => Some(SyntaxRole::Punctuation),
+        ";" | "," | "(" | ")" | "[" | "]" | "{" | "}" => Some(SyntaxRole::Punctuation),
         _ => None,
     }
 }

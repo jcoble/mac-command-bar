@@ -413,7 +413,7 @@ assert.deepEqual(parseQuickOpenQuery('apps/web/+page.svelte:003'), {
   targetLine: 3
 });
 assert.deepEqual(parseQuickOpenQuery('FormatDetector:'), {
-  searchQuery: 'FormatDetector:',
+  searchQuery: 'FormatDetector',
   targetLine: null
 });
 assert.deepEqual(parseQuickOpenQuery('FormatDetector:0'), {
@@ -430,7 +430,7 @@ assert.equal(monacoLanguageForSource('plain'), 'plaintext');
 assert.equal(sourceSupportsLanguageIntelligence('typescript'), true);
 assert.equal(sourceSupportsLanguageIntelligence('tsx'), true);
 assert.equal(sourceSupportsLanguageIntelligence('javascript'), true);
-assert.equal(sourceSupportsLanguageIntelligence('csharp'), false);
+assert.equal(sourceSupportsLanguageIntelligence('csharp'), true);
 
 assert.equal(formatSourceDiagnosticSummary([]), 'No problems');
 assert.equal(
@@ -470,6 +470,7 @@ assert.deepEqual(
   [
     ['interface', 'WidgetProps', 1],
     ['class', 'WidgetController', 4],
+    ['method', 'mount', 5],
     ['function', 'createWidget', 7],
     ['constant', 'widgetCache', 10]
   ]
@@ -514,6 +515,7 @@ assert.deepEqual(
   [
     ['interface', 1, 18, 11],
     ['class', 4, 14, 16],
+    ['method', 5, 3, 5],
     ['function', 7, 17, 12],
     ['variable', 10, 7, 11]
   ]
@@ -533,6 +535,9 @@ const csharpSymbols = extractSourceSymbols(
     'namespace Demo;',
     'public sealed class WidgetController',
     '{',
+    '    private readonly FormatDetector _detector;',
+    '    public WidgetController(FormatDetector detector) => _detector = detector;',
+    '    public FormatDetector Detector { get; }',
     '    public Task MountAsync() => Task.CompletedTask;',
     '}'
   ].join('\n')
@@ -542,7 +547,10 @@ assert.deepEqual(
   [
     ['namespace', 'Demo', 1],
     ['class', 'WidgetController', 2],
-    ['method', 'MountAsync', 4]
+    ['variable', '_detector', 4],
+    ['constructor', 'WidgetController', 5],
+    ['property', 'Detector', 6],
+    ['method', 'MountAsync', 7]
   ]
 );
 
@@ -560,6 +568,9 @@ const csharpSemanticTokens = extractSourceSemanticTokens(
     'namespace Demo;',
     'public sealed class WidgetController',
     '{',
+    '    private readonly FormatDetector _detector;',
+    '    public WidgetController(FormatDetector detector) => _detector = detector;',
+    '    public FormatDetector Detector { get; }',
     '    public Task MountAsync() => Task.CompletedTask;',
     '}'
   ].join('\n')
@@ -569,7 +580,10 @@ assert.deepEqual(
   [
     ['namespace', 1, 11, 4],
     ['class', 2, 21, 16],
-    ['method', 4, 17, 10]
+    ['variable', 4, 37, 9],
+    ['method', 5, 12, 16],
+    ['variable', 6, 27, 8],
+    ['method', 7, 17, 10]
   ]
 );
 

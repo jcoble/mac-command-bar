@@ -1,0 +1,919 @@
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use crate::RuntimeContextProject;
+
+const ORCHESTRATION_SCHEMA_VERSION: u16 = 1;
+const ORCHESTRATION_EVENT_STORE_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
+const ORCHESTRATION_EVENT_STORE_FILE: &str = "orchestration-events.jsonl";
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrchestrationEvent {
+    schema_version: u16,
+    id: String,
+    run_id: String,
+    timestamp: String,
+    kind: String,
+    status: String,
+    title: Option<String>,
+    message: Option<String>,
+    #[serde(rename = "projectID")]
+    project_id: Option<String>,
+    project_name: Option<String>,
+    project_path: Option<String>,
+    root_label: Option<String>,
+    #[serde(rename = "taskID")]
+    task_id: Option<String>,
+    agent_id: Option<String>,
+    agent_provider: Option<String>,
+    agent_role: Option<String>,
+    step_id: Option<String>,
+    step_kind: Option<String>,
+    artifact_id: Option<String>,
+    artifact_kind: Option<String>,
+    artifact_path: Option<String>,
+    artifact_url: Option<String>,
+    link_kind: Option<String>,
+    link_label: Option<String>,
+    link_url: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrchestrationRun {
+    id: String,
+    title: String,
+    status: String,
+    phase: String,
+    progress: u8,
+    #[serde(rename = "projectID")]
+    project_id: Option<String>,
+    project_name: String,
+    project_path: String,
+    root_label: String,
+    #[serde(rename = "taskID")]
+    task_id: Option<String>,
+    started_at: Option<String>,
+    updated_at: Option<String>,
+    summary: String,
+    agents: Vec<OrchestrationAgent>,
+    steps: Vec<OrchestrationStep>,
+    artifacts: Vec<OrchestrationArtifact>,
+    links: Vec<OrchestrationLink>,
+    events: Vec<OrchestrationEvent>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct OrchestrationAgent {
+    id: String,
+    provider: String,
+    role: String,
+    status: String,
+    title: String,
+    last_activity: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct OrchestrationStep {
+    id: String,
+    kind: String,
+    title: String,
+    status: String,
+    summary: String,
+    agent_id: Option<String>,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct OrchestrationArtifact {
+    id: String,
+    kind: String,
+    title: String,
+    path: Option<String>,
+    url: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct OrchestrationLink {
+    kind: String,
+    label: String,
+    url: String,
+}
+
+#[derive(Debug, Clone)]
+struct OrchestrationRunDraft {
+    run: OrchestrationRun,
+    agent_index: HashMap<String, usize>,
+    step_index: HashMap<String, usize>,
+    artifact_index: HashMap<String, usize>,
+    link_index: HashMap<String, usize>,
+}
+
+pub(crate) fn list_orchestration_runs_sync(
+    projects: Vec<RuntimeContextProject>,
+) -> Result<Vec<OrchestrationRun>, String> {
+    let events = read_orchestration_events()?;
+    let mut runs = reduce_orchestration_events(events);
+    if runs.is_empty() {
+        runs = demo_orchestration_runs(projects);
+    }
+
+    sort_orchestration_runs(&mut runs);
+    Ok(runs)
+}
+
+pub(crate) fn record_orchestration_event_sync(
+    mut event: OrchestrationEvent,
+) -> Result<OrchestrationRun, String> {
+    normalize_orchestration_event(&mut event)?;
+    append_orchestration_event(&event)?;
+
+    let runs = reduce_orchestration_events(read_orchestration_events()?);
+    runs.into_iter()
+        .find(|run| run.id == event.run_id)
+        .ok_or_else(|| "Recorded orchestration event, but could not rebuild its run".to_string())
+}
+
+fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), String> {
+    event.run_id = event.run_id.trim().to_string();
+    if event.run_id.is_empty() {
+        return Err("Orchestration event runId is required".to_string());
+    }
+
+    if event.schema_version == 0 {
+        event.schema_version = ORCHESTRATION_SCHEMA_VERSION;
+    }
+    if event.id.trim().is_empty() {
+        event.id = format!("evt-{}", unix_epoch_millis());
+    }
+    if event.timestamp.trim().is_empty() {
+        event.timestamp = unix_epoch_millis().to_string();
+    }
+    if event.kind.trim().is_empty() {
+        event.kind = "run.updated".to_string();
+    }
+    if event.status.trim().is_empty() {
+        event.status = "running".to_string();
+    }
+
+    Ok(())
+}
+
+fn orchestration_event_store_path() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var(ORCHESTRATION_EVENT_STORE_ENV) {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set".to_string())?;
+    Ok(home
+        .join("Library")
+        .join("Application Support")
+        .join("MacCommandBar")
+        .join(ORCHESTRATION_EVENT_STORE_FILE))
+}
+
+fn read_orchestration_events() -> Result<Vec<OrchestrationEvent>, String> {
+    let path = orchestration_event_store_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Could not read orchestration event store {}: {error}",
+            path.display()
+        )
+    })?;
+
+    parse_orchestration_events_jsonl(&contents)
+}
+
+fn parse_orchestration_events_jsonl(input: &str) -> Result<Vec<OrchestrationEvent>, String> {
+    let mut events = Vec::new();
+    for (line_index, line) in input.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut event = serde_json::from_str::<OrchestrationEvent>(trimmed).map_err(|error| {
+            format!(
+                "Could not parse orchestration event line {}: {error}",
+                line_index + 1
+            )
+        })?;
+        normalize_orchestration_event(&mut event)?;
+        events.push(event);
+    }
+
+    Ok(events)
+}
+
+fn append_orchestration_event(event: &OrchestrationEvent) -> Result<(), String> {
+    let path = orchestration_event_store_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Could not create orchestration event store directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let line = serde_json::to_string(event)
+        .map_err(|error| format!("Could not serialize orchestration event: {error}"))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "Could not open orchestration event store {}: {error}",
+                path.display()
+            )
+        })?;
+    writeln!(file, "{line}")
+        .map_err(|error| format!("Could not append orchestration event: {error}"))
+}
+
+fn reduce_orchestration_events(events: Vec<OrchestrationEvent>) -> Vec<OrchestrationRun> {
+    let mut drafts: HashMap<String, OrchestrationRunDraft> = HashMap::new();
+
+    for event in events {
+        let draft = drafts
+            .entry(event.run_id.clone())
+            .or_insert_with(|| OrchestrationRunDraft::new(&event));
+        draft.apply_event(event);
+    }
+
+    let mut runs: Vec<OrchestrationRun> = drafts
+        .into_values()
+        .map(|mut draft| {
+            draft.finalize();
+            draft.run
+        })
+        .collect();
+    sort_orchestration_runs(&mut runs);
+    runs
+}
+
+impl OrchestrationRunDraft {
+    fn new(event: &OrchestrationEvent) -> Self {
+        let project_path = event.project_path.clone().unwrap_or_default();
+        let project_name = event
+            .project_name
+            .clone()
+            .or_else(|| {
+                (!project_path.is_empty())
+                    .then(|| path_last_segment(Path::new(&project_path)).unwrap_or_default())
+            })
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Project".to_string());
+        let root_label = event
+            .root_label
+            .clone()
+            .or_else(|| {
+                (!project_path.is_empty()).then(|| root_label_for_path(Path::new(&project_path)))
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Self {
+            run: OrchestrationRun {
+                id: event.run_id.clone(),
+                title: event
+                    .title
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| format!("{} orchestration", project_name)),
+                status: event.status.clone(),
+                phase: orchestration_phase_for_event(event),
+                progress: 0,
+                project_id: event.project_id.clone(),
+                project_name,
+                project_path,
+                root_label,
+                task_id: event.task_id.clone(),
+                started_at: Some(event.timestamp.clone()),
+                updated_at: Some(event.timestamp.clone()),
+                summary: event.message.clone().unwrap_or_default(),
+                agents: Vec::new(),
+                steps: Vec::new(),
+                artifacts: Vec::new(),
+                links: Vec::new(),
+                events: Vec::new(),
+            },
+            agent_index: HashMap::new(),
+            step_index: HashMap::new(),
+            artifact_index: HashMap::new(),
+            link_index: HashMap::new(),
+        }
+    }
+
+    fn apply_event(&mut self, event: OrchestrationEvent) {
+        if let Some(title) = event
+            .title
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if event.kind.starts_with("run.") || self.run.title.ends_with(" orchestration") {
+                self.run.title = title.clone();
+            }
+        }
+
+        if let Some(message) = event
+            .message
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            self.run.summary = message.clone();
+        }
+
+        let next_phase = orchestration_phase_for_event(&event);
+        if next_phase != "link" && next_phase != "artifact" {
+            self.run.phase = next_phase;
+        }
+        self.run.status = merge_orchestration_status(&self.run.status, &event.status);
+        self.run.task_id = self.run.task_id.clone().or(event.task_id.clone());
+        self.run.project_id = self.run.project_id.clone().or(event.project_id.clone());
+        self.run.project_name = event
+            .project_name
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.run.project_name.clone());
+        self.run.project_path = event
+            .project_path
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.run.project_path.clone());
+        self.run.root_label = event
+            .root_label
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.run.root_label.clone());
+        self.run.started_at =
+            oldest_timestamp(self.run.started_at.take(), Some(event.timestamp.clone()));
+        self.run.updated_at =
+            latest_timestamp(self.run.updated_at.take(), Some(event.timestamp.clone()));
+
+        self.upsert_agent(&event);
+        self.upsert_step(&event);
+        self.upsert_artifact(&event);
+        self.upsert_link(&event);
+        self.run.events.push(event);
+    }
+
+    fn upsert_agent(&mut self, event: &OrchestrationEvent) {
+        let Some(id) = event.agent_id.clone().or_else(|| {
+            event
+                .agent_provider
+                .as_ref()
+                .map(|provider| format!("{}:{}", provider, event.run_id))
+        }) else {
+            return;
+        };
+
+        let provider = event
+            .agent_provider
+            .clone()
+            .unwrap_or_else(|| "agent".to_string());
+        let role = event
+            .agent_role
+            .clone()
+            .unwrap_or_else(|| "worker".to_string());
+        let title = event
+            .title
+            .clone()
+            .unwrap_or_else(|| format!("{provider} {role}"));
+
+        if let Some(index) = self.agent_index.get(&id).copied() {
+            let agent = &mut self.run.agents[index];
+            agent.status = merge_orchestration_status(&agent.status, &event.status);
+            agent.title = title;
+            agent.last_activity =
+                latest_timestamp(agent.last_activity.take(), Some(event.timestamp.clone()));
+            return;
+        }
+
+        self.agent_index.insert(id.clone(), self.run.agents.len());
+        self.run.agents.push(OrchestrationAgent {
+            id,
+            provider,
+            role,
+            status: event.status.clone(),
+            title,
+            last_activity: Some(event.timestamp.clone()),
+        });
+    }
+
+    fn upsert_step(&mut self, event: &OrchestrationEvent) {
+        if event.kind.starts_with("run.")
+            || event.kind.starts_with("agent.")
+            || event.kind.starts_with("artifact.")
+            || event.kind.starts_with("link.")
+        {
+            return;
+        }
+
+        let id = event.step_id.clone().unwrap_or_else(|| {
+            stable_orchestration_id(&format!(
+                "{}:{}:{}",
+                event.run_id,
+                event.kind,
+                event.title.as_deref().unwrap_or_default()
+            ))
+        });
+        let kind = event
+            .step_kind
+            .clone()
+            .unwrap_or_else(|| event.kind.split('.').next().unwrap_or("step").to_string());
+        let title = event
+            .title
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| humanize_orchestration_kind(&event.kind));
+        let summary = event
+            .message
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| event.kind.clone());
+
+        if let Some(index) = self.step_index.get(&id).copied() {
+            let step = &mut self.run.steps[index];
+            step.status = merge_orchestration_status(&step.status, &event.status);
+            step.title = title;
+            step.summary = summary;
+            step.finished_at = if orchestration_status_is_terminal(&event.status) {
+                latest_timestamp(step.finished_at.take(), Some(event.timestamp.clone()))
+            } else {
+                step.finished_at.take()
+            };
+            return;
+        }
+
+        self.step_index.insert(id.clone(), self.run.steps.len());
+        self.run.steps.push(OrchestrationStep {
+            id,
+            kind,
+            title,
+            status: event.status.clone(),
+            summary,
+            agent_id: event.agent_id.clone(),
+            started_at: Some(event.timestamp.clone()),
+            finished_at: orchestration_status_is_terminal(&event.status)
+                .then(|| event.timestamp.clone()),
+        });
+    }
+
+    fn upsert_artifact(&mut self, event: &OrchestrationEvent) {
+        if event.artifact_id.is_none()
+            && event.artifact_path.is_none()
+            && event.artifact_url.is_none()
+        {
+            return;
+        }
+
+        let id = event.artifact_id.clone().unwrap_or_else(|| {
+            stable_orchestration_id(&format!(
+                "{}:{}:{}",
+                event.run_id,
+                event.artifact_path.as_deref().unwrap_or_default(),
+                event.artifact_url.as_deref().unwrap_or_default()
+            ))
+        });
+        let kind = event
+            .artifact_kind
+            .clone()
+            .unwrap_or_else(|| "artifact".to_string());
+        let title = event
+            .title
+            .clone()
+            .or_else(|| event.artifact_path.clone())
+            .or_else(|| event.artifact_url.clone())
+            .unwrap_or_else(|| "Artifact".to_string());
+
+        if let Some(index) = self.artifact_index.get(&id).copied() {
+            let artifact = &mut self.run.artifacts[index];
+            artifact.status = merge_orchestration_status(&artifact.status, &event.status);
+            artifact.title = title;
+            artifact.path = artifact.path.clone().or(event.artifact_path.clone());
+            artifact.url = artifact.url.clone().or(event.artifact_url.clone());
+            return;
+        }
+
+        self.artifact_index
+            .insert(id.clone(), self.run.artifacts.len());
+        self.run.artifacts.push(OrchestrationArtifact {
+            id,
+            kind,
+            title,
+            path: event.artifact_path.clone(),
+            url: event.artifact_url.clone(),
+            status: event.status.clone(),
+        });
+    }
+
+    fn upsert_link(&mut self, event: &OrchestrationEvent) {
+        let Some(url) = event.link_url.clone() else {
+            return;
+        };
+
+        let kind = event
+            .link_kind
+            .clone()
+            .unwrap_or_else(|| "link".to_string());
+        let key = format!("{kind}:{url}");
+        if self.link_index.contains_key(&key) {
+            return;
+        }
+
+        self.link_index.insert(key, self.run.links.len());
+        self.run.links.push(OrchestrationLink {
+            kind,
+            label: event
+                .link_label
+                .clone()
+                .or_else(|| event.title.clone())
+                .unwrap_or_else(|| "Open link".to_string()),
+            url,
+        });
+    }
+
+    fn finalize(&mut self) {
+        self.run.events.sort_by(|left, right| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then(left.id.cmp(&right.id))
+        });
+        self.run.steps.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then(left.title.cmp(&right.title))
+        });
+        self.run.agents.sort_by(|left, right| {
+            right
+                .last_activity
+                .cmp(&left.last_activity)
+                .then(left.provider.cmp(&right.provider))
+        });
+        self.run
+            .artifacts
+            .sort_by(|left, right| left.title.cmp(&right.title));
+        self.run.progress = orchestration_progress(&self.run);
+        if self.run.summary.trim().is_empty() {
+            self.run.summary = format!(
+                "{} agents · {} steps · {} artifacts",
+                self.run.agents.len(),
+                self.run.steps.len(),
+                self.run.artifacts.len()
+            );
+        }
+    }
+}
+
+fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<OrchestrationRun> {
+    projects
+        .into_iter()
+        .map(|project| {
+            let task_id = (project.id == "mac-command-bar").then(|| "TSK-127".to_string());
+            let run_id = task_id
+                .clone()
+                .map(|task| format!("run-{}", task.to_lowercase()))
+                .unwrap_or_else(|| format!("run-{}", stable_orchestration_id(&project.path)));
+            let project_path = project.path.clone();
+            let root_label = root_label_for_path(Path::new(&project_path));
+            let mut events = vec![
+                OrchestrationEvent {
+                    schema_version: ORCHESTRATION_SCHEMA_VERSION,
+                    id: format!("{run_id}-created"),
+                    run_id: run_id.clone(),
+                    timestamp: "preview-001".to_string(),
+                    kind: "run.created".to_string(),
+                    status: "running".to_string(),
+                    title: Some(match &task_id {
+                        Some(task) => format!("{task} orchestration model"),
+                        None => format!("{} project monitor", project.name),
+                    }),
+                    message: Some(
+                        "Preview run seeded until real orchestration events exist".to_string(),
+                    ),
+                    project_id: Some(project.id.clone()),
+                    project_name: Some(project.name.clone()),
+                    project_path: Some(project_path.clone()),
+                    root_label: Some(root_label.clone()),
+                    task_id: task_id.clone(),
+                    agent_id: None,
+                    agent_provider: None,
+                    agent_role: None,
+                    step_id: None,
+                    step_kind: None,
+                    artifact_id: None,
+                    artifact_kind: None,
+                    artifact_path: None,
+                    artifact_url: None,
+                    link_kind: None,
+                    link_label: None,
+                    link_url: None,
+                },
+                OrchestrationEvent {
+                    schema_version: ORCHESTRATION_SCHEMA_VERSION,
+                    id: format!("{run_id}-model"),
+                    run_id: run_id.clone(),
+                    timestamp: "preview-002".to_string(),
+                    kind: "model.designed".to_string(),
+                    status: "succeeded".to_string(),
+                    title: Some("Event schema".to_string()),
+                    message: Some("Run, agent, step, artifact, and link records".to_string()),
+                    project_id: Some(project.id.clone()),
+                    project_name: Some(project.name.clone()),
+                    project_path: Some(project_path.clone()),
+                    root_label: Some(root_label.clone()),
+                    task_id: task_id.clone(),
+                    agent_id: Some("controller".to_string()),
+                    agent_provider: Some("codex".to_string()),
+                    agent_role: Some("orchestrator".to_string()),
+                    step_id: Some("event-schema".to_string()),
+                    step_kind: Some("model".to_string()),
+                    artifact_id: None,
+                    artifact_kind: None,
+                    artifact_path: None,
+                    artifact_url: None,
+                    link_kind: None,
+                    link_label: None,
+                    link_url: None,
+                },
+                OrchestrationEvent {
+                    schema_version: ORCHESTRATION_SCHEMA_VERSION,
+                    id: format!("{run_id}-store"),
+                    run_id: run_id.clone(),
+                    timestamp: "preview-003".to_string(),
+                    kind: "store.pending".to_string(),
+                    status: "running".to_string(),
+                    title: Some("JSONL event store".to_string()),
+                    message: Some("Append-only run events for skills and adapters".to_string()),
+                    project_id: Some(project.id.clone()),
+                    project_name: Some(project.name.clone()),
+                    project_path: Some(project_path.clone()),
+                    root_label: Some(root_label.clone()),
+                    task_id: task_id.clone(),
+                    agent_id: Some("controller".to_string()),
+                    agent_provider: Some("codex".to_string()),
+                    agent_role: Some("orchestrator".to_string()),
+                    step_id: Some("event-store".to_string()),
+                    step_kind: Some("store".to_string()),
+                    artifact_id: None,
+                    artifact_kind: None,
+                    artifact_path: None,
+                    artifact_url: None,
+                    link_kind: None,
+                    link_label: None,
+                    link_url: None,
+                },
+            ];
+
+            if let Some(task_id) = &task_id {
+                events.push(OrchestrationEvent {
+                    schema_version: ORCHESTRATION_SCHEMA_VERSION,
+                    id: format!("{run_id}-task"),
+                    run_id: run_id.clone(),
+                    timestamp: "preview-004".to_string(),
+                    kind: "link.task".to_string(),
+                    status: "succeeded".to_string(),
+                    title: Some(task_id.clone()),
+                    message: Some("Command Center task link".to_string()),
+                    project_id: Some(project.id),
+                    project_name: Some(project.name),
+                    project_path: Some(project_path),
+                    root_label: Some(root_label),
+                    task_id: Some(task_id.clone()),
+                    agent_id: None,
+                    agent_provider: None,
+                    agent_role: None,
+                    step_id: None,
+                    step_kind: None,
+                    artifact_id: None,
+                    artifact_kind: None,
+                    artifact_path: None,
+                    artifact_url: None,
+                    link_kind: Some("task".to_string()),
+                    link_label: Some(task_id.clone()),
+                    link_url: Some("https://app.notion.com/p/TSK-127-Create-a-native-MAC-OS-app-for-doing-diff-things-in-menu-bar-379394b0689d8053af76fd44c7ffdba4".to_string()),
+                });
+            }
+
+            reduce_orchestration_events(events)
+                .into_iter()
+                .next()
+                .expect("demo events should produce one run")
+        })
+        .collect()
+}
+
+fn sort_orchestration_runs(runs: &mut [OrchestrationRun]) {
+    runs.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then(left.project_name.cmp(&right.project_name))
+            .then(left.title.cmp(&right.title))
+    });
+}
+
+fn orchestration_phase_for_event(event: &OrchestrationEvent) -> String {
+    event
+        .step_kind
+        .clone()
+        .unwrap_or_else(|| event.kind.split('.').next().unwrap_or("run").to_string())
+}
+
+fn orchestration_progress(run: &OrchestrationRun) -> u8 {
+    if run.status == "succeeded" {
+        return 100;
+    }
+    if run.status == "failed" || run.status == "cancelled" {
+        return 100;
+    }
+    if run.steps.is_empty() {
+        return match run.status.as_str() {
+            "queued" => 5,
+            "running" => 35,
+            _ => 0,
+        };
+    }
+
+    let completed = run
+        .steps
+        .iter()
+        .filter(|step| orchestration_status_is_terminal(&step.status))
+        .count();
+    let total = run.steps.len().max(1);
+    let weighted = ((completed * 100) / total).clamp(10, 95);
+    u8::try_from(weighted).unwrap_or(95)
+}
+
+fn merge_orchestration_status(current: &str, next: &str) -> String {
+    let current_rank = orchestration_status_rank(current);
+    let next_rank = orchestration_status_rank(next);
+    if next_rank >= current_rank {
+        next.to_string()
+    } else {
+        current.to_string()
+    }
+}
+
+fn orchestration_status_rank(status: &str) -> u8 {
+    match status {
+        "failed" | "cancelled" => 5,
+        "running" => 4,
+        "blocked" => 3,
+        "queued" => 2,
+        "succeeded" | "skipped" => 1,
+        _ => 0,
+    }
+}
+
+fn orchestration_status_is_terminal(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled" | "skipped")
+}
+
+fn latest_timestamp(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn oldest_timestamp(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn humanize_orchestration_kind(kind: &str) -> String {
+    let value = kind
+        .replace(['.', '_', '-'], " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if value.is_empty() {
+        "Step".to_string()
+    } else {
+        value
+    }
+}
+
+fn stable_orchestration_id(value: &str) -> String {
+    let mut hash = 5381_u32;
+    for byte in value.bytes() {
+        hash = hash.wrapping_mul(33) ^ u32::from(byte);
+    }
+    format!("orch-{hash:x}")
+}
+
+fn root_label_for_path(path: &Path) -> String {
+    if let Some((_, slug)) = worktree_repo_and_slug(path) {
+        return format!("worktree:{slug}");
+    }
+
+    let segments = path_segments(path);
+    if segments
+        .len()
+        .checked_sub(2)
+        .and_then(|index| segments.get(index))
+        .is_some_and(|segment| segment == "work")
+    {
+        return "main checkout".to_string();
+    }
+
+    path_last_segment(path).unwrap_or_else(|| "unknown".to_string())
+}
+
+fn worktree_repo_and_slug(path: &Path) -> Option<(String, String)> {
+    let segments = path_segments(path);
+    let worktrees_index = segments.iter().position(|segment| segment == "worktrees")?;
+    let repo = segments.get(worktrees_index + 1)?.clone();
+    let slug = segments.get(worktrees_index + 2)?.clone();
+    Some((repo, slug))
+}
+
+fn path_segments(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .filter(|segment| !segment.is_empty() && *segment != "/")
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn path_last_segment(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|segment| segment.to_str())
+        .filter(|segment| !segment.is_empty())
+        .map(ToString::to_string)
+}
+
+fn unix_epoch_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orchestration_events_reduce_to_run_timeline() {
+        let input = [
+            r#"{"schemaVersion":1,"id":"evt-1","runId":"run-tsk-127","timestamp":"2026-06-10T10:00:00Z","kind":"run.created","status":"running","title":"TSK-127 run","message":"Started","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":null,"agentProvider":null,"agentRole":null,"stepId":null,"stepKind":null,"artifactId":null,"artifactKind":null,"artifactPath":null,"artifactUrl":null,"linkKind":null,"linkLabel":null,"linkUrl":null}"#,
+            r#"{"schemaVersion":1,"id":"evt-2","runId":"run-tsk-127","timestamp":"2026-06-10T10:01:00Z","kind":"test.failed","status":"failed","title":"Playwright checkout","message":"Button mismatch","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":"agent-a","agentProvider":"codex","agentRole":"tester","stepId":"e2e","stepKind":"test","artifactId":"trace-1","artifactKind":"trace","artifactPath":"/tmp/trace.zip","artifactUrl":null,"linkKind":null,"linkLabel":null,"linkUrl":null}"#,
+            r#"{"schemaVersion":1,"id":"evt-3","runId":"run-tsk-127","timestamp":"2026-06-10T10:02:00Z","kind":"link.task","status":"succeeded","title":"TSK-127","message":"Task link","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":null,"agentProvider":null,"agentRole":null,"stepId":null,"stepKind":null,"artifactId":null,"artifactKind":null,"artifactPath":null,"artifactUrl":null,"linkKind":"task","linkLabel":"TSK-127","linkUrl":"https://example.test/task"}"#,
+        ]
+        .join("\n");
+
+        let events = parse_orchestration_events_jsonl(&input).unwrap();
+        let runs = reduce_orchestration_events(events);
+
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.id, "run-tsk-127");
+        assert_eq!(run.status, "failed");
+        assert_eq!(run.phase, "test");
+        assert_eq!(run.task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(run.agents.len(), 1);
+        assert_eq!(run.agents[0].provider, "codex");
+        assert_eq!(run.steps.len(), 1);
+        assert_eq!(run.steps[0].id, "e2e");
+        assert_eq!(run.steps[0].status, "failed");
+        assert_eq!(run.artifacts.len(), 1);
+        assert_eq!(run.artifacts[0].path.as_deref(), Some("/tmp/trace.zip"));
+        assert_eq!(run.links.len(), 1);
+        assert_eq!(run.links[0].url, "https://example.test/task");
+        assert_eq!(run.progress, 100);
+    }
+}

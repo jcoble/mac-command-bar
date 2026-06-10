@@ -1778,6 +1778,7 @@ version = "0.1.0"
 dependencies = [
  "mcb-core",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
