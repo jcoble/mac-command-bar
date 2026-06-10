@@ -24,6 +24,7 @@ import {
   selectBackgroundIndexProjects,
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
+  textMatchesSearchTokens,
   upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
   upsertRecentSourceRecord,
@@ -633,3 +634,14 @@ assert.equal(scrollTopForSourceTreeReveal(2, 0, 90, 30), 0);
 assert.equal(scrollTopForSourceTreeReveal(10, 0, 90, 30), 240);
 assert.equal(scrollTopForSourceTreeReveal(1, 240, 90, 30), 30);
 assert.equal(scrollTopForSourceTreeReveal(-1, 240, 90, 30), 240);
+
+assert.equal(
+  textMatchesSearchTokens('context bottom', 'Move context to bottom', 'Context cards'),
+  true
+);
+assert.equal(textMatchesSearchTokens('git push', 'Push repository', 'Git actions'), true);
+assert.equal(
+  textMatchesSearchTokens('context bottom', 'Move context to side', 'Context cards'),
+  false
+);
+assert.equal(textMatchesSearchTokens('', 'Any command'), true);

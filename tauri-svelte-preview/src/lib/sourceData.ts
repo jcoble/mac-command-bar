@@ -568,6 +568,21 @@ export function sourceSupportsLanguageIntelligence(language: SourceLanguage): bo
   return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp'].includes(language);
 }
 
+export function textMatchesSearchTokens(
+  filter: string,
+  ...values: Array<string | number | boolean | null | undefined>
+): boolean {
+  const tokens = filter
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return true;
+
+  const haystack = values.map((value) => String(value ?? '').toLowerCase()).join(' ');
+  return tokens.every((token) => haystack.includes(token));
+}
+
 export function formatSourceDiagnosticSummary(diagnostics: SourceDiagnostic[]): string {
   if (diagnostics.length === 0) return 'No problems';
 

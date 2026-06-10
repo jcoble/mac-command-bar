@@ -36,6 +36,16 @@
   } from '$lib/pasteCleanup';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import {
+    createDefaultSourceDockLayout,
+    hideSourceDockPanel,
+    moveSourceDockPanel,
+    normalizeSourceDockLayout,
+    showSourceDockPanel,
+    type SourceDockGroupID,
+    type SourceDockLayout,
+    type SourceDockPanelID
+  } from '$lib/sourceDockLayout';
+  import {
     buildSourceTree,
     closeOpenSourceTab,
     createProjectRoot,
@@ -65,6 +75,7 @@
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
     sourceSupportsLanguageIntelligence,
+    textMatchesSearchTokens,
     upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
@@ -145,6 +156,7 @@
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
   const sourceLayoutVersionStorageKey = 'mac-command-bar.source-browser.layout-version';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
+  const sourceDockLayoutStorageKey = 'mac-command-bar.source-browser.dock-layout';
   const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
   const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
   const contextPanelPlacementStorageKey = 'mac-command-bar.source-browser.context-panel-placement';
@@ -153,6 +165,7 @@
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
   const editorInsightCollapsedStorageKey = 'mac-command-bar.source-browser.editor-insight-collapsed';
   const contextPaneWidthStorageKey = 'mac-command-bar.source-browser.context-pane-width';
+  const contextPaneHeightStorageKey = 'mac-command-bar.source-browser.context-pane-height';
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
   const hiddenContextCardsStorageKey = 'mac-command-bar.source-browser.hidden-context-cards';
   const activeContextCardStorageKey = 'mac-command-bar.source-browser.active-context-card';
@@ -181,6 +194,9 @@
   const contextPaneDefaultWidth = 330;
   const contextPaneMinWidth = 260;
   const contextPaneMaxWidth = 560;
+  const contextPaneDefaultHeight = 260;
+  const contextPaneMinHeight = 180;
+  const contextPaneMaxHeight = 520;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const sourceLayoutVersion = '2026-06-editor-canvas';
   const initialProject = defaultProjectRoots[0];
@@ -210,7 +226,7 @@
   type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'runs' | 'sessions' | 'custom';
   type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
   type SourceContextPanelMode = 'grid' | 'stack';
-  type SourceContextPanelPlacement = 'top' | 'side';
+  type SourceContextPanelPlacement = 'top' | 'side' | 'bottom';
   type SourceSidePanePosition = 'left' | 'right';
   type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
   type SourceLayoutPresetDefinition = {
@@ -404,7 +420,9 @@
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let editorInsightCollapsed = $state(true);
   let contextPaneWidth = $state(contextPaneDefaultWidth);
+  let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
+  let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
   let hiddenContextCardIDs = $state<Set<SourceContextCardID>>(new Set());
   let activeContextCardID = $state<SourceContextCardID>('orchestration');
   let viewMenuOpen = $state(false);
@@ -897,6 +915,13 @@
       perform: () => selectContextPanelPlacement('side')
     },
     {
+      id: 'context-bottom',
+      label: 'Move context to bottom',
+      detail: 'Context cards',
+      disabled: contextPanelPlacement === 'bottom',
+      perform: () => moveDockPanelToGroup('context', 'bottom')
+    },
+    {
       id: 'context-top',
       label: 'Move context to top',
       detail: 'Context cards',
@@ -929,6 +954,12 @@
       detail: `${hiddenContextCardIDs.size} hidden`,
       disabled: hiddenContextCardIDs.size === 0,
       perform: showAllContextCards
+    },
+    {
+      id: 'dock-show-terminal',
+      label: 'Show terminal dock',
+      detail: 'Reserved embedded terminal lane',
+      perform: () => showDockPanel('terminal')
     },
     ...contextCardOrder.map((cardID) => ({
       id: `context-card-${cardID}`,
@@ -2548,10 +2579,7 @@
     filter: string,
     ...values: Array<string | number | boolean | null | undefined>
   ) {
-    const normalizedFilter = filter.trim().toLowerCase();
-    if (!normalizedFilter) return true;
-
-    return values.some((value) => String(value ?? '').toLowerCase().includes(normalizedFilter));
+    return textMatchesSearchTokens(filter, ...values);
   }
 
   function handleCommandPaletteKeydown(event: KeyboardEvent) {
@@ -3211,6 +3239,8 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
     persistContextPanelPlacement(contextPanelPlacement);
+    sourceDockLayout = sourceDockLayoutFromWorkspace();
+    persistSourceDockLayout(sourceDockLayout);
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -3460,6 +3490,107 @@
     window.localStorage.setItem(sourceTerminalAppStorageKey, app);
   }
 
+  function moveDockPanelToGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID) {
+    applySourceDockLayout(moveSourceDockPanel(sourceDockLayout, panelID, groupID));
+  }
+
+  function hideDockPanel(panelID: SourceDockPanelID) {
+    applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+  }
+
+  function showDockPanel(panelID: SourceDockPanelID) {
+    applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));
+    if (panelID === 'terminal') {
+      fileActionStatus = 'Terminal dock reserved for embedded terminal integration';
+    }
+    if (panelID === 'browser') {
+      fileActionStatus = 'Browser dock reserved for embedded browser integration';
+    }
+  }
+
+  function applySourceDockLayout(layout: SourceDockLayout) {
+    const normalizedLayout = normalizeSourceDockLayout(layout);
+    sourceDockLayout = normalizedLayout;
+    syncSourceDockLayoutToWorkspace(normalizedLayout);
+    persistSourceDockLayout(normalizedLayout);
+  }
+
+  function syncSourceDockLayoutToWorkspace(layout: SourceDockLayout) {
+    const normalizedLayout = normalizeSourceDockLayout(layout);
+    const activityGroupID = dockGroupIDForPanel(normalizedLayout, 'activity');
+    const contextGroupID = dockGroupIDForPanel(normalizedLayout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(normalizedLayout, 'insights');
+
+    if (activityGroupID === 'left' || activityGroupID === 'right') {
+      sidePanePosition = activityGroupID;
+      persistSidePanePosition(sidePanePosition);
+    }
+
+    contextPanelCollapsed = contextGroupID === null;
+    persistContextPanelCollapsed(contextPanelCollapsed);
+    if (contextGroupID !== null) {
+      contextPanelPlacement = contextPanelPlacementForDockGroup(contextGroupID);
+      persistContextPanelPlacement(contextPanelPlacement);
+    }
+
+    editorInsightCollapsed = insightsGroupID === null;
+    persistEditorInsightCollapsed(editorInsightCollapsed);
+  }
+
+  function sourceDockLayoutFromWorkspace(): SourceDockLayout {
+    const layout = createDefaultSourceDockLayout();
+    let nextLayout = moveSourceDockPanel(
+      layout,
+      'activity',
+      sidePanePosition === 'right' ? 'right' : 'left'
+    );
+    nextLayout = contextPanelCollapsed
+      ? hideSourceDockPanel(nextLayout, 'context')
+      : moveSourceDockPanel(nextLayout, 'context', dockGroupForContextPanelPlacement(contextPanelPlacement));
+    nextLayout = editorInsightCollapsed
+      ? hideSourceDockPanel(nextLayout, 'insights')
+      : moveSourceDockPanel(nextLayout, 'insights', 'right');
+    return normalizeSourceDockLayout({
+      ...nextLayout,
+      preset: sourceLayoutPreset
+    });
+  }
+
+  function dockGroupIDForPanel(layout: SourceDockLayout, panelID: SourceDockPanelID): SourceDockGroupID | null {
+    return layout.groups.find((group) => group.panelIDs.includes(panelID))?.id ?? null;
+  }
+
+  function dockGroupForContextPanelPlacement(placement: SourceContextPanelPlacement): SourceDockGroupID {
+    if (placement === 'side') return 'right';
+    if (placement === 'bottom') return 'bottom';
+    return 'center';
+  }
+
+  function contextPanelPlacementForDockGroup(groupID: SourceDockGroupID): SourceContextPanelPlacement {
+    if (groupID === 'right' || groupID === 'left') return 'side';
+    if (groupID === 'bottom') return 'bottom';
+    return 'top';
+  }
+
+  function loadStoredSourceDockLayout(): SourceDockLayout | null {
+    if (typeof window === 'undefined') return null;
+
+    try {
+      const storedLayout = window.localStorage.getItem(sourceDockLayoutStorageKey);
+      return storedLayout ? normalizeSourceDockLayout(JSON.parse(storedLayout)) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function persistSourceDockLayout(layout: SourceDockLayout) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      sourceDockLayoutStorageKey,
+      JSON.stringify(normalizeSourceDockLayout(layout))
+    );
+  }
+
   function loadStoredSidePanePosition(): SourceSidePanePosition {
     if (typeof window === 'undefined') return 'left';
 
@@ -3475,6 +3606,8 @@
     markSourceLayoutCustom();
     sidePanePosition = position;
     persistSidePanePosition(position);
+    sourceDockLayout = moveSourceDockPanel(sourceDockLayout, 'activity', position);
+    persistSourceDockLayout(sourceDockLayout);
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
@@ -3546,12 +3679,20 @@
     markSourceLayoutCustom();
     contextPanelCollapsed = !contextPanelCollapsed;
     persistContextPanelCollapsed(contextPanelCollapsed);
+    sourceDockLayout = contextPanelCollapsed
+      ? hideSourceDockPanel(sourceDockLayout, 'context')
+      : showSourceDockPanel(sourceDockLayout, 'context');
+    persistSourceDockLayout(sourceDockLayout);
   }
 
   function toggleEditorInsightCollapsed() {
     markSourceLayoutCustom();
     editorInsightCollapsed = !editorInsightCollapsed;
     persistEditorInsightCollapsed(editorInsightCollapsed);
+    sourceDockLayout = editorInsightCollapsed
+      ? hideSourceDockPanel(sourceDockLayout, 'insights')
+      : showSourceDockPanel(sourceDockLayout, 'insights');
+    persistSourceDockLayout(sourceDockLayout);
   }
 
   function showEditorInsightPanel(panel: SourceIntelligencePanel) {
@@ -3559,6 +3700,8 @@
     sourceIntelligencePanel = panel;
     editorInsightCollapsed = false;
     persistEditorInsightCollapsed(editorInsightCollapsed);
+    sourceDockLayout = showSourceDockPanel(sourceDockLayout, 'insights');
+    persistSourceDockLayout(sourceDockLayout);
   }
 
   function clearSourceLookupResults() {
@@ -3607,7 +3750,9 @@
     hiddenContextCardIDs = new Set();
     persistHiddenContextCards(hiddenContextCardIDs);
     contextPanelCollapsed = false;
+    sourceDockLayout = showSourceDockPanel(sourceDockLayout, 'context');
     persistContextPanelCollapsed(contextPanelCollapsed);
+    persistSourceDockLayout(sourceDockLayout);
   }
 
   function showContextCard(cardID: SourceContextCardID) {
@@ -3617,9 +3762,11 @@
     hiddenContextCardIDs = nextCardIDs;
     activeContextCardID = cardID;
     contextPanelCollapsed = false;
+    sourceDockLayout = showSourceDockPanel(sourceDockLayout, 'context');
     persistHiddenContextCards(nextCardIDs);
     persistActiveContextCard(cardID);
     persistContextPanelCollapsed(contextPanelCollapsed);
+    persistSourceDockLayout(sourceDockLayout);
   }
 
   function selectContextPanelMode(mode: SourceContextPanelMode) {
@@ -3631,7 +3778,15 @@
   function selectContextPanelPlacement(placement: SourceContextPanelPlacement) {
     markSourceLayoutCustom();
     contextPanelPlacement = placement;
+    contextPanelCollapsed = false;
     persistContextPanelPlacement(placement);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+    sourceDockLayout = moveSourceDockPanel(
+      sourceDockLayout,
+      'context',
+      dockGroupForContextPanelPlacement(placement)
+    );
+    persistSourceDockLayout(sourceDockLayout);
   }
 
   function loadStoredContextPanelCollapsed() {
@@ -3668,7 +3823,7 @@
   }
 
   function isContextPanelPlacement(value: unknown): value is SourceContextPanelPlacement {
-    return value === 'top' || value === 'side';
+    return value === 'top' || value === 'side' || value === 'bottom';
   }
 
   function persistContextPanelPlacement(placement: SourceContextPanelPlacement) {
@@ -3804,21 +3959,53 @@
     return Math.min(contextPaneMaxWidth, Math.max(contextPaneMinWidth, Math.round(width)));
   }
 
+  function loadStoredContextPaneHeight() {
+    if (typeof window === 'undefined') return contextPaneDefaultHeight;
+
+    const storedHeight = window.localStorage.getItem(contextPaneHeightStorageKey);
+    if (storedHeight === null) return contextPaneDefaultHeight;
+    return clampContextPaneHeight(Number(storedHeight));
+  }
+
+  function persistContextPaneHeight(height: number) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(contextPaneHeightStorageKey, String(clampContextPaneHeight(height)));
+  }
+
+  function clampContextPaneHeight(height: number) {
+    if (!Number.isFinite(height)) return contextPaneDefaultHeight;
+    return Math.min(contextPaneMaxHeight, Math.max(contextPaneMinHeight, Math.round(height)));
+  }
+
   function beginContextPaneResize(event: PointerEvent) {
     if (event.button !== 0 || typeof window === 'undefined') return;
 
     const startX = event.clientX;
+    const startY = event.clientY;
     const startWidth = contextPaneWidth;
+    const startHeight = contextPaneHeight;
     event.preventDefault();
     markSourceLayoutCustom();
-    window.document.body.classList.add('resizing-context-pane');
+    const resizingClass = contextPanelPlacement === 'bottom'
+      ? 'resizing-context-pane-bottom'
+      : 'resizing-context-pane';
+    window.document.body.classList.add(resizingClass);
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (contextPanelPlacement === 'bottom') {
+        contextPaneHeight = clampContextPaneHeight(startHeight - (moveEvent.clientY - startY));
+        return;
+      }
+
       contextPaneWidth = clampContextPaneWidth(startWidth - (moveEvent.clientX - startX));
     };
     const finishResize = () => {
-      persistContextPaneWidth(contextPaneWidth);
-      window.document.body.classList.remove('resizing-context-pane');
+      if (contextPanelPlacement === 'bottom') {
+        persistContextPaneHeight(contextPaneHeight);
+      } else {
+        persistContextPaneWidth(contextPaneWidth);
+      }
+      window.document.body.classList.remove(resizingClass);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', finishResize);
       window.removeEventListener('pointercancel', finishResize);
@@ -3830,10 +4017,23 @@
   }
 
   function handleContextPaneResizerKeydown(event: KeyboardEvent) {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    if (
+      event.key !== 'ArrowLeft' &&
+      event.key !== 'ArrowRight' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'ArrowDown'
+    ) return;
 
     event.preventDefault();
     markSourceLayoutCustom();
+    if (contextPanelPlacement === 'bottom') {
+      const direction = event.key === 'ArrowUp' ? 1 : event.key === 'ArrowDown' ? -1 : 0;
+      if (direction === 0) return;
+      contextPaneHeight = clampContextPaneHeight(contextPaneHeight + direction * 24);
+      persistContextPaneHeight(contextPaneHeight);
+      return;
+    }
+
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     contextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
     persistContextPaneWidth(contextPaneWidth);
@@ -4278,11 +4478,13 @@
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
     const storedEditorInsightCollapsed = loadStoredEditorInsightCollapsed();
     const storedContextPaneWidth = loadStoredContextPaneWidth();
+    const storedContextPaneHeight = loadStoredContextPaneHeight();
     const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
     const storedContextPanelMode = loadStoredContextPanelMode();
     const storedContextPanelPlacement = loadStoredContextPanelPlacement();
     const storedHiddenContextCardIDs = loadStoredHiddenContextCards();
     const storedActiveContextCardID = loadStoredActiveContextCard();
+    const storedSourceDockLayout = loadStoredSourceDockLayout();
     const migrateSourceLayout = shouldMigrateSourceLayout();
     const compactPreset =
       sourceLayoutPresets.find((preset) => preset.id === 'code') ?? sourceLayoutPresets[0];
@@ -4305,11 +4507,18 @@
     editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
     editorInsightCollapsed = migrateSourceLayout ? compactPreset.editorInsightCollapsed : storedEditorInsightCollapsed;
     contextPaneWidth = storedContextPaneWidth;
+    contextPaneHeight = storedContextPaneHeight;
     contextPanelCollapsed = migrateSourceLayout ? compactPreset.contextPanelCollapsed : storedContextPanelCollapsed;
     contextPanelMode = migrateSourceLayout ? compactPreset.contextPanelMode : storedContextPanelMode;
     contextPanelPlacement = migrateSourceLayout ? compactPreset.contextPanelPlacement : storedContextPanelPlacement;
     hiddenContextCardIDs = storedHiddenContextCardIDs;
     activeContextCardID = storedActiveContextCardID;
+    sourceDockLayout = migrateSourceLayout || !storedSourceDockLayout
+      ? sourceDockLayoutFromWorkspace()
+      : storedSourceDockLayout;
+    if (!migrateSourceLayout && storedSourceDockLayout) {
+      syncSourceDockLayoutToWorkspace(storedSourceDockLayout);
+    }
     persistSelectedProjectID(storedProject.id);
     if (migrateSourceLayout) {
       persistSourceLayoutPreset(sourceLayoutPreset);
@@ -4322,6 +4531,7 @@
       persistContextPanelMode(contextPanelMode);
       persistContextPanelPlacement(contextPanelPlacement);
     }
+    persistSourceDockLayout(sourceDockLayout);
     persistSourceLayoutVersion();
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
@@ -4350,7 +4560,7 @@
 <main
   class="shell"
   class:side-right={sidePanePosition === 'right'}
-  style={`--side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px`}
+  style={`--side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px`}
 >
   <aside class="activity-shell" aria-label="Workspace browser">
     <nav class="activity-rail" aria-label="Workspace views">
@@ -5203,6 +5413,7 @@
   <section
     class="workspace"
     class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}
+    class:context-bottom={contextPanelPlacement === 'bottom' && !contextPanelCollapsed}
     aria-label="Source preview"
   >
     <header class="topbar">
@@ -5317,6 +5528,18 @@
                     Side
                   </button>
                   <button
+                    class:active={contextPanelPlacement === 'bottom'}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Put context below editor"
+                    onclick={() => {
+                      moveDockPanelToGroup('context', 'bottom');
+                      closeViewMenu();
+                    }}
+                  >
+                    Bottom
+                  </button>
+                  <button
                     class:active={contextPanelMode === 'grid'}
                     type="button"
                     role="menuitem"
@@ -5394,6 +5617,7 @@
     <div
       class="workspace-arrangement"
       class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}
+      class:context-bottom={contextPanelPlacement === 'bottom' && !contextPanelCollapsed}
     >
       <div class="workspace-context-column">
     <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextPanelMode === 'stack'}>
@@ -8044,6 +8268,11 @@
     gap: 0;
   }
 
+  .workspace-arrangement.context-bottom {
+    grid-template-rows: minmax(0, 1fr) 6px minmax(180px, var(--context-pane-height));
+    gap: 0;
+  }
+
   .workspace-context-column,
   .workspace-main-column {
     min-width: 0;
@@ -8072,6 +8301,18 @@
     padding-left: 6px;
   }
 
+  .workspace-arrangement.context-bottom .workspace-main-column {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .workspace-arrangement.context-bottom .workspace-context-column {
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
+    padding-top: 6px;
+  }
+
   .context-pane-resizer {
     display: none;
     width: 6px;
@@ -8090,6 +8331,19 @@
     grid-row: 1;
   }
 
+  .workspace-arrangement.context-bottom .context-pane-resizer {
+    display: block;
+    grid-column: 1;
+    grid-row: 2;
+    width: auto;
+    height: 6px;
+    cursor: row-resize;
+    border-top: 1px solid rgba(255, 255, 255, 0.045);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+    border-left: 0;
+    border-right: 0;
+  }
+
   .context-pane-resizer:hover,
   .context-pane-resizer:focus-visible {
     outline: 0;
@@ -8098,6 +8352,11 @@
 
   :global(body.resizing-context-pane) {
     cursor: col-resize;
+    user-select: none;
+  }
+
+  :global(body.resizing-context-pane-bottom) {
+    cursor: row-resize;
     user-select: none;
   }
 
@@ -8160,6 +8419,19 @@
 
   .workspace-arrangement.context-side .context-panel-grid {
     grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    height: 100%;
+    margin: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .workspace-arrangement.context-bottom .context-panel-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     align-content: start;
     height: 100%;
     margin: 0;
