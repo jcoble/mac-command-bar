@@ -1317,6 +1317,16 @@
     return 'ready';
   }
 
+  function projectWorktreeActivityLabel(worktree: ProjectWorktree) {
+    if (!worktree.lastActivity) return 'activity unknown';
+
+    const epochMs = new Date(worktree.lastActivity).getTime();
+    if (Number.isNaN(epochMs)) return worktree.lastActivity;
+
+    const age = formatRelativeAge(epochMs);
+    return age === 'just now' ? 'active just now' : `active ${age} ago`;
+  }
+
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
     return record ? gitStatusByRelativePath.get(record.relativePath) ?? null : null;
   }
@@ -3408,7 +3418,7 @@
                   <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
                   <div class="activity-row-main">
                     <strong>{worktree.branch}</strong>
-                    <small>{worktree.repo} · {worktree.deleteEligibility}</small>
+                    <small>{worktree.repo} · {worktree.deleteEligibility} · {projectWorktreeActivityLabel(worktree)}</small>
                   </div>
                   {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
                     <a
@@ -3744,7 +3754,7 @@
                 {/if}
                 <span>{worktree.repo}</span>
                 <small title={worktree.path}>{worktree.path}</small>
-                <em>{worktree.deleteEligibility}</em>
+                <em>{worktree.deleteEligibility} · {projectWorktreeActivityLabel(worktree)}</em>
               </div>
             {/each}
           </div>

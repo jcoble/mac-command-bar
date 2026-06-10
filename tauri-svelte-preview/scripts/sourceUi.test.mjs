@@ -68,6 +68,7 @@ assert.ok(pageSource.includes('function activityTextMatchesFilter'), 'Activity r
 assert.ok(pageSource.includes('function sourceActivityFilterPlaceholder'), 'Activity filter placeholder should match the active panel');
 assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
 assert.ok(pageSource.includes('function beginSidePaneResize'), 'Source shell should expose side pane drag resizing');
+assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');
 assert.ok(pageSource.includes('editorInsightWidthStorageKey'), 'Editor shell should persist the inspector width');
 assert.ok(pageSource.includes('contextPanelCollapsedStorageKey'), 'Workspace should persist collapsed context cards');
 assert.ok(pageSource.includes('let editorInsightWidth'), 'Editor shell should track inspector width');
@@ -105,6 +106,7 @@ assert.ok(pageSource.includes('filteredProjectWorktrees'), 'Activity panels shou
 assert.ok(pageSource.includes('worktree.taskID'), 'Worktree rows should expose parsed task IDs');
 assert.ok(pageSource.includes('gitTaskUrl(worktree.taskID)'), 'Worktree rows should link parsed task IDs to Notion');
 assert.ok(pageSource.includes('aria-label="Open worktree task"'), 'Worktree task links should be accessible');
+assert.ok(pageSource.includes('projectWorktreeActivityLabel(worktree)'), 'Worktree rows should show last activity');
 assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
