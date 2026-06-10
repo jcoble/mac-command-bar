@@ -125,6 +125,7 @@
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
+  const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
@@ -164,6 +165,7 @@
   type SourceActivityMode = 'files' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
   type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom';
   type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
+  type SourceContextPanelMode = 'grid' | 'stack';
   type SourceLayoutPresetDefinition = {
     id: Exclude<SourceLayoutPresetID, 'custom'>;
     label: string;
@@ -172,6 +174,7 @@
     sidePaneWidth: number;
     editorInsightWidth: number;
     contextPanelCollapsed: boolean;
+    contextPanelMode: SourceContextPanelMode;
     intelligencePanel: SourceIntelligencePanel;
   };
 
@@ -184,6 +187,7 @@
       sidePaneWidth: sidePaneDefaultWidth,
       editorInsightWidth: editorInsightDefaultWidth,
       contextPanelCollapsed: false,
+      contextPanelMode: 'grid',
       intelligencePanel: 'symbols'
     },
     {
@@ -194,6 +198,7 @@
       sidePaneWidth: 360,
       editorInsightWidth: editorInsightMinWidth,
       contextPanelCollapsed: true,
+      contextPanelMode: 'grid',
       intelligencePanel: 'symbols'
     },
     {
@@ -204,6 +209,7 @@
       sidePaneWidth: 440,
       editorInsightWidth: 340,
       contextPanelCollapsed: false,
+      contextPanelMode: 'stack',
       intelligencePanel: 'git'
     },
     {
@@ -214,6 +220,7 @@
       sidePaneWidth: 420,
       editorInsightWidth: 280,
       contextPanelCollapsed: false,
+      contextPanelMode: 'stack',
       intelligencePanel: 'problems'
     }
   ];
@@ -296,6 +303,7 @@
   let sourceActivityFilter = $state('');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('review');
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
+  let contextPanelMode = $state<SourceContextPanelMode>('grid');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let contextPanelCollapsed = $state(false);
@@ -2114,6 +2122,7 @@
     sidePaneWidth = clampSidePaneWidth(preset.sidePaneWidth);
     editorInsightWidth = clampEditorInsightWidth(preset.editorInsightWidth);
     contextPanelCollapsed = preset.contextPanelCollapsed;
+    contextPanelMode = preset.contextPanelMode;
     sourceIntelligencePanel = preset.intelligencePanel;
 
     persistSourceLayoutPreset(sourceLayoutPreset);
@@ -2121,6 +2130,7 @@
     persistSidePaneWidth(sidePaneWidth);
     persistEditorInsightWidth(editorInsightWidth);
     persistContextPanelCollapsed(contextPanelCollapsed);
+    persistContextPanelMode(contextPanelMode);
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -2377,6 +2387,12 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
   }
 
+  function selectContextPanelMode(mode: SourceContextPanelMode) {
+    markSourceLayoutCustom();
+    contextPanelMode = mode;
+    persistContextPanelMode(mode);
+  }
+
   function loadStoredContextPanelCollapsed() {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(contextPanelCollapsedStorageKey) === 'true';
@@ -2385,6 +2401,22 @@
   function persistContextPanelCollapsed(collapsed: boolean) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(contextPanelCollapsedStorageKey, collapsed ? 'true' : 'false');
+  }
+
+  function loadStoredContextPanelMode(): SourceContextPanelMode {
+    if (typeof window === 'undefined') return 'grid';
+
+    const storedMode = window.localStorage.getItem(contextPanelModeStorageKey);
+    return isContextPanelMode(storedMode) ? storedMode : 'grid';
+  }
+
+  function isContextPanelMode(value: unknown): value is SourceContextPanelMode {
+    return value === 'grid' || value === 'stack';
+  }
+
+  function persistContextPanelMode(mode: SourceContextPanelMode) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(contextPanelModeStorageKey, mode);
   }
 
   function loadStoredEditorInsightWidth() {
@@ -2876,6 +2908,7 @@
     const storedSidePaneWidth = loadStoredSidePaneWidth();
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
     const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
+    const storedContextPanelMode = loadStoredContextPanelMode();
     const storedProject =
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
@@ -2892,6 +2925,7 @@
     sidePaneWidth = storedSidePaneWidth;
     editorInsightWidth = storedEditorInsightWidth;
     contextPanelCollapsed = storedContextPanelCollapsed;
+    contextPanelMode = storedContextPanelMode;
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
@@ -3625,6 +3659,28 @@
               <span>Context</span>
             {/if}
           </button>
+          <div class="context-mode-group" role="group" aria-label="Context card layout">
+            <button
+              class:active={contextPanelMode === 'grid'}
+              type="button"
+              aria-label="Use grid context cards"
+              aria-pressed={contextPanelMode === 'grid'}
+              title="Grid context cards"
+              onclick={() => selectContextPanelMode('grid')}
+            >
+              Grid
+            </button>
+            <button
+              class:active={contextPanelMode === 'stack'}
+              type="button"
+              aria-label="Use stacked context cards"
+              aria-pressed={contextPanelMode === 'stack'}
+              title="Stack context cards"
+              onclick={() => selectContextPanelMode('stack')}
+            >
+              Stack
+            </button>
+          </div>
           <span class="project-git-pill" title={projectGitSummary}>{projectGitSummary}</span>
           <span>{runtime}</span>
           {#if preview}
@@ -3654,7 +3710,7 @@
       </div>
     </div>
 
-    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed}>
+    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextPanelMode === 'stack'}>
       <section class="runtime-context-panel" aria-label="Runtime contexts">
         <div class="runtime-context-header">
           <div>
@@ -5554,6 +5610,43 @@
     white-space: nowrap;
   }
 
+  .context-mode-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    height: 28px;
+    padding: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .context-mode-group button {
+    height: 20px;
+    min-width: 0;
+    padding: 0 7px;
+    color: #9facaa;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    font-size: 10px;
+    font-weight: 820;
+    cursor: pointer;
+  }
+
+  .context-mode-group button:hover,
+  .context-mode-group button:focus-visible {
+    color: #edf4f2;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .context-mode-group button.active {
+    color: #dffdf8;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
   .status-strip span,
   .mode-pill,
   .quality-pill {
@@ -5632,6 +5725,10 @@
 
   .context-panel-grid.collapsed {
     display: none;
+  }
+
+  .context-panel-grid.stacked {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .runtime-context-panel,
