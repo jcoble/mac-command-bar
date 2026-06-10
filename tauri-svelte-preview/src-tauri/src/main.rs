@@ -148,6 +148,7 @@ struct ProjectWorktree {
     repo: String,
     path: String,
     branch: String,
+    task_id: Option<String>,
     is_dirty: bool,
     has_unmerged_commits: bool,
     last_activity: Option<String>,
@@ -1738,14 +1739,19 @@ fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
                 }
             }
 
-            path.map(|path| ProjectWorktree {
-                repo: String::new(),
-                path,
-                branch: branch.unwrap_or_else(|| "unknown".to_string()),
-                is_dirty: false,
-                has_unmerged_commits: false,
-                last_activity: None,
-                delete_eligibility: "unknown".to_string(),
+            path.map(|path| {
+                let branch = branch.unwrap_or_else(|| "unknown".to_string());
+                let task_id = branch_task_id(&branch);
+                ProjectWorktree {
+                    repo: String::new(),
+                    path,
+                    branch,
+                    task_id,
+                    is_dirty: false,
+                    has_unmerged_commits: false,
+                    last_activity: None,
+                    delete_eligibility: "unknown".to_string(),
+                }
             })
         })
         .collect()
@@ -3333,18 +3339,24 @@ mod tests {
     #[test]
     fn project_worktree_parser_reads_porcelain_branches() {
         let records = parse_project_worktree_porcelain(
-            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feature\nHEAD def\nbranch refs/heads/cdx/feature\n\nworktree /detached\nHEAD fed\ndetached\n",
+            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feature\nHEAD def\nbranch refs/heads/cdx/tsk-126-feature\n\nworktree /detached\nHEAD fed\ndetached\n",
         );
 
         assert_eq!(
             records
                 .iter()
-                .map(|record| (record.path.as_str(), record.branch.as_str()))
+                .map(|record| {
+                    (
+                        record.path.as_str(),
+                        record.branch.as_str(),
+                        record.task_id.as_deref(),
+                    )
+                })
                 .collect::<Vec<_>>(),
             vec![
-                ("/repo", "main"),
-                ("/worktrees/feature", "cdx/feature"),
-                ("/detached", "detached")
+                ("/repo", "main", None),
+                ("/worktrees/feature", "cdx/tsk-126-feature", Some("TSK-126")),
+                ("/detached", "detached", None)
             ]
         );
     }

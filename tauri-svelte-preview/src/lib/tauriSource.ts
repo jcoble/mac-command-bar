@@ -49,6 +49,7 @@ export type ProjectWorktree = {
   repo: string;
   path: string;
   branch: string;
+  taskID: string | null;
   isDirty: boolean;
   hasUnmergedCommits: boolean;
   lastActivity: string | null;

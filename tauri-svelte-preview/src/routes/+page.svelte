@@ -473,6 +473,7 @@
         worktree.repo,
         worktree.path,
         worktree.branch,
+        worktree.taskID,
         worktree.deleteEligibility,
         worktree.lastActivity
       )
@@ -957,6 +958,7 @@
         repo: project.name,
         path: project.path,
         branch: 'main',
+        taskID: project.id === 'mac-command-bar' ? 'TSK-127' : null,
         isDirty: false,
         hasUnmergedCommits: false,
         lastActivity: null,
@@ -3408,6 +3410,17 @@
                     <strong>{worktree.branch}</strong>
                     <small>{worktree.repo} · {worktree.deleteEligibility}</small>
                   </div>
+                  {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
+                    <a
+                      class="git-task-link"
+                      href={gitTaskUrl(worktree.taskID) ?? ''}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open worktree task"
+                    >
+                      {worktree.taskID}
+                    </a>
+                  {/if}
                   <div class="activity-row-actions" aria-label="Worktree actions">
                     <button
                       type="button"
@@ -3718,6 +3731,17 @@
               <div class="worktree-context-row" class:blocked={eligibilityKind === 'blocked'}>
                 <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
                 <strong>{worktree.branch}</strong>
+                {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
+                  <a
+                    class="git-task-link"
+                    href={gitTaskUrl(worktree.taskID) ?? ''}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open worktree task"
+                  >
+                    {worktree.taskID}
+                  </a>
+                {/if}
                 <span>{worktree.repo}</span>
                 <small title={worktree.path}>{worktree.path}</small>
                 <em>{worktree.deleteEligibility}</em>
@@ -5723,7 +5747,7 @@
   }
 
   .worktree-context-row {
-    grid-template-columns: auto minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 0.9fr) auto minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1fr);
   }
 
   .repo-dashboard-row {

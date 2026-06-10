@@ -102,6 +102,9 @@ assert.ok(pageSource.includes('placeholder={sourceActivityFilterPlaceholder(sour
 assert.ok(pageSource.includes('aria-label="Filter workspace activity"'), 'Activity filter should be accessible');
 assert.ok(pageSource.includes('filteredProjectAgentSessions'), 'Activity panels should filter conversation and agent rows');
 assert.ok(pageSource.includes('filteredProjectWorktrees'), 'Activity panels should filter worktree rows');
+assert.ok(pageSource.includes('worktree.taskID'), 'Worktree rows should expose parsed task IDs');
+assert.ok(pageSource.includes('gitTaskUrl(worktree.taskID)'), 'Worktree rows should link parsed task IDs to Notion');
+assert.ok(pageSource.includes('aria-label="Open worktree task"'), 'Worktree task links should be accessible');
 assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
