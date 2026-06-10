@@ -244,9 +244,19 @@ assert.ok(pageSource.includes('filteredProjectOrchestrationRuns'), 'Activity pan
 assert.ok(pageSource.includes('listOrchestrationRunsFromTauri'), 'Source page should load orchestration runs from the native event store');
 assert.ok(pageSource.includes('class="activity-run-row"'), 'Runs mode should render orchestration run cards');
 assert.ok(pageSource.includes('class="orchestration-context-panel"'), 'Workspace context should include orchestration run status');
-assert.ok(pageSource.includes('run.steps.length'), 'Orchestration run cards should expose step counts');
-assert.ok(pageSource.includes('run.agents.length'), 'Orchestration run cards should expose agent counts');
-assert.ok(pageSource.includes('run.artifacts.length'), 'Orchestration run cards should expose artifact counts');
+assert.ok(pageSource.includes('runMetrics.stepCount'), 'Orchestration run cards should expose step counts');
+assert.ok(pageSource.includes('runMetrics.agentCount'), 'Orchestration run cards should expose agent counts');
+assert.ok(pageSource.includes('runMetrics.artifactCount'), 'Orchestration run cards should expose artifact counts');
+assert.ok(pageSource.includes('orchestrationRunMetrics(run)'), 'Orchestration run cards should derive status metrics');
+assert.ok(pageSource.includes('orchestrationTimelineItems(run, 6)'), 'Orchestration run cards should render timeline items');
+assert.ok(pageSource.includes('orchestrationCurrentActivity(run)'), 'Orchestration run cards should expose current activity');
+assert.ok(pageSource.includes('orchestrationArtifactChips(run)'), 'Orchestration run cards should expose artifact chips');
+assert.ok(pageSource.includes('orchestrationLinkChips(run)'), 'Orchestration run cards should expose link chips');
+assert.ok(pageSource.includes('class="run-current-activity"'), 'Runs mode should render current activity');
+assert.ok(pageSource.includes('class="run-timeline"'), 'Runs mode should render a timeline');
+assert.ok(pageSource.includes('class="run-artifact-row"'), 'Runs mode should render artifact/link chips');
+assert.ok(pageSource.includes('{runMetrics.retryCount} retries'), 'Runs mode should show retry counts');
+assert.ok(pageSource.includes('{runMetrics.approvalCount} sign-off'), 'Runs mode should show sign-off counts');
 assert.ok(pageSource.includes('filteredProjectWorktrees'), 'Activity panels should filter worktree rows');
 assert.ok(pageSource.includes('worktree.taskID'), 'Worktree rows should expose parsed task IDs');
 assert.ok(pageSource.includes('gitTaskUrl(worktree.taskID)'), 'Worktree rows should link parsed task IDs to Notion');
@@ -578,6 +588,16 @@ assertDeclaration('.git-history-list', 'overflow-y: auto');
 assertDeclaration('.git-task-trail', 'display: flex');
 assertDeclaration('.git-history-row.head', 'background: rgba(111, 223, 207, 0.07)');
 assertDeclaration('.git-graph-marker.head::after', 'background: #6fdfcf');
+assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.run-timeline-item', 'grid-template-columns: 18px minmax(0, 1fr) auto');
+assertDeclaration('.run-artifact-row', 'display: flex');
+assert.ok(
+  pageSource.includes('.run-status-badge.attention,') &&
+    pageSource.includes('.run-step-marker.attention') &&
+    pageSource.includes('background: #d8aa55'),
+  'Run attention status should style badges and markers'
+);
+assertDeclaration('.orchestration-context-row.attention', 'background: rgba(216, 170, 85, 0.09)');
 assertDeclaration('.git-history-list', 'scrollbar-width: thin');
 assertDeclaration('.git-history-row', 'min-width: 0');
 assertDeclaration('.git-task-link', 'white-space: nowrap');

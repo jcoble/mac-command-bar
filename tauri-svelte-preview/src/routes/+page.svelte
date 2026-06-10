@@ -34,6 +34,15 @@
     pasteCleanupModes,
     type PasteCleanupMode
   } from '$lib/pasteCleanup';
+  import {
+    orchestrationArtifactChips,
+    orchestrationCurrentActivity,
+    orchestrationLinkChips,
+    orchestrationRunMetrics,
+    orchestrationStatusTone,
+    orchestrationTimelineItems,
+    type OrchestrationTimelineItem
+  } from '$lib/orchestrationView';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import {
     createDefaultSourceDockLayout,
@@ -142,6 +151,7 @@
     type AgentSession,
     type GitCommitHistoryEntry,
     type GitRepositorySummary,
+    type OrchestrationEvent,
     type OrchestrationRun,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
@@ -1631,6 +1641,61 @@
       const runID = taskID ? `run-${taskID.toLowerCase()}` : `run-${project.id}`;
       const title = taskID ? `${taskID} orchestration model` : `${project.name} project monitor`;
       const rootLabel = formatSourceContextRootLabel(project.path);
+      const events = [
+        demoOrchestrationEvent({
+          runID,
+          project,
+          rootLabel,
+          taskID,
+          suffix: 'scenario',
+          kind: 'scenario.executed',
+          status: 'succeeded',
+          title: 'Scenario executed',
+          message: 'UI scenario pass produced fix candidates',
+          agentID: 'controller',
+          agentProvider: 'codex',
+          agentRole: 'orchestrator',
+          stepID: 'event-schema',
+          stepKind: 'scenario',
+          timestamp: now
+        }),
+        demoOrchestrationEvent({
+          runID,
+          project,
+          rootLabel,
+          taskID,
+          suffix: 'retry',
+          kind: 'test.retry',
+          status: 'running',
+          title: 'Retesting changed files',
+          message: 'Retrying after layout and Git context fixes',
+          agentID: 'fixer-1',
+          agentProvider: 'codex',
+          agentRole: 'fix-agent',
+          stepID: 'event-store',
+          stepKind: 'test',
+          timestamp: now
+        }),
+        demoOrchestrationEvent({
+          runID,
+          project,
+          rootLabel,
+          taskID,
+          suffix: 'approval',
+          kind: taskID ? 'approval.required' : 'run.monitoring',
+          status: taskID ? 'waiting-for-approval' : 'running',
+          title: taskID ? 'Needs sign-off' : 'Monitoring next action',
+          message: taskID
+            ? 'Decision needed before deleting dirty or unmerged worktrees'
+            : 'Watching for new agent events',
+          agentID: 'controller',
+          agentProvider: 'codex',
+          agentRole: 'orchestrator',
+          stepID: 'event-store',
+          stepKind: taskID ? 'cleanup' : 'monitor',
+          timestamp: now
+        })
+      ];
 
       return {
         id: runID,
@@ -1654,6 +1719,14 @@
             status: 'running',
             title: 'Codex orchestrator',
             lastActivity: now
+          },
+          {
+            id: 'fixer-1',
+            provider: 'codex',
+            role: 'fix-agent',
+            status: taskID ? 'waiting-for-approval' : 'running',
+            title: 'Fix and retest agent',
+            lastActivity: now
           }
         ],
         steps: [
@@ -1676,9 +1749,30 @@
             agentId: 'controller',
             startedAt: now,
             finishedAt: null
+          },
+          {
+            id: 'retest-loop',
+            kind: 'test',
+            title: 'Retest loop',
+            status: 'running',
+            summary: 'Retry failing scenarios after fix batches',
+            agentId: 'fixer-1',
+            startedAt: now,
+            finishedAt: null
           }
         ],
-        artifacts: [],
+        artifacts: taskID
+          ? [
+              {
+                id: `${runID}-handoff`,
+                kind: 'handoff',
+                title: 'Agent handoff',
+                path: `${project.path}/.codex-artifacts/${runID}-handoff.md`,
+                url: null,
+                status: 'available'
+              }
+            ]
+          : [],
         links: taskID
           ? [
               {
@@ -1688,9 +1782,55 @@
               }
             ]
           : [],
-        events: []
+        events
       };
     });
+  }
+
+  function demoOrchestrationEvent(input: {
+    runID: string;
+    project: ProjectRoot;
+    rootLabel: string;
+    taskID: string | null;
+    suffix: string;
+    kind: string;
+    status: string;
+    title: string;
+    message: string;
+    agentID: string;
+    agentProvider: string;
+    agentRole: string;
+    stepID: string;
+    stepKind: string;
+    timestamp: string;
+  }): OrchestrationEvent {
+    return {
+      schemaVersion: 1,
+      id: `${input.runID}-${input.suffix}`,
+      runId: input.runID,
+      timestamp: input.timestamp,
+      kind: input.kind,
+      status: input.status,
+      title: input.title,
+      message: input.message,
+      projectID: input.project.id,
+      projectName: input.project.name,
+      projectPath: input.project.path,
+      rootLabel: input.rootLabel,
+      taskID: input.taskID,
+      agentId: input.agentID,
+      agentProvider: input.agentProvider,
+      agentRole: input.agentRole,
+      stepId: input.stepID,
+      stepKind: input.stepKind,
+      artifactId: null,
+      artifactKind: null,
+      artifactPath: null,
+      artifactUrl: null,
+      linkKind: null,
+      linkLabel: null,
+      linkUrl: null
+    };
   }
 
   function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
@@ -1972,11 +2112,7 @@
   }
 
   function orchestrationStatusClass(status: string) {
-    const normalized = status.toLowerCase();
-    if (normalized === 'failed' || normalized === 'cancelled' || normalized === 'blocked') return 'bad';
-    if (normalized === 'succeeded' || normalized === 'skipped') return 'good';
-    if (normalized === 'running') return 'live';
-    return 'idle';
+    return orchestrationStatusTone(status);
   }
 
   function orchestrationRunTaskUrl(run: OrchestrationRun) {
@@ -1989,6 +2125,14 @@
     const numericValue = Number(value);
     const date = Number.isFinite(numericValue) ? new Date(numericValue) : new Date(value);
     if (Number.isNaN(date.getTime())) return value;
+    return formatRelativeAge(date.getTime());
+  }
+
+  function orchestrationTimelineTimeLabel(item: OrchestrationTimelineItem) {
+    if (!item.timestamp) return item.source;
+    const numericValue = Number(item.timestamp);
+    const date = Number.isFinite(numericValue) ? new Date(numericValue) : new Date(item.timestamp);
+    if (Number.isNaN(date.getTime())) return item.source;
     return formatRelativeAge(date.getTime());
   }
 
@@ -2009,6 +2153,8 @@
         return '✓';
       case 'bad':
         return '!';
+      case 'attention':
+        return '?';
       case 'live':
         return '…';
       default:
@@ -5048,9 +5194,16 @@
               <div class="activity-empty">No orchestration runs</div>
             {:else}
               {#each filteredProjectOrchestrationRuns as run (run.id)}
+                {@const runMetrics = orchestrationRunMetrics(run)}
+                {@const runTimeline = orchestrationTimelineItems(run, 6)}
+                {@const runArtifacts = orchestrationArtifactChips(run)}
+                {@const runLinks = orchestrationLinkChips(run)}
                 <div
                   class="activity-run-row"
                   class:bad={orchestrationStatusClass(run.status) === 'bad'}
+                  class:attention={orchestrationStatusClass(run.status) === 'attention' ||
+                    runMetrics.attentionCount > 0 ||
+                    runMetrics.approvalCount > 0}
                   class:live={orchestrationStatusClass(run.status) === 'live'}
                   title={orchestrationRunTitle(run)}
                 >
@@ -5071,26 +5224,58 @@
                     <strong>{run.title}</strong>
                     <small>{run.phase} · {run.rootLabel} · {orchestrationRunTimeLabel(run)}</small>
                   </div>
+                  <div class="run-current-activity" aria-label="Current run activity">
+                    <span>Now</span>
+                    <strong>{orchestrationCurrentActivity(run)}</strong>
+                  </div>
                   <div class="run-progress-track" aria-label={`Run progress ${run.progress}%`}>
                     <span style={`width: ${Math.max(0, Math.min(100, run.progress))}%`}></span>
                   </div>
                   <div class="run-metrics-row" aria-label="Run metrics">
-                    <span>{run.agents.length} agents</span>
-                    <span>{run.steps.length} steps</span>
-                    <span>{run.artifacts.length} artifacts</span>
+                    <span>{runMetrics.agentCount} agents</span>
+                    <span>{runMetrics.stepCount} steps</span>
+                    <span>{runMetrics.eventCount} events</span>
+                    <span>{runMetrics.artifactCount} artifacts</span>
+                    {#if runMetrics.retryCount > 0}
+                      <span>{runMetrics.retryCount} retries</span>
+                    {/if}
+                    {#if runMetrics.approvalCount > 0}
+                      <span>{runMetrics.approvalCount} sign-off</span>
+                    {/if}
                   </div>
-                  {#if run.steps.length > 0}
-                    <div class="run-step-list" aria-label="Run steps">
-                      {#each run.steps.slice(0, 4) as step (step.id)}
-                        <div class="run-step-row">
-                          <span class={`run-step-marker ${orchestrationStatusClass(step.status)}`}>
-                            {orchestrationStepIconLabel(step.status)}
+                  {#if runTimeline.length > 0}
+                    <div class="run-timeline" aria-label="Run timeline">
+                      {#each runTimeline as item (item.id)}
+                        <div class={`run-timeline-item ${item.tone}`}>
+                          <span class={`run-step-marker ${item.tone}`}>
+                            {orchestrationStepIconLabel(item.status)}
                           </span>
                           <div>
-                            <strong>{step.title}</strong>
-                            <small>{step.kind} · {step.summary}</small>
+                            <strong>{item.title}</strong>
+                            <small>{item.kind} · {item.summary}</small>
                           </div>
+                          <em>{orchestrationTimelineTimeLabel(item)}</em>
                         </div>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if runArtifacts.length > 0 || runLinks.length > 0}
+                    <div class="run-artifact-row" aria-label="Run artifacts and links">
+                      {#each runArtifacts as artifact (artifact.id)}
+                        {#if artifact.href}
+                          <a class="run-chip artifact" href={artifact.href} target="_blank" rel="noreferrer">
+                            {artifact.label}
+                          </a>
+                        {:else}
+                          <span class="run-chip artifact" title={artifact.path ?? artifact.title}>
+                            {artifact.label}
+                          </span>
+                        {/if}
+                      {/each}
+                      {#each runLinks as link (link.id)}
+                        <a class="run-chip link" href={link.href ?? ''} target="_blank" rel="noreferrer">
+                          {link.label}
+                        </a>
                       {/each}
                     </div>
                   {/if}
@@ -5699,11 +5884,18 @@
         {#if selectedProjectOrchestrationRuns.length > 0}
           <div class="orchestration-context-list">
             {#each selectedProjectOrchestrationRuns.slice(0, 3) as run (run.id)}
-              <div class="orchestration-context-row" class:bad={orchestrationStatusClass(run.status) === 'bad'}>
+              {@const runMetrics = orchestrationRunMetrics(run)}
+              <div
+                class="orchestration-context-row"
+                class:bad={orchestrationStatusClass(run.status) === 'bad'}
+                class:attention={orchestrationStatusClass(run.status) === 'attention' ||
+                  runMetrics.attentionCount > 0 ||
+                  runMetrics.approvalCount > 0}
+              >
                 <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
                 <strong>{run.title}</strong>
-                <span>{run.phase} · {run.progress}%</span>
-                <small>{run.steps.length} steps · {run.agents.length} agents</small>
+                <span>{run.phase} · {run.progress}% · {runMetrics.retryCount} retry</span>
+                <small>{orchestrationCurrentActivity(run)}</small>
               </div>
             {/each}
           </div>
@@ -7189,6 +7381,11 @@
     background: rgba(216, 170, 85, 0.09);
   }
 
+  .activity-run-row.attention {
+    border-color: rgba(216, 170, 85, 0.18);
+    background: rgba(216, 170, 85, 0.075);
+  }
+
   .activity-run-row.live {
     background: rgba(92, 226, 207, 0.07);
   }
@@ -7212,6 +7409,37 @@
     font-weight: 760;
   }
 
+  .run-current-activity {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 25px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.065);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.16);
+  }
+
+  .run-current-activity span {
+    color: #6fdfcf;
+    font-size: 8px;
+    font-weight: 860;
+    text-transform: uppercase;
+  }
+
+  .run-current-activity strong {
+    min-width: 0;
+    overflow: hidden;
+    color: #dfe7e5;
+    font-size: 10px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .run-progress-track {
     height: 6px;
     overflow: hidden;
@@ -7232,6 +7460,12 @@
     min-width: 0;
   }
 
+  .run-timeline {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
   .run-step-row {
     display: grid;
     grid-template-columns: 18px minmax(0, 1fr);
@@ -7240,14 +7474,37 @@
     min-width: 0;
   }
 
+  .run-timeline-item {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 4px 5px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .run-timeline-item.attention {
+    background: rgba(216, 170, 85, 0.09);
+  }
+
   .run-step-row div {
     display: grid;
     gap: 2px;
     min-width: 0;
   }
 
+  .run-timeline-item div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
   .run-step-row strong,
-  .run-step-row small {
+  .run-step-row small,
+  .run-timeline-item strong,
+  .run-timeline-item small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7264,6 +7521,62 @@
     color: #87918e;
     font-size: 9px;
     font-weight: 720;
+  }
+
+  .run-timeline-item strong {
+    color: #dfe7e5;
+    font-size: 10px;
+    font-weight: 780;
+  }
+
+  .run-timeline-item small,
+  .run-timeline-item em {
+    color: #87918e;
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 720;
+  }
+
+  .run-timeline-item em {
+    white-space: nowrap;
+  }
+
+  .run-artifact-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .run-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 150px;
+    height: 20px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 7px;
+    color: #9cebe0;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border: 1px solid rgba(92, 226, 207, 0.18);
+    border-radius: 999px;
+    background: rgba(92, 226, 207, 0.07);
+    font-size: 9px;
+    font-weight: 820;
+  }
+
+  .run-chip.artifact {
+    color: #c8d2d0;
+    border-color: rgba(255, 255, 255, 0.105);
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .run-chip:hover {
+    color: #f3fbfa;
+    border-color: rgba(92, 226, 207, 0.34);
+    background: rgba(92, 226, 207, 0.12);
   }
 
   .run-status-badge,
@@ -7302,6 +7615,12 @@
   .run-status-badge.bad,
   .run-step-marker.bad {
     background: #f36f6f;
+  }
+
+  .run-status-badge.attention,
+  .run-step-marker.attention {
+    color: #211606;
+    background: #d8aa55;
   }
 
   .run-status-badge.idle,
@@ -8688,6 +9007,10 @@
 
   .orchestration-context-row.bad {
     background: rgba(216, 95, 95, 0.1);
+  }
+
+  .orchestration-context-row.attention {
+    background: rgba(216, 170, 85, 0.09);
   }
 
   .worktree-context-row.blocked {
