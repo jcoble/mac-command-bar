@@ -1330,6 +1330,10 @@
     return session.resumeCommands[0] ?? `${session.provider} resume ${session.id}`;
   }
 
+  function runtimeContextUrl(context: RuntimeContext) {
+    return `http://localhost:${context.port}`;
+  }
+
   function projectWorktreeEligibilityKind(worktree: ProjectWorktree) {
     if (worktree.deleteEligibility.startsWith('blocked')) return 'blocked';
     if (worktree.isDirty || worktree.hasUnmergedCommits) return 'blocked';
@@ -3537,6 +3541,16 @@
                     >
                       <Copy size={12} strokeWidth={2} />
                     </button>
+                    <a
+                      class="activity-icon-link"
+                      href={runtimeContextUrl(context)}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open active session URL"
+                      title={runtimeContextUrl(context)}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                    </a>
                     <button
                       type="button"
                       aria-label="Open active session path"
@@ -3895,6 +3909,16 @@
             {#each selectedProjectRuntimeContexts as context (`${context.pid}:${context.port}:${context.cwd}`)}
               <div class="runtime-context-row">
                 <span class="runtime-port">:{context.port}</span>
+                <a
+                  class="runtime-url-link"
+                  href={runtimeContextUrl(context)}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Open runtime URL"
+                  title={runtimeContextUrl(context)}
+                >
+                  localhost
+                </a>
                 <strong>{context.command}</strong>
                 <span>{context.rootLabel}</span>
                 <small title={context.cwd}>{context.cwd}</small>
@@ -5015,7 +5039,8 @@
     min-width: 0;
   }
 
-  .activity-row-actions button {
+  .activity-row-actions button,
+  .activity-icon-link {
     display: grid;
     place-items: center;
     width: 23px;
@@ -5029,7 +5054,9 @@
   }
 
   .activity-row-actions button:hover,
-  .activity-row-actions button:focus-visible {
+  .activity-row-actions button:focus-visible,
+  .activity-icon-link:hover,
+  .activity-icon-link:focus-visible {
     color: #eaf5f2;
     border-color: rgba(92, 226, 207, 0.36);
     outline: 0;
@@ -6097,7 +6124,7 @@
   }
 
   .runtime-context-row {
-    grid-template-columns: auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
+    grid-template-columns: auto auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
   }
 
   .agent-session-row {
@@ -6152,6 +6179,21 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
     font-size: 11px;
     font-weight: 820;
+  }
+
+  .runtime-url-link {
+    display: inline-grid;
+    place-items: center;
+    height: 22px;
+    padding: 0 7px;
+    color: #7ce5d5;
+    text-decoration: none;
+    white-space: nowrap;
+    border: 1px solid rgba(92, 226, 207, 0.22);
+    border-radius: 999px;
+    background: rgba(92, 226, 207, 0.08);
+    font-size: 10px;
+    font-weight: 850;
   }
 
   .agent-provider-badge {
