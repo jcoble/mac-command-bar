@@ -280,6 +280,7 @@
   let sourceSearchLoading = $state(false);
   let sourceSearchError = $state('');
   let sourceActivityMode = $state<SourceActivityMode>('files');
+  let sourceActivityFilter = $state('');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('review');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
@@ -426,6 +427,71 @@
   );
   let selectedProjectAgentSessions = $derived(
     agentSessions.filter((session) => agentSessionMatchesProject(session, selectedProject))
+  );
+  let filteredProjectRuntimeContexts = $derived(
+    selectedProjectRuntimeContexts.filter((context) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        context.command,
+        context.cwd,
+        context.projectName,
+        context.rootLabel,
+        context.port
+      )
+    )
+  );
+  let filteredProjectAgentSessions = $derived(
+    selectedProjectAgentSessions.filter((session) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        session.provider,
+        session.title,
+        session.projectPath,
+        session.lastActivity,
+        agentSessionResumeCommand(session)
+      )
+    )
+  );
+  let filteredProjectWorktrees = $derived(
+    projectWorktrees.filter((worktree) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        worktree.repo,
+        worktree.path,
+        worktree.branch,
+        worktree.deleteEligibility,
+        worktree.lastActivity
+      )
+    )
+  );
+  let filteredGitRepositorySummaries = $derived(
+    gitRepositorySummaries.filter((summary) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        summary.projectName,
+        summary.repo,
+        summary.path,
+        summary.rootLabel,
+        summary.branch,
+        summary.taskID,
+        summary.lastCommitSha,
+        summary.lastCommitSubject,
+        summary.error
+      )
+    )
+  );
+  let filteredGitCommitHistory = $derived(
+    gitCommitHistory.filter((entry) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        entry.sha,
+        entry.shortSha,
+        entry.subject,
+        entry.author,
+        entry.refs,
+        entry.taskID
+      )
+    )
   );
   let runtimeContextSummary = $derived(
     formatRuntimeContextSummary(
@@ -2041,14 +2107,41 @@
         return filteredRecords.length;
       case 'conversations':
       case 'agents':
-        return selectedProjectAgentSessions.length;
+        return filteredProjectAgentSessions.length;
       case 'sessions':
-        return selectedProjectRuntimeContexts.length;
+        return filteredProjectRuntimeContexts.length;
       case 'worktrees':
-        return projectWorktrees.length;
+        return filteredProjectWorktrees.length;
       case 'git':
-        return gitRepositorySummaries.length;
+        return filteredGitRepositorySummaries.length;
     }
+  }
+
+  function sourceActivityFilterPlaceholder(mode: SourceActivityMode) {
+    switch (mode) {
+      case 'files':
+        return 'Filter files';
+      case 'conversations':
+        return 'Filter conversations';
+      case 'sessions':
+        return 'Filter active sessions';
+      case 'agents':
+        return 'Filter agents';
+      case 'worktrees':
+        return 'Filter worktrees';
+      case 'git':
+        return 'Filter repos, tasks, commits';
+    }
+  }
+
+  function activityTextMatchesFilter(
+    filter: string,
+    ...values: Array<string | number | boolean | null | undefined>
+  ) {
+    const normalizedFilter = filter.trim().toLowerCase();
+    if (!normalizedFilter) return true;
+
+    return values.some((value) => String(value ?? '').toLowerCase().includes(normalizedFilter));
   }
 
   function sourceActivitySummary(mode: SourceActivityMode) {
@@ -3103,12 +3196,24 @@
           </button>
         </div>
 
+        <label class="activity-filter-box">
+          <Search size={14} strokeWidth={1.9} />
+          <input
+            bind:value={sourceActivityFilter}
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Filter workspace activity"
+            placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}
+          />
+        </label>
+
         {#if sourceActivityMode === 'conversations'}
           <div class="activity-panel-list" aria-label="Conversation list">
-            {#if selectedProjectAgentSessions.length === 0}
+            {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No conversations</div>
             {:else}
-              {#each selectedProjectAgentSessions as session (`conversation:${session.provider}:${session.id}`)}
+              {#each filteredProjectAgentSessions as session (`conversation:${session.provider}:${session.id}`)}
                 <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -3141,10 +3246,10 @@
           </div>
         {:else if sourceActivityMode === 'sessions'}
           <div class="activity-panel-list" aria-label="Active session list">
-            {#if selectedProjectRuntimeContexts.length === 0}
+            {#if filteredProjectRuntimeContexts.length === 0}
               <div class="activity-empty">No active sessions</div>
             {:else}
-              {#each selectedProjectRuntimeContexts as context (`activity:${context.pid}:${context.port}:${context.cwd}`)}
+              {#each filteredProjectRuntimeContexts as context (`activity:${context.pid}:${context.port}:${context.cwd}`)}
                 <div class="activity-runtime-row" title={context.cwd}>
                   <span class="runtime-port">:{context.port}</span>
                   <div class="activity-row-main">
@@ -3175,10 +3280,10 @@
           </div>
         {:else if sourceActivityMode === 'agents'}
           <div class="activity-panel-list" aria-label="Agent session list">
-            {#if selectedProjectAgentSessions.length === 0}
+            {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No agents</div>
             {:else}
-              {#each selectedProjectAgentSessions as session (`agent:${session.provider}:${session.id}`)}
+              {#each filteredProjectAgentSessions as session (`agent:${session.provider}:${session.id}`)}
                 <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -3211,10 +3316,10 @@
           </div>
         {:else if sourceActivityMode === 'worktrees'}
           <div class="activity-panel-list" aria-label="Worktree list">
-            {#if projectWorktrees.length === 0}
+            {#if filteredProjectWorktrees.length === 0}
               <div class="activity-empty">No worktrees</div>
             {:else}
-              {#each projectWorktrees as worktree (`activity:${worktree.path}`)}
+              {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
                 <div class="activity-worktree-row" class:blocked={eligibilityKind === 'blocked'} title={worktree.path}>
                   <span class="worktree-status-badge">{eligibilityKind === 'blocked' ? 'Blocked' : 'Ready'}</span>
@@ -3254,10 +3359,10 @@
           </div>
         {:else if sourceActivityMode === 'git'}
           <div class="activity-panel-list" aria-label="Git and task list">
-            {#if gitRepositorySummaries.length === 0}
+            {#if filteredGitRepositorySummaries.length === 0}
               <div class="activity-empty">No repositories</div>
             {:else}
-              {#each gitRepositorySummaries as summary (`activity:${summary.projectID}:${summary.path}`)}
+              {#each filteredGitRepositorySummaries as summary (`activity:${summary.projectID}:${summary.path}`)}
                 <div
                   class="activity-repo-row"
                   class:dirty={summary.isDirty || summary.error}
@@ -3312,10 +3417,10 @@
             {/if}
 
             <div class="activity-subheading">Recent commits</div>
-            {#if gitCommitHistory.length === 0}
+            {#if filteredGitCommitHistory.length === 0}
               <div class="activity-empty">No commits</div>
             {:else}
-              {#each gitCommitHistory.slice(0, 8) as entry (entry.sha)}
+              {#each filteredGitCommitHistory.slice(0, 8) as entry (entry.sha)}
                 <div class="activity-commit-row" title={gitCommitTitle(entry)}>
                   <span class="git-graph-marker" aria-hidden="true"></span>
                   <div class="activity-row-main">
@@ -4302,7 +4407,7 @@
 
   .activity-panel {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
     min-height: 0;
     overflow: hidden;
   }
@@ -4340,6 +4445,35 @@
     color: #8d9995;
     font-size: 10px;
     font-weight: 760;
+  }
+
+  .activity-filter-box {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    margin-bottom: 10px;
+    padding: 7px 9px;
+    color: #8d9995;
+    border: 1px solid rgba(255, 255, 255, 0.065);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .activity-filter-box input {
+    min-width: 0;
+    color: #e5ebe9;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 720;
+    border: 0;
+    outline: none;
+    background: transparent;
+  }
+
+  .activity-filter-box input::placeholder {
+    color: #7f8a86;
   }
 
   .activity-panel-list {
