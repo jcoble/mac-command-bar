@@ -855,6 +855,13 @@
       perform: () => openActivityTerminalPath(selectedProject.path)
     },
     {
+      id: 'terminal-open-project',
+      label: `Open project shell in ${sourceTerminalApp}`,
+      detail: selectedProject.path,
+      disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
+      perform: () => openActivityTerminalPath(selectedProject.path)
+    },
+    {
       id: 'save-file',
       label: 'Save file',
       detail: 'Cmd+S',
@@ -1038,8 +1045,16 @@
     {
       id: 'dock-show-terminal',
       label: 'Show terminal dock',
-      detail: 'Reserved embedded terminal lane',
+      detail: terminalDockSummary(),
+      disabled: sourceDockPanelVisible('terminal'),
       perform: () => showDockPanel('terminal')
+    },
+    {
+      id: 'dock-hide-terminal',
+      label: 'Hide terminal dock',
+      detail: terminalDockSummary(),
+      disabled: !sourceDockPanelVisible('terminal'),
+      perform: () => hideDockPanel('terminal')
     },
     ...contextCardOrder.map((cardID) => ({
       id: `context-card-${cardID}`,
@@ -2611,6 +2626,21 @@
     return copyActivityCommand(agentSessionResumeShellCommand(session), 'Shell resume command copied');
   }
 
+  function terminalDockSummary() {
+    const parts = [
+      sourceTerminalApp,
+      selectedProjectAgentSessions.length
+        ? `${selectedProjectAgentSessions.length} ${selectedProjectAgentSessions.length === 1 ? 'agent' : 'agents'}`
+        : '',
+      selectedProjectRuntimeContexts.length ? `${selectedProjectRuntimeContexts.length} active` : '',
+      projectWorktrees.length
+        ? `${projectWorktrees.length} ${projectWorktrees.length === 1 ? 'worktree' : 'worktrees'}`
+        : ''
+    ].filter(Boolean);
+
+    return parts.join(' · ') || sourceTerminalApp;
+  }
+
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
     return record ? gitStatusByRelativePath.get(record.relativePath) ?? null : null;
   }
@@ -4046,7 +4076,7 @@
   function showDockPanel(panelID: SourceDockPanelID) {
     applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));
     if (panelID === 'terminal') {
-      fileActionStatus = 'Terminal dock reserved for embedded terminal integration';
+      fileActionStatus = 'Terminal dock shown';
     }
     if (panelID === 'browser') {
       fileActionStatus = 'Browser dock reserved for embedded browser integration';
@@ -4103,6 +4133,10 @@
 
   function dockGroupIDForPanel(layout: SourceDockLayout, panelID: SourceDockPanelID): SourceDockGroupID | null {
     return layout.groups.find((group) => group.panelIDs.includes(panelID))?.id ?? null;
+  }
+
+  function sourceDockPanelVisible(panelID: SourceDockPanelID) {
+    return dockGroupIDForPanel(sourceDockLayout, panelID) !== null;
   }
 
   function dockGroupForContextPanelPlacement(placement: SourceContextPanelPlacement): SourceDockGroupID {
@@ -7361,6 +7395,135 @@
           {/if}
         </div>
       </div>
+
+      {#if sourceDockPanelVisible('terminal')}
+        <section class="terminal-launchpad" aria-label="Terminal dock">
+          <header class="terminal-launchpad-header">
+            <div>
+              <Terminal size={14} strokeWidth={2} />
+              <strong>Terminal</strong>
+              <span>{terminalDockSummary()}</span>
+            </div>
+            <div class="terminal-launchpad-actions">
+              <label class="terminal-inline-picker" title={`Open commands in ${sourceTerminalApp}`}>
+                <span>App</span>
+                <select bind:value={sourceTerminalApp} aria-label="Terminal dock app" onchange={selectSourceTerminalApp}>
+                  {#each sourceTerminalApps as app (app)}
+                    <option value={app}>{app}</option>
+                  {/each}
+                </select>
+              </label>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Open project shell"
+                title={selectedProject.path}
+                disabled={!selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`}
+                onclick={() => openActivityTerminalPath(selectedProject.path)}
+              >
+                <Terminal size={13} strokeWidth={2} />
+                <span>Project</span>
+              </button>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Hide terminal dock"
+                title="Hide terminal dock"
+                onclick={() => hideDockPanel('terminal')}
+              >
+                <X size={13} strokeWidth={2} />
+              </button>
+            </div>
+          </header>
+
+          <div class="terminal-launchpad-grid">
+            <div class="terminal-launchpad-list" aria-label="Active terminal contexts">
+              <div class="terminal-launchpad-title">
+                <span>Active</span>
+                <strong>{selectedProjectRuntimeContexts.length}</strong>
+              </div>
+              {#if selectedProjectRuntimeContexts.length === 0}
+                <div class="terminal-launchpad-empty">No active contexts</div>
+              {:else}
+                {#each selectedProjectRuntimeContexts.slice(0, 3) as context (`terminal:${context.pid}:${context.port}:${context.cwd}`)}
+                  <div class="terminal-launchpad-row" title={context.cwd}>
+                    <span class="runtime-port">:{context.port}</span>
+                    <div>
+                      <strong>{context.command}</strong>
+                      <small>{context.rootLabel}</small>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Open active context in terminal"
+                      title="Open context in terminal"
+                      onclick={() => openActivityTerminalPath(context.cwd)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
+                    </button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+
+            <div class="terminal-launchpad-list" aria-label="Agent terminal resumes">
+              <div class="terminal-launchpad-title">
+                <span>Agents</span>
+                <strong>{selectedProjectAgentSessions.length}</strong>
+              </div>
+              {#if selectedProjectAgentSessions.length === 0}
+                <div class="terminal-launchpad-empty">No resumable agents</div>
+              {:else}
+                {#each selectedProjectAgentSessions.slice(0, 3) as session, index (agentSessionRowKey(session, index, 'terminal'))}
+                  <div class="terminal-launchpad-row" title={agentSessionResumePlan(session)}>
+                    <span class="agent-provider-badge">{session.provider}</span>
+                    <div>
+                      <strong>{session.title}</strong>
+                      <small>{agentSessionProjectLabel(session)}</small>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Resume agent from terminal dock"
+                      title="Resume agent"
+                      onclick={() => openAgentSessionTerminal(session)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
+                    </button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+
+            <div class="terminal-launchpad-list" aria-label="Worktree terminal shortcuts">
+              <div class="terminal-launchpad-title">
+                <span>Worktrees</span>
+                <strong>{projectWorktrees.length}</strong>
+              </div>
+              {#if projectWorktrees.length === 0}
+                <div class="terminal-launchpad-empty">No worktrees</div>
+              {:else}
+                {#each projectWorktrees.slice(0, 3) as worktree (`terminal:${worktree.path}`)}
+                  {@const safety = projectWorktreeSafety(worktree)}
+                  <div class="terminal-launchpad-row" title={safety.cleanupPlan}>
+                    <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
+                    <div>
+                      <strong>{worktree.branch}</strong>
+                      <small>{safety.reason}</small>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Open worktree from terminal dock"
+                      title="Open worktree in terminal"
+                      onclick={() => openActivityTerminalPath(worktree.path)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
+                    </button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          </div>
+        </section>
+      {/if}
     {:else}
       <div class="empty-preview">
         <FileCode2 size={34} strokeWidth={1.55} />
@@ -10117,6 +10280,186 @@
       0 18px 45px rgba(0, 0, 0, 0.2);
   }
 
+  .terminal-launchpad {
+    display: grid;
+    flex: 0 0 auto;
+    gap: 6px;
+    min-width: 0;
+    max-height: 214px;
+    margin-top: 6px;
+    overflow: hidden;
+    padding: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.105);
+    border-radius: 8px;
+    background: rgba(15, 18, 18, 0.92);
+  }
+
+  .terminal-launchpad-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .terminal-launchpad-header > div:first-child,
+  .terminal-launchpad-actions,
+  .terminal-inline-picker {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .terminal-launchpad-header > div:first-child {
+    gap: 6px;
+    color: #dce4e2;
+  }
+
+  .terminal-launchpad-header strong,
+  .terminal-launchpad-header span,
+  .terminal-launchpad-row strong,
+  .terminal-launchpad-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .terminal-launchpad-header strong {
+    font-size: 11px;
+    font-weight: 860;
+  }
+
+  .terminal-launchpad-header span {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .terminal-launchpad-actions {
+    justify-content: end;
+    gap: 5px;
+  }
+
+  .terminal-inline-picker {
+    gap: 5px;
+  }
+
+  .terminal-inline-picker span {
+    color: #7f8b88;
+    font-size: 8px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .terminal-inline-picker select {
+    width: 94px;
+    height: 24px;
+    min-width: 0;
+    color: #dffdf8;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .terminal-launchpad-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .terminal-launchpad-list {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .terminal-launchpad-title {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .terminal-launchpad-title strong {
+    color: #72e2cf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+  }
+
+  .terminal-launchpad-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 24px;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 4px 5px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .terminal-launchpad-row > div {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .terminal-launchpad-row strong {
+    color: #eef4f2;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .terminal-launchpad-row small {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 720;
+  }
+
+  .terminal-launchpad-row button {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 22px;
+    color: #72e2cf;
+    border: 1px solid rgba(92, 226, 207, 0.18);
+    border-radius: 5px;
+    background: rgba(92, 226, 207, 0.08);
+  }
+
+  .terminal-launchpad-row button:hover,
+  .terminal-launchpad-row button:focus-visible {
+    outline: 0;
+    background: rgba(92, 226, 207, 0.16);
+  }
+
+  .terminal-launchpad-empty {
+    display: grid;
+    place-items: center;
+    min-height: 30px;
+    color: #798481;
+    border: 1px dashed rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
   .editor-toolbar {
     display: grid;
     position: relative;
@@ -11350,6 +11693,21 @@
 
     .editor-frame {
       height: 520px;
+    }
+
+    .terminal-launchpad-grid {
+      grid-template-columns: 1fr;
+      overflow-y: auto;
+    }
+
+    .terminal-launchpad-header {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .terminal-launchpad-actions {
+      justify-content: start;
+      overflow-x: auto;
     }
 
     .editor-body-grid {

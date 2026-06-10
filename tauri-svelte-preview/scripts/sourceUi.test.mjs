@@ -60,6 +60,10 @@ assertDeclaration('.editor-body-grid', 'grid-template-columns: minmax(0, 1fr) 8p
 assertDeclaration('.editor-body-grid.insights-hidden', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.editor-canvas', 'position: relative');
 assertDeclaration('.editor-insight-resizer', 'cursor: col-resize');
+assertDeclaration('.terminal-launchpad', 'max-height: 214px');
+assertDeclaration('.terminal-launchpad-grid', 'grid-template-columns: repeat(3, minmax(0, 1fr))');
+assertDeclaration('.terminal-launchpad-row', 'display: grid');
+assertDeclaration('.terminal-launchpad-row', 'grid-template-columns: auto minmax(0, 1fr) 24px');
 assertDeclaration('.editor-lookup-popover', 'position: absolute');
 assertDeclaration('.git-command-drawer', 'flex: 0 0 auto');
 assertDeclaration('.context-panel-grid.collapsed', 'display: none');
@@ -123,6 +127,8 @@ assert.ok(pageSource.includes('function selectContextPanelPlacement'), 'Workspac
 assert.ok(pageSource.includes('function moveDockPanelToGroup'), 'Workspace should move real panes through the dock model');
 assert.ok(pageSource.includes('function hideDockPanel'), 'Workspace should hide real panes through the dock model');
 assert.ok(pageSource.includes('function showDockPanel'), 'Workspace should restore real panes through the dock model');
+assert.ok(pageSource.includes('function sourceDockPanelVisible'), 'Workspace should detect visible dock panels');
+assert.ok(pageSource.includes('function terminalDockSummary'), 'Terminal dock should summarize launch targets');
 assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace should persist source dock layout state');
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
@@ -209,6 +215,11 @@ assert.ok(pageSource.includes('context-card-close'), 'Workspace context cards sh
 assert.ok(pageSource.includes('class="context-restore-button"'), 'Workspace should render hidden-card restore when needed');
 assert.ok(pageSource.includes('class="context-stack-tabs"'), 'Workspace should render tabs for stacked context cards');
 assert.ok(pageSource.includes('aria-label="Context card tabs"'), 'Stacked context tabs should be accessible');
+assert.ok(pageSource.includes('class="terminal-launchpad"'), 'Workspace should render a terminal launchpad dock');
+assert.ok(pageSource.includes('aria-label="Terminal dock"'), 'Terminal launchpad should be accessible');
+assert.ok(pageSource.includes('aria-label="Terminal dock app"'), 'Terminal launchpad should expose terminal app selection');
+assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
+assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
 assert.ok(pageSource.includes('class="command-palette-layer"'), 'Source shell should render a command palette overlay');
 assert.ok(pageSource.includes('aria-label="Command palette"'), 'Command palette should be accessible');
 assert.ok(pageSource.includes("event.key.toLowerCase() === 'k'"), 'Command palette should open from Cmd+K');
@@ -252,6 +263,8 @@ assert.ok(pageSource.includes("selectContextPanelPlacement('side')"), 'Context p
 assert.ok(pageSource.includes("moveDockPanelToGroup('context', 'bottom')"), 'Context placement controls should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'dock-show-terminal'"), 'Command palette should expose the future terminal dock panel');
+assert.ok(pageSource.includes("id: 'dock-hide-terminal'"), 'Command palette should hide the terminal dock panel');
+assert.ok(pageSource.includes("id: 'terminal-open-project'"), 'Command palette should open the current project shell');
 assert.ok(pageSource.includes('orchestrationLoopTallyText'), 'Runs should render shared orchestration loop tally text');
 assert.ok(pageSource.includes('class="run-loop-row"'), 'Runs should render a compact loop tally row');
 assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally should be accessible');
