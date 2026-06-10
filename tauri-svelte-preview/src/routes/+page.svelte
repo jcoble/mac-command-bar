@@ -120,6 +120,8 @@
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
+  const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
+  const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
   const maxRecentSourceRecords = 24;
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
@@ -139,6 +141,9 @@
   const sidePaneDefaultWidth = 407;
   const sidePaneMinWidth = 320;
   const sidePaneMaxWidth = 620;
+  const editorInsightDefaultWidth = 260;
+  const editorInsightMinWidth = 220;
+  const editorInsightMaxWidth = 440;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const initialProject = defaultProjectRoots[0];
   const initialRecords = demoRecordsForProject(initialProject);
@@ -219,6 +224,8 @@
   let sourceSearchError = $state('');
   let sourceActivityMode = $state<SourceActivityMode>('files');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
+  let editorInsightWidth = $state(editorInsightDefaultWidth);
+  let contextPanelCollapsed = $state(false);
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(false);
@@ -1990,8 +1997,9 @@
   function loadStoredSidePaneWidth() {
     if (typeof window === 'undefined') return sidePaneDefaultWidth;
 
-    const storedWidth = Number(window.localStorage.getItem(sidePaneWidthStorageKey));
-    return clampSidePaneWidth(storedWidth);
+    const storedWidth = window.localStorage.getItem(sidePaneWidthStorageKey);
+    if (storedWidth === null) return sidePaneDefaultWidth;
+    return clampSidePaneWidth(Number(storedWidth));
   }
 
   function persistSidePaneWidth(width: number) {
@@ -2037,6 +2045,72 @@
     sidePaneWidth = clampSidePaneWidth(sidePaneWidth + direction * 24);
     persistSidePaneWidth(sidePaneWidth);
     window.setTimeout(measureFileTreeViewport, 0);
+  }
+
+  function toggleContextPanelCollapsed() {
+    contextPanelCollapsed = !contextPanelCollapsed;
+    persistContextPanelCollapsed(contextPanelCollapsed);
+  }
+
+  function loadStoredContextPanelCollapsed() {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(contextPanelCollapsedStorageKey) === 'true';
+  }
+
+  function persistContextPanelCollapsed(collapsed: boolean) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(contextPanelCollapsedStorageKey, collapsed ? 'true' : 'false');
+  }
+
+  function loadStoredEditorInsightWidth() {
+    if (typeof window === 'undefined') return editorInsightDefaultWidth;
+
+    const storedWidth = window.localStorage.getItem(editorInsightWidthStorageKey);
+    if (storedWidth === null) return editorInsightDefaultWidth;
+    return clampEditorInsightWidth(Number(storedWidth));
+  }
+
+  function persistEditorInsightWidth(width: number) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(editorInsightWidthStorageKey, String(clampEditorInsightWidth(width)));
+  }
+
+  function clampEditorInsightWidth(width: number) {
+    if (!Number.isFinite(width)) return editorInsightDefaultWidth;
+    return Math.min(editorInsightMaxWidth, Math.max(editorInsightMinWidth, Math.round(width)));
+  }
+
+  function beginEditorInsightResize(event: PointerEvent) {
+    if (event.button !== 0 || typeof window === 'undefined') return;
+
+    const startX = event.clientX;
+    const startWidth = editorInsightWidth;
+    event.preventDefault();
+    window.document.body.classList.add('resizing-editor-insight');
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      editorInsightWidth = clampEditorInsightWidth(startWidth - (moveEvent.clientX - startX));
+    };
+    const finishResize = () => {
+      persistEditorInsightWidth(editorInsightWidth);
+      window.document.body.classList.remove('resizing-editor-insight');
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+  }
+
+  function handleEditorInsightResizerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+
+    event.preventDefault();
+    const direction = event.key === 'ArrowLeft' ? 1 : -1;
+    editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
+    persistEditorInsightWidth(editorInsightWidth);
   }
 
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
@@ -2471,6 +2545,8 @@
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
+    const storedEditorInsightWidth = loadStoredEditorInsightWidth();
+    const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
     const storedProject =
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
@@ -2483,6 +2559,8 @@
     selectedProjectID = storedProject.id;
     sourceActivityMode = storedSourceActivityMode;
     sidePaneWidth = storedSidePaneWidth;
+    editorInsightWidth = storedEditorInsightWidth;
+    contextPanelCollapsed = storedContextPanelCollapsed;
     persistSelectedProjectID(storedProject.id);
     window.setTimeout(measureFileTreeViewport, 0);
     void loadProjectGitStatus(storedProject);
@@ -2507,7 +2585,7 @@
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
-<main class="shell" style={`--side-pane-width: ${sidePaneWidth}px`}>
+<main class="shell" style={`--side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px`}>
   <aside class="activity-shell" aria-label="Workspace browser">
     <nav class="activity-rail" aria-label="Workspace views">
       <button
@@ -3001,6 +3079,21 @@
         <h2>{preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="status-strip">
+        <button
+          class="workspace-context-toggle"
+          type="button"
+          aria-label="Toggle workspace context cards"
+          title={contextPanelCollapsed ? 'Show workspace context cards' : 'Hide workspace context cards'}
+          onclick={toggleContextPanelCollapsed}
+        >
+          {#if contextPanelCollapsed}
+            <ChevronDown size={13} strokeWidth={2} />
+            <span>Context</span>
+          {:else}
+            <ChevronRight size={13} strokeWidth={2} />
+            <span>Context</span>
+          {/if}
+        </button>
         <span class="project-git-pill" title={projectGitSummary}>{projectGitSummary}</span>
         <span>{runtime}</span>
         {#if preview}
@@ -3029,7 +3122,7 @@
       </div>
     </div>
 
-    <div class="context-panel-grid">
+    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed}>
       <section class="runtime-context-panel" aria-label="Runtime contexts">
         <div class="runtime-context-header">
           <div>
@@ -3358,6 +3451,15 @@
               onSymbolsChange={handleEditorSymbolsChange}
             />
           {/key}
+
+          <button
+            class="editor-insight-resizer"
+            type="button"
+            aria-label="Resize editor insights"
+            title="Resize editor insights"
+            onpointerdown={beginEditorInsightResize}
+            onkeydown={handleEditorInsightResizerKeydown}
+          ></button>
 
           <aside class="source-intelligence-panel" aria-label="Language intelligence">
             <div class="intelligence-tabs" role="tablist" aria-label="Source insights">
@@ -4734,6 +4836,38 @@
     min-width: 0;
   }
 
+  .workspace-context-toggle {
+    display: inline-grid;
+    grid-template-columns: 13px minmax(0, auto);
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    min-width: 0;
+    padding: 0 9px;
+    color: #b9c5c1;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.045);
+    font-size: 11px;
+    font-weight: 760;
+    cursor: pointer;
+  }
+
+  .workspace-context-toggle:hover,
+  .workspace-context-toggle:focus-visible {
+    color: #f2f6f5;
+    border-color: rgba(92, 226, 207, 0.42);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .workspace-context-toggle span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .status-strip span,
   .mode-pill,
   .quality-pill {
@@ -4808,6 +4942,10 @@
     gap: 8px;
     min-width: 0;
     margin: -4px 0 14px;
+  }
+
+  .context-panel-grid.collapsed {
+    display: none;
   }
 
   .runtime-context-panel,
@@ -5340,8 +5478,30 @@
 
   .editor-body-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 260px;
+    grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width);
     min-height: 0;
+  }
+
+  .editor-insight-resizer {
+    width: 8px;
+    min-width: 0;
+    padding: 0;
+    cursor: col-resize;
+    border: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.045);
+    border-right: 1px solid rgba(255, 255, 255, 0.045);
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .editor-insight-resizer:hover,
+  .editor-insight-resizer:focus-visible {
+    outline: 0;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
+  :global(body.resizing-editor-insight) {
+    cursor: col-resize;
+    user-select: none;
   }
 
   .editor-save-actions,
@@ -6155,6 +6315,10 @@
     .editor-body-grid {
       grid-template-columns: 1fr;
       grid-template-rows: minmax(0, 1fr) 148px;
+    }
+
+    .editor-insight-resizer {
+      display: none;
     }
 
     .source-intelligence-panel {
