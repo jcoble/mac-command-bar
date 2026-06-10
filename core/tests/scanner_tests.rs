@@ -1,8 +1,8 @@
 use mcb_core::crypto::SecretBox;
 use mcb_core::scanners::processes::parse_lsof_listeners;
 use mcb_core::scanners::sessions::{
-    decode_claude_project_dir_with_users_root, parse_claude_jsonl, parse_codex_index_jsonl,
-    read_tail_utf8,
+    decode_claude_project_dir_with_users_root, merge_codex_session_metadata, parse_claude_jsonl,
+    parse_codex_index_jsonl, parse_codex_rollout_jsonl, read_tail_utf8,
 };
 use mcb_core::scanners::worktrees::parse_worktree_porcelain;
 use mcb_core::scanners::worktrees::WorktreeScanOptions;
@@ -46,6 +46,45 @@ fn parses_codex_and_claude_session_indexes() {
     assert_eq!(codex[0].title, "Fix runtime");
     assert_eq!(claude[0].provider, "claude");
     assert_eq!(claude[0].project_path.as_deref(), Some("/repo"));
+}
+
+#[test]
+fn parses_codex_rollout_metadata_without_transcript_content() {
+    let records = parse_codex_rollout_jsonl(
+        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"timestamp\":\"2026-06-09T00:59:00Z\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\"}}\n\
+         {\"timestamp\":\"2026-06-09T01:01:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"do not use transcript text as a title\"}]}}\n",
+    );
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider, "codex");
+    assert_eq!(records[0].id, "019e");
+    assert_eq!(
+        records[0].project_path.as_deref(),
+        Some("/Users/blackcolours/dev/work/mac-command-bar")
+    );
+    assert_eq!(records[0].last_activity.as_deref(), Some("2026-06-09T01:00:00Z"));
+    assert_eq!(records[0].title, "Codex session");
+    assert_eq!(records[0].resume_commands, vec!["codex resume 019e"]);
+}
+
+#[test]
+fn merges_codex_rollout_project_path_into_index_record() {
+    let index = parse_codex_index_jsonl(
+        "{\"id\":\"019e\",\"thread_name\":\"Build command bar\",\"updated_at\":\"2026-06-09T01:05:00Z\"}\n",
+    );
+    let rollout = parse_codex_rollout_jsonl(
+        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\"}}\n",
+    );
+
+    let merged = merge_codex_session_metadata(index, rollout);
+
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].title, "Build command bar");
+    assert_eq!(merged[0].last_activity.as_deref(), Some("2026-06-09T01:05:00Z"));
+    assert_eq!(
+        merged[0].project_path.as_deref(),
+        Some("/Users/blackcolours/dev/work/mac-command-bar")
+    );
 }
 
 #[test]

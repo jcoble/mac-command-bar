@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 const CLAUDE_SESSION_FILE_LIMIT: usize = 120;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
+const CODEX_SESSION_FILE_LIMIT: usize = 160;
+const CODEX_SESSION_HEAD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -24,10 +26,22 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     };
 
     let mut records = Vec::new();
+    let mut codex_records = Vec::new();
     let codex_index = home.join(".codex/session_index.jsonl");
     if let Ok(contents) = fs::read_to_string(codex_index) {
-        records.extend(parse_codex_index_jsonl(&contents));
+        codex_records.extend(parse_codex_index_jsonl(&contents));
     }
+
+    let codex_sessions = home.join(".codex/sessions");
+    let mut codex_files = jsonl_files(&codex_sessions);
+    codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
+    let mut codex_metadata = Vec::new();
+    for file in codex_files.into_iter().take(CODEX_SESSION_FILE_LIMIT) {
+        if let Ok(contents) = read_head_utf8(&file, CODEX_SESSION_HEAD_BYTES) {
+            codex_metadata.extend(parse_codex_rollout_jsonl(&contents));
+        }
+    }
+    records.extend(merge_codex_session_metadata(codex_records, codex_metadata));
 
     let claude_projects = home.join(".claude/projects");
     let mut files = jsonl_files(&claude_projects);
@@ -77,6 +91,75 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
         .collect()
 }
 
+pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
+    let mut records: Vec<AgentSessionRecord> = Vec::new();
+
+    for value in input
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+    {
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
+        let Some(id) = payload.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+
+        let cwd = payload
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned);
+        let last_activity = value
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("timestamp").and_then(Value::as_str))
+            .map(ToOwned::to_owned);
+
+        let record = AgentSessionRecord {
+            provider: "codex".to_string(),
+            id: id.to_string(),
+            title: "Codex session".to_string(),
+            project_path: cwd,
+            last_activity,
+            resume_commands: vec![format!("codex resume {id}")],
+        };
+
+        if let Some(existing) = records
+            .iter_mut()
+            .find(|candidate| candidate.provider == record.provider && candidate.id == record.id)
+        {
+            merge_codex_record(existing, record);
+        } else {
+            records.push(record);
+        }
+    }
+
+    records
+}
+
+pub fn merge_codex_session_metadata(
+    mut indexed: Vec<AgentSessionRecord>,
+    metadata: Vec<AgentSessionRecord>,
+) -> Vec<AgentSessionRecord> {
+    for record in metadata {
+        if let Some(existing) = indexed
+            .iter_mut()
+            .find(|candidate| candidate.provider == record.provider && candidate.id == record.id)
+        {
+            merge_codex_record(existing, record);
+        } else {
+            indexed.push(record);
+        }
+    }
+
+    indexed
+}
+
 pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRecord> {
     let mut latest: Option<AgentSessionRecord> = None;
 
@@ -120,6 +203,29 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
     }
 
     latest.into_iter().collect()
+}
+
+fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
+    if existing.project_path.is_none() {
+        existing.project_path = candidate.project_path;
+    }
+
+    if candidate
+        .last_activity
+        .as_ref()
+        .is_some_and(|candidate_activity| {
+            existing
+                .last_activity
+                .as_ref()
+                .map_or(true, |existing_activity| candidate_activity > existing_activity)
+        })
+    {
+        existing.last_activity = candidate.last_activity;
+    }
+
+    if existing.resume_commands.is_empty() {
+        existing.resume_commands = candidate.resume_commands;
+    }
 }
 
 fn title_from_claude_message(value: &Value) -> Option<String> {
@@ -189,6 +295,14 @@ pub fn read_tail_utf8(path: &Path, max_bytes: usize) -> std::io::Result<String> 
         .split_once('\n')
         .map(|(_, tail)| tail.to_string())
         .unwrap_or_default())
+}
+
+pub fn read_head_utf8(path: &Path, max_bytes: usize) -> std::io::Result<String> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64).read_to_end(&mut bytes)?;
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
