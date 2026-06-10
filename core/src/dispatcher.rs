@@ -40,11 +40,19 @@ fn source_list_action(request: CoreRequest) -> CoreResponse {
     let query = request.payload.get("query").and_then(Value::as_str);
 
     match list_source_files(Path::new(root_path), limit, query) {
-        Ok(files) => CoreResponse::ok(
-            request.id,
-            format!("found {} source files", files.len()),
-            json!({ "files": files, "count": files.len() }),
-        ),
+        Ok(result) => {
+            let count = result.files.len();
+            CoreResponse::ok(
+                request.id,
+                format!("found {count} source files"),
+                json!({
+                    "files": result.files,
+                    "count": count,
+                    "limit": result.limit,
+                    "truncated": result.truncated
+                }),
+            )
+        }
         Err(error) => {
             CoreResponse::error(request.id, "source list failed", vec![format!("{error:#}")])
         }

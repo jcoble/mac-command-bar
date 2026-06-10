@@ -383,6 +383,7 @@ assert.ok(
 assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Index reset should discard cached scans for the selected project');
 assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
 assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');
+assert.ok(pageSource.includes('scanLimit: expandedSourceScanLimit'), 'New or duplicate project activation should run expanded onboarding scans');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');

@@ -342,3 +342,51 @@ fn source_list_applies_query_before_limit() {
         "src/TransactionProcessorWorker.cs"
     );
 }
+
+#[test]
+fn source_list_allows_explicit_limits_above_old_preview_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+
+    for index in 0..1_200 {
+        std::fs::write(
+            root.join(format!("src/File{index:04}.ts")),
+            "export const value = 1;\n",
+        )
+        .unwrap();
+    }
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-list-large".to_string(),
+        action: "source.list".to_string(),
+        dry_run: true,
+        payload: json!({ "rootPath": root, "limit": 1_200 }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["count"], 1_200);
+    assert_eq!(response.data["limit"], 1_200);
+    assert_eq!(response.data["truncated"], false);
+}
+
+#[test]
+fn source_list_reports_truncation_when_limit_is_reached() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/A.ts"), "export const a = 1;\n").unwrap();
+    std::fs::write(root.join("src/B.ts"), "export const b = 1;\n").unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-list-truncated".to_string(),
+        action: "source.list".to_string(),
+        dry_run: true,
+        payload: json!({ "rootPath": root, "limit": 1 }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["count"], 1);
+    assert_eq!(response.data["limit"], 1);
+    assert_eq!(response.data["truncated"], true);
+}

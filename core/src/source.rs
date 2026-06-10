@@ -5,7 +5,8 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
-const DEFAULT_SOURCE_LIST_LIMIT: usize = 200;
+const DEFAULT_SOURCE_LIST_LIMIT: usize = 5_000;
+const MAX_SOURCE_LIST_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +28,14 @@ pub struct SourceFileRecord {
     pub file_name: String,
     pub language: String,
     pub byte_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceFileList {
+    pub files: Vec<SourceFileRecord>,
+    pub limit: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -95,11 +104,7 @@ pub fn preview_source_file(path: &Path) -> Result<SourcePreview> {
     })
 }
 
-pub fn list_source_files(
-    root: &Path,
-    limit: usize,
-    query: Option<&str>,
-) -> Result<Vec<SourceFileRecord>> {
+pub fn list_source_files(root: &Path, limit: usize, query: Option<&str>) -> Result<SourceFileList> {
     let metadata = std::fs::metadata(root)
         .with_context(|| format!("could not read metadata for {}", root.display()))?;
     if !metadata.is_dir() {
@@ -109,20 +114,32 @@ pub fn list_source_files(
     let limit = if limit == 0 {
         DEFAULT_SOURCE_LIST_LIMIT
     } else {
-        limit.min(1_000)
+        limit.min(MAX_SOURCE_LIST_LIMIT)
     };
     let normalized_query = query
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty());
     let mut records = Vec::new();
-    collect_source_files(root, root, limit, normalized_query.as_deref(), &mut records)?;
+    let collect_limit = limit.saturating_add(1);
+    collect_source_files(
+        root,
+        root,
+        collect_limit,
+        normalized_query.as_deref(),
+        &mut records,
+    )?;
     records.sort_by(|left, right| {
         left.relative_path
             .to_lowercase()
             .cmp(&right.relative_path.to_lowercase())
     });
+    let truncated = records.len() > limit;
     records.truncate(limit);
-    Ok(records)
+    Ok(SourceFileList {
+        files: records,
+        limit,
+        truncated,
+    })
 }
 
 pub fn detect_language(path: &Path) -> String {

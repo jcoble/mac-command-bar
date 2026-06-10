@@ -486,6 +486,7 @@
   type ProjectActivationOptions = {
     projects?: ProjectRoot[];
     forceScan?: boolean;
+    scanLimit?: number;
   };
   type SourceCommandPaletteItem = {
     id: string;
@@ -4840,7 +4841,11 @@
       } else {
         addingProject = false;
         projectFormError = '';
-        void activateProject(duplicateProject, { forceScan: true, projects: projectOptions });
+        void activateProject(duplicateProject, {
+          forceScan: true,
+          scanLimit: expandedSourceScanLimit,
+          projects: projectOptions
+        });
       }
       return false;
     }
@@ -4851,7 +4856,11 @@
     persistCustomProjectRoots(nextCustomProjectRoots);
     addingProject = false;
     projectFormError = '';
-    void activateProject(nextProject, { forceScan: true, projects: nextProjectOptions });
+    void activateProject(nextProject, {
+      forceScan: true,
+      scanLimit: expandedSourceScanLimit,
+      projects: nextProjectOptions
+    });
     return true;
   }
 
@@ -4866,7 +4875,10 @@
     void loadGitRepositorySummaries(projects);
     void loadAgentSessions();
     void loadOrchestrationRuns(projects);
-    await scanProject(project, selectedSourcePaths[project.id], { force: options.forceScan });
+    await scanProject(project, selectedSourcePaths[project.id], {
+      force: options.forceScan,
+      limit: options.scanLimit
+    });
     void indexProjectsInBackground(projects);
   }
 

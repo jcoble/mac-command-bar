@@ -901,10 +901,18 @@ export function getSourceScanCacheEntry(
   now = Date.now(),
   maxAgeMs = 5 * 60 * 1000
 ): SourceScanCacheEntry | null {
-  const entry = cache[sourceScanCacheKey(project, limit)];
-  if (!entry) return null;
-  if (now - entry.scannedAt > maxAgeMs) return null;
-  return entry;
+  const projectPath = normalizeProjectPath(project.path);
+  const requestedLimit = Math.max(0, Math.floor(limit));
+  const entries = Object.values(cache)
+    .filter(
+      (entry) =>
+        entry.projectPath === projectPath &&
+        entry.limit >= requestedLimit &&
+        now - entry.scannedAt <= maxAgeMs
+    )
+    .sort((left, right) => left.limit - right.limit || right.scannedAt - left.scannedAt);
+
+  return entries[0] ?? null;
 }
 
 export function upsertSourceScanCacheEntry(
