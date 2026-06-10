@@ -481,11 +481,44 @@ impl SourceLspSession {
     ) -> Result<Vec<SourceLspDiagnostic>, String> {
         let file_uri = self.ensure_document_open(preview)?;
         self.drain_messages_until(Instant::now() + LSP_DIAGNOSTICS_TIMEOUT);
-        Ok(self
+        let published = self
             .diagnostics_by_uri
             .get(&file_uri)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if !published.is_empty() {
+            return Ok(published);
+        }
+
+        Ok(self.request_pull_diagnostics(&file_uri).unwrap_or_default())
+    }
+
+    fn request_pull_diagnostics(&mut self, file_uri: &str) -> Option<Vec<SourceLspDiagnostic>> {
+        let id = self.next_request_id();
+        write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/diagnostic",
+                "params": {
+                    "textDocument": { "uri": file_uri }
+                }
+            }),
+        )
+        .ok()?;
+        let response = self
+            .wait_for_response(id, Instant::now() + LSP_DIAGNOSTICS_TIMEOUT)
+            .ok()?;
+        if response.get("error").is_some() {
+            return None;
+        }
+        let diagnostics = diagnostics_from_pull_result(response.get("result")?);
+        if !diagnostics.is_empty() {
+            self.diagnostics_by_uri
+                .insert(file_uri.to_string(), diagnostics.clone());
+        }
+        Some(diagnostics)
     }
 
     fn ensure_document_open(&mut self, preview: &SourceLspPreview) -> Result<String, String> {
@@ -826,6 +859,19 @@ fn diagnostics_from_message(message: &Value, file_uri: &str) -> Vec<SourceLspDia
 
     params
         .get("diagnostics")
+        .and_then(Value::as_array)
+        .map(|diagnostics| {
+            diagnostics
+                .iter()
+                .filter_map(lsp_diagnostic_from_value)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn diagnostics_from_pull_result(result: &Value) -> Vec<SourceLspDiagnostic> {
+    result
+        .get("items")
         .and_then(Value::as_array)
         .map(|diagnostics| {
             diagnostics
@@ -1381,6 +1427,35 @@ mod tests {
     }
 
     #[test]
+    fn extracts_pull_diagnostics() {
+        let result = json!({
+            "kind": "full",
+            "items": [
+                {
+                    "range": {
+                        "start": { "line": 2, "character": 12 },
+                        "end": { "line": 2, "character": 20 }
+                    },
+                    "severity": 2,
+                    "source": "typescript",
+                    "message": "Type mismatch."
+                }
+            ]
+        });
+
+        assert_eq!(
+            diagnostics_from_pull_result(&result),
+            vec![SourceLspDiagnostic {
+                severity: "warning".to_string(),
+                message: "Type mismatch.".to_string(),
+                line: 3,
+                column: 13,
+                source: Some("typescript".to_string()),
+            }]
+        );
+    }
+
+    #[test]
     fn extracts_nested_document_symbols() {
         let result = json!([
             {
@@ -1444,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn typescript_language_server_smoke_reads_symbols_hover_and_definitions() {
+    fn typescript_language_server_smoke_reads_intelligence_actions() {
         if resolve_server_for_language("typescript").is_none() {
             eprintln!("skipping TypeScript LSP smoke: typescript-language-server not found");
             return;
@@ -1462,6 +1537,7 @@ mod tests {
             "}",
             "",
             "const value = greet(\"Mac\");",
+            "const broken: number = \"oops\";",
         ]
         .join("\n");
         let file_path = root.join("App.ts");
@@ -1474,7 +1550,7 @@ mod tests {
             language: "typescript".to_string(),
             byte_count: content.len() as u64,
             content,
-            line_count: 5,
+            line_count: 6,
         };
         let request = SourceLspLookupRequest {
             root: root.display().to_string(),
@@ -1503,16 +1579,183 @@ mod tests {
             "expected hover to describe greet; got {hover:?}"
         );
 
+        let references = registry
+            .find_references(preview.clone(), request.clone())
+            .expect("references");
+        assert!(
+            references
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 1),
+            "expected references to include greet declaration; got {references:?}"
+        );
+        assert!(
+            references
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 5),
+            "expected references to include greet call site; got {references:?}"
+        );
+
         let definitions = registry
-            .find_definitions(preview, request)
+            .find_definitions(preview.clone(), request.clone())
             .expect("definitions");
         assert!(
-            definitions.iter().any(|target| target.path == file_path.display().to_string()
-                && target.line == 1),
+            definitions
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 1),
             "expected definition to resolve to App.ts line 1; got {definitions:?}"
         );
 
+        let diagnostics = registry
+            .read_diagnostics(preview, request)
+            .expect("diagnostics");
+        if diagnostics.is_empty() {
+            eprintln!("TypeScript LSP smoke: diagnostics path returned no published or pulled diagnostics");
+        }
+
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn csharp_language_server_smoke_reads_intelligence_actions() {
+        if env::var_os("MCB_RUN_CSHARP_LSP_SMOKE").is_none() {
+            eprintln!("skipping C# LSP smoke: set MCB_RUN_CSHARP_LSP_SMOKE=1 to enable");
+            return;
+        }
+        if resolve_server_for_language("csharp").is_none() {
+            eprintln!("skipping C# LSP smoke: csharp-ls not found");
+            return;
+        }
+
+        let root = unique_lsp_temp_root("mcb-cs-lsp-smoke");
+        let outcome = run_csharp_language_server_smoke(&root);
+        let _ = std::fs::remove_dir_all(root);
+        outcome.expect("C# LSP smoke");
+    }
+
+    fn run_csharp_language_server_smoke(root: &Path) -> Result<(), String> {
+        std::fs::write(
+            root.join("Smoke.csproj"),
+            [
+                r#"<Project Sdk="Microsoft.NET.Sdk">"#,
+                "  <PropertyGroup>",
+                "    <TargetFramework>net9.0</TargetFramework>",
+                "    <Nullable>enable</Nullable>",
+                "    <ImplicitUsings>enable</ImplicitUsings>",
+                "  </PropertyGroup>",
+                "</Project>",
+            ]
+            .join("\n"),
+        )
+        .map_err(|error| format!("write csproj: {error}"))?;
+
+        let content = [
+            "namespace Smoke;",
+            "",
+            "public sealed class Widget",
+            "{",
+            "    public string Format(string value) => value.ToUpperInvariant();",
+            "}",
+            "",
+            "public sealed class Runner",
+            "{",
+            "    public string Run()",
+            "    {",
+            "        var widget = new Widget();",
+            "        int broken = \"oops\";",
+            "        return widget.Format(\"mac\");",
+            "    }",
+            "}",
+        ]
+        .join("\n");
+        let file_path = root.join("Widget.cs");
+        std::fs::write(&file_path, &content).map_err(|error| format!("write source: {error}"))?;
+
+        let restore = Command::new("dotnet")
+            .arg("restore")
+            .arg("--nologo")
+            .current_dir(root)
+            .output()
+            .map_err(|error| format!("dotnet restore failed to start: {error}"))?;
+        if !restore.status.success() {
+            return Err(format!(
+                "dotnet restore failed: {}",
+                String::from_utf8_lossy(&restore.stderr)
+            ));
+        }
+
+        let status = read_source_lsp_status_sync(root.to_path_buf(), "csharp".to_string())?;
+        if !status.available {
+            return Err(format!("C# LSP status unavailable: {:?}", status.reason));
+        }
+
+        let preview = SourceLspPreview {
+            path: file_path.display().to_string(),
+            relative_path: "Widget.cs".to_string(),
+            file_name: "Widget.cs".to_string(),
+            language: "csharp".to_string(),
+            byte_count: content.len() as u64,
+            content,
+            line_count: 16,
+        };
+        let request = SourceLspLookupRequest {
+            root: root.display().to_string(),
+            line: 12,
+            column: 28,
+            limit: Some(20),
+        };
+        let registry = SourceLspRegistry::default();
+
+        let symbols = registry.find_symbols(preview.clone(), request.clone())?;
+        if !symbols
+            .iter()
+            .any(|symbol| symbol.name == "Widget" && symbol.kind == "class")
+        {
+            return Err(format!(
+                "expected C# document symbols to include Widget; got {symbols:?}"
+            ));
+        }
+
+        let hover = registry
+            .find_hover(preview.clone(), request.clone())?
+            .ok_or_else(|| "expected C# hover contents".to_string())?;
+        if !hover.contents.join("\n").contains("Widget") {
+            return Err(format!(
+                "expected C# hover to describe Widget; got {hover:?}"
+            ));
+        }
+
+        let definitions = registry.find_definitions(preview.clone(), request.clone())?;
+        if !definitions
+            .iter()
+            .any(|target| target.path == file_path.display().to_string() && target.line == 3)
+        {
+            return Err(format!(
+                "expected C# definition to resolve to Widget.cs line 3; got {definitions:?}"
+            ));
+        }
+
+        let references = registry.find_references(preview.clone(), request.clone())?;
+        if !references
+            .iter()
+            .any(|target| target.path == file_path.display().to_string() && target.line == 12)
+        {
+            return Err(format!(
+                "expected C# references to include Widget call site; got {references:?}"
+            ));
+        }
+
+        let diagnostics = registry.read_diagnostics(preview, request)?;
+        if !diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == "error"
+                && diagnostic.message.contains("string")
+                && diagnostic.message.contains("int")
+        }) {
+            return Err(format!(
+                "expected C# diagnostics to include the broken int assignment; got {diagnostics:?}"
+            ));
+        }
+
+        Ok(())
     }
 
     #[test]
