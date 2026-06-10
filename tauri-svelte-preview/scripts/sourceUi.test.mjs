@@ -25,6 +25,8 @@ function assertDeclaration(selector, declaration) {
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
 assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 8px minmax(0, 1fr)');
 assertDeclaration('.activity-shell', 'min-width: 0');
+assertDeclaration('.topbar > div:first-child', 'min-width: 0');
+assertDeclaration('.topbar h2', 'text-overflow: ellipsis');
 assertDeclaration('.activity-rail', 'width: 54px');
 assertDeclaration('.layout-preset-group', 'display: inline-flex');
 assertDeclaration('.layout-preset-group button.active', 'background: rgba(92, 226, 207, 0.18)');
@@ -44,13 +46,18 @@ assert.ok(pageSource.includes("type SourceActivityMode = 'files' | 'conversation
 assert.ok(pageSource.includes('sourceActivityModeStorageKey'), 'Source shell should persist the active activity mode');
 assert.ok(pageSource.includes('sidePaneWidthStorageKey'), 'Source shell should persist the side pane width');
 assert.ok(pageSource.includes('sourceLayoutPresetStorageKey'), 'Source shell should persist the selected layout preset');
+assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes("type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom'"), 'Source shell should define named layout presets plus custom');
+assert.ok(pageSource.includes("type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty'"), 'Source shell should define supported terminal apps');
 assert.ok(pageSource.includes('const sourceLayoutPresets'), 'Source shell should define reusable layout presets');
+assert.ok(pageSource.includes('const sourceTerminalApps'), 'Source shell should define reusable terminal app choices');
 assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
 assert.ok(pageSource.includes('let sourceActivityFilter'), 'Source shell should track the side pane activity filter');
 assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
+assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('function applySourceLayoutPreset'), 'Source shell should expose layout preset application');
+assert.ok(pageSource.includes('function selectSourceTerminalApp'), 'Source shell should expose terminal app selection');
 assert.ok(pageSource.includes('function markSourceLayoutCustom'), 'Manual layout changes should mark the layout as custom');
 assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows should share clipboard copy behavior');
 assert.ok(pageSource.includes('function copyActivityCommand'), 'Activity rows should copy resume commands and paths');
@@ -72,6 +79,8 @@ assert.ok(pageSource.includes('if (storedWidth === null) return editorInsightDef
 assert.ok(pageSource.includes('class="activity-rail"'), 'Source shell should render an activity rail');
 assert.ok(pageSource.includes('class="layout-preset-group"'), 'Source shell should render layout preset controls');
 assert.ok(pageSource.includes('aria-label="Workspace layout presets"'), 'Layout preset controls should be grouped for assistive tech');
+assert.ok(pageSource.includes('aria-label="Terminal app"'), 'Terminal app picker should be accessible');
+assert.ok(pageSource.includes('openTerminalPathFromTauri(path, sourceTerminalApp)'), 'Terminal open actions should use the selected terminal app');
 assert.ok(pageSource.includes('aria-label="Workspace views"'), 'Activity rail should be labeled');
 assert.ok(pageSource.includes('aria-label="Files"'), 'Activity rail should expose files');
 assert.ok(pageSource.includes('aria-label="Conversations"'), 'Activity rail should expose conversations');

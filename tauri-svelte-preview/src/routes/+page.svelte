@@ -124,6 +124,7 @@
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
+  const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
@@ -162,6 +163,7 @@
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
   type SourceActivityMode = 'files' | 'conversations' | 'sessions' | 'agents' | 'worktrees' | 'git';
   type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'sessions' | 'custom';
+  type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
   type SourceLayoutPresetDefinition = {
     id: Exclude<SourceLayoutPresetID, 'custom'>;
     label: string;
@@ -214,6 +216,15 @@
       contextPanelCollapsed: false,
       intelligencePanel: 'problems'
     }
+  ];
+  const sourceTerminalApps: SourceTerminalApp[] = [
+    'Warp',
+    'Terminal',
+    'iTerm',
+    'iTerm2',
+    'Ghostty',
+    'WezTerm',
+    'Alacritty'
   ];
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
@@ -284,6 +295,7 @@
   let sourceActivityMode = $state<SourceActivityMode>('files');
   let sourceActivityFilter = $state('');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('review');
+  let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let contextPanelCollapsed = $state(false);
@@ -1888,7 +1900,7 @@
     error = '';
 
     try {
-      const opened = await openTerminalPathFromTauri(path, 'Warp');
+      const opened = await openTerminalPathFromTauri(path, sourceTerminalApp);
       fileActionStatus = opened ? 'Opened terminal' : 'Native action unavailable';
     } catch (terminalError) {
       error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal';
@@ -2266,6 +2278,30 @@
   function persistSourceLayoutPreset(presetID: SourceLayoutPresetID) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutPresetStorageKey, presetID);
+  }
+
+  function loadStoredSourceTerminalApp(): SourceTerminalApp {
+    if (typeof window === 'undefined') return 'Warp';
+
+    const storedTerminal = window.localStorage.getItem(sourceTerminalAppStorageKey);
+    return isSourceTerminalApp(storedTerminal) ? storedTerminal : 'Warp';
+  }
+
+  function isSourceTerminalApp(value: unknown): value is SourceTerminalApp {
+    return sourceTerminalApps.includes(value as SourceTerminalApp);
+  }
+
+  function selectSourceTerminalApp(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement | null)?.value;
+    if (!isSourceTerminalApp(value)) return;
+
+    sourceTerminalApp = value;
+    persistSourceTerminalApp(value);
+  }
+
+  function persistSourceTerminalApp(app: SourceTerminalApp) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceTerminalAppStorageKey, app);
   }
 
   function loadStoredSidePaneWidth() {
@@ -2824,6 +2860,7 @@
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
+    const storedSourceTerminalApp = loadStoredSourceTerminalApp();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
     const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
@@ -2839,6 +2876,7 @@
     selectedProjectID = storedProject.id;
     sourceActivityMode = storedSourceActivityMode;
     sourceLayoutPreset = storedSourceLayoutPreset;
+    sourceTerminalApp = storedSourceTerminalApp;
     sidePaneWidth = storedSidePaneWidth;
     editorInsightWidth = storedEditorInsightWidth;
     contextPanelCollapsed = storedContextPanelCollapsed;
@@ -3536,6 +3574,18 @@
             </button>
           {/each}
         </div>
+        <label class="terminal-picker" title={`Open directories in ${sourceTerminalApp}`}>
+          <Terminal size={13} strokeWidth={2} />
+          <select
+            bind:value={sourceTerminalApp}
+            aria-label="Terminal app"
+            onchange={selectSourceTerminalApp}
+          >
+            {#each sourceTerminalApps as app (app)}
+              <option value={app}>{app}</option>
+            {/each}
+          </select>
+        </label>
         <div class="status-strip">
           <button
             class="workspace-context-toggle"
@@ -5349,6 +5399,17 @@
     margin-bottom: 14px;
   }
 
+  .topbar > div:first-child {
+    min-width: 0;
+  }
+
+  .topbar h2 {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .topbar-tools {
     display: flex;
     flex-wrap: wrap;
@@ -5392,6 +5453,32 @@
   .layout-preset-group button.active {
     color: #dffdf8;
     background: rgba(92, 226, 207, 0.18);
+  }
+
+  .terminal-picker {
+    display: inline-grid;
+    grid-template-columns: 13px minmax(86px, auto);
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 7px;
+    color: #9facaa;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .terminal-picker select {
+    width: 100%;
+    height: 22px;
+    padding: 0 4px;
+    color: #dffdf8;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 10px;
+    font-weight: 820;
   }
 
   .status-strip {
