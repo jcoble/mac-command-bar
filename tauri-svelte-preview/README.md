@@ -19,6 +19,13 @@ For the Tauri shell:
 pnpm tauri:dev
 ```
 
+If Vite is already running on `127.0.0.1:5177`, use attach mode so Tauri does
+not try to start a second dev server:
+
+```bash
+pnpm tauri:dev:attach
+```
+
 The browser preview uses embedded demo source. The Tauri shell can call `read_source_file` from Rust to load the listed local files.
 
 ## Appearance
