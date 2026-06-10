@@ -4,6 +4,7 @@ import {
   orchestrationCurrentActivity,
   orchestrationLinkChips,
   orchestrationRunMetrics,
+  orchestrationRunSummaryText,
   orchestrationStatusTone,
   orchestrationTimelineItems
 } from '../src/lib/orchestrationView.ts';
@@ -191,6 +192,19 @@ assert.equal(timeline[0].agentLabel, 'claude fix-agent fixer-1');
 assert.equal(
   orchestrationCurrentActivity(run),
   'claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree'
+);
+assert.equal(
+  orchestrationRunSummaryText(run),
+  [
+    'TSK-127 source browser loop',
+    'Status: running · 72%',
+    'Project: MacCommandBar · main checkout',
+    'Task: TSK-127',
+    'Phase: ui-test-loop',
+    'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
+    'Tally: 2 done · 4 running · 0 failed · 2 attention · 1 retries · 1 sign-off',
+    'Artifacts: 1 · Links: 1 · Events: 3'
+  ].join('\n')
 );
 assert.deepEqual(orchestrationArtifactChips(run).map((chip) => [chip.kind, chip.path]), [
   ['handoff', '/repo/.codex-artifacts/handoff.md']

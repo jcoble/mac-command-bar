@@ -176,6 +176,30 @@ export function orchestrationCurrentActivity(run: OrchestrationRun): string {
   return `${agentPrefix}${activeItem.title}${summarySuffix}`;
 }
 
+export function orchestrationRunSummaryText(run: OrchestrationRun): string {
+  const metrics = orchestrationRunMetrics(run);
+  const tally = [
+    `${metrics.completedCount} done`,
+    `${metrics.runningCount} running`,
+    `${metrics.failedCount} failed`,
+    `${metrics.attentionCount} attention`,
+    `${metrics.retryCount} retries`,
+    `${metrics.approvalCount} sign-off`
+  ].join(' · ');
+  const taskLine = run.taskID ? `Task: ${run.taskID}` : '';
+
+  return [
+    run.title,
+    `Status: ${run.status} · ${run.progress}%`,
+    `Project: ${run.projectName} · ${run.rootLabel}`,
+    taskLine,
+    `Phase: ${run.phase}`,
+    `Current: ${orchestrationCurrentActivity(run)}`,
+    `Tally: ${tally}`,
+    `Artifacts: ${metrics.artifactCount} · Links: ${metrics.linkCount} · Events: ${metrics.eventCount}`
+  ].filter(Boolean).join('\n');
+}
+
 export function orchestrationArtifactChips(run: OrchestrationRun, limit = 4): OrchestrationChip[] {
   return run.artifacts.slice(0, Math.max(0, limit)).map((artifact) => ({
     id: artifact.id,

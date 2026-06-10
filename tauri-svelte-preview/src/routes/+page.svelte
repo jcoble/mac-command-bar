@@ -39,6 +39,7 @@
     orchestrationCurrentActivity,
     orchestrationLinkChips,
     orchestrationRunMetrics,
+    orchestrationRunSummaryText,
     orchestrationStatusTone,
     orchestrationTimelineItems,
     type OrchestrationTimelineItem
@@ -1046,6 +1047,18 @@
       disabled: sourceActivityMode === 'runs',
       perform: () => selectSourceActivityMode('runs')
     },
+    ...selectedProjectOrchestrationRuns.slice(0, 8).map((run) => ({
+      id: `run-focus-${run.id}`,
+      label: `Focus run: ${run.title}`,
+      detail: orchestrationCurrentActivity(run),
+      perform: () => focusOrchestrationRun(run)
+    })),
+    ...selectedProjectOrchestrationRuns.slice(0, 8).map((run) => ({
+      id: `run-copy-summary-${run.id}`,
+      label: `Copy run summary: ${run.title}`,
+      detail: `${run.status} · ${run.progress}%`,
+      perform: () => copyOrchestrationRunSummary(run)
+    })),
     {
       id: 'activity-sessions',
       label: 'Show active sessions',
@@ -2261,6 +2274,25 @@
     ]
       .filter(Boolean)
       .join('\n');
+  }
+
+  function focusOrchestrationRun(run: OrchestrationRun) {
+    selectSourceActivityMode('runs');
+    sourceActivityFilter = run.taskID ?? run.title ?? run.id;
+  }
+
+  async function copyOrchestrationRunSummary(run: OrchestrationRun) {
+    await copyActivityCommand(orchestrationRunSummaryText(run), 'Run summary copied');
+  }
+
+  async function copyOrchestrationCurrentActivity(run: OrchestrationRun) {
+    await copyActivityCommand(orchestrationCurrentActivity(run), 'Current run activity copied');
+  }
+
+  async function copyOrchestrationTaskReference(run: OrchestrationRun) {
+    if (!run.taskID) return;
+
+    await copyGitTaskReference(run.taskID);
   }
 
   function orchestrationStepIconLabel(status: string) {
@@ -5421,12 +5453,38 @@
                   <div class="activity-row-actions" aria-label="Run actions">
                     <button
                       type="button"
+                      aria-label="Copy run summary"
+                      title="Copy run summary"
+                      onclick={() => copyOrchestrationRunSummary(run)}
+                    >
+                      <Activity size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Copy current run activity"
+                      title="Copy current run activity"
+                      onclick={() => copyOrchestrationCurrentActivity(run)}
+                    >
+                      <History size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
                       aria-label="Copy run id"
                       title="Copy run id"
                       onclick={() => copyActivityCommand(run.id, 'Run id copied')}
                     >
                       <Copy size={12} strokeWidth={2} />
                     </button>
+                    {#if run.taskID}
+                      <button
+                        type="button"
+                        aria-label="Copy run task reference"
+                        title="Copy run task reference"
+                        onclick={() => copyOrchestrationTaskReference(run)}
+                      >
+                        <ExternalLink size={12} strokeWidth={2} />
+                      </button>
+                    {/if}
                     {#if run.projectPath}
                       <button
                         type="button"
