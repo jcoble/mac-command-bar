@@ -1444,10 +1444,93 @@ mod tests {
     }
 
     #[test]
+    fn typescript_language_server_smoke_reads_symbols_hover_and_definitions() {
+        if resolve_server_for_language("typescript").is_none() {
+            eprintln!("skipping TypeScript LSP smoke: typescript-language-server not found");
+            return;
+        }
+
+        let root = unique_lsp_temp_root("mcb-ts-lsp-smoke");
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
+        )
+        .unwrap();
+        let content = [
+            "export function greet(name: string): string {",
+            "  return `Hello ${name}`;",
+            "}",
+            "",
+            "const value = greet(\"Mac\");",
+        ]
+        .join("\n");
+        let file_path = root.join("App.ts");
+        std::fs::write(&file_path, &content).unwrap();
+
+        let preview = SourceLspPreview {
+            path: file_path.display().to_string(),
+            relative_path: "App.ts".to_string(),
+            file_name: "App.ts".to_string(),
+            language: "typescript".to_string(),
+            byte_count: content.len() as u64,
+            content,
+            line_count: 5,
+        };
+        let request = SourceLspLookupRequest {
+            root: root.display().to_string(),
+            line: 5,
+            column: 16,
+            limit: Some(20),
+        };
+        let registry = SourceLspRegistry::default();
+
+        let symbols = registry
+            .find_symbols(preview.clone(), request.clone())
+            .expect("document symbols");
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "greet" && symbol.kind == "function"),
+            "expected TypeScript document symbols to include greet; got {symbols:?}"
+        );
+
+        let hover = registry
+            .find_hover(preview.clone(), request.clone())
+            .expect("hover")
+            .expect("hover contents");
+        assert!(
+            hover.contents.join("\n").contains("greet"),
+            "expected hover to describe greet; got {hover:?}"
+        );
+
+        let definitions = registry
+            .find_definitions(preview, request)
+            .expect("definitions");
+        assert!(
+            definitions.iter().any(|target| target.path == file_path.display().to_string()
+                && target.line == 1),
+            "expected definition to resolve to App.ts line 1; got {definitions:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn round_trips_file_uri_encoding() {
         let path = PathBuf::from("/tmp/source file #1.cs");
         let uri = path_to_file_uri(&path);
         assert_eq!(uri, "file:///tmp/source%20file%20%231.cs");
         assert_eq!(file_uri_to_path(&uri), Some(path));
+    }
+
+    fn unique_lsp_temp_root(prefix: &str) -> PathBuf {
+        let mut root = env::temp_dir();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        root.push(format!("{prefix}-{nonce}"));
+        std::fs::create_dir_all(&root).unwrap();
+        root
     }
 }
