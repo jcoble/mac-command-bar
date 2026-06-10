@@ -49,6 +49,10 @@ assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track t
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
 assert.ok(pageSource.includes('function applySourceLayoutPreset'), 'Source shell should expose layout preset application');
 assert.ok(pageSource.includes('function markSourceLayoutCustom'), 'Manual layout changes should mark the layout as custom');
+assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows should share clipboard copy behavior');
+assert.ok(pageSource.includes('function copyActivityCommand'), 'Activity rows should copy resume commands and paths');
+assert.ok(pageSource.includes('function openActivityPath'), 'Activity rows should open repo and worktree paths');
+assert.ok(pageSource.includes('function revealActivityPath'), 'Activity rows should reveal repo and worktree paths');
 assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
 assert.ok(pageSource.includes('function beginSidePaneResize'), 'Source shell should expose side pane drag resizing');
 assert.ok(pageSource.includes('editorInsightWidthStorageKey'), 'Editor shell should persist the inspector width');
@@ -77,6 +81,10 @@ assert.ok(pageSource.includes('class="editor-insight-resizer"'), 'Editor shell s
 assert.ok(pageSource.includes('aria-label="Resize editor insights"'), 'Inspector resizer should be labeled');
 assert.ok(pageSource.includes('class="activity-panel"'), 'Non-file side modes should render activity panels');
 assert.ok(pageSource.includes('class="activity-panel-list"'), 'Activity panels should render scrollable lists');
+assert.ok(pageSource.includes('class="activity-row-actions"'), 'Activity rows should render compact action controls');
+assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
+assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
+assert.ok(pageSource.includes('aria-label="Reveal repository path"'), 'Repository rows should expose native reveal');
 assert.ok(pageSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
 assert.ok(pageSource.includes('function cancelSourceScan()'), 'Source scans should expose a cancel action');
 assert.ok(

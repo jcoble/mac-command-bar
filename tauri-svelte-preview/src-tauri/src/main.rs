@@ -235,6 +235,12 @@ enum SourceFileAction {
     Reveal,
 }
 
+#[derive(Clone, Copy)]
+enum PathAction {
+    Open,
+    Reveal,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct SourceFileActionCommand {
     program: String,
@@ -450,6 +456,24 @@ async fn reveal_source_file(path: String) -> Result<(), String> {
     })
     .await
     .map_err(|error| format!("Source reveal task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_path_action(PathBuf::from(path), PathAction::Open)
+    })
+    .await
+    .map_err(|error| format!("Path open task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_path_action(PathBuf::from(path), PathAction::Reveal)
+    })
+    .await
+    .map_err(|error| format!("Path reveal task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1222,6 +1246,20 @@ fn run_source_file_action(path: PathBuf, action: SourceFileAction) -> Result<(),
     }
 }
 
+fn run_path_action(path: PathBuf, action: PathAction) -> Result<(), String> {
+    let command = path_action_command(&path, action)?;
+    let status = Command::new(&command.program)
+        .args(&command.args)
+        .status()
+        .map_err(|error| format!("Could not run path action: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Path action exited with {status}"))
+    }
+}
+
 fn source_file_action_command(
     path: &Path,
     action: SourceFileAction,
@@ -1236,6 +1274,25 @@ fn source_file_action_command(
     let args = match action {
         SourceFileAction::Open => vec![path_arg],
         SourceFileAction::Reveal => vec!["-R".to_string(), path_arg],
+    };
+
+    Ok(SourceFileActionCommand {
+        program: "open".to_string(),
+        args,
+    })
+}
+
+fn path_action_command(path: &Path, action: PathAction) -> Result<SourceFileActionCommand, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Could not read path metadata: {error}"))?;
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err("Path is not a file or directory".to_string());
+    }
+
+    let path_arg = path.display().to_string();
+    let args = match action {
+        PathAction::Open => vec![path_arg],
+        PathAction::Reveal => vec!["-R".to_string(), path_arg],
     };
 
     Ok(SourceFileActionCommand {
@@ -2386,6 +2443,8 @@ fn main() {
             write_source_file,
             open_source_file,
             reveal_source_file,
+            open_path,
+            reveal_path,
             search_source_files,
             find_source_definitions,
             find_source_references,
@@ -2717,6 +2776,39 @@ mod tests {
         assert!(error.contains("Source path is not a file"));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_action_builds_open_and_reveal_commands_for_files_and_directories() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let file_path = root.join("src/App.svelte");
+        std::fs::write(&file_path, "<script></script>").unwrap();
+
+        let open_dir_command = path_action_command(&root, PathAction::Open).unwrap();
+        assert_eq!(open_dir_command.program, "open");
+        assert_eq!(open_dir_command.args, vec![root.display().to_string()]);
+
+        let reveal_dir_command = path_action_command(&root, PathAction::Reveal).unwrap();
+        assert_eq!(reveal_dir_command.program, "open");
+        assert_eq!(
+            reveal_dir_command.args,
+            vec!["-R".to_string(), root.display().to_string()]
+        );
+
+        let open_file_command = path_action_command(&file_path, PathAction::Open).unwrap();
+        assert_eq!(open_file_command.program, "open");
+        assert_eq!(open_file_command.args, vec![file_path.display().to_string()]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_action_rejects_missing_paths() {
+        let root = unique_temp_root();
+        let error = path_action_command(&root.join("missing"), PathAction::Open).unwrap_err();
+
+        assert!(error.contains("Could not read path metadata"));
     }
 
     #[test]

@@ -90,10 +90,12 @@
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
+    openPathFromTauri,
     openSourceFileFromTauri,
     readProjectGitStatusFromTauri,
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
+    revealPathFromTauri,
     revealSourceFileFromTauri,
     pullGitRepositoryFromTauri,
     pushGitRepositoryFromTauri,
@@ -1744,14 +1746,67 @@
     if (!preview) return;
 
     fileActionBusy = 'copy';
+
+    try {
+      await copyTextToClipboard(preview.path, 'Path copied');
+    } catch (copyError) {
+      error = copyError instanceof Error ? copyError.message : 'Could not copy source path';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function copyTextToClipboard(text: string, successStatus: string) {
+    fileActionStatus = '';
+    error = '';
+
+    await navigator.clipboard.writeText(text);
+    fileActionStatus = successStatus;
+  }
+
+  async function copyActivityCommand(text: string, successStatus = 'Copied') {
+    if (!text.trim()) return;
+
+    fileActionBusy = 'activity-copy';
+
+    try {
+      await copyTextToClipboard(text, successStatus);
+    } catch (copyError) {
+      error = copyError instanceof Error ? copyError.message : 'Could not copy activity text';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function openActivityPath(path: string) {
+    if (!path.trim()) return;
+
+    fileActionBusy = `activity-open:${path}`;
     fileActionStatus = '';
     error = '';
 
     try {
-      await navigator.clipboard.writeText(preview.path);
-      fileActionStatus = 'Path copied';
-    } catch (copyError) {
-      error = copyError instanceof Error ? copyError.message : 'Could not copy source path';
+      const opened = await openPathFromTauri(path);
+      fileActionStatus = opened ? 'Opened path' : 'Native action unavailable';
+    } catch (openError) {
+      error = openError instanceof Error ? openError.message : 'Could not open path';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function revealActivityPath(path: string) {
+    if (!path.trim()) return;
+
+    fileActionBusy = `activity-reveal:${path}`;
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const revealed = await revealPathFromTauri(path);
+      fileActionStatus = revealed ? 'Revealed path' : 'Native action unavailable';
+    } catch (revealError) {
+      error = revealError instanceof Error ? revealError.message : 'Could not reveal path';
     } finally {
       fileActionBusy = '';
     }
@@ -3060,6 +3115,26 @@
                     <strong>{session.title}</strong>
                     <small>{agentSessionProjectLabel(session)} · {agentSessionActivityLabel(session)}</small>
                   </div>
+                  <div class="activity-row-actions" aria-label="Conversation actions">
+                    <button
+                      type="button"
+                      aria-label="Copy agent resume command"
+                      title="Copy resume command"
+                      onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    {#if session.projectPath}
+                      <button
+                        type="button"
+                        aria-label="Open agent project path"
+                        title="Open project path"
+                        onclick={() => openActivityPath(session.projectPath ?? '')}
+                      >
+                        <ExternalLink size={12} strokeWidth={2} />
+                      </button>
+                    {/if}
+                  </div>
                 </div>
               {/each}
             {/if}
@@ -3075,6 +3150,24 @@
                   <div class="activity-row-main">
                     <strong>{context.command}</strong>
                     <small>{context.rootLabel} · {context.cwd}</small>
+                  </div>
+                  <div class="activity-row-actions" aria-label="Active session actions">
+                    <button
+                      type="button"
+                      aria-label="Copy active session command"
+                      title="Copy session command"
+                      onclick={() => copyActivityCommand(`${context.command} ${context.cwd}`, 'Session command copied')}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Open active session path"
+                      title="Open session path"
+                      onclick={() => openActivityPath(context.cwd)}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                    </button>
                   </div>
                 </div>
               {/each}
@@ -3092,6 +3185,26 @@
                     <strong>{session.title}</strong>
                     <small>{agentSessionResumeCommand(session)}</small>
                   </div>
+                  <div class="activity-row-actions" aria-label="Agent actions">
+                    <button
+                      type="button"
+                      aria-label="Copy agent resume command"
+                      title="Copy resume command"
+                      onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    {#if session.projectPath}
+                      <button
+                        type="button"
+                        aria-label="Reveal agent project path"
+                        title="Reveal project path"
+                        onclick={() => revealActivityPath(session.projectPath ?? '')}
+                      >
+                        <FolderSearch size={12} strokeWidth={2} />
+                      </button>
+                    {/if}
+                  </div>
                 </div>
               {/each}
             {/if}
@@ -3108,6 +3221,32 @@
                   <div class="activity-row-main">
                     <strong>{worktree.branch}</strong>
                     <small>{worktree.repo} · {worktree.deleteEligibility}</small>
+                  </div>
+                  <div class="activity-row-actions" aria-label="Worktree actions">
+                    <button
+                      type="button"
+                      aria-label="Copy worktree path"
+                      title="Copy worktree path"
+                      onclick={() => copyActivityCommand(worktree.path, 'Worktree path copied')}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Open worktree path"
+                      title="Open worktree path"
+                      onclick={() => openActivityPath(worktree.path)}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Reveal worktree path"
+                      title="Reveal worktree path"
+                      onclick={() => revealActivityPath(worktree.path)}
+                    >
+                      <FolderSearch size={12} strokeWidth={2} />
+                    </button>
                   </div>
                 </div>
               {/each}
@@ -3142,6 +3281,32 @@
                     <span class="repo-branch-badge">{repoDashboardTaskLabel(summary)}</span>
                   {/if}
                   <small>{repoDashboardDirtyLabel(summary)} · {repoDashboardRemoteLabel(summary)}</small>
+                  <div class="activity-row-actions" aria-label="Repository actions">
+                    <button
+                      type="button"
+                      aria-label="Copy repository path"
+                      title="Copy repository path"
+                      onclick={() => copyActivityCommand(summary.path, 'Repository path copied')}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Open repository path"
+                      title="Open repository path"
+                      onclick={() => openActivityPath(summary.path)}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Reveal repository path"
+                      title="Reveal repository path"
+                      onclick={() => revealActivityPath(summary.path)}
+                    >
+                      <FolderSearch size={12} strokeWidth={2} />
+                    </button>
+                  </div>
                 </div>
               {/each}
             {/if}
@@ -4209,13 +4374,16 @@
 
   .activity-session-row,
   .activity-runtime-row,
-  .activity-worktree-row,
+  .activity-worktree-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
   .activity-commit-row {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
   .activity-repo-row {
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
   }
 
   .activity-worktree-row.blocked,
@@ -4251,8 +4419,37 @@
     font-weight: 720;
   }
 
-  .activity-repo-row small {
-    grid-column: 1 / -1;
+  .activity-repo-row > small {
+    grid-column: 1 / 4;
+  }
+
+  .activity-row-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .activity-row-actions button {
+    display: grid;
+    place-items: center;
+    width: 23px;
+    height: 23px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .activity-row-actions button:hover,
+  .activity-row-actions button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.36);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
   }
 
   .activity-subheading {

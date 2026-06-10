@@ -190,11 +190,19 @@ export async function writeSourceToTauri(
 }
 
 export async function openSourceFileFromTauri(path: string): Promise<boolean> {
-  return runSourceFileAction('open_source_file', path);
+  return runPathCommand('open_source_file', path);
 }
 
 export async function revealSourceFileFromTauri(path: string): Promise<boolean> {
-  return runSourceFileAction('reveal_source_file', path);
+  return runPathCommand('reveal_source_file', path);
+}
+
+export async function openPathFromTauri(path: string): Promise<boolean> {
+  return runPathCommand('open_path', path);
+}
+
+export async function revealPathFromTauri(path: string): Promise<boolean> {
+  return runPathCommand('reveal_path', path);
 }
 
 export async function readProjectGitStatusFromTauri(
@@ -394,7 +402,7 @@ export async function findSourceReferencesFromTauri(
   });
 }
 
-async function runSourceFileAction(command: string, path: string): Promise<boolean> {
+async function runPathCommand(command: string, path: string): Promise<boolean> {
   if (!isTauriRuntime()) {
     return false;
   }
