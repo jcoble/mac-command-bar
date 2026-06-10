@@ -1159,6 +1159,27 @@
       disabled: !agentSessionResumeCommand(session).trim(),
       perform: () => openAgentSessionTerminal(session)
     })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `agent-copy-plan-${session.provider}-${session.id}`,
+      label: `Copy session resume plan: ${session.title}`,
+      detail: agentSessionProjectLabel(session),
+      disabled: !agentSessionResumeCommand(session).trim(),
+      perform: () => copyAgentSessionResumePlan(session)
+    })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `agent-copy-shell-command-${session.provider}-${session.id}`,
+      label: `Copy shell resume command: ${session.title}`,
+      detail: agentSessionResumeShellCommand(session),
+      disabled: !agentSessionResumeCommand(session).trim(),
+      perform: () => copyAgentSessionResumeShellCommand(session)
+    })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `agent-copy-resume-command-${session.provider}-${session.id}`,
+      label: `Copy resume command: ${session.title}`,
+      detail: agentSessionResumeCommand(session),
+      disabled: !agentSessionResumeCommand(session).trim(),
+      perform: () => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')
+    })),
     {
       id: 'git-stage-file',
       label: 'Stage selected file',
@@ -2372,8 +2393,46 @@
     return session.lastActivity ?? 'unknown activity';
   }
 
+  function agentSessionProjectPath(session: AgentSession) {
+    return session.projectPath?.trim() || selectedProject.path;
+  }
+
+  function agentSessionResumeCommandList(session: AgentSession) {
+    const commands = session.resumeCommands.map((command) => command.trim()).filter(Boolean);
+    return commands.length > 0 ? commands : [`${session.provider} resume ${session.id}`];
+  }
+
   function agentSessionResumeCommand(session: AgentSession) {
-    return session.resumeCommands[0] ?? `${session.provider} resume ${session.id}`;
+    return agentSessionResumeCommandList(session)[0] ?? '';
+  }
+
+  function agentSessionResumeShellCommand(session: AgentSession) {
+    const command = agentSessionResumeCommand(session);
+    const path = agentSessionProjectPath(session);
+    return path.trim() ? `cd ${shellQuoteForCommand(path)} && ${command}` : command;
+  }
+
+  function agentSessionResumePlan(session: AgentSession) {
+    const commands = agentSessionResumeCommandList(session);
+    const alternateCommands = commands.slice(1);
+
+    return [
+      `Session: ${session.title}`,
+      `Provider: ${session.provider}`,
+      `ID: ${session.id}`,
+      `Project: ${agentSessionProjectPath(session)}`,
+      `Activity: ${agentSessionActivityLabel(session)}`,
+      '',
+      'Shell resume:',
+      agentSessionResumeShellCommand(session),
+      '',
+      alternateCommands.length > 0 ? 'Alternate commands:' : '',
+      ...alternateCommands
+    ].filter(Boolean).join('\n');
+  }
+
+  function shellQuoteForCommand(value: string) {
+    return `'${value.replace(/'/g, "'\\''")}'`;
   }
 
   function agentSessionRowKey(session: AgentSession, index: number, scope: string) {
@@ -2441,6 +2500,14 @@
 
   function copyWorktreeBackupCommand(worktree: ProjectWorktree) {
     return copyActivityCommand(projectWorktreeSafety(worktree).backupCommand, 'Worktree backup command copied');
+  }
+
+  function copyAgentSessionResumePlan(session: AgentSession) {
+    return copyActivityCommand(agentSessionResumePlan(session), 'Session resume plan copied');
+  }
+
+  function copyAgentSessionResumeShellCommand(session: AgentSession) {
+    return copyActivityCommand(agentSessionResumeShellCommand(session), 'Shell resume command copied');
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -5569,7 +5636,7 @@
               <div class="activity-empty">No conversations</div>
             {:else}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
-                <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
+                <div class="activity-session-row" title={agentSessionResumePlan(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
                     <strong>{session.title}</strong>
@@ -5665,7 +5732,7 @@
               <div class="activity-empty">No agents</div>
             {:else}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'agent'))}
-                <div class="activity-session-row" title={agentSessionResumeCommand(session)}>
+                <div class="activity-session-row" title={agentSessionResumePlan(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
                     <strong>{session.title}</strong>
@@ -6303,7 +6370,7 @@
         {#if selectedProjectAgentSessions.length > 0}
           <div class="agent-session-list">
             {#each selectedProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'context'))}
-              <div class="agent-session-row" title={agentSessionResumeCommand(session)}>
+              <div class="agent-session-row" title={agentSessionResumePlan(session)}>
                 <span class="agent-provider-badge">{session.provider}</span>
                 <strong>{session.title}</strong>
                 <span>{agentSessionProjectLabel(session)}</span>

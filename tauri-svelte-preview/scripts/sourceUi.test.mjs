@@ -158,6 +158,10 @@ assert.ok(pageSource.includes('function copyWorktreeCleanupPlan'), 'Worktree row
 assert.ok(pageSource.includes('function copyWorktreeAuditCommand'), 'Worktree commands should copy audit commands');
 assert.ok(pageSource.includes('function copyWorktreeCleanupCommand'), 'Worktree commands should copy remove commands');
 assert.ok(pageSource.includes('function copyWorktreeBackupCommand'), 'Worktree rows should copy backup commands');
+assert.ok(pageSource.includes('function agentSessionResumePlan'), 'Agent rows should expose a copyable resume plan');
+assert.ok(pageSource.includes('function agentSessionResumeShellCommand'), 'Agent rows should expose shell-ready resume commands');
+assert.ok(pageSource.includes('function copyAgentSessionResumePlan'), 'Agent commands should copy session resume plans');
+assert.ok(pageSource.includes('function copyAgentSessionResumeShellCommand'), 'Agent commands should copy shell-ready resume commands');
 assert.ok(pageSource.includes('editorInsightWidthStorageKey'), 'Editor shell should persist the inspector width');
 assert.ok(pageSource.includes('editorInsightCollapsedStorageKey'), 'Editor shell should persist inspector visibility');
 assert.ok(pageSource.includes('contextPanelCollapsedStorageKey'), 'Workspace should persist collapsed context cards');
@@ -227,6 +231,9 @@ assert.ok(pageSource.includes('worktree-audit-command-${worktree.path}'), 'Comma
 assert.ok(pageSource.includes('worktree-remove-command-${worktree.path}'), 'Command palette should copy worktree remove commands');
 assert.ok(pageSource.includes('worktree-backup-command-${worktree.path}'), 'Command palette should copy worktree backup commands');
 assert.ok(pageSource.includes('agent-resume-${session.provider}-${session.id}'), 'Command palette should expose agent resume targets');
+assert.ok(pageSource.includes('agent-copy-plan-${session.provider}-${session.id}'), 'Command palette should copy session resume plans');
+assert.ok(pageSource.includes('agent-copy-shell-command-${session.provider}-${session.id}'), 'Command palette should copy shell-ready session commands');
+assert.ok(pageSource.includes('agent-copy-resume-command-${session.provider}-${session.id}'), 'Command palette should copy raw session resume commands');
 assert.ok(pageSource.includes('Go to symbol: ${symbol.name}'), 'Command palette should expose current-file symbols');
 assert.ok(pageSource.includes('selectSourceSymbol(symbol)'), 'Command palette symbol commands should reveal source lines');
 assert.ok(pageSource.includes('Go to problem: ${diagnostic.message}'), 'Command palette should expose current-file diagnostics');
