@@ -10,6 +10,7 @@ export type WorktreeSafetySummary = {
   reason: string;
   recommendation: string;
   activityLabel: string;
+  auditCommand: string;
   backupCommand: string;
   cleanupCommand: string;
   cleanupPlan: string;
@@ -67,6 +68,7 @@ export function buildWorktreeSafetySummary(
     recommendation = 'Confirm no session owns it, then remove it from the main checkout.';
   }
 
+  const auditCommand = worktreeAuditCommand(worktree);
   const backupCommand = worktreeBackupCommand(worktree, nowMs);
   const cleanupCommand = worktreeCleanupCommand(worktree, options.primaryPath);
 
@@ -77,9 +79,11 @@ export function buildWorktreeSafetySummary(
     reason,
     recommendation,
     activityLabel: activity.label,
+    auditCommand,
     backupCommand,
     cleanupCommand,
     cleanupPlan: worktreeCleanupPlan(worktree, {
+      auditCommand,
       backupCommand,
       cleanupCommand,
       reason,
@@ -87,6 +91,25 @@ export function buildWorktreeSafetySummary(
       isPrimaryCheckout
     })
   };
+}
+
+export function worktreeAuditCommand(worktree: ProjectWorktree): string {
+  return [
+    'git',
+    '-C',
+    shellQuote(worktree.path),
+    'status',
+    '--short',
+    '--branch',
+    '&&',
+    'git',
+    '-C',
+    shellQuote(worktree.path),
+    'log',
+    '--oneline',
+    '--decorate',
+    '--max-count=8'
+  ].join(' ');
 }
 
 export function worktreeBackupCommand(worktree: ProjectWorktree, now: number | Date = Date.now()): string {
@@ -130,6 +153,7 @@ export function worktreeCleanupCommand(
 function worktreeCleanupPlan(
   worktree: ProjectWorktree,
   details: {
+    auditCommand: string;
     backupCommand: string;
     cleanupCommand: string;
     reason: string;
@@ -148,8 +172,14 @@ function worktreeCleanupPlan(
   ].filter(Boolean);
 
   if (details.isPrimaryCheckout) {
+    lines.push('Audit current state:');
+    lines.push(details.auditCommand);
+    lines.push('');
     lines.push('Do not remove the primary checkout from the worktree list.');
   } else {
+    lines.push('Audit before cleanup:');
+    lines.push(details.auditCommand);
+    lines.push('');
     lines.push('Backup dirty/untracked work if needed:');
     lines.push(details.backupCommand);
     lines.push('');

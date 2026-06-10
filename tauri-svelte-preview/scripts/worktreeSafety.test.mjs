@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { buildWorktreeSafetySummary, worktreeCleanupCommand } from '../src/lib/worktreeSafety.ts';
+import {
+  buildWorktreeSafetySummary,
+  worktreeAuditCommand,
+  worktreeCleanupCommand
+} from '../src/lib/worktreeSafety.ts';
 
 const now = new Date('2026-06-10T12:00:00.000Z');
 
@@ -35,7 +39,9 @@ function worktree(overrides = {}) {
   assert.equal(summary.kind, 'blocked');
   assert.equal(summary.badge, 'Dirty');
   assert.match(summary.reason, /Uncommitted/);
+  assert.match(summary.auditCommand, /status --short --branch/);
   assert.match(summary.backupCommand, /stash push --include-untracked/);
+  assert.match(summary.cleanupPlan, /Audit before cleanup/);
   assert.match(summary.cleanupPlan, /Backup dirty\/untracked work/);
 }
 
@@ -72,6 +78,12 @@ function worktree(overrides = {}) {
   assert.equal(summary.kind, 'review');
   assert.equal(summary.badge, 'Review');
   assert.equal(summary.activityLabel, 'activity unknown');
+}
+
+{
+  const command = worktreeAuditCommand(worktree({ path: "/tmp/audit ' quote" }));
+  assert.match(command, /git -C '\/tmp\/audit '\\'' quote' status --short --branch/);
+  assert.match(command, /log --oneline --decorate --max-count=8/);
 }
 
 {

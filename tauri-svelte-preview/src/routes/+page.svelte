@@ -1115,14 +1115,28 @@
     },
     ...projectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-cleanup-plan-${worktree.path}`,
-      label: `Copy cleanup plan: ${worktree.branch}`,
+      label: `Copy worktree cleanup plan: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).recommendation,
       disabled: false,
       perform: () => copyWorktreeCleanupPlan(worktree)
     })),
     ...projectWorktrees.slice(0, 8).map((worktree) => ({
+      id: `worktree-audit-command-${worktree.path}`,
+      label: `Copy worktree audit command: ${worktree.branch}`,
+      detail: projectWorktreeSafety(worktree).reason,
+      disabled: false,
+      perform: () => copyWorktreeAuditCommand(worktree)
+    })),
+    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+      id: `worktree-remove-command-${worktree.path}`,
+      label: `Copy worktree remove command: ${worktree.branch}`,
+      detail: projectWorktreeSafety(worktree).cleanupCommand,
+      disabled: projectWorktreeSafety(worktree).kind === 'protected',
+      perform: () => copyWorktreeCleanupCommand(worktree)
+    })),
+    ...projectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-backup-command-${worktree.path}`,
-      label: `Copy backup command: ${worktree.branch}`,
+      label: `Copy worktree backup command: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).reason,
       disabled: projectWorktreeSafety(worktree).kind === 'protected',
       perform: () => copyWorktreeBackupCommand(worktree)
@@ -2398,6 +2412,14 @@
 
   function copyWorktreeCleanupPlan(worktree: ProjectWorktree) {
     return copyActivityCommand(projectWorktreeSafety(worktree).cleanupPlan, 'Worktree cleanup plan copied');
+  }
+
+  function copyWorktreeAuditCommand(worktree: ProjectWorktree) {
+    return copyActivityCommand(projectWorktreeSafety(worktree).auditCommand, 'Worktree audit command copied');
+  }
+
+  function copyWorktreeCleanupCommand(worktree: ProjectWorktree) {
+    return copyActivityCommand(projectWorktreeSafety(worktree).cleanupCommand, 'Worktree remove command copied');
   }
 
   function copyWorktreeBackupCommand(worktree: ProjectWorktree) {
