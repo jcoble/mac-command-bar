@@ -12,6 +12,7 @@
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
     "test:local-source-fs": "node --experimental-strip-types scripts/localSourceFs.test.mjs",
+    "test:source-dock-layout": "node --experimental-strip-types scripts/sourceDockLayout.test.mjs",
     "test:source-data": "node --experimental-strip-types scripts/sourceData.test.mjs",
     "test:source-ui": "node scripts/sourceUi.test.mjs",
     "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",
@@ -23,6 +24,7 @@
     "@lucide/svelte": "^1.17.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
+    "dockview-core": "^6.6.1",
     "monaco-editor": "^0.55.1"
   },
   "devDependencies": {
