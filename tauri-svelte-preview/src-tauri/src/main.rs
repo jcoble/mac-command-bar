@@ -13,6 +13,7 @@ use tauri::Emitter;
 
 mod lsp;
 mod orchestration;
+mod terminal;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 5_000;
@@ -733,6 +734,49 @@ async fn record_orchestration_event(event: OrchestrationEvent) -> Result<Orchest
     tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(event))
         .await
         .map_err(|error| format!("Orchestration event task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn start_terminal_session(
+    app: tauri::AppHandle,
+    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    request: terminal::TerminalStartRequest,
+) -> Result<terminal::TerminalSessionInfo, String> {
+    terminal::start_terminal_session(app, &terminal_registry, request)
+}
+
+#[tauri::command]
+async fn list_terminal_sessions(
+    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+) -> Result<Vec<terminal::TerminalSessionInfo>, String> {
+    terminal::list_terminal_sessions(&terminal_registry)
+}
+
+#[tauri::command]
+async fn write_terminal_session(
+    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    session_id: String,
+    data: String,
+) -> Result<bool, String> {
+    terminal::write_terminal_session(&terminal_registry, &session_id, &data)
+}
+
+#[tauri::command]
+async fn resize_terminal_session(
+    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    session_id: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<bool, String> {
+    terminal::resize_terminal_session(&terminal_registry, &session_id, cols, rows)
+}
+
+#[tauri::command]
+async fn close_terminal_session(
+    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    session_id: String,
+) -> Result<bool, String> {
+    terminal::close_terminal_session(&terminal_registry, &session_id)
 }
 
 #[cfg(test)]
@@ -2971,6 +3015,7 @@ fn main() {
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
+        .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_source_files,
@@ -3006,7 +3051,12 @@ fn main() {
             list_agent_sessions,
             list_runtime_contexts,
             list_orchestration_runs,
-            record_orchestration_event
+            record_orchestration_event,
+            start_terminal_session,
+            list_terminal_sessions,
+            write_terminal_session,
+            resize_terminal_session,
+            close_terminal_session
         ])
         .run(tauri::generate_context!())
         .expect("failed to run MacCommandBar webview preview");

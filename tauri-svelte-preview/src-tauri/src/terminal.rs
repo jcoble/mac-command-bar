@@ -1,0 +1,346 @@
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
+
+pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalStartRequest {
+    pub cwd: String,
+    pub shell: Option<String>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSessionInfo {
+    pub session_id: String,
+    pub cwd: String,
+    pub shell: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub pid: Option<u32>,
+    pub started_at: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputEvent {
+    pub session_id: String,
+    pub data: String,
+    pub terminated: bool,
+    pub exit_code: Option<u32>,
+    pub signal: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct TerminalRegistry {
+    inner: Arc<Mutex<HashMap<String, TerminalSessionHandle>>>,
+}
+
+struct TerminalSessionHandle {
+    info: TerminalSessionInfo,
+    master: Box<dyn MasterPty + Send>,
+    writer: Mutex<Box<dyn Write + Send>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+}
+
+pub fn start_terminal_session(
+    app: tauri::AppHandle,
+    registry: &TerminalRegistry,
+    request: TerminalStartRequest,
+) -> Result<TerminalSessionInfo, String> {
+    let cwd = terminal_cwd_from_request(&request.cwd)?;
+    let shell = terminal_shell_from_request(request.shell);
+    let size = terminal_size_from_request(request.cols, request.rows);
+    let session_id = new_terminal_session_id();
+    let started_at = timestamp_millis();
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(size)
+        .map_err(|error| format!("Could not open terminal pty: {error}"))?;
+    let mut command = CommandBuilder::new(&shell);
+    command.cwd(&cwd);
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("Could not start terminal shell: {error}"))?;
+    let pid = child.process_id();
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("Could not clone terminal reader: {error}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| format!("Could not take terminal writer: {error}"))?;
+    let killer = child.clone_killer();
+    drop(pair.slave);
+
+    let info = TerminalSessionInfo {
+        session_id: session_id.clone(),
+        cwd: cwd.display().to_string(),
+        shell,
+        cols: size.cols,
+        rows: size.rows,
+        pid,
+        started_at,
+    };
+
+    registry.insert(
+        session_id.clone(),
+        TerminalSessionHandle {
+            info: info.clone(),
+            master: pair.master,
+            writer: Mutex::new(writer),
+            killer: Mutex::new(killer),
+        },
+    )?;
+
+    spawn_terminal_reader(app.clone(), session_id.clone(), reader);
+    spawn_terminal_waiter(app, registry.clone(), session_id, child);
+
+    Ok(info)
+}
+
+pub fn list_terminal_sessions(
+    registry: &TerminalRegistry,
+) -> Result<Vec<TerminalSessionInfo>, String> {
+    let sessions = registry
+        .inner
+        .lock()
+        .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+    Ok(sessions
+        .values()
+        .map(|session| session.info.clone())
+        .collect())
+}
+
+pub fn write_terminal_session(
+    registry: &TerminalRegistry,
+    session_id: &str,
+    data: &str,
+) -> Result<bool, String> {
+    let sessions = registry
+        .inner
+        .lock()
+        .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+    let Some(session) = sessions.get(session_id) else {
+        return Ok(false);
+    };
+    let mut writer = session
+        .writer
+        .lock()
+        .map_err(|_| "Terminal writer is unavailable".to_string())?;
+    writer
+        .write_all(data.as_bytes())
+        .and_then(|_| writer.flush())
+        .map_err(|error| format!("Could not write terminal input: {error}"))?;
+    Ok(true)
+}
+
+pub fn resize_terminal_session(
+    registry: &TerminalRegistry,
+    session_id: &str,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<bool, String> {
+    let sessions = registry
+        .inner
+        .lock()
+        .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+    let Some(session) = sessions.get(session_id) else {
+        return Ok(false);
+    };
+    session
+        .master
+        .resize(terminal_size_from_request(cols, rows))
+        .map_err(|error| format!("Could not resize terminal: {error}"))?;
+    Ok(true)
+}
+
+pub fn close_terminal_session(
+    registry: &TerminalRegistry,
+    session_id: &str,
+) -> Result<bool, String> {
+    let Some(session) = registry.remove(session_id)? else {
+        return Ok(false);
+    };
+    let mut killer = session
+        .killer
+        .lock()
+        .map_err(|_| "Terminal process killer is unavailable".to_string())?;
+    killer
+        .kill()
+        .map_err(|error| format!("Could not close terminal process: {error}"))?;
+    Ok(true)
+}
+
+impl TerminalRegistry {
+    fn insert(&self, session_id: String, handle: TerminalSessionHandle) -> Result<(), String> {
+        let mut sessions = self
+            .inner
+            .lock()
+            .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+        sessions.insert(session_id, handle);
+        Ok(())
+    }
+
+    fn remove(&self, session_id: &str) -> Result<Option<TerminalSessionHandle>, String> {
+        let mut sessions = self
+            .inner
+            .lock()
+            .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+        Ok(sessions.remove(session_id))
+    }
+}
+
+fn spawn_terminal_reader(
+    app: tauri::AppHandle,
+    session_id: String,
+    mut reader: Box<dyn Read + Send>,
+) {
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read_count) => {
+                    let data = String::from_utf8_lossy(&buffer[..read_count]).to_string();
+                    let _ = app.emit(
+                        TERMINAL_OUTPUT_EVENT,
+                        TerminalOutputEvent {
+                            session_id: session_id.clone(),
+                            data,
+                            terminated: false,
+                            exit_code: None,
+                            signal: None,
+                        },
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+fn spawn_terminal_waiter(
+    app: tauri::AppHandle,
+    registry: TerminalRegistry,
+    session_id: String,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+) {
+    std::thread::spawn(move || {
+        let status = child.wait().ok();
+        let _ = registry.remove(&session_id);
+        let _ = app.emit(
+            TERMINAL_OUTPUT_EVENT,
+            TerminalOutputEvent {
+                session_id,
+                data: String::new(),
+                terminated: true,
+                exit_code: status.as_ref().map(|value| value.exit_code()),
+                signal: status
+                    .as_ref()
+                    .and_then(|value| value.signal().map(ToString::to_string)),
+            },
+        );
+    });
+}
+
+fn terminal_size_from_request(cols: Option<u16>, rows: Option<u16>) -> PtySize {
+    PtySize {
+        cols: cols.unwrap_or(96).clamp(20, 300),
+        rows: rows.unwrap_or(28).clamp(4, 100),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+fn terminal_shell_from_request(shell: Option<String>) -> String {
+    shell
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(default_terminal_shell)
+}
+
+fn terminal_cwd_from_request(cwd: &str) -> Result<PathBuf, String> {
+    let path = if cwd.trim().is_empty() {
+        std::env::current_dir()
+            .map_err(|error| format!("Could not read current directory: {error}"))?
+    } else {
+        PathBuf::from(cwd.trim())
+    };
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read terminal cwd metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Terminal cwd is not a directory".to_string());
+    }
+    Ok(path)
+}
+
+fn default_terminal_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            #[cfg(windows)]
+            {
+                "cmd.exe".to_string()
+            }
+            #[cfg(not(windows))]
+            {
+                "/bin/zsh".to_string()
+            }
+        })
+}
+
+fn new_terminal_session_id() -> String {
+    format!("term-{}-{}", std::process::id(), timestamp_millis())
+}
+
+fn timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_size_clamps_to_safe_bounds() {
+        let low = terminal_size_from_request(Some(1), Some(1));
+        assert_eq!(low.cols, 20);
+        assert_eq!(low.rows, 4);
+
+        let high = terminal_size_from_request(Some(999), Some(999));
+        assert_eq!(high.cols, 300);
+        assert_eq!(high.rows, 100);
+    }
+
+    #[test]
+    fn terminal_shell_uses_request_or_default() {
+        assert_eq!(
+            terminal_shell_from_request(Some("  /bin/zsh  ".to_string())),
+            "/bin/zsh"
+        );
+        assert!(!terminal_shell_from_request(Some("   ".to_string())).is_empty());
+        assert!(!terminal_shell_from_request(None).is_empty());
+    }
+}
