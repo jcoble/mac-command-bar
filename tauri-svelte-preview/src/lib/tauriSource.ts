@@ -16,11 +16,37 @@ import type {
 export const defaultSourceScanLimit = 5_000;
 export const expandedSourceScanLimit = 10_000;
 export const nativeSourceScanProgressEvent = 'source_scan_progress';
+export const terminalOutputEvent = 'terminal_output';
 
 export type NativeSourceScanProgress = {
   scanId: string;
   visitedEntries: number;
   matchedFiles: number;
+};
+
+export type TerminalStartRequest = {
+  cwd: string;
+  shell?: string | null;
+  cols?: number | null;
+  rows?: number | null;
+};
+
+export type TerminalSessionInfo = {
+  sessionId: string;
+  cwd: string;
+  shell: string;
+  cols: number;
+  rows: number;
+  pid: number | null;
+  startedAt: number;
+};
+
+export type TerminalOutputPayload = {
+  sessionId: string;
+  data: string;
+  terminated: boolean;
+  exitCode: number | null;
+  signal: string | null;
 };
 
 export type ProjectGitFileStatus = {
@@ -245,6 +271,73 @@ export async function listenToSourceScanProgress(
 
   const { listen } = await import('@tauri-apps/api/event');
   return listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
+    handler(event.payload);
+  });
+}
+
+export async function startTerminalSessionFromTauri(
+  request: TerminalStartRequest
+): Promise<TerminalSessionInfo | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<TerminalSessionInfo>('start_terminal_session', { request });
+}
+
+export async function listTerminalSessionsFromTauri(): Promise<TerminalSessionInfo[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<TerminalSessionInfo[]>('list_terminal_sessions');
+}
+
+export async function writeTerminalSessionFromTauri(
+  sessionId: string,
+  data: string
+): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<boolean>('write_terminal_session', { sessionId, data });
+}
+
+export async function resizeTerminalSessionFromTauri(
+  sessionId: string,
+  cols: number,
+  rows: number
+): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<boolean>('resize_terminal_session', { sessionId, cols, rows });
+}
+
+export async function closeTerminalSessionFromTauri(sessionId: string): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<boolean>('close_terminal_session', { sessionId });
+}
+
+export async function listenToTerminalOutput(
+  handler: (payload: TerminalOutputPayload) => void
+): Promise<(() => void) | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<TerminalOutputPayload>(terminalOutputEvent, (event) => {
     handler(event.payload);
   });
 }

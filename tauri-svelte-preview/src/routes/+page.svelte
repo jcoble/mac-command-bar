@@ -26,7 +26,10 @@
     X
   } from '@lucide/svelte';
   import { open } from '@tauri-apps/plugin-dialog';
+  import '@xterm/xterm/css/xterm.css';
   import { onMount } from 'svelte';
+  import type { FitAddon as XTermFitAddon } from '@xterm/addon-fit';
+  import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import {
     cleanupPasteText,
@@ -130,6 +133,7 @@
     listOrchestrationRunsFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
+    listenToTerminalOutput,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
     nativeSourceScanProgressEvent,
@@ -144,12 +148,16 @@
     readSourceFromTauri,
     revealPathFromTauri,
     revealSourceFileFromTauri,
+    resizeTerminalSessionFromTauri,
     pullGitRepositoryFromTauri,
     pushGitRepositoryFromTauri,
     readGitCommitHistoryFromTauri,
     searchSourceFilesFromTauri,
     stageGitPathsFromTauri,
+    startTerminalSessionFromTauri,
     unstageGitPathsFromTauri,
+    writeTerminalSessionFromTauri,
+    closeTerminalSessionFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type AgentSession,
@@ -161,7 +169,9 @@
     type ProjectGitStatus,
     type ProjectWorktree,
     type RuntimeContext,
-    type SourceGitDiff
+    type SourceGitDiff,
+    type TerminalOutputPayload,
+    type TerminalSessionInfo
   } from '$lib/tauriSource';
 
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
@@ -432,6 +442,10 @@
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
+  let embeddedTerminalSession = $state<TerminalSessionInfo | null>(null);
+  let embeddedTerminalStarting = $state(false);
+  let embeddedTerminalStatus = $state('Embedded terminal idle');
+  let embeddedTerminalError = $state('');
   let contextPanelMode = $state<SourceContextPanelMode>('grid');
   let contextPanelPlacement = $state<SourceContextPanelPlacement>('top');
   let sidePanePosition = $state<SourceSidePanePosition>('left');
@@ -468,6 +482,7 @@
   let commandPaletteIndex = $state(0);
   let commandPaletteInput = $state<HTMLInputElement | null>(null);
   let fileTreeElement = $state<HTMLDivElement | null>(null);
+  let embeddedTerminalElement = $state<HTMLDivElement | null>(null);
   let fileTreeScrollTop = $state(0);
   let fileTreeViewportHeight = $state(sourceTreeFallbackViewportHeight);
   let pendingTreeRevealPath = $state<string | null>(null);
@@ -478,6 +493,10 @@
   let scanGeneration = 0;
   let sourceIntelligenceCommandId = 0;
   let sourceLspDiagnosticsTimer: number | null = null;
+  let embeddedTerminal: XTermTerminal | null = null;
+  let embeddedTerminalFitAddon: XTermFitAddon | null = null;
+  let embeddedTerminalInputDisposable: { dispose: () => void } | null = null;
+  let embeddedTerminalRendererLoading = false;
 
   type SourceScanOptions = {
     force?: boolean;
@@ -1057,6 +1076,26 @@
       disabled: !sourceDockPanelVisible('terminal'),
       perform: () => hideDockPanel('terminal')
     },
+    {
+      id: 'terminal-start-embedded',
+      label: 'Start embedded terminal',
+      detail: selectedProject.path,
+      disabled: !selectedProject.path || embeddedTerminalStarting || Boolean(embeddedTerminalSession),
+      perform: () => startEmbeddedTerminalSession(selectedProject.path)
+    },
+    {
+      id: 'terminal-stop-embedded',
+      label: 'Stop embedded terminal',
+      detail: embeddedTerminalStatusLabel(),
+      disabled: !embeddedTerminalSession,
+      perform: closeEmbeddedTerminalSession
+    },
+    {
+      id: 'terminal-fit-embedded',
+      label: 'Fit embedded terminal',
+      detail: embeddedTerminalStatusLabel(),
+      perform: fitEmbeddedTerminal
+    },
     ...contextCardOrder.map((cardID) => ({
       id: `context-card-${cardID}`,
       label: `Show ${contextCardLabels[cardID]} card`,
@@ -1341,6 +1380,31 @@
 
     pendingTreeFocusRowIndex = null;
     button.focus();
+  });
+
+  $effect(() => {
+    const element = embeddedTerminalElement;
+    if (!sourceDockPanelVisible('terminal') || !element) return;
+
+    void ensureEmbeddedTerminalRenderer().then(() => {
+      window.setTimeout(fitEmbeddedTerminal, 0);
+    });
+
+    if (typeof ResizeObserver === 'undefined') return;
+
+    let resizeFrame = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0;
+        fitEmbeddedTerminal();
+      });
+    });
+    resizeObserver.observe(element);
+    return () => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeObserver.disconnect();
+    };
   });
 
   async function scanProject(
@@ -2629,7 +2693,7 @@
 
   function terminalDockSummary() {
     const parts = [
-      sourceTerminalApp,
+      embeddedTerminalSession ? 'embedded live' : sourceTerminalApp,
       selectedProjectAgentSessions.length
         ? `${selectedProjectAgentSessions.length} ${selectedProjectAgentSessions.length === 1 ? 'agent' : 'agents'}`
         : '',
@@ -2640,6 +2704,192 @@
     ].filter(Boolean);
 
     return parts.join(' · ') || sourceTerminalApp;
+  }
+
+  async function ensureEmbeddedTerminalRenderer() {
+    if (embeddedTerminal || embeddedTerminalRendererLoading || !embeddedTerminalElement) return;
+
+    embeddedTerminalRendererLoading = true;
+    embeddedTerminalStatus = 'Loading embedded terminal';
+
+    try {
+      const [{ Terminal: XTerm }, { FitAddon }] = await Promise.all([
+        import('@xterm/xterm'),
+        import('@xterm/addon-fit')
+      ]);
+
+      if (!embeddedTerminalElement || embeddedTerminal) return;
+
+      const terminal = new XTerm({
+        convertEol: true,
+        cursorBlink: true,
+        fontFamily: sourcePreviewAppearance.fontFamily,
+        fontSize: 12,
+        lineHeight: 1.2,
+        scrollback: 3000,
+        theme: {
+          background: '#101414',
+          foreground: '#dce4e2',
+          cursor: '#72e2cf',
+          selectionBackground: '#274740',
+          black: '#1d2423',
+          red: '#ff6b7f',
+          green: '#72e2cf',
+          yellow: '#ffd166',
+          blue: '#61afef',
+          magenta: '#c678dd',
+          cyan: '#56dce0',
+          white: '#e8f0ee'
+        }
+      });
+      const fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(embeddedTerminalElement);
+      embeddedTerminalInputDisposable = terminal.onData((data) => {
+        if (!embeddedTerminalSession) {
+          embeddedTerminalStatus = 'Start a native terminal first';
+          return;
+        }
+
+        void writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data).catch(() => {
+          embeddedTerminalError = 'Could not write to embedded terminal';
+        });
+      });
+      embeddedTerminal = terminal;
+      embeddedTerminalFitAddon = fitAddon;
+      embeddedTerminalStatus = 'Embedded terminal ready';
+      fitEmbeddedTerminal();
+    } catch (terminalError) {
+      embeddedTerminalError =
+        terminalError instanceof Error ? terminalError.message : 'Could not load embedded terminal';
+      embeddedTerminalStatus = 'Embedded terminal unavailable';
+    } finally {
+      embeddedTerminalRendererLoading = false;
+    }
+  }
+
+  async function startEmbeddedTerminalSession(cwd = selectedProject.path) {
+    const root = cwd.trim();
+    if (!root || embeddedTerminalStarting || embeddedTerminalSession) return;
+
+    embeddedTerminalStarting = true;
+    embeddedTerminalError = '';
+    embeddedTerminalStatus = 'Starting native terminal';
+
+    try {
+      await ensureEmbeddedTerminalRenderer();
+      if (!embeddedTerminal) {
+        embeddedTerminalStatus = 'Embedded terminal unavailable';
+        return;
+      }
+
+      fitEmbeddedTerminal();
+      const session = await startTerminalSessionFromTauri({
+        cwd: root,
+        cols: embeddedTerminal.cols || 96,
+        rows: embeddedTerminal.rows || 24
+      });
+
+      if (!session) {
+        embeddedTerminalError = 'Embedded terminal sessions run inside the Tauri app.';
+        embeddedTerminalStatus = 'Browser preview cannot start a native PTY';
+        embeddedTerminal.writeln('\r\nEmbedded terminal is available in the Tauri app.');
+        embeddedTerminal.writeln(`Use Project to open ${sourceTerminalApp} from browser preview.\r\n`);
+        return;
+      }
+
+      embeddedTerminalSession = session;
+      embeddedTerminalStatus = 'Native terminal running';
+      embeddedTerminal.reset();
+      embeddedTerminal.focus();
+      window.setTimeout(fitEmbeddedTerminal, 0);
+    } catch (terminalError) {
+      embeddedTerminalError =
+        terminalError instanceof Error ? terminalError.message : 'Could not start embedded terminal';
+      embeddedTerminalStatus = 'Embedded terminal failed';
+    } finally {
+      embeddedTerminalStarting = false;
+    }
+  }
+
+  async function closeEmbeddedTerminalSession() {
+    const session = embeddedTerminalSession;
+    if (!session) return;
+
+    embeddedTerminalSession = null;
+    embeddedTerminalStatus = 'Stopping embedded terminal';
+
+    try {
+      await closeTerminalSessionFromTauri(session.sessionId);
+      embeddedTerminalStatus = 'Embedded terminal stopped';
+      embeddedTerminal?.writeln('\r\n[terminal closed]');
+    } catch (terminalError) {
+      embeddedTerminalError =
+        terminalError instanceof Error ? terminalError.message : 'Could not stop embedded terminal';
+      embeddedTerminalStatus = 'Embedded terminal close failed';
+    }
+  }
+
+  function fitEmbeddedTerminal() {
+    if (!embeddedTerminal || !embeddedTerminalFitAddon || !embeddedTerminalElement) return;
+
+    try {
+      embeddedTerminalFitAddon.fit();
+      if (embeddedTerminalSession) {
+        void resizeTerminalSessionFromTauri(
+          embeddedTerminalSession.sessionId,
+          embeddedTerminal.cols,
+          embeddedTerminal.rows
+        ).catch(() => {
+          embeddedTerminalError = 'Could not resize embedded terminal';
+        });
+      }
+    } catch {
+      embeddedTerminalStatus = 'Terminal fit pending';
+    }
+  }
+
+  function handleTerminalOutput(payload: TerminalOutputPayload) {
+    if (!embeddedTerminalSession || payload.sessionId !== embeddedTerminalSession.sessionId) return;
+
+    if (payload.data) {
+      embeddedTerminal?.write(payload.data);
+    }
+
+    if (payload.terminated) {
+      const exitLabel =
+        payload.exitCode !== null
+          ? `exit ${payload.exitCode}`
+          : payload.signal
+            ? `signal ${payload.signal}`
+            : 'terminated';
+      embeddedTerminal?.writeln(`\r\n[process ${exitLabel}]`);
+      embeddedTerminalSession = null;
+      embeddedTerminalStatus = `Embedded terminal ${exitLabel}`;
+    }
+  }
+
+  function disposeEmbeddedTerminal() {
+    const session = embeddedTerminalSession;
+    embeddedTerminalSession = null;
+
+    if (session) {
+      void closeTerminalSessionFromTauri(session.sessionId);
+    }
+
+    embeddedTerminalInputDisposable?.dispose();
+    embeddedTerminalInputDisposable = null;
+    embeddedTerminalFitAddon = null;
+    embeddedTerminal?.dispose();
+    embeddedTerminal = null;
+  }
+
+  function embeddedTerminalStatusLabel(session = embeddedTerminalSession) {
+    if (!session) return embeddedTerminalStatus;
+
+    const segments = session.cwd.split('/').filter(Boolean);
+    const cwdName = segments[segments.length - 1] ?? session.cwd;
+    return `${cwdName} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''}`;
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -5047,6 +5297,7 @@
 
   onMount(() => {
     let unlistenSourceScanProgress: (() => void) | null = null;
+    let unlistenTerminalOutput: (() => void) | null = null;
     void listenToSourceScanProgress((progress) => {
       if (progress.scanId === activeSourceScanId) {
         sourceScanProgress = progress;
@@ -5057,6 +5308,13 @@
       })
       .catch(() => {
         unlistenSourceScanProgress = null;
+      });
+    void listenToTerminalOutput(handleTerminalOutput)
+      .then((unlisten) => {
+        unlistenTerminalOutput = unlisten;
+      })
+      .catch(() => {
+        unlistenTerminalOutput = null;
       });
 
     const storedCustomProjectRoots = loadStoredCustomProjectRoots();
@@ -5143,6 +5401,8 @@
 
     return () => {
       unlistenSourceScanProgress?.();
+      unlistenTerminalOutput?.();
+      disposeEmbeddedTerminal();
     };
   });
 </script>
@@ -7439,6 +7699,37 @@
               <button
                 class="file-action-button"
                 type="button"
+                aria-label="Start embedded terminal"
+                title={selectedProject.path}
+                disabled={!selectedProject.path || embeddedTerminalStarting || Boolean(embeddedTerminalSession)}
+                onclick={() => startEmbeddedTerminalSession(selectedProject.path)}
+              >
+                <Terminal size={13} strokeWidth={2} />
+                <span>{embeddedTerminalStarting ? 'Starting' : 'Start'}</span>
+              </button>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Stop embedded terminal"
+                title="Stop embedded terminal"
+                disabled={!embeddedTerminalSession}
+                onclick={closeEmbeddedTerminalSession}
+              >
+                <X size={13} strokeWidth={2} />
+                <span>Stop</span>
+              </button>
+              <button
+                class="file-action-button icon-only"
+                type="button"
+                aria-label="Fit embedded terminal"
+                title="Fit embedded terminal"
+                onclick={fitEmbeddedTerminal}
+              >
+                <RefreshCw size={13} strokeWidth={2} />
+              </button>
+              <button
+                class="file-action-button"
+                type="button"
                 aria-label="Hide terminal dock"
                 title="Hide terminal dock"
                 onclick={() => hideDockPanel('terminal')}
@@ -7447,6 +7738,19 @@
               </button>
             </div>
           </header>
+
+          <div class:active={Boolean(embeddedTerminalSession)} class="embedded-terminal-panel" aria-label="Embedded terminal">
+            <div class="embedded-terminal-toolbar">
+              <span>{embeddedTerminalStatusLabel()}</span>
+              {#if embeddedTerminalSession?.pid}
+                <code>pid {embeddedTerminalSession.pid}</code>
+              {/if}
+            </div>
+            <div class="embedded-terminal-host" bind:this={embeddedTerminalElement}></div>
+            {#if embeddedTerminalError}
+              <div class="embedded-terminal-error">{embeddedTerminalError}</div>
+            {/if}
+          </div>
 
           <div class="terminal-launchpad-grid">
             <div class="terminal-launchpad-list" aria-label="Active terminal contexts">
@@ -10297,7 +10601,7 @@
     flex: 0 0 auto;
     gap: 6px;
     min-width: 0;
-    max-height: 214px;
+    max-height: 392px;
     margin-top: 6px;
     overflow: hidden;
     padding: 7px;
@@ -10353,6 +10657,23 @@
     gap: 5px;
   }
 
+  .terminal-launchpad-actions .file-action-button {
+    display: inline-flex;
+    width: auto;
+    min-width: 28px;
+    height: 24px;
+    gap: 5px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .terminal-launchpad-actions .file-action-button.icon-only {
+    width: 28px;
+    padding: 0;
+  }
+
   .terminal-inline-picker {
     gap: 5px;
   }
@@ -10374,6 +10695,73 @@
     background: rgba(255, 255, 255, 0.04);
     font-size: 10px;
     font-weight: 820;
+  }
+
+  .embedded-terminal-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 5px;
+    min-width: 0;
+    padding: 6px;
+    border: 1px solid rgba(92, 226, 207, 0.11);
+    border-radius: 7px;
+    background: rgba(8, 11, 11, 0.48);
+  }
+
+  .embedded-terminal-panel.active {
+    border-color: rgba(92, 226, 207, 0.24);
+  }
+
+  .embedded-terminal-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .embedded-terminal-toolbar span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .embedded-terminal-toolbar code {
+    color: #72e2cf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9px;
+  }
+
+  .embedded-terminal-host {
+    height: 168px;
+    min-height: 128px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    background: #101414;
+  }
+
+  .embedded-terminal-host :global(.xterm) {
+    height: 100%;
+    padding: 6px;
+  }
+
+  .embedded-terminal-host :global(.xterm-viewport) {
+    background: transparent !important;
+  }
+
+  .embedded-terminal-error {
+    min-width: 0;
+    overflow: hidden;
+    color: #d8aa55;
+    font-size: 10px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .terminal-launchpad-grid {

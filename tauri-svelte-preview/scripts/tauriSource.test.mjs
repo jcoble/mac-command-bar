@@ -13,12 +13,19 @@ import {
   findSourceLspSymbolsFromTauri,
   readSourceLspDiagnosticsFromTauri,
   readSourceLspStatusFromTauri,
+  terminalOutputEvent,
+  listenToTerminalOutput,
   listAgentSessionsFromTauri,
   listGitRepositorySummariesFromTauri,
   listProjectWorktreesFromTauri,
+  listTerminalSessionsFromTauri,
   listRuntimeContextsFromTauri,
   openTerminalCommandFromTauri,
   openTerminalPathFromTauri,
+  startTerminalSessionFromTauri,
+  writeTerminalSessionFromTauri,
+  resizeTerminalSessionFromTauri,
+  closeTerminalSessionFromTauri,
   openPathFromTauri,
   readGitCommitHistoryFromTauri,
   readProjectGitStatusFromTauri,
@@ -36,6 +43,7 @@ import {
 assert.equal(defaultSourceScanLimit, 5_000);
 assert.equal(expandedSourceScanLimit, 10_000);
 assert.equal(nativeSourceScanProgressEvent, 'source_scan_progress');
+assert.equal(terminalOutputEvent, 'terminal_output');
 assert.match(createSourceScanId(), /^source-scan-\d+-[a-z0-9]+$/);
 assert.equal(
   await writeSourceToTauri(
@@ -63,6 +71,12 @@ assert.equal(await openPathFromTauri('/tmp/repo'), false);
 assert.equal(await revealPathFromTauri('/tmp/repo'), false);
 assert.equal(await openTerminalPathFromTauri('/tmp/repo'), false);
 assert.equal(await openTerminalCommandFromTauri('/tmp/repo', 'codex resume session-123'), false);
+assert.equal(await startTerminalSessionFromTauri({ cwd: '/tmp/repo', cols: 96, rows: 24 }), null);
+assert.equal(await listTerminalSessionsFromTauri(), null);
+assert.equal(await writeTerminalSessionFromTauri('terminal-1', 'echo hi\n'), false);
+assert.equal(await resizeTerminalSessionFromTauri('terminal-1', 100, 32), false);
+assert.equal(await closeTerminalSessionFromTauri('terminal-1'), false);
+assert.equal(await listenToTerminalOutput(() => {}), null);
 assert.equal(await listAgentSessionsFromTauri(), null);
 assert.equal(
   await listGitRepositorySummariesFromTauri([{ id: 'repo', name: 'Repo', path: '/tmp/repo' }]),
