@@ -14,6 +14,8 @@ import {
   formatSourceDiagnosticSummary,
   formatSourceRecordCount,
   formatSourceScanSummary,
+  gitCommitGraphKind,
+  gitRefLabels,
   folderIdsForSourceRecord,
   getSourceScanCacheEntry,
   monacoLanguageForSource,
@@ -25,6 +27,7 @@ import {
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
   textMatchesSearchTokens,
+  uniqueTaskIDsFromGitMetadata,
   upsertSourceScanCacheEntry,
   upsertOpenSourceTab,
   upsertRecentSourceRecord,
@@ -645,3 +648,21 @@ assert.equal(
   false
 );
 assert.equal(textMatchesSearchTokens('', 'Any command'), true);
+
+assert.deepEqual(gitRefLabels('HEAD -> main, origin/main, tag: v0.1.0'), [
+  'HEAD -> main',
+  'origin/main',
+  'tag: v0.1.0'
+]);
+assert.deepEqual(gitRefLabels(''), []);
+assert.equal(gitCommitGraphKind('HEAD -> main, origin/main', 3), 'head');
+assert.equal(gitCommitGraphKind('origin/main', 0), 'branch');
+assert.equal(gitCommitGraphKind('', 0), 'commit');
+assert.deepEqual(
+  uniqueTaskIDsFromGitMetadata(
+    [{ taskID: 'TSK-127' }, { taskID: null }],
+    [{ taskID: 'tsk-126' }],
+    [{ taskID: 'TSK-127' }]
+  ),
+  ['TSK-127', 'TSK-126']
+);

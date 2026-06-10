@@ -128,6 +128,12 @@ export type SourceScanCacheEntry = {
 
 export type SourceScanCache = Record<string, SourceScanCacheEntry>;
 
+export type GitTaskMetadata = {
+  taskID?: string | null;
+};
+
+export type GitCommitGraphKind = 'head' | 'branch' | 'commit';
+
 export type SourceContextGitStatus = {
   branch?: string | null;
   ahead: number;
@@ -581,6 +587,37 @@ export function textMatchesSearchTokens(
 
   const haystack = values.map((value) => String(value ?? '').toLowerCase()).join(' ');
   return tokens.every((token) => haystack.includes(token));
+}
+
+export function gitRefLabels(refs: string): string[] {
+  return refs
+    .split(',')
+    .map((ref) => ref.trim())
+    .filter(Boolean);
+}
+
+export function gitCommitGraphKind(refs: string, _index: number): GitCommitGraphKind {
+  const labels = gitRefLabels(refs);
+  if (labels.some((label) => label === 'HEAD' || label.startsWith('HEAD ->'))) return 'head';
+  if (labels.length > 0) return 'branch';
+  return 'commit';
+}
+
+export function uniqueTaskIDsFromGitMetadata(...groups: GitTaskMetadata[][]): string[] {
+  const seen = new Set<string>();
+  const taskIDs: string[] = [];
+
+  for (const group of groups) {
+    for (const item of group) {
+      const taskID = normalizeTaskID(item.taskID);
+      if (!taskID || seen.has(taskID)) continue;
+
+      seen.add(taskID);
+      taskIDs.push(taskID);
+    }
+  }
+
+  return taskIDs;
 }
 
 export function formatSourceDiagnosticSummary(diagnostics: SourceDiagnostic[]): string {
@@ -1310,6 +1347,11 @@ function compactSourceLineExcerpt(line: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeTaskID(taskID: string | null | undefined): string | null {
+  const normalized = String(taskID ?? '').trim().toUpperCase();
+  return /^TSK-\d+$/.test(normalized) ? normalized : null;
 }
 
 function createProjectSourceRecord(

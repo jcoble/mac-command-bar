@@ -56,6 +56,8 @@
     findSourceDefinitionTargets,
     findSourceReferenceTargets,
     findSourceSearchMatches,
+    gitCommitGraphKind,
+    gitRefLabels,
     formatSourceContextGitSummary,
     formatSourceContextIdentity,
     formatSourceContextRootLabel,
@@ -76,6 +78,7 @@
     selectPreferredSourceRecord,
     sourceSupportsLanguageIntelligence,
     textMatchesSearchTokens,
+    uniqueTaskIDsFromGitMetadata,
     upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
@@ -669,6 +672,20 @@
         entry.refs,
         entry.taskID
       )
+    )
+  );
+  let selectedProjectRepositorySummaries = $derived(
+    gitRepositorySummaries.filter(
+      (summary) =>
+        summary.projectID === selectedProject.id ||
+        normalizeProjectPath(summary.path) === normalizeProjectPath(selectedProject.path)
+    )
+  );
+  let selectedProjectGitTaskIDs = $derived(
+    uniqueTaskIDsFromGitMetadata(
+      selectedProjectRepositorySummaries,
+      projectWorktrees,
+      gitCommitHistory
     )
   );
   let runtimeContextSummary = $derived(
@@ -1753,6 +1770,14 @@
 
   function gitCommitTitle(entry: GitCommitHistoryEntry) {
     return [entry.sha, entry.refs, entry.subject].filter(Boolean).join('\n');
+  }
+
+  function gitCommitRefChips(entry: GitCommitHistoryEntry) {
+    return gitRefLabels(entry.refs);
+  }
+
+  function gitCommitGraphClass(entry: GitCommitHistoryEntry, index: number) {
+    return gitCommitGraphKind(entry.refs, index);
   }
 
   function gitTaskUrl(taskID: string | null) {
@@ -6513,6 +6538,20 @@
                     <span>History</span>
                     <small>{gitCommitHistorySummary}</small>
                   </div>
+                  {#if selectedProjectGitTaskIDs.length > 0}
+                    <div class="git-task-trail" aria-label="Git task links">
+                      <span>Tasks</span>
+                      {#each selectedProjectGitTaskIDs as taskID (taskID)}
+                        {#if gitTaskUrl(taskID)}
+                          <a class="git-task-link" href={gitTaskUrl(taskID) ?? ''} target="_blank" rel="noreferrer">
+                            {taskID}
+                          </a>
+                        {:else}
+                          <span class="git-task-link">{taskID}</span>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
                   <div class="git-history-list">
                     {#if gitCommitHistoryLoading}
                       <div class="intelligence-empty">Loading history</div>
@@ -6521,17 +6560,17 @@
                     {:else if gitCommitHistory.length === 0}
                       <div class="intelligence-empty">No commits</div>
                     {:else}
-                      {#each gitCommitHistory as entry (entry.sha)}
-                        <div class="git-history-row" title={gitCommitTitle(entry)}>
-                          <span class="git-graph-marker" aria-hidden="true"></span>
+                      {#each gitCommitHistory as entry, index (entry.sha)}
+                        <div class={`git-history-row ${gitCommitGraphClass(entry, index)}`} title={gitCommitTitle(entry)}>
+                          <span class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`} aria-hidden="true"></span>
                           <div class="git-history-main">
                             <strong>{entry.subject}</strong>
                             <small>{entry.shortSha} · {entry.author} · {formatGitCommitTime(entry.committedAt)}</small>
                           </div>
                           <div class="git-history-meta">
-                            {#if entry.refs}
-                              <span class="git-ref-label">{entry.refs}</span>
-                            {/if}
+                            {#each gitCommitRefChips(entry) as refLabel (refLabel)}
+                              <span class="git-ref-label">{refLabel}</span>
+                            {/each}
                             {#if entry.taskID}
                               {#if gitTaskUrl(entry.taskID)}
                                 <a
@@ -9633,6 +9672,23 @@
     white-space: nowrap;
   }
 
+  .git-task-trail {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    overflow: hidden;
+    color: #8d9995;
+    font-size: 8.5px;
+    font-weight: 820;
+  }
+
+  .git-task-trail > span:first-child {
+    flex: 0 0 auto;
+    color: #aeb8b5;
+    text-transform: uppercase;
+  }
+
   .git-history-list {
     display: grid;
     gap: 5px;
@@ -9647,6 +9703,7 @@
   }
 
   .git-history-row {
+    position: relative;
     display: grid;
     grid-template-columns: 18px minmax(0, 1fr) auto;
     align-items: center;
@@ -9658,6 +9715,15 @@
     border: 1px solid rgba(255, 255, 255, 0.055);
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.03);
+  }
+
+  .git-history-row.head {
+    border-color: rgba(111, 223, 207, 0.3);
+    background: rgba(111, 223, 207, 0.07);
+  }
+
+  .git-history-row.branch {
+    border-color: rgba(132, 201, 222, 0.2);
   }
 
   .git-graph-marker {
@@ -9684,6 +9750,24 @@
     border-radius: 999px;
     background: #171b1b;
     content: "";
+  }
+
+  .git-graph-marker.head::before {
+    width: 2px;
+    background: rgba(111, 223, 207, 0.44);
+  }
+
+  .git-graph-marker.head::after {
+    width: 10px;
+    height: 10px;
+    border-color: #6fdfcf;
+    background: #6fdfcf;
+    box-shadow: 0 0 0 3px rgba(111, 223, 207, 0.14);
+  }
+
+  .git-graph-marker.branch::after {
+    border-color: rgba(132, 201, 222, 0.84);
+    background: #171b1b;
   }
 
   .git-history-main,

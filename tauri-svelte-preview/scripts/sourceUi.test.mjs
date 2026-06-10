@@ -522,6 +522,20 @@ assert.ok(pageSource.includes('gitStatusByRelativePath'), 'Source page should ma
 assert.ok(pageSource.includes('gitCommitHistory'), 'Source page should track selected project commit history');
 assert.ok(pageSource.includes('function loadGitCommitHistory'), 'Source page should expose a Git commit history loader');
 assert.ok(pageSource.includes('function gitTaskUrl'), 'Source page should expose Notion task links for recognized task IDs');
+assert.ok(pageSource.includes('selectedProjectGitTaskIDs'), 'Git panel should derive a selected-project task trail');
+assert.ok(
+  pageSource.includes('uniqueTaskIDsFromGitMetadata'),
+  'Git panel should dedupe task IDs from repo/worktree/history metadata'
+);
+assert.ok(
+  pageSource.includes('gitCommitRefChips(entry)'),
+  'Git history should split decorated refs into compact chips'
+);
+assert.ok(
+  pageSource.includes('gitCommitGraphClass(entry, index)'),
+  'Git history should classify commits for graph styling'
+);
+assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
 assert.ok(pageSource.includes('function runGitPathAction'), 'Source page should expose reusable stage/unstage handling');
 assert.ok(pageSource.includes('function runGitRemoteAction'), 'Source page should expose reusable fetch/pull/push handling');
@@ -551,13 +565,19 @@ assert.ok(pageSource.includes('aria-label="Push selected repository"'), 'Git tab
 assert.ok(pageSource.includes('aria-label="Commit staged Git changes"'), 'Git tab should expose a guarded commit action');
 assert.ok(pageSource.includes('aria-label="Git commit history"'), 'Git tab should expose commit history');
 assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should render commit history rows');
-assert.ok(pageSource.includes('class="git-history-row"'), 'Git tab should render individual commit history rows');
+assert.ok(
+  pageSource.includes('git-history-row ${gitCommitGraphClass(entry, index)}'),
+  'Git tab should render individual commit history rows with graph styling'
+);
 assert.ok(pageSource.includes('class="git-task-link"'), 'Git history should render task links when task metadata is present');
 assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.git-diff-panel', 'overflow: hidden');
 assertDeclaration('.git-status-list', 'overflow-y: auto');
 assertDeclaration('.git-history-list', 'overflow-y: auto');
+assertDeclaration('.git-task-trail', 'display: flex');
+assertDeclaration('.git-history-row.head', 'background: rgba(111, 223, 207, 0.07)');
+assertDeclaration('.git-graph-marker.head::after', 'background: #6fdfcf');
 assertDeclaration('.git-history-list', 'scrollbar-width: thin');
 assertDeclaration('.git-history-row', 'min-width: 0');
 assertDeclaration('.git-task-link', 'white-space: nowrap');
