@@ -333,9 +333,14 @@ assert.ok(pageSource.includes('cancelSourceScanFromTauri'), 'Stop should call th
 assert.ok(pageSource.includes('sourceScanProgress'), 'Source preview should track native scan progress');
 assert.ok(pageSource.includes('nativeSourceScanProgressEvent'), 'Source preview should subscribe to native scan progress events');
 assert.ok(pageSource.includes('scanSummaryLabel'), 'Source tree should expose an explicit scan summary label');
+assert.ok(pageSource.includes('sourceScanNeedsAttention'), 'Source tree should detect suspiciously tiny scan indexes');
+assert.ok(pageSource.includes('function formatSourceScanHealthNote'), 'Source tree should explain suspicious scan results');
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
+assert.ok(pageSource.includes('class="scan-health-note"'), 'Source tree should render compact scan health guidance');
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
+assertDeclaration('.scan-health-note', 'grid-template-columns: minmax(0, 1fr) auto');
+assertDeclaration('.scan-health-note span', 'text-overflow: ellipsis');
 assert.ok(pageSource.includes('expandedSourceScanLimit'), 'Source preview should expose an expanded scan limit');
 assert.ok(
   pageSource.includes('expandedSourceScanLimitShortLabel'),
@@ -349,6 +354,7 @@ assert.ok(
   'Expanded source scans should rescan the active project at the larger limit'
 );
 assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Index reset should discard cached scans for the selected project');
+assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
 assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');

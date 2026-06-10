@@ -198,6 +198,7 @@
   };
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
+  const suspiciousSourceIndexFileThreshold = 2;
   const sourceTreeRowHeight = 30;
   const sourceTreeOverscanRows = 8;
   const sourceTreeFallbackViewportHeight = 420;
@@ -540,6 +541,15 @@
   let scanSummaryLabel = $derived(
     formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
   );
+  let sourceScanNeedsAttention = $derived(
+    !scanning &&
+      !loading &&
+      !scanLimitReached &&
+      query.trim().length === 0 &&
+      records.length > 0 &&
+      records.length <= suspiciousSourceIndexFileThreshold
+  );
+  let sourceScanHealthNote = $derived(formatSourceScanHealthNote(records.length, sourceScanNeedsAttention));
   let selectedProjectIndexEntry = $derived(
     getSourceScanCacheEntry(
       sourceScanCache,
@@ -803,7 +813,7 @@
     },
     {
       id: 'scan-reset-index',
-      label: 'Reset project index and rescan',
+      label: `Reset project index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`,
       detail: selectedProjectIndexSummary,
       disabled: scanning,
       perform: () => resetProjectScanCache(selectedProject)
@@ -1418,10 +1428,16 @@
     return recordPath === projectPath || recordPath.startsWith(`${projectPath}/`);
   }
 
-  function resetProjectScanCache(project: ProjectRoot = selectedProject) {
+  function resetProjectScanCache(project: ProjectRoot = selectedProject, limit = expandedSourceScanLimit) {
     sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
     fileActionStatus = `Index reset for ${project.name}`;
-    return scanProject(project, selectedSourcePaths[project.id], { force: true });
+    return scanProject(project, selectedSourcePaths[project.id], { force: true, limit });
+  }
+
+  function formatSourceScanHealthNote(totalCount: number, needsAttention: boolean) {
+    if (!needsAttention) return '';
+    const fileLabel = totalCount === 1 ? 'file' : 'files';
+    return `Only ${totalCount.toLocaleString()} ${fileLabel} indexed. If that looks wrong, reset and scan up to ${expandedSourceScanLimit.toLocaleString()} files.`;
   }
 
   async function indexProjectsInBackground(projects: ProjectRoot[]) {
@@ -5189,6 +5205,19 @@
           </div>
           <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
           <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
+          {#if sourceScanHealthNote}
+            <div class="scan-health-note" title={sourceScanHealthNote}>
+              <span>{sourceScanHealthNote}</span>
+              <button
+                type="button"
+                aria-label={`Reset index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`}
+                title={`Reset index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`}
+                onclick={() => resetProjectScanCache(selectedProject)}
+              >
+                Reset
+              </button>
+            </div>
+          {/if}
           {#if scanLimitReached && !scanning}
             <button
               class="scan-more-button"
@@ -8599,6 +8628,40 @@
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .scan-health-note {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    margin: -1px 0 8px;
+    border: 1px solid rgba(216, 170, 85, 0.24);
+    border-radius: 6px;
+    padding: 6px 7px;
+    background: rgba(216, 170, 85, 0.08);
+    color: #d8cba8;
+    font-size: 10px;
+    font-weight: 720;
+    line-height: 1.25;
+  }
+
+  .scan-health-note span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-health-note button {
+    height: 20px;
+    border: 1px solid rgba(216, 170, 85, 0.28);
+    border-radius: 5px;
+    padding: 0 7px;
+    background: rgba(216, 170, 85, 0.12);
+    color: #f1d99b;
+    font-size: 10px;
+    font-weight: 820;
   }
 
   .scan-more-button {
