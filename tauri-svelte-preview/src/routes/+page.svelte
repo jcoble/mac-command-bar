@@ -38,6 +38,7 @@
     orchestrationArtifactChips,
     orchestrationCurrentActivity,
     orchestrationLinkChips,
+    orchestrationLoopTallyText,
     orchestrationRunMetrics,
     orchestrationRunSummaryText,
     orchestrationStatusTone,
@@ -5465,6 +5466,9 @@
                       <span>{runMetrics.approvalCount} sign-off</span>
                     {/if}
                   </div>
+                  <div class="run-loop-row" aria-label="Run loop tally">
+                    <span>{orchestrationLoopTallyText(runMetrics)}</span>
+                  </div>
                   {#if runTimeline.length > 0}
                     <div class="run-timeline" aria-label="Run timeline">
                       {#each runTimeline as item (item.id)}
@@ -6202,7 +6206,9 @@
               >
                 <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
                 <strong>{run.title}</strong>
-                <span>{run.phase} · {run.progress}% · {runMetrics.retryCount} retry</span>
+                <span title={orchestrationLoopTallyText(runMetrics)}>
+                  {run.phase} · {run.progress}% · {orchestrationLoopTallyText(runMetrics)}
+                </span>
                 <small>{orchestrationCurrentActivity(run)}</small>
               </div>
             {/each}
@@ -7788,6 +7794,16 @@
     color: #8d9995;
     font-size: 10px;
     font-weight: 760;
+  }
+
+  .run-loop-row {
+    min-width: 0;
+    overflow: hidden;
+    color: #8fd8cf;
+    font-size: 10px;
+    font-weight: 780;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .run-current-activity {

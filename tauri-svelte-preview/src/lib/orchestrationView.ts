@@ -20,6 +20,13 @@ export type OrchestrationRunMetrics = {
   attentionCount: number;
   retryCount: number;
   approvalCount: number;
+  decisionCount: number;
+  scenarioCount: number;
+  testCount: number;
+  retestCount: number;
+  fixCount: number;
+  resolvedCount: number;
+  handoffCount: number;
 };
 
 export type OrchestrationTimelineItem = {
@@ -46,8 +53,17 @@ export type OrchestrationChip = {
   status: string;
 };
 
+type OrchestrationLoopKind = 'scenario' | 'test' | 'retest' | 'fix' | 'resolved' | 'handoff';
+
 const retryPattern = /\b(retry|retries|retried|rerun|re-run)\b/i;
 const approvalPattern = /\b(approval|approve|approved|signoff|sign-off|confirm|confirmation|decision|manual review)\b/i;
+const decisionPattern = /\b(decision|manual review|needs input|needs sign-off|sign-off|required approval|approval required)\b/i;
+const scenarioPattern = /\b(scenario|journey|workflow)\b/i;
+const testPattern = /\b(test|tested|testing|playwright|e2e|ui check|browser)\b/i;
+const retestPattern = /\b(retest|re-test|retested|retry|rerun|re-run)\b/i;
+const fixPattern = /\b(fix|fixed|repair|patch|resolve|resolved|auto-resolve|autoresolve)\b/i;
+const resolvedPattern = /\b(resolved|fixed|closed|passed after fix|verified fix)\b/i;
+const handoffPattern = /\b(handoff|handover|summary|report|artifact)\b/i;
 
 export function orchestrationStatusTone(status: string): OrchestrationStatusTone {
   const normalized = status.trim().toLowerCase();
@@ -127,6 +143,9 @@ export function orchestrationRunMetrics(run: OrchestrationRun): OrchestrationRun
     }
   }
 
+  const timelineText = timeline.map(searchTextForTimelineItem);
+  const loopKinds = timeline.map(orchestrationLoopKindForTimelineItem);
+
   return {
     agentCount: run.agents.length,
     stepCount: run.steps.length,
@@ -137,9 +156,31 @@ export function orchestrationRunMetrics(run: OrchestrationRun): OrchestrationRun
     completedCount,
     failedCount,
     attentionCount,
-    retryCount: timeline.filter((item) => retryPattern.test(searchTextForTimelineItem(item))).length,
-    approvalCount: timeline.filter((item) => approvalPattern.test(searchTextForTimelineItem(item))).length
+    retryCount: timelineText.filter((text) => retryPattern.test(text)).length,
+    approvalCount: timelineText.filter((text) => approvalPattern.test(text)).length,
+    decisionCount: timelineText.filter((text) => decisionPattern.test(text)).length,
+    scenarioCount: loopKinds.filter((kind) => kind === 'scenario').length,
+    testCount: loopKinds.filter((kind) => kind === 'test' || kind === 'retest').length,
+    retestCount: loopKinds.filter((kind) => kind === 'retest').length,
+    fixCount: loopKinds.filter((kind) => kind === 'fix').length,
+    resolvedCount: loopKinds.filter((kind) => kind === 'resolved').length,
+    handoffCount: loopKinds.filter((kind) => kind === 'handoff').length
   };
+}
+
+export function orchestrationLoopTallyText(metrics: OrchestrationRunMetrics): string {
+  const parts = [
+    formatMetricLabel(metrics.scenarioCount, 'scenario', 'scenarios'),
+    formatMetricLabel(metrics.testCount, 'test', 'tests'),
+    formatMetricLabel(metrics.retestCount, 'retest', 'retests'),
+    formatMetricLabel(metrics.fixCount, 'fix', 'fixes'),
+    metrics.resolvedCount ? `${metrics.resolvedCount} resolved` : '',
+    formatMetricLabel(metrics.handoffCount, 'handoff', 'handoffs'),
+    formatMetricLabel(metrics.decisionCount, 'decision', 'decisions'),
+    metrics.approvalCount ? `${metrics.approvalCount} sign-off` : ''
+  ].filter(Boolean);
+
+  return parts.join(' · ') || 'no loop events yet';
 }
 
 export function orchestrationTimelineItems(
@@ -196,6 +237,7 @@ export function orchestrationRunSummaryText(run: OrchestrationRun): string {
     `Phase: ${run.phase}`,
     `Current: ${orchestrationCurrentActivity(run)}`,
     `Tally: ${tally}`,
+    `Loop: ${orchestrationLoopTallyText(metrics)}`,
     `Artifacts: ${metrics.artifactCount} · Links: ${metrics.linkCount} · Events: ${metrics.eventCount}`
   ].filter(Boolean).join('\n');
 }
@@ -312,4 +354,22 @@ function searchTextForTimelineItem(item: OrchestrationTimelineItem): string {
   return [item.kind, item.status, item.title, item.summary, item.agentLabel]
     .filter(Boolean)
     .join(' ');
+}
+
+function formatMetricLabel(count: number, singular: string, plural: string): string {
+  if (count <= 0) return '';
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function orchestrationLoopKindForTimelineItem(item: OrchestrationTimelineItem): OrchestrationLoopKind | null {
+  const kindTitleStatus = [item.kind, item.title, item.status].filter(Boolean).join(' ');
+  const allText = searchTextForTimelineItem(item);
+
+  if (handoffPattern.test(kindTitleStatus)) return 'handoff';
+  if (retestPattern.test(kindTitleStatus)) return 'retest';
+  if (testPattern.test(kindTitleStatus)) return 'test';
+  if (resolvedPattern.test(allText)) return 'resolved';
+  if (fixPattern.test(kindTitleStatus)) return 'fix';
+  if (scenarioPattern.test(kindTitleStatus)) return 'scenario';
+  return null;
 }

@@ -3,6 +3,7 @@ import {
   orchestrationArtifactChips,
   orchestrationCurrentActivity,
   orchestrationLinkChips,
+  orchestrationLoopTallyText,
   orchestrationRunMetrics,
   orchestrationRunSummaryText,
   orchestrationStatusTone,
@@ -178,8 +179,19 @@ assert.equal(metrics.linkCount, 1);
 assert.equal(metrics.eventCount, 3);
 assert.equal(metrics.retryCount, 1);
 assert.equal(metrics.approvalCount, 1);
+assert.equal(metrics.decisionCount, 1);
+assert.equal(metrics.scenarioCount, 2);
+assert.equal(metrics.testCount, 1);
+assert.equal(metrics.retestCount, 1);
+assert.equal(metrics.fixCount, 1);
+assert.equal(metrics.resolvedCount, 0);
+assert.equal(metrics.handoffCount, 1);
 assert.ok(metrics.attentionCount >= 2);
 assert.ok(metrics.runningCount >= 2);
+assert.equal(
+  orchestrationLoopTallyText(metrics),
+  '2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off'
+);
 
 const timeline = orchestrationTimelineItems(run, 3);
 assert.deepEqual(
@@ -203,6 +215,7 @@ assert.equal(
     'Phase: ui-test-loop',
     'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
     'Tally: 2 done · 4 running · 0 failed · 2 attention · 1 retries · 1 sign-off',
+    'Loop: 2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off',
     'Artifacts: 1 · Links: 1 · Events: 3'
   ].join('\n')
 );

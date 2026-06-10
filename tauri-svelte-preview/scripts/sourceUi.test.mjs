@@ -52,6 +52,7 @@ assertDeclaration('.worktree-safety-line', 'display: flex');
 assertDeclaration('.worktree-context-main', 'display: grid');
 assertDeclaration('.worktree-context-actions', 'display: inline-flex');
 assertDeclaration('.worktree-status-badge.blocked', 'background: #d8aa55');
+assertDeclaration('.run-loop-row', 'text-overflow: ellipsis');
 assertDeclaration('.paste-cleanup-panel', 'overflow: hidden');
 assertDeclaration('.paste-cleanup-grid', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.paste-cleanup-textarea', 'resize: none');
@@ -241,6 +242,9 @@ assert.ok(pageSource.includes("selectContextPanelPlacement('side')"), 'Context p
 assert.ok(pageSource.includes("moveDockPanelToGroup('context', 'bottom')"), 'Context placement controls should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'dock-show-terminal'"), 'Command palette should expose the future terminal dock panel');
+assert.ok(pageSource.includes('orchestrationLoopTallyText'), 'Runs should render shared orchestration loop tally text');
+assert.ok(pageSource.includes('class="run-loop-row"'), 'Runs should render a compact loop tally row');
+assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally should be accessible');
 assert.ok(pageSource.includes("selectContextPanelMode('grid')"), 'Context layout controls should select grid mode');
 assert.ok(pageSource.includes("selectContextPanelMode('stack')"), 'Context layout controls should select stack mode');
 assert.ok(pageSource.includes("class:stacked={contextPanelMode === 'stack'}"), 'Context card grid should support stacked layout');
