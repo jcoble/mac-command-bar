@@ -68,6 +68,7 @@ export type WorkspaceSnapshotInput = {
 export type RestoredWorkspaceSnapshot = {
   selectedProjectID: string;
   selectedSourcePaths: Record<string, string>;
+  selectedPath: string | null;
   selectedLine: number | null;
   sourceActivityMode: WorkspaceSnapshotActivityMode;
   sourceTerminalApp: WorkspaceSnapshotTerminalApp;
@@ -111,6 +112,7 @@ export function restoreWorkspaceSnapshot(snapshot: WorkspaceSnapshot): RestoredW
   return {
     selectedProjectID: snapshot.project.id,
     selectedSourcePaths,
+    selectedPath: snapshot.selectedPath,
     selectedLine: snapshot.selectedLine,
     sourceActivityMode: snapshot.sourceActivityMode,
     sourceTerminalApp: snapshot.sourceTerminalApp,

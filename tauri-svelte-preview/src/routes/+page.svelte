@@ -123,6 +123,7 @@
     type SourceLspHover,
     type SourceLspStatus,
     type SourceSymbol,
+    type SourceLanguage,
     type SourceTreeNode,
     type SourceTreeRow
   } from '$lib/sourceData';
@@ -2643,14 +2644,22 @@
     persistSourceDockLayout(sourceDockLayout);
     fileActionStatus = `Workspace restored: ${snapshot.title}`;
 
-    await activateProject(project, {
-      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots)
-    });
+    await activateWorkspaceSnapshotProject(project);
 
-    restoreWorkspaceOpenTabs(project, restored.openPaths);
-    if (restored.selectedLine) {
+    restoreWorkspaceOpenTabs(project, restored.openPaths, restored.selectedPath);
+    if (restored.selectedPath) {
+      await selectRecord(sourceRecordFromRestoredPath(project, restored.selectedPath), restored.selectedLine);
+    } else if (restored.selectedLine) {
       revealSourceLine(restored.selectedLine);
     }
+  }
+
+  async function activateWorkspaceSnapshotProject(project: ProjectRoot) {
+    await activateProject(project, {
+      forceScan: true,
+      scanLimit: expandedSourceScanLimit,
+      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots)
+    });
   }
 
   function ensureWorkspaceSnapshotProject(project: ProjectRoot): ProjectRoot {
@@ -2668,11 +2677,22 @@
     return nextProject;
   }
 
-  function restoreWorkspaceOpenTabs(project: ProjectRoot, openPaths: string[]) {
+  function restoreWorkspaceOpenTabs(
+    project: ProjectRoot,
+    openPaths: string[],
+    selectedPath: string | null = null
+  ) {
     const openedAt = Date.now();
-    const restoredTabs = openPaths
-      .map((path) => records.find((record) => record.path === path))
-      .filter((record): record is SourceRecord => record !== undefined)
+    const seenPaths = new Set<string>();
+    const restoredTabs = [selectedPath, ...openPaths]
+      .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+      .filter((path) => {
+        const normalizedPath = normalizeProjectPath(path);
+        if (seenPaths.has(normalizedPath)) return false;
+        seenPaths.add(normalizedPath);
+        return true;
+      })
+      .map((path) => sourceRecordFromRestoredPath(project, path))
       .slice(0, maxProjectOpenSourceTabs)
       .map((record, index): SourceOpenTab => ({
         ...record,
@@ -2685,6 +2705,53 @@
     const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, restoredTabs);
     openSourceTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
+  }
+
+  function sourceRecordFromRestoredPath(project: ProjectRoot, path: string): SourceRecord {
+    const normalizedPath = normalizeProjectPath(path);
+    const existingRecord = records.find((record) => normalizeProjectPath(record.path) === normalizedPath);
+    if (existingRecord) return existingRecord;
+
+    const normalizedProjectPath = normalizeProjectPath(project.path);
+    const relativePath =
+      normalizedPath === normalizedProjectPath
+        ? fileNameFromRestoredPath(normalizedPath)
+        : normalizedPath.startsWith(`${normalizedProjectPath}/`)
+          ? normalizedPath.slice(normalizedProjectPath.length + 1)
+          : fileNameFromRestoredPath(normalizedPath);
+
+    return {
+      path: normalizedPath,
+      relativePath,
+      fileName: fileNameFromRestoredPath(relativePath),
+      language: sourceLanguageForRestoredPath(normalizedPath),
+      byteCount: 0
+    };
+  }
+
+  function fileNameFromRestoredPath(path: string) {
+    return path.split('/').filter(Boolean).at(-1) ?? 'file';
+  }
+
+  function sourceLanguageForRestoredPath(path: string): SourceLanguage {
+    const normalizedPath = path.toLowerCase();
+    if (normalizedPath.endsWith('.cs')) return 'csharp';
+    if (normalizedPath.endsWith('.tsx')) return 'tsx';
+    if (normalizedPath.endsWith('.ts')) return 'typescript';
+    if (normalizedPath.endsWith('.jsx')) return 'jsx';
+    if (normalizedPath.endsWith('.js') || normalizedPath.endsWith('.mjs')) return 'javascript';
+    if (normalizedPath.endsWith('.svelte')) return 'svelte';
+    if (normalizedPath.endsWith('.rs')) return 'rust';
+    if (normalizedPath.endsWith('.swift')) return 'swift';
+    if (normalizedPath.endsWith('.json')) return 'json';
+    if (normalizedPath.endsWith('.md') || normalizedPath.endsWith('.mdx')) return 'markdown';
+    if (normalizedPath.endsWith('.toml')) return 'toml';
+    if (normalizedPath.endsWith('.yaml') || normalizedPath.endsWith('.yml')) return 'yaml';
+    if (normalizedPath.endsWith('.css')) return 'css';
+    if (normalizedPath.endsWith('.html')) return 'html';
+    if (normalizedPath.endsWith('.xml')) return 'xml';
+    if (normalizedPath.endsWith('.sh') || normalizedPath.endsWith('.zsh')) return 'shell';
+    return 'plain';
   }
 
   function workspaceSnapshotProviderForSession(session: AgentSession | null): WorkspaceSnapshotProvider {

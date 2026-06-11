@@ -55,6 +55,7 @@ assert.deepEqual(restored.selectedProjectID, 'ediplatform');
 assert.deepEqual(restored.selectedSourcePaths, {
   ediplatform: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/src/App.ts'
 });
+assert.equal(restored.selectedPath, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/src/App.ts');
 assert.equal(restored.selectedLine, 43);
 assert.equal(restored.sourceActivityMode, 'conversations');
 assert.equal(restored.sourceTerminalApp, 'Warp');
