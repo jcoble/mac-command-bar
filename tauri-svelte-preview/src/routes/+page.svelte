@@ -2677,12 +2677,17 @@
     }
 
     await restoreConversationWorkspaceSnapshot(snapshot);
+    markAgentSessionWorkspaceActive(session);
   }
 
   async function openAgentSessionWorkspace(session: AgentSession) {
     captureActiveWorkspaceBeforeSwitch();
     const snapshot = workspaceSnapshotForAgentSession(session) ?? captureAgentSessionWorkspaceSnapshot(session);
     await restoreConversationWorkspaceSnapshot(snapshot);
+    markAgentSessionWorkspaceActive(session);
+  }
+
+  function markAgentSessionWorkspaceActive(session: AgentSession) {
     activeWorkspaceSessionKey = workspaceSnapshotIDForAgentSession(session);
     persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
   }
@@ -4160,6 +4165,7 @@
     if (!command.trim()) return;
 
     captureAgentSessionWorkspaceSnapshot(session);
+    markAgentSessionWorkspaceActive(session);
     const path = session.projectPath ?? selectedProject.path;
     fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
     fileActionStatus = '';

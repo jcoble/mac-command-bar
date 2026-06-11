@@ -175,8 +175,12 @@ assert.ok(pageSource.includes('function sourceLanguageForRestoredPath'), 'Worksp
 assert.ok(pageSource.includes('function persistWorkspaceSnapshots'), 'Workspace should persist captured conversation contexts');
 assert.ok(pageSource.includes('function loadStoredActiveWorkspaceSessionKey'), 'Workspace should restore the active conversation key');
 assert.ok(pageSource.includes('function persistActiveWorkspaceSessionKey'), 'Workspace should persist active conversation switches');
+assert.ok(pageSource.includes('function markAgentSessionWorkspaceActive'), 'Workspace should share active-session marking across open and resume actions');
 assert.ok(pageSource.includes('captureActiveWorkspaceBeforeSwitch();'), 'Conversation switching should save the previous active workspace first');
-assert.ok(pageSource.includes('activeWorkspaceSessionKey = workspaceSnapshotIDForAgentSession(session);'), 'Opening a conversation should mark it as active');
+assert.ok(
+  (pageSource.match(/markAgentSessionWorkspaceActive\(session\);/g) ?? []).length >= 2,
+  'Opening or resuming a conversation should mark it as active'
+);
 assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === snapshot.id}'), 'Saved workspace rows should show the active workspace');
 assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}'), 'Conversation session rows should show the active workspace');
 assert.ok(pageSource.includes("id: 'conversation-restore-active'"), 'Command palette should restore the active workspace snapshot');
