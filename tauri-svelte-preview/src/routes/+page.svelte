@@ -4320,6 +4320,7 @@
       contextPanelCollapsed,
       editorInsightCollapsed,
       sidePanePosition,
+      sourceActivityFilter,
       hiddenContextCardIDs: [...hiddenContextCardIDs],
       activeContextCardID,
       sourceIntelligencePanel
@@ -4332,6 +4333,7 @@
     contextPanelCollapsed = viewState.contextPanelCollapsed;
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
+    sourceActivityFilter = viewState.sourceActivityFilter;
     hiddenContextCardIDs = new Set(viewState.hiddenContextCardIDs);
     activeContextCardID = viewState.activeContextCardID;
     sourceIntelligencePanel = viewState.sourceIntelligencePanel;
@@ -4350,6 +4352,7 @@
       `context ${viewState.contextPanelMode} ${viewState.contextPanelPlacement}${viewState.contextPanelCollapsed ? ' hidden' : ''}`,
       `active ${contextCardLabels[viewState.activeContextCardID]}`,
       `explorer ${viewState.sidePanePosition}`,
+      viewState.sourceActivityFilter ? `filter "${viewState.sourceActivityFilter}"` : 'no activity filter',
       hiddenCount === 0 ? 'no hidden cards' : `${hiddenCount} hidden`,
       `insights ${viewState.editorInsightCollapsed ? 'hidden' : viewState.sourceIntelligencePanel}`
     ].join(' · ');

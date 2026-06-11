@@ -234,12 +234,15 @@ assert.ok(workspaceSnapshotSource.includes('contextPanelPlacement'), 'Workspace 
 assert.ok(workspaceSnapshotSource.includes('contextPanelCollapsed'), 'Workspace snapshots should serialize context pane visibility');
 assert.ok(workspaceSnapshotSource.includes('editorInsightCollapsed'), 'Workspace snapshots should serialize editor insight visibility');
 assert.ok(workspaceSnapshotSource.includes('sidePanePosition'), 'Workspace snapshots should serialize explorer side placement');
+assert.ok(workspaceSnapshotSource.includes('sourceActivityFilter'), 'Workspace snapshots should serialize the side activity filter');
 assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');
 assert.ok(pageSource.includes('persistContextPanelPlacement(contextPanelPlacement)'), 'Workspace restore should persist restored context placement');
 assert.ok(pageSource.includes('persistContextPanelCollapsed(contextPanelCollapsed)'), 'Workspace restore should persist restored context visibility');
 assert.ok(pageSource.includes('persistEditorInsightCollapsed(editorInsightCollapsed)'), 'Workspace restore should persist restored insight visibility');
 assert.ok(pageSource.includes('persistSidePanePosition(sidePanePosition)'), 'Workspace restore should persist restored explorer side placement');
+assert.ok(pageSource.includes('sourceActivityFilter = viewState.sourceActivityFilter'), 'Workspace restore should rehydrate the side activity filter');
 assert.ok(pageSource.includes('function workspaceSnapshotViewStateLabel'), 'Workspace restore plans should summarize saved pane view state');
+assert.ok(pageSource.includes('no activity filter'), 'Workspace restore plans should show saved activity filter state');
 assert.ok(pageSource.includes('describeWorkspaceSnapshotRestoreReadiness'), 'Workspace restore should use shared readiness rules');
 assert.ok(pageSource.includes('function workspaceSnapshotRestoreReadiness'), 'Workspace should classify saved snapshot restore readiness');
 assert.ok(pageSource.includes('Restore status: ${readiness.label}'), 'Workspace restore plans should include restore readiness status');

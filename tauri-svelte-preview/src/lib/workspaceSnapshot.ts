@@ -37,6 +37,7 @@ export type WorkspaceSnapshotViewState = {
   contextPanelCollapsed: boolean;
   editorInsightCollapsed: boolean;
   sidePanePosition: WorkspaceSnapshotSidePanePosition;
+  sourceActivityFilter: string;
   hiddenContextCardIDs: WorkspaceSnapshotContextCardID[];
   activeContextCardID: WorkspaceSnapshotContextCardID;
   sourceIntelligencePanel: WorkspaceSnapshotIntelligencePanel;
@@ -427,6 +428,10 @@ function normalizeWorkspaceSnapshotViewState(
     sidePanePosition: isWorkspaceSnapshotSidePanePosition(candidate.sidePanePosition)
       ? candidate.sidePanePosition
       : 'left',
+    sourceActivityFilter:
+      typeof candidate.sourceActivityFilter === 'string'
+        ? candidate.sourceActivityFilter.trim()
+        : '',
     hiddenContextCardIDs,
     activeContextCardID: isWorkspaceSnapshotContextCardID(candidate.activeContextCardID)
       ? candidate.activeContextCardID

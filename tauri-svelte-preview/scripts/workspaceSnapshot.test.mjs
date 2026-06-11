@@ -37,6 +37,11 @@ const snapshot = createWorkspaceSnapshot({
   sourceTerminalApp: 'Warp',
   viewState: {
     contextPanelMode: 'stack',
+    contextPanelPlacement: 'side',
+    contextPanelCollapsed: true,
+    editorInsightCollapsed: false,
+    sidePanePosition: 'right',
+    sourceActivityFilter: 'tsk-127',
     hiddenContextCardIDs: ['runtime', 'runtime', 'repo'],
     activeContextCardID: 'agents',
     sourceIntelligencePanel: 'git'
@@ -71,6 +76,11 @@ assert.deepEqual(snapshot.openPaths, [
 ]);
 assert.deepEqual(snapshot.viewState, {
   contextPanelMode: 'stack',
+  contextPanelPlacement: 'side',
+  contextPanelCollapsed: true,
+  editorInsightCollapsed: false,
+  sidePanePosition: 'right',
+  sourceActivityFilter: 'tsk-127',
   hiddenContextCardIDs: ['runtime', 'repo'],
   activeContextCardID: 'agents',
   sourceIntelligencePanel: 'git'
@@ -173,6 +183,11 @@ const storedSnapshot = parseStoredWorkspaceSnapshot({
   ...snapshot,
   viewState: {
     contextPanelMode: 'stack',
+    contextPanelPlacement: 'bottom',
+    contextPanelCollapsed: false,
+    editorInsightCollapsed: false,
+    sidePanePosition: 'right',
+    sourceActivityFilter: '  task trail  ',
     hiddenContextCardIDs: ['runtime', 'bad-card', 'repo'],
     activeContextCardID: 'worktrees',
     sourceIntelligencePanel: 'symbols'
@@ -189,6 +204,11 @@ assert.deepEqual(
   storedSnapshot?.viewState,
   {
     contextPanelMode: 'stack',
+    contextPanelPlacement: 'bottom',
+    contextPanelCollapsed: false,
+    editorInsightCollapsed: false,
+    sidePanePosition: 'right',
+    sourceActivityFilter: 'task trail',
     hiddenContextCardIDs: ['runtime', 'repo'],
     activeContextCardID: 'worktrees',
     sourceIntelligencePanel: 'symbols'
