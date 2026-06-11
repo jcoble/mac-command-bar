@@ -262,6 +262,10 @@ assert.ok(pageSource.includes('function restoreWorkspaceEmbeddedTerminal'), 'Wor
 assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
 assert.ok(pageSource.includes('function openAgentSessionWorkspace'), 'Conversation rows should open their saved workspace on row click');
 assert.ok(pageSource.includes('function openWorkspaceSnapshotTerminal'), 'Workspace snapshots should launch saved resume commands in a terminal');
+assert.ok(
+  pageSource.includes('await restoreConversationWorkspaceSnapshot(snapshot);\n\n    fileActionBusy = `workspace-terminal-command:${snapshot.id}`'),
+  'External workspace terminal resume should restore the saved workspace first'
+);
 assert.ok(pageSource.includes('function workspaceSnapshotRestorePlan'), 'Workspace snapshots should produce a copyable restore plan');
 assert.ok(pageSource.includes('function copyWorkspaceSnapshotRestorePlan'), 'Workspace snapshots should copy their restore plan');
 assert.ok(pageSource.includes('function copyAgentSessionWorkspaceRestorePlan'), 'Conversation rows should copy their saved workspace restore plan');

@@ -4093,6 +4093,8 @@
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
 
+    await restoreConversationWorkspaceSnapshot(snapshot);
+
     fileActionBusy = `workspace-terminal-command:${snapshot.id}`;
     fileActionStatus = '';
     error = '';
