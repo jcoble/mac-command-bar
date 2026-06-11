@@ -3503,6 +3503,21 @@
     captureAgentSessionWorkspaceSnapshot(activeSession);
   }
 
+  function captureActiveWorkspaceSnapshotBeforeUnload() {
+    if (activeWorkspaceSessionKey) {
+      captureActiveWorkspaceBeforeSwitch();
+      return;
+    }
+
+    captureCurrentWorkspaceSnapshot();
+  }
+
+  function handleWorkspaceSnapshotVisibilityChange() {
+    if (document.visibilityState === 'hidden') {
+      captureActiveWorkspaceSnapshotBeforeUnload();
+    }
+  }
+
   function captureWorkspaceSnapshot(session: AgentSession | null): WorkspaceSnapshot {
     const cwd = session?.projectPath ?? selectedProject.path;
     const project = workspaceSnapshotProjectForSession(session);
@@ -8370,6 +8385,9 @@
       .catch(() => {
         unlistenTerminalOutput = null;
       });
+    window.addEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload);
+    window.addEventListener('pagehide', captureActiveWorkspaceSnapshotBeforeUnload);
+    document.addEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange);
 
     const storedCustomProjectRoots = loadStoredCustomProjectRoots();
     const storedProjectOptions = mergeProjectRoots(defaultProjectRoots, storedCustomProjectRoots);
@@ -8464,6 +8482,9 @@
     );
 
     return () => {
+      window.removeEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload);
+      window.removeEventListener('pagehide', captureActiveWorkspaceSnapshotBeforeUnload);
+      document.removeEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange);
       unlistenSourceScanProgress?.();
       unlistenTerminalOutput?.();
       disposeEmbeddedTerminal();

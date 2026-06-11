@@ -220,6 +220,14 @@ assert.ok(pageSource.includes('function openWorkspaceSnapshotTerminal'), 'Worksp
 assert.ok(pageSource.includes('function workspaceSnapshotRestorePlan'), 'Workspace snapshots should produce a copyable restore plan');
 assert.ok(pageSource.includes('function copyWorkspaceSnapshotRestorePlan'), 'Workspace snapshots should copy their restore plan');
 assert.ok(pageSource.includes('function copyAgentSessionWorkspaceRestorePlan'), 'Conversation rows should copy their saved workspace restore plan');
+assert.ok(pageSource.includes('function captureActiveWorkspaceSnapshotBeforeUnload'), 'Workspace should auto-save active context before window unload');
+assert.ok(pageSource.includes('function handleWorkspaceSnapshotVisibilityChange'), 'Workspace should auto-save active context when the app is hidden');
+assert.ok(pageSource.includes("document.visibilityState === 'hidden'"), 'Workspace visibility auto-save should only run when hidden');
+assert.ok(pageSource.includes("window.addEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload)"), 'Workspace should register a beforeunload auto-save hook');
+assert.ok(pageSource.includes("window.addEventListener('pagehide', captureActiveWorkspaceSnapshotBeforeUnload)"), 'Workspace should register a pagehide auto-save hook');
+assert.ok(pageSource.includes("document.addEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange)"), 'Workspace should register a visibility auto-save hook');
+assert.ok(pageSource.includes("window.removeEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload)"), 'Workspace should clean up the beforeunload auto-save hook');
+assert.ok(pageSource.includes("document.removeEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange)"), 'Workspace should clean up the visibility auto-save hook');
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
