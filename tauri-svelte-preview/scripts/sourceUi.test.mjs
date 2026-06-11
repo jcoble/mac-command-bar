@@ -166,8 +166,10 @@ assert.ok(pageSource.includes('sourceActivityFiltersByMode'), 'Source shell shou
 assert.ok(pageSource.includes('function rememberSourceActivityFilter'), 'Source shell should save the active filter before pane switches');
 assert.ok(pageSource.includes('function setSourceActivityFilter'), 'Source shell should update the active pane filter through a helper');
 assert.ok(pageSource.includes('let pasteCleanupInput'), 'Clipboard cleanup should track the source text');
+assert.ok(pageSource.includes('let pasteCleanupReplyDraft'), 'Clipboard cleanup should track a reply draft');
 assert.ok(pageSource.includes('let pasteCleanupMode'), 'Clipboard cleanup should track the cleanup mode');
 assert.ok(pageSource.includes('pasteCleanupOutput'), 'Clipboard cleanup should derive cleaned output');
+assert.ok(pageSource.includes('pasteCleanupReplyOutput'), 'Clipboard cleanup should derive a normalized reply draft');
 assert.ok(pageSource.includes('buildWorktreeSafetySummary'), 'Worktree UI should use the shared safety model');
 assert.ok(pageSource.includes('buildWorktreeCleanupBrief'), 'Worktree UI should use the shared cleanup brief model');
 assert.ok(pageSource.includes('prioritizeWorktreesForCleanup'), 'Worktree UI should use shared cleanup priority ordering');
@@ -544,7 +546,9 @@ assert.ok(pageSource.includes('showContextCard(cardID)'), 'Command palette shoul
 assert.ok(pageSource.includes("id: 'activity-clipboard'"), 'Command palette should switch to clipboard cleanup');
 assert.ok(pageSource.includes("id: 'paste-read-clipboard'"), 'Command palette should read clipboard text for cleanup');
 assert.ok(pageSource.includes("id: 'paste-copy-cleaned'"), 'Command palette should copy cleaned clipboard output');
+assert.ok(pageSource.includes("id: 'paste-copy-reply-draft'"), 'Command palette should copy the clipboard reply draft');
 assert.ok(pageSource.includes("id: 'paste-clear-input'"), 'Command palette should clear clipboard cleanup input');
+assert.ok(pageSource.includes("id: 'paste-clear-reply-draft'"), 'Command palette should clear the clipboard reply draft');
 assert.ok(pageSource.includes('id: `paste-mode-${mode}`'), 'Command palette should switch cleanup modes directly');
 assert.ok(pageSource.includes("id: 'activity-conversations'"), 'Command palette should switch to conversations');
 assert.ok(pageSource.includes("id: 'activity-refresh'"), 'Command palette should refresh the current activity lane');
@@ -647,10 +651,14 @@ assert.ok(pageSource.includes('class="activity-panel-list"'), 'Activity panels s
 assert.ok(pageSource.includes('class="paste-cleanup-panel"'), 'Clipboard mode should render the paste cleanup panel');
 assert.ok(pageSource.includes('aria-label="Paste cleanup input"'), 'Paste cleanup input should be accessible');
 assert.ok(pageSource.includes('aria-label="Cleaned paste output"'), 'Paste cleanup output should be accessible');
+assert.ok(pageSource.includes('aria-label="Paste cleanup reply draft"'), 'Paste cleanup reply draft should be accessible');
 assert.ok(pageSource.includes('onclick={readPasteCleanupClipboard}'), 'Paste cleanup should read the clipboard on demand');
 assert.ok(pageSource.includes('onclick={copyPasteCleanupOutput}'), 'Paste cleanup should copy the cleaned output');
+assert.ok(pageSource.includes('onclick={copyPasteCleanupReplyDraft}'), 'Paste cleanup should copy the reply draft');
 assert.ok(pageSource.includes('cleanupPasteText(pasteCleanupInput, pasteCleanupMode)'), 'Paste cleanup should use the shared cleanup helper');
+assert.ok(pageSource.includes('cleanupPasteReplyDraft(pasteCleanupReplyDraft)'), 'Paste cleanup should normalize reply drafts with the shared helper');
 assert.ok(pageSource.includes('function clearPasteCleanupInput'), 'Paste cleanup should share clear behavior between UI and commands');
+assert.ok(pageSource.includes('function clearPasteCleanupReplyDraft'), 'Paste cleanup should clear reply drafts from commands');
 assert.ok(pageSource.includes('function setPasteCleanupMode'), 'Paste cleanup should share mode switching between UI and commands');
 assert.ok(pageSource.includes('class="activity-row-actions"'), 'Activity rows should render compact action controls');
 assert.ok(pageSource.includes('placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}'), 'Activity filter placeholder should be dynamic');

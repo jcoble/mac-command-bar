@@ -34,6 +34,7 @@
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import {
+    cleanupPasteReplyDraft,
     cleanupPasteText,
     formatPasteCleanupStats,
     pasteCleanupModes,
@@ -583,6 +584,7 @@
   let sourceActivityFilter = $state('');
   let sourceActivityFiltersByMode = $state<Record<SourceActivityMode, string>>(createSourceActivityFilterState());
   let pasteCleanupInput = $state('');
+  let pasteCleanupReplyDraft = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceLayoutPresetOverrides = $state<SourceLayoutPresetOverrides>({});
@@ -857,6 +859,10 @@
   );
   let pasteCleanupOutput = $derived(cleanupPasteText(pasteCleanupInput, pasteCleanupMode));
   let pasteCleanupStats = $derived(formatPasteCleanupStats(pasteCleanupInput, pasteCleanupOutput));
+  let pasteCleanupReplyOutput = $derived(cleanupPasteReplyDraft(pasteCleanupReplyDraft));
+  let pasteCleanupReplyStats = $derived(
+    formatPasteCleanupStats(pasteCleanupReplyDraft, pasteCleanupReplyOutput)
+  );
   let selectedProjectRuntimeContexts = $derived(
     runtimeContexts.filter(
       (context) =>
@@ -1837,11 +1843,25 @@
       perform: copyPasteCleanupOutput
     },
     {
+      id: 'paste-copy-reply-draft',
+      label: 'Copy paste reply draft',
+      detail: pasteCleanupReplyStats,
+      disabled: pasteCleanupReplyOutput.trim().length === 0 || fileActionBusy === 'paste-reply-copy',
+      perform: copyPasteCleanupReplyDraft
+    },
+    {
       id: 'paste-clear-input',
       label: 'Clear paste cleanup input',
       detail: pasteCleanupStats,
       disabled: pasteCleanupInput.length === 0,
       perform: clearPasteCleanupInput
+    },
+    {
+      id: 'paste-clear-reply-draft',
+      label: 'Clear paste reply draft',
+      detail: pasteCleanupReplyStats,
+      disabled: pasteCleanupReplyDraft.length === 0,
+      perform: clearPasteCleanupReplyDraft
     },
     ...pasteCleanupModes.map((mode) => ({
       id: `paste-mode-${mode}`,
@@ -6488,6 +6508,20 @@
     }
   }
 
+  async function copyPasteCleanupReplyDraft() {
+    if (!pasteCleanupReplyOutput.trim()) return;
+
+    fileActionBusy = 'paste-reply-copy';
+
+    try {
+      await copyTextToClipboard(pasteCleanupReplyOutput, 'Reply draft copied');
+    } catch (copyError) {
+      error = copyError instanceof Error ? copyError.message : 'Could not copy reply draft';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
   function selectPasteCleanupMode(event: Event) {
     const value = (event.currentTarget as HTMLSelectElement | null)?.value;
     if (!isPasteCleanupMode(value)) return;
@@ -6503,6 +6537,12 @@
   function clearPasteCleanupInput() {
     pasteCleanupInput = '';
     fileActionStatus = 'Paste cleanup cleared';
+    error = '';
+  }
+
+  function clearPasteCleanupReplyDraft() {
+    pasteCleanupReplyDraft = '';
+    fileActionStatus = 'Reply draft cleared';
     error = '';
   }
 
@@ -9980,9 +10020,19 @@
                   spellcheck="false"
                 ></textarea>
               </label>
+              <label>
+                <span>Reply</span>
+                <textarea
+                  class="paste-cleanup-textarea"
+                  bind:value={pasteCleanupReplyDraft}
+                  aria-label="Paste cleanup reply draft"
+                  spellcheck="true"
+                  placeholder="Draft the reply to copy back"
+                ></textarea>
+              </label>
             </div>
             <div class="paste-cleanup-footer">
-              <span>{pasteCleanupStats}</span>
+              <span>Cleaned {pasteCleanupStats} · Reply {pasteCleanupReplyStats}</span>
               <button
                 class="file-action-button"
                 type="button"
@@ -9993,6 +10043,17 @@
               >
                 <Copy size={13} strokeWidth={1.9} />
                 <span>{fileActionBusy === 'paste-copy' ? 'Copying' : 'Copy'}</span>
+              </button>
+              <button
+                class="file-action-button"
+                type="button"
+                aria-label="Copy paste reply draft"
+                title="Copy paste reply draft"
+                disabled={pasteCleanupReplyOutput.trim().length === 0 || fileActionBusy === 'paste-reply-copy'}
+                onclick={copyPasteCleanupReplyDraft}
+              >
+                <Copy size={13} strokeWidth={1.9} />
+                <span>{fileActionBusy === 'paste-reply-copy' ? 'Copying' : 'Copy Reply'}</span>
               </button>
             </div>
           </div>

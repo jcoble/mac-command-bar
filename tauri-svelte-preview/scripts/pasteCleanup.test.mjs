@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  cleanupPasteReplyDraft,
   cleanupPasteText,
   formatPasteCleanupStats,
   pasteCleanupModes
@@ -22,5 +23,6 @@ assert.equal(
   'Here is the answer.\n\n```ts\nconst x = 1;\n```\n\nThanks.'
 );
 assert.equal(cleanupPasteText('A\u00a0B\r\nC', 'plain'), 'A B\nC');
+assert.equal(cleanupPasteReplyDraft('  I can do that.\r\n\r\n\r\n\tNext step.  '), 'I can do that.\n\nNext step.');
 assert.equal(formatPasteCleanupStats('', ''), '0 chars');
 assert.equal(formatPasteCleanupStats('  abc  ', 'abc'), '3 chars - trimmed 4');

@@ -25,6 +25,10 @@ export function formatPasteCleanupStats(input: string, output: string): string {
   return `${charCount.toLocaleString()} chars - trimmed ${trimmedCount.toLocaleString()}`;
 }
 
+export function cleanupPasteReplyDraft(input: string): string {
+  return normalizePastedText(input).trim();
+}
+
 function normalizePastedText(input: string): string {
   return input
     .replace(/^\uFEFF/, '')
