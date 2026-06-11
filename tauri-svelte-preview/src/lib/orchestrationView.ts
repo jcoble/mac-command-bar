@@ -436,6 +436,59 @@ export function orchestrationRunSummaryText(run: OrchestrationRun): string {
   ].filter(Boolean).join('\n');
 }
 
+export function orchestrationRunHandoffText(run: OrchestrationRun): string {
+  const metrics = orchestrationRunMetrics(run);
+  const stage = orchestrationRunStage(run, metrics);
+  const attentionQueue = orchestrationAttentionQueue(run, 5);
+  const agentItems = orchestrationAgentActivityItems(run, 8);
+  const timeline = orchestrationRunTimelineText(run, 8);
+  const artifactLines = run.artifacts.slice(0, 8).map((artifact) => {
+    const target = artifact.path ?? artifact.url ?? artifact.status;
+    return `- ${artifact.kind || 'artifact'} · ${artifact.title || 'Artifact'} · ${target}`;
+  });
+  const linkLines = run.links.slice(0, 8).map((link) => {
+    return `- ${link.kind || 'link'} · ${link.label || link.kind || 'link'} · ${link.url}`;
+  });
+  const attentionLines = attentionQueue.map((item) => {
+    const agent = item.agentLabel ? `${item.agentLabel} · ` : '';
+    const summary = item.summary ? ` - ${item.summary}` : '';
+    return `- ${item.label} · ${agent}${item.title}${summary}`;
+  });
+  const agentLines = agentItems.map((agent) => {
+    const detail = agent.detail ? ` - ${agent.detail}` : '';
+    return `- ${agent.label} · ${agent.status} · ${agent.activity}${detail}`;
+  });
+
+  return [
+    'Orchestration run handoff',
+    `Run: ${run.title}`,
+    `ID: ${run.id}`,
+    `Status: ${run.status} · ${run.progress}% · ${stage.label}`,
+    `Project: ${run.projectName} · ${run.rootLabel}`,
+    `Path: ${run.projectPath}`,
+    `Task: ${run.taskID ?? 'none'}`,
+    `Phase: ${run.phase}`,
+    `Current: ${orchestrationCurrentActivity(run)}`,
+    `Loop tally: ${orchestrationLoopTallyText(metrics)}`,
+    `Counts: ${metrics.agentCount} agents · ${metrics.stepCount} steps · ${metrics.eventCount} events · ${metrics.artifactCount} artifacts · ${metrics.linkCount} links`,
+    '',
+    'Needs attention:',
+    attentionLines.length > 0 ? attentionLines.join('\n') : '- none',
+    '',
+    'Agents:',
+    agentLines.length > 0 ? agentLines.join('\n') : '- none',
+    '',
+    'Recent timeline:',
+    timeline || '- none',
+    '',
+    'Artifacts:',
+    artifactLines.length > 0 ? artifactLines.join('\n') : '- none',
+    '',
+    'Links:',
+    linkLines.length > 0 ? linkLines.join('\n') : '- none'
+  ].join('\n');
+}
+
 export function orchestrationRunTimelineText(run: OrchestrationRun, limit = 6): string {
   return orchestrationTimelineItems(run, limit)
     .map((item) => {

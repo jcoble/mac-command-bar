@@ -46,6 +46,7 @@
     orchestrationLinkChips,
     orchestrationLoopStageMetrics,
     orchestrationLoopTallyText,
+    orchestrationRunHandoffText,
     orchestrationRunMetrics,
     orchestrationRunSummaryText,
     orchestrationRunStage,
@@ -1730,6 +1731,12 @@
       label: `Copy run summary: ${run.title}`,
       detail: `${run.status} · ${run.progress}%`,
       perform: () => copyOrchestrationRunSummary(run)
+    })),
+    ...selectedProjectOrchestrationRuns.slice(0, 8).map((run) => ({
+      id: `run-copy-handoff-${run.id}`,
+      label: `Copy run handoff: ${run.title}`,
+      detail: orchestrationCurrentActivity(run),
+      perform: () => copyOrchestrationRunHandoff(run)
     })),
     {
       id: 'activity-sessions',
@@ -3436,6 +3443,10 @@
 
   async function copyOrchestrationRunSummary(run: OrchestrationRun) {
     await copyActivityCommand(orchestrationRunSummaryText(run), 'Run summary copied');
+  }
+
+  async function copyOrchestrationRunHandoff(run: OrchestrationRun) {
+    await copyActivityCommand(orchestrationRunHandoffText(run), 'Run handoff copied');
   }
 
   async function copyOrchestrationCurrentActivity(run: OrchestrationRun) {
@@ -9176,6 +9187,14 @@
                       onclick={() => copyOrchestrationRunSummary(run)}
                     >
                       <Activity size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Copy run handoff"
+                      title="Copy run handoff"
+                      onclick={() => copyOrchestrationRunHandoff(run)}
+                    >
+                      <FileCode2 size={12} strokeWidth={2} />
                     </button>
                     <button
                       type="button"

@@ -7,6 +7,7 @@ import {
   orchestrationLinkChips,
   orchestrationLoopStageMetrics,
   orchestrationLoopTallyText,
+  orchestrationRunHandoffText,
   orchestrationRunMetrics,
   orchestrationRunSummaryText,
   orchestrationRunStage,
@@ -284,6 +285,43 @@ assert.equal(
     '- good · controller · Customer trading-partner pass - Scenario created and executed',
     '- good · codex orchestrator controller · Scenario executed - UI path passed',
     '- idle · Scenario handoff - /repo/.codex-artifacts/handoff.md'
+  ].join('\n')
+);
+assert.equal(
+  orchestrationRunHandoffText(run),
+  [
+    'Orchestration run handoff',
+    'Run: TSK-127 source browser loop',
+    'ID: run-tsk-127',
+    'Status: running · 72% · Needs sign-off',
+    'Project: MacCommandBar · main checkout',
+    'Path: /repo',
+    'Task: TSK-127',
+    'Phase: ui-test-loop',
+    'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
+    'Loop tally: 2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off',
+    'Counts: 2 agents · 2 steps · 3 events · 1 artifacts · 1 links',
+    '',
+    'Needs attention:',
+    '- Decision · claude fix-agent fixer-1 · Needs sign-off - Manual decision before deleting dirty worktree',
+    '',
+    'Agents:',
+    '- claude fix-agent · waiting-for-approval · Needs sign-off - Manual decision before deleting dirty worktree',
+    '- codex orchestrator · running · Customer trading-partner pass - Scenario created and executed',
+    '',
+    'Recent timeline:',
+    '- attention · claude fix-agent fixer-1 · Needs sign-off - Manual decision before deleting dirty worktree',
+    '- live · claude fix-agent fixer-1 · Retesting failed scenario - Retry after auth fix',
+    '- live · fixer-1 · Fix rejected auth redirect - Batching two findings for retest',
+    '- good · controller · Customer trading-partner pass - Scenario created and executed',
+    '- good · codex orchestrator controller · Scenario executed - UI path passed',
+    '- idle · Scenario handoff - /repo/.codex-artifacts/handoff.md',
+    '',
+    'Artifacts:',
+    '- handoff · Scenario handoff · /repo/.codex-artifacts/handoff.md',
+    '',
+    'Links:',
+    '- task · TSK-127 · https://example.test/task'
   ].join('\n')
 );
 assert.deepEqual(orchestrationArtifactChips(run).map((chip) => [chip.kind, chip.path]), [
