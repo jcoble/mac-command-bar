@@ -51,8 +51,16 @@ export type OrchestrationAttentionItem = {
   title: string;
   summary: string;
   agentLabel: string;
+  timestamp: string | null;
   href: string | null;
   path: string | null;
+};
+
+export type OrchestrationDecisionQueueItem = OrchestrationAttentionItem & {
+  runID: string;
+  runTitle: string;
+  taskID: string | null;
+  projectName: string;
 };
 
 export type OrchestrationAgentActivityItem = {
@@ -389,9 +397,37 @@ export function orchestrationAttentionQueue(
       title: item.title,
       summary: item.summary,
       agentLabel: item.agentLabel,
+      timestamp: item.timestamp,
       href: item.href,
       path: item.path
     }));
+}
+
+export function orchestrationDecisionQueueForRuns(
+  runs: OrchestrationRun[],
+  limit = 6
+): OrchestrationDecisionQueueItem[] {
+  return runs
+    .flatMap((run) =>
+      orchestrationAttentionQueue(run, Number.POSITIVE_INFINITY).map((item) => ({
+        ...item,
+        id: `${run.id}:${item.id}`,
+        runID: run.id,
+        runTitle: run.title,
+        taskID: run.taskID,
+        projectName: run.projectName
+      }))
+    )
+    .sort((left, right) => {
+      const toneDelta = orchestrationTonePriority(left.tone) - orchestrationTonePriority(right.tone);
+      if (toneDelta) return toneDelta;
+
+      const timeDelta = timestampValue(right.timestamp) - timestampValue(left.timestamp);
+      if (timeDelta) return timeDelta;
+
+      return left.runTitle.localeCompare(right.runTitle);
+    })
+    .slice(0, Math.max(0, limit));
 }
 
 export function orchestrationAgentActivityItems(

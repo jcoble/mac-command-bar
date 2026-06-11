@@ -1441,10 +1441,18 @@ assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0
 assertDeclaration('.run-agent-strip', 'display: grid');
 assertDeclaration('.run-agent-pill', 'grid-template-columns: minmax(0, auto) minmax(0, 1fr)');
 assert.ok(pageSource.includes('orchestrationAttentionQueue'), 'Runs mode should derive decision and blocker queues');
+assert.ok(pageSource.includes('orchestrationDecisionQueueForRuns'), 'Context should derive an aggregate orchestration decision queue');
+assert.ok(pageSource.includes('selectedProjectOrchestrationDecisionQueue'), 'Source page should track aggregate run decisions');
 assert.ok(pageSource.includes('class="run-attention-queue"'), 'Runs mode should render decision and blocker queues');
 assert.ok(pageSource.includes('aria-label="Run decisions and blockers"'), 'Runs mode should expose the attention queue');
+assert.ok(pageSource.includes('class="orchestration-decision-queue"'), 'Orchestration context should render aggregate decisions');
+assert.ok(pageSource.includes('aria-label="Run decisions needing attention"'), 'Orchestration context should expose aggregate decision accessibility');
+assert.ok(pageSource.includes('id: `run-decision-${item.id}`'), 'Command palette should focus aggregate run decisions');
+assert.ok(pageSource.includes('id: `run-copy-decision-${item.id}`'), 'Command palette should copy aggregate run decisions');
 assertDeclaration('.run-attention-queue', 'display: grid');
 assertDeclaration('.run-attention-item', 'grid-template-columns: auto minmax(0, 1fr) auto');
+assertDeclaration('.orchestration-decision-queue', 'display: grid');
+assertDeclaration('.orchestration-decision-item', 'grid-template-columns: auto minmax(0, 1fr) auto auto');
 assertDeclaration('.run-timeline-item', 'grid-template-columns: 18px minmax(0, 1fr) auto');
 assertDeclaration('.run-artifact-row', 'display: flex');
 assert.ok(

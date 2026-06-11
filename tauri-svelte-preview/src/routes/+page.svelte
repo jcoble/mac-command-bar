@@ -43,6 +43,7 @@
     orchestrationArtifactChips,
     orchestrationAttentionQueue,
     orchestrationCurrentActivity,
+    orchestrationDecisionQueueForRuns,
     orchestrationLinkChips,
     orchestrationLoopStageMetrics,
     orchestrationLoopTallyText,
@@ -843,6 +844,9 @@
   );
   let selectedProjectOrchestrationRuns = $derived(
     orchestrationRuns.filter((run) => orchestrationRunMatchesProject(run, selectedProject))
+  );
+  let selectedProjectOrchestrationDecisionQueue = $derived(
+    orchestrationDecisionQueueForRuns(selectedProjectOrchestrationRuns, 5)
   );
   let filteredProjectOrchestrationRuns = $derived(
     selectedProjectOrchestrationRuns.filter((run) =>
@@ -1759,6 +1763,25 @@
       disabled: sourceActivityMode === 'runs',
       perform: () => selectSourceActivityMode('runs')
     },
+    ...selectedProjectOrchestrationDecisionQueue.slice(0, 8).map((item) => ({
+      id: `run-decision-${item.id}`,
+      label: `Focus decision: ${item.title}`,
+      detail: `${item.runTitle}${item.taskID ? ` · ${item.taskID}` : ''}`,
+      perform: () => {
+        const run = selectedProjectOrchestrationRuns.find((entry) => entry.id === item.runID);
+        if (run) focusOrchestrationRun(run);
+      }
+    })),
+    ...selectedProjectOrchestrationDecisionQueue.slice(0, 8).map((item) => ({
+      id: `run-copy-decision-${item.id}`,
+      label: `Copy decision: ${item.title}`,
+      detail: `${item.runTitle}${item.summary ? ` · ${item.summary}` : ''}`,
+      perform: () =>
+        copyActivityCommand(
+          `${item.label} · ${item.runTitle} · ${item.title}${item.summary ? ` - ${item.summary}` : ''}`,
+          'Run decision copied'
+        )
+    })),
     ...selectedProjectOrchestrationRuns.slice(0, 8).map((run) => ({
       id: `run-focus-${run.id}`,
       label: `Focus run: ${run.title}`,
@@ -10575,6 +10598,48 @@
             </button>
           </div>
         </div>
+        {#if selectedProjectOrchestrationDecisionQueue.length > 0}
+          <div class="orchestration-decision-queue" aria-label="Run decisions needing attention">
+            {#each selectedProjectOrchestrationDecisionQueue as item (item.id)}
+              {@const decisionRun = selectedProjectOrchestrationRuns.find((run) => run.id === item.runID)}
+              {@const decisionHref = item.href ?? gitTaskUrl(item.taskID)}
+              <div
+                class={`orchestration-decision-item ${item.tone}`}
+                title={`${item.runTitle}\n${item.title}${item.summary ? ` - ${item.summary}` : ''}`}
+              >
+                <span>{item.label}</span>
+                <button
+                  type="button"
+                  aria-label={`Focus run decision: ${item.title}`}
+                  disabled={!decisionRun}
+                  onclick={() => {
+                    if (decisionRun) focusOrchestrationRun(decisionRun);
+                  }}
+                >
+                  <strong>{item.title}</strong>
+                  <small>{item.runTitle}{item.agentLabel ? ` · ${item.agentLabel}` : ''}</small>
+                </button>
+                <button
+                  type="button"
+                  aria-label="Copy run decision"
+                  title="Copy run decision"
+                  onclick={() =>
+                    copyActivityCommand(
+                      `${item.label} · ${item.runTitle} · ${item.title}${item.summary ? ` - ${item.summary}` : ''}`,
+                      'Run decision copied'
+                    )}
+                >
+                  <Copy size={11} strokeWidth={2} />
+                </button>
+                {#if decisionHref}
+                  <a href={decisionHref} target="_blank" rel="noreferrer" aria-label={`Open ${item.title}`}>
+                    <ExternalLink size={11} strokeWidth={2} />
+                  </a>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if selectedProjectOrchestrationRuns.length > 0}
           <div class="orchestration-context-list">
             {#each selectedProjectOrchestrationRuns.slice(0, 3) as run (run.id)}
@@ -15231,6 +15296,7 @@
   }
 
   .workspace-arrangement.context-side .orchestration-context-list,
+  .workspace-arrangement.context-side .orchestration-decision-queue,
   .workspace-arrangement.context-side .runtime-context-list,
   .workspace-arrangement.context-side .agent-session-list,
   .workspace-arrangement.context-side .worktree-context-list,
@@ -15387,6 +15453,122 @@
   .orchestration-context-list {
     overflow-y: auto;
     scrollbar-width: thin;
+  }
+
+  .orchestration-decision-queue {
+    display: grid;
+    gap: 4px;
+    max-height: 82px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .orchestration-decision-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 28px;
+    padding: 4px 5px;
+    border: 1px solid rgba(216, 170, 85, 0.2);
+    border-radius: 5px;
+    background: rgba(216, 170, 85, 0.075);
+  }
+
+  .orchestration-decision-item.bad {
+    border-color: rgba(255, 112, 112, 0.24);
+    background: rgba(255, 112, 112, 0.08);
+  }
+
+  .orchestration-decision-item > span {
+    min-width: 0;
+    padding: 0 5px;
+    color: #20170a;
+    border-radius: 999px;
+    background: #d8aa55;
+    font-size: 8px;
+    font-weight: 900;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .orchestration-decision-item.bad > span {
+    color: #220a0a;
+    background: #ff8f8f;
+  }
+
+  .orchestration-decision-item button,
+  .orchestration-decision-item a {
+    min-width: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .orchestration-decision-item button {
+    display: grid;
+    gap: 1px;
+    padding: 0;
+    color: #f3ebe0;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .orchestration-decision-item button:disabled {
+    cursor: default;
+    opacity: 0.56;
+  }
+
+  .orchestration-decision-item button:not(:disabled):hover strong,
+  .orchestration-decision-item button:not(:disabled):focus-visible strong {
+    color: #f4d08b;
+  }
+
+  .orchestration-decision-item button:not(:disabled):focus-visible {
+    outline: 1px solid rgba(216, 170, 85, 0.34);
+    outline-offset: 2px;
+  }
+
+  .orchestration-decision-item strong,
+  .orchestration-decision-item small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .orchestration-decision-item strong {
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .orchestration-decision-item small {
+    color: #b9ada0;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .orchestration-decision-item > button:not(:first-of-type),
+  .orchestration-decision-item a {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    color: #d8aa55;
+    border-radius: 5px;
+    text-decoration: none;
+  }
+
+  .orchestration-decision-item > button:not(:first-of-type):hover,
+  .orchestration-decision-item > button:not(:first-of-type):focus-visible,
+  .orchestration-decision-item a:hover,
+  .orchestration-decision-item a:focus-visible {
+    color: #f4d08b;
+    outline: 0;
+    background: rgba(216, 170, 85, 0.14);
   }
 
   .orchestration-context-row,

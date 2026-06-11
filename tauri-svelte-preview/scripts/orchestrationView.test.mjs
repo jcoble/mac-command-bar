@@ -4,6 +4,7 @@ import {
   orchestrationAgentActivityItems,
   orchestrationAttentionQueue,
   orchestrationCurrentActivity,
+  orchestrationDecisionQueueForRuns,
   orchestrationLinkChips,
   orchestrationLoopStageMetrics,
   orchestrationLoopTallyText,
@@ -264,6 +265,34 @@ assert.equal(
 assert.deepEqual(
   orchestrationAttentionQueue(run).map((item) => [item.label, item.title, item.agentLabel]),
   [['Decision', 'Needs sign-off', 'claude fix-agent fixer-1']]
+);
+assert.deepEqual(
+  orchestrationDecisionQueueForRuns([
+    {
+      ...run,
+      id: 'run-tsk-128',
+      title: 'TSK-128 failed checkout loop',
+      taskID: 'TSK-128',
+      events: [
+        {
+          ...run.events[0],
+          id: 'evt-4',
+          runId: 'run-tsk-128',
+          timestamp: '2026-06-10T12:07:00.000Z',
+          kind: 'test.failed',
+          status: 'failed',
+          title: 'Checkout scenario failed',
+          message: 'Browser test found a redirect loop',
+          taskID: 'TSK-128'
+        }
+      ]
+    },
+    run
+  ]).map((item) => [item.tone, item.runTitle, item.taskID, item.title, item.timestamp]),
+  [
+    ['bad', 'TSK-128 failed checkout loop', 'TSK-128', 'Checkout scenario failed', '2026-06-10T12:07:00.000Z'],
+    ['attention', 'TSK-127 source browser loop', 'TSK-127', 'Needs sign-off', '2026-06-10T12:06:00.000Z']
+  ]
 );
 assert.equal(
   orchestrationRunSummaryText(run),
