@@ -27,6 +27,7 @@ import {
   selectBackgroundIndexProjects,
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
+  taskReferenceUrl,
   textMatchesSearchTokens,
   uniqueTaskIDsFromGitMetadata,
   upsertSourceScanCacheEntry,
@@ -679,3 +680,6 @@ assert.deepEqual(
   ),
   ['TSK-127', 'TSK-126']
 );
+assert.equal(taskReferenceUrl('TSK-127', { 'TSK-127': 'https://example.test/task' }), 'https://example.test/task');
+assert.equal(taskReferenceUrl('tsk-192', {}), 'https://www.notion.so/search?q=TSK-192');
+assert.equal(taskReferenceUrl('not-a-task', {}), null);

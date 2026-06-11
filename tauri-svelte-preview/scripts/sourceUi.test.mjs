@@ -747,6 +747,7 @@ assert.ok(pageSource.includes('gitStatusByRelativePath'), 'Source page should ma
 assert.ok(pageSource.includes('gitCommitHistory'), 'Source page should track selected project commit history');
 assert.ok(pageSource.includes('function loadGitCommitHistory'), 'Source page should expose a Git commit history loader');
 assert.ok(pageSource.includes('function gitTaskUrl'), 'Source page should expose Notion task links for recognized task IDs');
+assert.ok(pageSource.includes('taskReferenceUrl(taskID, commandCenterTaskUrls)'), 'Task links should fall back to Notion search');
 assert.ok(pageSource.includes('function gitCommitSummaryText'), 'Git history should create a copyable commit summary');
 assert.ok(pageSource.includes('function copyGitCommitSha'), 'Git history should expose quick SHA copy');
 assert.ok(pageSource.includes('function copyGitCommitSummary'), 'Git history should expose quick summary copy');

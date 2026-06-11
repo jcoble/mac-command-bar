@@ -620,6 +620,16 @@ export function uniqueTaskIDsFromGitMetadata(...groups: GitTaskMetadata[][]): st
   return taskIDs;
 }
 
+export function taskReferenceUrl(
+  taskID: string | null | undefined,
+  knownTaskUrls: Record<string, string>
+): string | null {
+  const normalized = normalizeTaskID(taskID);
+  if (!normalized) return null;
+
+  return knownTaskUrls[normalized] ?? `https://www.notion.so/search?q=${encodeURIComponent(normalized)}`;
+}
+
 export function formatSourceDiagnosticSummary(diagnostics: SourceDiagnostic[]): string {
   if (diagnostics.length === 0) return 'No problems';
 

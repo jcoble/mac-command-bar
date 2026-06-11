@@ -104,6 +104,7 @@
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
     sourceSupportsLanguageIntelligence,
+    taskReferenceUrl,
     textMatchesSearchTokens,
     uniqueTaskIDsFromGitMetadata,
     upsertSourceScanCacheEntry,
@@ -219,7 +220,9 @@
   const maxGitCommitHistoryEntries = 24;
   const commandCenterTaskUrls: Record<string, string> = {
     'TSK-127':
-      'https://app.notion.com/p/TSK-127-Create-a-native-MAC-OS-app-for-doing-diff-things-in-menu-bar-379394b0689d8053af76fd44c7ffdba4'
+      'https://app.notion.com/p/TSK-127-Create-a-native-MAC-OS-app-for-doing-diff-things-in-menu-bar-379394b0689d8053af76fd44c7ffdba4',
+    'TSK-192':
+      'https://app.notion.com/p/TSK-192-Add-conversation-workspace-restore-snapshots-37c394b0689d810d9d74e798a144a3e9'
   };
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
@@ -2299,7 +2302,7 @@
   }
 
   function gitTaskUrl(taskID: string | null) {
-    return taskID ? commandCenterTaskUrls[taskID] ?? null : null;
+    return taskReferenceUrl(taskID, commandCenterTaskUrls);
   }
 
   function gitTaskReferenceText(taskID: string) {
