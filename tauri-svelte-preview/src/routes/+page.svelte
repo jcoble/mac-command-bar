@@ -12605,10 +12605,10 @@
                 aria-label="Start embedded terminal"
                 title={selectedProject.path}
                 disabled={!selectedProject.path || embeddedTerminalStarting}
-                onclick={() => startEmbeddedTerminalSession(selectedProject.path)}
+                onclick={attachOrStartProjectEmbeddedTerminal}
               >
                 <Terminal size={13} strokeWidth={2} />
-                <span>{embeddedTerminalStarting ? 'Starting' : 'Start'}</span>
+                <span>{embeddedTerminalStarting ? 'Starting' : 'Open'}</span>
               </button>
               <button
                 class="file-action-button"

@@ -432,6 +432,7 @@ assert.ok(pageSource.includes('aria-label="Embedded terminal"'), 'Terminal launc
 assert.ok(pageSource.includes('aria-label="Embedded terminal sessions"'), 'Terminal launchpad should list embedded PTY sessions');
 assert.ok(pageSource.includes('bind:this={embeddedTerminalElement}'), 'Embedded terminal should bind its xterm host');
 assert.ok(pageSource.includes('aria-label="Start embedded terminal"'), 'Terminal launchpad should start embedded sessions');
+assert.ok(pageSource.includes('onclick={attachOrStartProjectEmbeddedTerminal}'), 'Terminal launchpad project button should attach before starting duplicate project PTYs');
 assert.ok(pageSource.includes('aria-label="Stop embedded terminal"'), 'Terminal launchpad should stop embedded sessions');
 assert.ok(pageSource.includes('aria-label="Fit embedded terminal"'), 'Terminal launchpad should resize embedded sessions');
 assert.ok(pageSource.includes("id: 'terminal-open-or-attach-project'"), 'Command palette should open or attach the current project terminal');
