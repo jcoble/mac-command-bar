@@ -10167,6 +10167,8 @@
                 onHoverLookup={handleEditorHoverLookup}
                 onImplementationLookup={handleEditorImplementationLookup}
                 onInlayHintLookup={handleEditorInlayHintLookup}
+                onNavigateBackRequest={navigateSourceBack}
+                onNavigateForwardRequest={navigateSourceForward}
                 onProblemsRequest={() => showEditorInsightPanel('problems')}
                 onQuickOpenRequest={openQuickOpen}
                 onReferenceLookup={handleEditorReferenceLookup}

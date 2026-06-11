@@ -886,6 +886,8 @@ assert.ok(editorSource.includes('onSaveRequest?: () => void'), 'Editor should ac
 assert.ok(editorSource.includes('onQuickOpenRequest?: () => void'), 'Editor should accept a native quick-open shortcut callback');
 assert.ok(editorSource.includes('onCommandPaletteRequest?: () => void'), 'Editor should accept a native command-palette shortcut callback');
 assert.ok(editorSource.includes('onGoToLineRequest?: () => void'), 'Editor should accept a native go-to-line shortcut callback');
+assert.ok(editorSource.includes('onNavigateBackRequest?: () => void'), 'Editor should accept a source back-navigation shortcut callback');
+assert.ok(editorSource.includes('onNavigateForwardRequest?: () => void'), 'Editor should accept a source forward-navigation shortcut callback');
 assert.ok(editorSource.includes('onProblemsRequest?: () => void'), 'Editor should accept a native problems shortcut callback');
 assert.ok(editorSource.includes('onSymbolsRequest?: () => void'), 'Editor should accept a native symbols shortcut callback');
 assert.ok(editorSource.includes('monaco.KeyCode.F12'), 'Editor should bind F12 for definition lookup');
@@ -894,6 +896,8 @@ assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS'), 
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP'), 'Editor should bind Cmd+P inside Monaco');
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK'), 'Editor should bind Cmd+K inside Monaco');
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyG'), 'Editor should bind Cmd+G inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.BracketLeft'), 'Editor should bind Cmd+[ inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.BracketRight'), 'Editor should bind Cmd+] inside Monaco');
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO'), 'Editor should bind Cmd+Shift+O inside Monaco');
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM'), 'Editor should bind Cmd+Shift+M inside Monaco');
 assert.ok(editorSource.includes('editor.addAction'), 'Editor should register Monaco command-palette/context-menu actions');
@@ -991,6 +995,8 @@ assert.ok(pageSource.includes('aria-label="Save all source files"'), 'Editor act
 assert.ok(pageSource.includes('onQuickOpenRequest={openQuickOpen}'), 'Editor Cmd+P should call the page quick-open path');
 assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), 'Editor Cmd+K should call the page command palette');
 assert.ok(pageSource.includes('onGoToLineRequest={openCurrentFileGoToLine}'), 'Editor Cmd+G should call current-file line navigation');
+assert.ok(pageSource.includes('onNavigateBackRequest={navigateSourceBack}'), 'Editor Cmd+[ should call page source back navigation');
+assert.ok(pageSource.includes('onNavigateForwardRequest={navigateSourceForward}'), 'Editor Cmd+] should call page source forward navigation');
 assert.ok(pageSource.includes("onProblemsRequest={() => showEditorInsightPanel('problems')}"), 'Editor Cmd+Shift+M should show problems');
 assert.ok(pageSource.includes('title={sourceLspStatusTitle()}'), 'LSP badge should explain server or fallback status');
 assert.ok(pageSource.includes('class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}'), 'LSP badge should style fallback status distinctly');

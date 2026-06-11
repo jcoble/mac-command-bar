@@ -142,6 +142,8 @@
 		onGoToLineRequest?: () => void;
 		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
 		onImplementationLookup?: SourceEditorImplementationLookup;
+		onNavigateBackRequest?: () => void;
+		onNavigateForwardRequest?: () => void;
 		onProblemsRequest?: () => void;
 		onQuickOpenRequest?: () => void;
 		onReferenceLookup?: SourceEditorReferenceLookup;
@@ -176,6 +178,8 @@
 		onGoToLineRequest,
 		onHoverLookup,
 		onImplementationLookup,
+		onNavigateBackRequest,
+		onNavigateForwardRequest,
 		onProblemsRequest,
 		onQuickOpenRequest,
 		onReferenceLookup,
@@ -1421,6 +1425,22 @@
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 0.2,
 				run: () => onGoToLineRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.navigateBack",
+				label: "Go Back",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.BracketLeft],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.21,
+				run: () => onNavigateBackRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.navigateForward",
+				label: "Go Forward",
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.BracketRight],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.22,
+				run: () => onNavigateForwardRequest?.(),
 			}),
 			editor.addAction({
 				id: "mcb.source.showSymbols",
