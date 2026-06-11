@@ -3,6 +3,7 @@ import {
   defaultSourceScanLimit,
   expandedSourceScanLimit,
   nativeSourceScanProgressEvent,
+  validateProjectRootFromTauri,
   fetchGitRepositoryFromTauri,
   createSourceScanId,
   findSourceDefinitionsFromTauri,
@@ -88,6 +89,7 @@ assert.equal(
 );
 assert.equal(await listProjectWorktreesFromTauri('/tmp/repo'), null);
 assert.equal(await removeProjectWorktreeFromTauri('/tmp/repo', '/tmp/repo-worktree'), null);
+assert.equal(await validateProjectRootFromTauri('/tmp/repo'), null);
 assert.equal(
   await listRuntimeContextsFromTauri([
     {

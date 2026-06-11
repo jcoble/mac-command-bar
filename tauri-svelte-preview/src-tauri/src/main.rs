@@ -58,6 +58,16 @@ struct SourceScanStats {
     unreadable_entries: usize,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRootValidationResult {
+    path: String,
+    exists: bool,
+    is_directory: bool,
+    is_git_repository: bool,
+    message: String,
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceScanProgressEvent {
@@ -426,6 +436,13 @@ async fn cancel_source_scan(
     scan_id: String,
 ) -> Result<bool, String> {
     Ok(scan_registry.cancel(&scan_id))
+}
+
+#[tauri::command]
+async fn validate_project_root(path: String) -> Result<ProjectRootValidationResult, String> {
+    tauri::async_runtime::spawn_blocking(move || validate_project_root_sync(PathBuf::from(path)))
+        .await
+        .map_err(|error| format!("Project root validation task failed: {error}"))
 }
 
 fn source_scan_cancellation_for_command(
@@ -1014,6 +1031,57 @@ fn list_source_files_sync_with_cancellation(
         truncated,
         stats: progress.stats,
     })
+}
+
+fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
+    let path_label = path.display().to_string();
+    let metadata = std::fs::metadata(&path);
+    let Ok(metadata) = metadata else {
+        return ProjectRootValidationResult {
+            path: path_label,
+            exists: false,
+            is_directory: false,
+            is_git_repository: false,
+            message: "Project path not found".to_string(),
+        };
+    };
+
+    if !metadata.is_dir() {
+        return ProjectRootValidationResult {
+            path: path_label,
+            exists: true,
+            is_directory: false,
+            is_git_repository: false,
+            message: "Project path points to a file. Choose the repository folder instead."
+                .to_string(),
+        };
+    }
+
+    let is_git_repository = is_git_repository_root(&path);
+    ProjectRootValidationResult {
+        path: path_label,
+        exists: true,
+        is_directory: true,
+        is_git_repository,
+        message: if is_git_repository {
+            "Project root ready".to_string()
+        } else {
+            "Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable."
+                .to_string()
+        },
+    }
+}
+
+fn is_git_repository_root(path: &Path) -> bool {
+    if path.join(".git").exists() {
+        return true;
+    }
+
+    Command::new("git")
+        .args(["-C", path.to_str().unwrap_or_default(), "rev-parse", "--show-toplevel"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn collect_source_files(
@@ -3307,6 +3375,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_source_files,
             cancel_source_scan,
+            validate_project_root,
             read_source_file,
             write_source_file,
             open_source_file,
@@ -3408,6 +3477,70 @@ mod tests {
         assert!(scan.stats.visited_entries >= 8);
         assert!(scan.stats.skipped_directories >= 1);
         assert!(scan.stats.unsupported_files >= 1);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_root_validation_rejects_missing_paths() {
+        let root = unique_temp_root();
+
+        let validation = validate_project_root_sync(root.clone());
+
+        assert_eq!(validation.path, root.display().to_string());
+        assert!(!validation.exists);
+        assert!(!validation.is_directory);
+        assert!(!validation.is_git_repository);
+        assert!(validation.message.contains("not found"));
+    }
+
+    #[test]
+    fn project_root_validation_rejects_files() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("Project.csproj");
+        std::fs::write(&file_path, "<Project />").unwrap();
+
+        let validation = validate_project_root_sync(file_path.clone());
+
+        assert_eq!(validation.path, file_path.display().to_string());
+        assert!(validation.exists);
+        assert!(!validation.is_directory);
+        assert!(!validation.is_git_repository);
+        assert!(validation.message.contains("file"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_root_validation_accepts_git_worktrees() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: /tmp/repo/.git/worktrees/test\n").unwrap();
+
+        let validation = validate_project_root_sync(root.clone());
+
+        assert_eq!(validation.path, root.display().to_string());
+        assert!(validation.exists);
+        assert!(validation.is_directory);
+        assert!(validation.is_git_repository);
+        assert!(validation.message.contains("ready"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_root_validation_warns_for_non_git_directories() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let validation = validate_project_root_sync(root.clone());
+
+        assert_eq!(validation.path, root.display().to_string());
+        assert!(validation.exists);
+        assert!(validation.is_directory);
+        assert!(!validation.is_git_repository);
+        assert!(validation.message.contains("not a Git repository"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

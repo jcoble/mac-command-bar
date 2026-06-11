@@ -224,6 +224,7 @@
     stageGitPathsFromTauri,
     startTerminalSessionFromTauri,
     unstageGitPathsFromTauri,
+    validateProjectRootFromTauri,
     writeTerminalSessionFromTauri,
     closeTerminalSessionFromTauri,
     writeSourceToTauri,
@@ -235,6 +236,7 @@
     type OrchestrationRun,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
+    type ProjectRootValidationResult,
     type ProjectWorktree,
     type RuntimeContext,
     type SourceGitDiff,
@@ -596,6 +598,7 @@
   let fileActionBusy = $state('');
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
+  let projectRootValidating = $state(false);
   let quickOpenVisible = $state(false);
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
@@ -4463,7 +4466,8 @@
     sourceActivityFilter = '';
     persistSourceActivityMode(sourceActivityMode);
     fileActionStatus = `Opening ${worktree.branch} source tree`;
-    return addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
+    void addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
+    return true;
   }
 
   function copyWorktreeCleanupPlan(worktree: ProjectWorktree) {
@@ -8318,7 +8322,7 @@
         return;
       }
 
-      addCustomProjectRoot('', selectedFolder, false);
+      await addCustomProjectRoot('', selectedFolder, false);
     } catch {
       startAddingProject();
       projectFormError = 'Folder picker unavailable';
@@ -8334,10 +8338,37 @@
 
   function saveProject(event: SubmitEvent) {
     event.preventDefault();
-    addCustomProjectRoot(projectNameInput, projectPathInput, true);
+    void addCustomProjectRoot(projectNameInput, projectPathInput, true);
   }
 
-  function addCustomProjectRoot(name: string, path: string, reportDuplicate: boolean) {
+  async function validateProjectRootBeforeAdd(project: ProjectRoot): Promise<ProjectRootValidationResult | null | false> {
+    projectRootValidating = true;
+
+    try {
+      const validation = await validateProjectRootFromTauri(project.path);
+      if (!validation) return null;
+
+      if (!validation.exists || !validation.isDirectory) {
+        projectFormError = validation.message;
+        fileActionStatus = validation.message;
+        return false;
+      }
+
+      if (!validation.isGitRepository) {
+        fileActionStatus = validation.message;
+      }
+
+      return validation;
+    } catch (validationError) {
+      projectFormError =
+        validationError instanceof Error ? validationError.message : 'Could not validate project root';
+      return false;
+    } finally {
+      projectRootValidating = false;
+    }
+  }
+
+  async function addCustomProjectRoot(name: string, path: string, reportDuplicate: boolean) {
     const nextProject = createProjectRoot(name, path);
 
     if (!nextProject.path) {
@@ -8358,6 +8389,9 @@
       return false;
     }
 
+    const validation = await validateProjectRootBeforeAdd(nextProject);
+    if (validation === false) return false;
+
     const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
     customProjectRoots = nextCustomProjectRoots;
@@ -8365,6 +8399,9 @@
     addingProject = false;
     projectFormError = '';
     fileActionStatus = sourceOnboardingScanStatus(nextProject);
+    if (validation && !validation.isGitRepository) {
+      fileActionStatus = `${validation.message} ${fileActionStatus}`;
+    }
     void activateProject(nextProject, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
@@ -8817,7 +8854,7 @@
             <option value={project.id}>{project.name}</option>
           {/each}
         </select>
-        <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot} onclick={chooseProjectRoot}>
+        <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot || projectRootValidating} onclick={chooseProjectRoot}>
           <Plus size={16} strokeWidth={2} />
         </button>
         <button class="icon-button quick-open-trigger" type="button" aria-label="Open source file" title="Open source file" onclick={openQuickOpen}>
@@ -8869,13 +8906,13 @@
             <p class="project-form-error">{projectFormError}</p>
           {/if}
           <div class="form-actions">
-            <button class="form-button" type="button" onclick={cancelAddingProject}>
+            <button class="form-button" type="button" disabled={projectRootValidating} onclick={cancelAddingProject}>
               <X size={14} strokeWidth={2} />
               <span>Cancel</span>
             </button>
-            <button class="form-button primary" type="submit">
+            <button class="form-button primary" type="submit" disabled={projectRootValidating}>
               <Save size={14} strokeWidth={2} />
-              <span>Save</span>
+              <span>{projectRootValidating ? 'Checking' : 'Save'}</span>
             </button>
           </div>
         </form>

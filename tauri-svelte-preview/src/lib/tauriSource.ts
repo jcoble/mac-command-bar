@@ -162,6 +162,14 @@ export type RuntimeContext = {
   rootLabel: string;
 };
 
+export type ProjectRootValidationResult = {
+  path: string;
+  exists: boolean;
+  isDirectory: boolean;
+  isGitRepository: boolean;
+  message: string;
+};
+
 export type OrchestrationEvent = {
   schemaVersion: number;
   id: string;
@@ -248,6 +256,17 @@ export type OrchestrationLink = {
 
 export function createSourceScanId(): string {
   return `source-scan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export async function validateProjectRootFromTauri(
+  path: string
+): Promise<ProjectRootValidationResult | null> {
+  if (!isTauriRuntime() || !path.trim()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProjectRootValidationResult>('validate_project_root', { path });
 }
 
 export async function listSourceFilesFromTauri(
