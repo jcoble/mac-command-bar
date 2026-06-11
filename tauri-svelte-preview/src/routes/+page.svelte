@@ -15015,27 +15015,27 @@
     position: relative;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 6px;
-    height: 28px;
-    padding: 0 6px;
+    gap: 4px;
+    height: 24px;
+    padding: 0 4px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.025);
   }
 
   .editor-file-state {
     display: inline-grid;
-    grid-template-columns: 15px minmax(0, auto) auto auto;
+    grid-template-columns: 14px minmax(0, auto) auto auto;
     align-items: center;
     justify-self: start;
-    gap: 5px;
+    gap: 4px;
     min-width: 0;
     max-width: 100%;
-    height: 22px;
-    padding: 0 7px;
+    height: 18px;
+    padding: 0 2px;
     color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    border: 0;
     border-radius: 5px;
-    background: rgba(0, 0, 0, 0.16);
+    background: transparent;
   }
 
   .editor-file-state strong,
@@ -15081,8 +15081,8 @@
   .editor-icon-button {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 22px;
+    width: 22px;
+    height: 20px;
     color: #aeb8b5;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 5px;
@@ -15107,7 +15107,7 @@
   .editor-action-menu {
     position: absolute;
     z-index: 8;
-    top: calc(100% + 5px);
+    top: calc(100% + 3px);
     right: 0;
     display: grid;
     width: 230px;
@@ -15125,7 +15125,7 @@
     align-items: center;
     gap: 7px;
     min-width: 0;
-    height: 28px;
+    height: 26px;
     padding: 0 7px;
     color: #cbd3d1;
     border: 0;
