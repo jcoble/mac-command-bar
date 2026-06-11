@@ -65,6 +65,7 @@ export type WorkspaceSnapshot = {
   openPaths: string[];
   sourceActivityMode: WorkspaceSnapshotActivityMode;
   sourceTerminalApp: WorkspaceSnapshotTerminalApp;
+  browserUrl: string | null;
   viewState: WorkspaceSnapshotViewState;
   embeddedTerminal: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout: SourceDockLayout;
@@ -86,6 +87,7 @@ export type WorkspaceSnapshotInput = {
   openPaths?: string[];
   sourceActivityMode?: WorkspaceSnapshotActivityMode;
   sourceTerminalApp?: WorkspaceSnapshotTerminalApp;
+  browserUrl?: string | null;
   viewState?: Partial<WorkspaceSnapshotViewState> | null;
   embeddedTerminal?: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout?: SourceDockLayout;
@@ -105,6 +107,7 @@ export type RestoredWorkspaceSnapshot = {
   worktreePath: string | null;
   branch: string | null;
   openPaths: string[];
+  browserUrl: string | null;
   embeddedTerminal: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout: SourceDockLayout;
   resumeCommand: string | null;
@@ -159,6 +162,7 @@ export function createWorkspaceSnapshot(input: WorkspaceSnapshotInput): Workspac
     openPaths: normalizeOpenPaths(input.openPaths, selectedPath),
     sourceActivityMode: input.sourceActivityMode ?? 'conversations',
     sourceTerminalApp: input.sourceTerminalApp ?? 'Warp',
+    browserUrl: normalizeOptionalString(input.browserUrl),
     viewState: normalizeWorkspaceSnapshotViewState(input.viewState),
     embeddedTerminal: normalizeEmbeddedTerminal(input.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(input.dockLayout ?? createDefaultSourceDockLayout()),
@@ -183,6 +187,7 @@ export function restoreWorkspaceSnapshot(snapshot: WorkspaceSnapshot): RestoredW
     worktreePath: snapshot.worktreePath,
     branch: snapshot.branch,
     openPaths: snapshot.openPaths,
+    browserUrl: normalizeOptionalString(snapshot.browserUrl),
     embeddedTerminal: normalizeEmbeddedTerminal(snapshot.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(snapshot.dockLayout),
     resumeCommand: snapshot.resumeCommand
@@ -331,6 +336,7 @@ export function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot 
     sourceTerminalApp: isWorkspaceSnapshotTerminalApp(snapshot.sourceTerminalApp)
       ? snapshot.sourceTerminalApp
       : 'Warp',
+    browserUrl: typeof snapshot.browserUrl === 'string' ? snapshot.browserUrl : null,
     viewState: normalizeWorkspaceSnapshotViewState(snapshot.viewState),
     embeddedTerminal: isWorkspaceSnapshotEmbeddedTerminal(snapshot.embeddedTerminal)
       ? snapshot.embeddedTerminal

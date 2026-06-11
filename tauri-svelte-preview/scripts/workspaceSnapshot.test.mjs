@@ -35,6 +35,7 @@ const snapshot = createWorkspaceSnapshot({
   ],
   sourceActivityMode: 'conversations',
   sourceTerminalApp: 'Warp',
+  browserUrl: '  http://localhost:5177/customer/dashboard  ',
   viewState: {
     contextPanelMode: 'stack',
     contextPanelPlacement: 'side',
@@ -96,6 +97,7 @@ assert.equal(restored.selectedPath, '/Users/blackcolours/dev/work/worktrees/EdiP
 assert.equal(restored.selectedLine, 43);
 assert.equal(restored.sourceActivityMode, 'conversations');
 assert.equal(restored.sourceTerminalApp, 'Warp');
+assert.equal(restored.browserUrl, 'http://localhost:5177/customer/dashboard');
 assert.deepEqual(restored.viewState, snapshot.viewState);
 assert.equal(restored.cwd, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center');
 assert.deepEqual(restored.embeddedTerminal, snapshot.embeddedTerminal);
@@ -197,7 +199,8 @@ const storedSnapshot = parseStoredWorkspaceSnapshot({
     cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center',
     shell: '/bin/zsh',
     startedAt: 2_222
-  }
+  },
+  browserUrl: ' http://localhost:6190/customer/trading-partners '
 });
 
 assert.deepEqual(
@@ -224,6 +227,11 @@ assert.deepEqual(
     startedAt: 2_222
   },
   'stored snapshots should preserve embedded terminal restore metadata'
+);
+assert.equal(
+  storedSnapshot?.browserUrl,
+  'http://localhost:6190/customer/trading-partners',
+  'stored snapshots should preserve normalized browser dock URLs'
 );
 assert.equal(parseStoredWorkspaceSnapshot({ ...snapshot, provider: 'unknown' }), null);
 

@@ -4047,6 +4047,7 @@
       openPaths: workspaceSnapshotOpenPathsForProject(project),
       sourceActivityMode,
       sourceTerminalApp,
+      browserUrl: activeBrowserUrl || null,
       viewState: workspaceSnapshotViewState(),
       embeddedTerminal: workspaceSnapshotEmbeddedTerminal(),
       dockLayout: sourceDockLayout,
@@ -4233,6 +4234,7 @@
       `Restore status: ${readiness.label} - ${readiness.detail}`,
       `Activity pane: ${sourceActivityLabel(snapshot.sourceActivityMode)}`,
       `Terminal app: ${snapshot.sourceTerminalApp}`,
+      `Browser URL: ${snapshot.browserUrl ?? 'none'}`,
       `View state: ${workspaceSnapshotViewStateLabel(snapshot.viewState)}`,
       `Embedded terminal: ${embeddedTerminal}`,
       `Resume command: ${snapshot.resumeCommand ?? 'none'}`,
@@ -4304,6 +4306,7 @@
     persistSourceActivityMode(sourceActivityMode);
     sourceTerminalApp = restored.sourceTerminalApp;
     persistSourceTerminalApp(sourceTerminalApp);
+    setBrowserDockUrl(restored.browserUrl ?? '');
     applyWorkspaceSnapshotViewState(restored.viewState);
     sourceDockLayout = restored.dockLayout;
     syncSourceDockLayoutToWorkspace(sourceDockLayout);
