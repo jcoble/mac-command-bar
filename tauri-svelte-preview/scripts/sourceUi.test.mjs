@@ -943,6 +943,15 @@ assert.ok(pageSource.includes('function loadSourceLspWorkspaceSymbols'), 'Source
 assert.ok(pageSource.includes('findSourceDefinitionTargets'), 'Source page should fall back to browser definition lookup');
 assert.ok(pageSource.includes('findSourceReferencesFromTauri'), 'Source page should call native project reference lookup');
 assert.ok(pageSource.includes('findSourceReferenceTargets'), 'Source page should fall back to browser reference lookup');
+assert.ok(pageSource.includes('sourceNavigationBackStack'), 'Source page should track source navigation back stack');
+assert.ok(pageSource.includes('sourceNavigationForwardStack'), 'Source page should track source navigation forward stack');
+assert.ok(pageSource.includes('pushSourceNavigationHistory'), 'Source page should push current source locations before jumps');
+assert.ok(pageSource.includes('function navigateSourceBack'), 'Source page should expose back navigation');
+assert.ok(pageSource.includes('function navigateSourceForward'), 'Source page should expose forward navigation');
+assert.ok(pageSource.includes("id: 'navigate-back'"), 'Command palette should expose source back navigation');
+assert.ok(pageSource.includes("id: 'navigate-forward'"), 'Command palette should expose source forward navigation');
+assert.ok(pageSource.includes("event.key === '['"), 'Window shortcuts should bind Cmd+[ for source back navigation');
+assert.ok(pageSource.includes("event.key === ']'"), 'Window shortcuts should bind Cmd+] for source forward navigation');
 assert.ok(pageSource.includes('function runSourceDefinitionLookup'), 'Source page should expose project definition lookup');
 assert.ok(pageSource.includes('function runSourceReferenceLookup'), 'Source page should expose project reference lookup');
 assert.ok(pageSource.includes('function runSourceImplementationLookup'), 'Source page should expose implementation lookup');

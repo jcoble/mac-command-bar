@@ -21,7 +21,10 @@ import {
   folderIdsForSourceRecord,
   getSourceScanCacheEntry,
   monacoLanguageForSource,
+  navigateSourceHistoryBack,
+  navigateSourceHistoryForward,
   parseQuickOpenQuery,
+  pushSourceNavigationHistory,
   rankSourceRecords,
   removeSourceScanCacheEntries,
   scrollTopForSourceTreeReveal,
@@ -105,6 +108,44 @@ const limitedRecent = upsertRecentSourceRecord(bumpedRecent, records[1], project
 assert.deepEqual(
   limitedRecent.map((record) => record.path),
   ['/repo/src/B.ts']
+);
+
+const navigationStart = { path: '/repo/src/A.ts', line: 12 };
+const navigationTarget = { path: '/repo/src/B.ts', line: 4 };
+const pushedNavigation = pushSourceNavigationHistory([], navigationStart, navigationTarget, 20);
+assert.deepEqual(pushedNavigation, [navigationStart]);
+assert.deepEqual(
+  pushSourceNavigationHistory(pushedNavigation, navigationTarget, navigationTarget, 20),
+  pushedNavigation
+);
+const limitedNavigation = pushSourceNavigationHistory(
+  pushedNavigation,
+  { path: '/repo/src/C.ts', line: 3 },
+  { path: '/repo/src/D.ts', line: 1 },
+  1
+);
+assert.deepEqual(limitedNavigation, [{ path: '/repo/src/C.ts', line: 3 }]);
+const backNavigation = navigateSourceHistoryBack(
+  [navigationStart],
+  [],
+  navigationTarget
+);
+assert.deepEqual(backNavigation, {
+  target: navigationStart,
+  backStack: [],
+  forwardStack: [navigationTarget]
+});
+assert.deepEqual(
+  navigateSourceHistoryForward(
+    backNavigation.backStack,
+    backNavigation.forwardStack,
+    backNavigation.target
+  ),
+  {
+    target: navigationTarget,
+    backStack: [navigationStart],
+    forwardStack: []
+  }
 );
 
 assert.equal(formatSourceRecordCount(2, 2, false), '2');

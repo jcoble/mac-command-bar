@@ -107,13 +107,17 @@
     getSourceScanCacheEntry,
     mergeProjectRoots,
     normalizeProjectPath,
+    navigateSourceHistoryBack,
+    navigateSourceHistoryForward,
     parseQuickOpenQuery,
     previewFromContent,
+    pushSourceNavigationHistory,
     rankSourceRecords,
     removeSourceScanCacheEntries,
     scrollTopForSourceTreeReveal,
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
+    sourceNavigationLocationForRecord,
     shouldRepairSuspiciousSourceScan,
     sourceLanguageForPath,
     sourceSupportsLanguageIntelligence,
@@ -140,6 +144,7 @@
     type SourceInlayHint,
     type SourceLspHover,
     type SourceLspStatus,
+    type SourceNavigationLocation,
     type SourceRenameFileEdit,
     type SourceRenameResult,
     type SourceSemanticToken,
@@ -252,6 +257,7 @@
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
   const maxStoredOpenSourceTabs = 64;
+  const maxSourceNavigationHistoryEntries = 64;
   const maxSourceSearchResults = 50;
   const maxSourceDefinitionResults = 20;
   const maxSourceCompletionResults = 50;
@@ -484,6 +490,8 @@
   let selectedRecord = $state<SourceRecord | null>(null);
   let selectedSourceLine = $state<number | null>(null);
   let selectedSourceLineRequestId = $state(0);
+  let sourceNavigationBackStack = $state<SourceNavigationLocation[]>([]);
+  let sourceNavigationForwardStack = $state<SourceNavigationLocation[]>([]);
   let preview = $state<SourcePreview | null>(null);
   let sourceDraftContentByPath = $state<Record<string, string>>({});
   let savedSourceContentByPath = $state<Record<string, string>>({});
@@ -661,6 +669,8 @@
   let quickOpenActiveResultCount = $derived(
     quickOpenWorkspaceSymbolMode ? workspaceSymbolResults.length : quickOpenResults.length
   );
+  let sourceNavigationCanGoBack = $derived(sourceNavigationBackStack.length > 0);
+  let sourceNavigationCanGoForward = $derived(sourceNavigationForwardStack.length > 0);
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
@@ -1006,6 +1016,20 @@
       detail: selectedRecord ? `${selectedRecord.relativePath}:line` : 'No file',
       disabled: !selectedRecord,
       perform: openCurrentFileGoToLine
+    },
+    {
+      id: 'navigate-back',
+      label: 'Go back',
+      detail: 'Cmd+[',
+      disabled: !sourceNavigationCanGoBack,
+      perform: navigateSourceBack
+    },
+    {
+      id: 'navigate-forward',
+      label: 'Go forward',
+      detail: 'Cmd+]',
+      disabled: !sourceNavigationCanGoForward,
+      perform: navigateSourceForward
     },
     {
       id: 'scan-project',
@@ -2015,6 +2039,8 @@
     records = [];
     selectedRecord = null;
     selectedSourceLine = null;
+    sourceNavigationBackStack = [];
+    sourceNavigationForwardStack = [];
     scanLimitReached = false;
     preview = null;
     expandedFolderIds = new Set();
@@ -4806,7 +4832,63 @@
     }
   }
 
-  async function selectRecord(record: SourceRecord, targetLine: number | null = null) {
+  function currentSourceNavigationLocation() {
+    return selectedRecord ? sourceNavigationLocationForRecord(selectedRecord, selectedSourceLine) : null;
+  }
+
+  function recordSourceNavigation(nextLocation: SourceNavigationLocation | null) {
+    const nextBackStack = pushSourceNavigationHistory(
+      sourceNavigationBackStack,
+      currentSourceNavigationLocation(),
+      nextLocation,
+      maxSourceNavigationHistoryEntries
+    );
+
+    if (nextBackStack !== sourceNavigationBackStack) {
+      sourceNavigationBackStack = nextBackStack;
+      sourceNavigationForwardStack = [];
+    }
+  }
+
+  async function selectSourceNavigationLocation(location: SourceNavigationLocation) {
+    const record = records.find((sourceRecord) => sourceRecord.path === location.path) ??
+      sourceRecordFromRestoredPath(selectedProject, location.path);
+    await selectRecord(record, location.line, false);
+  }
+
+  async function navigateSourceBack() {
+    const step = navigateSourceHistoryBack(
+      sourceNavigationBackStack,
+      sourceNavigationForwardStack,
+      currentSourceNavigationLocation()
+    );
+
+    sourceNavigationBackStack = step.backStack;
+    sourceNavigationForwardStack = step.forwardStack;
+    if (step.target) await selectSourceNavigationLocation(step.target);
+  }
+
+  async function navigateSourceForward() {
+    const step = navigateSourceHistoryForward(
+      sourceNavigationBackStack,
+      sourceNavigationForwardStack,
+      currentSourceNavigationLocation()
+    );
+
+    sourceNavigationBackStack = step.backStack;
+    sourceNavigationForwardStack = step.forwardStack;
+    if (step.target) await selectSourceNavigationLocation(step.target);
+  }
+
+  async function selectRecord(
+    record: SourceRecord,
+    targetLine: number | null = null,
+    recordNavigation = true
+  ) {
+    if (recordNavigation) {
+      recordSourceNavigation(sourceNavigationLocationForRecord(record, targetLine));
+    }
+
     selectedRecord = record;
     selectedSourceLine = targetLine;
     if (targetLine) selectedSourceLineRequestId += 1;
@@ -4865,6 +4947,18 @@
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'p') {
       event.preventDefault();
       openQuickOpen();
+      return;
+    }
+
+    if ((event.metaKey || event.ctrlKey) && event.key === '[') {
+      event.preventDefault();
+      void navigateSourceBack();
+      return;
+    }
+
+    if ((event.metaKey || event.ctrlKey) && event.key === ']') {
+      event.preventDefault();
+      void navigateSourceForward();
     }
   }
 
@@ -5986,10 +6080,15 @@
     revealSourceLine(symbol.line);
   }
 
-  function revealSourceLine(line: number) {
-    if (!preview) return;
+  function revealSourceLine(line: number, recordNavigation = true) {
+    if (!preview || !selectedRecord) return;
 
-    selectedSourceLine = Math.max(1, Math.floor(line));
+    const nextLine = Math.max(1, Math.floor(line));
+    if (recordNavigation) {
+      recordSourceNavigation(sourceNavigationLocationForRecord(selectedRecord, nextLine));
+    }
+
+    selectedSourceLine = nextLine;
     selectedSourceLineRequestId += 1;
   }
 

@@ -42,6 +42,17 @@ export type SourceWorkspaceSymbol = SourceRecord & {
   containerName: string | null;
 };
 
+export type SourceNavigationLocation = {
+  path: string;
+  line: number | null;
+};
+
+export type SourceNavigationHistoryStep = {
+  target: SourceNavigationLocation | null;
+  backStack: SourceNavigationLocation[];
+  forwardStack: SourceNavigationLocation[];
+};
+
 export type SourceReferenceTarget = SourceRecord & {
   symbolName: string;
   line: number;
@@ -1156,6 +1167,76 @@ export function upsertRecentSourceRecord(
     createProjectSourceRecord(record, project, openedAt),
     ...recents.filter((recentRecord) => recentRecord.path !== record.path)
   ].slice(0, cappedLimit);
+}
+
+export function sourceNavigationLocationForRecord(
+  record: SourceRecord,
+  line: number | null = null
+): SourceNavigationLocation {
+  return {
+    path: record.path,
+    line: normalizeSourceNavigationLine(line)
+  };
+}
+
+export function pushSourceNavigationHistory(
+  backStack: SourceNavigationLocation[],
+  currentLocation: SourceNavigationLocation | null,
+  nextLocation: SourceNavigationLocation | null,
+  maxEntries = 50
+): SourceNavigationLocation[] {
+  if (!currentLocation || sourceNavigationLocationsEqual(currentLocation, nextLocation)) {
+    return backStack;
+  }
+
+  const nextBackStack = [...backStack, currentLocation];
+  return nextBackStack.slice(Math.max(0, nextBackStack.length - Math.max(1, maxEntries)));
+}
+
+export function navigateSourceHistoryBack(
+  backStack: SourceNavigationLocation[],
+  forwardStack: SourceNavigationLocation[],
+  currentLocation: SourceNavigationLocation | null
+): SourceNavigationHistoryStep {
+  const target = backStack.at(-1) ?? null;
+  if (!target) {
+    return { target: null, backStack, forwardStack };
+  }
+
+  return {
+    target,
+    backStack: backStack.slice(0, -1),
+    forwardStack: currentLocation ? [...forwardStack, currentLocation] : forwardStack
+  };
+}
+
+export function navigateSourceHistoryForward(
+  backStack: SourceNavigationLocation[],
+  forwardStack: SourceNavigationLocation[],
+  currentLocation: SourceNavigationLocation | null
+): SourceNavigationHistoryStep {
+  const target = forwardStack.at(-1) ?? null;
+  if (!target) {
+    return { target: null, backStack, forwardStack };
+  }
+
+  return {
+    target,
+    backStack: currentLocation ? [...backStack, currentLocation] : backStack,
+    forwardStack: forwardStack.slice(0, -1)
+  };
+}
+
+export function sourceNavigationLocationsEqual(
+  left: SourceNavigationLocation | null,
+  right: SourceNavigationLocation | null
+) {
+  return Boolean(left && right && left.path === right.path && left.line === right.line);
+}
+
+function normalizeSourceNavigationLine(line: number | null | undefined) {
+  if (line === null || line === undefined || !Number.isFinite(line)) return null;
+  return Math.max(1, Math.floor(line));
 }
 
 export function getSourceScanCacheEntry(
