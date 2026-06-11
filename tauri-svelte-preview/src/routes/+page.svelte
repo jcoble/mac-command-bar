@@ -201,6 +201,7 @@
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
+  const sourceLayoutPresetOverridesStorageKey = 'mac-command-bar.source-browser.layout-preset-overrides';
   const sourceLayoutVersionStorageKey = 'mac-command-bar.source-browser.layout-version';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const sourceDockLayoutStorageKey = 'mac-command-bar.source-browser.dock-layout';
@@ -296,6 +297,15 @@
     contextPanelPlacement: SourceContextPanelPlacement;
     intelligencePanel: SourceIntelligencePanel;
   };
+  type ConcreteSourceLayoutPresetID = SourceLayoutPresetDefinition['id'];
+  type SourceLayoutPresetOverride = Omit<SourceLayoutPresetDefinition, 'id' | 'label' | 'title'> & {
+    contextPaneWidth: number;
+    contextPaneHeight: number;
+    dockLayout: SourceDockLayout;
+    hiddenContextCardIDs: SourceContextCardID[];
+    activeContextCardID: SourceContextCardID;
+  };
+  type SourceLayoutPresetOverrides = Partial<Record<ConcreteSourceLayoutPresetID, SourceLayoutPresetOverride>>;
 
   const sourceLayoutPresets: SourceLayoutPresetDefinition[] = [
     {
@@ -466,6 +476,7 @@
   let pasteCleanupInput = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
+  let sourceLayoutPresetOverrides = $state<SourceLayoutPresetOverrides>({});
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
   let embeddedTerminalSession = $state<TerminalSessionInfo | null>(null);
   let embeddedTerminalSessions = $state<TerminalSessionInfo[]>([]);
@@ -1121,6 +1132,19 @@
       detail: 'Code layout',
       perform: resetSourceDockLayout
     },
+    ...sourceLayoutPresets.map((preset) => ({
+      id: `layout-save-${preset.id}`,
+      label: `Save current layout as ${preset.label}`,
+      detail: 'Custom preset override',
+      perform: () => saveSourceLayoutPresetOverride(preset.id)
+    })),
+    ...sourceLayoutPresets.map((preset) => ({
+      id: `layout-reset-${preset.id}`,
+      label: `Reset saved ${preset.label} layout`,
+      detail: sourceLayoutPresetOverrides[preset.id] ? 'Custom override saved' : 'Default preset',
+      disabled: !sourceLayoutPresetOverrides[preset.id],
+      perform: () => resetSourceLayoutPresetOverride(preset.id)
+    })),
     ...managedDockPanelIDs.flatMap((panelID) =>
       dockPanelMoveTargets(panelID).map((groupID) => ({
         id: `dock-move-${panelID}-${groupID}`,
@@ -5018,20 +5042,25 @@
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
-  function applySourceLayoutPreset(presetID: SourceLayoutPresetDefinition['id']) {
+  function applySourceLayoutPreset(presetID: ConcreteSourceLayoutPresetID) {
     const preset = sourceLayoutPresets.find((candidate) => candidate.id === presetID);
     if (!preset) return;
+    const override = sourceLayoutPresetOverrides[preset.id];
 
     sourceLayoutPreset = preset.id;
-    sourceActivityMode = preset.activityMode;
-    sidePaneWidth = clampSidePaneWidth(preset.sidePaneWidth);
-    sidePanePosition = preset.sidePanePosition;
-    editorInsightWidth = clampEditorInsightWidth(preset.editorInsightWidth);
-    editorInsightCollapsed = preset.editorInsightCollapsed;
-    contextPanelCollapsed = preset.contextPanelCollapsed;
-    contextPanelMode = preset.contextPanelMode;
-    contextPanelPlacement = preset.contextPanelPlacement;
-    sourceIntelligencePanel = preset.intelligencePanel;
+    sourceActivityMode = override?.activityMode ?? preset.activityMode;
+    sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
+    sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
+    editorInsightWidth = clampEditorInsightWidth(override?.editorInsightWidth ?? preset.editorInsightWidth);
+    editorInsightCollapsed = override?.editorInsightCollapsed ?? preset.editorInsightCollapsed;
+    contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? contextPaneWidth);
+    contextPaneHeight = clampContextPaneHeight(override?.contextPaneHeight ?? contextPaneHeight);
+    contextPanelCollapsed = override?.contextPanelCollapsed ?? preset.contextPanelCollapsed;
+    contextPanelMode = override?.contextPanelMode ?? preset.contextPanelMode;
+    contextPanelPlacement = override?.contextPanelPlacement ?? preset.contextPanelPlacement;
+    sourceIntelligencePanel = override?.intelligencePanel ?? preset.intelligencePanel;
+    hiddenContextCardIDs = new Set(override?.hiddenContextCardIDs ?? []);
+    activeContextCardID = override?.activeContextCardID ?? activeContextCardID;
 
     persistSourceLayoutPreset(sourceLayoutPreset);
     persistSourceActivityMode(sourceActivityMode);
@@ -5039,14 +5068,74 @@
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
+    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneHeight(contextPaneHeight);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
     persistContextPanelPlacement(contextPanelPlacement);
-    sourceDockLayout = sourceDockLayoutFromWorkspace();
+    persistHiddenContextCards(hiddenContextCardIDs);
+    persistActiveContextCard(activeContextCardID);
+    sourceDockLayout = override?.dockLayout
+      ? normalizeSourceDockLayout(override.dockLayout)
+      : sourceDockLayoutFromWorkspace();
+    syncSourceDockLayoutToWorkspace(sourceDockLayout);
     persistSourceDockLayout(sourceDockLayout);
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
+    }
+  }
+
+  function currentSaveableSourceLayoutPreset(): SourceLayoutPresetDefinition {
+    const activePreset = sourceLayoutPresets.find((preset) => preset.id === sourceLayoutPreset);
+    if (activePreset) return activePreset;
+    return sourceLayoutPresets.find((preset) => preset.id === 'code') ?? sourceLayoutPresets[0]!;
+  }
+
+  function captureSourceLayoutPresetOverride(): SourceLayoutPresetOverride {
+    return {
+      activityMode: sourceActivityMode,
+      sidePaneWidth: clampSidePaneWidth(sidePaneWidth),
+      sidePanePosition,
+      editorInsightWidth: clampEditorInsightWidth(editorInsightWidth),
+      editorInsightCollapsed,
+      contextPaneWidth: clampContextPaneWidth(contextPaneWidth),
+      contextPaneHeight: clampContextPaneHeight(contextPaneHeight),
+      contextPanelCollapsed,
+      contextPanelMode,
+      contextPanelPlacement,
+      intelligencePanel: sourceIntelligencePanel,
+      dockLayout: normalizeSourceDockLayout(sourceDockLayout),
+      hiddenContextCardIDs: [...hiddenContextCardIDs],
+      activeContextCardID
+    };
+  }
+
+  function saveSourceLayoutPresetOverride(presetID: ConcreteSourceLayoutPresetID) {
+    const preset = sourceLayoutPresets.find((candidate) => candidate.id === presetID);
+    if (!preset) return;
+
+    sourceLayoutPresetOverrides = {
+      ...sourceLayoutPresetOverrides,
+      [presetID]: captureSourceLayoutPresetOverride()
+    };
+    sourceLayoutPreset = presetID;
+    persistSourceLayoutPreset(sourceLayoutPreset);
+    persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
+    fileActionStatus = `${preset.label} layout saved`;
+  }
+
+  function resetSourceLayoutPresetOverride(presetID: ConcreteSourceLayoutPresetID) {
+    const preset = sourceLayoutPresets.find((candidate) => candidate.id === presetID);
+    if (!preset || !sourceLayoutPresetOverrides[presetID]) return;
+
+    const nextOverrides = { ...sourceLayoutPresetOverrides };
+    delete nextOverrides[presetID];
+    sourceLayoutPresetOverrides = nextOverrides;
+    persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
+    fileActionStatus = `${preset.label} layout reset`;
+    if (sourceLayoutPreset === presetID) {
+      applySourceLayoutPreset(presetID);
     }
   }
 
@@ -5257,6 +5346,102 @@
   function persistSourceLayoutPreset(presetID: SourceLayoutPresetID) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutPresetStorageKey, presetID);
+  }
+
+  function loadStoredSourceLayoutPresetOverrides(): SourceLayoutPresetOverrides {
+    if (typeof window === 'undefined') return {};
+
+    const storedOverrides = window.localStorage.getItem(sourceLayoutPresetOverridesStorageKey);
+    if (!storedOverrides) return {};
+
+    try {
+      const parsedOverrides = JSON.parse(storedOverrides) as Record<string, unknown>;
+      if (!parsedOverrides || typeof parsedOverrides !== 'object' || Array.isArray(parsedOverrides)) return {};
+
+      return sourceLayoutPresets.reduce<SourceLayoutPresetOverrides>((overrides, preset) => {
+        const override = normalizeStoredSourceLayoutPresetOverride(parsedOverrides[preset.id], preset);
+        if (override) {
+          overrides[preset.id] = override;
+        }
+        return overrides;
+      }, {});
+    } catch {
+      return {};
+    }
+  }
+
+  function normalizeStoredSourceLayoutPresetOverride(
+    value: unknown,
+    preset: SourceLayoutPresetDefinition
+  ): SourceLayoutPresetOverride | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+    const candidate = value as Record<string, unknown>;
+    const hiddenCards = Array.isArray(candidate.hiddenContextCardIDs)
+      ? candidate.hiddenContextCardIDs.filter(isSourceContextCardID)
+      : [];
+
+    return {
+      activityMode: isSourceActivityMode(candidate.activityMode) ? candidate.activityMode : preset.activityMode,
+      sidePaneWidth: clampSidePaneWidth(numericValue(candidate.sidePaneWidth, preset.sidePaneWidth)),
+      sidePanePosition: isSourceSidePanePosition(candidate.sidePanePosition)
+        ? candidate.sidePanePosition
+        : preset.sidePanePosition,
+      editorInsightWidth: clampEditorInsightWidth(
+        numericValue(candidate.editorInsightWidth, preset.editorInsightWidth)
+      ),
+      editorInsightCollapsed:
+        typeof candidate.editorInsightCollapsed === 'boolean'
+          ? candidate.editorInsightCollapsed
+          : preset.editorInsightCollapsed,
+      contextPaneWidth: clampContextPaneWidth(numericValue(candidate.contextPaneWidth, contextPaneDefaultWidth)),
+      contextPaneHeight: clampContextPaneHeight(numericValue(candidate.contextPaneHeight, contextPaneDefaultHeight)),
+      contextPanelCollapsed:
+        typeof candidate.contextPanelCollapsed === 'boolean'
+          ? candidate.contextPanelCollapsed
+          : preset.contextPanelCollapsed,
+      contextPanelMode: isSourceContextPanelMode(candidate.contextPanelMode)
+        ? candidate.contextPanelMode
+        : preset.contextPanelMode,
+      contextPanelPlacement: isSourceContextPanelPlacement(candidate.contextPanelPlacement)
+        ? candidate.contextPanelPlacement
+        : preset.contextPanelPlacement,
+      intelligencePanel: isSourceIntelligencePanel(candidate.intelligencePanel)
+        ? candidate.intelligencePanel
+        : preset.intelligencePanel,
+      dockLayout: normalizeSourceDockLayout(candidate.dockLayout),
+      hiddenContextCardIDs: hiddenCards,
+      activeContextCardID: isSourceContextCardID(candidate.activeContextCardID)
+        ? candidate.activeContextCardID
+        : preset.contextPanelPlacement === 'top'
+          ? 'orchestration'
+          : activeContextCardID
+    };
+  }
+
+  function persistSourceLayoutPresetOverrides(overrides: SourceLayoutPresetOverrides) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceLayoutPresetOverridesStorageKey, JSON.stringify(overrides));
+  }
+
+  function numericValue(value: unknown, fallback: number) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  }
+
+  function isSourceSidePanePosition(value: unknown): value is SourceSidePanePosition {
+    return value === 'left' || value === 'right';
+  }
+
+  function isSourceContextPanelMode(value: unknown): value is SourceContextPanelMode {
+    return value === 'grid' || value === 'stack';
+  }
+
+  function isSourceContextPanelPlacement(value: unknown): value is SourceContextPanelPlacement {
+    return value === 'top' || value === 'side' || value === 'bottom';
+  }
+
+  function isSourceIntelligencePanel(value: unknown): value is SourceIntelligencePanel {
+    return value === 'problems' || value === 'symbols' || value === 'git';
   }
 
   function shouldMigrateSourceLayout() {
@@ -6574,6 +6759,7 @@
     const storedSourceActivityMode = loadStoredSourceActivityMode();
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
+    const storedSourceLayoutPresetOverrides = loadStoredSourceLayoutPresetOverrides();
     const storedSourceTerminalApp = loadStoredSourceTerminalApp();
     const storedBrowserDockUrl = loadStoredBrowserDockUrl();
     const storedSidePanePosition = loadStoredSidePanePosition();
@@ -6606,6 +6792,7 @@
     sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
+    sourceLayoutPresetOverrides = storedSourceLayoutPresetOverrides;
     sourceTerminalApp = storedSourceTerminalApp;
     browserUrl = storedBrowserDockUrl;
     browserInputUrl = storedBrowserDockUrl;
@@ -7869,6 +8056,33 @@
                       {preset.label}
                     </button>
                   {/each}
+                </div>
+                <div class="view-menu-button-grid two">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label="Save current layout preset"
+                    title={`Save current arrangement as ${currentSaveableSourceLayoutPreset().label}`}
+                    onclick={() => {
+                      saveSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id);
+                      closeViewMenu();
+                    }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-label="Reset saved layout preset"
+                    title={`Reset saved ${currentSaveableSourceLayoutPreset().label} layout`}
+                    disabled={!sourceLayoutPresetOverrides[currentSaveableSourceLayoutPreset().id]}
+                    onclick={() => {
+                      resetSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id);
+                      closeViewMenu();
+                    }}
+                  >
+                    Reset
+                  </button>
                 </div>
               </section>
 

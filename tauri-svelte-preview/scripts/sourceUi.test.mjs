@@ -101,6 +101,7 @@ assert.ok(pageSource.includes('contextPaneWidthStorageKey'), 'Workspace should p
 assert.ok(pageSource.includes('sidePanePositionStorageKey'), 'Source shell should persist the side pane position');
 assert.ok(pageSource.includes('sourceLayoutPresetStorageKey'), 'Source shell should persist the selected layout preset');
 assert.ok(pageSource.includes('sourceLayoutVersionStorageKey'), 'Source shell should version layout storage migrations');
+assert.ok(pageSource.includes('sourceLayoutPresetOverridesStorageKey'), 'Source shell should persist custom layout preset overrides');
 assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes('sourceDockLayoutStorageKey'), 'Workspace should persist dock layout state');
 assert.ok(pageSource.includes('browserDockUrlStorageKey'), 'Workspace should persist the browser dock URL');
@@ -138,6 +139,7 @@ assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track t
 assert.ok(pageSource.includes('let contextPaneWidth'), 'Workspace should track the resizable side context pane width');
 assert.ok(pageSource.includes('let sidePanePosition'), 'Source shell should track the side pane position');
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
+assert.ok(pageSource.includes('let sourceLayoutPresetOverrides'), 'Source shell should track saved layout preset overrides');
 assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('let embeddedTerminalSession'), 'Source shell should track an embedded terminal session');
 assert.ok(pageSource.includes('let embeddedTerminalSessions'), 'Source shell should track all embedded terminal sessions');
@@ -152,6 +154,9 @@ assert.ok(pageSource.includes('let activeContextCardID'), 'Workspace should trac
 assert.ok(pageSource.includes('let viewMenuOpen'), 'Source shell should track the compact view menu');
 assert.ok(pageSource.includes('let commandPaletteVisible'), 'Source shell should track command palette visibility');
 assert.ok(pageSource.includes('function applySourceLayoutPreset'), 'Source shell should expose layout preset application');
+assert.ok(pageSource.includes('function saveSourceLayoutPresetOverride'), 'Source shell should save custom layout presets');
+assert.ok(pageSource.includes('function resetSourceLayoutPresetOverride'), 'Source shell should reset custom layout presets');
+assert.ok(pageSource.includes('function captureSourceLayoutPresetOverride'), 'Source shell should capture a dock layout override');
 assert.ok(pageSource.includes('function selectSourceTerminalApp'), 'Source shell should expose terminal app selection');
 assert.ok(pageSource.includes('function selectContextPanelMode'), 'Workspace should expose context card layout selection');
 assert.ok(pageSource.includes('function selectContextPanelPlacement'), 'Workspace should expose context card placement selection');
@@ -381,6 +386,8 @@ assert.ok(pageSource.includes('class="view-menu-button-grid"'), 'Workspace shoul
 assert.ok(pageSource.includes('aria-label="Context card layout"'), 'Context card layout controls should be accessible');
 assert.ok(pageSource.includes('aria-label="Side pane position"'), 'Side pane placement controls should be accessible');
 assert.ok(pageSource.includes('aria-label="Context card layout"'), 'Context placement controls should be accessible');
+assert.ok(pageSource.includes('aria-label="Save current layout preset"'), 'View menu should save the current layout as a preset override');
+assert.ok(pageSource.includes('aria-label="Reset saved layout preset"'), 'View menu should reset the active saved layout override');
 assert.ok(pageSource.includes("selectSidePanePosition('left')"), 'Side pane controls should select the left position');
 assert.ok(pageSource.includes("selectSidePanePosition('right')"), 'Side pane controls should select the right position');
 assert.ok(pageSource.includes("selectContextPanelPlacement('top')"), 'Context placement controls should select top placement');
@@ -388,6 +395,8 @@ assert.ok(pageSource.includes("selectContextPanelPlacement('side')"), 'Context p
 assert.ok(pageSource.includes("moveDockPanelToGroup('context', 'bottom')"), 'Context placement controls should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'layout-reset-dock'"), 'Command palette should reset the dock layout');
+assert.ok(pageSource.includes('layout-save-${preset.id}'), 'Command palette should save custom layout presets');
+assert.ok(pageSource.includes('layout-reset-${preset.id}'), 'Command palette should reset saved layout presets');
 assert.ok(pageSource.includes('dock-move-${panelID}-${groupID}'), 'Command palette should expose valid panel move targets');
 assert.ok(pageSource.includes('dock-toggle-${panelID}'), 'Command palette should expose panel visibility toggles');
 assert.ok(pageSource.includes('dock-panel-manager'), 'View menu should expose a compact dock panel manager');
