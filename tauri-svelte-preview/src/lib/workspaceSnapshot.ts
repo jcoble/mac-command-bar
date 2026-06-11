@@ -37,6 +37,7 @@ export type WorkspaceSnapshotViewState = {
   contextPanelCollapsed: boolean;
   editorInsightCollapsed: boolean;
   sidePanePosition: WorkspaceSnapshotSidePanePosition;
+  sourceChromeCompact: boolean;
   sourceActivityFilter: string;
   hiddenContextCardIDs: WorkspaceSnapshotContextCardID[];
   activeContextCardID: WorkspaceSnapshotContextCardID;
@@ -434,6 +435,10 @@ function normalizeWorkspaceSnapshotViewState(
     sidePanePosition: isWorkspaceSnapshotSidePanePosition(candidate.sidePanePosition)
       ? candidate.sidePanePosition
       : 'left',
+    sourceChromeCompact:
+      typeof candidate.sourceChromeCompact === 'boolean'
+        ? candidate.sourceChromeCompact
+        : true,
     sourceActivityFilter:
       typeof candidate.sourceActivityFilter === 'string'
         ? candidate.sourceActivityFilter.trim()

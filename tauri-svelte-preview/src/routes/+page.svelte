@@ -264,6 +264,7 @@
   const sourceLayoutPresetStorageKey = 'mac-command-bar.source-browser.layout-preset';
   const sourceLayoutPresetOverridesStorageKey = 'mac-command-bar.source-browser.layout-preset-overrides';
   const sourceLayoutVersionStorageKey = 'mac-command-bar.source-browser.layout-version';
+  const sourceChromeCompactStorageKey = 'mac-command-bar.source-browser.chrome-compact';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const sourceDockLayoutStorageKey = 'mac-command-bar.source-browser.dock-layout';
   const browserDockUrlStorageKey = 'mac-command-bar.source-browser.browser-url';
@@ -319,7 +320,7 @@
   const bottomDockMaxHeight = 620;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
-  const sourceLayoutVersion = '2026-06-editor-canvas';
+  const sourceLayoutVersion = '2026-06-compact-chrome';
   const initialProject = defaultProjectRoots[0];
 
   type SourceIntelligenceAction =
@@ -390,6 +391,7 @@
     contextPanelCollapsed: boolean;
     contextPanelMode: SourceContextPanelMode;
     contextPanelPlacement: SourceContextPanelPlacement;
+    chromeCompact: boolean;
     intelligencePanel: SourceIntelligencePanel;
   };
   type ConcreteSourceLayoutPresetID = SourceLayoutPresetDefinition['id'];
@@ -415,6 +417,7 @@
       contextPanelCollapsed: false,
       contextPanelMode: 'grid',
       contextPanelPlacement: 'top',
+      chromeCompact: true,
       intelligencePanel: 'symbols'
     },
     {
@@ -429,6 +432,7 @@
       contextPanelCollapsed: true,
       contextPanelMode: 'grid',
       contextPanelPlacement: 'top',
+      chromeCompact: true,
       intelligencePanel: 'symbols'
     },
     {
@@ -443,6 +447,7 @@
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
+      chromeCompact: true,
       intelligencePanel: 'git'
     },
     {
@@ -457,6 +462,7 @@
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
+      chromeCompact: true,
       intelligencePanel: 'problems'
     },
     {
@@ -471,6 +477,7 @@
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
+      chromeCompact: true,
       intelligencePanel: 'problems'
     }
   ];
@@ -588,6 +595,7 @@
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceLayoutPresetOverrides = $state<SourceLayoutPresetOverrides>({});
+  let sourceChromeCompact = $state(true);
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
   let embeddedTerminalSession = $state<TerminalSessionInfo | null>(null);
   let embeddedTerminalSessions = $state<TerminalSessionInfo[]>([]);
@@ -1605,6 +1613,12 @@
       label: 'Focus editor canvas',
       detail: 'Hide context, insights, terminal, and browser',
       perform: focusSourceEditorLayout
+    },
+    {
+      id: 'layout-toggle-chrome',
+      label: sourceChromeCompact ? 'Use comfortable editor chrome' : 'Use compact editor chrome',
+      detail: sourceChromeCompact ? 'Show source context strip' : 'Tight title row',
+      perform: toggleSourceChromeCompact
     },
     {
       id: 'layout-reset-dock',
@@ -4416,6 +4430,7 @@
       contextPanelCollapsed,
       editorInsightCollapsed,
       sidePanePosition,
+      sourceChromeCompact,
       sourceActivityFilter,
       hiddenContextCardIDs: [...hiddenContextCardIDs],
       activeContextCardID,
@@ -4429,6 +4444,7 @@
     contextPanelCollapsed = viewState.contextPanelCollapsed;
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
+    sourceChromeCompact = viewState.sourceChromeCompact;
     setSourceActivityFilter(viewState.sourceActivityFilter);
     hiddenContextCardIDs = new Set(viewState.hiddenContextCardIDs);
     activeContextCardID = viewState.activeContextCardID;
@@ -4438,6 +4454,7 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSidePanePosition(sidePanePosition);
+    persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
   }
@@ -4448,6 +4465,7 @@
       `context ${viewState.contextPanelMode} ${viewState.contextPanelPlacement}${viewState.contextPanelCollapsed ? ' hidden' : ''}`,
       `active ${contextCardLabels[viewState.activeContextCardID]}`,
       `explorer ${viewState.sidePanePosition}`,
+      `chrome ${viewState.sourceChromeCompact ? 'compact' : 'comfortable'}`,
       viewState.sourceActivityFilter ? `filter "${viewState.sourceActivityFilter}"` : 'no activity filter',
       hiddenCount === 0 ? 'no hidden cards' : `${hiddenCount} hidden`,
       `insights ${viewState.editorInsightCollapsed ? 'hidden' : viewState.sourceIntelligencePanel}`
@@ -7514,6 +7532,7 @@
     contextPanelCollapsed = override?.contextPanelCollapsed ?? preset.contextPanelCollapsed;
     contextPanelMode = override?.contextPanelMode ?? preset.contextPanelMode;
     contextPanelPlacement = override?.contextPanelPlacement ?? preset.contextPanelPlacement;
+    sourceChromeCompact = override?.chromeCompact ?? preset.chromeCompact;
     sourceIntelligencePanel = override?.intelligencePanel ?? preset.intelligencePanel;
     hiddenContextCardIDs = new Set(override?.hiddenContextCardIDs ?? []);
     activeContextCardID = override?.activeContextCardID ?? activeContextCardID;
@@ -7529,6 +7548,7 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
     persistContextPanelPlacement(contextPanelPlacement);
+    persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
     sourceDockLayout = override?.dockLayout
@@ -7560,6 +7580,7 @@
       contextPanelCollapsed,
       contextPanelMode,
       contextPanelPlacement,
+      chromeCompact: sourceChromeCompact,
       intelligencePanel: sourceIntelligencePanel,
       dockLayout: normalizeSourceDockLayout(sourceDockLayout),
       hiddenContextCardIDs: [...hiddenContextCardIDs],
@@ -7812,6 +7833,29 @@
     window.localStorage.setItem(sourceLayoutPresetStorageKey, presetID);
   }
 
+  function loadStoredSourceChromeCompact() {
+    if (typeof window === 'undefined') return true;
+    const storedValue = window.localStorage.getItem(sourceChromeCompactStorageKey);
+    if (storedValue === null) return true;
+    return storedValue !== 'false';
+  }
+
+  function selectSourceChromeCompact(compact: boolean) {
+    markSourceLayoutCustom();
+    sourceChromeCompact = compact;
+    persistSourceChromeCompact(compact);
+    fileActionStatus = compact ? 'Compact editor chrome enabled' : 'Comfortable editor chrome enabled';
+  }
+
+  function toggleSourceChromeCompact() {
+    selectSourceChromeCompact(!sourceChromeCompact);
+  }
+
+  function persistSourceChromeCompact(compact: boolean) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceChromeCompactStorageKey, compact ? 'true' : 'false');
+  }
+
   function loadStoredSourceLayoutPresetOverrides(): SourceLayoutPresetOverrides {
     if (typeof window === 'undefined') return {};
 
@@ -7870,6 +7914,10 @@
       contextPanelPlacement: isSourceContextPanelPlacement(candidate.contextPanelPlacement)
         ? candidate.contextPanelPlacement
         : preset.contextPanelPlacement,
+      chromeCompact:
+        typeof candidate.chromeCompact === 'boolean'
+          ? candidate.chromeCompact
+          : preset.chromeCompact,
       intelligencePanel: isSourceIntelligencePanel(candidate.intelligencePanel)
         ? candidate.intelligencePanel
         : preset.intelligencePanel,
@@ -7990,9 +8038,11 @@
     sourceActivityFilter = sourceActivityFiltersByMode.files ?? '';
     contextPanelCollapsed = true;
     editorInsightCollapsed = true;
+    sourceChromeCompact = true;
     persistSourceActivityMode(sourceActivityMode);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
+    persistSourceChromeCompact(sourceChromeCompact);
 
     const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
     let nextLayout = sourceDockLayout;
@@ -9461,6 +9511,7 @@
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSourceLayoutPresetOverrides = loadStoredSourceLayoutPresetOverrides();
+    const storedSourceChromeCompact = loadStoredSourceChromeCompact();
     const storedSourceTerminalApp = loadStoredSourceTerminalApp();
     const storedBrowserDockUrl = loadStoredBrowserDockUrl();
     const storedSidePanePosition = loadStoredSidePanePosition();
@@ -9520,6 +9571,7 @@
     pasteCleanupMode = storedPasteCleanupMode;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceLayoutPresetOverrides = storedSourceLayoutPresetOverrides;
+    sourceChromeCompact = migrateSourceLayout ? compactPreset.chromeCompact : storedSourceChromeCompact;
     sourceTerminalApp = storedSourceTerminalApp;
     browserUrl = storedBrowserDockUrl;
     browserInputUrl = storedBrowserDockUrl;
@@ -9551,6 +9603,7 @@
       persistContextPanelCollapsed(contextPanelCollapsed);
       persistContextPanelMode(contextPanelMode);
       persistContextPanelPlacement(contextPanelPlacement);
+      persistSourceChromeCompact(sourceChromeCompact);
     }
     persistSourceDockLayout(sourceDockLayout);
     persistSourceLayoutVersion();
@@ -11010,6 +11063,7 @@
 
   <section
     class="workspace"
+    class:chrome-compact={sourceChromeCompact}
     class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}
     class:context-bottom={contextPanelPlacement === 'bottom' && shouldRenderDockPanel('context')}
     aria-label="Source preview"
@@ -11017,7 +11071,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Source Preview</p>
-        <h2>{preview?.fileName ?? 'No file selected'}</h2>
+        <h2 title={sourceContextIdentity.summary}>{preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="topbar-tools">
         <button
@@ -11106,6 +11160,32 @@
                 >
                   Focus editor
                 </button>
+                <div class="view-menu-button-grid two">
+                  <button
+                    class:active={sourceChromeCompact}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Use compact editor chrome"
+                    onclick={() => {
+                      selectSourceChromeCompact(true);
+                      closeViewMenu();
+                    }}
+                  >
+                    Compact
+                  </button>
+                  <button
+                    class:active={!sourceChromeCompact}
+                    type="button"
+                    role="menuitem"
+                    aria-label="Use comfortable editor chrome"
+                    onclick={() => {
+                      selectSourceChromeCompact(false);
+                      closeViewMenu();
+                    }}
+                  >
+                    Comfort
+                  </button>
+                </div>
               </section>
 
               <section class="view-menu-section" aria-label="Side pane position">
@@ -15700,12 +15780,23 @@
       rgba(24, 26, 26, 0.96);
   }
 
+  .workspace.chrome-compact {
+    grid-template-rows: auto auto minmax(0, 1fr);
+    padding: 6px;
+  }
+
   .topbar {
     display: grid;
     grid-template-columns: minmax(180px, 1fr) auto;
     align-items: center;
     gap: 8px;
     margin-bottom: 5px;
+  }
+
+  .workspace.chrome-compact .topbar {
+    gap: 6px;
+    min-height: 26px;
+    margin-bottom: 3px;
   }
 
   .topbar > div:first-child {
@@ -15720,6 +15811,11 @@
     line-height: 1.1;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .workspace.chrome-compact .topbar h2 {
+    font-size: 13px;
+    line-height: 1.05;
   }
 
   .topbar .eyebrow {
@@ -15750,6 +15846,17 @@
     font-size: 10px;
     font-weight: 820;
     cursor: pointer;
+  }
+
+  .workspace.chrome-compact .topbar-command-button {
+    width: 26px;
+    height: 24px;
+    padding: 0;
+    gap: 0;
+  }
+
+  .workspace.chrome-compact .topbar-command-button span {
+    display: none;
   }
 
   .topbar-command-button:hover,
@@ -15969,6 +16076,10 @@
     padding: 0 2px;
   }
 
+  .workspace.chrome-compact .context-identity-strip {
+    display: none;
+  }
+
   .context-identity-item {
     display: inline-flex;
     align-items: center;
@@ -16010,6 +16121,11 @@
     min-height: 22px;
     margin: 0 0 5px;
     overflow: hidden;
+  }
+
+  .workspace.chrome-compact .dock-panel-tabs {
+    min-height: 19px;
+    margin-bottom: 3px;
   }
 
   .dock-panel-tabs.empty {
@@ -16075,6 +16191,10 @@
     background: transparent;
   }
 
+  .workspace.chrome-compact .dock-panel-tab {
+    height: 16px;
+  }
+
   .dock-panel-tab-label {
     display: inline-grid;
     place-items: center;
@@ -16089,6 +16209,12 @@
     font-weight: 820;
     line-height: 1;
     cursor: pointer;
+  }
+
+  .workspace.chrome-compact .dock-panel-tab-label {
+    height: 16px;
+    padding: 0 5px;
+    font-size: 8.5px;
   }
 
   .dock-panel-tab-close {

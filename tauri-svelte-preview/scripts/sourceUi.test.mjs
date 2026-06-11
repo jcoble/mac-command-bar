@@ -45,17 +45,27 @@ assertDeclaration('.view-menu-button-grid', 'grid-template-columns: repeat(3, mi
 assertDeclaration('.dock-panel-manager-row', 'grid-template-columns: minmax(0, 74px) minmax(0, 1fr)');
 assertDeclaration('.dock-panel-manager-actions', 'display: flex');
 assertDeclaration('.workspace', 'grid-template-rows: auto auto auto minmax(0, 1fr)');
+assertDeclaration('.workspace.chrome-compact', 'grid-template-rows: auto auto minmax(0, 1fr)');
+assertDeclaration('.workspace.chrome-compact', 'padding: 6px');
+assertDeclaration('.workspace.chrome-compact .topbar', 'min-height: 26px');
+assertDeclaration('.workspace.chrome-compact .topbar h2', 'font-size: 13px');
+assertDeclaration('.workspace.chrome-compact .topbar-command-button', 'width: 26px');
+assertDeclaration('.workspace.chrome-compact .topbar-command-button span', 'display: none');
 assertDeclaration('.workspace-arrangement', 'grid-template-rows: minmax(0, 1fr)');
 assertDeclaration('.workspace-arrangement.context-top', 'grid-template-rows: auto minmax(0, 1fr)');
 assertDeclaration('.context-identity-strip', 'display: flex');
+assertDeclaration('.workspace.chrome-compact .context-identity-strip', 'display: none');
 assertDeclaration('.context-identity-strip', 'min-height: 18px');
 assertDeclaration('.context-identity-item', 'display: inline-flex');
 assertDeclaration('.context-identity-value', 'text-overflow: ellipsis');
 assertDeclaration('.dock-panel-tabs', 'min-height: 22px');
+assertDeclaration('.workspace.chrome-compact .dock-panel-tabs', 'min-height: 19px');
 assertDeclaration('.dock-panel-tabs.empty', 'height: 0');
 assertDeclaration('.dock-panel-tab-group', 'display: inline-flex');
 assertDeclaration('.dock-panel-tab', 'display: inline-flex');
+assertDeclaration('.workspace.chrome-compact .dock-panel-tab', 'height: 16px');
 assertDeclaration('.dock-panel-tab-label', 'height: 18px');
+assertDeclaration('.workspace.chrome-compact .dock-panel-tab-label', 'height: 16px');
 assertDeclaration('.dock-panel-tab-move', 'width: 18px');
 assertDeclaration('.dock-panel-tab-close', 'width: 17px');
 assertDeclaration('.dock-drop-zones', 'display: flex');
@@ -131,6 +141,7 @@ assert.ok(pageSource.includes('contextPaneWidthStorageKey'), 'Workspace should p
 assert.ok(pageSource.includes('sidePanePositionStorageKey'), 'Source shell should persist the side pane position');
 assert.ok(pageSource.includes('sourceLayoutPresetStorageKey'), 'Source shell should persist the selected layout preset');
 assert.ok(pageSource.includes('sourceLayoutVersionStorageKey'), 'Source shell should version layout storage migrations');
+assert.ok(pageSource.includes('sourceChromeCompactStorageKey'), 'Source shell should persist compact editor chrome');
 assert.ok(pageSource.includes('sourceLayoutPresetOverridesStorageKey'), 'Source shell should persist custom layout preset overrides');
 assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes('sourceDockLayoutStorageKey'), 'Workspace should persist dock layout state');
@@ -152,6 +163,7 @@ assert.ok(pageSource.includes('const contextCardLabels'), 'Workspace should defi
 assert.ok(pageSource.includes('contextPanelMode: SourceContextPanelMode'), 'Layout presets should include context card layout mode');
 assert.ok(pageSource.includes('contextPanelPlacement: SourceContextPanelPlacement'), 'Layout presets should include context card placement');
 assert.ok(pageSource.includes('sidePanePosition: SourceSidePanePosition'), 'Layout presets should include side pane position');
+assert.ok(pageSource.includes('chromeCompact: boolean'), 'Layout presets should include compact chrome density');
 assert.ok(pageSource.includes('const sourceLayoutPresets'), 'Source shell should define reusable layout presets');
 assert.ok(pageSource.includes('const managedDockPanelIDs'), 'Source shell should define managed dock panels');
 assert.ok(pageSource.includes('const hideableDockPanelIDs'), 'Source shell should only expose hide controls for renderable hideable panels');
@@ -159,7 +171,7 @@ assert.ok(
   pageSource.includes("const hideableDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser']"),
   'Source shell should let the Activity pane collapse like other dock panels'
 );
-assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-editor-canvas'"), 'Source shell should define the compact layout migration version');
+assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-compact-chrome'"), 'Source shell should define the compact layout migration version');
 assert.ok(pageSource.includes('const sourceTerminalApps'), 'Source shell should define reusable terminal app choices');
 assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
 assert.ok(pageSource.includes('let sourceActivityFilter'), 'Source shell should track the side pane activity filter');
@@ -181,6 +193,7 @@ assert.ok(pageSource.includes('let contextPaneWidth'), 'Workspace should track t
 assert.ok(pageSource.includes('let sidePanePosition'), 'Source shell should track the side pane position');
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
 assert.ok(pageSource.includes('let sourceLayoutPresetOverrides'), 'Source shell should track saved layout preset overrides');
+assert.ok(pageSource.includes('let sourceChromeCompact'), 'Source shell should track compact editor chrome');
 assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('let embeddedTerminalSession'), 'Source shell should track an embedded terminal session');
 assert.ok(pageSource.includes('let embeddedTerminalSessions'), 'Source shell should track all embedded terminal sessions');
@@ -199,6 +212,7 @@ assert.ok(pageSource.includes('function applySourceLayoutPreset'), 'Source shell
 assert.ok(pageSource.includes('function saveSourceLayoutPresetOverride'), 'Source shell should save custom layout presets');
 assert.ok(pageSource.includes('function resetSourceLayoutPresetOverride'), 'Source shell should reset custom layout presets');
 assert.ok(pageSource.includes('function captureSourceLayoutPresetOverride'), 'Source shell should capture a dock layout override');
+assert.ok(pageSource.includes('function selectSourceChromeCompact'), 'Source shell should expose editor chrome density selection');
 assert.ok(pageSource.includes('function selectSourceTerminalApp'), 'Source shell should expose terminal app selection');
 assert.ok(pageSource.includes('function selectContextPanelMode'), 'Workspace should expose context card layout selection');
 assert.ok(pageSource.includes('function selectContextPanelPlacement'), 'Workspace should expose context card placement selection');
@@ -246,6 +260,7 @@ assert.ok(workspaceSnapshotSource.includes('contextPanelPlacement'), 'Workspace 
 assert.ok(workspaceSnapshotSource.includes('contextPanelCollapsed'), 'Workspace snapshots should serialize context pane visibility');
 assert.ok(workspaceSnapshotSource.includes('editorInsightCollapsed'), 'Workspace snapshots should serialize editor insight visibility');
 assert.ok(workspaceSnapshotSource.includes('sidePanePosition'), 'Workspace snapshots should serialize explorer side placement');
+assert.ok(workspaceSnapshotSource.includes('sourceChromeCompact'), 'Workspace snapshots should serialize editor chrome density');
 assert.ok(workspaceSnapshotSource.includes('sourceActivityFilter'), 'Workspace snapshots should serialize the side activity filter');
 assert.ok(workspaceSnapshotSource.includes('browserUrl: string | null'), 'Workspace snapshots should serialize the browser dock URL');
 assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');
