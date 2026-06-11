@@ -175,6 +175,7 @@ assert.ok(pageSource.includes('function ensureEmbeddedTerminalRenderer'), 'Termi
 assert.ok(pageSource.includes('function startEmbeddedTerminalSession'), 'Terminal dock should start native PTY sessions');
 assert.ok(pageSource.includes("startupCommand = ''"), 'Terminal dock should optionally start a PTY with an initial command');
 assert.ok(pageSource.includes('function openPathEmbeddedTerminal'), 'Terminal dock should start embedded shells for arbitrary project paths');
+assert.ok(pageSource.includes('function openWorkspaceSnapshotEmbeddedTerminal'), 'Saved workspace snapshots should resume inside embedded terminals');
 assert.ok(pageSource.includes('function resumeAgentSessionEmbeddedTerminal'), 'Terminal dock should resume agents inside the embedded PTY');
 assert.ok(pageSource.includes('function loadEmbeddedTerminalSessions'), 'Terminal dock should refresh native PTY sessions');
 assert.ok(pageSource.includes('function attachEmbeddedTerminalSession'), 'Terminal dock should attach to existing native PTY sessions');
@@ -342,6 +343,8 @@ assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal
 assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
 assert.ok(pageSource.includes('onclick={() => openPathEmbeddedTerminal(worktree.path)}'), 'Terminal worktree shortcuts should open embedded worktree shells');
 assert.ok(pageSource.includes('onclick={() => openPathEmbeddedTerminal(context.cwd)}'), 'Terminal runtime shortcuts should open embedded shells at active context cwd');
+assert.ok(pageSource.includes('onclick={() => openWorkspaceSnapshotEmbeddedTerminal(snapshot)}'), 'Saved workspace shortcuts should open embedded snapshot shells');
+assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Conversation shortcuts should resume agents inside embedded terminals');
 assert.ok(pageSource.includes('disabled={!selectedProject.path || embeddedTerminalStarting}'), 'Terminal dock should allow a new embedded session while another session is active');
 assert.ok(!pageSource.includes('Stop or attach a matching terminal before resume'), 'Agent resume should start a matching embedded session instead of blocking on another cwd');
 assert.ok(pageSource.includes('aria-label="Browser dock"'), 'Workspace should render a browser dock');
@@ -418,6 +421,7 @@ assert.ok(pageSource.includes("id: 'terminal-open-project'"), 'Command palette s
 assert.ok(pageSource.includes("id: 'conversation-save-snapshot'"), 'Command palette should save the current conversation workspace');
 assert.ok(pageSource.includes("id: 'conversation-restore-latest'"), 'Command palette should restore the latest conversation workspace');
 assert.ok(pageSource.includes("id: 'conversation-resume-latest'"), 'Command palette should resume the latest workspace snapshot in terminal');
+assert.ok(pageSource.includes("id: 'conversation-resume-latest-embedded'"), 'Command palette should resume the latest workspace snapshot in the embedded terminal');
 assert.ok(pageSource.includes("id: 'conversation-delete-latest'"), 'Command palette should delete the latest workspace snapshot');
 assert.ok(pageSource.includes('conversation-save-session-workspace'), 'Command palette should save a specific session workspace');
 assert.ok(pageSource.includes('conversation-restore-session-workspace'), 'Command palette should restore a specific session workspace');
@@ -487,10 +491,10 @@ assert.ok(pageSource.includes('projectWorktreeActivityLabel(worktree)'), 'Worktr
 assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
-assert.ok(pageSource.includes('aria-label="Resume agent in terminal"'), 'Agent rows should expose one-click terminal resume');
+assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'), 'Agent rows should expose one-click embedded terminal resume');
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
 assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
-assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in terminal"'), 'Saved workspace rows should launch their resume command');
+assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in embedded terminal"'), 'Saved workspace rows should launch their resume command in the embedded terminal');
 assert.ok(pageSource.includes('aria-label="Delete workspace snapshot"'), 'Saved workspace rows should expose snapshot removal');
 assert.ok(pageSource.includes('aria-label="Open conversation workspace"'), 'Conversation row body should open that session workspace');
 assert.ok(pageSource.includes('class="activity-session-row conversation-session-row"'), 'Conversation rows should use a compact clickable row layout');

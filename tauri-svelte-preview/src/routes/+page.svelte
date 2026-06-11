@@ -1018,6 +1018,16 @@
       }
     },
     {
+      id: 'conversation-resume-latest-embedded',
+      label: 'Resume latest workspace in embedded terminal',
+      detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
+      disabled: workspaceSnapshots.length === 0,
+      perform: () => {
+        const snapshot = workspaceSnapshots[0];
+        if (snapshot) openWorkspaceSnapshotEmbeddedTerminal(snapshot);
+      }
+    },
+    {
       id: 'conversation-delete-latest',
       label: 'Delete latest workspace snapshot',
       detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
@@ -3141,6 +3151,51 @@
       } catch {
         error = terminalError instanceof Error ? terminalError.message : 'Could not open workspace terminal';
       }
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function openWorkspaceSnapshotEmbeddedTerminal(snapshot: WorkspaceSnapshot) {
+    const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
+    const path = snapshot.worktreePath ?? snapshot.cwd;
+    if (!command && !path.trim()) return;
+
+    await restoreConversationWorkspaceSnapshot(snapshot);
+    showDockPanel('terminal');
+    await tick();
+
+    fileActionBusy = `workspace-embedded-terminal-command:${snapshot.id}`;
+    fileActionStatus = '';
+    error = '';
+    embeddedTerminalError = '';
+
+    try {
+      if (command) {
+        if (
+          embeddedTerminalSession &&
+          normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(path)
+        ) {
+          await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
+          embeddedTerminalStatus = 'Running embedded workspace command';
+          fileActionStatus = 'Sent workspace command to embedded terminal';
+          embeddedTerminal?.focus();
+          return;
+        }
+
+        await startEmbeddedTerminalSession(path, command);
+        fileActionStatus = 'Started embedded workspace command';
+        return;
+      }
+
+      await openPathEmbeddedTerminal(path);
+      fileActionStatus = 'Opened embedded workspace terminal';
+    } catch (terminalError) {
+      error =
+        terminalError instanceof Error
+          ? terminalError.message
+          : 'Could not resume workspace in embedded terminal';
+      embeddedTerminalStatus = 'Embedded workspace resume failed';
     } finally {
       fileActionBusy = '';
     }
@@ -7715,10 +7770,13 @@
                       <div class="activity-row-actions" aria-label="Workspace snapshot actions">
                         <button
                           type="button"
-                          aria-label="Resume workspace snapshot in terminal"
-                          title={snapshot.resumeCommand ? 'Resume workspace in terminal' : 'No resume command saved'}
-                          disabled={!snapshot.resumeCommand}
-                          onclick={() => openWorkspaceSnapshotTerminal(snapshot)}
+                          aria-label="Resume workspace snapshot in embedded terminal"
+                          title={
+                            snapshot.resumeCommand
+                              ? 'Resume workspace in embedded terminal'
+                              : 'Open workspace shell in embedded terminal'
+                          }
+                          onclick={() => openWorkspaceSnapshotEmbeddedTerminal(snapshot)}
                         >
                           <Terminal size={12} strokeWidth={2} />
                         </button>
@@ -7828,9 +7886,9 @@
                       </button>
                       <button
                         type="button"
-                        aria-label="Resume agent in terminal"
-                        title="Resume in terminal"
-                        onclick={() => openAgentSessionTerminal(session)}
+                        aria-label="Resume agent in embedded terminal"
+                        title="Resume in embedded terminal"
+                        onclick={() => resumeAgentSessionEmbeddedTerminal(session)}
                       >
                         <Terminal size={12} strokeWidth={2} />
                       </button>
