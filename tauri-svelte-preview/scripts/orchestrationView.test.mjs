@@ -188,10 +188,13 @@ assert.equal(metrics.retryCount, 1);
 assert.equal(metrics.approvalCount, 1);
 assert.equal(metrics.decisionCount, 1);
 assert.equal(metrics.scenarioCount, 2);
+assert.equal(metrics.issueCount, 0);
 assert.equal(metrics.testCount, 1);
 assert.equal(metrics.retestCount, 1);
 assert.equal(metrics.fixCount, 1);
 assert.equal(metrics.resolvedCount, 0);
+assert.equal(metrics.verifiedCount, 0);
+assert.equal(metrics.delegationCount, 0);
 assert.equal(metrics.handoffCount, 1);
 assert.ok(metrics.attentionCount >= 2);
 assert.ok(metrics.runningCount >= 2);
@@ -214,14 +217,101 @@ assert.deepEqual(
   ]),
   [
     ['scenario', 'Scen', 2, 'good', '2 scenarios mapped'],
+    ['issue', 'Issue', 0, 'idle', '0 issues found'],
     ['test', 'Test', 1, 'live', '1 test run'],
     ['retest', 'Retest', 1, 'live', '1 retest run'],
     ['fix', 'Fix', 1, 'live', '1 fix batched'],
     ['resolved', 'Done', 0, 'idle', '0 resolved'],
+    ['verified', 'UI', 0, 'idle', '0 UI verifications passed'],
     ['decision', 'Decide', 1, 'attention', '1 decision needed'],
     ['approval', 'Sign', 1, 'attention', '1 sign-off needed']
   ]
 );
+
+const autoResolveRun = {
+  ...run,
+  id: 'run-auto-resolve',
+  title: 'Auto-resolve browser loop',
+  status: 'succeeded',
+  phase: 'verified',
+  progress: 100,
+  agents: [],
+  steps: [],
+  artifacts: [],
+  links: [],
+  events: [
+    {
+      ...run.events[0],
+      id: 'auto-issue',
+      runId: 'run-auto-resolve',
+      kind: 'issue.found',
+      status: 'needs-fix',
+      title: 'Issue found: AUTH-7',
+      message: 'Google redirect loop',
+      stepId: 'issue-auth-7',
+      stepKind: 'issue'
+    },
+    {
+      ...run.events[0],
+      id: 'auto-delegated',
+      runId: 'run-auto-resolve',
+      timestamp: '2026-06-10T12:03:00.000Z',
+      kind: 'batch.delegated',
+      status: 'running',
+      title: 'Fix batch delegated',
+      message: '1 issue · 1 resolved',
+      agentId: 'fixer-1',
+      agentProvider: 'codex',
+      agentRole: 'fix-agent',
+      stepId: 'fix-batch',
+      stepKind: 'fix'
+    },
+    {
+      ...run.events[0],
+      id: 'auto-resolved',
+      runId: 'run-auto-resolve',
+      timestamp: '2026-06-10T12:04:00.000Z',
+      kind: 'fix.resolved',
+      status: 'succeeded',
+      title: 'Fix resolved: AUTH-7',
+      message: '1 resolved',
+      agentId: 'fixer-1',
+      agentProvider: 'codex',
+      agentRole: 'fix-agent',
+      stepId: 'fix-batch',
+      stepKind: 'fix'
+    },
+    {
+      ...run.events[0],
+      id: 'auto-verified',
+      runId: 'run-auto-resolve',
+      timestamp: '2026-06-10T12:05:00.000Z',
+      kind: 'ui.verified',
+      status: 'succeeded',
+      title: 'UI verified: Google auth callback',
+      message: 'Scenario passed in browser',
+      agentId: 'tester-1',
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      stepId: 'retest-auth-7',
+      stepKind: 'retest'
+    }
+  ]
+};
+const autoResolveMetrics = orchestrationRunMetrics(autoResolveRun);
+assert.equal(autoResolveMetrics.issueCount, 1);
+assert.equal(autoResolveMetrics.delegationCount, 1);
+assert.equal(autoResolveMetrics.resolvedCount, 1);
+assert.equal(autoResolveMetrics.verifiedCount, 1);
+assert.equal(
+  orchestrationLoopTallyText(autoResolveMetrics),
+  '1 issue · 1 resolved · 1 UI verified · 1 delegation'
+);
+assert.deepEqual(orchestrationRunStage(autoResolveRun, autoResolveMetrics), {
+  label: 'UI verified',
+  tone: 'good',
+  title: '1 UI verification'
+});
 
 assert.deepEqual(
   orchestrationAgentActivityItems(run).map((agent) => [

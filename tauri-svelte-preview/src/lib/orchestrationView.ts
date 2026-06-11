@@ -23,10 +23,13 @@ export type OrchestrationRunMetrics = {
   approvalCount: number;
   decisionCount: number;
   scenarioCount: number;
+  issueCount: number;
   testCount: number;
   retestCount: number;
   fixCount: number;
   resolvedCount: number;
+  verifiedCount: number;
+  delegationCount: number;
   handoffCount: number;
 };
 
@@ -91,23 +94,44 @@ export type OrchestrationRunStage = {
 };
 
 export type OrchestrationLoopStageMetric = {
-  id: 'scenario' | 'test' | 'retest' | 'fix' | 'resolved' | 'decision' | 'approval';
+  id:
+    | 'scenario'
+    | 'issue'
+    | 'test'
+    | 'retest'
+    | 'fix'
+    | 'resolved'
+    | 'verified'
+    | 'decision'
+    | 'approval';
   label: string;
   value: number;
   tone: OrchestrationStatusTone;
   title: string;
 };
 
-type OrchestrationLoopKind = 'scenario' | 'test' | 'retest' | 'fix' | 'resolved' | 'handoff';
+type OrchestrationLoopKind =
+  | 'scenario'
+  | 'issue'
+  | 'test'
+  | 'retest'
+  | 'fix'
+  | 'resolved'
+  | 'verified'
+  | 'delegation'
+  | 'handoff';
 
 const retryPattern = /\b(retry|retries|retried|rerun|re-run)\b/i;
 const approvalPattern = /\b(approval|approve|approved|signoff|sign-off|confirm|confirmation|decision|manual review)\b/i;
 const decisionPattern = /\b(decision|manual review|needs input|needs sign-off|sign-off|required approval|approval required)\b/i;
 const scenarioPattern = /\b(scenario|journey|workflow)\b/i;
+const issuePattern = /\b(issue|finding|bug|defect)\b/i;
 const testPattern = /\b(test|tested|testing|playwright|e2e|ui check|browser)\b/i;
 const retestPattern = /\b(retest|re-test|retested|retry|rerun|re-run)\b/i;
 const fixPattern = /\b(fix|fixed|repair|patch|resolve|resolved|auto-resolve|autoresolve)\b/i;
 const resolvedPattern = /\b(resolved|fixed|closed|passed after fix|verified fix)\b/i;
+const verifiedPattern = /\b(ui verified|browser verified|verified in ui|ui passed|validated in browser)\b/i;
+const delegationPattern = /\b(delegated|assigned|sub-agent|subagent|fix batch|batch)\b/i;
 const handoffPattern = /\b(handoff|handover|summary|report|artifact)\b/i;
 
 export function orchestrationStatusTone(status: string): OrchestrationStatusTone {
@@ -205,10 +229,13 @@ export function orchestrationRunMetrics(run: OrchestrationRun): OrchestrationRun
     approvalCount: timelineText.filter((text) => approvalPattern.test(text)).length,
     decisionCount: timelineText.filter((text) => decisionPattern.test(text)).length,
     scenarioCount: loopKinds.filter((kind) => kind === 'scenario').length,
+    issueCount: loopKinds.filter((kind) => kind === 'issue').length,
     testCount: loopKinds.filter((kind) => kind === 'test' || kind === 'retest').length,
     retestCount: loopKinds.filter((kind) => kind === 'retest').length,
     fixCount: loopKinds.filter((kind) => kind === 'fix').length,
     resolvedCount: loopKinds.filter((kind) => kind === 'resolved').length,
+    verifiedCount: loopKinds.filter((kind) => kind === 'verified').length,
+    delegationCount: loopKinds.filter((kind) => kind === 'delegation').length,
     handoffCount: loopKinds.filter((kind) => kind === 'handoff').length
   };
 }
@@ -216,10 +243,13 @@ export function orchestrationRunMetrics(run: OrchestrationRun): OrchestrationRun
 export function orchestrationLoopTallyText(metrics: OrchestrationRunMetrics): string {
   const parts = [
     formatMetricLabel(metrics.scenarioCount, 'scenario', 'scenarios'),
+    formatMetricLabel(metrics.issueCount, 'issue', 'issues'),
     formatMetricLabel(metrics.testCount, 'test', 'tests'),
     formatMetricLabel(metrics.retestCount, 'retest', 'retests'),
     formatMetricLabel(metrics.fixCount, 'fix', 'fixes'),
     metrics.resolvedCount ? `${metrics.resolvedCount} resolved` : '',
+    metrics.verifiedCount ? `${metrics.verifiedCount} UI verified` : '',
+    formatMetricLabel(metrics.delegationCount, 'delegation', 'delegations'),
     formatMetricLabel(metrics.handoffCount, 'handoff', 'handoffs'),
     formatMetricLabel(metrics.decisionCount, 'decision', 'decisions'),
     metrics.approvalCount ? `${metrics.approvalCount} sign-off` : ''
@@ -277,6 +307,30 @@ export function orchestrationRunStage(
     };
   }
 
+  if (metrics.verifiedCount > 0) {
+    return {
+      label: 'UI verified',
+      tone: 'good',
+      title: `${metrics.verifiedCount} UI verification${metrics.verifiedCount === 1 ? '' : 's'}`
+    };
+  }
+
+  if (metrics.resolvedCount > 0) {
+    return {
+      label: 'Resolved',
+      tone: 'good',
+      title: `${metrics.resolvedCount} resolved`
+    };
+  }
+
+  if (metrics.issueCount > 0) {
+    return {
+      label: 'Issues found',
+      tone: 'attention',
+      title: `${metrics.issueCount} issue${metrics.issueCount === 1 ? '' : 's'}`
+    };
+  }
+
   if (metrics.scenarioCount > 0) {
     return {
       label: 'Scenarios',
@@ -305,6 +359,13 @@ export function orchestrationLoopStageMetrics(
       title: stageMetricTitle(metrics.scenarioCount, 'scenario', 'scenarios', 'mapped')
     },
     {
+      id: 'issue',
+      label: 'Issue',
+      value: metrics.issueCount,
+      tone: metrics.issueCount > 0 ? 'attention' : 'idle',
+      title: stageMetricTitle(metrics.issueCount, 'issue', 'issues', 'found')
+    },
+    {
       id: 'test',
       label: 'Test',
       value: metrics.testCount,
@@ -331,6 +392,13 @@ export function orchestrationLoopStageMetrics(
       value: metrics.resolvedCount,
       tone: metrics.resolvedCount > 0 ? 'good' : 'idle',
       title: stageMetricTitle(metrics.resolvedCount, 'resolved', 'resolved', '')
+    },
+    {
+      id: 'verified',
+      label: 'UI',
+      value: metrics.verifiedCount,
+      tone: metrics.verifiedCount > 0 ? 'good' : 'idle',
+      title: stageMetricTitle(metrics.verifiedCount, 'UI verification', 'UI verifications', 'passed')
     },
     {
       id: 'decision',
@@ -744,8 +812,11 @@ function orchestrationLoopKindForTimelineItem(item: OrchestrationTimelineItem): 
   const allText = searchTextForTimelineItem(item);
 
   if (handoffPattern.test(kindTitleStatus)) return 'handoff';
+  if (verifiedPattern.test(kindTitleStatus)) return 'verified';
   if (retestPattern.test(kindTitleStatus)) return 'retest';
+  if (issuePattern.test(kindTitleStatus)) return 'issue';
   if (testPattern.test(kindTitleStatus)) return 'test';
+  if (delegationPattern.test(kindTitleStatus)) return 'delegation';
   if (resolvedPattern.test(allText)) return 'resolved';
   if (fixPattern.test(kindTitleStatus)) return 'fix';
   if (scenarioPattern.test(kindTitleStatus)) return 'scenario';

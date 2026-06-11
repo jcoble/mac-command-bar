@@ -81,6 +81,50 @@ try {
   assert.match(resolvedEvent.message, /3 resolved/);
   assert.match(resolvedEvent.message, /1 failed/);
 
+  const issueEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'issue-found',
+    issueId: 'AUTH-7',
+    scenario: 'Google auth callback'
+  });
+  assert.equal(issueEvent.kind, 'issue.found');
+  assert.equal(issueEvent.status, 'needs-fix');
+  assert.equal(issueEvent.stepKind, 'issue');
+  assert.equal(issueEvent.title, 'Issue found: AUTH-7');
+
+  const delegatedEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'batch-delegated',
+    resolvedCount: '3',
+    agentProvider: 'codex',
+    agentRole: 'fix-agent'
+  });
+  assert.equal(delegatedEvent.kind, 'batch.delegated');
+  assert.equal(delegatedEvent.status, 'running');
+  assert.equal(delegatedEvent.stepKind, 'fix');
+  assert.equal(delegatedEvent.title, 'Fix batch delegated');
+  assert.match(delegatedEvent.message, /3 resolved/);
+
+  const agentEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'agent-started',
+    agentProvider: 'claude',
+    agentRole: 'ui-tester'
+  });
+  assert.equal(agentEvent.kind, 'agent.started');
+  assert.equal(agentEvent.status, 'running');
+  assert.equal(agentEvent.title, 'Agent started: ui-tester');
+
+  const verifiedEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'ui-verified',
+    scenario: 'Trading partner setup'
+  });
+  assert.equal(verifiedEvent.kind, 'ui.verified');
+  assert.equal(verifiedEvent.status, 'succeeded');
+  assert.equal(verifiedEvent.stepKind, 'retest');
+  assert.equal(verifiedEvent.title, 'UI verified: Trading partner setup');
+
   const approvalEvent = normalizeOrchestrationEvent({
     runId: 'run-tsk-127',
     preset: 'approval-required',

@@ -72,7 +72,8 @@ export function applyOrchestrationEventPreset(input) {
 
   const scenario = optionalString(input.scenario);
   const issueId = optionalString(input.issueId);
-  const subject = issueId ?? scenario;
+  const agentSubject = optionalString(input.agentRole) ?? optionalString(input.agentId) ?? optionalString(input.agentProvider);
+  const subject = issueId ?? scenario ?? optionalString(input.title);
   const counts = orchestrationPresetCountMessage(input);
   const presets = {
     'run-started': {
@@ -113,6 +114,40 @@ export function applyOrchestrationEventPreset(input) {
       title: formatPresetTitle('Test failed', subject),
       message: counts ?? scenario
     },
+    'issue-found': {
+      kind: 'issue.found',
+      status: 'needs-fix',
+      stepKind: 'issue',
+      title: formatPresetTitle('Issue found', subject),
+      message: counts ?? scenario
+    },
+    'agent-started': {
+      kind: 'agent.started',
+      status: 'running',
+      title: formatPresetTitle('Agent started', agentSubject)
+    },
+    'agent-completed': {
+      kind: 'agent.completed',
+      status: 'succeeded',
+      title: formatPresetTitle('Agent completed', agentSubject)
+    },
+    'agent-blocked': {
+      kind: 'agent.blocked',
+      status: 'waiting-for-approval',
+      title: formatPresetTitle('Agent blocked', agentSubject)
+    },
+    'agent-delegated': {
+      kind: 'agent.delegated',
+      status: 'running',
+      title: formatPresetTitle('Agent delegated', agentSubject ?? subject)
+    },
+    'batch-delegated': {
+      kind: 'batch.delegated',
+      status: 'running',
+      stepKind: 'fix',
+      title: formatPresetTitle('Fix batch delegated', subject),
+      message: counts ?? scenario
+    },
     'fix-started': {
       kind: 'fix.started',
       status: 'running',
@@ -146,6 +181,20 @@ export function applyOrchestrationEventPreset(input) {
       status: 'failed',
       stepKind: 'retest',
       title: formatPresetTitle('Retest failed', subject),
+      message: counts ?? scenario
+    },
+    'ui-verified': {
+      kind: 'ui.verified',
+      status: 'succeeded',
+      stepKind: 'retest',
+      title: formatPresetTitle('UI verified', subject),
+      message: counts ?? scenario
+    },
+    'ui-failed': {
+      kind: 'ui.failed',
+      status: 'failed',
+      stepKind: 'test',
+      title: formatPresetTitle('UI failed', subject),
       message: counts ?? scenario
     },
     'approval-required': {
@@ -258,6 +307,9 @@ function printHelp() {
   console.log(`Usage:
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --kind test.started --status running
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset scenario-started --scenario "Trading partner setup"
+  node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset issue-found --issue-id AUTH-7 --message "Redirect loop"
+  node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset batch-delegated --resolved-count 3 --agent-role fix-agent
+  node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset ui-verified --scenario "Trading partner setup"
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset approval-required --message "Needs deletion sign-off"
   node scripts/orchestrationEvent.mjs --json '{"runId":"run-tsk-127","kind":"run.created"}'
 
