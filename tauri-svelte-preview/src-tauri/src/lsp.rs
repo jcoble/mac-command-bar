@@ -90,6 +90,29 @@ pub(crate) struct SourceLspHover {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspSignatureParameter {
+    label: String,
+    documentation: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspSignature {
+    label: String,
+    documentation: String,
+    parameters: Vec<SourceLspSignatureParameter>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspSignatureHelp {
+    signatures: Vec<SourceLspSignature>,
+    active_signature: usize,
+    active_parameter: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspDiagnostic {
     severity: String,
     message: String,
@@ -369,6 +392,18 @@ impl SourceLspRegistry {
             return Ok(None);
         }
         Ok(Some(SourceLspHover { contents }))
+    }
+
+    pub(crate) fn find_signature_help(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Option<SourceLspSignatureHelp>, String> {
+        let Some(result) = self.request(&preview, &request, "textDocument/signatureHelp")? else {
+            return Ok(None);
+        };
+
+        Ok(lsp_signature_help_from_result(&result))
     }
 
     pub(crate) fn find_symbols(
@@ -1197,6 +1232,14 @@ fn lsp_client_capabilities() -> Value {
                     "snippetSupport": false
                 }
             },
+            "signatureHelp": {
+                "signatureInformation": {
+                    "documentationFormat": ["markdown", "plaintext"],
+                    "parameterInformation": {
+                        "labelOffsetSupport": true
+                    }
+                }
+            },
             "definition": {
                 "linkSupport": true
             },
@@ -1268,6 +1311,104 @@ fn hover_contents_from_value(value: &Value) -> Vec<String> {
             Vec::new()
         }
         _ => Vec::new(),
+    }
+}
+
+fn lsp_signature_help_from_result(result: &Value) -> Option<SourceLspSignatureHelp> {
+    let signatures = result
+        .get("signatures")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(lsp_signature_from_value)
+        .collect::<Vec<_>>();
+    if signatures.is_empty() {
+        return None;
+    }
+
+    Some(SourceLspSignatureHelp {
+        active_signature: result
+            .get("activeSignature")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        active_parameter: result
+            .get("activeParameter")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+        signatures,
+    })
+}
+
+fn lsp_signature_from_value(value: &Value) -> Option<SourceLspSignature> {
+    let label = value.get("label")?.as_str()?.trim().to_string();
+    if label.is_empty() {
+        return None;
+    }
+
+    let parameters = value
+        .get("parameters")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|parameter| lsp_signature_parameter_from_value(parameter, &label))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(SourceLspSignature {
+        documentation: lsp_documentation_from_value(value.get("documentation")),
+        label,
+        parameters,
+    })
+}
+
+fn lsp_signature_parameter_from_value(
+    value: &Value,
+    signature_label: &str,
+) -> Option<SourceLspSignatureParameter> {
+    let label = lsp_signature_parameter_label(value.get("label")?, signature_label)?;
+    if label.trim().is_empty() {
+        return None;
+    }
+
+    Some(SourceLspSignatureParameter {
+        label,
+        documentation: lsp_documentation_from_value(value.get("documentation")),
+    })
+}
+
+fn lsp_signature_parameter_label(value: &Value, signature_label: &str) -> Option<String> {
+    if let Some(label) = value.as_str() {
+        return Some(label.to_string());
+    }
+
+    let range = value.as_array()?;
+    if range.len() != 2 {
+        return None;
+    }
+    let start = range[0].as_u64()? as usize;
+    let end = range[1].as_u64()? as usize;
+    if start >= end {
+        return None;
+    }
+
+    signature_label.get(start..end).map(str::to_string)
+}
+
+fn lsp_documentation_from_value(value: Option<&Value>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+
+    match value {
+        Value::String(text) => text.trim().to_string(),
+        Value::Object(map) => map
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        _ => String::new(),
     }
 }
 
@@ -2040,6 +2181,16 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("signatureHelp"))
+                .and_then(|signature_help| signature_help.get("signatureInformation"))
+                .and_then(|signature_information| signature_information.get("parameterInformation"))
+                .and_then(|parameter_information| parameter_information.get("labelOffsetSupport"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -2232,6 +2383,46 @@ mod tests {
                     kind: "write".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn extracts_signature_help() {
+        let result = json!({
+            "activeSignature": 0,
+            "activeParameter": 1,
+            "signatures": [
+                {
+                    "label": "Format(value: string, uppercase: bool)",
+                    "documentation": { "kind": "markdown", "value": "Formats a value." },
+                    "parameters": [
+                        { "label": "value: string", "documentation": "Input value." },
+                        { "label": "uppercase: bool" }
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            lsp_signature_help_from_result(&result),
+            Some(SourceLspSignatureHelp {
+                active_signature: 0,
+                active_parameter: 1,
+                signatures: vec![SourceLspSignature {
+                    label: "Format(value: string, uppercase: bool)".to_string(),
+                    documentation: "Formats a value.".to_string(),
+                    parameters: vec![
+                        SourceLspSignatureParameter {
+                            label: "value: string".to_string(),
+                            documentation: "Input value.".to_string(),
+                        },
+                        SourceLspSignatureParameter {
+                            label: "uppercase: bool".to_string(),
+                            documentation: String::new(),
+                        },
+                    ],
+                }],
+            })
         );
     }
 

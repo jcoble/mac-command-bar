@@ -22,6 +22,7 @@
 		type SourceReferenceTarget,
 		type SourceRenameResult,
 		type SourceSemanticToken,
+		type SourceSignatureHelp,
 		type SourceSymbol,
 		type SourceTextEdit,
 	} from "./sourceData";
@@ -79,6 +80,10 @@
 		request: SourceEditorLookupRequest
 	) => SourceDocumentHighlight[] | Promise<SourceDocumentHighlight[] | null> | null | undefined;
 
+	type SourceEditorSignatureHelpLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceSignatureHelp | Promise<SourceSignatureHelp | null> | null | undefined;
+
 	type SourceEditorFormatDocument = () =>
 		| SourceTextEdit[]
 		| Promise<SourceTextEdit[]>
@@ -122,6 +127,7 @@
 		onReferenceLookup?: SourceEditorReferenceLookup;
 		onRename?: SourceEditorRename;
 		onSaveRequest?: () => void;
+		onSignatureHelpLookup?: SourceEditorSignatureHelpLookup;
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 		onTypeDefinitionLookup?: SourceEditorTypeDefinitionLookup;
@@ -152,6 +158,7 @@
 		onReferenceLookup,
 		onRename,
 		onSaveRequest,
+		onSignatureHelpLookup,
 		onSymbolsRequest,
 		onSymbolsChange,
 		onTypeDefinitionLookup,
@@ -172,6 +179,7 @@
 	let formattingProviderDisposable: Monaco.IDisposable | null = null;
 	let renameProviderDisposable: Monaco.IDisposable | null = null;
 	let codeActionProviderDisposable: Monaco.IDisposable | null = null;
+	let signatureHelpProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -461,6 +469,27 @@
 		);
 	}
 
+	function registerSourceSignatureHelpProvider(monaco: typeof Monaco) {
+		signatureHelpProviderDisposable?.dispose();
+		signatureHelpProviderDisposable = monaco.languages.registerSignatureHelpProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				signatureHelpTriggerCharacters: ["(", ",", "<"],
+				signatureHelpRetriggerCharacters: [","],
+				provideSignatureHelp: async (model, position) => {
+					const request = positionRequestForModelPosition(model, position);
+					const signatureHelp = await onSignatureHelpLookup?.(request);
+					if (!signatureHelp?.signatures.length) return null;
+
+					return {
+						value: sourceSignatureHelpToMonacoHelp(signatureHelp),
+						dispose() {},
+					};
+				},
+			}
+		);
+	}
+
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
@@ -569,6 +598,23 @@
 			isPreferred: action.isPreferred,
 			disabled,
 			edit,
+		};
+	}
+
+	function sourceSignatureHelpToMonacoHelp(
+		signatureHelp: SourceSignatureHelp
+	): Monaco.languages.SignatureHelp {
+		return {
+			activeSignature: Math.max(0, signatureHelp.activeSignature),
+			activeParameter: Math.max(0, signatureHelp.activeParameter),
+			signatures: signatureHelp.signatures.map((signature) => ({
+				label: signature.label,
+				documentation: signature.documentation ? { value: signature.documentation } : undefined,
+				parameters: signature.parameters.map((parameter) => ({
+					label: parameter.label,
+					documentation: parameter.documentation ? { value: parameter.documentation } : undefined,
+				})),
+			})),
 		};
 	}
 
@@ -1067,6 +1113,18 @@
 		};
 	}
 
+	function positionRequestForModelPosition(
+		model: Monaco.editor.ITextModel,
+		position: Monaco.IPosition
+	): SourceEditorLookupRequest {
+		const word = model.getWordUntilPosition(position);
+		return {
+			symbolName: word.word,
+			line: position.lineNumber,
+			column: position.column,
+		};
+	}
+
 	onMount(async () => {
 		if (!host) return;
 
@@ -1124,6 +1182,7 @@
 		registerSourceFormattingProvider(monaco);
 		registerSourceRenameProvider(monaco);
 		registerSourceCodeActionProvider(monaco);
+		registerSourceSignatureHelpProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -1343,6 +1402,7 @@
 		formattingProviderDisposable?.dispose();
 		renameProviderDisposable?.dispose();
 		codeActionProviderDisposable?.dispose();
+		signatureHelpProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();

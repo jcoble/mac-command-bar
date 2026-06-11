@@ -622,6 +622,18 @@ async fn find_source_lsp_document_highlights(
 }
 
 #[tauri::command]
+async fn find_source_lsp_signature_help(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Option<lsp::SourceLspSignatureHelp>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_signature_help(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP signature-help task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn format_source_with_lsp(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
     preview: lsp::SourceLspPreview,
@@ -3175,6 +3187,7 @@ fn main() {
             find_source_lsp_implementations,
             find_source_lsp_type_definitions,
             find_source_lsp_document_highlights,
+            find_source_lsp_signature_help,
             format_source_with_lsp,
             rename_source_with_lsp,
             find_source_lsp_code_actions,

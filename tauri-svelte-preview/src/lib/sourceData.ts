@@ -132,6 +132,23 @@ export type SourceDocumentHighlight = {
   kind: 'text' | 'read' | 'write';
 };
 
+export type SourceSignatureParameter = {
+  label: string;
+  documentation: string;
+};
+
+export type SourceSignature = {
+  label: string;
+  documentation: string;
+  parameters: SourceSignatureParameter[];
+};
+
+export type SourceSignatureHelp = {
+  signatures: SourceSignature[];
+  activeSignature: number;
+  activeParameter: number;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {

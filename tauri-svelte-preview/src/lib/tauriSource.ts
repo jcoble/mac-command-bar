@@ -16,6 +16,7 @@ import type {
   SourceRenameResult,
   SourceScanResult,
   SourceSearchMatch,
+  SourceSignatureHelp,
   SourceSymbol,
   SourceTextEdit
 } from './sourceData';
@@ -822,6 +823,21 @@ export async function findSourceLspCodeActionsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceCodeAction[]>('find_source_lsp_code_actions', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspSignatureHelpFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceSignatureHelp | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceSignatureHelp | null>('find_source_lsp_signature_help', {
     preview,
     request
   });

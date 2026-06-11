@@ -138,6 +138,7 @@
     type SourceLspHover,
     type SourceLspStatus,
     type SourceRenameResult,
+    type SourceSignatureHelp,
     type SourceSymbol,
     type SourceTextEdit,
     type SourceLanguage,
@@ -158,6 +159,7 @@
     findSourceLspHoverFromTauri,
     findSourceLspImplementationsFromTauri,
     findSourceLspReferencesFromTauri,
+    findSourceLspSignatureHelpFromTauri,
     findSourceLspSymbolsFromTauri,
     findSourceLspTypeDefinitionsFromTauri,
     formatSourceWithLspFromTauri,
@@ -5510,6 +5512,25 @@
     }
   }
 
+  async function handleEditorSignatureHelpLookup(
+    request: SourceEditorLookupRequest
+  ): Promise<SourceSignatureHelp | null> {
+    if (!preview || !sourceIntelligenceAvailable) return null;
+
+    try {
+      return await findSourceLspSignatureHelpFromTauri(
+        { ...preview, content: selectedSourceDraftContent },
+        {
+          root: selectedProject.path,
+          line: request.line,
+          column: request.column
+        }
+      );
+    } catch {
+      return null;
+    }
+  }
+
   async function handleEditorCodeActionLookup(
     request: SourceCodeActionLookupRequest
   ): Promise<SourceCodeAction[]> {
@@ -9736,6 +9757,7 @@
                 onReferenceLookup={handleEditorReferenceLookup}
                 onRename={handleEditorRename}
                 onSaveRequest={saveSelectedSourceFile}
+                onSignatureHelpLookup={handleEditorSignatureHelpLookup}
                 onSymbolsRequest={() => showEditorInsightPanel('symbols')}
                 onSymbolsChange={handleEditorSymbolsChange}
                 onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
