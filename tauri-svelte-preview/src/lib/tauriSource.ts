@@ -11,7 +11,8 @@ import type {
   SourceReferenceTarget,
   SourceScanResult,
   SourceSearchMatch,
-  SourceSymbol
+  SourceSymbol,
+  SourceTextEdit
 } from './sourceData';
 
 export const defaultSourceScanLimit = 10_000;
@@ -756,6 +757,21 @@ export async function findSourceLspTypeDefinitionsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceDefinitionTarget[]>('find_source_lsp_type_definitions', {
+    preview,
+    request
+  });
+}
+
+export async function formatSourceWithLspFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceTextEdit[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceTextEdit[]>('format_source_with_lsp', {
     preview,
     request
   });

@@ -19,12 +19,14 @@
 		type SourceReferenceTarget,
 		type SourceSemanticToken,
 		type SourceSymbol,
+		type SourceTextEdit,
 	} from "./sourceData";
 
 	type SourceEditorIntelligenceAction =
 		| "definition"
 		| "hover"
 		| "implementation"
+		| "format"
 		| "references"
 		| "type-definition";
 
@@ -63,6 +65,12 @@
 		request: SourceEditorLookupRequest
 	) => SourceCompletionItem[] | Promise<SourceCompletionItem[]> | null | undefined;
 
+	type SourceEditorFormatDocument = () =>
+		| SourceTextEdit[]
+		| Promise<SourceTextEdit[]>
+		| null
+		| undefined;
+
 	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
@@ -79,6 +87,7 @@
 		onCompletionLookup?: SourceEditorCompletionLookup;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
 		onDefinitionLookup?: SourceEditorDefinitionLookup;
+		onFormatDocument?: SourceEditorFormatDocument;
 		onGoToLineRequest?: () => void;
 		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
 		onImplementationLookup?: SourceEditorImplementationLookup;
@@ -105,6 +114,7 @@
 		onCompletionLookup,
 		onDiagnosticsChange,
 		onDefinitionLookup,
+		onFormatDocument,
 		onGoToLineRequest,
 		onHoverLookup,
 		onImplementationLookup,
@@ -128,6 +138,7 @@
 	let definitionProviderDisposable: Monaco.IDisposable | null = null;
 	let implementationProviderDisposable: Monaco.IDisposable | null = null;
 	let typeDefinitionProviderDisposable: Monaco.IDisposable | null = null;
+	let formattingProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -323,6 +334,19 @@
 		);
 	}
 
+	function registerSourceFormattingProvider(monaco: typeof Monaco) {
+		formattingProviderDisposable?.dispose();
+		formattingProviderDisposable = monaco.languages.registerDocumentFormattingEditProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideDocumentFormattingEdits: async () => {
+					const edits = await onFormatDocument?.();
+					return (edits ?? []).map((edit) => sourceTextEditToMonacoEdit(monaco, edit));
+				},
+			}
+		);
+	}
+
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
@@ -388,6 +412,21 @@
 		target: SourceDefinitionTarget
 	): Monaco.languages.Location {
 		return sourceDefinitionTargetToLocation(monaco, target);
+	}
+
+	function sourceTextEditToMonacoEdit(
+		monaco: typeof Monaco,
+		edit: SourceTextEdit
+	): Monaco.languages.TextEdit {
+		return {
+			range: new monaco.Range(
+				Math.max(1, edit.startLine),
+				Math.max(1, edit.startColumn),
+				Math.max(1, edit.endLine),
+				Math.max(1, edit.endColumn)
+			),
+			text: edit.newText,
+		};
 	}
 
 	function sourceReferenceTargetToLocation(
@@ -745,6 +784,10 @@
 			requestTypeDefinitionAtCursor();
 			return;
 		}
+		if (intelligenceCommand.action === "format") {
+			requestFormatDocumentAtCursor();
+			return;
+		}
 
 		requestHoverAtCursor();
 	}
@@ -780,6 +823,10 @@
 		}
 
 		void editor?.getAction("editor.action.goToTypeDefinition")?.run();
+	}
+
+	function requestFormatDocumentAtCursor() {
+		void editor?.getAction("editor.action.formatDocument")?.run();
 	}
 
 	function requestHoverAtCursor() {
@@ -891,6 +938,7 @@
 		registerSourceDefinitionProvider(monaco);
 		registerSourceImplementationProvider(monaco);
 		registerSourceTypeDefinitionProvider(monaco);
+		registerSourceFormattingProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -975,6 +1023,13 @@
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 3,
 				run: () => requestHoverAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.formatDocument",
+				label: "Format Document",
+				contextMenuGroupId: "1_modification",
+				contextMenuOrder: 0.5,
+				run: () => requestFormatDocumentAtCursor(),
 			}),
 			editor.addAction({
 				id: "mcb.source.save",
@@ -1083,6 +1138,7 @@
 		definitionProviderDisposable?.dispose();
 		implementationProviderDisposable?.dispose();
 		typeDefinitionProviderDisposable?.dispose();
+		formattingProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();

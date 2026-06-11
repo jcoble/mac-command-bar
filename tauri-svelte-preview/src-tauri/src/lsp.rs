@@ -86,6 +86,16 @@ pub(crate) struct SourceLspCompletionItem {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspTextEdit {
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+    new_text: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspDefinitionTarget {
     path: String,
     relative_path: String,
@@ -311,6 +321,18 @@ impl SourceLspRegistry {
         ))
     }
 
+    pub(crate) fn format_document(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Vec<SourceLspTextEdit>, String> {
+        let Some(result) = self.request(&preview, &request, "textDocument/formatting")? else {
+            return Ok(Vec::new());
+        };
+
+        Ok(lsp_text_edits_from_result(&result))
+    }
+
     pub(crate) fn read_diagnostics(
         &self,
         preview: SourceLspPreview,
@@ -527,6 +549,16 @@ impl SourceLspSession {
                 "textDocument": { "uri": file_uri },
                 "position": lsp_position(request),
                 "context": { "includeDeclaration": true }
+            }),
+            "textDocument/formatting" => json!({
+                "textDocument": { "uri": file_uri },
+                "options": {
+                    "tabSize": 4,
+                    "insertSpaces": true,
+                    "trimTrailingWhitespace": true,
+                    "insertFinalNewline": true,
+                    "trimFinalNewlines": true
+                }
             }),
             _ => json!({
                 "textDocument": { "uri": file_uri },
@@ -1056,6 +1088,32 @@ fn lsp_completion_items_from_result(result: &Value, limit: usize) -> Vec<SourceL
         .collect()
 }
 
+fn lsp_text_edits_from_result(result: &Value) -> Vec<SourceLspTextEdit> {
+    let Some(items) = result.as_array() else {
+        return Vec::new();
+    };
+
+    items.iter().filter_map(lsp_text_edit_from_value).collect()
+}
+
+fn lsp_text_edit_from_value(value: &Value) -> Option<SourceLspTextEdit> {
+    let range = value.get("range")?;
+    let start = range.get("start")?;
+    let end = range.get("end")?;
+
+    Some(SourceLspTextEdit {
+        start_line: start.get("line")?.as_u64()? as usize + 1,
+        start_column: start.get("character")?.as_u64()? as usize + 1,
+        end_line: end.get("line")?.as_u64()? as usize + 1,
+        end_column: end.get("character")?.as_u64()? as usize + 1,
+        new_text: value
+            .get("newText")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
 fn lsp_completion_item_from_value(value: &Value) -> Option<SourceLspCompletionItem> {
     let label = value.get("label")?.as_str()?.trim().to_string();
     if label.is_empty() {
@@ -1538,6 +1596,30 @@ mod tests {
                 .and_then(|completion_item| completion_item.get("snippetSupport"))
                 .and_then(Value::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn extracts_text_edits_from_formatting_result() {
+        let result = json!([
+            {
+                "range": {
+                    "start": { "line": 1, "character": 2 },
+                    "end": { "line": 1, "character": 8 }
+                },
+                "newText": "formatted"
+            }
+        ]);
+
+        assert_eq!(
+            lsp_text_edits_from_result(&result),
+            vec![SourceLspTextEdit {
+                start_line: 2,
+                start_column: 3,
+                end_line: 2,
+                end_column: 9,
+                new_text: "formatted".to_string(),
+            }]
         );
     }
 

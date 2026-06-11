@@ -710,6 +710,14 @@ assert.ok(
   'Editor should expose native type definitions to Monaco peek'
 );
 assert.ok(
+  editorSource.includes('registerSourceFormattingProvider'),
+  'Editor should register native document formatting results with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerDocumentFormattingEditProvider'),
+  'Editor should expose native formatting to Monaco'
+);
+assert.ok(
   editorSource.includes('registerSourceCompletionProvider'),
   'Editor should register native completion results with Monaco'
 );
@@ -748,6 +756,10 @@ assert.ok(
 assert.ok(
   editorSource.includes('sourceTypeDefinitionTargetToLocation'),
   'Editor should map native type-definition targets into Monaco locations'
+);
+assert.ok(
+  editorSource.includes('sourceTextEditToMonacoEdit'),
+  'Editor should map native text edits into Monaco formatting edits'
 );
 assert.ok(
   pageSource.includes('async function handleEditorDefinitionLookup'),
@@ -795,6 +807,10 @@ assert.ok(
   'Editor should return native type-definition targets to Monaco'
 );
 assert.ok(
+  editorSource.includes('onFormatDocument?: SourceEditorFormatDocument'),
+  'Editor should return native formatting edits to Monaco'
+);
+assert.ok(
   editorSource.includes('onCompletionLookup?: SourceEditorCompletionLookup'),
   'Editor should return native completion items to Monaco'
 );
@@ -804,6 +820,7 @@ assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor shoul
 assert.ok(editorSource.includes('editor.action.referenceSearch.trigger'), 'Editor should expose Monaco reference search');
 assert.ok(editorSource.includes('editor.action.goToImplementation'), 'Editor should expose go-to-implementation');
 assert.ok(editorSource.includes('editor.action.goToTypeDefinition'), 'Editor should expose go-to-type-definition');
+assert.ok(editorSource.includes('editor.action.formatDocument'), 'Editor should expose format-document');
 assert.ok(editorSource.includes('editor.action.quickOutline'), 'Editor should expose Monaco quick outline');
 assert.ok(editorSource.includes('onSaveRequest?: () => void'), 'Editor should accept a native save shortcut callback');
 assert.ok(editorSource.includes('onQuickOpenRequest?: () => void'), 'Editor should accept a native quick-open shortcut callback');
@@ -842,6 +859,7 @@ assert.ok(pageSource.includes('findSourceLspDefinitionsFromTauri'), 'Source page
 assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page should try LSP reference lookup before project index lookup');
 assert.ok(pageSource.includes('findSourceLspImplementationsFromTauri'), 'Source page should use LSP implementation lookup');
 assert.ok(pageSource.includes('findSourceLspTypeDefinitionsFromTauri'), 'Source page should use LSP type-definition lookup');
+assert.ok(pageSource.includes('formatSourceWithLspFromTauri'), 'Source page should use LSP document formatting');
 assert.ok(pageSource.includes('findSourceLspCompletionsFromTauri'), 'Source page should use LSP for completion lookup');
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
@@ -867,11 +885,13 @@ assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source p
 assert.ok(pageSource.includes('function handleEditorImplementationLookup'), 'Source page should receive editor implementation lookup requests');
 assert.ok(pageSource.includes('function handleEditorTypeDefinitionLookup'), 'Source page should receive editor type-definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source page should receive editor completion lookup requests');
+assert.ok(pageSource.includes('function handleEditorFormatDocument'), 'Source page should receive editor formatting requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
 assert.ok(pageSource.includes('onImplementationLookup={handleEditorImplementationLookup}'), 'Editor should be wired to LSP implementation lookup');
 assert.ok(pageSource.includes('onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}'), 'Editor should be wired to LSP type-definition lookup');
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
+assert.ok(pageSource.includes('onFormatDocument={handleEditorFormatDocument}'), 'Editor should be wired to LSP document formatting');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
 assert.ok(pageSource.includes("id: 'save-all-files'"), 'Command palette should expose Save All');
 assert.ok(pageSource.includes('aria-label="Save all source files"'), 'Editor action menu should expose Save All');
@@ -889,6 +909,7 @@ assert.ok(pageSource.includes('aria-label="Go to definition"'), 'Editor controls
 assert.ok(pageSource.includes('aria-label="Find references"'), 'Editor controls should expose references');
 assert.ok(pageSource.includes('aria-label="Find implementations"'), 'Editor controls should expose implementations');
 assert.ok(pageSource.includes('aria-label="Go to type definition"'), 'Editor controls should expose type-definition lookup');
+assert.ok(pageSource.includes('aria-label="Format source file"'), 'Editor controls should expose formatting');
 assert.ok(pageSource.includes('Problems'), 'Language panel should include Problems');
 assert.ok(pageSource.includes('Symbols'), 'Language panel should include Symbols');
 assert.ok(pageSource.includes('selectSourceSymbol'), 'Symbol rows should reveal source lines');
@@ -919,6 +940,14 @@ assert.ok(
 assert.ok(
   tauriSource.includes("'find_source_lsp_type_definitions'"),
   'Tauri source bridge should invoke native type-definition lookup'
+);
+assert.ok(
+  tauriSource.includes('formatSourceWithLspFromTauri'),
+  'Tauri source bridge should expose native LSP formatting'
+);
+assert.ok(
+  tauriSource.includes("'format_source_with_lsp'"),
+  'Tauri source bridge should invoke native formatting'
 );
 assert.ok(
   appearanceSource.includes('encodedTokensColors'),

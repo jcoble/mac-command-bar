@@ -136,6 +136,7 @@
     type SourceLspHover,
     type SourceLspStatus,
     type SourceSymbol,
+    type SourceTextEdit,
     type SourceLanguage,
     type SourceTreeNode,
     type SourceTreeRow
@@ -154,6 +155,7 @@
     findSourceLspReferencesFromTauri,
     findSourceLspSymbolsFromTauri,
     findSourceLspTypeDefinitionsFromTauri,
+    formatSourceWithLspFromTauri,
     findSourceReferencesFromTauri,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
@@ -1089,6 +1091,13 @@
       detail: `${dirtyProjectSourceRecords.length} dirty`,
       disabled: dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all',
       perform: saveAllDirtySourceFiles
+    },
+    {
+      id: 'format-document',
+      label: 'Format document',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('format')
     },
     {
       id: 'revert-file',
@@ -5478,6 +5487,32 @@
     }
   }
 
+  async function handleEditorFormatDocument(): Promise<SourceTextEdit[]> {
+    if (!preview || !sourceIntelligenceAvailable) return [];
+
+    fileActionStatus = 'Formatting source file';
+    try {
+      const edits =
+        (await formatSourceWithLspFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: 1,
+            column: 1
+          }
+        )) ?? [];
+      fileActionStatus =
+        edits.length === 0
+          ? 'No formatting edits'
+          : `${edits.length} formatting ${edits.length === 1 ? 'edit' : 'edits'} applied to draft`;
+      return edits;
+    } catch (formatError) {
+      fileActionStatus =
+        formatError instanceof Error ? formatError.message : 'Formatting unavailable';
+      return [];
+    }
+  }
+
   async function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
     return runSourceReferenceLookup(request);
   }
@@ -5493,7 +5528,10 @@
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
     if (!preview || loading) return;
     if (
-      (action === 'hover' || action === 'implementation' || action === 'type-definition') &&
+      (action === 'hover' ||
+        action === 'implementation' ||
+        action === 'type-definition' ||
+        action === 'format') &&
       !sourceIntelligenceAvailable
     ) {
       return;
@@ -9357,6 +9395,19 @@
                 <button
                   type="button"
                   role="menuitem"
+                  aria-label="Format source file"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('format');
+                  }}
+                >
+                  <Braces size={13} strokeWidth={2} />
+                  <span>Format</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   aria-label="Revert source file"
                   disabled={!selectedSourceDirty || fileActionBusy === 'save'}
                   onclick={() => {
@@ -9547,6 +9598,7 @@
                 onCompletionLookup={handleEditorCompletionLookup}
                 onDiagnosticsChange={handleEditorDiagnosticsChange}
                 onDefinitionLookup={handleEditorDefinitionLookup}
+                onFormatDocument={handleEditorFormatDocument}
                 onGoToLineRequest={openCurrentFileGoToLine}
                 onHoverLookup={handleEditorHoverLookup}
                 onImplementationLookup={handleEditorImplementationLookup}

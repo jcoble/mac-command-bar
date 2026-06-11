@@ -608,6 +608,18 @@ async fn find_source_lsp_type_definitions(
 }
 
 #[tauri::command]
+async fn format_source_with_lsp(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspTextEdit>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.format_document(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP formatting task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn find_source_lsp_references(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
     preview: lsp::SourceLspPreview,
@@ -3124,6 +3136,7 @@ fn main() {
             find_source_lsp_completions,
             find_source_lsp_implementations,
             find_source_lsp_type_definitions,
+            format_source_with_lsp,
             find_source_lsp_references,
             find_source_lsp_hover,
             find_source_lsp_symbols,

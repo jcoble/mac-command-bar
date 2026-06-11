@@ -68,6 +68,14 @@ export type SourceCompletionItem = {
   insertText: string;
 };
 
+export type SourceTextEdit = {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  newText: string;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {
