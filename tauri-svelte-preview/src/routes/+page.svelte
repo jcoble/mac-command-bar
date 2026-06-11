@@ -3505,7 +3505,7 @@
     if (!normalizedSymbolName) {
       sourceDefinitionTargets = [];
       fileActionStatus = 'No symbol under cursor';
-      return;
+      return [];
     }
 
     sourceDefinitionLoading = true;
@@ -3546,11 +3546,11 @@
 
       if (nextTargets.length === 0) {
         fileActionStatus = `No definition for ${normalizedSymbolName}`;
-        return;
+        return nextTargets;
       }
 
-      fileActionStatus = `Opened ${nextTargets[0].symbolName}`;
-      await selectSourceDefinitionTarget(nextTargets[0]);
+      fileActionStatus = `${nextTargets.length} ${nextTargets.length === 1 ? 'definition' : 'definitions'} for ${normalizedSymbolName}`;
+      return nextTargets;
     } catch (definitionError) {
       sourceDefinitionTargets = findSourceDefinitionTargets(
         records.map((record) => demoPreviewFor(record)),
@@ -3560,9 +3560,7 @@
       sourceDefinitionError =
         definitionError instanceof Error ? definitionError.message : 'Could not find definition';
 
-      if (sourceDefinitionTargets[0]) {
-        await selectSourceDefinitionTarget(sourceDefinitionTargets[0]);
-      }
+      return sourceDefinitionTargets;
     } finally {
       sourceDefinitionLoading = false;
     }
@@ -3600,7 +3598,7 @@
     if (!normalizedSymbolName) {
       sourceReferenceTargets = [];
       fileActionStatus = 'No symbol under cursor';
-      return;
+      return [];
     }
 
     sourceReferenceLoading = true;
@@ -3639,6 +3637,7 @@
           ? ''
           : 'Browser preview references';
       fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
+      return sourceReferenceTargets;
     } catch (referenceError) {
       sourceReferenceTargets = findSourceReferenceTargets(
         records.map((record) => demoPreviewFor(record)),
@@ -3647,6 +3646,7 @@
       );
       sourceReferenceError =
         referenceError instanceof Error ? referenceError.message : 'Could not find references';
+      return sourceReferenceTargets;
     } finally {
       sourceReferenceLoading = false;
     }
@@ -4421,8 +4421,8 @@
     sourceSymbols = symbols;
   }
 
-  function handleEditorDefinitionLookup(request: SourceEditorLookupRequest) {
-    void runSourceDefinitionLookup(request);
+  async function handleEditorDefinitionLookup(request: SourceEditorLookupRequest) {
+    return runSourceDefinitionLookup(request);
   }
 
   async function handleEditorHoverLookup(request: SourceEditorLookupRequest): Promise<SourceLspHover | null> {
@@ -4442,8 +4442,8 @@
     }
   }
 
-  function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
-    void runSourceReferenceLookup(request);
+  async function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
+    return runSourceReferenceLookup(request);
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {

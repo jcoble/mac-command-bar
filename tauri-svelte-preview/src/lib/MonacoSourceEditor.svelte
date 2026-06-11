@@ -13,7 +13,9 @@
 		sourceSemanticTokenLegend,
 		type SourceDiagnostic,
 		type SourceDiagnosticSeverity,
+		type SourceDefinitionTarget,
 		type SourcePreview,
+		type SourceReferenceTarget,
 		type SourceSemanticToken,
 		type SourceSymbol,
 	} from "./sourceData";
@@ -35,6 +37,14 @@
 		contents: string[];
 	};
 
+	type SourceEditorDefinitionLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceDefinitionTarget[] | Promise<SourceDefinitionTarget[]> | null | undefined;
+
+	type SourceEditorReferenceLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceReferenceTarget[] | Promise<SourceReferenceTarget[]> | null | undefined;
+
 	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
@@ -49,12 +59,12 @@
 		onContentChange?: (content: string) => void;
 		onCommandPaletteRequest?: () => void;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
-		onDefinitionLookup?: (request: SourceEditorLookupRequest) => void;
+		onDefinitionLookup?: SourceEditorDefinitionLookup;
 		onGoToLineRequest?: () => void;
 		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
 		onProblemsRequest?: () => void;
 		onQuickOpenRequest?: () => void;
-		onReferenceLookup?: (request: SourceEditorLookupRequest) => void;
+		onReferenceLookup?: SourceEditorReferenceLookup;
 		onSaveRequest?: () => void;
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
@@ -91,6 +101,8 @@
 	let mouseDefinitionDisposable: Monaco.IDisposable | null = null;
 	let semanticTokensDisposable: Monaco.IDisposable | null = null;
 	let hoverProviderDisposable: Monaco.IDisposable | null = null;
+	let definitionProviderDisposable: Monaco.IDisposable | null = null;
+	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let editorActionDisposables: Monaco.IDisposable[] = [];
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
@@ -213,6 +225,64 @@
 				},
 			}
 		);
+	}
+
+	function registerSourceDefinitionProvider(monaco: typeof Monaco) {
+		definitionProviderDisposable?.dispose();
+		definitionProviderDisposable = monaco.languages.registerDefinitionProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideDefinition: async (model, position) => {
+					const request = lookupRequestForModelPosition(model, position);
+					if (!request) return null;
+
+					const targets = await onDefinitionLookup?.(request);
+					return (targets ?? []).map((target) => sourceDefinitionTargetToLocation(monaco, target));
+				},
+			}
+		);
+	}
+
+	function registerSourceReferenceProvider(monaco: typeof Monaco) {
+		referenceProviderDisposable?.dispose();
+		referenceProviderDisposable = monaco.languages.registerReferenceProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideReferences: async (model, position) => {
+					const request = lookupRequestForModelPosition(model, position);
+					if (!request) return null;
+
+					const targets = await onReferenceLookup?.(request);
+					return (targets ?? []).map((target) => sourceReferenceTargetToLocation(monaco, target));
+				},
+			}
+		);
+	}
+
+	function sourceDefinitionTargetToLocation(
+		monaco: typeof Monaco,
+		target: SourceDefinitionTarget
+	): Monaco.languages.Location {
+		const line = Math.max(1, target.line);
+		const column = Math.max(1, target.column);
+		const length = Math.max(1, target.symbolName.length);
+		return {
+			uri: monaco.Uri.file(target.path),
+			range: new monaco.Range(line, column, line, column + length),
+		};
+	}
+
+	function sourceReferenceTargetToLocation(
+		monaco: typeof Monaco,
+		target: SourceReferenceTarget
+	): Monaco.languages.Location {
+		const line = Math.max(1, target.line);
+		const column = Math.max(1, target.column);
+		const length = Math.max(1, target.symbolName.length);
+		return {
+			uri: monaco.Uri.file(target.path),
+			range: new monaco.Range(line, column, line, column + length),
+		};
 	}
 
 	function previewForModel(model: Monaco.editor.ITextModel): SourcePreview {
@@ -431,27 +501,15 @@
 	}
 
 	function requestDefinitionAtCursor() {
-		const request = lookupRequestAtCursor();
-		if (!request) return;
-
-		onDefinitionLookup?.(request);
-		void editor?.getAction("editor.action.revealDefinition")?.run();
+		void editor?.getAction("editor.action.peekDefinition")?.run();
 	}
 
 	function requestDefinitionAtPosition(position: Monaco.IPosition) {
-		const request = lookupRequestAtPosition(position);
-		if (!request) return;
-
 		editor?.setPosition(position);
-		onDefinitionLookup?.(request);
 		void editor?.getAction("editor.action.revealDefinition")?.run();
 	}
 
 	function requestReferencesAtCursor() {
-		const request = lookupRequestAtCursor();
-		if (!request) return;
-
-		onReferenceLookup?.(request);
 		void editor?.getAction("editor.action.referenceSearch.trigger")?.run();
 	}
 
@@ -468,6 +526,15 @@
 
 	function lookupRequestAtPosition(position: Monaco.IPosition): SourceEditorLookupRequest | null {
 		const model = editor?.getModel();
+		if (!model) return null;
+
+		return lookupRequestForModelPosition(model, position);
+	}
+
+	function lookupRequestForModelPosition(
+		model: Monaco.editor.ITextModel,
+		position: Monaco.IPosition
+	): SourceEditorLookupRequest | null {
 		if (!model) return null;
 
 		const word = model.getWordAtPosition(position);
@@ -530,6 +597,8 @@
 		configureTypeScriptLanguageService(typeScriptLanguage);
 		registerSourceSemanticTokens(monaco);
 		registerSourceHoverProvider(monaco);
+		registerSourceDefinitionProvider(monaco);
+		registerSourceReferenceProvider(monaco);
 
 		editor = monaco.editor.create(host, {
 			automaticLayout: false,
@@ -702,6 +771,8 @@
 		mouseDefinitionDisposable?.dispose();
 		semanticTokensDisposable?.dispose();
 		hoverProviderDisposable?.dispose();
+		definitionProviderDisposable?.dispose();
+		referenceProviderDisposable?.dispose();
 		for (const disposable of editorActionDisposables) {
 			disposable.dispose();
 		}

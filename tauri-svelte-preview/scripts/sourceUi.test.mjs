@@ -559,6 +559,38 @@ assert.ok(
   'Editor should accept native LSP diagnostics as external markers'
 );
 assert.ok(
+  editorSource.includes('registerSourceDefinitionProvider'),
+  'Editor should register native definition results with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerDefinitionProvider'),
+  'Editor should expose native definition lookup to Monaco peek'
+);
+assert.ok(
+  editorSource.includes('registerSourceReferenceProvider'),
+  'Editor should register native reference results with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerReferenceProvider'),
+  'Editor should expose native references to Monaco peek'
+);
+assert.ok(
+  editorSource.includes('sourceDefinitionTargetToLocation'),
+  'Editor should map native definition targets into Monaco locations'
+);
+assert.ok(
+  editorSource.includes('sourceReferenceTargetToLocation'),
+  'Editor should map native reference targets into Monaco locations'
+);
+assert.ok(
+  pageSource.includes('async function handleEditorDefinitionLookup'),
+  'Source page should return definition lookup results to Monaco'
+);
+assert.ok(
+  pageSource.includes('async function handleEditorReferenceLookup'),
+  'Source page should return reference lookup results to Monaco'
+);
+assert.ok(
   editorSource.includes('function applyExternalDiagnostics'),
   'Editor should apply native LSP diagnostics to Monaco markers'
 );
@@ -576,12 +608,12 @@ assert.ok(
   'Editor should define a position-aware lookup request'
 );
 assert.ok(
-  editorSource.includes('onDefinitionLookup?: (request: SourceEditorLookupRequest) => void'),
-  'Editor should report the current word and position for project definition lookup'
+  editorSource.includes('onDefinitionLookup?: SourceEditorDefinitionLookup'),
+  'Editor should return native definition targets to Monaco'
 );
 assert.ok(
-  editorSource.includes('onReferenceLookup?: (request: SourceEditorLookupRequest) => void'),
-  'Editor should report the current word and position for project reference lookup'
+  editorSource.includes('onReferenceLookup?: SourceEditorReferenceLookup'),
+  'Editor should return native reference targets to Monaco'
 );
 assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the symbol under the cursor');
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
