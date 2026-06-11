@@ -3,6 +3,7 @@ import {
   buildWorktreeCleanupBrief,
   buildWorktreeSafetySummary,
   worktreeAuditCommand,
+  worktreeBackupCommand,
   worktreeCleanupCommand
 } from '../src/lib/worktreeSafety.ts';
 
@@ -42,8 +43,14 @@ function worktree(overrides = {}) {
   assert.match(summary.reason, /Uncommitted/);
   assert.match(summary.auditCommand, /status --short --branch/);
   assert.match(summary.backupCommand, /stash push --include-untracked/);
+  assert.match(summary.backupCommand, /worktree-archives\/EdiPlatform\//);
+  assert.match(summary.backupCommand, /status --short --branch > .*status\.txt/);
+  assert.match(summary.backupCommand, /log --oneline --decorate --max-count=40 > .*commits\.txt/);
+  assert.match(summary.backupCommand, /diff --binary > .*unstaged\.patch/);
+  assert.match(summary.backupCommand, /diff --cached --binary > .*staged\.patch/);
+  assert.match(summary.backupCommand, /ls-files --others --exclude-standard > .*untracked\.txt/);
   assert.match(summary.cleanupPlan, /Audit before cleanup/);
-  assert.match(summary.cleanupPlan, /Backup dirty\/untracked work/);
+  assert.match(summary.cleanupPlan, /Archive a recoverable backup/);
 }
 
 {
@@ -110,6 +117,17 @@ function worktree(overrides = {}) {
   assert.match(command, /git -C '\/Users\/blackcolours\/dev\/work\/EdiPlatform' worktree remove/);
   assert.match(command, /'\/tmp\/has '\\'' quote'/);
   assert.match(command, /worktree prune/);
+}
+
+{
+  const command = worktreeBackupCommand(
+    worktree({ path: "/Users/blackcolours/dev/work/worktrees/EdiPlatform/has ' quote" }),
+    now
+  );
+  assert.match(command, /mkdir -p/);
+  assert.match(command, /worktree-archives\/EdiPlatform\/EdiPlatform-cdx-tsk-127-command-center-2026-06-10T12-00-00-000Z/);
+  assert.match(command, /'\/Users\/blackcolours\/dev\/work\/worktrees\/EdiPlatform\/has '\\'' quote'/);
+  assert.match(command, /stash push --include-untracked/);
 }
 
 {

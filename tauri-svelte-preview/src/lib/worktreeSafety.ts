@@ -69,7 +69,7 @@ export function buildWorktreeSafetySummary(
     kind = 'blocked';
     badge = 'Dirty';
     reason = 'Uncommitted changes';
-    recommendation = 'Open it, review git status, then commit or stash before cleanup.';
+    recommendation = 'Open it, review git status, then archive, commit, or stash before cleanup.';
   } else if (worktree.hasUnmergedCommits || deleteEligibility.includes('unmerged')) {
     kind = 'blocked';
     badge = 'Unmerged';
@@ -175,17 +175,20 @@ export function worktreeAuditCommand(worktree: ProjectWorktree): string {
 }
 
 export function worktreeBackupCommand(worktree: ProjectWorktree, now: number | Date = Date.now()): string {
-  const timestamp = backupTimestamp(normalizeNow(now));
+  const nowMs = normalizeNow(now);
+  const timestamp = backupTimestamp(nowMs);
+  const archiveDirectory = worktreeArchiveDirectory(worktree, nowMs);
+  const gitInWorktree = ['git', '-C', shellQuote(worktree.path)].join(' ');
+
   return [
-    'git',
-    '-C',
-    shellQuote(worktree.path),
-    'stash',
-    'push',
-    '--include-untracked',
-    '-m',
-    shellQuote(`mcb backup ${worktree.branch} ${timestamp}`)
-  ].join(' ');
+    `mkdir -p ${shellQuote(archiveDirectory)}`,
+    `${gitInWorktree} status --short --branch > ${shellQuote(`${archiveDirectory}/status.txt`)}`,
+    `${gitInWorktree} log --oneline --decorate --max-count=40 > ${shellQuote(`${archiveDirectory}/commits.txt`)}`,
+    `${gitInWorktree} diff --binary > ${shellQuote(`${archiveDirectory}/unstaged.patch`)}`,
+    `${gitInWorktree} diff --cached --binary > ${shellQuote(`${archiveDirectory}/staged.patch`)}`,
+    `${gitInWorktree} ls-files --others --exclude-standard > ${shellQuote(`${archiveDirectory}/untracked.txt`)}`,
+    `${gitInWorktree} stash push --include-untracked -m ${shellQuote(`mcb backup ${worktree.branch} ${timestamp}`)}`
+  ].join(' && ');
 }
 
 export function worktreeCleanupCommand(
@@ -248,7 +251,7 @@ function worktreeCleanupPlan(
     lines.push('Audit before cleanup:');
     lines.push(details.auditCommand);
     lines.push('');
-    lines.push('Backup dirty/untracked work if needed:');
+    lines.push('Archive a recoverable backup before cleanup:');
     lines.push(details.backupCommand);
     lines.push('');
     lines.push('Remove once clean and no active session owns it:');
@@ -376,6 +379,33 @@ function formatRelativeAge(elapsedMs: number): string {
 
 function backupTimestamp(nowMs: number): string {
   return new Date(nowMs).toISOString().replace(/[:.]/g, '-');
+}
+
+function worktreeArchiveDirectory(worktree: ProjectWorktree, nowMs: number): string {
+  const repoSegment = safePathSegment(worktree.repo || 'repo');
+  const branchSegment = safePathSegment(worktree.branch || 'worktree');
+  const archiveName = safePathSegment(`${repoSegment}-${branchSegment}-${backupTimestamp(nowMs)}`);
+  return `${worktreeArchiveRoot(worktree.path)}/${repoSegment}/${archiveName}`;
+}
+
+function worktreeArchiveRoot(worktreePath: string): string {
+  const normalizedPath = normalizePath(worktreePath);
+  const marker = '/worktrees/';
+  const markerIndex = normalizedPath.indexOf(marker);
+  if (markerIndex >= 0) return `${normalizedPath.slice(0, markerIndex)}/worktree-archives`;
+
+  return `${parentPath(normalizedPath)}/worktree-archives`;
+}
+
+function parentPath(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  const lastSlash = trimmed.lastIndexOf('/');
+  if (lastSlash <= 0) return '.';
+  return trimmed.slice(0, lastSlash);
+}
+
+function safePathSegment(value: string): string {
+  return value.trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'worktree';
 }
 
 function normalizeNow(now: number | Date | undefined): number {
