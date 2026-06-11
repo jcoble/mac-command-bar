@@ -1788,6 +1788,34 @@
       perform: () => selectSourceActivityMode('clipboard')
     },
     {
+      id: 'paste-read-clipboard',
+      label: 'Read clipboard for cleanup',
+      detail: pasteCleanupMode,
+      disabled: fileActionBusy === 'paste-read',
+      perform: readPasteCleanupClipboard
+    },
+    {
+      id: 'paste-copy-cleaned',
+      label: 'Copy cleaned paste',
+      detail: pasteCleanupStats,
+      disabled: pasteCleanupOutput.trim().length === 0 || fileActionBusy === 'paste-copy',
+      perform: copyPasteCleanupOutput
+    },
+    {
+      id: 'paste-clear-input',
+      label: 'Clear paste cleanup input',
+      detail: pasteCleanupStats,
+      disabled: pasteCleanupInput.length === 0,
+      perform: clearPasteCleanupInput
+    },
+    ...pasteCleanupModes.map((mode) => ({
+      id: `paste-mode-${mode}`,
+      label: `Use ${mode} paste cleanup`,
+      detail: pasteCleanupMode === mode ? 'Current cleanup mode' : 'Clipboard cleanup mode',
+      disabled: pasteCleanupMode === mode,
+      perform: () => setPasteCleanupMode(mode)
+    })),
+    {
       id: 'activity-conversations',
       label: 'Show conversations',
       detail: sourceActivitySummary('conversations'),
@@ -6289,8 +6317,18 @@
     const value = (event.currentTarget as HTMLSelectElement | null)?.value;
     if (!isPasteCleanupMode(value)) return;
 
-    pasteCleanupMode = value;
-    persistPasteCleanupMode(value);
+    setPasteCleanupMode(value);
+  }
+
+  function setPasteCleanupMode(mode: PasteCleanupMode) {
+    pasteCleanupMode = mode;
+    persistPasteCleanupMode(mode);
+  }
+
+  function clearPasteCleanupInput() {
+    pasteCleanupInput = '';
+    fileActionStatus = 'Paste cleanup cleared';
+    error = '';
   }
 
   async function openActivityPath(path: string) {
@@ -9603,7 +9641,7 @@
                 aria-label="Clear paste cleanup text"
                 title="Clear paste cleanup text"
                 disabled={pasteCleanupInput.length === 0}
-                onclick={() => (pasteCleanupInput = '')}
+                onclick={clearPasteCleanupInput}
               >
                 <X size={13} strokeWidth={1.9} />
                 <span>Clear</span>

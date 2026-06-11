@@ -486,6 +486,10 @@ assert.ok(pageSource.includes("id: 'project-reveal-folder'"), 'Command palette s
 assert.ok(pageSource.includes("id: 'project-open-terminal'"), 'Command palette should open the current project in the selected terminal');
 assert.ok(pageSource.includes('showContextCard(cardID)'), 'Command palette should restore individual context cards');
 assert.ok(pageSource.includes("id: 'activity-clipboard'"), 'Command palette should switch to clipboard cleanup');
+assert.ok(pageSource.includes("id: 'paste-read-clipboard'"), 'Command palette should read clipboard text for cleanup');
+assert.ok(pageSource.includes("id: 'paste-copy-cleaned'"), 'Command palette should copy cleaned clipboard output');
+assert.ok(pageSource.includes("id: 'paste-clear-input'"), 'Command palette should clear clipboard cleanup input');
+assert.ok(pageSource.includes('id: `paste-mode-${mode}`'), 'Command palette should switch cleanup modes directly');
 assert.ok(pageSource.includes("id: 'activity-conversations'"), 'Command palette should switch to conversations');
 assert.ok(pageSource.includes("id: 'activity-refresh'"), 'Command palette should refresh the current activity lane');
 assert.ok(pageSource.includes('worktree-cleanup-plan-${worktree.path}'), 'Command palette should copy worktree cleanup plans');
@@ -590,6 +594,8 @@ assert.ok(pageSource.includes('aria-label="Cleaned paste output"'), 'Paste clean
 assert.ok(pageSource.includes('onclick={readPasteCleanupClipboard}'), 'Paste cleanup should read the clipboard on demand');
 assert.ok(pageSource.includes('onclick={copyPasteCleanupOutput}'), 'Paste cleanup should copy the cleaned output');
 assert.ok(pageSource.includes('cleanupPasteText(pasteCleanupInput, pasteCleanupMode)'), 'Paste cleanup should use the shared cleanup helper');
+assert.ok(pageSource.includes('function clearPasteCleanupInput'), 'Paste cleanup should share clear behavior between UI and commands');
+assert.ok(pageSource.includes('function setPasteCleanupMode'), 'Paste cleanup should share mode switching between UI and commands');
 assert.ok(pageSource.includes('class="activity-row-actions"'), 'Activity rows should render compact action controls');
 assert.ok(pageSource.includes('placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}'), 'Activity filter placeholder should be dynamic');
 assert.ok(pageSource.includes('aria-label="Filter workspace activity"'), 'Activity filter should be accessible');
