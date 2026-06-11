@@ -326,6 +326,9 @@
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-compact-chrome';
   const initialProject = defaultProjectRoots[0];
+  const macCommandBarRepoPath =
+    defaultProjectRoots.find((project) => project.id === 'mac-command-bar')?.path ??
+    '/Users/blackcolours/dev/work/mac-command-bar';
 
   type SourceIntelligenceAction =
     | 'definition'
@@ -1952,6 +1955,67 @@
       detail: sourceActivitySummary('runs'),
       disabled: sourceActivityMode === 'runs',
       perform: () => selectSourceActivityMode('runs')
+    },
+    {
+      id: 'orchestration-copy-run-started-command',
+      label: 'Copy run-started event command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () => copyOrchestrationEventCommand('run-started', 'Run started')
+    },
+    {
+      id: 'orchestration-copy-scenario-command',
+      label: 'Copy scenario-started event command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () =>
+        copyOrchestrationEventCommand('scenario-started', 'Scenario started', {
+          '--scenario': 'Scenario name',
+          '--scenario-count': 1
+        })
+    },
+    {
+      id: 'orchestration-copy-issue-command',
+      label: 'Copy issue-found event command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () =>
+        copyOrchestrationEventCommand('issue-found', 'Issue found', {
+          '--issue-id': 'ISSUE-1',
+          '--message': 'Short failure summary',
+          '--issue-count': 1,
+          '--failed-count': 1
+        })
+    },
+    {
+      id: 'orchestration-copy-batch-command',
+      label: 'Copy fix-batch event command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () =>
+        copyOrchestrationEventCommand('batch-delegated', 'Fix batch', {
+          '--agent-role': 'fix-agent',
+          '--issue-count': 1,
+          '--fix-count': 1,
+          '--delegated-count': 1
+        })
+    },
+    {
+      id: 'orchestration-copy-ui-verified-command',
+      label: 'Copy UI-verified event command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () =>
+        copyOrchestrationEventCommand('ui-verified', 'UI verified', {
+          '--scenario': 'Scenario name',
+          '--resolved-count': 1,
+          '--verified-count': 1
+        })
+    },
+    {
+      id: 'orchestration-copy-approval-command',
+      label: 'Copy approval-required event command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () =>
+        copyOrchestrationEventCommand('approval-required', 'Approval required', {
+          '--message': 'Needs sign-off before continuing',
+          '--approval-count': 1
+        })
     },
     ...selectedProjectOrchestrationDecisionQueue.slice(0, 8).map((item) => ({
       id: `run-decision-${item.id}`,
@@ -4027,6 +4091,62 @@
 
   async function copyOrchestrationCurrentActivity(run: OrchestrationRun) {
     await copyActivityCommand(orchestrationCurrentActivity(run), 'Current run activity copied');
+  }
+
+  function selectedProjectOrchestrationTaskID() {
+    return (
+      selectedProjectGitTaskIDs[0] ??
+      selectedProjectPrimaryRepoSummary?.taskID ??
+      selectedProjectOrchestrationRuns.find((run) => run.taskID)?.taskID ??
+      (selectedProject.id === 'mac-command-bar' ? 'TSK-127' : null)
+    );
+  }
+
+  function selectedProjectOrchestrationRunID() {
+    const existingRunID = selectedProjectOrchestrationRuns[0]?.id;
+    if (existingRunID) return existingRunID;
+
+    const taskID = selectedProjectOrchestrationTaskID();
+    return taskID ? `run-${taskID.toLowerCase()}` : `run-${selectedProject.id}`;
+  }
+
+  function orchestrationEventCommandDetail() {
+    const taskID = selectedProjectOrchestrationTaskID();
+    return `${selectedProjectOrchestrationRunID()}${taskID ? ` · ${taskID}` : ` · ${selectedProject.name}`}`;
+  }
+
+  function mcbOrchestrationEventCommand(
+    preset: string,
+    extraArgs: Record<string, string | number | null | undefined> = {}
+  ) {
+    const taskID = selectedProjectOrchestrationTaskID();
+    const args: Record<string, string | number | null | undefined> = {
+      '--run-id': selectedProjectOrchestrationRunID(),
+      '--preset': preset,
+      '--project-id': selectedProject.id,
+      '--project-name': selectedProject.name,
+      '--project-path': selectedProject.path,
+      '--root-label': selectedProjectPrimaryRepoSummary?.rootLabel ?? formatSourceContextRootLabel(selectedProject.path),
+      '--task-id': taskID,
+      ...extraArgs
+    };
+
+    return `cd ${shellQuoteForCommand(macCommandBarRepoPath)} && scripts/mcb-orch ${orchestrationEventCommandArgs(args)}`;
+  }
+
+  function orchestrationEventCommandArgs(args: Record<string, string | number | null | undefined>) {
+    return Object.entries(args)
+      .filter(([, value]) => value !== null && value !== undefined && String(value).trim().length > 0)
+      .map(([key, value]) => `${key} ${shellQuoteForCommand(String(value))}`)
+      .join(' ');
+  }
+
+  async function copyOrchestrationEventCommand(
+    preset: string,
+    label: string,
+    extraArgs: Record<string, string | number | null | undefined> = {}
+  ) {
+    await copyActivityCommand(mcbOrchestrationEventCommand(preset, extraArgs), `${label} event command copied`);
   }
 
   async function copyOrchestrationTaskReference(run: OrchestrationRun) {

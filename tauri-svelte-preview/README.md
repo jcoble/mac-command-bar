@@ -48,3 +48,19 @@ pnpm test:native-lsp
 Monaco is the default source surface, so the prototype now exercises a real editor viewport instead of static highlighted HTML. The current build intentionally accepts Monaco's large editor chunks for this visual comparison; production would lazy-load the editor route and add language intelligence only where needed.
 
 `pnpm test:native-lsp` exercises the Rust LSP bridge directly. It uses TypeScript and C# scratch workspaces and verifies symbols, hover, definition, references, and diagnostics against the same registry used by the Tauri commands.
+
+## Orchestration Events
+
+Long-running agent loops can append visual run events through the repo-level
+bridge:
+
+```bash
+../scripts/mcb-orch --run-id run-tsk-127 --preset scenario-started --scenario "Trading partner setup"
+../scripts/mcb-orch --run-id run-tsk-127 --preset issue-found --issue-id AUTH-7 --issue-count 1
+../scripts/mcb-orch --run-id run-tsk-127 --preset batch-delegated --agent-role fix-agent --fix-count 2
+../scripts/mcb-orch --run-id run-tsk-127 --preset ui-verified --scenario "Trading partner setup" --verified-count 1
+```
+
+The Source Browser command palette can copy ready-to-edit versions of those
+commands for the selected project: run-started, scenario-started, issue-found,
+fix-batch, UI-verified, and approval-required.

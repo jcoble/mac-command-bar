@@ -324,6 +324,17 @@ assert.ok(pageSource.includes('const orchestrationRefreshTimer = window.setInter
 assert.ok(pageSource.includes("document.visibilityState !== 'visible'"), 'Orchestration background refresh should pause while the app is hidden');
 assert.ok(pageSource.includes('void loadOrchestrationRuns(projectOptions, { background: true })'), 'Background orchestration refresh should use the current project set');
 assert.ok(pageSource.includes('window.clearInterval(orchestrationRefreshTimer)'), 'Workspace should clean up the orchestration refresh timer');
+assert.ok(pageSource.includes('function mcbOrchestrationEventCommand'), 'Command palette should build copyable orchestration event commands');
+assert.ok(pageSource.includes('function selectedProjectOrchestrationRunID'), 'Orchestration event commands should target a stable project run ID');
+assert.ok(pageSource.includes('function selectedProjectOrchestrationTaskID'), 'Orchestration event commands should include task metadata when available');
+assert.ok(pageSource.includes('function orchestrationEventCommandArgs'), 'Orchestration event command args should use shell-safe quoting');
+assert.ok(pageSource.includes('scripts/mcb-orch'), 'Orchestration event commands should call the repo-level event bridge');
+assert.ok(pageSource.includes("id: 'orchestration-copy-run-started-command'"), 'Command palette should copy run-started event commands');
+assert.ok(pageSource.includes("id: 'orchestration-copy-scenario-command'"), 'Command palette should copy scenario-started event commands');
+assert.ok(pageSource.includes("id: 'orchestration-copy-issue-command'"), 'Command palette should copy issue-found event commands');
+assert.ok(pageSource.includes("id: 'orchestration-copy-batch-command'"), 'Command palette should copy fix-batch event commands');
+assert.ok(pageSource.includes("id: 'orchestration-copy-ui-verified-command'"), 'Command palette should copy UI-verified event commands');
+assert.ok(pageSource.includes("id: 'orchestration-copy-approval-command'"), 'Command palette should copy approval-required event commands');
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');

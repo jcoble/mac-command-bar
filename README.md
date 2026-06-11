@@ -58,6 +58,14 @@ scripts/mcb-orch --run-id run-tsk-127 --preset batch-delegated --agent-role fix-
 scripts/mcb-orch --run-id run-tsk-127 --preset ui-verified --scenario "Google auth" --resolved-count 3 --verified-count 2
 ```
 
+Inside the app, open the command palette and run `Copy run-started event
+command`, `Copy scenario-started event command`, `Copy issue-found event
+command`, `Copy fix-batch event command`, `Copy UI-verified event command`, or
+`Copy approval-required event command`. The copied command includes the current
+project path, task ID when known, and a stable run ID, so it can be pasted into an
+agent prompt, shell, or orchestrator script and then edited for the specific
+scenario or issue.
+
 Count flags such as `--issue-count`, `--fix-count`, `--resolved-count`, and
 `--verified-count` feed the run tally directly, so a batched agent update can
 represent more than one issue or fix.
