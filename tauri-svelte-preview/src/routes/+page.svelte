@@ -447,6 +447,7 @@
     'Alacritty'
   ];
   const dockTabGroupIDs: SourceDockGroupID[] = ['right', 'bottom'];
+  const dockPanelDragDataType = 'application/x-mcb-dock-panel';
   const managedDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
   const hideableDockPanelIDs: SourceDockPanelID[] = ['context', 'insights', 'terminal', 'browser'];
   const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
@@ -569,6 +570,8 @@
   let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
   let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
+  let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
+  let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
   let hiddenContextCardIDs = $state<Set<SourceContextCardID>>(new Set());
   let activeContextCardID = $state<SourceContextCardID>('orchestration');
   let viewMenuOpen = $state(false);
@@ -6724,6 +6727,57 @@
     moveDockPanelToManagedGroup(panelID, groupID);
   }
 
+  function beginDockPanelDrag(panelID: SourceDockPanelID, event: DragEvent) {
+    if (dockPanelMoveTargets(panelID).length <= 1) return;
+
+    draggingDockPanelID = panelID;
+    dockDropTargetGroupID = null;
+    event.dataTransfer?.setData(dockPanelDragDataType, panelID);
+    event.dataTransfer?.setData('text/plain', panelID);
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+    }
+  }
+
+  function dragOverDockDropZone(event: DragEvent, groupID: SourceDockGroupID) {
+    const panelID = draggedDockPanelID(event);
+    if (!panelID || !dockPanelMoveTargets(panelID).includes(groupID)) return;
+
+    event.preventDefault();
+    dockDropTargetGroupID = groupID;
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function dropDockPanelOnGroup(event: DragEvent, groupID: SourceDockGroupID) {
+    const panelID = draggedDockPanelID(event);
+    if (!panelID || !dockPanelMoveTargets(panelID).includes(groupID)) {
+      clearDockPanelDrag();
+      return;
+    }
+
+    event.preventDefault();
+    moveDockPanelToManagedGroup(panelID, groupID);
+    clearDockPanelDrag();
+  }
+
+  function clearDockPanelDrag() {
+    draggingDockPanelID = null;
+    dockDropTargetGroupID = null;
+  }
+
+  function draggedDockPanelID(event: DragEvent): SourceDockPanelID | null {
+    const draggedPanelID =
+      event.dataTransfer?.getData(dockPanelDragDataType) ||
+      event.dataTransfer?.getData('text/plain') ||
+      draggingDockPanelID;
+
+    return managedDockPanelIDs.includes(draggedPanelID as SourceDockPanelID)
+      ? (draggedPanelID as SourceDockPanelID)
+      : null;
+  }
+
   function dockPanelMoveTargets(panelID: SourceDockPanelID): SourceDockGroupID[] {
     switch (panelID) {
       case 'activity':
@@ -9511,6 +9565,10 @@
                 <div
                   class="dock-panel-tab"
                   class:active={activeDockPanelForGroup(groupID) === panelID}
+                  role="presentation"
+                  draggable={dockPanelMoveTargets(panelID).length > 1}
+                  ondragstart={(event) => beginDockPanelDrag(panelID, event)}
+                  ondragend={clearDockPanelDrag}
                 >
                   <button
                     class="dock-panel-tab-label"
@@ -9558,7 +9616,33 @@
         {/each}
       </div>
 
-    <div
+      {#if draggingDockPanelID}
+        <div
+          class="dock-drop-zones"
+          aria-label={`Dock targets for ${dockPanelLabel(draggingDockPanelID)}`}
+        >
+          {#each dockPanelMoveTargets(draggingDockPanelID) as groupID (groupID)}
+            <button
+              class="dock-drop-zone"
+              class:active={dockDropTargetGroupID === groupID}
+              type="button"
+              ondragenter={(event) => dragOverDockDropZone(event, groupID)}
+              ondragover={(event) => dragOverDockDropZone(event, groupID)}
+              ondragleave={() => (dockDropTargetGroupID = null)}
+              ondrop={(event) => dropDockPanelOnGroup(event, groupID)}
+              onclick={() => {
+                if (!draggingDockPanelID) return;
+                moveDockPanelToManagedGroup(draggingDockPanelID, groupID);
+                clearDockPanelDrag();
+              }}
+            >
+              {dockGroupLabel(groupID, draggingDockPanelID)}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <div
       class="workspace-arrangement"
       class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}
       class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}
@@ -13747,6 +13831,40 @@
     height: 0;
     min-height: 0;
     margin: 0;
+  }
+
+  .dock-drop-zones {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    min-height: 22px;
+    margin: -2px 0 5px;
+    overflow: hidden;
+  }
+
+  .dock-drop-zone {
+    display: inline-grid;
+    place-items: center;
+    min-width: 54px;
+    height: 22px;
+    padding: 0 8px;
+    color: #aab6b2;
+    border: 1px dashed rgba(92, 226, 207, 0.28);
+    border-radius: 6px;
+    background: rgba(92, 226, 207, 0.055);
+    font-size: 9px;
+    font-weight: 860;
+    cursor: pointer;
+  }
+
+  .dock-drop-zone.active,
+  .dock-drop-zone:hover,
+  .dock-drop-zone:focus-visible {
+    color: #dffdf8;
+    border-color: rgba(92, 226, 207, 0.58);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.14);
   }
 
   .dock-panel-tab-group {
