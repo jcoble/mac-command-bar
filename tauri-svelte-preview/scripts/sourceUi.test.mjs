@@ -513,6 +513,7 @@ assert.ok(pageSource.includes('await restoreWorkspaceEmbeddedTerminal(restored.e
 assert.ok(pageSource.includes('workspaceSnapshotForAgentSession(session)'), 'Conversation rows should read their saved workspace context');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
+assert.ok(pageSource.includes('aria-label="Open worktree in embedded terminal"'), 'Worktree rows should expose embedded terminal open');
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open active session in terminal"'), 'Active session rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Reveal repository path"'), 'Repository rows should expose native reveal');

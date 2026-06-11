@@ -15,6 +15,7 @@
     History,
     MoreHorizontal,
     Network,
+    PanelBottom,
     Plus,
     RefreshCw,
     RotateCcw,
@@ -8962,6 +8963,14 @@
                     </button>
                     <button
                       type="button"
+                      aria-label="Open worktree in embedded terminal"
+                      title="Open worktree in embedded terminal"
+                      onclick={() => openPathEmbeddedTerminal(worktree.path)}
+                    >
+                      <PanelBottom size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
                       aria-label="Reveal worktree path"
                       title="Reveal worktree path"
                       onclick={() => revealActivityPath(worktree.path)}
@@ -9716,6 +9725,14 @@
                     {:else}
                       <History size={12} strokeWidth={2} />
                     {/if}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Open worktree in embedded terminal"
+                    title="Open worktree in embedded terminal"
+                    onclick={() => openPathEmbeddedTerminal(worktree.path)}
+                  >
+                    <PanelBottom size={12} strokeWidth={2} />
                   </button>
                 </div>
               </div>
