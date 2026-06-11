@@ -1049,6 +1049,10 @@ assert.ok(pageSource.includes('function sourceLspStatusReport'), 'Source page sh
 assert.ok(pageSource.includes('function copySourceLspInstallCommand'), 'Source page should copy LSP install commands');
 assert.ok(pageSource.includes('dotnet tool install --global csharp-ls'), 'C# LSP guidance should install csharp-ls');
 assert.ok(pageSource.includes('npm install -g typescript typescript-language-server'), 'TypeScript LSP guidance should install the TS language server');
+assert.ok(pageSource.includes('rustup component add rust-analyzer'), 'Rust LSP guidance should install rust-analyzer');
+assert.ok(pageSource.includes('npm install -g svelte-language-server typescript'), 'Svelte LSP guidance should install the Svelte language server');
+assert.ok(pageSource.includes('npm install -g pyright'), 'Python LSP guidance should install pyright');
+assert.ok(pageSource.includes('go install golang.org/x/tools/gopls@latest'), 'Go LSP guidance should install gopls');
 assert.ok(pageSource.includes('function loadSourceLspDiagnostics'), 'Source page should expose native LSP diagnostics loading');
 assert.ok(pageSource.includes('function loadSourceLspSymbols'), 'Source page should expose native LSP symbol loading');
 assert.ok(pageSource.includes('function loadSourceLspWorkspaceSymbols'), 'Source page should expose native LSP workspace symbol loading');

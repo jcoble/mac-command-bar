@@ -963,7 +963,9 @@ export function sourceLanguageForPath(path: string): SourceLanguage {
 }
 
 export function sourceSupportsLanguageIntelligence(language: SourceLanguage): boolean {
-  return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp'].includes(language);
+  return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp', 'rust', 'svelte', 'python', 'go'].includes(
+    language
+  );
 }
 
 export function applySourceTextEdits(content: string, edits: SourceTextEdit[]): string {

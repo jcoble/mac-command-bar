@@ -4204,6 +4204,14 @@
       case 'javascript':
       case 'jsx':
         return 'npm install -g typescript typescript-language-server';
+      case 'rust':
+        return 'rustup component add rust-analyzer';
+      case 'svelte':
+        return 'npm install -g svelte-language-server typescript';
+      case 'python':
+        return 'npm install -g pyright';
+      case 'go':
+        return 'go install golang.org/x/tools/gopls@latest';
       default:
         return '';
     }

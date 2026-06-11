@@ -2495,6 +2495,30 @@ fn server_spec_for_language(language: &str) -> Option<LspServerSpec> {
             command: "typescript-language-server",
             args: &["--stdio"],
         }),
+        "rust" | "rs" => Some(LspServerSpec {
+            server_name: "rust-analyzer",
+            language_id: "rust",
+            command: "rust-analyzer",
+            args: &[],
+        }),
+        "svelte" => Some(LspServerSpec {
+            server_name: "svelte-language-server",
+            language_id: "svelte",
+            command: "svelte-language-server",
+            args: &["--stdio"],
+        }),
+        "python" | "py" => Some(LspServerSpec {
+            server_name: "pyright",
+            language_id: "python",
+            command: "pyright-langserver",
+            args: &["--stdio"],
+        }),
+        "go" => Some(LspServerSpec {
+            server_name: "gopls",
+            language_id: "go",
+            command: "gopls",
+            args: &[],
+        }),
         _ => None,
     }
 }
@@ -2634,6 +2658,20 @@ mod tests {
         let typescript = server_spec_for_language("typescript").expect("typescript spec");
         assert_eq!(typescript.command, "typescript-language-server");
         assert_eq!(typescript.args, &["--stdio"]);
+
+        let rust = server_spec_for_language("rust").expect("rust spec");
+        assert_eq!(rust.command, "rust-analyzer");
+
+        let svelte = server_spec_for_language("svelte").expect("svelte spec");
+        assert_eq!(svelte.command, "svelte-language-server");
+        assert_eq!(svelte.args, &["--stdio"]);
+
+        let python = server_spec_for_language("python").expect("python spec");
+        assert_eq!(python.command, "pyright-langserver");
+        assert_eq!(python.args, &["--stdio"]);
+
+        let go = server_spec_for_language("go").expect("go spec");
+        assert_eq!(go.command, "gopls");
     }
 
     #[test]
