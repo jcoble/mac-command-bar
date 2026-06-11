@@ -768,6 +768,14 @@ async fn list_terminal_sessions(
 }
 
 #[tauri::command]
+async fn read_terminal_session_scrollback(
+    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    terminal::read_terminal_session_scrollback(&terminal_registry, &session_id)
+}
+
+#[tauri::command]
 async fn write_terminal_session(
     terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
     session_id: String,
@@ -3111,6 +3119,7 @@ fn main() {
             record_orchestration_event,
             start_terminal_session,
             list_terminal_sessions,
+            read_terminal_session_scrollback,
             write_terminal_session,
             resize_terminal_session,
             close_terminal_session

@@ -165,6 +165,7 @@
     readSourceLspStatusFromTauri,
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
+    readTerminalSessionScrollbackFromTauri,
     revealPathFromTauri,
     revealSourceFileFromTauri,
     resizeTerminalSessionFromTauri,
@@ -3536,8 +3537,13 @@
       embeddedTerminalSession = session;
       embeddedTerminalSessions = upsertEmbeddedTerminalSession(embeddedTerminalSessions, session);
       embeddedTerminal.reset();
-      embeddedTerminal.writeln(`Attached to ${embeddedTerminalSessionTitle(session)}`);
-      embeddedTerminal.writeln('New output will appear here. Earlier scrollback stays in the original PTY.\r\n');
+      const scrollback = await readTerminalSessionScrollbackFromTauri(session.sessionId);
+      if (scrollback) {
+        embeddedTerminal.write(scrollback);
+      } else {
+        embeddedTerminal.writeln(`Attached to ${embeddedTerminalSessionTitle(session)}`);
+        embeddedTerminal.writeln('Waiting for terminal output.\r\n');
+      }
       embeddedTerminalStatus = 'Native terminal attached';
       embeddedTerminal.focus();
       window.setTimeout(fitEmbeddedTerminal, 0);

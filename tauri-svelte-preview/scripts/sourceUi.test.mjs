@@ -165,6 +165,7 @@ assert.ok(pageSource.includes('function attachEmbeddedTerminalSession'), 'Termin
 assert.ok(pageSource.includes('function closeListedEmbeddedTerminalSession'), 'Terminal dock should close listed native PTY sessions');
 assert.ok(pageSource.includes('function closeEmbeddedTerminalSession'), 'Terminal dock should close native PTY sessions');
 assert.ok(pageSource.includes('function fitEmbeddedTerminal'), 'Terminal dock should fit and resize native PTY sessions');
+assert.ok(pageSource.includes('readTerminalSessionScrollbackFromTauri'), 'Terminal dock should restore native PTY scrollback when attaching');
 assert.ok(pageSource.includes('function handleTerminalOutput'), 'Terminal dock should consume native PTY output events');
 assert.ok(pageSource.includes('function disposeEmbeddedTerminal'), 'Terminal dock should dispose xterm and PTY resources');
 assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace should persist source dock layout state');
@@ -320,6 +321,7 @@ assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), '
 assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
 assert.ok(pageSource.includes('listenToTerminalOutput(handleTerminalOutput)'), 'Source shell should subscribe to terminal output events');
 assert.ok(pageSource.includes('writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data)'), 'Embedded terminal should write input to the native PTY');
+assert.ok(pageSource.includes('embeddedTerminal.write(scrollback)'), 'Embedded terminal attach should replay buffered scrollback');
 assert.ok(pageSource.includes('resizeTerminalSessionFromTauri('), 'Embedded terminal should call the native PTY resize command');
 assert.ok(pageSource.includes('embeddedTerminalSession.sessionId'), 'Embedded terminal should address the active native PTY session');
 assert.ok(pageSource.includes('closeTerminalSessionFromTauri(session.sessionId)'), 'Embedded terminal should close the native PTY');

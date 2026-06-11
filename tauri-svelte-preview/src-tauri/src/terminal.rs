@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
 pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
+const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +51,7 @@ struct TerminalSessionHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    scrollback: Arc<Mutex<String>>,
 }
 
 pub fn start_terminal_session(
@@ -86,6 +88,7 @@ pub fn start_terminal_session(
         .take_writer()
         .map_err(|error| format!("Could not take terminal writer: {error}"))?;
     let killer = child.clone_killer();
+    let scrollback = Arc::new(Mutex::new(String::new()));
     drop(pair.slave);
 
     let info = TerminalSessionInfo {
@@ -105,10 +108,11 @@ pub fn start_terminal_session(
             master: pair.master,
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
+            scrollback: Arc::clone(&scrollback),
         },
     )?;
 
-    spawn_terminal_reader(app.clone(), session_id.clone(), reader);
+    spawn_terminal_reader(app.clone(), session_id.clone(), Arc::clone(&scrollback), reader);
     spawn_terminal_waiter(app, registry.clone(), session_id, child);
 
     Ok(info)
@@ -125,6 +129,26 @@ pub fn list_terminal_sessions(
         .values()
         .map(|session| session.info.clone())
         .collect())
+}
+
+pub fn read_terminal_session_scrollback(
+    registry: &TerminalRegistry,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    let scrollback = {
+        let sessions = registry
+            .inner
+            .lock()
+            .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+        let Some(session) = sessions.get(session_id) else {
+            return Ok(None);
+        };
+        Arc::clone(&session.scrollback)
+    };
+    let scrollback = scrollback
+        .lock()
+        .map_err(|_| "Terminal scrollback is unavailable".to_string())?;
+    Ok(Some(scrollback.clone()))
 }
 
 pub fn write_terminal_session(
@@ -209,6 +233,7 @@ impl TerminalRegistry {
 fn spawn_terminal_reader(
     app: tauri::AppHandle,
     session_id: String,
+    scrollback: Arc<Mutex<String>>,
     mut reader: Box<dyn Read + Send>,
 ) {
     std::thread::spawn(move || {
@@ -218,6 +243,9 @@ fn spawn_terminal_reader(
                 Ok(0) => break,
                 Ok(read_count) => {
                     let data = String::from_utf8_lossy(&buffer[..read_count]).to_string();
+                    if let Ok(mut stored_scrollback) = scrollback.lock() {
+                        append_terminal_scrollback(&mut stored_scrollback, &data);
+                    }
                     let _ = app.emit(
                         TERMINAL_OUTPUT_EVENT,
                         TerminalOutputEvent {
@@ -233,6 +261,25 @@ fn spawn_terminal_reader(
             }
         }
     });
+}
+
+fn append_terminal_scrollback(scrollback: &mut String, data: &str) {
+    if data.is_empty() {
+        return;
+    }
+
+    scrollback.push_str(data);
+    if scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES {
+        return;
+    }
+
+    let excess_bytes = scrollback.len() - TERMINAL_SCROLLBACK_MAX_BYTES;
+    let trim_index = scrollback
+        .char_indices()
+        .map(|(index, _)| index)
+        .find(|index| *index >= excess_bytes)
+        .unwrap_or(scrollback.len());
+    scrollback.drain(..trim_index);
 }
 
 fn spawn_terminal_waiter(
@@ -342,5 +389,21 @@ mod tests {
         );
         assert!(!terminal_shell_from_request(Some("   ".to_string())).is_empty());
         assert!(!terminal_shell_from_request(None).is_empty());
+    }
+
+    #[test]
+    fn terminal_scrollback_stays_bounded_and_utf8_safe() {
+        let mut scrollback = String::new();
+        append_terminal_scrollback(&mut scrollback, "hello");
+        append_terminal_scrollback(&mut scrollback, " 世界");
+
+        assert!(scrollback.ends_with(" 世界"));
+        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
+
+        append_terminal_scrollback(&mut scrollback, &"x".repeat(TERMINAL_SCROLLBACK_MAX_BYTES + 1024));
+
+        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
+        assert!(scrollback.is_char_boundary(0));
+        assert!(scrollback.ends_with('x'));
     }
 }

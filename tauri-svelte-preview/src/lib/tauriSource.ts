@@ -300,6 +300,17 @@ export async function listTerminalSessionsFromTauri(): Promise<TerminalSessionIn
   return invoke<TerminalSessionInfo[]>('list_terminal_sessions');
 }
 
+export async function readTerminalSessionScrollbackFromTauri(
+  sessionId: string
+): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string | null>('read_terminal_session_scrollback', { sessionId });
+}
+
 export async function writeTerminalSessionFromTauri(
   sessionId: string,
   data: string

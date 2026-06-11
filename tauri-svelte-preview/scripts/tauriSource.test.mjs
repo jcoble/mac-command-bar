@@ -23,6 +23,7 @@ import {
   listRuntimeContextsFromTauri,
   openTerminalCommandFromTauri,
   openTerminalPathFromTauri,
+  readTerminalSessionScrollbackFromTauri,
   startTerminalSessionFromTauri,
   writeTerminalSessionFromTauri,
   resizeTerminalSessionFromTauri,
@@ -74,6 +75,7 @@ assert.equal(await openTerminalPathFromTauri('/tmp/repo'), false);
 assert.equal(await openTerminalCommandFromTauri('/tmp/repo', 'codex resume session-123'), false);
 assert.equal(await startTerminalSessionFromTauri({ cwd: '/tmp/repo', cols: 96, rows: 24 }), null);
 assert.equal(await listTerminalSessionsFromTauri(), null);
+assert.equal(await readTerminalSessionScrollbackFromTauri('terminal-1'), null);
 assert.equal(await writeTerminalSessionFromTauri('terminal-1', 'echo hi\n'), false);
 assert.equal(await resizeTerminalSessionFromTauri('terminal-1', 100, 32), false);
 assert.equal(await closeTerminalSessionFromTauri('terminal-1'), false);
