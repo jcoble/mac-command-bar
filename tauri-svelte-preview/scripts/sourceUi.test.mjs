@@ -594,8 +594,20 @@ assert.ok(
   'Editor should expose native completions to Monaco suggestions'
 );
 assert.ok(
+  editorSource.includes('registerSourceDocumentSymbolProvider'),
+  'Editor should register source symbols with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerDocumentSymbolProvider'),
+  'Editor should expose source symbols to Monaco quick outline'
+);
+assert.ok(
   editorSource.includes('sourceCompletionItemToSuggestion'),
   'Editor should map native completion items into Monaco suggestions'
+);
+assert.ok(
+  editorSource.includes('sourceSymbolToDocumentSymbol'),
+  'Editor should map source symbols into Monaco document symbols'
 );
 assert.ok(
   editorSource.includes('sourceDefinitionTargetToLocation'),
@@ -650,6 +662,7 @@ assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the sy
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
 assert.ok(editorSource.includes('editor.action.referenceSearch.trigger'), 'Editor should expose Monaco reference search');
+assert.ok(editorSource.includes('editor.action.quickOutline'), 'Editor should expose Monaco quick outline');
 assert.ok(editorSource.includes('onSaveRequest?: () => void'), 'Editor should accept a native save shortcut callback');
 assert.ok(editorSource.includes('onQuickOpenRequest?: () => void'), 'Editor should accept a native quick-open shortcut callback');
 assert.ok(editorSource.includes('onCommandPaletteRequest?: () => void'), 'Editor should accept a native command-palette shortcut callback');

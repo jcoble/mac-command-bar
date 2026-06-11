@@ -111,6 +111,7 @@
 	let definitionProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
+	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
 	let editorActionDisposables: Monaco.IDisposable[] = [];
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
@@ -294,6 +295,19 @@
 		);
 	}
 
+	function registerSourceDocumentSymbolProvider(monaco: typeof Monaco) {
+		documentSymbolProviderDisposable?.dispose();
+		documentSymbolProviderDisposable = monaco.languages.registerDocumentSymbolProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideDocumentSymbols: (model) =>
+					extractSourceSymbols(previewForModel(model), model.getValue()).map((symbol) =>
+						sourceSymbolToDocumentSymbol(monaco, symbol)
+					),
+			}
+		);
+	}
+
 	function sourceDefinitionTargetToLocation(
 		monaco: typeof Monaco,
 		target: SourceDefinitionTarget
@@ -390,6 +404,56 @@
 				return completionKind.TypeParameter;
 			default:
 				return completionKind.Text;
+		}
+	}
+
+	function sourceSymbolToDocumentSymbol(
+		monaco: typeof Monaco,
+		symbol: SourceSymbol
+	): Monaco.languages.DocumentSymbol {
+		const line = Math.max(1, symbol.line);
+		const column = Math.max(1, symbol.column);
+		const endColumn = column + Math.max(1, symbol.name.length);
+		const range = new monaco.Range(line, column, line, endColumn);
+
+		return {
+			name: symbol.name,
+			detail: symbol.detail,
+			kind: sourceSymbolKind(monaco, symbol.kind),
+			range,
+			selectionRange: range,
+		};
+	}
+
+	function sourceSymbolKind(monaco: typeof Monaco, kind: string): Monaco.languages.SymbolKind {
+		const symbolKind = monaco.languages.SymbolKind;
+		switch (kind) {
+			case "namespace":
+				return symbolKind.Namespace;
+			case "class":
+				return symbolKind.Class;
+			case "interface":
+				return symbolKind.Interface;
+			case "enum":
+				return symbolKind.Enum;
+			case "function":
+				return symbolKind.Function;
+			case "method":
+				return symbolKind.Method;
+			case "constructor":
+				return symbolKind.Constructor;
+			case "property":
+				return symbolKind.Property;
+			case "constant":
+				return symbolKind.Constant;
+			case "record":
+			case "struct":
+				return symbolKind.Struct;
+			case "type":
+				return symbolKind.TypeParameter;
+			case "variable":
+			default:
+				return symbolKind.Variable;
 		}
 	}
 
@@ -625,6 +689,16 @@
 		void editor?.getAction("editor.action.showHover")?.run();
 	}
 
+	function requestSymbolsAtCursor() {
+		const quickOutlineAction = editor?.getAction("editor.action.quickOutline");
+		if (quickOutlineAction) {
+			void quickOutlineAction.run();
+			return;
+		}
+
+		onSymbolsRequest?.();
+	}
+
 	function lookupRequestAtCursor(): SourceEditorLookupRequest | null {
 		const position = editor?.getPosition();
 		if (!position) return null;
@@ -720,6 +794,7 @@
 		registerSourceDefinitionProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
+		registerSourceDocumentSymbolProvider(monaco);
 
 		editor = monaco.editor.create(host, {
 			automaticLayout: false,
@@ -826,7 +901,7 @@
 				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO],
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 0.3,
-				run: () => onSymbolsRequest?.(),
+				run: () => requestSymbolsAtCursor(),
 			}),
 			editor.addAction({
 				id: "mcb.source.showProblems",
@@ -895,6 +970,7 @@
 		definitionProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
+		documentSymbolProviderDisposable?.dispose();
 		for (const disposable of editorActionDisposables) {
 			disposable.dispose();
 		}
