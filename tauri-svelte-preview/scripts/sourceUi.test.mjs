@@ -1479,6 +1479,7 @@ assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should rende
 assert.ok(pageSource.includes('class="git-commit-detail"'), 'Git tab should render selected commit details');
 assert.ok(pageSource.includes("id: 'git-copy-selected-commit-detail'"), 'Command palette should copy selected commit details');
 assert.ok(pageSource.includes("id: 'git-copy-selected-commit-handoff'"), 'Command palette should copy selected commit handoffs');
+assert.ok(pageSource.includes("id: 'git-open-selected-commit-task'"), 'Command palette should open the selected commit task');
 assert.ok(
   pageSource.includes('git-history-row ${gitCommitGraphClass(entry, index)}'),
   'Git tab should render individual commit history rows with graph styling'
@@ -1493,9 +1494,17 @@ assert.ok(pageSource.includes('class="git-history-actions"'), 'Git history rows 
 assert.ok(pageSource.includes('aria-label="Copy commit SHA"'), 'Git rows should expose copy SHA actions');
 assert.ok(pageSource.includes('aria-label="Copy commit summary"'), 'Git rows should expose copy summary actions');
 assert.ok(pageSource.includes('aria-label="Copy selected commit handoff"'), 'Selected commit detail should expose handoff copy');
+assert.ok(
+  pageSource.includes('aria-label="Open selected commit task reference"'),
+  'Selected commit detail should expose direct task opening'
+);
 assert.ok(pageSource.includes('aria-label="Copy commit handoff"'), 'Git rows should expose copy handoff actions');
 assert.ok(pageSource.includes('aria-label="Copy task reference"'), 'Git rows should expose copy task reference actions');
 assert.ok(pageSource.includes('function openGitTaskReference'), 'Git tasks should open Notion task links from command actions');
+assert.ok(
+  pageSource.includes('openGitTaskReference(selectedGitCommit.taskID)'),
+  'Selected commit detail should open the linked task directly'
+);
 assert.ok(pageSource.includes('function focusGitTaskLedger'), 'Git tasks should focus task ledger rows from command actions');
 assert.ok(pageSource.includes('data-task-ledger-id={row.taskID}'), 'Task ledger rows should expose focus targets');
 assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');

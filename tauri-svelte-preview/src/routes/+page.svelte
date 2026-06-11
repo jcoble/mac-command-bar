@@ -1941,6 +1941,15 @@
       }
     },
     {
+      id: 'git-open-selected-commit-task',
+      label: 'Open selected commit task',
+      detail: selectedGitCommit?.taskID ? (gitTaskUrl(selectedGitCommit.taskID) ?? selectedGitCommit.taskID) : 'No selected task',
+      disabled: !selectedGitCommit?.taskID || !gitTaskUrl(selectedGitCommit.taskID),
+      perform: () => {
+        if (selectedGitCommit?.taskID) openGitTaskReference(selectedGitCommit.taskID);
+      }
+    },
+    {
       id: 'git-copy-workspace-brief',
       label: 'Copy Git workspace brief',
       detail: `${selectedProject.name} · ${repoDashboardSummary} · ${projectWorktreeCleanupBrief.headline}`,
@@ -12437,13 +12446,23 @@
                           <History size={11} strokeWidth={2} />
                         </button>
                         {#if selectedGitCommit.taskID}
+                          {#if gitTaskUrl(selectedGitCommit.taskID)}
+                            <button
+                              type="button"
+                              aria-label="Open selected commit task reference"
+                              title="Open selected commit task reference"
+                              onclick={() => openGitTaskReference(selectedGitCommit.taskID)}
+                            >
+                              <ExternalLink size={11} strokeWidth={2} />
+                            </button>
+                          {/if}
                           <button
                             type="button"
                             aria-label="Copy selected commit task reference"
                             title="Copy selected commit task reference"
                             onclick={() => copyGitTaskReference(selectedGitCommit.taskID)}
                           >
-                            <ExternalLink size={11} strokeWidth={2} />
+                            <Copy size={11} strokeWidth={2} />
                           </button>
                         {/if}
                       </div>
