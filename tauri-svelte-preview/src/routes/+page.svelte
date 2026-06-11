@@ -1332,6 +1332,13 @@
       perform: copySelectedPath
     },
     {
+      id: 'source-copy-context-brief',
+      label: 'Copy source context brief',
+      detail: selectedRecord?.relativePath ?? selectedProject.name,
+      disabled: !selectedProject.path,
+      perform: copySourceContextBrief
+    },
+    {
       id: 'open-file-native',
       label: 'Open file in IDE',
       detail: preview?.fileName ?? 'No file',
@@ -2940,6 +2947,36 @@
     ].join('\n');
   }
 
+  function sourceContextBriefText() {
+    const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
+    const currentFile = selectedRecord
+      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+      : 'none';
+    const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
+      const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
+      return `${dirtyPrefix}${tab.relativePath}`;
+    });
+    const dirtyFiles = dirtyProjectSourceRecords.slice(0, 8).map((record) => `- ${record.relativePath}`);
+
+    return [
+      'Source context brief',
+      `Project: ${selectedProject.name}`,
+      `Root: ${selectedProject.path}`,
+      `Root label: ${sourceContextIdentity.rootLabel}`,
+      `Git: ${sourceContextIdentity.gitSummary}`,
+      `Tasks: ${tasks}`,
+      `Current file: ${currentFile}`,
+      `Language: ${preview?.language ?? 'none'}`,
+      `Line: ${selectedSourceLine ?? 'unknown'}`,
+      `LSP: ${sourceLspStatusLabel()}`,
+      `Index: ${selectedProjectIndexSummary}`,
+      `Dirty files: ${dirtyProjectSourceRecords.length}`,
+      dirtyFiles.length > 0 ? dirtyFiles.join('\n') : '- none',
+      `Open tabs: ${projectOpenSourceTabs.length}`,
+      openTabs.length > 0 ? openTabs.join('\n') : '- none'
+    ].join('\n');
+  }
+
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
     return gitRefLabels(entry.refs);
   }
@@ -3033,6 +3070,10 @@
 
   async function copyGitWorkspaceBrief() {
     await copyActivityCommand(gitWorkspaceBriefText(), 'Git workspace brief copied');
+  }
+
+  async function copySourceContextBrief() {
+    await copyActivityCommand(sourceContextBriefText(), 'Source context brief copied');
   }
 
   function repoDashboardTaskLabel(summary: GitRepositorySummary) {

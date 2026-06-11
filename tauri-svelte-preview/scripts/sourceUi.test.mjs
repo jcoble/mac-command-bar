@@ -1244,6 +1244,10 @@ assert.ok(pageSource.includes('function copyGitCommitSummary'), 'Git history sho
 assert.ok(pageSource.includes('function copyGitTaskReference'), 'Git task links should expose quick task reference copy');
 assert.ok(pageSource.includes('function gitWorkspaceBriefText'), 'Git view should build a copyable workspace brief');
 assert.ok(pageSource.includes('function copyGitWorkspaceBrief'), 'Git view should expose a copyable workspace brief action');
+assert.ok(pageSource.includes('function sourceContextBriefText'), 'Source page should build a current editor context brief');
+assert.ok(pageSource.includes('function copySourceContextBrief'), 'Source page should expose a current editor context brief action');
+assert.ok(pageSource.includes("id: 'source-copy-context-brief'"), 'Command palette should copy the current source context brief');
+assert.ok(pageSource.includes('Source context brief'), 'Current source context brief should be clearly labeled');
 assert.ok(pageSource.includes("id: 'git-copy-workspace-brief'"), 'Command palette should copy the Git workspace brief');
 assert.ok(pageSource.includes('selectedProjectGitTaskIDs'), 'Git panel should derive a selected-project task trail');
 assert.ok(pageSource.includes('selectedProjectGitTaskSourceGroups'), 'Git panel should derive task source groups');
