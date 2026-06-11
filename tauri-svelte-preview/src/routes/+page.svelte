@@ -9265,7 +9265,7 @@
           {:else}
             <RefreshCw size={15} strokeWidth={1.8} />
           {/if}
-          <span>{scanning ? 'Stop' : 'Scan'}</span>
+          <span>{scanning ? 'Stop' : `Scan ${expandedSourceScanLimitShortLabel}`}</span>
         </button>
       </div>
 

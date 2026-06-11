@@ -668,7 +668,10 @@ assert.ok(
   pageSource.includes("aria-label={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}"),
   'Scan button should announce the expanded scan limit and stop state'
 );
-assert.ok(pageSource.includes("<span>{scanning ? 'Stop' : 'Scan'}</span>"), 'Scan button label should switch to Stop while scanning');
+assert.ok(
+  pageSource.includes("<span>{scanning ? 'Stop' : `Scan ${expandedSourceScanLimitShortLabel}`}</span>"),
+  'Scan button label should show the expanded limit and switch to Stop while scanning'
+);
 assert.ok(pageSource.includes('virtualizeSourceTreeRows'), 'Source tree should use virtualized row slicing');
 assert.ok(pageSource.includes('bind:this={fileTreeElement}'), 'File tree should bind the scroll container for viewport measurement');
 assert.ok(pageSource.includes('onscroll={handleFileTreeScroll}'), 'File tree should track scroll position for virtualization');
