@@ -15,6 +15,7 @@ export type WorktreeSafetySummary = {
   backupCommand: string;
   cleanupCommand: string;
   cleanupPlan: string;
+  decisionChecklist: string[];
 };
 
 export type WorktreePrimaryActionKind = 'audit' | 'backup' | 'cleanup';
@@ -100,6 +101,14 @@ export function buildWorktreeSafetySummary(
   const auditCommand = worktreeAuditCommand(worktree);
   const backupCommand = worktreeBackupCommand(worktree, nowMs);
   const cleanupCommand = worktreeCleanupCommand(worktree, options.primaryPath);
+  const decisionChecklist = worktreeDecisionChecklist({
+    kind,
+    badge,
+    reason,
+    ageBucket: activity.ageBucket,
+    isPrimaryCheckout,
+    activeSessionCount
+  });
 
   return {
     kind,
@@ -119,8 +128,10 @@ export function buildWorktreeSafetySummary(
       reason,
       recommendation,
       isPrimaryCheckout,
-      activeSessionCount
-    })
+      activeSessionCount,
+      decisionChecklist
+    }),
+    decisionChecklist
   };
 }
 
@@ -345,6 +356,7 @@ function worktreeCleanupPlan(
     recommendation: string;
     isPrimaryCheckout: boolean;
     activeSessionCount: number;
+    decisionChecklist: string[];
   }
 ): string {
   const lines = [
@@ -357,6 +369,12 @@ function worktreeCleanupPlan(
     `Recommended: ${details.recommendation}`,
     ''
   ].filter(Boolean);
+
+  lines.push('Decision checklist:');
+  for (const item of details.decisionChecklist) {
+    lines.push(`- ${item}`);
+  }
+  lines.push('');
 
   if (details.isPrimaryCheckout) {
     lines.push('Audit current state:');
@@ -379,6 +397,64 @@ function worktreeCleanupPlan(
   }
 
   return lines.join('\n');
+}
+
+function worktreeDecisionChecklist(details: {
+  kind: WorktreeSafetyKind;
+  badge: string;
+  reason: string;
+  ageBucket: WorktreeAgeBucket;
+  isPrimaryCheckout: boolean;
+  activeSessionCount: number;
+}): string[] {
+  if (details.isPrimaryCheckout) {
+    return [
+      'Keep this checkout as the repository anchor.',
+      'Clean sibling worktrees instead of removing main.'
+    ];
+  }
+
+  if (details.activeSessionCount > 0) {
+    return [
+      'Resume or close the active sessions using this path.',
+      'Refresh sessions and worktrees before attempting cleanup.'
+    ];
+  }
+
+  if (details.badge === 'Dirty') {
+    return [
+      'Inspect git status and uncommitted files.',
+      'Archive, commit, or stash the changes before removal.',
+      'Remove only after the worktree is clean or intentionally backed up.'
+    ];
+  }
+
+  if (details.badge === 'Unmerged') {
+    return [
+      'Inspect local commits that are not on a remote branch.',
+      'Push, merge, cherry-pick, or archive the branch before removal.',
+      'Remove only after the branch is recoverable from another ref.'
+    ];
+  }
+
+  if (details.kind === 'ready' && details.ageBucket === 'stale') {
+    return [
+      'Confirm no active session owns this stale path.',
+      'Remove from the main checkout, then prune worktree metadata.'
+    ];
+  }
+
+  if (details.kind === 'ready') {
+    return [
+      'Confirm branch ownership and task status.',
+      'Remove from the main checkout when no session needs it.'
+    ];
+  }
+
+  return [
+    `Audit before cleanup: ${details.reason}.`,
+    'Confirm ownership, task status, and active sessions before removal.'
+  ];
 }
 
 function formatBriefHeadline(counts: {

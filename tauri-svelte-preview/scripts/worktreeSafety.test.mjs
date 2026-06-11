@@ -33,6 +33,11 @@ function worktree(overrides = {}) {
   });
   assert.equal(summary.kind, 'protected');
   assert.equal(summary.badge, 'Main');
+  assert.deepEqual(summary.decisionChecklist, [
+    'Keep this checkout as the repository anchor.',
+    'Clean sibling worktrees instead of removing main.'
+  ]);
+  assert.match(summary.cleanupPlan, /Decision checklist:/);
   assert.match(summary.cleanupPlan, /Do not remove the primary checkout/);
 }
 
@@ -55,6 +60,12 @@ function worktree(overrides = {}) {
   assert.match(summary.backupCommand, /bundle create .*head\.bundle' HEAD/);
   assert.match(summary.cleanupPlan, /Audit before cleanup/);
   assert.match(summary.cleanupPlan, /Archive a recoverable backup/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Inspect git status and uncommitted files.',
+    'Archive, commit, or stash the changes before removal.',
+    'Remove only after the worktree is clean or intentionally backed up.'
+  ]);
+  assert.match(summary.cleanupPlan, /Inspect git status and uncommitted files/);
 
   const action = worktreePrimaryAction(summary);
   assert.equal(action.kind, 'backup');
@@ -75,6 +86,10 @@ function worktree(overrides = {}) {
   assert.equal(summary.badge, 'Active');
   assert.equal(summary.activeSessionCount, 1);
   assert.match(summary.reason, /Active session/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Resume or close the active sessions using this path.',
+    'Refresh sessions and worktrees before attempting cleanup.'
+  ]);
   assert.match(summary.cleanupPlan, /Do not remove while active sessions point here/);
 
   const action = worktreePrimaryAction(summary);
@@ -91,6 +106,12 @@ function worktree(overrides = {}) {
   assert.equal(summary.kind, 'blocked');
   assert.equal(summary.badge, 'Unmerged');
   assert.match(summary.recommendation, /push/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Inspect local commits that are not on a remote branch.',
+    'Push, merge, cherry-pick, or archive the branch before removal.',
+    'Remove only after the branch is recoverable from another ref.'
+  ]);
+  assert.match(summary.cleanupPlan, /Inspect local commits/);
 
   const action = worktreePrimaryAction(summary);
   assert.equal(action.kind, 'backup');
@@ -110,6 +131,10 @@ function worktree(overrides = {}) {
   assert.equal(summary.badge, 'Stale');
   assert.equal(summary.ageBucket, 'stale');
   assert.match(summary.recommendation, /cleanup candidate/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Confirm no active session owns this stale path.',
+    'Remove from the main checkout, then prune worktree metadata.'
+  ]);
 
   const action = worktreePrimaryAction(summary);
   assert.equal(action.kind, 'cleanup');

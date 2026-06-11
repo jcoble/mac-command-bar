@@ -10788,6 +10788,10 @@
 	                  · {projectWorktreeActivityLabel(worktree)}
 	                </em>
                 <small class="worktree-recommendation">{safety.recommendation}</small>
+                <small class="worktree-next-check">
+                  <strong>Next</strong>
+                  {safety.decisionChecklist[0] ?? 'Audit before cleanup.'}
+                </small>
                 <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
                   <button
                     type="button"
@@ -15410,8 +15414,8 @@
 
   .worktree-context-row {
     grid-template-columns:
-      auto minmax(0, 0.95fr) minmax(0, 0.5fr) auto minmax(0, 1fr) minmax(0, 1.1fr)
-      auto;
+      auto minmax(0, 0.9fr) minmax(0, 0.44fr) auto minmax(0, 0.9fr) minmax(0, 1fr)
+      minmax(0, 1fr) auto;
   }
 
   .repo-dashboard-row {
@@ -15544,6 +15548,24 @@
   .worktree-status-badge.blocked {
     color: #211606;
     background: #d8aa55;
+  }
+
+  .worktree-next-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #8fbdb6;
+    font-size: 10px;
+    font-weight: 730;
+  }
+
+  .worktree-next-check strong {
+    flex: 0 0 auto;
+    color: #6fdfcf;
+    font-size: 9px;
+    font-weight: 860;
+    letter-spacing: 0;
+    text-transform: uppercase;
   }
 
   .repo-branch-badge {

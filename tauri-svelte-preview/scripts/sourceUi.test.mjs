@@ -1500,9 +1500,12 @@ assert.ok(pageSource.includes('function copyProjectWorktreeCleanupBrief'), 'Work
 assert.ok(pageSource.includes('aria-label="Copy worktree cleanup script"'), 'Worktree panel should expose the guarded cleanup script');
 assert.ok(pageSource.includes('class="worktree-context-list"'), 'Worktree panel should render a scrollable list');
 assert.ok(pageSource.includes('worktree-status-badge ${safety.kind}'), 'Worktree rows should show safety status');
+assert.ok(pageSource.includes('safety.decisionChecklist[0]'), 'Worktree rows should show the next cleanup decision');
+assert.ok(pageSource.includes('class="worktree-next-check"'), 'Worktree rows should render compact next-step hints');
 assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');
 assertDeclaration('.worktree-context-list', 'overflow-y: auto');
 assertDeclaration('.worktree-context-list', 'scrollbar-width: thin');
+assertDeclaration('.worktree-next-check', 'display: inline-flex');
 assert.ok(pageSource.includes('listGitRepositorySummariesFromTauri'), 'Source page should load native repository summaries');
 assert.ok(pageSource.includes('gitRepositorySummaries'), 'Source page should track repository dashboard summaries');
 assert.ok(pageSource.includes('function loadGitRepositorySummaries'), 'Source page should expose a repository dashboard refresh action');
