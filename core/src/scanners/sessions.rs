@@ -15,6 +15,7 @@ pub struct AgentSessionRecord {
     pub provider: String,
     pub id: String,
     pub title: String,
+    pub model: Option<String>,
     pub project_path: Option<String>,
     pub last_activity: Option<String>,
     pub resume_commands: Vec<String>,
@@ -108,6 +109,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 provider: "codex".to_string(),
                 id: id.clone(),
                 title,
+                model: model_from_value(&value),
                 project_path: None,
                 last_activity,
                 resume_commands: vec![format!("codex resume {id}")],
@@ -149,6 +151,7 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
             provider: "codex".to_string(),
             id: id.to_string(),
             title: "Codex session".to_string(),
+            model: model_from_value(payload),
             project_path: cwd,
             last_activity,
             resume_commands: vec![format!("codex resume {id}")],
@@ -245,6 +248,7 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 provider: format!("cmux-{agent}"),
                 id: id.to_string(),
                 title,
+                model: model_from_value(value),
                 project_path: cwd.clone(),
                 last_activity,
                 resume_commands: cmux_resume_commands(&agent, id, cwd.as_deref()),
@@ -286,6 +290,10 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             provider: "claude".to_string(),
             id: id.to_string(),
             title,
+            model: value
+                .get("message")
+                .and_then(model_from_value)
+                .or_else(|| model_from_value(&value)),
             project_path: (!cwd.is_empty()).then_some(cwd.clone()),
             last_activity: timestamp,
             resume_commands: vec![
@@ -323,6 +331,10 @@ fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSession
 }
 
 fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
+    if existing.model.is_none() {
+        existing.model = candidate.model.clone();
+    }
+
     if existing.project_path.is_none() {
         existing.project_path = candidate.project_path.clone();
     }
@@ -341,6 +353,7 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
 
     if candidate_is_newer {
         existing.title = candidate.title;
+        existing.model = candidate.model.or(existing.model.take());
         existing.project_path = candidate.project_path.or(existing.project_path.take());
         existing.last_activity = candidate.last_activity;
     }
@@ -350,6 +363,24 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
             existing.resume_commands.push(command);
         }
     }
+}
+
+fn model_from_value(value: &Value) -> Option<String> {
+    optional_string(value.get("model"))
+        .or_else(|| optional_string(value.get("model_slug")))
+        .or_else(|| optional_string(value.get("modelSlug")))
+        .or_else(|| optional_string(value.get("modelName")))
+        .or_else(|| optional_string(value.get("model_name")))
+        .or_else(|| optional_string(value.get("modelId")))
+        .or_else(|| optional_string(value.get("model_id")))
+}
+
+fn optional_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn title_from_claude_message(value: &Value) -> Option<String> {

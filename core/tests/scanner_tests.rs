@@ -36,23 +36,25 @@ fn parses_lsof_tcp_listener_output() {
 #[test]
 fn parses_codex_and_claude_session_indexes() {
     let codex = parse_codex_index_jsonl(
-        "{\"id\":\"019d\",\"thread_name\":\"Fix runtime\",\"updated_at\":\"2026-06-08T22:00:00Z\"}\n",
+        "{\"id\":\"019d\",\"thread_name\":\"Fix runtime\",\"updated_at\":\"2026-06-08T22:00:00Z\",\"model\":\"gpt-5.5-codex\"}\n",
     );
     let claude = parse_claude_jsonl(
-        "{\"sessionId\":\"abc\",\"cwd\":\"/repo\",\"timestamp\":\"2026-06-08T22:01:00Z\",\"message\":{\"role\":\"user\",\"content\":\"resume work\"}}\n",
+        "{\"sessionId\":\"abc\",\"cwd\":\"/repo\",\"timestamp\":\"2026-06-08T22:01:00Z\",\"message\":{\"role\":\"user\",\"model\":\"claude-opus-4-8\",\"content\":\"resume work\"}}\n",
         "/repo",
     );
 
     assert_eq!(codex[0].provider, "codex");
     assert_eq!(codex[0].title, "Fix runtime");
+    assert_eq!(codex[0].model.as_deref(), Some("gpt-5.5-codex"));
     assert_eq!(claude[0].provider, "claude");
     assert_eq!(claude[0].project_path.as_deref(), Some("/repo"));
+    assert_eq!(claude[0].model.as_deref(), Some("claude-opus-4-8"));
 }
 
 #[test]
 fn parses_codex_rollout_metadata_without_transcript_content() {
     let records = parse_codex_rollout_jsonl(
-        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"timestamp\":\"2026-06-09T00:59:00Z\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\"}}\n\
+        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"timestamp\":\"2026-06-09T00:59:00Z\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\",\"model_slug\":\"gpt-5.5-codex\"}}\n\
          {\"timestamp\":\"2026-06-09T01:01:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"do not use transcript text as a title\"}]}}\n",
     );
 
@@ -68,6 +70,7 @@ fn parses_codex_rollout_metadata_without_transcript_content() {
         Some("2026-06-09T01:00:00Z")
     );
     assert_eq!(records[0].title, "Codex session");
+    assert_eq!(records[0].model.as_deref(), Some("gpt-5.5-codex"));
     assert_eq!(records[0].resume_commands, vec!["codex resume 019e"]);
 }
 
@@ -77,7 +80,7 @@ fn merges_codex_rollout_project_path_into_index_record() {
         "{\"id\":\"019e\",\"thread_name\":\"Build command bar\",\"updated_at\":\"2026-06-09T01:05:00Z\"}\n",
     );
     let rollout = parse_codex_rollout_jsonl(
-        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\"}}\n",
+        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\",\"modelName\":\"gpt-5.5-xhigh\"}}\n",
     );
 
     let merged = merge_codex_session_metadata(index, rollout);
@@ -92,13 +95,14 @@ fn merges_codex_rollout_project_path_into_index_record() {
         merged[0].project_path.as_deref(),
         Some("/Users/blackcolours/dev/work/mac-command-bar")
     );
+    assert_eq!(merged[0].model.as_deref(), Some("gpt-5.5-xhigh"));
 }
 
 #[test]
 fn parses_cmux_hook_sessions_without_body_content() {
     let records = parse_cmux_hook_sessions_json(
         "codex",
-        "{\"version\":1,\"sessions\":{\"019e\":{\"sessionId\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\",\"updatedAt\":\"2026-06-09T01:07:00Z\",\"runtimeStatus\":\"running\",\"lastSubtitle\":\"main · context 42%\",\"lastBody\":\"do not use this transcript body\"}}}\n",
+        "{\"version\":1,\"sessions\":{\"019e\":{\"sessionId\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\",\"updatedAt\":\"2026-06-09T01:07:00Z\",\"runtimeStatus\":\"running\",\"modelId\":\"gpt-5.5-codex\",\"lastSubtitle\":\"main · context 42%\",\"lastBody\":\"do not use this transcript body\"}}}\n",
     );
 
     assert_eq!(records.len(), 1);
@@ -114,6 +118,7 @@ fn parses_cmux_hook_sessions_without_body_content() {
         records[0].last_activity.as_deref(),
         Some("2026-06-09T01:07:00Z")
     );
+    assert_eq!(records[0].model.as_deref(), Some("gpt-5.5-codex"));
     assert_eq!(
         records[0].resume_commands,
         vec![
@@ -130,6 +135,7 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             provider: "claude".to_string(),
             id: "abc".to_string(),
             title: "Older title".to_string(),
+            model: Some("claude-sonnet-4-5".to_string()),
             project_path: Some("/repo".to_string()),
             last_activity: Some("2026-06-09T01:00:00Z".to_string()),
             resume_commands: vec!["claude --resume abc".to_string()],
@@ -138,6 +144,7 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             provider: "claude".to_string(),
             id: "abc".to_string(),
             title: "Newer title".to_string(),
+            model: Some("claude-opus-4-8".to_string()),
             project_path: Some("/repo/worktree".to_string()),
             last_activity: Some("2026-06-09T02:00:00Z".to_string()),
             resume_commands: vec![
@@ -157,6 +164,7 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
         records[0].last_activity.as_deref(),
         Some("2026-06-09T02:00:00Z")
     );
+    assert_eq!(records[0].model.as_deref(), Some("claude-opus-4-8"));
     assert_eq!(
         records[0].resume_commands,
         vec![

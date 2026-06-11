@@ -207,6 +207,9 @@ assert.ok(pageSource.includes('function copyWorktreeCleanupCommand'), 'Worktree 
 assert.ok(pageSource.includes('function copyWorktreeBackupCommand'), 'Worktree rows should copy backup commands');
 assert.ok(pageSource.includes('function agentSessionResumePlan'), 'Agent rows should expose a copyable resume plan');
 assert.ok(pageSource.includes('function agentSessionResumeShellCommand'), 'Agent rows should expose shell-ready resume commands');
+assert.ok(pageSource.includes('function agentSessionModelLabel'), 'Agent rows should expose model metadata when session scanners find it');
+assert.ok(pageSource.includes('session.model'), 'Agent session filtering and rows should include model metadata');
+assert.ok(pageSource.includes('model: session?.model ?? null'), 'Workspace snapshots should preserve the agent session model');
 assert.ok(pageSource.includes('function copyAgentSessionResumePlan'), 'Agent commands should copy session resume plans');
 assert.ok(pageSource.includes('function copyAgentSessionResumeShellCommand'), 'Agent commands should copy shell-ready resume commands');
 assert.ok(pageSource.includes('editorInsightWidthStorageKey'), 'Editor shell should persist the inspector width');

@@ -124,6 +124,7 @@ export type AgentSession = {
   provider: string;
   id: string;
   title: string;
+  model: string | null;
   projectPath: string | null;
   lastActivity: string | null;
   resumeCommands: string[];

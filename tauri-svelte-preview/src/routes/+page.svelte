@@ -689,6 +689,7 @@
         sourceActivityFilter,
         session.provider,
         session.title,
+        session.model,
         session.projectPath,
         session.lastActivity,
         agentSessionResumeCommand(session)
@@ -2171,6 +2172,7 @@
         provider: 'codex',
         id: 'preview-session',
         title: `Review ${project.name}`,
+        model: null,
         projectPath: project.path,
         lastActivity: null,
         resumeCommands: ['codex resume preview-session']
@@ -2572,6 +2574,10 @@
     return session.projectPath ? formatSourceContextRootLabel(session.projectPath) : 'global';
   }
 
+  function agentSessionModelLabel(session: AgentSession) {
+    return session.model?.trim() || 'model unknown';
+  }
+
   function agentSessionActivityLabel(session: AgentSession) {
     return session.lastActivity ?? 'unknown activity';
   }
@@ -2610,7 +2616,7 @@
       provider: workspaceSnapshotProviderForSession(session),
       sessionID: session?.id ?? selectedProject.id,
       title: session?.title ?? `${selectedProject.name} workspace`,
-      model: null,
+      model: session?.model ?? null,
       project,
       cwd,
       worktreePath: snapshotWorktreePathForPath(cwd),
@@ -2902,6 +2908,7 @@
       `Session: ${session.title}`,
       `Provider: ${session.provider}`,
       `ID: ${session.id}`,
+      `Model: ${agentSessionModelLabel(session)}`,
       `Project: ${agentSessionProjectPath(session)}`,
       `Activity: ${agentSessionActivityLabel(session)}`,
       '',
@@ -6650,7 +6657,7 @@
                         <div class="activity-row-main">
                           <strong>{snapshot.title}</strong>
                           <small>
-                            {snapshot.project.name} · {snapshot.branch ?? snapshot.worktreePath ?? snapshot.cwd}
+                            {snapshot.project.name} · {snapshot.model ?? snapshot.branch ?? snapshot.worktreePath ?? snapshot.cwd}
                           </small>
                         </div>
                       </button>
@@ -6722,7 +6729,11 @@
                     <span class="agent-provider-badge">{session.provider}</span>
                     <div class="activity-row-main">
                       <strong>{session.title}</strong>
-                      <small>{agentSessionProjectLabel(session)} · {agentSessionActivityLabel(session)}</small>
+                      <small>
+                        {agentSessionProjectLabel(session)}
+                        {#if session.model} · {agentSessionModelLabel(session)}{/if}
+                        · {agentSessionActivityLabel(session)}
+                      </small>
                     </div>
                   </button>
                   <div class="activity-row-actions" aria-label="Conversation actions">
@@ -6836,7 +6847,10 @@
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
                     <strong>{session.title}</strong>
-                    <small>{agentSessionResumeCommand(session)}</small>
+                    <small>
+                      {#if session.model}{agentSessionModelLabel(session)} · {/if}
+                      {agentSessionResumeCommand(session)}
+                    </small>
                   </div>
                   <div class="activity-row-actions" aria-label="Agent actions">
                     <button
@@ -7501,6 +7515,7 @@
                 <span class="agent-provider-badge">{session.provider}</span>
                 <strong>{session.title}</strong>
                 <span>{agentSessionProjectLabel(session)}</span>
+                {#if session.model}<span>{agentSessionModelLabel(session)}</span>{/if}
                 <small>{agentSessionActivityLabel(session)}</small>
               </div>
             {/each}
