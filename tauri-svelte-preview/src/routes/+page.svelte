@@ -83,6 +83,7 @@
     findSourceReferenceTargets,
     findSourceSearchMatches,
     gitCommitGraphKind,
+    gitCommitTopologyLabel,
     gitRefLabels,
     formatSourceContextGitSummary,
     formatSourceContextIdentity,
@@ -1994,7 +1995,10 @@
         author: 'MacCommandBar',
         committedAt,
         refs: 'HEAD -> main',
-        taskID: 'TSK-127'
+        parentShas: ['ebca14e7594f84f6be0d18f2f0d39c48a2d0002'],
+        parentCount: 1,
+        taskID: 'TSK-127',
+        taskSource: 'subject'
       },
       {
         shortSha: 'ebca14e',
@@ -2003,7 +2007,10 @@
         author: 'MacCommandBar',
         committedAt,
         refs: repoSlug ? `origin/${repoSlug}` : 'origin/main',
-        taskID: 'TSK-127'
+        parentShas: ['27a95ed5b28f23d345ccac9a8c6e63f99ad0003'],
+        parentCount: 1,
+        taskID: 'TSK-127',
+        taskSource: 'refs'
       },
       {
         shortSha: '27a95ed',
@@ -2012,7 +2019,10 @@
         author: 'MacCommandBar',
         committedAt,
         refs: '',
-        taskID: 'TSK-127'
+        parentShas: [],
+        parentCount: 0,
+        taskID: 'TSK-127',
+        taskSource: 'subject'
       }
     ];
   }
@@ -2294,17 +2304,28 @@
   }
 
   function gitCommitTitle(entry: GitCommitHistoryEntry) {
-    return [entry.sha, entry.refs, entry.subject].filter(Boolean).join('\n');
+    const parentSummary = gitCommitParentSummary(entry);
+    const taskSource = gitCommitTaskSourceLabel(entry);
+    return [
+      entry.sha,
+      entry.refs,
+      parentSummary,
+      entry.taskID && taskSource ? `${entry.taskID} from ${taskSource}` : '',
+      entry.subject
+    ].filter(Boolean).join('\n');
   }
 
   function gitCommitSummaryText(entry: GitCommitHistoryEntry) {
     const refs = gitCommitRefChips(entry).join(', ');
-    const task = entry.taskID ? `Task ${entry.taskID}` : '';
+    const taskSource = gitCommitTaskSourceLabel(entry);
+    const task = entry.taskID ? `Task ${entry.taskID}${taskSource ? ` from ${taskSource}` : ''}` : '';
+    const topology = gitCommitParentSummary(entry);
 
     return [
       entry.shortSha,
       entry.subject,
       refs,
+      topology,
       task,
       entry.author,
       formatGitCommitTime(entry.committedAt)
@@ -2353,8 +2374,31 @@
     return gitRefLabels(entry.refs);
   }
 
+  function gitCommitParentCount(entry: GitCommitHistoryEntry) {
+    if (Number.isFinite(entry.parentCount)) return entry.parentCount;
+    return entry.parentShas?.length ?? 1;
+  }
+
   function gitCommitGraphClass(entry: GitCommitHistoryEntry, index: number) {
-    return gitCommitGraphKind(entry.refs, index);
+    return gitCommitGraphKind(entry.refs, index, gitCommitParentCount(entry));
+  }
+
+  function gitCommitTopology(entry: GitCommitHistoryEntry, index: number) {
+    return gitCommitTopologyLabel(entry.refs, index, gitCommitParentCount(entry));
+  }
+
+  function gitCommitParentSummary(entry: GitCommitHistoryEntry) {
+    const parentCount = gitCommitParentCount(entry);
+    if (parentCount > 1) return `${parentCount} parents`;
+    if (parentCount === 0) return 'root commit';
+    return '';
+  }
+
+  function gitCommitTaskSourceLabel(entry: GitCommitHistoryEntry) {
+    if (!entry.taskID) return '';
+    if (entry.taskSource === 'refs') return 'branch/ref';
+    if (entry.taskSource === 'subject') return 'subject';
+    return '';
   }
 
   function gitTaskUrl(taskID: string | null) {
@@ -7247,9 +7291,13 @@
             {#if filteredGitCommitHistory.length === 0}
               <div class="activity-empty">No commits</div>
             {:else}
-              {#each filteredGitCommitHistory.slice(0, 8) as entry (entry.sha)}
+              {#each filteredGitCommitHistory.slice(0, 8) as entry, index (entry.sha)}
                 <div class="activity-commit-row" title={gitCommitTitle(entry)}>
-                  <span class="git-graph-marker" aria-hidden="true"></span>
+                  <span
+                    class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`}
+                    aria-label={gitCommitTopology(entry, index)}
+                    title={gitCommitTopology(entry, index)}
+                  ></span>
                   <div class="activity-row-main">
                     <strong>{entry.subject}</strong>
                     <small>{entry.shortSha} · {formatGitCommitTime(entry.committedAt)}</small>
@@ -7261,6 +7309,7 @@
                         href={gitTaskUrl(entry.taskID) ?? ''}
                         target="_blank"
                         rel="noreferrer"
+                        title={`Task from ${gitCommitTaskSourceLabel(entry) || 'Git metadata'}`}
                       >
                         {entry.taskID}
                       </a>
@@ -8528,7 +8577,11 @@
                     {:else}
                       {#each gitCommitHistory as entry, index (entry.sha)}
                         <div class={`git-history-row ${gitCommitGraphClass(entry, index)}`} title={gitCommitTitle(entry)}>
-                          <span class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`} aria-hidden="true"></span>
+                          <span
+                            class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`}
+                            aria-label={gitCommitTopology(entry, index)}
+                            title={gitCommitTopology(entry, index)}
+                          ></span>
                           <div class="git-history-main">
                             <strong>{entry.subject}</strong>
                             <small>{entry.shortSha} · {entry.author} · {formatGitCommitTime(entry.committedAt)}</small>
@@ -8544,11 +8597,15 @@
                                   href={gitTaskUrl(entry.taskID) ?? ''}
                                   target="_blank"
                                   rel="noreferrer"
+                                  title={`Task from ${gitCommitTaskSourceLabel(entry) || 'Git metadata'}`}
                                 >
                                   {entry.taskID}
                                 </a>
                               {:else}
-                                <span class="git-task-link">{entry.taskID}</span>
+                                <span
+                                  class="git-task-link"
+                                  title={`Task from ${gitCommitTaskSourceLabel(entry) || 'Git metadata'}`}
+                                >{entry.taskID}</span>
                               {/if}
                             {/if}
                             <div class="git-history-actions" aria-label="Commit quick actions">
@@ -12690,6 +12747,14 @@
     border-color: rgba(132, 201, 222, 0.2);
   }
 
+  .git-history-row.merge {
+    border-color: rgba(216, 170, 85, 0.24);
+  }
+
+  .git-history-row.root {
+    border-color: rgba(174, 184, 181, 0.18);
+  }
+
   .git-graph-marker {
     position: relative;
     display: grid;
@@ -12732,6 +12797,33 @@
   .git-graph-marker.branch::after {
     border-color: rgba(132, 201, 222, 0.84);
     background: #171b1b;
+  }
+
+  .git-graph-marker.merge::before {
+    background: linear-gradient(
+      180deg,
+      rgba(216, 170, 85, 0.15),
+      rgba(216, 170, 85, 0.5),
+      rgba(111, 223, 207, 0.2)
+    );
+  }
+
+  .git-graph-marker.merge::after {
+    width: 10px;
+    height: 10px;
+    border-color: rgba(216, 170, 85, 0.9);
+    border-radius: 3px;
+    background: #171b1b;
+  }
+
+  .git-graph-marker.root::before {
+    inset: -8px auto 50%;
+    background: rgba(174, 184, 181, 0.2);
+  }
+
+  .git-graph-marker.root::after {
+    border-color: rgba(174, 184, 181, 0.75);
+    background: rgba(174, 184, 181, 0.2);
   }
 
   .git-history-main,

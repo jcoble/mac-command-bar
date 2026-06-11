@@ -817,6 +817,11 @@ assert.ok(
   pageSource.includes('gitCommitGraphClass(entry, index)'),
   'Git history should classify commits for graph styling'
 );
+assert.ok(pageSource.includes('function gitCommitTopology'), 'Git history should label commit topology for graph markers');
+assert.ok(
+  pageSource.includes('gitCommitTaskSourceLabel(entry)'),
+  'Git task links should explain whether task IDs came from refs or subjects'
+);
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
 assert.ok(pageSource.includes('function runGitPathAction'), 'Source page should expose reusable stage/unstage handling');
@@ -873,8 +878,10 @@ assert.match(
 );
 assertDeclaration('.activity-commit-meta', 'display: inline-flex');
 assertDeclaration('.git-history-row.head', 'background: rgba(111, 223, 207, 0.07)');
+assertDeclaration('.git-history-row.merge', 'border-color: rgba(216, 170, 85, 0.24)');
 assertDeclaration('.git-history-actions', 'display: inline-flex');
 assertDeclaration('.git-graph-marker.head::after', 'background: #6fdfcf');
+assertDeclaration('.git-graph-marker.merge::after', 'border-radius: 3px');
 assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0, 1fr)');
 assertDeclaration('.run-timeline-item', 'grid-template-columns: 18px minmax(0, 1fr) auto');
 assertDeclaration('.run-artifact-row', 'display: flex');

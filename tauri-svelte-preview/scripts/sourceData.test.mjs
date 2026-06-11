@@ -15,6 +15,7 @@ import {
   formatSourceRecordCount,
   formatSourceScanSummary,
   gitCommitGraphKind,
+  gitCommitTopologyLabel,
   gitRefLabels,
   folderIdsForSourceRecord,
   getSourceScanCacheEntry,
@@ -671,7 +672,12 @@ assert.deepEqual(gitRefLabels('HEAD -> main, origin/main, tag: v0.1.0'), [
 assert.deepEqual(gitRefLabels(''), []);
 assert.equal(gitCommitGraphKind('HEAD -> main, origin/main', 3), 'head');
 assert.equal(gitCommitGraphKind('origin/main', 0), 'branch');
+assert.equal(gitCommitGraphKind('', 0, 2), 'merge');
+assert.equal(gitCommitGraphKind('', 0, 0), 'root');
 assert.equal(gitCommitGraphKind('', 0), 'commit');
+assert.equal(gitCommitTopologyLabel('HEAD -> main', 0), 'HEAD');
+assert.equal(gitCommitTopologyLabel('', 0, 2), 'MERGE');
+assert.equal(gitCommitTopologyLabel('', 0, 0), 'ROOT');
 assert.deepEqual(
   uniqueTaskIDsFromGitMetadata(
     [{ taskID: 'TSK-127' }, { taskID: null }],

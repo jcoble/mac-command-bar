@@ -139,7 +139,7 @@ export type GitTaskMetadata = {
   taskID?: string | null;
 };
 
-export type GitCommitGraphKind = 'head' | 'branch' | 'commit';
+export type GitCommitGraphKind = 'head' | 'branch' | 'merge' | 'root' | 'commit';
 
 export type SourceContextGitStatus = {
   branch?: string | null;
@@ -603,11 +603,31 @@ export function gitRefLabels(refs: string): string[] {
     .filter(Boolean);
 }
 
-export function gitCommitGraphKind(refs: string, _index: number): GitCommitGraphKind {
+export function gitCommitGraphKind(refs: string, _index: number, parentCount = 1): GitCommitGraphKind {
   const labels = gitRefLabels(refs);
   if (labels.some((label) => label === 'HEAD' || label.startsWith('HEAD ->'))) return 'head';
+  if (parentCount > 1) return 'merge';
   if (labels.length > 0) return 'branch';
+  if (parentCount === 0) return 'root';
   return 'commit';
+}
+
+export function gitCommitTopologyLabel(refs: string, index: number, parentCount = 1): string {
+  const kind = gitCommitGraphKind(refs, index, parentCount);
+
+  switch (kind) {
+    case 'head':
+      return 'HEAD';
+    case 'branch':
+      return 'REF';
+    case 'merge':
+      return 'MERGE';
+    case 'root':
+      return 'ROOT';
+    case 'commit':
+    default:
+      return 'COMMIT';
+  }
 }
 
 export function uniqueTaskIDsFromGitMetadata(...groups: GitTaskMetadata[][]): string[] {

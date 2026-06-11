@@ -220,8 +220,11 @@ struct GitCommitHistoryEntry {
     author: String,
     committed_at: String,
     refs: String,
+    parent_shas: Vec<String>,
+    parent_count: usize,
     #[serde(rename = "taskID")]
     task_id: Option<String>,
+    task_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1745,7 +1748,7 @@ fn read_git_commit_history_sync(
             "log",
             "--decorate=short",
             "--date=iso-strict",
-            "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D",
+            "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P",
             limit_arg.as_str(),
         ],
     );
@@ -2286,12 +2289,27 @@ fn parse_git_commit_history(output: &str) -> Result<Vec<GitCommitHistoryEntry>, 
         let author = parts.next().unwrap_or_default().trim().to_string();
         let committed_at = parts.next().unwrap_or_default().trim().to_string();
         let refs = parts.next().unwrap_or_default().trim().to_string();
+        let parent_shas = parts
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::trim)
+            .filter(|parent| !parent.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let parent_count = parent_shas.len();
 
         if short_sha.is_empty() || sha.is_empty() {
             return Err("Could not parse Git history entry".to_string());
         }
 
-        let task_id = task_id_from_text(&refs).or_else(|| task_id_from_text(&subject));
+        let (task_id, task_source) = match task_id_from_text(&refs) {
+            Some(task_id) => (Some(task_id), Some("refs".to_string())),
+            None => match task_id_from_text(&subject) {
+                Some(task_id) => (Some(task_id), Some("subject".to_string())),
+                None => (None, None),
+            },
+        };
         entries.push(GitCommitHistoryEntry {
             short_sha,
             sha,
@@ -2299,7 +2317,10 @@ fn parse_git_commit_history(output: &str) -> Result<Vec<GitCommitHistoryEntry>, 
             author,
             committed_at,
             refs,
+            parent_shas,
+            parent_count,
             task_id,
+            task_source,
         });
     }
 
@@ -3821,11 +3842,32 @@ mod tests {
         assert!(!history[0].sha.is_empty());
         assert_eq!(history[0].author, "MacCommandBar Test");
         assert!(!history[0].committed_at.is_empty());
+        assert_eq!(history[0].parent_count, 1);
+        assert_eq!(history[0].parent_shas.len(), 1);
+        assert_eq!(history[0].task_source.as_deref(), Some("refs"));
         assert_eq!(history[1].task_id.as_deref(), Some("TSK-128"));
+        assert_eq!(history[1].task_source.as_deref(), Some("subject"));
         assert_eq!(history[2].task_id.as_deref(), Some("TSK-127"));
         assert_eq!(history[3].task_id, None);
+        assert_eq!(history[3].parent_count, 0);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_commit_history_parser_tracks_merge_parent_metadata() {
+        let output = "abc1234\x1fabc1234abc1234abc1234abc1234abc1234abc1234\x1fmerge TSK-127 pane work\x1fMacCommandBar Test\x1f2026-06-11T12:00:00Z\x1fHEAD -> main\x1fparent-one parent-two\n";
+
+        let history = parse_git_commit_history(output).unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].parent_count, 2);
+        assert_eq!(
+            history[0].parent_shas,
+            vec!["parent-one".to_string(), "parent-two".to_string()]
+        );
+        assert_eq!(history[0].task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(history[0].task_source.as_deref(), Some("subject"));
     }
 
     #[test]

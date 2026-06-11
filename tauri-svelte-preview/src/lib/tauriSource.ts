@@ -118,7 +118,10 @@ export type GitCommitHistoryEntry = {
   author: string;
   committedAt: string;
   refs: string;
+  parentShas: string[];
+  parentCount: number;
   taskID: string | null;
+  taskSource: string | null;
 };
 
 export type AgentSession = {
