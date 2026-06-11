@@ -150,6 +150,7 @@
     findSourceLspCompletionsFromTauri,
     findSourceLspDefinitionsFromTauri,
     findSourceLspHoverFromTauri,
+    findSourceLspImplementationsFromTauri,
     findSourceLspReferencesFromTauri,
     findSourceLspSymbolsFromTauri,
     findSourceReferencesFromTauri,
@@ -264,7 +265,7 @@
   const sourceLayoutVersion = '2026-06-editor-canvas';
   const initialProject = defaultProjectRoots[0];
 
-  type SourceIntelligenceAction = 'definition' | 'hover' | 'references';
+  type SourceIntelligenceAction = 'definition' | 'hover' | 'implementation' | 'references';
   type SourceEditorIntelligenceCommand = {
     id: number;
     action: SourceIntelligenceAction;
@@ -466,6 +467,10 @@
   let sourceReferenceQuery = $state('');
   let sourceReferenceLoading = $state(false);
   let sourceReferenceError = $state('');
+  let sourceImplementationTargets = $state<SourceDefinitionTarget[]>([]);
+  let sourceImplementationQuery = $state('');
+  let sourceImplementationLoading = $state(false);
+  let sourceImplementationError = $state('');
   let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
   let selectedSourceGitDiffLoading = $state(false);
   let selectedSourceGitDiffError = $state('');
@@ -912,6 +917,14 @@
       sourceReferenceQuery
     )
   );
+  let sourceImplementationSummary = $derived(
+    formatSourceImplementationSummary(
+      sourceImplementationTargets.length,
+      sourceImplementationLoading,
+      sourceImplementationError,
+      sourceImplementationQuery
+    )
+  );
   let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
   let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
     {
@@ -1100,6 +1113,13 @@
       detail: preview?.fileName ?? 'No file',
       disabled: !preview || loading,
       perform: () => requestSourceIntelligenceAction('references')
+    },
+    {
+      id: 'find-implementations',
+      label: 'Find implementations',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('implementation')
     },
     {
       id: 'show-hover',
@@ -4423,6 +4443,78 @@
     sourceReferenceQuery = '';
   }
 
+  async function runSourceImplementationLookup(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    sourceImplementationQuery = normalizedSymbolName;
+    sourceImplementationError = '';
+
+    if (!normalizedSymbolName) {
+      sourceImplementationTargets = [];
+      fileActionStatus = 'No symbol under cursor';
+      return [];
+    }
+
+    if (!preview || !sourceIntelligenceAvailable) {
+      sourceImplementationTargets = [];
+      sourceImplementationError = 'Language server unavailable';
+      fileActionStatus = `No implementation lookup for ${normalizedSymbolName}`;
+      return [];
+    }
+
+    sourceImplementationLoading = true;
+    fileActionStatus = `Finding implementations for ${normalizedSymbolName}`;
+    try {
+      const lspTargets =
+        (await findSourceLspImplementationsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceDefinitionResults
+          }
+        )) ?? [];
+
+      sourceImplementationTargets = lspTargets;
+      sourceImplementationError = '';
+      fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
+      return lspTargets;
+    } catch (implementationError) {
+      sourceImplementationTargets = [];
+      sourceImplementationError =
+        implementationError instanceof Error
+          ? implementationError.message
+          : 'Could not find implementations';
+      return sourceImplementationTargets;
+    } finally {
+      sourceImplementationLoading = false;
+    }
+  }
+
+  function formatSourceImplementationSummary(
+    targetCount: number,
+    loadingImplementations: boolean,
+    implementationError: string,
+    symbolName: string
+  ) {
+    if (loadingImplementations) return 'Finding implementations';
+    if (implementationError) return implementationError;
+    if (!symbolName.trim()) return '';
+    return `${targetCount} ${targetCount === 1 ? 'implementation' : 'implementations'} for ${symbolName}`;
+  }
+
+  async function selectSourceImplementationTarget(target: SourceDefinitionTarget) {
+    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    await selectRecord(record, target.line);
+  }
+
+  function clearSourceImplementationTargets() {
+    sourceImplementationTargets = [];
+    sourceImplementationError = '';
+    sourceImplementationLoading = false;
+    sourceImplementationQuery = '';
+  }
+
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
     const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
     if (indexing) {
@@ -4463,6 +4555,7 @@
     clearSourceSearchResults();
     clearSourceDefinitionTargets();
     clearSourceReferenceTargets();
+    clearSourceImplementationTargets();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -5291,9 +5384,13 @@
     return runSourceReferenceLookup(request);
   }
 
+  async function handleEditorImplementationLookup(request: SourceEditorLookupRequest) {
+    return runSourceImplementationLookup(request);
+  }
+
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
     if (!preview || loading) return;
-    if (action === 'hover' && !sourceIntelligenceAvailable) return;
+    if ((action === 'hover' || action === 'implementation') && !sourceIntelligenceAvailable) return;
 
     sourceIntelligenceCommand = {
       id: ++sourceIntelligenceCommandId,
@@ -6149,6 +6246,9 @@
     sourceReferenceTargets = [];
     sourceReferenceQuery = '';
     sourceReferenceError = '';
+    sourceImplementationTargets = [];
+    sourceImplementationQuery = '';
+    sourceImplementationError = '';
   }
 
   function isContextCardVisible(cardID: SourceContextCardID) {
@@ -9200,6 +9300,19 @@
                 <button
                   type="button"
                   role="menuitem"
+                  aria-label="Find implementations"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('implementation');
+                  }}
+                >
+                  <Network size={13} strokeWidth={2} />
+                  <span>Find implementations</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
                   onclick={() => {
                     closeEditorActionMenu();
@@ -9313,6 +9426,7 @@
                 onDefinitionLookup={handleEditorDefinitionLookup}
                 onGoToLineRequest={openCurrentFileGoToLine}
                 onHoverLookup={handleEditorHoverLookup}
+                onImplementationLookup={handleEditorImplementationLookup}
                 onProblemsRequest={() => showEditorInsightPanel('problems')}
                 onQuickOpenRequest={openQuickOpen}
                 onReferenceLookup={handleEditorReferenceLookup}
@@ -9322,10 +9436,10 @@
               />
             {/key}
 
-            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading)}
+            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading)}
               <div class="editor-lookup-popover" aria-label="Editor lookup results">
                 <div class="editor-lookup-header">
-                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceDefinitionSummary}</strong>
+                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceImplementationQuery ? sourceImplementationSummary : sourceDefinitionSummary}</strong>
                   <button
                     class="editor-lookup-close"
                     type="button"
@@ -9369,6 +9483,24 @@
                           <strong>{target.line}:{target.column}</strong>
                           <span>{target.fileName}</span>
                           <small>{target.excerpt}</small>
+                        </button>
+                      {/each}
+                    {/if}
+                  {/if}
+                  {#if sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading}
+                    {#if sourceImplementationTargets.length === 0 && !sourceImplementationLoading}
+                      <div class="intelligence-empty">No implementations</div>
+                    {:else}
+                      {#each sourceImplementationTargets as target (`inline-implementation:${target.path}:${target.line}:${target.symbolName}`)}
+                        <button
+                          class="definition-row"
+                          type="button"
+                          title={target.detail}
+                          onclick={() => selectSourceImplementationTarget(target)}
+                        >
+                          <strong>{target.kind}</strong>
+                          <span>{target.symbolName}</span>
+                          <small>{target.relativePath}:{target.line}</small>
                         </button>
                       {/each}
                     {/if}
@@ -9463,6 +9595,28 @@
                       <strong>{target.line}:{target.column}</strong>
                       <span>{target.fileName}</span>
                       <small>{target.excerpt}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+
+            {#if sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading}
+              <div class="implementation-results" aria-label="Implementation lookup results">
+                <div class="implementation-summary">{sourceImplementationSummary}</div>
+                {#if sourceImplementationTargets.length === 0 && !sourceImplementationLoading}
+                  <div class="intelligence-empty">No implementations</div>
+                {:else}
+                  {#each sourceImplementationTargets as target (`${target.path}:${target.line}:${target.symbolName}:implementation`)}
+                    <button
+                      class="definition-row"
+                      type="button"
+                      title={target.detail}
+                      onclick={() => selectSourceImplementationTarget(target)}
+                    >
+                      <strong>{target.kind}</strong>
+                      <span>{target.symbolName}</span>
+                      <small>{target.relativePath}:{target.line}</small>
                     </button>
                   {/each}
                 {/if}
@@ -14835,6 +14989,7 @@
   }
 
   .definition-results,
+  .implementation-results,
   .reference-results {
     flex: 0 0 auto;
     max-height: 164px;
@@ -14858,7 +15013,13 @@
     scrollbar-width: thin;
   }
 
+  .implementation-results {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
   .definition-summary,
+  .implementation-summary,
   .reference-summary {
     margin-bottom: 6px;
     min-width: 0;

@@ -10,6 +10,7 @@ const appearanceSource = await readFile(
   new URL('../src/lib/sourcePreviewAppearance.ts', import.meta.url),
   'utf8'
 );
+const tauriSource = await readFile(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
 
 function blockFor(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -693,6 +694,14 @@ assert.ok(
   'Editor should expose native references to Monaco peek'
 );
 assert.ok(
+  editorSource.includes('registerSourceImplementationProvider'),
+  'Editor should register native implementation results with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerImplementationProvider'),
+  'Editor should expose native implementations to Monaco peek'
+);
+assert.ok(
   editorSource.includes('registerSourceCompletionProvider'),
   'Editor should register native completion results with Monaco'
 );
@@ -723,6 +732,10 @@ assert.ok(
 assert.ok(
   editorSource.includes('sourceReferenceTargetToLocation'),
   'Editor should map native reference targets into Monaco locations'
+);
+assert.ok(
+  editorSource.includes('sourceImplementationTargetToLocation'),
+  'Editor should map native implementation targets into Monaco locations'
 );
 assert.ok(
   pageSource.includes('async function handleEditorDefinitionLookup'),
@@ -762,6 +775,10 @@ assert.ok(
   'Editor should return native reference targets to Monaco'
 );
 assert.ok(
+  editorSource.includes('onImplementationLookup?: SourceEditorImplementationLookup'),
+  'Editor should return native implementation targets to Monaco'
+);
+assert.ok(
   editorSource.includes('onCompletionLookup?: SourceEditorCompletionLookup'),
   'Editor should return native completion items to Monaco'
 );
@@ -769,6 +786,7 @@ assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the sy
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
 assert.ok(editorSource.includes('editor.action.referenceSearch.trigger'), 'Editor should expose Monaco reference search');
+assert.ok(editorSource.includes('editor.action.goToImplementation'), 'Editor should expose go-to-implementation');
 assert.ok(editorSource.includes('editor.action.quickOutline'), 'Editor should expose Monaco quick outline');
 assert.ok(editorSource.includes('onSaveRequest?: () => void'), 'Editor should accept a native save shortcut callback');
 assert.ok(editorSource.includes('onQuickOpenRequest?: () => void'), 'Editor should accept a native quick-open shortcut callback');
@@ -797,12 +815,14 @@ assert.ok(pageSource.includes('sourceDiagnostics'), 'Source page should track di
 assert.ok(pageSource.includes('sourceSymbols'), 'Source page should track symbols');
 assert.ok(pageSource.includes('sourceDefinitionTargets'), 'Source page should track project definition lookup targets');
 assert.ok(pageSource.includes('sourceReferenceTargets'), 'Source page should track project reference lookup targets');
+assert.ok(pageSource.includes('sourceImplementationTargets'), 'Source page should track implementation lookup targets');
 assert.ok(pageSource.includes('formatSourceDiagnosticSummary'), 'Source page should summarize diagnostics');
 assert.ok(pageSource.includes('sourceSupportsLanguageIntelligence'), 'Source page should gate Monaco language actions');
 assert.ok(pageSource.includes('requestSourceIntelligenceAction'), 'Source page should dispatch language actions');
 assert.ok(pageSource.includes('findSourceDefinitionsFromTauri'), 'Source page should call native project definition lookup');
 assert.ok(pageSource.includes('findSourceLspDefinitionsFromTauri'), 'Source page should try LSP definition lookup before project index lookup');
 assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page should try LSP reference lookup before project index lookup');
+assert.ok(pageSource.includes('findSourceLspImplementationsFromTauri'), 'Source page should use LSP implementation lookup');
 assert.ok(pageSource.includes('findSourceLspCompletionsFromTauri'), 'Source page should use LSP for completion lookup');
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
@@ -821,11 +841,14 @@ assert.ok(pageSource.includes('findSourceReferencesFromTauri'), 'Source page sho
 assert.ok(pageSource.includes('findSourceReferenceTargets'), 'Source page should fall back to browser reference lookup');
 assert.ok(pageSource.includes('function runSourceDefinitionLookup'), 'Source page should expose project definition lookup');
 assert.ok(pageSource.includes('function runSourceReferenceLookup'), 'Source page should expose project reference lookup');
+assert.ok(pageSource.includes('function runSourceImplementationLookup'), 'Source page should expose implementation lookup');
 assert.ok(pageSource.includes('function handleEditorDefinitionLookup'), 'Source page should receive editor definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source page should receive editor reference lookup requests');
+assert.ok(pageSource.includes('function handleEditorImplementationLookup'), 'Source page should receive editor implementation lookup requests');
 assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source page should receive editor completion lookup requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
+assert.ok(pageSource.includes('onImplementationLookup={handleEditorImplementationLookup}'), 'Editor should be wired to LSP implementation lookup');
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
 assert.ok(pageSource.includes("id: 'save-all-files'"), 'Command palette should expose Save All');
@@ -842,15 +865,27 @@ assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should 
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
 assert.ok(pageSource.includes('aria-label="Go to definition"'), 'Editor controls should expose definition');
 assert.ok(pageSource.includes('aria-label="Find references"'), 'Editor controls should expose references');
+assert.ok(pageSource.includes('aria-label="Find implementations"'), 'Editor controls should expose implementations');
 assert.ok(pageSource.includes('Problems'), 'Language panel should include Problems');
 assert.ok(pageSource.includes('Symbols'), 'Language panel should include Symbols');
 assert.ok(pageSource.includes('selectSourceSymbol'), 'Symbol rows should reveal source lines');
 assert.ok(pageSource.includes('class="definition-results"'), 'Language panel should show project definition lookup results');
 assert.ok(pageSource.includes('class="reference-results"'), 'Language panel should show project reference lookup results');
+assert.ok(pageSource.includes('class="implementation-results"'), 'Language panel should show implementation lookup results');
 assertDeclaration('.definition-results', 'overflow-y: auto');
 assertDeclaration('.definition-results', 'scrollbar-width: thin');
 assertDeclaration('.reference-results', 'overflow-y: auto');
 assertDeclaration('.reference-results', 'scrollbar-width: thin');
+assertDeclaration('.implementation-results', 'overflow-y: auto');
+assertDeclaration('.implementation-results', 'scrollbar-width: thin');
+assert.ok(
+  tauriSource.includes('findSourceLspImplementationsFromTauri'),
+  'Tauri source bridge should expose native LSP implementation lookup'
+);
+assert.ok(
+  tauriSource.includes("'find_source_lsp_implementations'"),
+  'Tauri source bridge should invoke native implementation lookup'
+);
 assert.ok(
   appearanceSource.includes('encodedTokensColors'),
   'Theme should include an encoded token palette for sharper Monaco token color separation'

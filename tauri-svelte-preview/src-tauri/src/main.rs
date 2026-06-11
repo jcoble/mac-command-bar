@@ -584,6 +584,18 @@ async fn find_source_lsp_completions(
 }
 
 #[tauri::command]
+async fn find_source_lsp_implementations(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspDefinitionTarget>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_implementations(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP implementation task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn find_source_lsp_references(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
     preview: lsp::SourceLspPreview,
@@ -3098,6 +3110,7 @@ fn main() {
             read_source_lsp_status,
             find_source_lsp_definitions,
             find_source_lsp_completions,
+            find_source_lsp_implementations,
             find_source_lsp_references,
             find_source_lsp_hover,
             find_source_lsp_symbols,

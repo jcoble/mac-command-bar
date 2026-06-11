@@ -21,7 +21,7 @@
 		type SourceSymbol,
 	} from "./sourceData";
 
-	type SourceEditorIntelligenceAction = "definition" | "hover" | "references";
+	type SourceEditorIntelligenceAction = "definition" | "hover" | "implementation" | "references";
 
 	type SourceEditorIntelligenceCommand = {
 		id: number;
@@ -46,6 +46,10 @@
 		request: SourceEditorLookupRequest
 	) => SourceReferenceTarget[] | Promise<SourceReferenceTarget[]> | null | undefined;
 
+	type SourceEditorImplementationLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceDefinitionTarget[] | Promise<SourceDefinitionTarget[]> | null | undefined;
+
 	type SourceEditorCompletionLookup = (
 		request: SourceEditorLookupRequest
 	) => SourceCompletionItem[] | Promise<SourceCompletionItem[]> | null | undefined;
@@ -68,6 +72,7 @@
 		onDefinitionLookup?: SourceEditorDefinitionLookup;
 		onGoToLineRequest?: () => void;
 		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
+		onImplementationLookup?: SourceEditorImplementationLookup;
 		onProblemsRequest?: () => void;
 		onQuickOpenRequest?: () => void;
 		onReferenceLookup?: SourceEditorReferenceLookup;
@@ -92,6 +97,7 @@
 		onDefinitionLookup,
 		onGoToLineRequest,
 		onHoverLookup,
+		onImplementationLookup,
 		onProblemsRequest,
 		onQuickOpenRequest,
 		onReferenceLookup,
@@ -109,6 +115,7 @@
 	let semanticTokensDisposable: Monaco.IDisposable | null = null;
 	let hoverProviderDisposable: Monaco.IDisposable | null = null;
 	let definitionProviderDisposable: Monaco.IDisposable | null = null;
+	let implementationProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -268,6 +275,24 @@
 		);
 	}
 
+	function registerSourceImplementationProvider(monaco: typeof Monaco) {
+		implementationProviderDisposable?.dispose();
+		implementationProviderDisposable = monaco.languages.registerImplementationProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideImplementation: async (model, position) => {
+					const request = lookupRequestForModelPosition(model, position);
+					if (!request) return null;
+
+					const targets = await onImplementationLookup?.(request);
+					return (targets ?? []).map((target) =>
+						sourceImplementationTargetToLocation(monaco, target)
+					);
+				},
+			}
+		);
+	}
+
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
@@ -319,6 +344,13 @@
 			uri: monaco.Uri.file(target.path),
 			range: new monaco.Range(line, column, line, column + length),
 		};
+	}
+
+	function sourceImplementationTargetToLocation(
+		monaco: typeof Monaco,
+		target: SourceDefinitionTarget
+	): Monaco.languages.Location {
+		return sourceDefinitionTargetToLocation(monaco, target);
 	}
 
 	function sourceReferenceTargetToLocation(
@@ -668,6 +700,10 @@
 			requestReferencesAtCursor();
 			return;
 		}
+		if (intelligenceCommand.action === "implementation") {
+			requestImplementationAtCursor();
+			return;
+		}
 
 		requestHoverAtCursor();
 	}
@@ -683,6 +719,16 @@
 
 	function requestReferencesAtCursor() {
 		void editor?.getAction("editor.action.referenceSearch.trigger")?.run();
+	}
+
+	function requestImplementationAtCursor() {
+		const implementationAction = editor?.getAction("editor.action.peekImplementation");
+		if (implementationAction) {
+			void implementationAction.run();
+			return;
+		}
+
+		void editor?.getAction("editor.action.goToImplementation")?.run();
 	}
 
 	function requestHoverAtCursor() {
@@ -792,6 +838,7 @@
 		registerSourceSemanticTokens(monaco);
 		registerSourceHoverProvider(monaco);
 		registerSourceDefinitionProvider(monaco);
+		registerSourceImplementationProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -855,6 +902,13 @@
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 2,
 				run: () => requestReferencesAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.findImplementations",
+				label: "Find Implementations",
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 2.5,
+				run: () => requestImplementationAtCursor(),
 			}),
 			editor.addAction({
 				id: "mcb.source.showHover",
@@ -968,6 +1022,7 @@
 		semanticTokensDisposable?.dispose();
 		hoverProviderDisposable?.dispose();
 		definitionProviderDisposable?.dispose();
+		implementationProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();
