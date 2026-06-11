@@ -42,7 +42,9 @@ assertDeclaration('.workspace-arrangement.context-top', 'grid-template-rows: aut
 assertDeclaration('.dock-panel-tabs', 'min-height: 22px');
 assertDeclaration('.dock-panel-tabs.empty', 'height: 0');
 assertDeclaration('.dock-panel-tab-group', 'display: inline-flex');
-assertDeclaration('.dock-panel-tab-group button', 'height: 18px');
+assertDeclaration('.dock-panel-tab', 'display: inline-flex');
+assertDeclaration('.dock-panel-tab-label', 'height: 18px');
+assertDeclaration('.dock-panel-tab-close', 'width: 17px');
 assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width)');
 assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) 6px minmax(180px, var(--context-pane-height))');
 assertDeclaration('.context-panel-grid.stacked', 'grid-template-columns: minmax(0, 1fr)');
@@ -263,6 +265,9 @@ assert.ok(pageSource.includes('activateSourceDockPanel'), 'Workspace should acti
 assert.ok(pageSource.includes('function selectDockPanel'), 'Workspace should expose dock tab selection');
 assert.ok(pageSource.includes('function activeDockPanelForGroup'), 'Workspace should resolve active panels for dock groups');
 assert.ok(pageSource.includes('class="dock-panel-tabs"'), 'Workspace should render compact dock panel tabs');
+assert.ok(pageSource.includes('class="dock-panel-tab"'), 'Dock tabs should wrap labels and actions in compact tab items');
+assert.ok(pageSource.includes('aria-label={`Hide ${dockPanelLabel(panelID)} panel from tab`}'), 'Dock tabs should expose direct close controls for hideable panels');
+assert.ok(pageSource.includes('onclick={() => hideDockPanel(panelID)}'), 'Dock tab close controls should hide panels through the dock model');
 assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');
 assert.ok(pageSource.includes('function projectWorktreeSafety'), 'Worktree rows should derive cleanup safety details');
 assert.ok(pageSource.includes('function formatProjectWorktreeSafetyStats'), 'Worktree context should derive compact safety stats');

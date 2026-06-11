@@ -9447,16 +9447,32 @@
           {#if dockGroupHasTabs(groupID)}
             <div class="dock-panel-tab-group" role="tablist" aria-label={`${groupID} dock panels`}>
               {#each dockGroupPanelIDs(groupID) as panelID (panelID)}
-                <button
+                <div
+                  class="dock-panel-tab"
                   class:active={activeDockPanelForGroup(groupID) === panelID}
-                  type="button"
-                  role="tab"
-                  aria-selected={activeDockPanelForGroup(groupID) === panelID}
-                  aria-label={`Show ${dockPanelLabel(panelID)} panel`}
-                  onclick={() => selectDockPanel(panelID)}
                 >
-                  {dockPanelLabel(panelID)}
-                </button>
+                  <button
+                    class="dock-panel-tab-label"
+                    type="button"
+                    role="tab"
+                    aria-selected={activeDockPanelForGroup(groupID) === panelID}
+                    aria-label={`Show ${dockPanelLabel(panelID)} panel`}
+                    onclick={() => selectDockPanel(panelID)}
+                  >
+                    {dockPanelLabel(panelID)}
+                  </button>
+                  {#if dockPanelCanHide(panelID)}
+                    <button
+                      class="dock-panel-tab-close"
+                      type="button"
+                      aria-label={`Hide ${dockPanelLabel(panelID)} panel from tab`}
+                      title={`Hide ${dockPanelLabel(panelID)}`}
+                      onclick={() => hideDockPanel(panelID)}
+                    >
+                      <X size={10} strokeWidth={2} />
+                    </button>
+                  {/if}
+                </div>
               {/each}
             </div>
           {/if}
@@ -13543,15 +13559,24 @@
     background: rgba(255, 255, 255, 0.035);
   }
 
-  .dock-panel-tab-group button {
+  .dock-panel-tab {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    height: 18px;
+    overflow: hidden;
+    border-radius: 4px;
+    background: transparent;
+  }
+
+  .dock-panel-tab-label {
     display: inline-grid;
     place-items: center;
     min-width: 0;
     height: 18px;
-    padding: 0 7px;
+    padding: 0 6px;
     color: #9facaa;
     border: 0;
-    border-radius: 4px;
     background: transparent;
     font: inherit;
     font-size: 9px;
@@ -13560,16 +13585,43 @@
     cursor: pointer;
   }
 
-  .dock-panel-tab-group button:hover,
-  .dock-panel-tab-group button:focus-visible {
+  .dock-panel-tab-close {
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+    height: 18px;
+    width: 17px;
+    padding: 0;
+    color: #9facaa;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    font-size: 9px;
+    font-weight: 820;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.72;
+  }
+
+  .dock-panel-tab-label:hover,
+  .dock-panel-tab-label:focus-visible,
+  .dock-panel-tab-close:hover,
+  .dock-panel-tab-close:focus-visible {
     color: #eef6f4;
     outline: 0;
     background: rgba(255, 255, 255, 0.07);
   }
 
-  .dock-panel-tab-group button.active {
-    color: #dffdf8;
+  .dock-panel-tab.active {
     background: rgba(92, 226, 207, 0.18);
+  }
+
+  .dock-panel-tab.active .dock-panel-tab-label {
+    color: #dffdf8;
+  }
+
+  .dock-panel-tab.active .dock-panel-tab-close {
+    color: #c9f6ef;
   }
 
   .workspace-arrangement {
