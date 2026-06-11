@@ -318,6 +318,7 @@
   const bottomDockDefaultHeight = 300;
   const bottomDockMinHeight = 180;
   const bottomDockMaxHeight = 620;
+  const orchestrationRefreshIntervalMs = 5_000;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-compact-chrome';
@@ -536,6 +537,7 @@
   let orchestrationRunsLoading = $state(false);
   let orchestrationRunError = $state('');
   let orchestrationRunSource = $state('browser preview');
+  let orchestrationRunsRefreshInFlight = false;
   let agentSessions = $state<AgentSession[]>([]);
   let agentSessionsLoading = $state(false);
   let agentSessionError = $state('');
@@ -2789,9 +2791,18 @@
     }
   }
 
-  async function loadOrchestrationRuns(projects: ProjectRoot[] = projectOptions) {
-    orchestrationRunsLoading = true;
-    orchestrationRunError = '';
+  async function loadOrchestrationRuns(
+    projects: ProjectRoot[] = projectOptions,
+    options: { background?: boolean } = {}
+  ) {
+    const background = options.background === true;
+    if (background && orchestrationRunsRefreshInFlight) return;
+
+    orchestrationRunsRefreshInFlight = true;
+    if (!background) {
+      orchestrationRunsLoading = true;
+      orchestrationRunError = '';
+    }
 
     try {
       const nativeRuns = await listOrchestrationRunsFromTauri(projects);
@@ -2801,15 +2812,24 @@
         return;
       }
 
+      if (background) return;
       orchestrationRuns = demoOrchestrationRunsForProjects(projects);
       orchestrationRunSource = 'browser preview';
     } catch (runError) {
+      if (background) {
+        orchestrationRunError =
+          runError instanceof Error ? runError.message : 'Could not read orchestration runs';
+        return;
+      }
       orchestrationRuns = demoOrchestrationRunsForProjects(projects);
       orchestrationRunSource = 'browser preview';
       orchestrationRunError =
         runError instanceof Error ? runError.message : 'Could not read orchestration runs';
     } finally {
-      orchestrationRunsLoading = false;
+      orchestrationRunsRefreshInFlight = false;
+      if (!background) {
+        orchestrationRunsLoading = false;
+      }
     }
   }
 
@@ -9498,6 +9518,10 @@
     window.addEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload);
     window.addEventListener('pagehide', captureActiveWorkspaceSnapshotBeforeUnload);
     document.addEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange);
+    const orchestrationRefreshTimer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadOrchestrationRuns(projectOptions, { background: true });
+    }, orchestrationRefreshIntervalMs);
 
     const storedCustomProjectRoots = loadStoredCustomProjectRoots();
     const storedProjectOptions = mergeProjectRoots(defaultProjectRoots, storedCustomProjectRoots);
@@ -9631,6 +9655,7 @@
       window.removeEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload);
       window.removeEventListener('pagehide', captureActiveWorkspaceSnapshotBeforeUnload);
       document.removeEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange);
+      window.clearInterval(orchestrationRefreshTimer);
       unlistenSourceScanProgress?.();
       unlistenTerminalOutput?.();
       disposeEmbeddedTerminal();

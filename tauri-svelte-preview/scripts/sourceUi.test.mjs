@@ -310,6 +310,15 @@ assert.ok(pageSource.includes("window.addEventListener('pagehide', captureActive
 assert.ok(pageSource.includes("document.addEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange)"), 'Workspace should register a visibility auto-save hook');
 assert.ok(pageSource.includes("window.removeEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload)"), 'Workspace should clean up the beforeunload auto-save hook');
 assert.ok(pageSource.includes("document.removeEventListener('visibilitychange', handleWorkspaceSnapshotVisibilityChange)"), 'Workspace should clean up the visibility auto-save hook');
+assert.ok(pageSource.includes('const orchestrationRefreshIntervalMs = 5_000'), 'Orchestration runs should define a lightweight background refresh cadence');
+assert.ok(pageSource.includes('let orchestrationRunsRefreshInFlight = false'), 'Orchestration background refresh should prevent overlapping native reads');
+assert.ok(pageSource.includes('options: { background?: boolean } = {}'), 'Orchestration run loading should support non-blocking background refreshes');
+assert.ok(pageSource.includes('if (background && orchestrationRunsRefreshInFlight) return;'), 'Orchestration background refresh should skip if a prior refresh is still running');
+assert.ok(pageSource.includes('if (background) return;'), 'Orchestration background refresh should avoid replacing existing runs with browser-preview demo data');
+assert.ok(pageSource.includes('const orchestrationRefreshTimer = window.setInterval'), 'Workspace should start a background orchestration refresh timer');
+assert.ok(pageSource.includes("document.visibilityState !== 'visible'"), 'Orchestration background refresh should pause while the app is hidden');
+assert.ok(pageSource.includes('void loadOrchestrationRuns(projectOptions, { background: true })'), 'Background orchestration refresh should use the current project set');
+assert.ok(pageSource.includes('window.clearInterval(orchestrationRefreshTimer)'), 'Workspace should clean up the orchestration refresh timer');
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
