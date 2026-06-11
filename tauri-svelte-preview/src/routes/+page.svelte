@@ -9030,6 +9030,7 @@
     if (!validation) return 'Root not checked';
     if (!validation.exists) return `Missing root: ${validation.path}`;
     if (!validation.isDirectory) return 'Path is a file';
+    if (!validation.isGitRepository && validation.gitRoot) return 'Inside Git root';
     return validation.isGitRepository ? 'Git root ready' : 'Not a Git root';
   }
 
@@ -9077,13 +9078,17 @@
   }
 
   async function addCustomProjectRoot(name: string, path: string, reportDuplicate: boolean) {
-    const nextProject = createProjectRoot(name, path);
+    const requestedProject = createProjectRoot(name, path);
 
-    if (!nextProject.path) {
+    if (!requestedProject.path) {
       projectFormError = 'Path is required';
       return false;
     }
 
+    const validation = await validateProjectRootBeforeAdd(requestedProject);
+    if (validation === false) return false;
+
+    const nextProject = projectRootForValidatedAdd(requestedProject, validation);
     const duplicateProject = projectOptions.find(
       (project) => normalizeProjectPath(project.path) === nextProject.path
     );
@@ -9097,9 +9102,6 @@
       return false;
     }
 
-    const validation = await validateProjectRootBeforeAdd(nextProject);
-    if (validation === false) return false;
-
     const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
     customProjectRoots = nextCustomProjectRoots;
@@ -9107,7 +9109,14 @@
     addingProject = false;
     projectFormError = '';
     fileActionStatus = sourceOnboardingScanStatus(nextProject);
-    if (validation && !validation.isGitRepository) {
+    if (
+      validation &&
+      !validation.isGitRepository &&
+      validation.gitRoot &&
+      normalizeProjectPath(validation.gitRoot) === nextProject.path
+    ) {
+      fileActionStatus = `Using Git root ${validation.gitRoot}. ${fileActionStatus}`;
+    } else if (validation && !validation.isGitRepository) {
       fileActionStatus = `${validation.message} ${fileActionStatus}`;
     }
     void activateProject(nextProject, {
@@ -9116,6 +9125,18 @@
       projects: nextProjectOptions
     });
     return true;
+  }
+
+  function projectRootForValidatedAdd(
+    project: ProjectRoot,
+    validation: ProjectRootValidationResult | null
+  ): ProjectRoot {
+    const gitRoot = validation?.gitRoot?.trim();
+    if (!gitRoot || normalizeProjectPath(gitRoot) === project.path) {
+      return project;
+    }
+
+    return createProjectRoot(project.name, gitRoot);
   }
 
   function activateDuplicateProjectRoot(project: ProjectRoot, projects: ProjectRoot[], message: string) {

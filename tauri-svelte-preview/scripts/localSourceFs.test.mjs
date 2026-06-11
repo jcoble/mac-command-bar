@@ -39,6 +39,7 @@ try {
     exists: true,
     isDirectory: true,
     isGitRepository: true,
+    gitRoot: root,
     message: 'Project root ready'
   });
   assert.deepEqual(await validateLocalProjectRoot(join(root, 'plain-folder')), {
@@ -46,14 +47,16 @@ try {
     exists: true,
     isDirectory: true,
     isGitRepository: false,
+    gitRoot: root,
     message:
-      'Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable.'
+      `Folder is inside a Git repository. Add ${root} for full project context.`
   });
   assert.deepEqual(await validateLocalProjectRoot(join(root, 'missing')), {
     path: join(root, 'missing'),
     exists: false,
     isDirectory: false,
     isGitRepository: false,
+    gitRoot: null,
     message: 'Project path not found'
   });
 

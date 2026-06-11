@@ -171,6 +171,7 @@ export type ProjectRootValidationResult = {
   exists: boolean;
   isDirectory: boolean;
   isGitRepository: boolean;
+  gitRoot: string | null;
   message: string;
 };
 

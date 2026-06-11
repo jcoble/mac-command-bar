@@ -398,7 +398,10 @@ assert.ok(pageSource.includes('validateProjectRootFromTauri'), 'Project onboardi
 assert.ok(pageSource.includes('async function validateProjectRootBeforeAdd'), 'Project onboarding should validate roots before persisting them');
 assert.ok(pageSource.includes("projectFormError = fileActionStatus || 'Could not validate project root'"), 'Invalid project roots should show the validation message');
 assert.ok(pageSource.includes('report || !validation.isGitRepository'), 'Non-Git project roots should warn without blocking source browsing');
-assert.ok(pageSource.includes('await validateProjectRootBeforeAdd(nextProject)'), 'Project onboarding should wait for validation before adding a root');
+assert.ok(pageSource.includes('await validateProjectRootBeforeAdd(requestedProject)'), 'Project onboarding should wait for validation before adding a root');
+assert.ok(pageSource.includes('function projectRootForValidatedAdd'), 'Project onboarding should normalize nested Git folders before adding them');
+assert.ok(pageSource.includes('validation?.gitRoot?.trim()'), 'Project onboarding should use native Git-root detection when available');
+assert.ok(pageSource.includes('return createProjectRoot(project.name, gitRoot);'), 'Project onboarding should persist the detected Git root instead of nested folders');
 assert.ok(pageSource.includes('void addCustomProjectRoot(projectNameInput, projectPathInput, true)'), 'Project form submission should run async root onboarding');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Worktree panel should copy a guarded cleanup script');
 assert.ok(pageSource.includes('worktreePrimaryAction'), 'Worktree rows should derive a recommended next action');

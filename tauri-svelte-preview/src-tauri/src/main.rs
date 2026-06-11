@@ -65,6 +65,7 @@ struct ProjectRootValidationResult {
     exists: bool,
     is_directory: bool,
     is_git_repository: bool,
+    git_root: Option<String>,
     message: String,
 }
 
@@ -1071,6 +1072,7 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
             exists: false,
             is_directory: false,
             is_git_repository: false,
+            git_root: None,
             message: "Project path not found".to_string(),
         };
     };
@@ -1081,19 +1083,29 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
             exists: true,
             is_directory: false,
             is_git_repository: false,
+            git_root: None,
             message: "Project path points to a file. Choose the repository folder instead."
                 .to_string(),
         };
     }
 
-    let is_git_repository = is_git_repository_root(&path);
+    let git_root_path = git_repository_root(&path);
+    let is_git_repository = git_root_path
+        .as_ref()
+        .is_some_and(|git_root| paths_refer_to_same_location(git_root, &path));
+    let git_root = git_root_path
+        .as_ref()
+        .map(|root| normalized_path_string(root));
     ProjectRootValidationResult {
         path: path_label,
         exists: true,
         is_directory: true,
         is_git_repository,
+        git_root: git_root.clone(),
         message: if is_git_repository {
             "Project root ready".to_string()
+        } else if let Some(git_root) = git_root {
+            format!("Folder is inside a Git repository. Add {git_root} for full project context.")
         } else {
             "Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable."
                 .to_string()
@@ -1101,16 +1113,40 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
     }
 }
 
-fn is_git_repository_root(path: &Path) -> bool {
-    if path.join(".git").exists() {
-        return true;
+fn git_repository_root(path: &Path) -> Option<PathBuf> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if candidate.join(".git").exists() {
+            return Some(candidate.to_path_buf());
+        }
+        current = candidate.parent();
     }
 
-    Command::new("git")
+    let output = Command::new("git")
         .args(["-C", path.to_str().unwrap_or_default(), "rev-parse", "--show-toplevel"])
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(root))
+    }
+}
+
+fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
+    let normalized_left = std::fs::canonicalize(left)
+        .map(|path| normalized_path_string(&path))
+        .unwrap_or_else(|_| normalized_path_string(left));
+    let normalized_right = std::fs::canonicalize(right)
+        .map(|path| normalized_path_string(&path))
+        .unwrap_or_else(|_| normalized_path_string(right));
+    normalized_left == normalized_right
 }
 
 fn collect_source_files(
@@ -3726,6 +3762,7 @@ mod tests {
         assert!(!validation.exists);
         assert!(!validation.is_directory);
         assert!(!validation.is_git_repository);
+        assert_eq!(validation.git_root, None);
         assert!(validation.message.contains("not found"));
     }
 
@@ -3742,6 +3779,7 @@ mod tests {
         assert!(validation.exists);
         assert!(!validation.is_directory);
         assert!(!validation.is_git_repository);
+        assert_eq!(validation.git_root, None);
         assert!(validation.message.contains("file"));
 
         std::fs::remove_dir_all(root).unwrap();
@@ -3759,7 +3797,27 @@ mod tests {
         assert!(validation.exists);
         assert!(validation.is_directory);
         assert!(validation.is_git_repository);
+        assert_eq!(validation.git_root, Some(root.display().to_string()));
         assert!(validation.message.contains("ready"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_root_validation_finds_parent_git_root() {
+        let root = unique_temp_root();
+        let nested = root.join("src").join("Services");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: /tmp/repo/.git/worktrees/test\n").unwrap();
+
+        let validation = validate_project_root_sync(nested.clone());
+
+        assert_eq!(validation.path, nested.display().to_string());
+        assert!(validation.exists);
+        assert!(validation.is_directory);
+        assert!(!validation.is_git_repository);
+        assert_eq!(validation.git_root, Some(root.display().to_string()));
+        assert!(validation.message.contains("inside a Git repository"));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3775,6 +3833,7 @@ mod tests {
         assert!(validation.exists);
         assert!(validation.is_directory);
         assert!(!validation.is_git_repository);
+        assert_eq!(validation.git_root, None);
         assert!(validation.message.contains("not a Git repository"));
 
         std::fs::remove_dir_all(root).unwrap();
