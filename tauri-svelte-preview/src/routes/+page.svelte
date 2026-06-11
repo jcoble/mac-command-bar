@@ -67,6 +67,7 @@
     resizeSourceDockGroup,
     showSourceDockPanel,
     sourceDockGroupSize,
+    sourceDockPanelDescriptors,
     type SourceDockGroupID,
     type SourceDockLayout,
     type SourceDockPanelID
@@ -376,6 +377,8 @@
     'Alacritty'
   ];
   const dockTabGroupIDs: SourceDockGroupID[] = ['right', 'bottom'];
+  const managedDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
+  const hideableDockPanelIDs: SourceDockPanelID[] = ['context', 'insights', 'terminal', 'browser'];
   const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
   const contextCardLabels: Record<SourceContextCardID, string> = {
     orchestration: 'Runs',
@@ -1102,6 +1105,27 @@
       label: `Use ${preset.label} layout`,
       detail: preset.title,
       perform: () => applySourceLayoutPreset(preset.id)
+    })),
+    {
+      id: 'layout-reset-dock',
+      label: 'Reset dock layout',
+      detail: 'Code layout',
+      perform: resetSourceDockLayout
+    },
+    ...managedDockPanelIDs.flatMap((panelID) =>
+      dockPanelMoveTargets(panelID).map((groupID) => ({
+        id: `dock-move-${panelID}-${groupID}`,
+        label: `Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`,
+        detail: dockPanelPlacementSummary(panelID),
+        disabled: dockGroupIDForPanel(sourceDockLayout, panelID) === groupID,
+        perform: () => moveDockPanelToManagedGroup(panelID, groupID)
+      }))
+    ),
+    ...hideableDockPanelIDs.map((panelID) => ({
+      id: `dock-toggle-${panelID}`,
+      label: `${sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'} ${dockPanelLabel(panelID)} panel`,
+      detail: dockPanelPlacementSummary(panelID),
+      perform: () => toggleDockPanelVisibility(panelID)
     })),
     {
       id: 'side-left',
@@ -4946,6 +4970,68 @@
     }
   }
 
+  function resetSourceDockLayout() {
+    applySourceLayoutPreset('code');
+    fileActionStatus = 'Dock layout reset';
+  }
+
+  function toggleDockPanelVisibility(panelID: SourceDockPanelID) {
+    if (!dockPanelCanHide(panelID)) return;
+    if (sourceDockPanelVisible(panelID)) {
+      hideDockPanel(panelID);
+      return;
+    }
+
+    showDockPanel(panelID);
+  }
+
+  function moveDockPanelToManagedGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID) {
+    if (!dockPanelMoveTargets(panelID).includes(groupID)) return;
+    if (panelID === 'activity' && (groupID === 'left' || groupID === 'right')) {
+      selectSidePanePosition(groupID);
+      return;
+    }
+
+    moveDockPanelToGroup(panelID, groupID);
+  }
+
+  function dockPanelMoveTargets(panelID: SourceDockPanelID): SourceDockGroupID[] {
+    switch (panelID) {
+      case 'activity':
+        return ['left', 'right'];
+      case 'context':
+        return ['center', 'right', 'bottom'];
+      case 'insights':
+        return ['right'];
+      case 'terminal':
+      case 'browser':
+        return ['bottom'];
+      case 'editor':
+        return ['center'];
+    }
+  }
+
+  function dockPanelCanHide(panelID: SourceDockPanelID) {
+    return (
+      hideableDockPanelIDs.includes(panelID) &&
+      Boolean(sourceDockPanelDescriptors.find((panel) => panel.id === panelID)?.canHide)
+    );
+  }
+
+  function dockGroupLabel(groupID: SourceDockGroupID, panelID?: SourceDockPanelID) {
+    if (panelID === 'context' && groupID === 'center') return 'Top';
+    if (groupID === 'left') return 'Left';
+    if (groupID === 'right') return 'Right';
+    if (groupID === 'bottom') return 'Bottom';
+    return 'Center';
+  }
+
+  function dockPanelPlacementSummary(panelID: SourceDockPanelID) {
+    const groupID = dockGroupIDForPanel(sourceDockLayout, panelID);
+    if (groupID === null) return 'Hidden';
+    return dockGroupLabel(groupID, panelID);
+  }
+
   function selectDockPanel(panelID: SourceDockPanelID) {
     markSourceLayoutCustom();
     applySourceDockLayout(activateSourceDockPanel(sourceDockLayout, panelID));
@@ -7527,6 +7613,56 @@
                   }}
                 >
                   {contextPanelCollapsed ? 'Show context cards' : 'Hide context cards'}
+                </button>
+              </section>
+
+              <section class="view-menu-section dock-panel-manager" aria-label="Dock panels">
+                <span>Panels</span>
+                <div class="dock-panel-manager-list">
+                  {#each managedDockPanelIDs as panelID (panelID)}
+                    <div class="dock-panel-manager-row">
+                      <div>
+                        <strong>{dockPanelLabel(panelID)}</strong>
+                        <small>{dockPanelPlacementSummary(panelID)}</small>
+                      </div>
+                      <div class="dock-panel-manager-actions">
+                        {#if dockPanelCanHide(panelID)}
+                          <button
+                            class:active={sourceDockPanelVisible(panelID)}
+                            type="button"
+                            role="menuitem"
+                            aria-label={`${sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'} ${dockPanelLabel(panelID)} panel`}
+                            onclick={() => toggleDockPanelVisibility(panelID)}
+                          >
+                            {sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'}
+                          </button>
+                        {/if}
+                        {#each dockPanelMoveTargets(panelID) as groupID (groupID)}
+                          <button
+                            class:active={dockGroupIDForPanel(sourceDockLayout, panelID) === groupID}
+                            type="button"
+                            role="menuitem"
+                            aria-label={`Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`}
+                            disabled={dockGroupIDForPanel(sourceDockLayout, panelID) === groupID}
+                            onclick={() => moveDockPanelToManagedGroup(panelID, groupID)}
+                          >
+                            {dockGroupLabel(groupID, panelID)}
+                          </button>
+                        {/each}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+                <button
+                  class="view-menu-wide-button"
+                  type="button"
+                  role="menuitem"
+                  onclick={() => {
+                    resetSourceDockLayout();
+                    closeViewMenu();
+                  }}
+                >
+                  Reset dock layout
                 </button>
               </section>
 
@@ -10770,11 +10906,15 @@
     gap: 8px;
     width: 270px;
     min-width: 0;
+    max-height: min(680px, calc(100vh - 104px));
+    overflow-y: auto;
     padding: 8px;
     border: 1px solid rgba(255, 255, 255, 0.11);
     border-radius: 9px;
     background: rgba(22, 25, 25, 0.98);
     box-shadow: 0 20px 54px rgba(0, 0, 0, 0.36);
+    scrollbar-color: rgba(174, 184, 181, 0.52) rgba(255, 255, 255, 0.04);
+    scrollbar-width: thin;
   }
 
   .view-menu-section {
@@ -10837,6 +10977,89 @@
   .view-menu-wide-button {
     width: 100%;
     justify-content: start;
+  }
+
+  .dock-panel-manager-list {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .dock-panel-manager-row {
+    display: grid;
+    grid-template-columns: minmax(0, 74px) minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .dock-panel-manager-row > div:first-child {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .dock-panel-manager-row strong,
+  .dock-panel-manager-row small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dock-panel-manager-row strong {
+    color: #e8eeec;
+    font-size: 9.5px;
+    font-weight: 850;
+  }
+
+  .dock-panel-manager-row small {
+    color: #7f8b88;
+    font-size: 8.5px;
+    font-weight: 760;
+  }
+
+  .dock-panel-manager-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 3px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .dock-panel-manager-actions button {
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 22px;
+    padding: 0 6px;
+    color: #aab6b2;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+    font: inherit;
+    font-size: 8.5px;
+    font-weight: 820;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .dock-panel-manager-actions button:hover,
+  .dock-panel-manager-actions button:focus-visible {
+    color: #edf4f2;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .dock-panel-manager-actions button.active,
+  .dock-panel-manager-actions button:disabled {
+    color: #dffdf8;
+    background: rgba(92, 226, 207, 0.16);
+    cursor: default;
   }
 
   .view-terminal-picker {
