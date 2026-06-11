@@ -24,6 +24,7 @@ try {
   );
 
   const parsed = parseOrchestrationEventArgs([
+    '--',
     '--run-id',
     'run-tsk-127',
     '--project-id',

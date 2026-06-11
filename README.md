@@ -47,6 +47,22 @@ cargo test --manifest-path core/Cargo.toml
 swift test
 ```
 
+## Orchestration Events
+
+External agent loops can write dashboard events with the stable repo-level
+bridge:
+
+```bash
+scripts/mcb-orch --run-id run-tsk-127 --preset issue-found --issue-id AUTH-7
+scripts/mcb-orch --run-id run-tsk-127 --preset batch-delegated --agent-role fix-agent
+scripts/mcb-orch --run-id run-tsk-127 --preset ui-verified --scenario "Google auth"
+```
+
+Events are appended to
+`~/Library/Application Support/MacCommandBar/orchestration-events.jsonl` by
+default. Set `MAC_COMMAND_BAR_ORCHESTRATION_EVENTS=/path/to/events.jsonl` to
+redirect them for tests or isolated sessions.
+
 ## Profiles
 
 V1 uses global app profiles rather than repo-local config files. See `config/profiles.example.toml` for the intended shape.

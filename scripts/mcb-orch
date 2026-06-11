@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EVENT_SCRIPT="$ROOT/tauri-svelte-preview/scripts/orchestrationEvent.mjs"
+
+if [[ ! -f "$EVENT_SCRIPT" ]]; then
+  echo "MacCommandBar orchestration event script was not found: $EVENT_SCRIPT" >&2
+  exit 1
+fi
+
+exec node "$EVENT_SCRIPT" "$@"

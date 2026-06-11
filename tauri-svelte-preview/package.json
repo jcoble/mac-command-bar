@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && tsc --noEmit",
+    "orch:event": "node scripts/orchestrationEvent.mjs",
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
     "test:orchestration-view": "node --experimental-strip-types scripts/orchestrationView.test.mjs",
