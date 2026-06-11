@@ -910,6 +910,11 @@ assert.ok(
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
 assert.ok(pageSource.includes('function runGitPathAction'), 'Source page should expose reusable stage/unstage handling');
+assert.ok(pageSource.includes('type GitStatusGroupID'), 'Git panel should define staged/unstaged/untracked groups');
+assert.ok(pageSource.includes('function buildGitStatusFileGroups'), 'Git panel should group changed files by index state');
+assert.ok(pageSource.includes('function runGitStatusGroupAction'), 'Git panel should expose group-level stage and unstage actions');
+assert.ok(pageSource.includes('selectedProjectGitFileGroups'), 'Git panel should derive grouped changed files');
+assert.ok(pageSource.includes('selectedProjectGitFileGroupSummary'), 'Git panel should summarize grouped changed files');
 assert.ok(pageSource.includes('function runGitRemoteAction'), 'Source page should expose reusable fetch/pull/push handling');
 assert.ok(pageSource.includes('function commitGitChanges'), 'Source page should expose a commit action');
 assert.ok(pageSource.includes('selectedSourceGitDiff'), 'Source page should track selected source Git diff');
@@ -929,6 +934,9 @@ assert.ok(pageSource.includes('class="git-status-badge"'), 'Tree and tabs should
 assert.ok(pageSource.includes('<span>Git</span>'), 'Language panel should include a Git tab');
 assert.ok(pageSource.includes('class="git-diff-panel"'), 'Source page should render a selected-file Git diff panel');
 assert.ok(pageSource.includes('class="git-status-list"'), 'Git tab should render changed file rows');
+assert.ok(pageSource.includes('class="git-status-overview"'), 'Git tab should render staged/unstaged summary');
+assert.ok(pageSource.includes('class="git-status-group"'), 'Git tab should render grouped changed files');
+assert.ok(pageSource.includes('class="git-status-group-heading"'), 'Git tab should render group-level actions');
 assert.ok(pageSource.includes('aria-label="Stage selected source file"'), 'Git tab should expose staging for the selected file');
 assert.ok(pageSource.includes('aria-label="Unstage selected source file"'), 'Git tab should expose unstaging for the selected file');
 assert.ok(pageSource.includes('aria-label="Fetch selected repository"'), 'Git tab should expose repository fetch');
@@ -954,6 +962,9 @@ assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should ren
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.git-diff-panel', 'overflow: hidden');
 assertDeclaration('.git-status-list', 'overflow-y: auto');
+assertDeclaration('.git-status-overview', 'text-overflow: ellipsis');
+assertDeclaration('.git-status-group', 'display: grid');
+assertDeclaration('.git-status-group-heading', 'grid-template-columns: minmax(0, 1fr) auto auto');
 assertDeclaration('.git-history-list', 'overflow-y: auto');
 assertDeclaration('.git-task-trail', 'display: flex');
 assert.match(

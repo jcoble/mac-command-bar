@@ -559,6 +559,13 @@
     disabled?: boolean;
     perform: () => void | Promise<void>;
   };
+  type GitStatusGroupID = 'staged' | 'unstaged' | 'untracked';
+  type GitStatusFileGroup = {
+    id: GitStatusGroupID;
+    label: string;
+    files: ProjectGitFileStatus[];
+    action: 'stage' | 'unstage';
+  };
 
   let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
   let selectedProject = $derived(
@@ -636,6 +643,12 @@
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
   let selectedProjectGitChangedFiles = $derived(projectGitStatus?.files ?? []);
+  let selectedProjectGitFileGroups = $derived(
+    buildGitStatusFileGroups(selectedProjectGitChangedFiles)
+  );
+  let selectedProjectGitFileGroupSummary = $derived(
+    formatGitStatusFileGroupSummary(selectedProjectGitFileGroups)
+  );
   let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(selectedRecord));
   let selectedGitPathActionDisabled = $derived(
     !selectedRecordGitStatus || selectedSourceDirty || gitActionBusy !== ''
@@ -2614,6 +2627,44 @@
 
   function isGitFileStaged(fileStatus: ProjectGitFileStatus | null | undefined) {
     return Boolean(fileStatus?.indexStatus && fileStatus.badge !== '?');
+  }
+
+  function isGitFileUntracked(fileStatus: ProjectGitFileStatus) {
+    return fileStatus.badge === '?' || fileStatus.indexStatus === '?' || fileStatus.worktreeStatus === '?';
+  }
+
+  function hasGitFileUnstagedChanges(fileStatus: ProjectGitFileStatus) {
+    return isGitFileUntracked(fileStatus) || Boolean(fileStatus.worktreeStatus);
+  }
+
+  function buildGitStatusFileGroups(fileStatuses: ProjectGitFileStatus[]): GitStatusFileGroup[] {
+    const stagedFiles = fileStatuses.filter(isGitFileStaged);
+    const unstagedFiles = fileStatuses.filter(
+      (fileStatus) => hasGitFileUnstagedChanges(fileStatus) && !isGitFileUntracked(fileStatus)
+    );
+    const untrackedFiles = fileStatuses.filter(isGitFileUntracked);
+
+    return [
+      { id: 'staged', label: 'Staged', files: stagedFiles, action: 'unstage' },
+      { id: 'unstaged', label: 'Unstaged', files: unstagedFiles, action: 'stage' },
+      { id: 'untracked', label: 'Untracked', files: untrackedFiles, action: 'stage' }
+    ].filter((group) => group.files.length > 0);
+  }
+
+  function formatGitStatusFileGroupSummary(groups: GitStatusFileGroup[]) {
+    if (groups.length === 0) return 'No changed files';
+    return groups.map((group) => `${group.label} ${group.files.length}`).join(' · ');
+  }
+
+  function gitStatusGroupActionLabel(group: GitStatusFileGroup) {
+    return group.action === 'unstage' ? 'Unstage all' : 'Stage all';
+  }
+
+  async function runGitStatusGroupAction(group: GitStatusFileGroup) {
+    await runGitPathAction(
+      group.action,
+      group.files.map((fileStatus) => fileStatus.relativePath)
+    );
   }
 
   function gitStatusFileTitle(fileStatus: ProjectGitFileStatus) {
@@ -9267,18 +9318,34 @@
                   {:else if selectedProjectGitChangedFiles.length === 0}
                     <div class="intelligence-empty">No changed files</div>
                   {:else}
-                    {#each selectedProjectGitChangedFiles as fileStatus (fileStatus.relativePath)}
-                      <button
-                        class="git-status-row"
-                        class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
-                        type="button"
-                        title={gitStatusFileTitle(fileStatus)}
-                        onclick={() => selectGitStatusFile(fileStatus)}
-                      >
-                        <strong>{fileStatus.badge}</strong>
-                        <span>{fileStatus.relativePath}</span>
-                        <small>{gitStatusFileSummary(fileStatus)}</small>
-                      </button>
+                    <div class="git-status-overview">{selectedProjectGitFileGroupSummary}</div>
+                    {#each selectedProjectGitFileGroups as group (group.id)}
+                      <section class="git-status-group" aria-label={`${group.label} Git files`}>
+                        <div class="git-status-group-heading">
+                          <strong>{group.label}</strong>
+                          <span>{group.files.length}</span>
+                          <button
+                            type="button"
+                            disabled={gitActionBusy !== ''}
+                            onclick={() => runGitStatusGroupAction(group)}
+                          >
+                            {gitStatusGroupActionLabel(group)}
+                          </button>
+                        </div>
+                        {#each group.files as fileStatus (`${group.id}:${fileStatus.relativePath}`)}
+                          <button
+                            class="git-status-row"
+                            class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
+                            type="button"
+                            title={gitStatusFileTitle(fileStatus)}
+                            onclick={() => selectGitStatusFile(fileStatus)}
+                          >
+                            <strong>{fileStatus.badge}</strong>
+                            <span>{fileStatus.relativePath}</span>
+                            <small>{gitStatusFileSummary(fileStatus)}</small>
+                          </button>
+                        {/each}
+                      </section>
                     {/each}
                   {/if}
                 </div>
@@ -13865,6 +13932,70 @@
     scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
     scrollbar-gutter: stable;
     scrollbar-width: thin;
+  }
+
+  .git-status-overview {
+    min-width: 0;
+    overflow: hidden;
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 780;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-status-group {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .git-status-group-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 22px;
+    color: #aeb8b5;
+    font-size: 9px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .git-status-group-heading strong,
+  .git-status-group-heading span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-status-group-heading button {
+    min-width: 0;
+    height: 20px;
+    padding: 0 6px;
+    color: #cfd8d5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 8.5px;
+    font-weight: 820;
+    cursor: pointer;
+    text-transform: none;
+  }
+
+  .git-status-group-heading button:disabled {
+    cursor: default;
+    opacity: 0.48;
+  }
+
+  .git-status-group-heading button:hover:not(:disabled),
+  .git-status-group-heading button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.34);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.11);
   }
 
   .git-status-row {
