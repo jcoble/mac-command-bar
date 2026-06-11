@@ -608,6 +608,20 @@ async fn find_source_lsp_type_definitions(
 }
 
 #[tauri::command]
+async fn find_source_lsp_document_highlights(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspLookupRequest,
+) -> Result<Vec<lsp::SourceLspDocumentHighlight>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.find_document_highlights(preview, request)
+    })
+    .await
+    .map_err(|error| format!("Source LSP document-highlight task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn format_source_with_lsp(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
     preview: lsp::SourceLspPreview,
@@ -3160,6 +3174,7 @@ fn main() {
             find_source_lsp_completions,
             find_source_lsp_implementations,
             find_source_lsp_type_definitions,
+            find_source_lsp_document_highlights,
             format_source_with_lsp,
             rename_source_with_lsp,
             find_source_lsp_code_actions,

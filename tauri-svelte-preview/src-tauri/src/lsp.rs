@@ -110,6 +110,16 @@ pub(crate) struct SourceLspSymbol {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspDocumentHighlight {
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+    kind: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspCompletionItem {
     label: String,
     kind: String,
@@ -304,6 +314,19 @@ impl SourceLspRegistry {
             }
         }
         Ok(targets)
+    }
+
+    pub(crate) fn find_document_highlights(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Vec<SourceLspDocumentHighlight>, String> {
+        let Some(result) = self.request(&preview, &request, "textDocument/documentHighlight")?
+        else {
+            return Ok(Vec::new());
+        };
+
+        Ok(lsp_document_highlights_from_result(&result))
     }
 
     pub(crate) fn find_references(
@@ -1439,6 +1462,39 @@ fn lsp_code_action_from_value(value: &Value, root: &Path) -> Option<SourceLspCod
     })
 }
 
+fn lsp_document_highlights_from_result(result: &Value) -> Vec<SourceLspDocumentHighlight> {
+    let Some(items) = result.as_array() else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(lsp_document_highlight_from_value)
+        .collect()
+}
+
+fn lsp_document_highlight_from_value(value: &Value) -> Option<SourceLspDocumentHighlight> {
+    let range = value.get("range")?;
+    let start = range.get("start")?;
+    let end = range.get("end")?;
+
+    Some(SourceLspDocumentHighlight {
+        start_line: start.get("line")?.as_u64()? as usize + 1,
+        start_column: start.get("character")?.as_u64()? as usize + 1,
+        end_line: end.get("line")?.as_u64()? as usize + 1,
+        end_column: end.get("character")?.as_u64()? as usize + 1,
+        kind: lsp_document_highlight_kind(value.get("kind").and_then(Value::as_u64)).to_string(),
+    })
+}
+
+fn lsp_document_highlight_kind(kind: Option<u64>) -> &'static str {
+    match kind {
+        Some(2) => "read",
+        Some(3) => "write",
+        _ => "text",
+    }
+}
+
 fn lsp_symbols_from_result(result: &Value, limit: usize) -> Vec<SourceLspSymbol> {
     let mut symbols = Vec::new();
     if let Value::Array(items) = result {
@@ -2134,6 +2190,46 @@ mod tests {
                         "Command-only code action is not supported yet".to_string()
                     ),
                     files: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_document_highlights() {
+        let result = json!([
+            {
+                "range": {
+                    "start": { "line": 4, "character": 8 },
+                    "end": { "line": 4, "character": 14 }
+                },
+                "kind": 2
+            },
+            {
+                "range": {
+                    "start": { "line": 8, "character": 2 },
+                    "end": { "line": 8, "character": 8 }
+                },
+                "kind": 3
+            }
+        ]);
+
+        assert_eq!(
+            lsp_document_highlights_from_result(&result),
+            vec![
+                SourceLspDocumentHighlight {
+                    start_line: 5,
+                    start_column: 9,
+                    end_line: 5,
+                    end_column: 15,
+                    kind: "read".to_string(),
+                },
+                SourceLspDocumentHighlight {
+                    start_line: 9,
+                    start_column: 3,
+                    end_line: 9,
+                    end_column: 9,
+                    kind: "write".to_string(),
                 },
             ]
         );

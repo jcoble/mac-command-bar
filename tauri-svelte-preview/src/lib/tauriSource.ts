@@ -4,6 +4,7 @@ import type {
   SourceDiagnostic,
   SourceCompletionItem,
   SourceDefinitionTarget,
+  SourceDocumentHighlight,
   SourceLspCodeActionRequest,
   SourceLspHover,
   SourceLspLookupRequest,
@@ -761,6 +762,21 @@ export async function findSourceLspTypeDefinitionsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceDefinitionTarget[]>('find_source_lsp_type_definitions', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspDocumentHighlightsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceDocumentHighlight[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceDocumentHighlight[]>('find_source_lsp_document_highlights', {
     preview,
     request
   });

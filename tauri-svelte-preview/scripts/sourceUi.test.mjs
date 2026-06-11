@@ -694,6 +694,14 @@ assert.ok(
   'Editor should expose native references to Monaco peek'
 );
 assert.ok(
+  editorSource.includes('registerSourceDocumentHighlightProvider'),
+  'Editor should register native document highlights with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerDocumentHighlightProvider'),
+  'Editor should expose native symbol occurrence highlights to Monaco'
+);
+assert.ok(
   editorSource.includes('registerSourceImplementationProvider'),
   'Editor should register native implementation results with Monaco'
 );
@@ -871,6 +879,7 @@ assert.ok(pageSource.includes('findSourceLspDefinitionsFromTauri'), 'Source page
 assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page should try LSP reference lookup before project index lookup');
 assert.ok(pageSource.includes('findSourceLspImplementationsFromTauri'), 'Source page should use LSP implementation lookup');
 assert.ok(pageSource.includes('findSourceLspTypeDefinitionsFromTauri'), 'Source page should use LSP type-definition lookup');
+assert.ok(pageSource.includes('findSourceLspDocumentHighlightsFromTauri'), 'Source page should use LSP document highlights');
 assert.ok(pageSource.includes('formatSourceWithLspFromTauri'), 'Source page should use LSP document formatting');
 assert.ok(pageSource.includes('renameSourceWithLspFromTauri'), 'Source page should use LSP rename');
 assert.ok(pageSource.includes('findSourceLspCodeActionsFromTauri'), 'Source page should use LSP code actions');
@@ -896,6 +905,7 @@ assert.ok(pageSource.includes('function runSourceImplementationLookup'), 'Source
 assert.ok(pageSource.includes('function runSourceTypeDefinitionLookup'), 'Source page should expose type-definition lookup');
 assert.ok(pageSource.includes('function handleEditorDefinitionLookup'), 'Source page should receive editor definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source page should receive editor reference lookup requests');
+assert.ok(pageSource.includes('function handleEditorDocumentHighlightLookup'), 'Source page should receive editor document highlight requests');
 assert.ok(pageSource.includes('function handleEditorImplementationLookup'), 'Source page should receive editor implementation lookup requests');
 assert.ok(pageSource.includes('function handleEditorTypeDefinitionLookup'), 'Source page should receive editor type-definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source page should receive editor completion lookup requests');
@@ -904,6 +914,7 @@ assert.ok(pageSource.includes('function handleEditorFormatDocument'), 'Source pa
 assert.ok(pageSource.includes('function handleEditorRename'), 'Source page should receive editor rename requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
+assert.ok(pageSource.includes('onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}'), 'Editor should be wired to LSP document highlights');
 assert.ok(pageSource.includes('onImplementationLookup={handleEditorImplementationLookup}'), 'Editor should be wired to LSP implementation lookup');
 assert.ok(pageSource.includes('onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}'), 'Editor should be wired to LSP type-definition lookup');
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
@@ -958,6 +969,14 @@ assert.ok(
 assert.ok(
   tauriSource.includes("'find_source_lsp_type_definitions'"),
   'Tauri source bridge should invoke native type-definition lookup'
+);
+assert.ok(
+  tauriSource.includes('findSourceLspDocumentHighlightsFromTauri'),
+  'Tauri source bridge should expose native LSP document highlights'
+);
+assert.ok(
+  tauriSource.includes("'find_source_lsp_document_highlights'"),
+  'Tauri source bridge should invoke native document highlights'
 );
 assert.ok(
   tauriSource.includes('formatSourceWithLspFromTauri'),

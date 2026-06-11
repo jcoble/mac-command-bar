@@ -124,6 +124,14 @@ export type SourceCodeAction = {
   files: SourceRenameFileEdit[];
 };
 
+export type SourceDocumentHighlight = {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  kind: 'text' | 'read' | 'write';
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {

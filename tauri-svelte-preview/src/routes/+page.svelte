@@ -154,6 +154,7 @@
     findSourceLspCompletionsFromTauri,
     findSourceLspCodeActionsFromTauri,
     findSourceLspDefinitionsFromTauri,
+    findSourceLspDocumentHighlightsFromTauri,
     findSourceLspHoverFromTauri,
     findSourceLspImplementationsFromTauri,
     findSourceLspReferencesFromTauri,
@@ -5593,6 +5594,26 @@
     return runSourceReferenceLookup(request);
   }
 
+  async function handleEditorDocumentHighlightLookup(request: SourceEditorLookupRequest) {
+    if (!preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
+        (await findSourceLspDocumentHighlightsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: 100
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async function handleEditorImplementationLookup(request: SourceEditorLookupRequest) {
     return runSourceImplementationLookup(request);
   }
@@ -9705,6 +9726,7 @@
                 onCompletionLookup={handleEditorCompletionLookup}
                 onDiagnosticsChange={handleEditorDiagnosticsChange}
                 onDefinitionLookup={handleEditorDefinitionLookup}
+                onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}
                 onFormatDocument={handleEditorFormatDocument}
                 onGoToLineRequest={openCurrentFileGoToLine}
                 onHoverLookup={handleEditorHoverLookup}

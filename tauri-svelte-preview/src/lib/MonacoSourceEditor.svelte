@@ -17,6 +17,7 @@
 		type SourceDiagnostic,
 		type SourceDiagnosticSeverity,
 		type SourceDefinitionTarget,
+		type SourceDocumentHighlight,
 		type SourcePreview,
 		type SourceReferenceTarget,
 		type SourceRenameResult,
@@ -74,6 +75,10 @@
 		request: SourceCodeActionLookupRequest
 	) => SourceCodeAction[] | Promise<SourceCodeAction[] | null> | null | undefined;
 
+	type SourceEditorDocumentHighlightLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceDocumentHighlight[] | Promise<SourceDocumentHighlight[] | null> | null | undefined;
+
 	type SourceEditorFormatDocument = () =>
 		| SourceTextEdit[]
 		| Promise<SourceTextEdit[]>
@@ -107,6 +112,7 @@
 		onCompletionLookup?: SourceEditorCompletionLookup;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
 		onDefinitionLookup?: SourceEditorDefinitionLookup;
+		onDocumentHighlightLookup?: SourceEditorDocumentHighlightLookup;
 		onFormatDocument?: SourceEditorFormatDocument;
 		onGoToLineRequest?: () => void;
 		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
@@ -136,6 +142,7 @@
 		onCompletionLookup,
 		onDiagnosticsChange,
 		onDefinitionLookup,
+		onDocumentHighlightLookup,
 		onFormatDocument,
 		onGoToLineRequest,
 		onHoverLookup,
@@ -159,6 +166,7 @@
 	let semanticTokensDisposable: Monaco.IDisposable | null = null;
 	let hoverProviderDisposable: Monaco.IDisposable | null = null;
 	let definitionProviderDisposable: Monaco.IDisposable | null = null;
+	let documentHighlightProviderDisposable: Monaco.IDisposable | null = null;
 	let implementationProviderDisposable: Monaco.IDisposable | null = null;
 	let typeDefinitionProviderDisposable: Monaco.IDisposable | null = null;
 	let formattingProviderDisposable: Monaco.IDisposable | null = null;
@@ -318,6 +326,24 @@
 
 					const targets = await onReferenceLookup?.(request);
 					return (targets ?? []).map((target) => sourceReferenceTargetToLocation(monaco, target));
+				},
+			}
+		);
+	}
+
+	function registerSourceDocumentHighlightProvider(monaco: typeof Monaco) {
+		documentHighlightProviderDisposable?.dispose();
+		documentHighlightProviderDisposable = monaco.languages.registerDocumentHighlightProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideDocumentHighlights: async (model, position) => {
+					const request = lookupRequestForModelPosition(model, position);
+					if (!request) return [];
+
+					const highlights = await onDocumentHighlightLookup?.(request);
+					return (highlights ?? []).map((highlight) =>
+						sourceDocumentHighlightToMonacoHighlight(monaco, highlight)
+					);
 				},
 			}
 		);
@@ -556,6 +582,29 @@
 		return {
 			uri: monaco.Uri.file(target.path),
 			range: new monaco.Range(line, column, line, column + length),
+		};
+	}
+
+	function sourceDocumentHighlightToMonacoHighlight(
+		monaco: typeof Monaco,
+		highlight: SourceDocumentHighlight
+	): Monaco.languages.DocumentHighlight {
+		const kind = monaco.languages.DocumentHighlightKind;
+		const highlightKind =
+			highlight.kind === "read"
+				? kind.Read
+				: highlight.kind === "write"
+					? kind.Write
+					: kind.Text;
+
+		return {
+			range: new monaco.Range(
+				Math.max(1, highlight.startLine),
+				Math.max(1, highlight.startColumn),
+				Math.max(1, highlight.endLine),
+				Math.max(1, highlight.endColumn)
+			),
+			kind: highlightKind,
 		};
 	}
 
@@ -1069,6 +1118,7 @@
 		registerSourceSemanticTokens(monaco);
 		registerSourceHoverProvider(monaco);
 		registerSourceDefinitionProvider(monaco);
+		registerSourceDocumentHighlightProvider(monaco);
 		registerSourceImplementationProvider(monaco);
 		registerSourceTypeDefinitionProvider(monaco);
 		registerSourceFormattingProvider(monaco);
@@ -1100,7 +1150,7 @@
 			lineNumbersMinChars: 3,
 			minimap: { enabled: false },
 			model: null,
-			occurrencesHighlight: "off",
+			occurrencesHighlight: "singleFile",
 			overviewRulerBorder: false,
 			overviewRulerLanes: 0,
 			padding: { top: 16, bottom: 20 },
@@ -1287,6 +1337,7 @@
 		semanticTokensDisposable?.dispose();
 		hoverProviderDisposable?.dispose();
 		definitionProviderDisposable?.dispose();
+		documentHighlightProviderDisposable?.dispose();
 		implementationProviderDisposable?.dispose();
 		typeDefinitionProviderDisposable?.dispose();
 		formattingProviderDisposable?.dispose();
