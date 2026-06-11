@@ -10,6 +10,7 @@ import type {
   SourceLspHover,
   SourceLspLookupRequest,
   SourceLspRenameRequest,
+  SourceLspWorkspaceSymbolRequest,
   SourceLspStatus,
   SourcePreview,
   SourceRecord,
@@ -20,7 +21,8 @@ import type {
   SourceSemanticToken,
   SourceSignatureHelp,
   SourceSymbol,
-  SourceTextEdit
+  SourceTextEdit,
+  SourceWorkspaceSymbol
 } from './sourceData';
 
 export const defaultSourceScanLimit = 10_000;
@@ -900,6 +902,21 @@ export async function findSourceLspSymbolsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceSymbol[]>('find_source_lsp_symbols', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspWorkspaceSymbolsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspWorkspaceSymbolRequest
+): Promise<SourceWorkspaceSymbol[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceWorkspaceSymbol[]>('find_source_lsp_workspace_symbols', {
     preview,
     request
   });

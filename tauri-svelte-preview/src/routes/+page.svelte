@@ -148,7 +148,8 @@
     type SourceTextEdit,
     type SourceLanguage,
     type SourceTreeNode,
-    type SourceTreeRow
+    type SourceTreeRow,
+    type SourceWorkspaceSymbol
   } from '$lib/sourceData';
   import {
     cancelSourceScanFromTauri,
@@ -169,6 +170,7 @@
     findSourceLspSignatureHelpFromTauri,
     findSourceLspSymbolsFromTauri,
     findSourceLspTypeDefinitionsFromTauri,
+    findSourceLspWorkspaceSymbolsFromTauri,
     formatSourceWithLspFromTauri,
     findSourceReferencesFromTauri,
     listAgentSessionsFromTauri,
@@ -570,6 +572,10 @@
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
   let quickOpenInput = $state<HTMLInputElement | null>(null);
+  let workspaceSymbolResults = $state<SourceWorkspaceSymbol[]>([]);
+  let workspaceSymbolLoading = $state(false);
+  let workspaceSymbolError = $state('');
+  let workspaceSymbolRequestID = 0;
   let commandPaletteVisible = $state(false);
   let commandPaletteQuery = $state('');
   let commandPaletteIndex = $state(0);
@@ -645,7 +651,16 @@
     openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
   );
   let parsedQuickOpenQuery = $derived(parseQuickOpenQuery(quickOpenQuery));
-  let quickOpenResults = $derived(rankSourceRecords(records, quickOpenQuery, 12));
+  let quickOpenWorkspaceSymbolMode = $derived(parsedQuickOpenQuery.searchQuery.startsWith('#'));
+  let quickOpenWorkspaceSymbolQuery = $derived(
+    quickOpenWorkspaceSymbolMode ? parsedQuickOpenQuery.searchQuery.slice(1).trim() : ''
+  );
+  let quickOpenResults = $derived(
+    quickOpenWorkspaceSymbolMode ? [] : rankSourceRecords(records, quickOpenQuery, 12)
+  );
+  let quickOpenActiveResultCount = $derived(
+    quickOpenWorkspaceSymbolMode ? workspaceSymbolResults.length : quickOpenResults.length
+  );
   let selectedIndex = $derived(
     selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
@@ -977,6 +992,13 @@
       label: 'Open file',
       detail: 'Cmd+P',
       perform: openQuickOpen
+    },
+    {
+      id: 'workspace-symbols',
+      label: 'Search workspace symbols',
+      detail: 'Cmd+P then #symbol',
+      disabled: !preview || !sourceIntelligenceAvailable,
+      perform: openWorkspaceSymbolQuickOpen
     },
     {
       id: 'go-to-line',
@@ -1716,10 +1738,33 @@
 
   $effect(() => {
     if (!quickOpenVisible) return;
-    const lastResultIndex = Math.max(0, quickOpenResults.length - 1);
+    const lastResultIndex = Math.max(0, quickOpenActiveResultCount - 1);
     if (quickOpenIndex > lastResultIndex) {
       quickOpenIndex = lastResultIndex;
     }
+  });
+
+  $effect(() => {
+    const query = quickOpenWorkspaceSymbolQuery;
+    if (!quickOpenVisible || !quickOpenWorkspaceSymbolMode) {
+      workspaceSymbolResults = [];
+      workspaceSymbolError = '';
+      workspaceSymbolLoading = false;
+      return;
+    }
+
+    if (!query || !preview || !sourceIntelligenceAvailable) {
+      workspaceSymbolResults = [];
+      workspaceSymbolError = '';
+      workspaceSymbolLoading = false;
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadSourceLspWorkspaceSymbols(query);
+    }, 180);
+
+    return () => window.clearTimeout(timer);
   });
 
   $effect(() => {
@@ -4904,6 +4949,20 @@
     window.setTimeout(() => quickOpenInput?.focus(), 0);
   }
 
+  function openWorkspaceSymbolQuickOpen() {
+    quickOpenVisible = true;
+    quickOpenQuery = '#';
+    quickOpenIndex = 0;
+    closeCommandPalette();
+    closeViewMenu();
+    closeEditorActionMenu();
+    window.setTimeout(() => {
+      quickOpenInput?.focus();
+      const cursor = quickOpenQuery.length;
+      quickOpenInput?.setSelectionRange(cursor, cursor);
+    }, 0);
+  }
+
   function openCurrentFileGoToLine() {
     if (!selectedRecord) return;
 
@@ -4921,10 +4980,19 @@
     quickOpenVisible = false;
     quickOpenQuery = '';
     quickOpenIndex = 0;
+    workspaceSymbolRequestID += 1;
+    workspaceSymbolResults = [];
+    workspaceSymbolError = '';
+    workspaceSymbolLoading = false;
   }
 
   async function chooseQuickOpenRecord(record: SourceRecord) {
     await selectRecord(record, parsedQuickOpenQuery.targetLine);
+    closeQuickOpen();
+  }
+
+  async function chooseQuickOpenWorkspaceSymbol(symbol: SourceWorkspaceSymbol) {
+    await selectRecord(symbol, symbol.line);
     closeQuickOpen();
   }
 
@@ -4937,7 +5005,7 @@
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      quickOpenIndex = Math.min(quickOpenIndex + 1, Math.max(0, quickOpenResults.length - 1));
+      quickOpenIndex = Math.min(quickOpenIndex + 1, Math.max(0, quickOpenActiveResultCount - 1));
       return;
     }
 
@@ -4949,6 +5017,14 @@
 
     if (event.key === 'Enter') {
       event.preventDefault();
+      if (quickOpenWorkspaceSymbolMode) {
+        const selectedWorkspaceSymbol = workspaceSymbolResults[quickOpenIndex];
+        if (selectedWorkspaceSymbol) {
+          void chooseQuickOpenWorkspaceSymbol(selectedWorkspaceSymbol);
+        }
+        return;
+      }
+
       const selectedQuickOpenRecord = quickOpenResults[quickOpenIndex];
       if (selectedQuickOpenRecord) {
         void chooseQuickOpenRecord(selectedQuickOpenRecord);
@@ -5589,6 +5665,48 @@
       if (symbols?.length) sourceSymbols = symbols;
     } catch {
       // Parser-provided Monaco symbols stay in place when native LSP is unavailable.
+    }
+  }
+
+  async function loadSourceLspWorkspaceSymbols(query: string) {
+    const normalizedQuery = query.trim();
+    const sourcePreview = preview;
+    if (!normalizedQuery || !sourcePreview || !sourceSupportsLanguageIntelligence(sourcePreview.language)) {
+      workspaceSymbolResults = [];
+      workspaceSymbolError = '';
+      workspaceSymbolLoading = false;
+      return;
+    }
+
+    const requestID = ++workspaceSymbolRequestID;
+    workspaceSymbolLoading = true;
+    workspaceSymbolError = '';
+
+    try {
+      const symbols = await findSourceLspWorkspaceSymbolsFromTauri(
+        { ...sourcePreview, content: selectedSourceDraftContent },
+        {
+          root: selectedProject.path,
+          query: normalizedQuery,
+          limit: 24
+        }
+      );
+
+      if (requestID !== workspaceSymbolRequestID) return;
+
+      workspaceSymbolResults = symbols ?? [];
+    } catch (workspaceSymbolLookupError) {
+      if (requestID !== workspaceSymbolRequestID) return;
+
+      workspaceSymbolResults = [];
+      workspaceSymbolError =
+        workspaceSymbolLookupError instanceof Error
+          ? workspaceSymbolLookupError.message
+          : 'Workspace symbol search unavailable';
+    } finally {
+      if (requestID === workspaceSymbolRequestID) {
+        workspaceSymbolLoading = false;
+      }
     }
   }
 
@@ -10882,13 +11000,49 @@
           bind:this={quickOpenInput}
           bind:value={quickOpenQuery}
           onkeydown={handleQuickOpenKeydown}
-          placeholder="Open source file"
+          placeholder={quickOpenWorkspaceSymbolMode ? 'Search workspace symbols' : 'Open source file'}
           autocomplete="off"
         />
       </label>
 
-      <div class="quick-open-results" role="listbox" aria-label="Matching source files">
-        {#if quickOpenResults.length === 0}
+      <div
+        class="quick-open-results"
+        role="listbox"
+        aria-label={quickOpenWorkspaceSymbolMode ? 'Matching workspace symbols' : 'Matching source files'}
+      >
+        {#if quickOpenWorkspaceSymbolMode}
+          {#if !preview || !sourceIntelligenceAvailable}
+            <div class="quick-open-empty">Open a C# or TypeScript file first</div>
+          {:else if !quickOpenWorkspaceSymbolQuery}
+            <div class="quick-open-empty">Type a symbol name after #</div>
+          {:else if workspaceSymbolLoading}
+            <div class="quick-open-empty">Searching workspace symbols</div>
+          {:else if workspaceSymbolError}
+            <div class="quick-open-empty">{workspaceSymbolError}</div>
+          {:else if workspaceSymbolResults.length === 0}
+            <div class="quick-open-empty">No matching workspace symbols</div>
+          {:else}
+            {#each workspaceSymbolResults as symbol, index (`${symbol.path}:${symbol.line}:${symbol.column}:${symbol.symbolName}`)}
+              <button
+                class:active={index === quickOpenIndex}
+                type="button"
+                role="option"
+                aria-selected={index === quickOpenIndex}
+                title={symbol.detail}
+                onclick={() => chooseQuickOpenWorkspaceSymbol(symbol)}
+              >
+                <span class="quick-open-result-icon">
+                  <FileCode2 size={15} strokeWidth={1.8} />
+                </span>
+                <span>
+                  <strong>{symbol.symbolName}</strong>
+                  <small>{symbol.detail}</small>
+                </span>
+                <em>{symbol.kind}</em>
+              </button>
+            {/each}
+          {/if}
+        {:else if quickOpenResults.length === 0}
           <div class="quick-open-empty">No matching source files</div>
         {:else}
           {#each quickOpenResults as record, index (record.path)}

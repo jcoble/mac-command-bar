@@ -47,6 +47,14 @@ pub(crate) struct SourceLspRenameRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspWorkspaceSymbolRequest {
+    root: String,
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspCodeActionDiagnostic {
     severity: String,
     message: String,
@@ -150,6 +158,22 @@ pub(crate) struct SourceLspSymbol {
     line: usize,
     column: usize,
     detail: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspWorkspaceSymbol {
+    path: String,
+    relative_path: String,
+    file_name: String,
+    language: String,
+    byte_count: u64,
+    symbol_name: String,
+    kind: String,
+    line: usize,
+    column: usize,
+    detail: String,
+    container_name: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -466,6 +490,55 @@ impl SourceLspRegistry {
                 Ok(None) => return Ok(Vec::new()),
                 Err(_) if attempt == 0 && !session_alive => {
                     self.remove_session(&preview, &request)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
+    pub(crate) fn find_workspace_symbols(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspWorkspaceSymbolRequest,
+    ) -> Result<Vec<SourceLspWorkspaceSymbol>, String> {
+        let query = request.query.trim().to_string();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let lookup_request = SourceLspLookupRequest {
+            root: request.root.clone(),
+            line: 1,
+            column: 1,
+            limit: request.limit,
+        };
+        let limit = lookup_request.limit.unwrap_or(50);
+        for attempt in 0..2 {
+            let Some(session) = self.session_for(&preview, &lookup_request)? else {
+                return Ok(Vec::new());
+            };
+            let (result, session_alive) = {
+                let mut session = lock_lsp_session(&session)?;
+                let result = session.request_workspace_symbols(&preview, &query);
+                let session_alive = session.is_alive();
+                (result, session_alive)
+            };
+
+            match result {
+                Ok(Some(value)) => {
+                    return Ok(lsp_workspace_symbols_from_result(
+                        &value,
+                        Path::new(&request.root),
+                        &preview.language,
+                        limit,
+                    ));
+                }
+                Ok(None) => return Ok(Vec::new()),
+                Err(_) if attempt == 0 && !session_alive => {
+                    self.remove_session(&preview, &lookup_request)?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -939,6 +1012,32 @@ impl SourceLspSession {
                 "method": "textDocument/semanticTokens/full",
                 "params": {
                     "textDocument": { "uri": file_uri }
+                }
+            }),
+        )?;
+        let response = self.wait_for_response(id, Instant::now() + LSP_REQUEST_TIMEOUT)?;
+        if let Some(error) = response.get("error") {
+            return Err(format!("Language server request failed: {error}"));
+        }
+
+        Ok(response.get("result").cloned())
+    }
+
+    fn request_workspace_symbols(
+        &mut self,
+        preview: &SourceLspPreview,
+        query: &str,
+    ) -> Result<Option<Value>, String> {
+        self.ensure_document_open(preview)?;
+        let id = self.next_request_id();
+        write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "workspace/symbol",
+                "params": {
+                    "query": query
                 }
             }),
         )?;
@@ -1991,6 +2090,76 @@ fn lsp_symbols_from_result(result: &Value, limit: usize) -> Vec<SourceLspSymbol>
         }
     }
     symbols
+}
+
+fn lsp_workspace_symbols_from_result(
+    result: &Value,
+    root: &Path,
+    fallback_language: &str,
+    limit: usize,
+) -> Vec<SourceLspWorkspaceSymbol> {
+    let Some(items) = result.as_array() else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(|value| lsp_workspace_symbol_from_value(value, root, fallback_language))
+        .take(limit)
+        .collect()
+}
+
+fn lsp_workspace_symbol_from_value(
+    value: &Value,
+    root: &Path,
+    fallback_language: &str,
+) -> Option<SourceLspWorkspaceSymbol> {
+    let symbol_name = value.get("name")?.as_str()?.trim().to_string();
+    if symbol_name.is_empty() {
+        return None;
+    }
+
+    let location = value.get("location")?;
+    let uri = location
+        .get("uri")
+        .or_else(|| location.get("targetUri"))?
+        .as_str()?;
+    let path = file_uri_to_path(uri)?;
+    let range = location
+        .get("range")
+        .or_else(|| location.get("targetSelectionRange"))
+        .or_else(|| value.get("range"))?;
+    let start = range.get("start")?;
+    let line = start.get("line")?.as_u64()? as usize + 1;
+    let column = start.get("character")?.as_u64()? as usize + 1;
+    let relative_path = relative_path_for(&path, root);
+    let file_name = file_name_for(&path);
+    let container_name = value
+        .get("containerName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|container| !container.is_empty())
+        .map(str::to_string);
+    let location_detail = format!("{relative_path}:{line}:{column}");
+    let detail = container_name
+        .as_ref()
+        .map(|container| format!("{container} - {location_detail}"))
+        .unwrap_or_else(|| location_detail.clone());
+    let metadata = std::fs::metadata(&path).ok();
+
+    Some(SourceLspWorkspaceSymbol {
+        path: path.display().to_string(),
+        relative_path,
+        file_name,
+        language: language_for_path(&path).unwrap_or_else(|| fallback_language.to_string()),
+        byte_count: metadata.map(|metadata| metadata.len()).unwrap_or(0),
+        symbol_name,
+        kind: lsp_symbol_kind(value.get("kind").and_then(Value::as_u64)),
+        line,
+        column,
+        detail,
+        container_name,
+    })
 }
 
 fn lsp_completion_items_from_result(result: &Value, limit: usize) -> Vec<SourceLspCompletionItem> {
@@ -3162,6 +3331,43 @@ mod tests {
                     detail: String::new(),
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn extracts_workspace_symbols_from_locations() {
+        let root = env::temp_dir().join("mcb-workspace-symbol-root");
+        let source_path = root.join("src/FormatResolver.cs");
+        let result = json!([
+            {
+                "name": "FormatResolver",
+                "kind": 5,
+                "containerName": "EdiPlatform.Core.Services",
+                "location": {
+                    "uri": path_to_file_uri(&source_path),
+                    "range": {
+                        "start": { "line": 7, "character": 20 },
+                        "end": { "line": 7, "character": 34 }
+                    }
+                }
+            }
+        ]);
+
+        assert_eq!(
+            lsp_workspace_symbols_from_result(&result, &root, "csharp", 20),
+            vec![SourceLspWorkspaceSymbol {
+                path: source_path.display().to_string(),
+                relative_path: "src/FormatResolver.cs".to_string(),
+                file_name: "FormatResolver.cs".to_string(),
+                language: "csharp".to_string(),
+                byte_count: 0,
+                symbol_name: "FormatResolver".to_string(),
+                kind: "class".to_string(),
+                line: 8,
+                column: 21,
+                detail: "EdiPlatform.Core.Services - src/FormatResolver.cs:8:21".to_string(),
+                container_name: Some("EdiPlatform.Core.Services".to_string()),
+            }]
         );
     }
 

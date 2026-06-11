@@ -231,6 +231,7 @@ assert.ok(pageSource.includes('function toggleViewMenu'), 'Source shell should e
 assert.ok(pageSource.includes('function closeViewMenu'), 'Source shell should close the compact view menu');
 assert.ok(pageSource.includes('function openCommandPalette'), 'Source shell should expose a command palette');
 assert.ok(pageSource.includes('function runCommandPaletteItem'), 'Command palette should execute selected commands');
+assert.ok(pageSource.includes('function openWorkspaceSymbolQuickOpen'), 'Command palette should expose workspace symbol quick-open');
 assert.ok(pageSource.includes('function selectSidePanePosition'), 'Source shell should expose side pane placement selection');
 assert.ok(pageSource.includes('function markSourceLayoutCustom'), 'Manual layout changes should mark the layout as custom');
 assert.ok(pageSource.includes('function shouldMigrateSourceLayout'), 'Source shell should migrate old dense layout storage');
@@ -368,8 +369,11 @@ assert.ok(pageSource.includes('class="command-palette-layer"'), 'Source shell sh
 assert.ok(pageSource.includes('aria-label="Command palette"'), 'Command palette should be accessible');
 assert.ok(pageSource.includes("event.key.toLowerCase() === 'k'"), 'Command palette should open from Cmd+K');
 assert.ok(pageSource.includes("id: 'go-to-line'"), 'Command palette should expose current-file line navigation');
+assert.ok(pageSource.includes("id: 'workspace-symbols'"), 'Command palette should expose workspace symbol search');
 assert.ok(pageSource.includes('function openCurrentFileGoToLine'), 'Line navigation should reuse quick open');
 assert.ok(pageSource.includes('quickOpenQuery = `${selectedRecord.relativePath}:`'), 'Line navigation should prefill the current file path');
+assert.ok(pageSource.includes("quickOpenQuery = '#'"), 'Workspace symbol search should prefill the quick-open symbol prefix');
+assert.ok(pageSource.includes('function chooseQuickOpenWorkspaceSymbol'), 'Quick open should select workspace symbols directly');
 assert.ok(pageSource.includes("id: 'scan-project-expanded'"), 'Command palette should expose expanded source scans');
 assert.ok(pageSource.includes("id: 'scan-reset-index'"), 'Command palette should expose source index reset');
 assert.ok(pageSource.includes("id: 'scan-stop'"), 'Command palette should expose scan cancellation');
@@ -923,6 +927,7 @@ assert.ok(pageSource.includes('findSourceLspCompletionsFromTauri'), 'Source page
 assert.ok(pageSource.includes('findSourceLspSignatureHelpFromTauri'), 'Source page should use LSP signature help');
 assert.ok(pageSource.includes('findSourceLspInlayHintsFromTauri'), 'Source page should use LSP inlay hints');
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
+assert.ok(pageSource.includes('findSourceLspWorkspaceSymbolsFromTauri'), 'Source page should search native LSP workspace symbols');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
 assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
 assert.ok(pageSource.includes('sourceLspStatus'), 'Source page should track LSP availability');
@@ -934,6 +939,7 @@ assert.ok(pageSource.includes('dotnet tool install --global csharp-ls'), 'C# LSP
 assert.ok(pageSource.includes('npm install -g typescript typescript-language-server'), 'TypeScript LSP guidance should install the TS language server');
 assert.ok(pageSource.includes('function loadSourceLspDiagnostics'), 'Source page should expose native LSP diagnostics loading');
 assert.ok(pageSource.includes('function loadSourceLspSymbols'), 'Source page should expose native LSP symbol loading');
+assert.ok(pageSource.includes('function loadSourceLspWorkspaceSymbols'), 'Source page should expose native LSP workspace symbol loading');
 assert.ok(pageSource.includes('findSourceDefinitionTargets'), 'Source page should fall back to browser definition lookup');
 assert.ok(pageSource.includes('findSourceReferencesFromTauri'), 'Source page should call native project reference lookup');
 assert.ok(pageSource.includes('findSourceReferenceTargets'), 'Source page should fall back to browser reference lookup');
@@ -1066,6 +1072,14 @@ assert.ok(
 assert.ok(
   tauriSource.includes("'find_source_lsp_semantic_tokens'"),
   'Tauri source bridge should invoke native semantic tokens'
+);
+assert.ok(
+  tauriSource.includes('findSourceLspWorkspaceSymbolsFromTauri'),
+  'Tauri source bridge should expose native LSP workspace symbols'
+);
+assert.ok(
+  tauriSource.includes("'find_source_lsp_workspace_symbols'"),
+  'Tauri source bridge should invoke native workspace symbols'
 );
 assert.ok(
   appearanceSource.includes('encodedTokensColors'),

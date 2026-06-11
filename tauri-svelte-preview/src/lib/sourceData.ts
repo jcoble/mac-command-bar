@@ -33,6 +33,15 @@ export type SourceDefinitionTarget = SourceRecord & {
   detail: string;
 };
 
+export type SourceWorkspaceSymbol = SourceRecord & {
+  symbolName: string;
+  kind: string;
+  line: number;
+  column: number;
+  detail: string;
+  containerName: string | null;
+};
+
 export type SourceReferenceTarget = SourceRecord & {
   symbolName: string;
   line: number;
@@ -62,6 +71,12 @@ export type SourceLspRenameRequest = {
   line: number;
   column: number;
   newName: string;
+};
+
+export type SourceLspWorkspaceSymbolRequest = {
+  root: string;
+  query: string;
+  limit?: number;
 };
 
 export type SourceCodeActionDiagnostic = {
