@@ -659,6 +659,11 @@
   let selectedProjectAgentSessions = $derived(
     agentSessions.filter((session) => agentSessionMatchesProject(session, selectedProject))
   );
+  let selectedProjectAgentSessionPaths = $derived(
+    selectedProjectAgentSessions
+      .map((session) => agentSessionProjectPath(session))
+      .filter((path) => path.trim().length > 0)
+  );
   let selectedProjectOrchestrationRuns = $derived(
     orchestrationRuns.filter((run) => orchestrationRunMatchesProject(run, selectedProject))
   );
@@ -805,7 +810,10 @@
   );
   let projectWorktreeSafetyStats = $derived(formatProjectWorktreeSafetyStats(projectWorktrees));
   let projectWorktreeCleanupBrief = $derived(
-    buildWorktreeCleanupBrief(projectWorktrees, { primaryPath: selectedProject.path })
+    buildWorktreeCleanupBrief(projectWorktrees, {
+      primaryPath: selectedProject.path,
+      activeSessionPaths: selectedProjectAgentSessionPaths
+    })
   );
   let repoDashboardSummary = $derived(
     formatRepoDashboardSummary(
@@ -3160,7 +3168,10 @@
   }
 
   function projectWorktreeSafety(worktree: ProjectWorktree) {
-    return buildWorktreeSafetySummary(worktree, { primaryPath: selectedProject.path });
+    return buildWorktreeSafetySummary(worktree, {
+      primaryPath: selectedProject.path,
+      activeSessionPaths: selectedProjectAgentSessionPaths
+    });
   }
 
   function formatProjectWorktreeSafetyStats(worktrees: ProjectWorktree[]) {
@@ -7098,10 +7109,16 @@
                         </a>
                       {/if}
                     </strong>
-                    <small class="worktree-safety-line">
-                      <span>{safety.reason}</span>
-                      <span>{projectWorktreeActivityLabel(worktree)}</span>
-                    </small>
+	                    <small class="worktree-safety-line">
+	                      <span>{safety.reason}</span>
+	                      {#if safety.activeSessionCount > 0}
+	                        <span>
+	                          {safety.activeSessionCount}
+	                          {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
+	                        </span>
+	                      {/if}
+	                      <span>{projectWorktreeActivityLabel(worktree)}</span>
+	                    </small>
                     <small class="worktree-recommendation">{safety.recommendation}</small>
                   </div>
                   <div class="activity-row-actions" aria-label="Worktree actions">
@@ -7777,7 +7794,14 @@
                 {:else}
                   <span class="worktree-task-empty">no task</span>
                 {/if}
-                <em>{safety.reason} · {projectWorktreeActivityLabel(worktree)}</em>
+	                <em>
+	                  {safety.reason}
+	                  {#if safety.activeSessionCount > 0}
+	                    · {safety.activeSessionCount}
+	                    {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
+	                  {/if}
+	                  · {projectWorktreeActivityLabel(worktree)}
+	                </em>
                 <small class="worktree-recommendation">{safety.recommendation}</small>
                 <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
                   <button

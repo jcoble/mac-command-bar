@@ -6,6 +6,7 @@ export type WorktreeAgeBucket = 'active' | 'stale' | 'unknown';
 export type WorktreeSafetySummary = {
   kind: WorktreeSafetyKind;
   ageBucket: WorktreeAgeBucket;
+  activeSessionCount: number;
   badge: string;
   reason: string;
   recommendation: string;
@@ -29,6 +30,7 @@ export type WorktreeCleanupBrief = {
 
 export type WorktreeSafetyOptions = {
   primaryPath?: string | null;
+  activeSessionPaths?: Array<string | null | undefined>;
   now?: number | Date;
   staleAfterDays?: number;
 };
@@ -45,6 +47,7 @@ export function buildWorktreeSafetySummary(
   const primaryPath = options.primaryPath ? normalizePath(options.primaryPath) : '';
   const worktreePath = normalizePath(worktree.path);
   const isPrimaryCheckout = Boolean(primaryPath && primaryPath === worktreePath);
+  const activeSessionCount = countActiveSessionPaths(worktreePath, options.activeSessionPaths);
   const deleteEligibility = worktree.deleteEligibility.toLowerCase();
 
   let kind: WorktreeSafetyKind = 'ready';
@@ -57,6 +60,11 @@ export function buildWorktreeSafetySummary(
     badge = 'Main';
     reason = 'Primary checkout';
     recommendation = 'Keep this worktree as the repo anchor; clean branches from sibling worktrees instead.';
+  } else if (activeSessionCount > 0) {
+    kind = 'blocked';
+    badge = 'Active';
+    reason = `Active ${activeSessionCount === 1 ? 'session' : 'sessions'} owns this worktree`;
+    recommendation = 'Resume, close, or move active agent sessions before cleanup.';
   } else if (worktree.isDirty || deleteEligibility.includes('dirty')) {
     kind = 'blocked';
     badge = 'Dirty';
@@ -86,6 +94,7 @@ export function buildWorktreeSafetySummary(
   return {
     kind,
     ageBucket: activity.ageBucket,
+    activeSessionCount,
     badge,
     reason,
     recommendation,
@@ -99,7 +108,8 @@ export function buildWorktreeSafetySummary(
       cleanupCommand,
       reason,
       recommendation,
-      isPrimaryCheckout
+      isPrimaryCheckout,
+      activeSessionCount
     })
   };
 }
@@ -211,6 +221,7 @@ function worktreeCleanupPlan(
     reason: string;
     recommendation: string;
     isPrimaryCheckout: boolean;
+    activeSessionCount: number;
   }
 ): string {
   const lines = [
@@ -219,6 +230,7 @@ function worktreeCleanupPlan(
     `Repo: ${worktree.repo}`,
     worktree.taskID ? `Task: ${worktree.taskID}` : '',
     `State: ${details.reason}`,
+    details.activeSessionCount > 0 ? `Active sessions: ${details.activeSessionCount}` : '',
     `Recommended: ${details.recommendation}`,
     ''
   ].filter(Boolean);
@@ -229,6 +241,10 @@ function worktreeCleanupPlan(
     lines.push('');
     lines.push('Do not remove the primary checkout from the worktree list.');
   } else {
+    if (details.activeSessionCount > 0) {
+      lines.push('Do not remove while active sessions point here. Resume, close, or move them first.');
+      lines.push('');
+    }
     lines.push('Audit before cleanup:');
     lines.push(details.auditCommand);
     lines.push('');
@@ -315,6 +331,19 @@ function uniqueTaskIDs(values: Array<string | null | undefined>): string[] {
   }
 
   return taskIDs;
+}
+
+function countActiveSessionPaths(
+  worktreePath: string,
+  activeSessionPaths: Array<string | null | undefined> | undefined
+): number {
+  if (!activeSessionPaths || activeSessionPaths.length === 0) return 0;
+
+  return activeSessionPaths.filter((path) => {
+    if (!path) return false;
+    const sessionPath = normalizePath(path);
+    return sessionPath === worktreePath || sessionPath.startsWith(`${worktreePath}/`);
+  }).length;
 }
 
 function worktreeActivity(

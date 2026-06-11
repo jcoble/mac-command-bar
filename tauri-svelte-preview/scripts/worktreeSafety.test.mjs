@@ -47,6 +47,21 @@ function worktree(overrides = {}) {
 }
 
 {
+  const summary = buildWorktreeSafetySummary(worktree(), {
+    primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+    activeSessionPaths: [
+      '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/ediplatform-web'
+    ],
+    now
+  });
+  assert.equal(summary.kind, 'blocked');
+  assert.equal(summary.badge, 'Active');
+  assert.equal(summary.activeSessionCount, 1);
+  assert.match(summary.reason, /Active session/);
+  assert.match(summary.cleanupPlan, /Do not remove while active sessions point here/);
+}
+
+{
   const summary = buildWorktreeSafetySummary(worktree({ hasUnmergedCommits: true }), {
     primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
     now
@@ -126,16 +141,19 @@ function worktree(overrides = {}) {
     ],
     {
       primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      activeSessionPaths: [
+        '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-120-clean'
+      ],
       now,
       staleAfterDays: 14
     }
   );
 
-  assert.equal(brief.headline, '1 blocked · 1 ready · 1 review · 1 stale · 1 main');
-  assert.equal(brief.cleanupCandidateCount, 1);
+  assert.equal(brief.headline, '2 blocked · 1 review · 1 stale · 1 main');
+  assert.equal(brief.cleanupCandidateCount, 0);
   assert.deepEqual(brief.taskIDs, ['TSK-120', 'TSK-121', 'TSK-122']);
   assert.match(brief.report, /Worktree cleanup brief/);
-  assert.match(brief.report, /Blocked: 1/);
+  assert.match(brief.report, /Blocked: 2/);
   assert.match(brief.report, /Cleanup candidates:/);
   assert.match(brief.report, /cdx\/tsk-120-clean/);
   assert.match(brief.report, /Needs attention:/);
