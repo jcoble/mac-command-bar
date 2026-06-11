@@ -482,6 +482,14 @@ assert.ok(
   pageSource.includes('scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })'),
   'Expanded source scans should rescan the active project at the larger limit'
 );
+assert.ok(
+  pageSource.includes('scanProject(storedProject, storedSelectedSourcePaths[storedProject.id], { limit: expandedSourceScanLimit })'),
+  'Startup should request an expanded project scan'
+);
+assert.ok(
+  pageSource.includes('await activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit })'),
+  'Project switching should request an expanded project scan'
+);
 assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Index reset should discard cached scans for the selected project');
 assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
 assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');

@@ -4491,7 +4491,7 @@
   async function handleProjectChange() {
     const nextProject =
       projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
-    await activateProject(nextProject, { projects: projectOptions });
+    await activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit });
   }
 
   function selectSourceActivityMode(mode: SourceActivityMode) {
@@ -4628,7 +4628,7 @@
   function refreshSourceActivityMode(mode: SourceActivityMode = sourceActivityMode) {
     switch (mode) {
       case 'files':
-        void scanProject(selectedProject, selectedRecord?.path, { force: true });
+        void scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit });
         break;
       case 'clipboard':
         break;
@@ -6076,8 +6076,8 @@
     void loadGitRepositorySummaries(storedProjectOptions);
     void loadAgentSessions();
     void loadOrchestrationRuns(storedProjectOptions);
-    void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id]).then(() =>
-      indexProjectsInBackground(storedProjectOptions)
+    void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id], { limit: expandedSourceScanLimit }).then(
+      () => indexProjectsInBackground(storedProjectOptions)
     );
 
     return () => {
