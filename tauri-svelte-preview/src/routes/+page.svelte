@@ -1945,11 +1945,24 @@
       detail: gitTaskUrl(taskID) ?? 'Task ID only',
       perform: () => copyGitTaskReference(taskID)
     })),
+    ...selectedProjectGitTaskIDs.slice(0, 8).map((taskID) => ({
+      id: `git-open-task-${taskID}`,
+      label: `Open task: ${taskID}`,
+      detail: gitTaskUrl(taskID) ?? 'Task ID only',
+      disabled: !gitTaskUrl(taskID),
+      perform: () => openGitTaskReference(taskID)
+    })),
     ...selectedProjectGitTaskLedger.slice(0, 8).map((row) => ({
       id: `git-task-ledger-${row.taskID}`,
       label: `Copy task ledger: ${row.taskID}`,
       detail: row.nextAction,
       perform: () => copyGitTaskLedger(row)
+    })),
+    ...selectedProjectGitTaskLedger.slice(0, 8).map((row) => ({
+      id: `git-focus-task-ledger-${row.taskID}`,
+      label: `Focus task ledger: ${row.taskID}`,
+      detail: row.nextAction,
+      perform: () => focusGitTaskLedger(row.taskID)
     })),
     ...gitCommitHistory.slice(0, 8).map((entry) => ({
       id: `git-copy-commit-${entry.sha}`,
@@ -3491,6 +3504,27 @@
     if (!taskID) return;
 
     await copyActivityCommand(gitTaskReferenceText(taskID), gitTaskUrl(taskID) ? 'Task link copied' : 'Task ID copied');
+  }
+
+  function openGitTaskReference(taskID: string | null) {
+    const url = gitTaskUrl(taskID);
+    if (!url || typeof window === 'undefined') return;
+
+    window.open(url, '_blank', 'noopener,noreferrer');
+    fileActionStatus = `Opened ${taskID}`;
+  }
+
+  async function focusGitTaskLedger(taskID: string | null) {
+    const normalizedTaskID = normalizeGitTaskID(taskID);
+    if (!normalizedTaskID || typeof document === 'undefined') return;
+
+    selectSourceActivityMode('git');
+    await tick();
+    const row = document.querySelector<HTMLElement>(
+      `[data-task-ledger-id="${normalizedTaskID}"]`
+    );
+    row?.scrollIntoView({ block: 'center', inline: 'nearest' });
+    row?.focus({ preventScroll: true });
   }
 
   async function copyGitTaskLedger(row: GitTaskLedgerRow) {
@@ -10414,6 +10448,8 @@
                 {@const ledgerAction = ledgerWorktree ? projectWorktreePrimaryAction(ledgerWorktree) : null}
                 <div
                   class={`activity-task-ledger-row ${row.tone}`}
+                  data-task-ledger-id={row.taskID}
+                  tabindex="-1"
                   title={gitTaskLedgerTitle(row)}
                 >
                   <div class="activity-row-main">

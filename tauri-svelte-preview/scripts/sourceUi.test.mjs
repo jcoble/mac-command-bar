@@ -1451,7 +1451,9 @@ assert.ok(pageSource.includes('aria-label="Commit staged Git changes"'), 'Git ta
 assert.ok(pageSource.includes('aria-label="Git commit history"'), 'Git tab should expose commit history');
 assert.ok(pageSource.includes("id: 'git-refresh-history'"), 'Command palette should refresh Git history directly');
 assert.ok(pageSource.includes('id: `git-copy-task-${taskID}`'), 'Command palette should copy task links from Git metadata');
+assert.ok(pageSource.includes('id: `git-open-task-${taskID}`'), 'Command palette should open task links from Git metadata');
 assert.ok(pageSource.includes('id: `git-task-ledger-${row.taskID}`'), 'Command palette should copy task ledger entries');
+assert.ok(pageSource.includes('id: `git-focus-task-ledger-${row.taskID}`'), 'Command palette should focus task ledger entries');
 assert.ok(pageSource.includes('id: `git-copy-commit-${entry.sha}`'), 'Command palette should copy recent commit summaries');
 assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should render commit history rows');
 assert.ok(pageSource.includes('class="git-commit-detail"'), 'Git tab should render selected commit details');
@@ -1473,6 +1475,9 @@ assert.ok(pageSource.includes('aria-label="Copy commit summary"'), 'Git rows sho
 assert.ok(pageSource.includes('aria-label="Copy selected commit handoff"'), 'Selected commit detail should expose handoff copy');
 assert.ok(pageSource.includes('aria-label="Copy commit handoff"'), 'Git rows should expose copy handoff actions');
 assert.ok(pageSource.includes('aria-label="Copy task reference"'), 'Git rows should expose copy task reference actions');
+assert.ok(pageSource.includes('function openGitTaskReference'), 'Git tasks should open Notion task links from command actions');
+assert.ok(pageSource.includes('function focusGitTaskLedger'), 'Git tasks should focus task ledger rows from command actions');
+assert.ok(pageSource.includes('data-task-ledger-id={row.taskID}'), 'Task ledger rows should expose focus targets');
 assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.git-diff-panel', 'overflow: hidden');
