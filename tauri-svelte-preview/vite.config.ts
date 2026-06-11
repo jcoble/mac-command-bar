@@ -16,83 +16,90 @@ function localSourceBridgePlugin(): Plugin {
   return {
     name: 'mac-command-bar-local-source-bridge',
     configureServer(server) {
-      server.middlewares.use(async (request, response, next) => {
-        const pathname = request.url?.split('?')[0] ?? '';
-        if (!pathname.startsWith('/__mcb/source/')) {
-          next();
-          return;
-        }
+      server.middlewares.use(createLocalSourceBridgeMiddleware());
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(createLocalSourceBridgeMiddleware());
+    }
+  };
+}
 
-        if (request.method !== 'POST') {
-          sendJSON(response, 405, { error: 'Method not allowed' });
-          return;
-        }
+function createLocalSourceBridgeMiddleware() {
+  return async (request: IncomingMessage, response: ServerResponse, next: () => void) => {
+    const pathname = request.url?.split('?')[0] ?? '';
+    if (!pathname.startsWith('/__mcb/source/')) {
+      next();
+      return;
+    }
 
-        try {
-          const body = await readJSONBody(request);
-          switch (pathname) {
-            case '/__mcb/source/list':
-              sendJSON(
-                response,
-                200,
-                await scanLocalSourceFiles({
-                  root: String(body.root ?? ''),
-                  query: stringOrNull(body.query),
-                  limit: numberOrNull(body.limit)
-                })
-              );
-              break;
-            case '/__mcb/source/read':
-              sendJSON(response, 200, await readLocalSourceFile(String(body.path ?? '')));
-              break;
-            case '/__mcb/source/write':
-              sendJSON(
-                response,
-                200,
-                await writeLocalSourceFile(String(body.path ?? ''), String(body.content ?? ''))
-              );
-              break;
-            case '/__mcb/source/search':
-              sendJSON(
-                response,
-                200,
-                await searchLocalSourceFiles(
-                  sourceRecordsFromBody(body.records),
-                  String(body.query ?? ''),
-                  numberOrUndefined(body.limit)
-                )
-              );
-              break;
-            case '/__mcb/source/definitions':
-              sendJSON(
-                response,
-                200,
-                await findLocalSourceDefinitions(
-                  sourceRecordsFromBody(body.records),
-                  String(body.symbolName ?? ''),
-                  numberOrUndefined(body.limit)
-                )
-              );
-              break;
-            case '/__mcb/source/references':
-              sendJSON(
-                response,
-                200,
-                await findLocalSourceReferences(
-                  sourceRecordsFromBody(body.records),
-                  String(body.symbolName ?? ''),
-                  numberOrUndefined(body.limit)
-                )
-              );
-              break;
-            default:
-              sendJSON(response, 404, { error: 'Unknown source bridge route' });
-              break;
-          }
-        } catch (error) {
-          sendJSON(response, 500, { error: error instanceof Error ? error.message : String(error) });
-        }
-      });
+    if (request.method !== 'POST') {
+      sendJSON(response, 405, { error: 'Method not allowed' });
+      return;
+    }
+
+    try {
+      const body = await readJSONBody(request);
+      switch (pathname) {
+        case '/__mcb/source/list':
+          sendJSON(
+            response,
+            200,
+            await scanLocalSourceFiles({
+              root: String(body.root ?? ''),
+              query: stringOrNull(body.query),
+              limit: numberOrNull(body.limit)
+            })
+          );
+          break;
+        case '/__mcb/source/read':
+          sendJSON(response, 200, await readLocalSourceFile(String(body.path ?? '')));
+          break;
+        case '/__mcb/source/write':
+          sendJSON(
+            response,
+            200,
+            await writeLocalSourceFile(String(body.path ?? ''), String(body.content ?? ''))
+          );
+          break;
+        case '/__mcb/source/search':
+          sendJSON(
+            response,
+            200,
+            await searchLocalSourceFiles(
+              sourceRecordsFromBody(body.records),
+              String(body.query ?? ''),
+              numberOrUndefined(body.limit)
+            )
+          );
+          break;
+        case '/__mcb/source/definitions':
+          sendJSON(
+            response,
+            200,
+            await findLocalSourceDefinitions(
+              sourceRecordsFromBody(body.records),
+              String(body.symbolName ?? ''),
+              numberOrUndefined(body.limit)
+            )
+          );
+          break;
+        case '/__mcb/source/references':
+          sendJSON(
+            response,
+            200,
+            await findLocalSourceReferences(
+              sourceRecordsFromBody(body.records),
+              String(body.symbolName ?? ''),
+              numberOrUndefined(body.limit)
+            )
+          );
+          break;
+        default:
+          sendJSON(response, 404, { error: 'Unknown source bridge route' });
+          break;
+      }
+    } catch (error) {
+      sendJSON(response, 500, { error: error instanceof Error ? error.message : String(error) });
     }
   };
 }
