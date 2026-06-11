@@ -625,6 +625,7 @@ assert.ok(pageSource.includes('sourceDraftContentByPath'), 'Source page should t
 assert.ok(pageSource.includes('savedSourceContentByPath'), 'Source page should track saved content per path');
 assert.ok(pageSource.includes('writeSourceToTauri'), 'Source page should use the native write command');
 assert.ok(pageSource.includes('function saveSelectedSourceFile'), 'Source page should expose a save action');
+assert.ok(pageSource.includes('function saveAllDirtySourceFiles'), 'Source page should expose a save-all action');
 assert.ok(pageSource.includes('function revertSelectedSourceFile'), 'Source page should expose a revert action');
 assert.ok(pageSource.includes('const hasUnsavedDraft'), 'Source page should preserve only real unsaved drafts');
 assert.ok(
@@ -827,6 +828,8 @@ assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
+assert.ok(pageSource.includes("id: 'save-all-files'"), 'Command palette should expose Save All');
+assert.ok(pageSource.includes('aria-label="Save all source files"'), 'Editor action menu should expose Save All');
 assert.ok(pageSource.includes('onQuickOpenRequest={openQuickOpen}'), 'Editor Cmd+P should call the page quick-open path');
 assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), 'Editor Cmd+K should call the page command palette');
 assert.ok(pageSource.includes('onGoToLineRequest={openCurrentFileGoToLine}'), 'Editor Cmd+G should call current-file line navigation');

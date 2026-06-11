@@ -611,6 +611,9 @@
     preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
   );
   let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
+  let dirtyProjectSourceRecords = $derived(
+    projectOpenSourceTabs.filter((tab) => isSourcePathDirty(tab.path))
+  );
   let sourceIntelligenceAvailable = $derived(
     preview ? sourceSupportsLanguageIntelligence(preview.language) : false
   );
@@ -1048,6 +1051,13 @@
       detail: 'Cmd+S',
       disabled: !selectedSourceDirty || fileActionBusy === 'save',
       perform: saveSelectedSourceFile
+    },
+    {
+      id: 'save-all-files',
+      label: 'Save all dirty files',
+      detail: `${dirtyProjectSourceRecords.length} dirty`,
+      disabled: dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all',
+      perform: saveAllDirtySourceFiles
     },
     {
       id: 'revert-file',
@@ -5041,6 +5051,45 @@
       fileActionStatus = 'Saved file';
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save source file';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function saveAllDirtySourceFiles() {
+    const dirtyRecords = dirtyProjectSourceRecords;
+    if (dirtyRecords.length === 0) return;
+
+    fileActionBusy = 'save-all';
+    fileActionStatus = '';
+    error = '';
+
+    let savedCount = 0;
+
+    try {
+      for (const record of dirtyRecords) {
+        const content = sourceDraftContentByPath[record.path];
+        if (content === undefined || !isSourcePathDirty(record.path)) continue;
+
+        const savedPreview = await writeSourceToTauri(record, content);
+        if (!savedPreview) {
+          fileActionStatus = `Native save unavailable for ${record.fileName}`;
+          return;
+        }
+
+        commitSourcePreviewContent(savedPreview);
+        if (selectedRecord?.path === record.path) {
+          preview = savedPreview;
+        }
+        savedCount += 1;
+      }
+
+      runtime = 'tauri file write';
+      void loadProjectGitStatus(selectedProject);
+      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      fileActionStatus = `Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`;
+    } catch (saveError) {
+      error = saveError instanceof Error ? saveError.message : 'Could not save all source files';
     } finally {
       fileActionBusy = '';
     }
@@ -9080,6 +9129,20 @@
                   <Save size={13} strokeWidth={2} />
                   <span>Save</span>
                   <kbd>Cmd+S</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Save all source files"
+                  disabled={dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all'}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void saveAllDirtySourceFiles();
+                  }}
+                >
+                  <Save size={13} strokeWidth={2} />
+                  <span>Save all</span>
+                  <kbd>{dirtyProjectSourceRecords.length}</kbd>
                 </button>
                 <button
                   type="button"
