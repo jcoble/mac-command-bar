@@ -743,8 +743,13 @@ assert.ok(
 );
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
 assert.ok(pageSource.includes('class="scan-health-note"'), 'Source tree should render compact scan health guidance');
+assert.ok(pageSource.includes('sourceRuntimeNotice'), 'Source tree should derive a compact native/browser runtime notice');
+assert.ok(pageSource.includes('class="scan-runtime-note"'), 'Source tree should render native/browser runtime guidance');
+assert.ok(pageSource.includes('Browser preview uses demo data only'), 'Scan diagnostics should call out browser preview demo data');
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
+assertDeclaration('.scan-runtime-note', 'grid-template-columns: minmax(0, 1fr) auto');
+assertDeclaration('.scan-runtime-note span', 'text-overflow: ellipsis');
 assertDeclaration('.scan-health-note', 'grid-template-columns: minmax(0, 1fr) auto');
 assertDeclaration('.scan-health-note span', 'text-overflow: ellipsis');
 assertDeclaration('.scan-recovery-panel', 'grid-template-columns: minmax(0, 1fr) auto');

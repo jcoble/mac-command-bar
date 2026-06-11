@@ -799,6 +799,7 @@
   let sourceScanStatsLabel = $derived(
     formatSourceScanStats(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
   );
+  let sourceRuntimeNotice = $derived(sourceRuntimeNoticeText(runtime, error));
   let gitStatusByRelativePath = $derived(
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
@@ -3228,6 +3229,7 @@
       `Active scan: ${activeScan}`,
       `Loading: ${loading ? 'yes' : 'no'}`,
       `Runtime: ${runtime}`,
+      `Browser preview uses demo data only: ${sourceRuntimeNotice ? 'yes' : 'no'}`,
       error ? `Error: ${error}` : 'Error: none',
       `Current file: ${currentFile}`,
       `Saved selected path: ${selectedPath}`,
@@ -6331,6 +6333,10 @@
     error = '';
   }
 
+  async function copyTauriRunCommand() {
+    await copyActivityCommand('pnpm tauri dev', 'Tauri run command copied');
+  }
+
   async function openActivityPath(path: string) {
     if (!path.trim()) return;
 
@@ -7377,6 +7383,14 @@
       case 'git':
         return repoDashboardSummary;
     }
+  }
+
+  function sourceRuntimeNoticeText(currentRuntime: string, currentError: string) {
+    const browserPreviewRuntime = currentRuntime === 'browser preview';
+    const nativeScannerUnavailable = currentError.includes('Local source scanner unavailable');
+    if (!browserPreviewRuntime && !nativeScannerUnavailable) return '';
+
+    return 'Browser preview uses demo data only. Run the Tauri app for real filesystem scans.';
   }
 
   function refreshSourceActivityMode(mode: SourceActivityMode = sourceActivityMode) {
@@ -9456,6 +9470,19 @@
           <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
           {#if sourceScanStatsLabel}
             <div class="scan-stats" title={sourceScanStatsLabel}>{sourceScanStatsLabel}</div>
+          {/if}
+          {#if sourceRuntimeNotice}
+            <div class="scan-runtime-note" title={sourceRuntimeNotice}>
+              <span>{sourceRuntimeNotice}</span>
+              <button
+                type="button"
+                aria-label="Copy Tauri run command"
+                title="Copy Tauri run command"
+                onclick={copyTauriRunCommand}
+              >
+                Tauri
+              </button>
+            </div>
           {/if}
           {#if sourceScanHealthNote}
             <div class="scan-health-note" title={sourceScanHealthNote}>
@@ -14889,6 +14916,40 @@
     font-size: 10px;
     font-weight: 720;
     line-height: 1.25;
+  }
+
+  .scan-runtime-note {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    margin: -1px 0 8px;
+    border: 1px solid rgba(143, 216, 207, 0.2);
+    border-radius: 6px;
+    padding: 6px 7px;
+    background: rgba(143, 216, 207, 0.07);
+    color: #a8c8c3;
+    font-size: 10px;
+    font-weight: 720;
+    line-height: 1.25;
+  }
+
+  .scan-runtime-note span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-runtime-note button {
+    height: 20px;
+    border: 1px solid rgba(143, 216, 207, 0.24);
+    border-radius: 5px;
+    padding: 0 7px;
+    background: rgba(143, 216, 207, 0.1);
+    color: #bce8e2;
+    font-size: 10px;
+    font-weight: 820;
   }
 
   .scan-health-note span {
