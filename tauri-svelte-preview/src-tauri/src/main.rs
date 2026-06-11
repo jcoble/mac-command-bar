@@ -168,6 +168,13 @@ struct ProjectWorktree {
     delete_eligibility: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectWorktreeActionResult {
+    message: String,
+    worktrees: Vec<ProjectWorktree>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeContextProject {
@@ -841,6 +848,18 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Worktree scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn remove_project_worktree(
+    root: String,
+    path: String,
+) -> Result<ProjectWorktreeActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        remove_project_worktree_sync(PathBuf::from(root), PathBuf::from(path))
+    })
+    .await
+    .map_err(|error| format!("Worktree remove task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2138,6 +2157,68 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
     )
 }
 
+fn remove_project_worktree_sync(
+    root: PathBuf,
+    path: PathBuf,
+) -> Result<ProjectWorktreeActionResult, String> {
+    validate_git_root(&root)?;
+
+    let root_metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read worktree root metadata: {error}"))?;
+    if !root_metadata.is_dir() {
+        return Err("Worktree root is not a directory".to_string());
+    }
+
+    let path_metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read worktree path metadata: {error}"))?;
+    if !path_metadata.is_dir() {
+        return Err("Worktree path is not a directory".to_string());
+    }
+
+    let canonical_root =
+        std::fs::canonicalize(&root).map_err(|error| format!("Could not resolve Git root: {error}"))?;
+    let canonical_path = std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
+    if normalized_path_string(&canonical_root) == normalized_path_string(&canonical_path) {
+        return Err("Refusing to remove the primary checkout".to_string());
+    }
+
+    let worktrees = list_project_worktrees_sync(root.clone())?;
+    let worktree = worktrees
+        .iter()
+        .find(|worktree| project_worktree_path_matches(&worktree.path, &canonical_path))
+        .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
+
+    if worktree.is_dirty {
+        return Err("Refusing to remove dirty worktree".to_string());
+    }
+    if worktree.has_unmerged_commits {
+        return Err("Refusing to remove worktree with unmerged commits".to_string());
+    }
+
+    let worktree_path = worktree.path.clone();
+    run_git_text(&root, &["worktree", "remove", worktree_path.as_str()])?;
+    run_git_text(&root, &["worktree", "prune"])?;
+
+    Ok(ProjectWorktreeActionResult {
+        message: format!("Removed worktree {}", worktree.branch),
+        worktrees: list_project_worktrees_sync(root)?,
+    })
+}
+
+fn project_worktree_path_matches(record_path: &str, canonical_target: &Path) -> bool {
+    let normalized_target = normalized_path_string(canonical_target);
+    let normalized_record = normalized_path_string(Path::new(record_path));
+    if normalized_record == normalized_target {
+        return true;
+    }
+
+    std::fs::canonicalize(record_path)
+        .ok()
+        .map(|canonical_record| normalized_path_string(&canonical_record) == normalized_target)
+        .unwrap_or(false)
+}
+
 fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
     output
         .split("\n\n")
@@ -3264,6 +3345,7 @@ fn main() {
             push_git_repository,
             read_git_commit_history,
             list_project_worktrees,
+            remove_project_worktree,
             list_git_repository_summaries,
             list_agent_sessions,
             list_runtime_contexts,
@@ -4256,6 +4338,81 @@ mod tests {
             project_worktree_delete_eligibility(false, false),
             "requires-confirmation"
         );
+    }
+
+    #[test]
+    fn remove_project_worktree_removes_clean_sibling_and_refreshes_list() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        let remote = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&remote, &["init", "--bare"]);
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(&root, &["branch", "-M", "main"]);
+        run_git_for_test(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        run_git_for_test(&root, &["push", "-u", "origin", "main"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-cleanup",
+                sibling.to_str().unwrap(),
+            ],
+        );
+
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap();
+
+        assert!(result.message.contains("Removed worktree"));
+        assert!(!sibling.exists());
+        assert!(!result
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.path == normalized_path_string(&sibling)));
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
+    }
+
+    #[test]
+    fn remove_project_worktree_refuses_dirty_sibling() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-dirty",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(sibling.join("dirty.txt"), "keep me\n").unwrap();
+
+        let error = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap_err();
+
+        assert!(error.contains("dirty worktree"));
+        assert!(sibling.exists());
+
+        run_git_for_test(&root, &["worktree", "remove", "--force", sibling.to_str().unwrap()]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

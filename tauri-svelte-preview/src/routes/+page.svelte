@@ -201,6 +201,7 @@
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
     readTerminalSessionScrollbackFromTauri,
+    removeProjectWorktreeFromTauri,
     revealPathFromTauri,
     revealSourceFileFromTauri,
     renameSourceWithLspFromTauri,
@@ -3927,6 +3928,36 @@
   function copyWorktreePrimaryAction(worktree: ProjectWorktree) {
     const action = projectWorktreePrimaryAction(worktree);
     return copyActivityCommand(action.command, action.clipboardMessage);
+  }
+
+  async function runWorktreePrimaryAction(worktree: ProjectWorktree) {
+    const safety = projectWorktreeSafety(worktree);
+    const action = worktreePrimaryAction(safety);
+    if (action.kind !== 'cleanup') {
+      await copyActivityCommand(action.command, action.clipboardMessage);
+      return;
+    }
+
+    const busyKey = `worktree-primary:${worktree.path}`;
+    fileActionBusy = busyKey;
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      const result = await removeProjectWorktreeFromTauri(selectedProject.path, worktree.path);
+      if (!result) {
+        await copyTextToClipboard(action.command, 'Native remove unavailable; command copied');
+        return;
+      }
+
+      projectWorktrees = result.worktrees;
+      fileActionStatus = result.message;
+      void loadGitRepositorySummaries(projects);
+    } catch (removeError) {
+      error = removeError instanceof Error ? removeError.message : 'Could not remove worktree';
+    } finally {
+      if (fileActionBusy === busyKey) fileActionBusy = '';
+    }
   }
 
   function copyProjectWorktreeCleanupBrief() {
@@ -8925,9 +8956,10 @@
                     <button
                       class={`worktree-primary-action ${primaryAction.kind}`}
                       type="button"
-                      aria-label={`Copy recommended worktree action: ${primaryAction.label}`}
+                      aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
                       title={primaryAction.title}
-                      onclick={() => copyWorktreePrimaryAction(worktree)}
+                      disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
+                      onclick={() => runWorktreePrimaryAction(worktree)}
                     >
                       {#if primaryAction.kind === 'cleanup'}
                         <Trash2 size={12} strokeWidth={2} />
@@ -9714,9 +9746,10 @@
                   <button
                     class={`worktree-primary-action ${primaryAction.kind}`}
                     type="button"
-                    aria-label={`Copy recommended worktree action: ${primaryAction.label}`}
+                    aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
                     title={primaryAction.title}
-                    onclick={() => copyWorktreePrimaryAction(worktree)}
+                    disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
+                    onclick={() => runWorktreePrimaryAction(worktree)}
                   >
                     {#if primaryAction.kind === 'cleanup'}
                       <Trash2 size={12} strokeWidth={2} />

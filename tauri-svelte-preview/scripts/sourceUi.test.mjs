@@ -274,7 +274,8 @@ assert.ok(pageSource.includes('function copyWorktreeBackupCommand'), 'Worktree r
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Worktree panel should copy a guarded cleanup script');
 assert.ok(pageSource.includes('worktreePrimaryAction'), 'Worktree rows should derive a recommended next action');
 assert.ok(pageSource.includes('function copyWorktreePrimaryAction'), 'Worktree rows should copy the recommended next action command');
-assert.ok(pageSource.includes('Copy recommended worktree action'), 'Worktree rows should expose a compact recommended action button');
+assert.ok(pageSource.includes('function runWorktreePrimaryAction'), 'Worktree rows should execute safe recommended actions');
+assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree rows should expose a compact recommended action button');
 assert.ok(pageSource.includes('Recommended worktree action'), 'Command palette should expose recommended worktree actions');
 assert.ok(pageSource.includes('function agentSessionResumePlan'), 'Agent rows should expose a copyable resume plan');
 assert.ok(pageSource.includes('function agentSessionResumeShellCommand'), 'Agent rows should expose shell-ready resume commands');
@@ -322,7 +323,7 @@ assert.ok(pageSource.includes('aria-label="Agents"'), 'Activity rail should expo
 assert.ok(pageSource.includes('aria-label="Worktrees"'), 'Activity rail should expose worktrees');
 assert.ok(pageSource.includes('aria-label="Git and tasks"'), 'Activity rail should expose Git and tasks');
 assert.ok(pageSource.includes('aria-label="Copy worktree cleanup plan"'), 'Worktree rows should expose copyable cleanup plans');
-assert.ok(pageSource.includes('Copy recommended worktree action'), 'Worktree rows should expose a recommended cleanup action');
+assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree rows should expose a recommended cleanup action');
 assert.ok(pageSource.includes('class="side-pane-resizer"'), 'Source shell should render a side pane resizer');
 assert.ok(pageSource.includes('aria-label="Resize side pane"'), 'Side pane resizer should be labeled');
 assert.ok(pageSource.includes('class="context-pane-resizer"'), 'Workspace should render a context pane resizer');
@@ -514,6 +515,9 @@ assert.ok(pageSource.includes('workspaceSnapshotForAgentSession(session)'), 'Con
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open worktree in embedded terminal"'), 'Worktree rows should expose embedded terminal open');
+assert.ok(pageSource.includes('function runWorktreePrimaryAction'), 'Worktree rows should execute safe primary actions');
+assert.ok(pageSource.includes('removeProjectWorktreeFromTauri'), 'Worktree cleanup should use the native guarded remove command');
+assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree primary action labels should describe the real action');
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open active session in terminal"'), 'Active session rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Reveal repository path"'), 'Repository rows should expose native reveal');
