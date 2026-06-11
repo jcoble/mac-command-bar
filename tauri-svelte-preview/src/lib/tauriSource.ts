@@ -274,6 +274,10 @@ export function createSourceScanId(): string {
   return `source-scan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+export function isNativeTauriRuntime(): boolean {
+  return isTauriRuntime();
+}
+
 export async function validateProjectRootFromTauri(
   path: string
 ): Promise<ProjectRootValidationResult | null> {

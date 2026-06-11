@@ -871,7 +871,16 @@ assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should rende
 assert.ok(pageSource.includes('class="scan-health-note"'), 'Source tree should render compact scan health guidance');
 assert.ok(pageSource.includes('sourceRuntimeNotice'), 'Source tree should derive a compact native/browser runtime notice');
 assert.ok(pageSource.includes('class="scan-runtime-note"'), 'Source tree should render native/browser runtime guidance');
-assert.ok(pageSource.includes('Browser preview uses demo data only'), 'Scan diagnostics should call out browser preview demo data');
+assert.ok(pageSource.includes('isNativeTauriRuntime'), 'Source runtime labels should distinguish Tauri from browser bridge reads');
+assert.ok(pageSource.includes('browser source bridge'), 'Source runtime should label browser filesystem bridge reads explicitly');
+assert.ok(
+  pageSource.includes('Browser preview is using the local filesystem bridge for source files'),
+  'Scan diagnostics should explain that browser preview source scans can use the local bridge'
+);
+assert.ok(
+  pageSource.includes('Browser source bridge active:'),
+  'Source diagnostics should report whether the browser source bridge is active'
+);
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
 assertDeclaration('.scan-runtime-note', 'grid-template-columns: minmax(0, 1fr) auto');

@@ -26,7 +26,9 @@ not try to start a second dev server:
 pnpm tauri:dev:attach
 ```
 
-The browser preview uses embedded demo source. The Tauri shell can call `read_source_file` from Rust to load the listed local files.
+The browser preview uses the local Vite source bridge for filesystem-backed source scans, reads,
+writes, and basic search. The Tauri shell uses native Rust commands for the same source operations
+plus native Git, LSP, terminal, worktree, process, and session actions.
 
 ## Appearance
 

@@ -202,6 +202,7 @@
     formatSourceWithLspFromTauri,
     findSourceReferencesFromTauri,
     archiveProjectWorktreeFromTauri,
+    isNativeTauriRuntime,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
     listOrchestrationRunsFromTauri,
@@ -3405,7 +3406,7 @@
       `Active scan: ${activeScan}`,
       `Loading: ${loading ? 'yes' : 'no'}`,
       `Runtime: ${runtime}`,
-      `Browser preview uses demo data only: ${sourceRuntimeNotice ? 'yes' : 'no'}`,
+      `Browser source bridge active: ${runtime === 'browser source bridge' ? 'yes' : 'no'}`,
       error ? `Error: ${error}` : 'Error: none',
       `Current file: ${currentFile}`,
       `Saved selected path: ${selectedPath}`,
@@ -6043,7 +6044,11 @@
       const tauriPreview = await readSourceFromTauri(record);
       if (expectedScanGeneration !== null && expectedScanGeneration !== scanGeneration) return;
 
-      runtime = tauriPreview ? 'tauri file read' : 'browser preview';
+      runtime = tauriPreview
+        ? isNativeTauriRuntime()
+          ? 'tauri file read'
+          : 'browser source bridge'
+        : 'browser preview';
       const nextPreview = tauriPreview ?? demoPreviewFor(record);
       preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
@@ -7800,11 +7805,16 @@
   }
 
   function sourceRuntimeNoticeText(currentRuntime: string, currentError: string) {
-    const browserPreviewRuntime = currentRuntime === 'browser preview';
     const nativeScannerUnavailable = currentError.includes('Local source scanner unavailable');
-    if (!browserPreviewRuntime && !nativeScannerUnavailable) return '';
+    if (nativeScannerUnavailable) {
+      return 'Local source bridge unavailable. Run pnpm dev/preview or the Tauri app for filesystem scans.';
+    }
 
-    return 'Browser preview uses demo data only. Run the Tauri app for real filesystem scans.';
+    const browserPreviewRuntime =
+      currentRuntime === 'browser preview' || currentRuntime === 'browser source bridge';
+    if (!browserPreviewRuntime) return '';
+
+    return 'Browser preview is using the local filesystem bridge for source files. Run the Tauri app for native Git, LSP, and terminal actions.';
   }
 
   function refreshSourceActivityMode(mode: SourceActivityMode = sourceActivityMode) {
