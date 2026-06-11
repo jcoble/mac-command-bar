@@ -51,6 +51,14 @@
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import { buildWorktreeSafetySummary } from '$lib/worktreeSafety';
   import {
+    createWorkspaceSnapshot,
+    restoreWorkspaceSnapshot,
+    snapshotStorageKey,
+    upsertWorkspaceSnapshot,
+    type WorkspaceSnapshot,
+    type WorkspaceSnapshotProvider
+  } from '$lib/workspaceSnapshot';
+  import {
     activateSourceDockPanel,
     createDefaultSourceDockLayout,
     hideSourceDockPanel,
@@ -199,6 +207,7 @@
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
   const hiddenContextCardsStorageKey = 'mac-command-bar.source-browser.hidden-context-cards';
   const activeContextCardStorageKey = 'mac-command-bar.source-browser.active-context-card';
+  const maxWorkspaceSnapshots = 24;
   const maxRecentSourceRecords = 24;
   const maxProjectRecentRecords = 5;
   const maxProjectOpenSourceTabs = 8;
@@ -371,6 +380,7 @@
   let selectedSourcePaths = $state<Record<string, string>>({});
   let recentSourceRecords = $state<SourceRecentRecord[]>([]);
   let openSourceTabs = $state<SourceOpenTab[]>([]);
+  let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
   let sourceScanCache = $state<SourceScanCache>({});
   let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
   let backgroundIndexErrorByProject = $state<Record<string, string>>({});
@@ -684,6 +694,23 @@
       )
     )
   );
+  let filteredWorkspaceSnapshots = $derived(
+    workspaceSnapshots.filter((snapshot) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        snapshot.title,
+        snapshot.provider,
+        snapshot.model,
+        snapshot.project.name,
+        snapshot.project.path,
+        snapshot.cwd,
+        snapshot.worktreePath,
+        snapshot.branch,
+        snapshot.selectedPath,
+        snapshot.resumeCommand
+      )
+    )
+  );
   let filteredProjectWorktrees = $derived(
     projectWorktrees.filter((worktree) => {
       const safety = projectWorktreeSafety(worktree);
@@ -884,6 +911,22 @@
       detail: selectedProject.path,
       disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
       perform: () => openActivityTerminalPath(selectedProject.path)
+    },
+    {
+      id: 'conversation-save-snapshot',
+      label: 'Save workspace snapshot',
+      detail: selectedProject.name,
+      perform: captureCurrentWorkspaceSnapshot
+    },
+    {
+      id: 'conversation-restore-latest',
+      label: 'Restore latest workspace snapshot',
+      detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
+      disabled: workspaceSnapshots.length === 0,
+      perform: () => {
+        const snapshot = workspaceSnapshots[0];
+        if (snapshot) restoreConversationWorkspaceSnapshot(snapshot);
+      }
     },
     {
       id: 'save-file',
@@ -2515,6 +2558,112 @@
     const command = agentSessionResumeCommand(session);
     const path = agentSessionProjectPath(session);
     return path.trim() ? `cd ${shellQuoteForCommand(path)} && ${command}` : command;
+  }
+
+  function captureCurrentWorkspaceSnapshot() {
+    const session = selectedProjectAgentSessions[0] ?? null;
+    const cwd = session?.projectPath ?? selectedProject.path;
+    const snapshot = createWorkspaceSnapshot({
+      provider: workspaceSnapshotProviderForSession(session),
+      sessionID: session?.id ?? selectedProject.id,
+      title: session?.title ?? `${selectedProject.name} workspace`,
+      model: null,
+      project: selectedProject,
+      cwd,
+      worktreePath: snapshotWorktreePathForPath(cwd),
+      branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
+      selectedPath: selectedRecord?.path ?? selectedSourcePaths[selectedProject.id] ?? null,
+      selectedLine: selectedSourceLine,
+      openPaths: projectOpenSourceTabs.map((tab) => tab.path),
+      sourceActivityMode,
+      sourceTerminalApp,
+      dockLayout: sourceDockLayout,
+      resumeCommand: session ? agentSessionResumeShellCommand(session) : null,
+      capturedAt: Date.now()
+    });
+    const nextSnapshots = upsertWorkspaceSnapshot(
+      workspaceSnapshots,
+      snapshot,
+      maxWorkspaceSnapshots
+    );
+
+    workspaceSnapshots = nextSnapshots;
+    persistWorkspaceSnapshots(nextSnapshots);
+    fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
+  }
+
+  async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
+    const restored = restoreWorkspaceSnapshot(snapshot);
+    const project = ensureWorkspaceSnapshotProject(snapshot.project);
+    const nextSelectedSourcePaths = {
+      ...selectedSourcePaths,
+      ...restored.selectedSourcePaths
+    };
+
+    selectedSourcePaths = nextSelectedSourcePaths;
+    persistSelectedSourcePaths(nextSelectedSourcePaths);
+    sourceActivityMode = restored.sourceActivityMode;
+    persistSourceActivityMode(sourceActivityMode);
+    sourceTerminalApp = restored.sourceTerminalApp;
+    persistSourceTerminalApp(sourceTerminalApp);
+    sourceDockLayout = restored.dockLayout;
+    syncSourceDockLayoutToWorkspace(sourceDockLayout);
+    persistSourceDockLayout(sourceDockLayout);
+    fileActionStatus = `Workspace restored: ${snapshot.title}`;
+
+    await activateProject(project, {
+      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots)
+    });
+
+    restoreWorkspaceOpenTabs(project, restored.openPaths);
+    if (restored.selectedLine) {
+      revealSourceLine(restored.selectedLine);
+    }
+  }
+
+  function ensureWorkspaceSnapshotProject(project: ProjectRoot): ProjectRoot {
+    const existingProject = projectOptions.find(
+      (candidate) =>
+        candidate.id === project.id ||
+        normalizeProjectPath(candidate.path) === normalizeProjectPath(project.path)
+    );
+    if (existingProject) return existingProject;
+
+    const nextProject = createProjectRoot(project.name, project.path);
+    const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
+    customProjectRoots = nextCustomProjectRoots;
+    persistCustomProjectRoots(nextCustomProjectRoots);
+    return nextProject;
+  }
+
+  function restoreWorkspaceOpenTabs(project: ProjectRoot, openPaths: string[]) {
+    const openedAt = Date.now();
+    const restoredTabs = openPaths
+      .map((path) => records.find((record) => record.path === path))
+      .filter((record): record is SourceRecord => record !== undefined)
+      .slice(0, maxProjectOpenSourceTabs)
+      .map((record, index): SourceOpenTab => ({
+        ...record,
+        projectID: project.id,
+        projectName: project.name,
+        openedAt: openedAt + index
+      }));
+    if (restoredTabs.length === 0) return;
+
+    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, restoredTabs);
+    openSourceTabs = nextOpenSourceTabs;
+    persistOpenSourceTabs(nextOpenSourceTabs);
+  }
+
+  function workspaceSnapshotProviderForSession(session: AgentSession | null): WorkspaceSnapshotProvider {
+    const provider = session?.provider.trim().toLowerCase();
+    if (provider === 'codex' || provider === 'claude' || provider === 'cmux') return provider;
+    return 'manual';
+  }
+
+  function snapshotWorktreePathForPath(path: string) {
+    const normalizedPath = normalizeProjectPath(path);
+    return normalizedPath.includes('/worktrees/') ? normalizedPath : null;
   }
 
   function agentSessionResumePlan(session: AgentSession) {
@@ -5043,6 +5192,11 @@
     window.localStorage.setItem(openSourceTabsStorageKey, JSON.stringify(tabs));
   }
 
+  function persistWorkspaceSnapshots(snapshots: WorkspaceSnapshot[]) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(snapshotStorageKey, JSON.stringify(snapshots));
+  }
+
   function loadStoredSelectedProjectID(roots: ProjectRoot[]): string {
     if (typeof window === 'undefined') return initialProject.id;
 
@@ -5113,6 +5267,89 @@
     } catch {
       return [];
     }
+  }
+
+  function loadStoredWorkspaceSnapshots(): WorkspaceSnapshot[] {
+    if (typeof window === 'undefined') return [];
+
+    try {
+      const storedValue = window.localStorage.getItem(snapshotStorageKey);
+      if (!storedValue) return [];
+
+      const parsedValue: unknown = JSON.parse(storedValue);
+      if (!Array.isArray(parsedValue)) return [];
+
+      return parsedValue
+        .map(parseStoredWorkspaceSnapshot)
+        .filter((snapshot): snapshot is WorkspaceSnapshot => snapshot !== null)
+        .slice(0, maxWorkspaceSnapshots);
+    } catch {
+      return [];
+    }
+  }
+
+  function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot | null {
+    if (typeof value !== 'object' || value === null) return null;
+    const snapshot = value as Partial<WorkspaceSnapshot>;
+    if (
+      !isWorkspaceSnapshotProvider(snapshot.provider) ||
+      typeof snapshot.sessionID !== 'string' ||
+      typeof snapshot.title !== 'string' ||
+      typeof snapshot.cwd !== 'string' ||
+      typeof snapshot.project !== 'object' ||
+      snapshot.project === null ||
+      typeof snapshot.project.id !== 'string' ||
+      typeof snapshot.project.name !== 'string' ||
+      typeof snapshot.project.path !== 'string'
+    ) {
+      return null;
+    }
+
+    return createWorkspaceSnapshot({
+      provider: snapshot.provider,
+      sessionID: snapshot.sessionID,
+      title: snapshot.title,
+      model: typeof snapshot.model === 'string' ? snapshot.model : null,
+      project: snapshot.project,
+      cwd: snapshot.cwd,
+      worktreePath: typeof snapshot.worktreePath === 'string' ? snapshot.worktreePath : null,
+      branch: typeof snapshot.branch === 'string' ? snapshot.branch : null,
+      selectedPath: typeof snapshot.selectedPath === 'string' ? snapshot.selectedPath : null,
+      selectedLine: typeof snapshot.selectedLine === 'number' ? snapshot.selectedLine : null,
+      openPaths: Array.isArray(snapshot.openPaths)
+        ? snapshot.openPaths.filter((path): path is string => typeof path === 'string')
+        : [],
+      sourceActivityMode: isSourceActivityMode(snapshot.sourceActivityMode)
+        ? snapshot.sourceActivityMode
+        : 'conversations',
+      sourceTerminalApp: isSourceTerminalApp(snapshot.sourceTerminalApp)
+        ? snapshot.sourceTerminalApp
+        : 'Warp',
+      dockLayout: snapshot.dockLayout,
+      resumeCommand: typeof snapshot.resumeCommand === 'string' ? snapshot.resumeCommand : null,
+      capturedAt: typeof snapshot.capturedAt === 'number' ? snapshot.capturedAt : Date.now()
+    });
+  }
+
+  function isWorkspaceSnapshotProvider(value: unknown): value is WorkspaceSnapshotProvider {
+    return value === 'codex' || value === 'claude' || value === 'cmux' || value === 'manual';
+  }
+
+  function isSourceActivityMode(value: unknown): value is SourceActivityMode {
+    return (
+      value === 'files' ||
+      value === 'clipboard' ||
+      value === 'conversations' ||
+      value === 'runs' ||
+      value === 'sessions' ||
+      value === 'agents' ||
+      value === 'worktrees' ||
+      value === 'git'
+    );
+  }
+
+  function isSourceTerminalApp(value: unknown): value is SourceTerminalApp {
+    return typeof value === 'string' && sourceTerminalApps.includes(value as SourceTerminalApp);
   }
 
   function parseStoredProjectSourceRecord(value: unknown): SourceRecentRecord | null {
@@ -5438,6 +5675,7 @@
     const storedSelectedSourcePaths = loadStoredSelectedSourcePaths();
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
+    const storedWorkspaceSnapshots = loadStoredWorkspaceSnapshots();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
@@ -5466,6 +5704,7 @@
     selectedSourcePaths = storedSelectedSourcePaths;
     recentSourceRecords = storedRecentSourceRecords;
     openSourceTabs = storedOpenSourceTabs;
+    workspaceSnapshots = storedWorkspaceSnapshots;
     selectedProjectID = storedProject.id;
     sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
@@ -6154,9 +6393,77 @@
           </div>
         {:else if sourceActivityMode === 'conversations'}
           <div class="activity-panel-list" aria-label="Conversation list">
-            {#if filteredProjectAgentSessions.length === 0}
+            <section class="workspace-snapshot-section" aria-label="Saved workspace snapshots">
+              <div class="workspace-snapshot-toolbar">
+                <div>
+                  <strong>Saved Workspaces</strong>
+                  <span>{workspaceSnapshots.length} saved</span>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Save current workspace snapshot"
+                  title="Save current workspace snapshot"
+                  onclick={captureCurrentWorkspaceSnapshot}
+                >
+                  <Save size={12} strokeWidth={2} />
+                </button>
+              </div>
+              {#if filteredWorkspaceSnapshots.length > 0}
+                <div class="workspace-snapshot-list">
+                  {#each filteredWorkspaceSnapshots as snapshot (snapshot.id)}
+                    <div class="workspace-snapshot-row" title={snapshot.cwd}>
+                      <button
+                        type="button"
+                        aria-label={`Restore ${snapshot.title}`}
+                        onclick={() => restoreConversationWorkspaceSnapshot(snapshot)}
+                      >
+                        <span class="agent-provider-badge">{snapshot.provider}</span>
+                        <div class="activity-row-main">
+                          <strong>{snapshot.title}</strong>
+                          <small>
+                            {snapshot.project.name} · {snapshot.branch ?? snapshot.worktreePath ?? snapshot.cwd}
+                          </small>
+                        </div>
+                      </button>
+                      <div class="activity-row-actions" aria-label="Workspace snapshot actions">
+                        <button
+                          type="button"
+                          aria-label="Copy workspace resume command"
+                          title="Copy resume command"
+                          disabled={!snapshot.resumeCommand}
+                          onclick={() => copyActivityCommand(snapshot.resumeCommand ?? '', 'Resume command copied')}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Open workspace path"
+                          title="Open workspace path"
+                          onclick={() => openActivityPath(snapshot.worktreePath ?? snapshot.cwd)}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Open workspace in terminal"
+                          title="Open workspace in terminal"
+                          onclick={() => openActivityTerminalPath(snapshot.worktreePath ?? snapshot.cwd)}
+                        >
+                          <Terminal size={12} strokeWidth={2} />
+                        </button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="activity-empty compact">No saved workspaces</div>
+              {/if}
+            </section>
+
+            {#if filteredWorkspaceSnapshots.length === 0 && filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No conversations</div>
-            {:else}
+            {/if}
+            {#if filteredProjectAgentSessions.length > 0}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 <div class="activity-session-row" title={agentSessionResumePlan(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
@@ -8502,6 +8809,115 @@
     scrollbar-width: thin;
   }
 
+  .workspace-snapshot-section {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .workspace-snapshot-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .workspace-snapshot-toolbar div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .workspace-snapshot-toolbar strong,
+  .workspace-snapshot-toolbar span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .workspace-snapshot-toolbar strong {
+    color: #dfe7e5;
+    font-size: 10px;
+    font-weight: 820;
+    text-transform: uppercase;
+  }
+
+  .workspace-snapshot-toolbar span {
+    color: #7f8b88;
+    font-size: 9px;
+    font-weight: 720;
+  }
+
+  .workspace-snapshot-toolbar button {
+    display: grid;
+    place-items: center;
+    width: 23px;
+    height: 23px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .workspace-snapshot-toolbar button:hover,
+  .workspace-snapshot-toolbar button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.36);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .workspace-snapshot-list {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .workspace-snapshot-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 36px;
+    padding: 5px;
+    border: 1px solid rgba(92, 226, 207, 0.08);
+    border-radius: 7px;
+    background: rgba(92, 226, 207, 0.045);
+  }
+
+  .workspace-snapshot-row > button {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 0;
+    color: inherit;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .workspace-snapshot-row > button:hover .activity-row-main strong,
+  .workspace-snapshot-row > button:focus-visible .activity-row-main strong {
+    color: #9cebe0;
+  }
+
+  .workspace-snapshot-row > button:focus-visible {
+    outline: 1px solid rgba(92, 226, 207, 0.34);
+    outline-offset: 2px;
+  }
+
   .activity-session-row,
   .activity-runtime-row,
   .activity-worktree-row,
@@ -8948,6 +9364,11 @@
     background: rgba(255, 255, 255, 0.025);
     font-size: 12px;
     font-weight: 750;
+  }
+
+  .activity-empty.compact {
+    min-height: 42px;
+    font-size: 10px;
   }
 
   .project-row {

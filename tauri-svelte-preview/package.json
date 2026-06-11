@@ -17,6 +17,7 @@
     "test:source-dock-layout": "node --experimental-strip-types scripts/sourceDockLayout.test.mjs",
     "test:source-data": "node --experimental-strip-types scripts/sourceData.test.mjs",
     "test:source-ui": "node scripts/sourceUi.test.mjs",
+    "test:workspace-snapshot": "node --experimental-strip-types scripts/workspaceSnapshot.test.mjs",
     "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",
     "test:tauri-config": "node scripts/tauriDevConfig.test.mjs",
     "test:native-lsp": "MCB_RUN_CSHARP_LSP_SMOKE=1 cargo test --manifest-path src-tauri/Cargo.toml lsp -- --nocapture",

@@ -93,6 +93,7 @@ assert.ok(pageSource.includes('sourceLayoutPresetStorageKey'), 'Source shell sho
 assert.ok(pageSource.includes('sourceLayoutVersionStorageKey'), 'Source shell should version layout storage migrations');
 assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes('sourceDockLayoutStorageKey'), 'Workspace should persist dock layout state');
+assert.ok(pageSource.includes('snapshotStorageKey'), 'Workspace should persist conversation workspace snapshots');
 assert.ok(pageSource.includes('contextPanelModeStorageKey'), 'Workspace should persist the context card layout mode');
 assert.ok(pageSource.includes('contextPanelPlacementStorageKey'), 'Workspace should persist the context card placement');
 assert.ok(pageSource.includes('hiddenContextCardsStorageKey'), 'Workspace should persist hidden context cards');
@@ -124,6 +125,7 @@ assert.ok(pageSource.includes('let sidePanePosition'), 'Source shell should trac
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
 assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('let embeddedTerminalSession'), 'Source shell should track an embedded terminal session');
+assert.ok(pageSource.includes('let workspaceSnapshots'), 'Source shell should track conversation workspace snapshots');
 assert.ok(pageSource.includes('let embeddedTerminalElement'), 'Source shell should bind the embedded terminal host');
 assert.ok(pageSource.includes('let contextPanelMode'), 'Workspace should track the context card layout mode');
 assert.ok(pageSource.includes('let contextPanelPlacement'), 'Workspace should track context card placement');
@@ -148,6 +150,9 @@ assert.ok(pageSource.includes('function handleTerminalOutput'), 'Terminal dock s
 assert.ok(pageSource.includes('function disposeEmbeddedTerminal'), 'Terminal dock should dispose xterm and PTY resources');
 assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace should persist source dock layout state');
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
+assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
+assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
+assert.ok(pageSource.includes('function persistWorkspaceSnapshots'), 'Workspace should persist captured conversation contexts');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
 assert.ok(pageSource.includes('function shouldRenderContextCard'), 'Workspace should render stacked context cards through one predicate');
@@ -300,6 +305,8 @@ assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should d
 assert.ok(pageSource.includes("id: 'dock-show-terminal'"), 'Command palette should expose the future terminal dock panel');
 assert.ok(pageSource.includes("id: 'dock-hide-terminal'"), 'Command palette should hide the terminal dock panel');
 assert.ok(pageSource.includes("id: 'terminal-open-project'"), 'Command palette should open the current project shell');
+assert.ok(pageSource.includes("id: 'conversation-save-snapshot'"), 'Command palette should save the current conversation workspace');
+assert.ok(pageSource.includes("id: 'conversation-restore-latest'"), 'Command palette should restore the latest conversation workspace');
 assert.ok(pageSource.includes('orchestrationLoopTallyText'), 'Runs should render shared orchestration loop tally text');
 assert.ok(pageSource.includes('class="run-loop-row"'), 'Runs should render a compact loop tally row');
 assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally should be accessible');
@@ -362,6 +369,9 @@ assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panel
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
 assert.ok(pageSource.includes('aria-label="Resume agent in terminal"'), 'Agent rows should expose one-click terminal resume');
+assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
+assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
+assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(snapshot)'), 'Snapshot rows should restore saved workspace context');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
