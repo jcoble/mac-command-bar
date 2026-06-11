@@ -17,6 +17,16 @@ export type WorktreeSafetySummary = {
   cleanupPlan: string;
 };
 
+export type WorktreePrimaryActionKind = 'audit' | 'backup' | 'cleanup';
+
+export type WorktreePrimaryAction = {
+  kind: WorktreePrimaryActionKind;
+  label: string;
+  title: string;
+  command: string;
+  clipboardMessage: string;
+};
+
 export type WorktreeCleanupBrief = {
   headline: string;
   cleanupCandidateCount: number;
@@ -155,6 +165,37 @@ export function buildWorktreeCleanupBrief(
   };
 }
 
+export function worktreePrimaryAction(summary: WorktreeSafetySummary): WorktreePrimaryAction {
+  if (summary.kind === 'ready') {
+    return {
+      kind: 'cleanup',
+      label: 'Remove',
+      title: 'Copy the safe remove command for this clean worktree.',
+      command: summary.cleanupCommand,
+      clipboardMessage: 'Recommended worktree remove command copied'
+    };
+  }
+
+  if (summary.kind === 'blocked' && summary.activeSessionCount === 0) {
+    return {
+      kind: 'backup',
+      label: 'Backup',
+      title: 'Archive a recoverable backup before deciding whether to remove this worktree.',
+      command: summary.backupCommand,
+      clipboardMessage: 'Recommended worktree backup command copied'
+    };
+  }
+
+  const activeReason = summary.activeSessionCount > 0 ? ' while active sessions still point here' : '';
+  return {
+    kind: 'audit',
+    label: 'Audit',
+    title: `Copy the audit command before changing this worktree${activeReason}.`,
+    command: summary.auditCommand,
+    clipboardMessage: 'Recommended worktree audit command copied'
+  };
+}
+
 export function worktreeAuditCommand(worktree: ProjectWorktree): string {
   return [
     'git',
@@ -187,6 +228,7 @@ export function worktreeBackupCommand(worktree: ProjectWorktree, now: number | D
     `${gitInWorktree} diff --binary > ${shellQuote(`${archiveDirectory}/unstaged.patch`)}`,
     `${gitInWorktree} diff --cached --binary > ${shellQuote(`${archiveDirectory}/staged.patch`)}`,
     `${gitInWorktree} ls-files --others --exclude-standard > ${shellQuote(`${archiveDirectory}/untracked.txt`)}`,
+    `${gitInWorktree} bundle create ${shellQuote(`${archiveDirectory}/head.bundle`)} HEAD`,
     `${gitInWorktree} stash push --include-untracked -m ${shellQuote(`mcb backup ${worktree.branch} ${timestamp}`)}`
   ].join(' && ');
 }

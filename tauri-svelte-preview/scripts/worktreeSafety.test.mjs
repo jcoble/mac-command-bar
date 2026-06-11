@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildWorktreeCleanupBrief,
   buildWorktreeSafetySummary,
+  worktreePrimaryAction,
   worktreeAuditCommand,
   worktreeBackupCommand,
   worktreeCleanupCommand
@@ -49,8 +50,15 @@ function worktree(overrides = {}) {
   assert.match(summary.backupCommand, /diff --binary > .*unstaged\.patch/);
   assert.match(summary.backupCommand, /diff --cached --binary > .*staged\.patch/);
   assert.match(summary.backupCommand, /ls-files --others --exclude-standard > .*untracked\.txt/);
+  assert.match(summary.backupCommand, /bundle create .*head\.bundle' HEAD/);
   assert.match(summary.cleanupPlan, /Audit before cleanup/);
   assert.match(summary.cleanupPlan, /Archive a recoverable backup/);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'backup');
+  assert.equal(action.label, 'Backup');
+  assert.equal(action.command, summary.backupCommand);
+  assert.match(action.title, /Archive/);
 }
 
 {
@@ -66,6 +74,11 @@ function worktree(overrides = {}) {
   assert.equal(summary.activeSessionCount, 1);
   assert.match(summary.reason, /Active session/);
   assert.match(summary.cleanupPlan, /Do not remove while active sessions point here/);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'audit');
+  assert.equal(action.command, summary.auditCommand);
+  assert.match(action.title, /active/);
 }
 
 {
@@ -76,6 +89,10 @@ function worktree(overrides = {}) {
   assert.equal(summary.kind, 'blocked');
   assert.equal(summary.badge, 'Unmerged');
   assert.match(summary.recommendation, /push/);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'backup');
+  assert.equal(action.command, summary.backupCommand);
 }
 
 {
@@ -91,6 +108,11 @@ function worktree(overrides = {}) {
   assert.equal(summary.badge, 'Stale');
   assert.equal(summary.ageBucket, 'stale');
   assert.match(summary.recommendation, /cleanup candidate/);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'cleanup');
+  assert.equal(action.label, 'Remove');
+  assert.equal(action.command, summary.cleanupCommand);
 }
 
 {
@@ -101,6 +123,21 @@ function worktree(overrides = {}) {
   assert.equal(summary.kind, 'review');
   assert.equal(summary.badge, 'Review');
   assert.equal(summary.activityLabel, 'activity unknown');
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'audit');
+  assert.equal(action.command, summary.auditCommand);
+}
+
+{
+  const summary = buildWorktreeSafetySummary(worktree({ path: '/repo/main', branch: 'main' }), {
+    primaryPath: '/repo/main/',
+    now
+  });
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'audit');
+  assert.equal(action.label, 'Audit');
+  assert.equal(action.command, summary.auditCommand);
 }
 
 {

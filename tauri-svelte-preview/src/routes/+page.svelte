@@ -52,7 +52,7 @@
     type OrchestrationTimelineItem
   } from '$lib/orchestrationView';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
-  import { buildWorktreeCleanupBrief, buildWorktreeSafetySummary } from '$lib/worktreeSafety';
+  import { buildWorktreeCleanupBrief, buildWorktreeSafetySummary, worktreePrimaryAction } from '$lib/worktreeSafety';
   import {
     createWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
@@ -1452,6 +1452,16 @@
       disabled: sourceActivityRefreshing(sourceActivityMode),
       perform: () => refreshSourceActivityMode(sourceActivityMode)
     },
+    ...projectWorktrees.slice(0, 8).map((worktree) => {
+      const action = projectWorktreePrimaryAction(worktree);
+      return {
+        id: `worktree-primary-action-${worktree.path}`,
+        label: `Recommended worktree action: ${action.label} ${worktree.branch}`,
+        detail: action.title,
+        disabled: false,
+        perform: () => copyWorktreePrimaryAction(worktree)
+      };
+    }),
     ...projectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-cleanup-plan-${worktree.path}`,
       label: `Copy worktree cleanup plan: ${worktree.branch}`,
@@ -3533,6 +3543,10 @@
     });
   }
 
+  function projectWorktreePrimaryAction(worktree: ProjectWorktree) {
+    return worktreePrimaryAction(projectWorktreeSafety(worktree));
+  }
+
   function formatProjectWorktreeSafetyStats(worktrees: ProjectWorktree[]) {
     if (projectWorktreesLoading) return 'scanning';
     if (projectWorktreeError) return 'needs refresh';
@@ -3579,6 +3593,11 @@
 
   function copyWorktreeBackupCommand(worktree: ProjectWorktree) {
     return copyActivityCommand(projectWorktreeSafety(worktree).backupCommand, 'Worktree backup command copied');
+  }
+
+  function copyWorktreePrimaryAction(worktree: ProjectWorktree) {
+    const action = projectWorktreePrimaryAction(worktree);
+    return copyActivityCommand(action.command, action.clipboardMessage);
   }
 
   function copyProjectWorktreeCleanupBrief() {
@@ -7857,6 +7876,7 @@
             {:else}
               {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
                 {@const safety = projectWorktreeSafety(worktree)}
+                {@const primaryAction = projectWorktreePrimaryAction(worktree)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
                 <div
                   class="activity-worktree-row"
@@ -7903,13 +7923,19 @@
                       <Copy size={12} strokeWidth={2} />
                     </button>
                     <button
+                      class={`worktree-primary-action ${primaryAction.kind}`}
                       type="button"
-                      aria-label="Copy worktree backup command"
-                      title="Copy backup command"
-                      disabled={safety.kind === 'protected'}
-                      onclick={() => copyWorktreeBackupCommand(worktree)}
+                      aria-label={`Copy recommended worktree action: ${primaryAction.label}`}
+                      title={primaryAction.title}
+                      onclick={() => copyWorktreePrimaryAction(worktree)}
                     >
-                      <Save size={12} strokeWidth={2} />
+                      {#if primaryAction.kind === 'cleanup'}
+                        <Trash2 size={12} strokeWidth={2} />
+                      {:else if primaryAction.kind === 'backup'}
+                        <Save size={12} strokeWidth={2} />
+                      {:else}
+                        <History size={12} strokeWidth={2} />
+                      {/if}
                     </button>
                     <button
                       type="button"
@@ -8621,6 +8647,7 @@
           <div class="worktree-context-list">
             {#each projectWorktrees as worktree (worktree.path)}
               {@const safety = projectWorktreeSafety(worktree)}
+              {@const primaryAction = projectWorktreePrimaryAction(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
               <div
                 class="worktree-context-row"
@@ -8667,13 +8694,19 @@
                     <Copy size={12} strokeWidth={2} />
                   </button>
                   <button
+                    class={`worktree-primary-action ${primaryAction.kind}`}
                     type="button"
-                    aria-label="Copy worktree backup command"
-                    title="Copy backup command"
-                    disabled={safety.kind === 'protected'}
-                    onclick={() => copyWorktreeBackupCommand(worktree)}
+                    aria-label={`Copy recommended worktree action: ${primaryAction.label}`}
+                    title={primaryAction.title}
+                    onclick={() => copyWorktreePrimaryAction(worktree)}
                   >
-                    <Save size={12} strokeWidth={2} />
+                    {#if primaryAction.kind === 'cleanup'}
+                      <Trash2 size={12} strokeWidth={2} />
+                    {:else if primaryAction.kind === 'backup'}
+                      <Save size={12} strokeWidth={2} />
+                    {:else}
+                      <History size={12} strokeWidth={2} />
+                    {/if}
                   </button>
                 </div>
               </div>
@@ -11066,6 +11099,20 @@
   .activity-row-actions button:disabled {
     opacity: 0.38;
     cursor: default;
+  }
+
+  .activity-row-actions button.worktree-primary-action.backup,
+  .worktree-context-actions button.worktree-primary-action.backup {
+    color: #d8aa55;
+    border-color: rgba(216, 170, 85, 0.2);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .activity-row-actions button.worktree-primary-action.cleanup,
+  .worktree-context-actions button.worktree-primary-action.cleanup {
+    color: #79eadb;
+    border-color: rgba(92, 226, 207, 0.28);
+    background: rgba(92, 226, 207, 0.1);
   }
 
   .activity-row-actions button:hover,
