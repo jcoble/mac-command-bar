@@ -82,6 +82,7 @@
     type SourceDockPanelID
   } from '$lib/sourceDockLayout';
   import {
+    applySourceTextEdits,
     buildSourceTree,
     closeOpenSourceTab,
     createProjectRoot,
@@ -114,6 +115,7 @@
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
     shouldRepairSuspiciousSourceScan,
+    sourceLanguageForPath,
     sourceSupportsLanguageIntelligence,
     taskReferenceUrl,
     textMatchesSearchTokens,
@@ -137,6 +139,7 @@
     type SourceDiagnostic,
     type SourceLspHover,
     type SourceLspStatus,
+    type SourceRenameFileEdit,
     type SourceRenameResult,
     type SourceSignatureHelp,
     type SourceSymbol,
@@ -472,6 +475,7 @@
   let preview = $state<SourcePreview | null>(null);
   let sourceDraftContentByPath = $state<Record<string, string>>({});
   let savedSourceContentByPath = $state<Record<string, string>>({});
+  let workspaceEditSourceRecordsByPath = $state<Record<string, SourceRecord>>({});
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
@@ -640,7 +644,7 @@
   );
   let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
   let dirtyProjectSourceRecords = $derived(
-    projectOpenSourceTabs.filter((tab) => isSourcePathDirty(tab.path))
+    dirtySourceRecordsForProject(projectOpenSourceTabs, workspaceEditSourceRecordsByPath, selectedProject)
   );
   let sourceIntelligenceAvailable = $derived(
     preview ? sourceSupportsLanguageIntelligence(preview.language) : false
@@ -1966,6 +1970,24 @@
     const projectPath = normalizeProjectPath(project.path);
     const recordPath = normalizeProjectPath(record.path);
     return recordPath === projectPath || recordPath.startsWith(`${projectPath}/`);
+  }
+
+  function dirtySourceRecordsForProject(
+    openTabs: SourceOpenTab[],
+    workspaceEditRecordsByPath: Record<string, SourceRecord>,
+    project: ProjectRoot
+  ) {
+    const recordsByPath = new Map<string, SourceRecord>();
+    for (const tab of openTabs) {
+      recordsByPath.set(tab.path, tab);
+    }
+    for (const record of Object.values(workspaceEditRecordsByPath)) {
+      if (sourceRecordBelongsToProject(record, project)) {
+        recordsByPath.set(record.path, record);
+      }
+    }
+
+    return Array.from(recordsByPath.values()).filter((record) => isSourcePathDirty(record.path));
   }
 
   function resetProjectScanCache(project: ProjectRoot = selectedProject, limit = expandedSourceScanLimit) {
@@ -5370,12 +5392,107 @@
       ...savedSourceContentByPath,
       [nextPreview.path]: nextPreview.content
     };
+    if (workspaceEditSourceRecordsByPath[nextPreview.path]) {
+      const nextWorkspaceEditRecordsByPath = { ...workspaceEditSourceRecordsByPath };
+      delete nextWorkspaceEditRecordsByPath[nextPreview.path];
+      workspaceEditSourceRecordsByPath = nextWorkspaceEditRecordsByPath;
+    }
   }
 
   function isSourcePathDirty(path: string) {
     const draftContent = sourceDraftContentByPath[path];
     const savedContent = savedSourceContentByPath[path];
     return draftContent !== undefined && savedContent !== undefined && draftContent !== savedContent;
+  }
+
+  async function stageExternalWorkspaceEditDrafts(files: SourceRenameFileEdit[]) {
+    const selectedPath = preview?.path ?? '';
+    const externalFiles = files.filter((file) => file.path !== selectedPath && file.edits.length > 0);
+    if (externalFiles.length === 0) {
+      return { fileCount: 0, editCount: 0, missingCount: 0 };
+    }
+
+    const nextDraftContentByPath = { ...sourceDraftContentByPath };
+    const nextSavedContentByPath = { ...savedSourceContentByPath };
+    const nextWorkspaceEditRecordsByPath = { ...workspaceEditSourceRecordsByPath };
+    let nextProjectOpenTabs = projectOpenSourceTabs;
+    let fileCount = 0;
+    let editCount = 0;
+    let missingCount = 0;
+
+    for (const file of externalFiles) {
+      const record = sourceRecordForWorkspaceEditFile(file);
+      let draftContent = nextDraftContentByPath[file.path];
+      let savedContent = nextSavedContentByPath[file.path];
+
+      if (draftContent === undefined || savedContent === undefined) {
+        const sourcePreview = await readSourceFromTauri(record);
+        if (!sourcePreview) {
+          missingCount += 1;
+          continue;
+        }
+
+        savedContent = savedContent ?? sourcePreview.content;
+        draftContent = draftContent ?? sourcePreview.content;
+        nextSavedContentByPath[file.path] = savedContent;
+      }
+
+      const nextContent = applySourceTextEdits(draftContent, file.edits);
+      const nextRecord = {
+        ...record,
+        byteCount: new TextEncoder().encode(nextContent).length
+      };
+      nextDraftContentByPath[file.path] = nextContent;
+      nextWorkspaceEditRecordsByPath[file.path] = nextRecord;
+      nextProjectOpenTabs = upsertOpenSourceTab(
+        nextProjectOpenTabs,
+        nextRecord,
+        selectedProject,
+        Date.now(),
+        maxProjectOpenSourceTabs
+      );
+      fileCount += 1;
+      editCount += file.edits.length;
+    }
+
+    sourceDraftContentByPath = nextDraftContentByPath;
+    savedSourceContentByPath = nextSavedContentByPath;
+    workspaceEditSourceRecordsByPath = nextWorkspaceEditRecordsByPath;
+
+    if (fileCount > 0) {
+      const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, nextProjectOpenTabs);
+      openSourceTabs = nextOpenSourceTabs;
+      persistOpenSourceTabs(nextOpenSourceTabs);
+    }
+
+    return { fileCount, editCount, missingCount };
+  }
+
+  function sourceRecordForWorkspaceEditFile(file: SourceRenameFileEdit): SourceRecord {
+    const existingRecord =
+      records.find((record) => record.path === file.path) ??
+      projectOpenSourceTabs.find((record) => record.path === file.path) ??
+      workspaceEditSourceRecordsByPath[file.path];
+    if (existingRecord) return existingRecord;
+
+    const relativePath = file.relativePath || sourceRelativePathForPath(file.path);
+    return {
+      path: file.path,
+      relativePath,
+      fileName: fileNameFromRestoredPath(relativePath || file.path),
+      language: sourceLanguageForPath(file.path),
+      byteCount: 0
+    };
+  }
+
+  function sourceRelativePathForPath(path: string) {
+    const normalizedProjectPath = normalizeProjectPath(selectedProject.path);
+    const normalizedPath = normalizeProjectPath(path);
+    if (normalizedPath.startsWith(`${normalizedProjectPath}/`)) {
+      return normalizedPath.slice(normalizedProjectPath.length + 1);
+    }
+
+    return fileNameFromRestoredPath(normalizedPath);
   }
 
   function resetSourceIntelligence() {
@@ -5552,6 +5669,20 @@
     }
   }
 
+  async function handleEditorWorkspaceEditAction(action: SourceCodeAction) {
+    try {
+      const staged = await stageExternalWorkspaceEditDrafts(action.files);
+      if (staged.editCount === 0) return;
+
+      fileActionStatus = `${action.title}: ${staged.editCount.toLocaleString()} external ${staged.editCount === 1 ? 'edit' : 'edits'} staged in ${staged.fileCount.toLocaleString()} ${staged.fileCount === 1 ? 'file' : 'files'}`;
+    } catch (workspaceEditError) {
+      error =
+        workspaceEditError instanceof Error
+          ? workspaceEditError.message
+          : 'Could not stage workspace edits';
+    }
+  }
+
   async function handleEditorFormatDocument(): Promise<SourceTextEdit[]> {
     if (!preview || !sourceIntelligenceAvailable) return [];
 
@@ -5600,10 +5731,22 @@
       const currentFileEditCount =
         files.find((file) => file.path === preview.path)?.edits.length ?? 0;
       const totalEditCount = files.reduce((count, file) => count + file.edits.length, 0);
+      const externalDrafts = await stageExternalWorkspaceEditDrafts(files);
+      const renameParts = [
+        currentFileEditCount > 0
+          ? `${currentFileEditCount.toLocaleString()} current-file ${currentFileEditCount === 1 ? 'edit' : 'edits'}`
+          : '',
+        externalDrafts.editCount > 0
+          ? `${externalDrafts.editCount.toLocaleString()} external ${externalDrafts.editCount === 1 ? 'edit' : 'edits'} staged in ${externalDrafts.fileCount.toLocaleString()} ${externalDrafts.fileCount === 1 ? 'file' : 'files'}`
+          : '',
+        externalDrafts.missingCount > 0
+          ? `${externalDrafts.missingCount.toLocaleString()} external ${externalDrafts.missingCount === 1 ? 'file' : 'files'} could not be read`
+          : ''
+      ].filter(Boolean);
       fileActionStatus =
         totalEditCount === 0
           ? 'No rename edits'
-          : `${currentFileEditCount.toLocaleString()} of ${totalEditCount.toLocaleString()} rename ${totalEditCount === 1 ? 'edit' : 'edits'} applied to current draft`;
+          : `Rename staged: ${renameParts.join(' · ')}`;
       return result;
     } catch (renameError) {
       fileActionStatus = renameError instanceof Error ? renameError.message : 'Rename unavailable';
@@ -9761,6 +9904,7 @@
                 onSymbolsRequest={() => showEditorInsightPanel('symbols')}
                 onSymbolsChange={handleEditorSymbolsChange}
                 onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
+                onWorkspaceEditAction={handleEditorWorkspaceEditAction}
               />
             {/key}
 

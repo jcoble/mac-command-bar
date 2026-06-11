@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  applySourceTextEdits,
   closeOpenSourceTab,
   extractSourceSemanticTokens,
   extractSourceSymbols,
@@ -27,6 +28,7 @@ import {
   selectPreferredSourceRecord,
   selectBackgroundIndexProjects,
   shouldRepairSuspiciousSourceScan,
+  sourceLanguageForPath,
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
   taskReferenceUrl,
@@ -456,6 +458,47 @@ assert.equal(sourceSupportsLanguageIntelligence('typescript'), true);
 assert.equal(sourceSupportsLanguageIntelligence('tsx'), true);
 assert.equal(sourceSupportsLanguageIntelligence('javascript'), true);
 assert.equal(sourceSupportsLanguageIntelligence('csharp'), true);
+assert.equal(sourceLanguageForPath('/repo/src/App.cs'), 'csharp');
+assert.equal(sourceLanguageForPath('/repo/src/App.svelte'), 'svelte');
+assert.equal(sourceLanguageForPath('/repo/src/App.unknown'), 'plain');
+assert.equal(
+  applySourceTextEdits('alpha\nbeta\ngamma\n', [
+    {
+      startLine: 2,
+      startColumn: 1,
+      endLine: 2,
+      endColumn: 5,
+      newText: 'BETA'
+    },
+    {
+      startLine: 3,
+      startColumn: 6,
+      endLine: 3,
+      endColumn: 6,
+      newText: '!'
+    }
+  ]),
+  'alpha\nBETA\ngamma!\n'
+);
+assert.equal(
+  applySourceTextEdits('call(foo, bar)', [
+    {
+      startLine: 1,
+      startColumn: 6,
+      endLine: 1,
+      endColumn: 9,
+      newText: 'baz'
+    },
+    {
+      startLine: 1,
+      startColumn: 11,
+      endLine: 1,
+      endColumn: 14,
+      newText: 'qux'
+    }
+  ]),
+  'call(baz, qux)'
+);
 
 assert.equal(formatSourceDiagnosticSummary([]), 'No problems');
 assert.equal(

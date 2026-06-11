@@ -131,6 +131,7 @@
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 		onTypeDefinitionLookup?: SourceEditorTypeDefinitionLookup;
+		onWorkspaceEditAction?: (action: SourceCodeAction) => void | Promise<void>;
 	};
 
 	let {
@@ -162,6 +163,7 @@
 		onSymbolsRequest,
 		onSymbolsChange,
 		onTypeDefinitionLookup,
+		onWorkspaceEditAction,
 	}: Props = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
@@ -192,6 +194,7 @@
 	let isReady = $state(false);
 	let layoutObserver: ResizeObserver | null = null;
 	let layoutFrame = 0;
+	let externalWorkspaceEditCommandId = "";
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 
@@ -579,6 +582,7 @@
 		const model = editor?.getModel();
 		const currentFile = action.files.find((file) => file.path === currentPath);
 		const currentFileEdits = currentFile?.edits ?? [];
+		const externalFiles = action.files.filter((file) => file.path !== currentPath && file.edits.length > 0);
 		const edit =
 			model && currentFileEdits.length > 0
 				? {
@@ -589,8 +593,17 @@
 						})),
 					}
 				: undefined;
+		const command =
+			externalFiles.length > 0 && externalWorkspaceEditCommandId
+				? {
+						id: externalWorkspaceEditCommandId,
+						title: "Stage External Workspace Edits",
+						arguments: [action],
+					}
+				: undefined;
 		const disabled =
-			action.disabledReason ?? (edit ? undefined : "No current-file edit available");
+			action.disabledReason ??
+			(edit || command ? undefined : "No current-file edit available");
 
 		return {
 			title: action.title,
@@ -598,6 +611,7 @@
 			isPreferred: action.isPreferred,
 			disabled,
 			edit,
+			command,
 		};
 	}
 
@@ -1230,6 +1244,11 @@
 			wordWrap: "off",
 		});
 
+		externalWorkspaceEditCommandId =
+			editor.addCommand(0, (_accessor, action?: SourceCodeAction) => {
+				if (action) void onWorkspaceEditAction?.(action);
+			}) ?? "";
+
 		editorActionDisposables = [
 			editor.addAction({
 				id: "mcb.source.goToDefinition",
@@ -1417,6 +1436,7 @@
 			if (model) monacoApi.editor.setModelMarkers(model, "mcb-lsp", []);
 		}
 		editor?.dispose();
+		externalWorkspaceEditCommandId = "";
 		for (const model of ownedModels) {
 			model.dispose();
 		}

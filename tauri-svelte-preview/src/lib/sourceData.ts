@@ -676,8 +676,100 @@ export function monacoLanguageForSource(language: SourceLanguage): string {
   }
 }
 
+export function sourceLanguageForPath(path: string): SourceLanguage {
+  const extension = path.split('/').filter(Boolean).at(-1)?.split('.').at(-1)?.toLowerCase() ?? '';
+  switch (extension) {
+    case 'cs':
+      return 'csharp';
+    case 'ts':
+      return 'typescript';
+    case 'tsx':
+      return 'tsx';
+    case 'js':
+      return 'javascript';
+    case 'jsx':
+      return 'jsx';
+    case 'svelte':
+      return 'svelte';
+    case 'json':
+      return 'json';
+    case 'md':
+    case 'mdx':
+      return 'markdown';
+    case 'rs':
+      return 'rust';
+    case 'swift':
+      return 'swift';
+    case 'py':
+      return 'python';
+    case 'go':
+      return 'go';
+    case 'java':
+      return 'java';
+    case 'kt':
+    case 'kts':
+      return 'kotlin';
+    case 'rb':
+      return 'ruby';
+    case 'php':
+      return 'php';
+    case 'sh':
+    case 'bash':
+    case 'zsh':
+      return 'shell';
+    case 'sql':
+      return 'sql';
+    case 'yaml':
+    case 'yml':
+      return 'yaml';
+    case 'xml':
+      return 'xml';
+    case 'toml':
+      return 'toml';
+    default:
+      return 'plain';
+  }
+}
+
 export function sourceSupportsLanguageIntelligence(language: SourceLanguage): boolean {
   return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp'].includes(language);
+}
+
+export function applySourceTextEdits(content: string, edits: SourceTextEdit[]): string {
+  return [...edits]
+    .sort(compareSourceTextEditsDescending)
+    .reduce((nextContent, edit) => {
+      const startOffset = sourceOffsetForLineColumn(nextContent, edit.startLine, edit.startColumn);
+      const endOffset = sourceOffsetForLineColumn(nextContent, edit.endLine, edit.endColumn);
+      if (startOffset > endOffset) return nextContent;
+
+      return `${nextContent.slice(0, startOffset)}${edit.newText}${nextContent.slice(endOffset)}`;
+    }, content);
+}
+
+function compareSourceTextEditsDescending(left: SourceTextEdit, right: SourceTextEdit): number {
+  if (left.startLine !== right.startLine) return right.startLine - left.startLine;
+  if (left.startColumn !== right.startColumn) return right.startColumn - left.startColumn;
+  if (left.endLine !== right.endLine) return right.endLine - left.endLine;
+  return right.endColumn - left.endColumn;
+}
+
+function sourceOffsetForLineColumn(content: string, line: number, column: number): number {
+  const targetLine = Math.max(1, Math.floor(line));
+  const targetColumn = Math.max(1, Math.floor(column));
+  let currentLine = 1;
+  let lineStartOffset = 0;
+
+  while (currentLine < targetLine) {
+    const nextNewlineOffset = content.indexOf('\n', lineStartOffset);
+    if (nextNewlineOffset < 0) return content.length;
+    lineStartOffset = nextNewlineOffset + 1;
+    currentLine += 1;
+  }
+
+  const nextNewlineOffset = content.indexOf('\n', lineStartOffset);
+  const lineEndOffset = nextNewlineOffset < 0 ? content.length : nextNewlineOffset;
+  return Math.min(lineStartOffset + targetColumn - 1, lineEndOffset);
 }
 
 export function textMatchesSearchTokens(

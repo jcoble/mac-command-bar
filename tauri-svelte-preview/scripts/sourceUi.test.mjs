@@ -786,6 +786,14 @@ assert.ok(
   'Editor should map native text edits into Monaco formatting edits'
 );
 assert.ok(
+  editorSource.includes('externalWorkspaceEditCommandId'),
+  'Editor should register a command for external workspace edits'
+);
+assert.ok(
+  editorSource.includes('onWorkspaceEditAction?.(action)'),
+  'Editor should notify the page when a selected code action has external edits'
+);
+assert.ok(
   pageSource.includes('async function handleEditorDefinitionLookup'),
   'Source page should return definition lookup results to Monaco'
 );
@@ -922,11 +930,16 @@ assert.ok(pageSource.includes('function handleEditorCodeActionLookup'), 'Source 
 assert.ok(pageSource.includes('function handleEditorSignatureHelpLookup'), 'Source page should receive editor signature help requests');
 assert.ok(pageSource.includes('function handleEditorFormatDocument'), 'Source page should receive editor formatting requests');
 assert.ok(pageSource.includes('function handleEditorRename'), 'Source page should receive editor rename requests');
+assert.ok(pageSource.includes('function stageExternalWorkspaceEditDrafts'), 'Source page should stage external workspace edits as drafts');
+assert.ok(pageSource.includes('applySourceTextEdits'), 'Source page should apply external LSP text edits to drafts');
+assert.ok(pageSource.includes('workspaceEditSourceRecordsByPath'), 'Source page should track workspace-edited dirty files');
+assert.ok(pageSource.includes('function handleEditorWorkspaceEditAction'), 'Source page should stage selected quick-fix workspace edits');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
 assert.ok(pageSource.includes('onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}'), 'Editor should be wired to LSP document highlights');
 assert.ok(pageSource.includes('onImplementationLookup={handleEditorImplementationLookup}'), 'Editor should be wired to LSP implementation lookup');
 assert.ok(pageSource.includes('onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}'), 'Editor should be wired to LSP type-definition lookup');
+assert.ok(pageSource.includes('onWorkspaceEditAction={handleEditorWorkspaceEditAction}'), 'Editor should be wired to selected workspace edits');
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
 assert.ok(pageSource.includes('onCodeActionLookup={handleEditorCodeActionLookup}'), 'Editor should be wired to LSP code actions');
 assert.ok(pageSource.includes('onSignatureHelpLookup={handleEditorSignatureHelpLookup}'), 'Editor should be wired to LSP signature help');
