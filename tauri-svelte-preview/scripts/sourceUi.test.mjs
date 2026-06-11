@@ -1069,6 +1069,10 @@ assert.ok(pageSource.includes('onFormatDocument={handleEditorFormatDocument}'), 
 assert.ok(pageSource.includes('onRename={handleEditorRename}'), 'Editor should be wired to LSP rename');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
 assert.ok(pageSource.includes("id: 'save-all-files'"), 'Command palette should expose Save All');
+assert.ok(pageSource.includes("id: 'next-dirty-file'"), 'Command palette should expose next dirty file navigation');
+assert.ok(pageSource.includes("id: 'previous-dirty-file'"), 'Command palette should expose previous dirty file navigation');
+assert.ok(pageSource.includes('dirtyProjectSourceRecords.slice(0, 8).map'), 'Command palette should expose direct dirty file jumps');
+assert.ok(pageSource.includes('function selectAdjacentDirtySourceFile'), 'Source page should navigate between dirty files');
 assert.ok(pageSource.includes('aria-label="Save all source files"'), 'Editor action menu should expose Save All');
 assert.ok(pageSource.includes("id: 'close-current-tab'"), 'Command palette should expose closing the current source tab');
 assert.ok(pageSource.includes("id: 'close-other-clean-tabs'"), 'Command palette should expose closing other clean source tabs');

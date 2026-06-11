@@ -1256,6 +1256,26 @@
       perform: saveAllDirtySourceFiles
     },
     {
+      id: 'next-dirty-file',
+      label: 'Go to next dirty file',
+      detail: `${dirtyProjectSourceRecords.length} dirty`,
+      disabled: dirtyProjectSourceRecords.length === 0,
+      perform: () => selectAdjacentDirtySourceFile(1)
+    },
+    {
+      id: 'previous-dirty-file',
+      label: 'Go to previous dirty file',
+      detail: `${dirtyProjectSourceRecords.length} dirty`,
+      disabled: dirtyProjectSourceRecords.length === 0,
+      perform: () => selectAdjacentDirtySourceFile(-1)
+    },
+    ...dirtyProjectSourceRecords.slice(0, 8).map((record) => ({
+      id: `dirty-file-${record.path}`,
+      label: `Open dirty file: ${record.fileName}`,
+      detail: record.relativePath,
+      perform: () => selectRecord(record)
+    })),
+    {
       id: 'close-current-tab',
       label: 'Close current tab',
       detail: selectedRecord?.fileName ?? 'No file',
@@ -5113,6 +5133,26 @@
   async function selectOpenTab(tab: SourceOpenTab) {
     const record = records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
     await selectRecord(record);
+  }
+
+  async function selectAdjacentDirtySourceFile(direction: 1 | -1) {
+    const dirtyRecords = dirtyProjectSourceRecords;
+    if (dirtyRecords.length === 0) {
+      fileActionStatus = 'No dirty files';
+      return;
+    }
+
+    const selectedPath = selectedRecord?.path ?? '';
+    const currentIndex = dirtyRecords.findIndex((record) => record.path === selectedPath);
+    const nextIndex =
+      currentIndex === -1
+        ? direction > 0
+          ? 0
+          : dirtyRecords.length - 1
+        : (currentIndex + direction + dirtyRecords.length) % dirtyRecords.length;
+    const nextRecord = dirtyRecords[nextIndex];
+    await selectRecord(nextRecord);
+    fileActionStatus = `Dirty file ${nextIndex + 1} of ${dirtyRecords.length}`;
   }
 
   function handleWindowKeydown(event: KeyboardEvent) {
