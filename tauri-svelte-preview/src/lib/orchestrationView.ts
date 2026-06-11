@@ -238,8 +238,19 @@ export function orchestrationRunSummaryText(run: OrchestrationRun): string {
     `Current: ${orchestrationCurrentActivity(run)}`,
     `Tally: ${tally}`,
     `Loop: ${orchestrationLoopTallyText(metrics)}`,
-    `Artifacts: ${metrics.artifactCount} · Links: ${metrics.linkCount} · Events: ${metrics.eventCount}`
+    `Artifacts: ${metrics.artifactCount} · Links: ${metrics.linkCount} · Events: ${metrics.eventCount}`,
+    orchestrationRunTimelineText(run) ? `Timeline:\n${orchestrationRunTimelineText(run)}` : ''
   ].filter(Boolean).join('\n');
+}
+
+export function orchestrationRunTimelineText(run: OrchestrationRun, limit = 6): string {
+  return orchestrationTimelineItems(run, limit)
+    .map((item) => {
+      const agent = item.agentLabel ? `${item.agentLabel} · ` : '';
+      const summary = item.summary ? ` - ${item.summary}` : '';
+      return `- ${item.tone} · ${agent}${item.title}${summary}`;
+    })
+    .join('\n');
 }
 
 export function orchestrationArtifactChips(run: OrchestrationRun, limit = 4): OrchestrationChip[] {

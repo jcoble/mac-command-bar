@@ -6,6 +6,7 @@ import {
   orchestrationLoopTallyText,
   orchestrationRunMetrics,
   orchestrationRunSummaryText,
+  orchestrationRunTimelineText,
   orchestrationStatusTone,
   orchestrationTimelineItems
 } from '../src/lib/orchestrationView.ts';
@@ -206,6 +207,13 @@ assert.equal(
   'claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree'
 );
 assert.equal(
+  orchestrationRunTimelineText(run, 2),
+  [
+    '- attention · claude fix-agent fixer-1 · Needs sign-off - Manual decision before deleting dirty worktree',
+    '- live · claude fix-agent fixer-1 · Retesting failed scenario - Retry after auth fix'
+  ].join('\n')
+);
+assert.equal(
   orchestrationRunSummaryText(run),
   [
     'TSK-127 source browser loop',
@@ -216,7 +224,14 @@ assert.equal(
     'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
     'Tally: 2 done · 4 running · 0 failed · 2 attention · 1 retries · 1 sign-off',
     'Loop: 2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off',
-    'Artifacts: 1 · Links: 1 · Events: 3'
+    'Artifacts: 1 · Links: 1 · Events: 3',
+    'Timeline:',
+    '- attention · claude fix-agent fixer-1 · Needs sign-off - Manual decision before deleting dirty worktree',
+    '- live · claude fix-agent fixer-1 · Retesting failed scenario - Retry after auth fix',
+    '- live · fixer-1 · Fix rejected auth redirect - Batching two findings for retest',
+    '- good · controller · Customer trading-partner pass - Scenario created and executed',
+    '- good · codex orchestrator controller · Scenario executed - UI path passed',
+    '- idle · Scenario handoff - /repo/.codex-artifacts/handoff.md'
   ].join('\n')
 );
 assert.deepEqual(orchestrationArtifactChips(run).map((chip) => [chip.kind, chip.path]), [
