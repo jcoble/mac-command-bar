@@ -407,7 +407,7 @@ impl SourceLspSession {
                 "params": {
                     "processId": null,
                     "rootUri": root_uri,
-                    "capabilities": {}
+                    "capabilities": lsp_client_capabilities()
                 }
             }),
         )?;
@@ -787,6 +787,22 @@ fn lsp_position(request: &SourceLspLookupRequest) -> Value {
     json!({
         "line": request.line.saturating_sub(1),
         "character": request.column.saturating_sub(1)
+    })
+}
+
+fn lsp_client_capabilities() -> Value {
+    json!({
+        "textDocument": {
+            "definition": {
+                "linkSupport": true
+            },
+            "publishDiagnostics": {
+                "relatedInformation": true,
+                "tagSupport": {
+                    "valueSet": [1, 2]
+                }
+            }
+        }
     })
 }
 
@@ -1319,6 +1335,27 @@ mod tests {
     }
 
     #[test]
+    fn lsp_client_capabilities_enable_editor_diagnostics() {
+        let capabilities = lsp_client_capabilities();
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("publishDiagnostics"))
+                .and_then(|publish_diagnostics| publish_diagnostics.get("relatedInformation"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("definition"))
+                .and_then(|definition| definition.get("linkSupport"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn builds_session_key_from_root_and_language() {
         let root = env::temp_dir();
         let preview = SourceLspPreview {
@@ -1608,9 +1645,14 @@ mod tests {
         let diagnostics = registry
             .read_diagnostics(preview, request)
             .expect("diagnostics");
-        if diagnostics.is_empty() {
-            eprintln!("TypeScript LSP smoke: diagnostics path returned no published or pulled diagnostics");
-        }
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == "error"
+                    && diagnostic.message.contains("string")
+                    && diagnostic.message.contains("number")
+            }),
+            "expected TypeScript diagnostics to include the broken number assignment; got {diagnostics:?}"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
