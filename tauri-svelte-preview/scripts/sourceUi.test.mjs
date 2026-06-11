@@ -301,6 +301,9 @@ assert.ok(pageSource.includes("activeWorkspaceSnapshot?.title ?? 'No active work
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(activeWorkspaceSnapshot)'), 'Active workspace command should restore the active snapshot');
 assert.ok(pageSource.includes("id: 'conversation-copy-active-restore-plan'"), 'Command palette should copy the active workspace restore plan');
 assert.ok(pageSource.includes("id: 'conversation-copy-latest-restore-plan'"), 'Command palette should copy the latest workspace restore plan');
+assert.ok(pageSource.includes('id: `conversation-restore-snapshot-${snapshot.id}`'), 'Command palette should restore individual saved snapshots');
+assert.ok(pageSource.includes('id: `conversation-resume-snapshot-terminal-${snapshot.id}`'), 'Command palette should resume individual snapshots in external terminals');
+assert.ok(pageSource.includes('id: `conversation-resume-snapshot-embedded-${snapshot.id}`'), 'Command palette should resume individual snapshots in the embedded terminal');
 assert.ok(pageSource.includes('id: `conversation-copy-restore-plan-${snapshot.id}`'), 'Command palette should expose direct saved workspace plan copies');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');

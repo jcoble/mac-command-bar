@@ -1334,6 +1334,25 @@
       }
     },
     ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
+      id: `conversation-restore-snapshot-${snapshot.id}`,
+      label: `Restore workspace: ${snapshot.title}`,
+      detail: workspaceSnapshotScopeLabel(snapshot),
+      perform: () => restoreConversationWorkspaceSnapshot(snapshot)
+    })),
+    ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
+      id: `conversation-resume-snapshot-terminal-${snapshot.id}`,
+      label: `Resume workspace in ${snapshot.sourceTerminalApp}: ${snapshot.title}`,
+      detail: snapshot.resumeCommand ?? workspaceSnapshotScopeLabel(snapshot),
+      disabled: !snapshot.resumeCommand,
+      perform: () => openWorkspaceSnapshotTerminal(snapshot)
+    })),
+    ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
+      id: `conversation-resume-snapshot-embedded-${snapshot.id}`,
+      label: `Resume workspace embedded: ${snapshot.title}`,
+      detail: snapshot.resumeCommand ?? workspaceSnapshotScopeLabel(snapshot),
+      perform: () => openWorkspaceSnapshotEmbeddedTerminal(snapshot)
+    })),
+    ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
       id: `conversation-copy-restore-plan-${snapshot.id}`,
       label: `Copy restore plan: ${snapshot.title}`,
       detail: workspaceSnapshotScopeLabel(snapshot),
