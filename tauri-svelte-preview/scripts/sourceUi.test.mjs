@@ -44,6 +44,7 @@ assertDeclaration('.dock-panel-tabs.empty', 'height: 0');
 assertDeclaration('.dock-panel-tab-group', 'display: inline-flex');
 assertDeclaration('.dock-panel-tab', 'display: inline-flex');
 assertDeclaration('.dock-panel-tab-label', 'height: 18px');
+assertDeclaration('.dock-panel-tab-move', 'width: 18px');
 assertDeclaration('.dock-panel-tab-close', 'width: 17px');
 assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width)');
 assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) 6px minmax(180px, var(--context-pane-height))');
@@ -266,6 +267,10 @@ assert.ok(pageSource.includes('function selectDockPanel'), 'Workspace should exp
 assert.ok(pageSource.includes('function activeDockPanelForGroup'), 'Workspace should resolve active panels for dock groups');
 assert.ok(pageSource.includes('class="dock-panel-tabs"'), 'Workspace should render compact dock panel tabs');
 assert.ok(pageSource.includes('class="dock-panel-tab"'), 'Dock tabs should wrap labels and actions in compact tab items');
+assert.ok(pageSource.includes('class="dock-panel-tab-move"'), 'Dock tabs should expose direct move controls');
+assert.ok(pageSource.includes('function dockGroupShortcutLabel'), 'Dock tab move controls should use compact placement labels');
+assert.ok(pageSource.includes('aria-label={`Move ${dockPanelLabel(panelID)} panel from tab`}'), 'Dock tab move controls should be accessible');
+assert.ok(pageSource.includes('onchange={(event) => moveDockPanelFromTab(panelID, event)}'), 'Dock tab move controls should use the dock model');
 assert.ok(pageSource.includes('aria-label={`Hide ${dockPanelLabel(panelID)} panel from tab`}'), 'Dock tabs should expose direct close controls for hideable panels');
 assert.ok(pageSource.includes('onclick={() => hideDockPanel(panelID)}'), 'Dock tab close controls should hide panels through the dock model');
 assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');

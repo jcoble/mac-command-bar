@@ -6635,6 +6635,13 @@
     moveDockPanelToGroup(panelID, groupID);
   }
 
+  function moveDockPanelFromTab(panelID: SourceDockPanelID, event: Event) {
+    const groupID = (event.currentTarget as HTMLSelectElement | null)?.value as SourceDockGroupID;
+    if (!dockPanelMoveTargets(panelID).includes(groupID)) return;
+
+    moveDockPanelToManagedGroup(panelID, groupID);
+  }
+
   function dockPanelMoveTargets(panelID: SourceDockPanelID): SourceDockGroupID[] {
     switch (panelID) {
       case 'activity':
@@ -6664,6 +6671,14 @@
     if (groupID === 'right') return 'Right';
     if (groupID === 'bottom') return 'Bottom';
     return 'Center';
+  }
+
+  function dockGroupShortcutLabel(groupID: SourceDockGroupID, panelID?: SourceDockPanelID) {
+    if (panelID === 'context' && groupID === 'center') return 'T';
+    if (groupID === 'left') return 'L';
+    if (groupID === 'right') return 'R';
+    if (groupID === 'bottom') return 'B';
+    return 'C';
   }
 
   function dockPanelPlacementSummary(panelID: SourceDockPanelID) {
@@ -9461,6 +9476,24 @@
                   >
                     {dockPanelLabel(panelID)}
                   </button>
+                  {#if dockPanelMoveTargets(panelID).length > 1}
+                    <select
+                      class="dock-panel-tab-move"
+                      aria-label={`Move ${dockPanelLabel(panelID)} panel from tab`}
+                      title={`Move ${dockPanelLabel(panelID)}`}
+                      value={dockGroupIDForPanel(sourceDockLayout, panelID) ?? ''}
+                      onchange={(event) => moveDockPanelFromTab(panelID, event)}
+                    >
+                      {#each dockPanelMoveTargets(panelID) as targetGroupID (targetGroupID)}
+                        <option
+                          value={targetGroupID}
+                          disabled={dockGroupIDForPanel(sourceDockLayout, panelID) === targetGroupID}
+                        >
+                          {dockGroupShortcutLabel(targetGroupID, panelID)}
+                        </option>
+                      {/each}
+                    </select>
+                  {/if}
                   {#if dockPanelCanHide(panelID)}
                     <button
                       class="dock-panel-tab-close"
@@ -13603,8 +13636,29 @@
     opacity: 0.72;
   }
 
+  .dock-panel-tab-move {
+    display: inline-block;
+    min-width: 0;
+    height: 18px;
+    width: 18px;
+    padding: 0;
+    color: #9facaa;
+    border: 0;
+    background: rgba(255, 255, 255, 0.03);
+    font: inherit;
+    font-size: 8px;
+    font-weight: 820;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.72;
+    appearance: none;
+    text-align: center;
+  }
+
   .dock-panel-tab-label:hover,
   .dock-panel-tab-label:focus-visible,
+  .dock-panel-tab-move:hover,
+  .dock-panel-tab-move:focus-visible,
   .dock-panel-tab-close:hover,
   .dock-panel-tab-close:focus-visible {
     color: #eef6f4;
@@ -13621,6 +13675,10 @@
   }
 
   .dock-panel-tab.active .dock-panel-tab-close {
+    color: #c9f6ef;
+  }
+
+  .dock-panel-tab.active .dock-panel-tab-move {
     color: #c9f6ef;
   }
 
