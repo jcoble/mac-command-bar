@@ -131,6 +131,7 @@ assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should tra
 assert.ok(pageSource.includes('let embeddedTerminalSession'), 'Source shell should track an embedded terminal session');
 assert.ok(pageSource.includes('let workspaceSnapshots'), 'Source shell should track conversation workspace snapshots');
 assert.ok(pageSource.includes('let activeWorkspaceSessionKey'), 'Source shell should track the active conversation workspace');
+assert.ok(pageSource.includes('let activeWorkspaceSnapshot'), 'Source shell should derive the active saved workspace snapshot');
 assert.ok(pageSource.includes('let embeddedTerminalElement'), 'Source shell should bind the embedded terminal host');
 assert.ok(pageSource.includes('let contextPanelMode'), 'Workspace should track the context card layout mode');
 assert.ok(pageSource.includes('let contextPanelPlacement'), 'Workspace should track context card placement');
@@ -178,6 +179,9 @@ assert.ok(pageSource.includes('captureActiveWorkspaceBeforeSwitch();'), 'Convers
 assert.ok(pageSource.includes('activeWorkspaceSessionKey = workspaceSnapshotIDForAgentSession(session);'), 'Opening a conversation should mark it as active');
 assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === snapshot.id}'), 'Saved workspace rows should show the active workspace');
 assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}'), 'Conversation session rows should show the active workspace');
+assert.ok(pageSource.includes("id: 'conversation-restore-active'"), 'Command palette should restore the active workspace snapshot');
+assert.ok(pageSource.includes("activeWorkspaceSnapshot?.title ?? 'No active workspace'"), 'Active workspace command should explain when nothing can be restored');
+assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(activeWorkspaceSnapshot)'), 'Active workspace command should restore the active snapshot');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
 assert.ok(pageSource.includes('function shouldRenderContextCard'), 'Workspace should render stacked context cards through one predicate');

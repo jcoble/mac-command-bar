@@ -715,6 +715,11 @@
       )
     )
   );
+  let activeWorkspaceSnapshot = $derived(
+    activeWorkspaceSessionKey
+      ? workspaceSnapshots.find((snapshot) => snapshot.id === activeWorkspaceSessionKey) ?? null
+      : null
+  );
   let filteredProjectWorktrees = $derived(
     projectWorktrees.filter((worktree) => {
       const safety = projectWorktreeSafety(worktree);
@@ -921,6 +926,15 @@
       label: 'Save workspace snapshot',
       detail: selectedProject.name,
       perform: captureCurrentWorkspaceSnapshot
+    },
+    {
+      id: 'conversation-restore-active',
+      label: 'Restore active workspace snapshot',
+      detail: activeWorkspaceSnapshot?.title ?? 'No active workspace',
+      disabled: !activeWorkspaceSnapshot,
+      perform: () => {
+        if (activeWorkspaceSnapshot) restoreConversationWorkspaceSnapshot(activeWorkspaceSnapshot);
+      }
     },
     {
       id: 'conversation-restore-latest',
