@@ -202,6 +202,7 @@ assert.ok(pageSource.includes('function markSourceLayoutCustom'), 'Manual layout
 assert.ok(pageSource.includes('function shouldMigrateSourceLayout'), 'Source shell should migrate old dense layout storage');
 assert.ok(pageSource.includes('function persistSourceLayoutVersion'), 'Source shell should persist layout migration state');
 assert.ok(pageSource.includes('function resetProjectScanCache'), 'Source shell should reset stale project indexes');
+assert.ok(pageSource.includes('function sourceOnboardingScanStatus'), 'Project onboarding should explain expanded source scans');
 assert.ok(pageSource.includes('function clearSourceRecordsForIncomingProject'), 'Source shell should clear stale records when switching roots');
 assert.ok(pageSource.includes('function sourceRecordBelongsToProject'), 'Source shell should guard scan records by project path');
 assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows should share clipboard copy behavior');
@@ -479,6 +480,8 @@ assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, pro
 assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
 assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');
 assert.ok(pageSource.includes('scanLimit: expandedSourceScanLimit'), 'New or duplicate project activation should run expanded onboarding scans');
+assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(duplicateProject)'), 'Duplicate project selection should announce the expanded onboarding scan');
+assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nextProject)'), 'New project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');

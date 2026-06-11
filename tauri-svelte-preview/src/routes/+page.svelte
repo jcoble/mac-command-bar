@@ -1656,6 +1656,10 @@
     return scanProject(project, selectedSourcePaths[project.id], { force: true, limit });
   }
 
+  function sourceOnboardingScanStatus(project: ProjectRoot) {
+    return `Scanning ${project.name} up to ${expandedSourceScanLimit.toLocaleString()} source files`;
+  }
+
   function formatSourceScanHealthNote(totalCount: number, needsAttention: boolean) {
     if (!needsAttention) return '';
     const fileLabel = totalCount === 1 ? 'file' : 'files';
@@ -5745,6 +5749,7 @@
       } else {
         addingProject = false;
         projectFormError = '';
+        fileActionStatus = sourceOnboardingScanStatus(duplicateProject);
         void activateProject(duplicateProject, {
           forceScan: true,
           scanLimit: expandedSourceScanLimit,
@@ -5760,6 +5765,7 @@
     persistCustomProjectRoots(nextCustomProjectRoots);
     addingProject = false;
     projectFormError = '';
+    fileActionStatus = sourceOnboardingScanStatus(nextProject);
     void activateProject(nextProject, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
