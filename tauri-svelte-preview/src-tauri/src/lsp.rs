@@ -36,6 +36,15 @@ pub(crate) struct SourceLspLookupRequest {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspRenameRequest {
+    root: String,
+    line: usize,
+    column: usize,
+    new_name: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspStatus {
@@ -92,6 +101,20 @@ pub(crate) struct SourceLspTextEdit {
     end_line: usize,
     end_column: usize,
     new_text: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspWorkspaceEditFile {
+    path: String,
+    relative_path: String,
+    edits: Vec<SourceLspTextEdit>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspRenameResult {
+    files: Vec<SourceLspWorkspaceEditFile>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -331,6 +354,50 @@ impl SourceLspRegistry {
         };
 
         Ok(lsp_text_edits_from_result(&result))
+    }
+
+    pub(crate) fn rename(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspRenameRequest,
+    ) -> Result<SourceLspRenameResult, String> {
+        let lookup_request = SourceLspLookupRequest {
+            root: request.root.clone(),
+            line: request.line,
+            column: request.column,
+            limit: None,
+        };
+
+        for attempt in 0..2 {
+            let Some(session) = self.session_for(&preview, &lookup_request)? else {
+                return Ok(SourceLspRenameResult { files: Vec::new() });
+            };
+            let (result, session_alive) = {
+                let mut session = lock_lsp_session(&session)?;
+                let result = session.request_rename(&preview, &request);
+                let session_alive = session.is_alive();
+                (result, session_alive)
+            };
+
+            match result {
+                Ok(Some(value)) => {
+                    return Ok(SourceLspRenameResult {
+                        files: lsp_workspace_edit_files_from_result(
+                            &value,
+                            Path::new(&request.root),
+                        ),
+                    });
+                }
+                Ok(None) => return Ok(SourceLspRenameResult { files: Vec::new() }),
+                Err(_) if attempt == 0 && !session_alive => {
+                    self.remove_session(&preview, &lookup_request)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(SourceLspRenameResult { files: Vec::new() })
     }
 
     pub(crate) fn read_diagnostics(
@@ -573,6 +640,37 @@ impl SourceLspSession {
                 "id": id,
                 "method": method,
                 "params": params
+            }),
+        )?;
+        let response = self.wait_for_response(id, Instant::now() + LSP_REQUEST_TIMEOUT)?;
+        if let Some(error) = response.get("error") {
+            return Err(format!("Language server request failed: {error}"));
+        }
+
+        Ok(response.get("result").cloned())
+    }
+
+    fn request_rename(
+        &mut self,
+        preview: &SourceLspPreview,
+        request: &SourceLspRenameRequest,
+    ) -> Result<Option<Value>, String> {
+        let file_uri = self.ensure_document_open(preview)?;
+        let id = self.next_request_id();
+        write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/rename",
+                "params": {
+                    "textDocument": { "uri": file_uri },
+                    "position": {
+                        "line": request.line.saturating_sub(1),
+                        "character": request.column.saturating_sub(1)
+                    },
+                    "newName": request.new_name.clone()
+                }
             }),
         )?;
         let response = self.wait_for_response(id, Instant::now() + LSP_REQUEST_TIMEOUT)?;
@@ -1058,6 +1156,64 @@ fn lsp_diagnostic_severity(severity: Option<u64>) -> String {
         _ => "info",
     }
     .to_string()
+}
+
+fn lsp_workspace_edit_files_from_result(
+    result: &Value,
+    root: &Path,
+) -> Vec<SourceLspWorkspaceEditFile> {
+    let mut files = Vec::new();
+
+    if let Some(document_changes) = result.get("documentChanges").and_then(Value::as_array) {
+        for document_change in document_changes {
+            let Some(uri) = document_change
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("uri"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let Some(edits) = document_change.get("edits").and_then(Value::as_array) else {
+                continue;
+            };
+            push_lsp_workspace_edit_file(&mut files, uri, edits, root);
+        }
+    }
+
+    if let Some(changes) = result.get("changes").and_then(Value::as_object) {
+        for (uri, edits) in changes {
+            let Some(edits) = edits.as_array() else {
+                continue;
+            };
+            push_lsp_workspace_edit_file(&mut files, uri, edits, root);
+        }
+    }
+
+    files
+}
+
+fn push_lsp_workspace_edit_file(
+    files: &mut Vec<SourceLspWorkspaceEditFile>,
+    uri: &str,
+    edits: &[Value],
+    root: &Path,
+) {
+    let Some(path) = file_uri_to_path(uri) else {
+        return;
+    };
+    let parsed_edits = edits
+        .iter()
+        .filter_map(lsp_text_edit_from_value)
+        .collect::<Vec<_>>();
+    if parsed_edits.is_empty() {
+        return;
+    }
+
+    files.push(SourceLspWorkspaceEditFile {
+        path: path.display().to_string(),
+        relative_path: relative_path_for(&path, root),
+        edits: parsed_edits,
+    });
 }
 
 fn lsp_symbols_from_result(result: &Value, limit: usize) -> Vec<SourceLspSymbol> {
@@ -1620,6 +1776,69 @@ mod tests {
                 end_column: 9,
                 new_text: "formatted".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn extracts_workspace_edits_from_rename_result() {
+        let root = env::temp_dir().join("mcb-lsp-rename-root");
+        let source_path = root.join("src/App.ts");
+        let other_path = root.join("src/App.test.ts");
+        let result = json!({
+            "documentChanges": [
+                {
+                    "textDocument": { "uri": path_to_file_uri(&source_path) },
+                    "edits": [
+                        {
+                            "range": {
+                                "start": { "line": 2, "character": 4 },
+                                "end": { "line": 2, "character": 12 }
+                            },
+                            "newText": "nextName"
+                        }
+                    ]
+                },
+                {
+                    "textDocument": { "uri": path_to_file_uri(&other_path) },
+                    "edits": [
+                        {
+                            "range": {
+                                "start": { "line": 4, "character": 6 },
+                                "end": { "line": 4, "character": 14 }
+                            },
+                            "newText": "nextName"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            lsp_workspace_edit_files_from_result(&result, &root),
+            vec![
+                SourceLspWorkspaceEditFile {
+                    path: source_path.display().to_string(),
+                    relative_path: "src/App.ts".to_string(),
+                    edits: vec![SourceLspTextEdit {
+                        start_line: 3,
+                        start_column: 5,
+                        end_line: 3,
+                        end_column: 13,
+                        new_text: "nextName".to_string(),
+                    }],
+                },
+                SourceLspWorkspaceEditFile {
+                    path: other_path.display().to_string(),
+                    relative_path: "src/App.test.ts".to_string(),
+                    edits: vec![SourceLspTextEdit {
+                        start_line: 5,
+                        start_column: 7,
+                        end_line: 5,
+                        end_column: 15,
+                        new_text: "nextName".to_string(),
+                    }],
+                },
+            ]
         );
     }
 

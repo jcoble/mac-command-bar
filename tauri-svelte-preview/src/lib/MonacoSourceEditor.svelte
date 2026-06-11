@@ -17,6 +17,7 @@
 		type SourceDefinitionTarget,
 		type SourcePreview,
 		type SourceReferenceTarget,
+		type SourceRenameResult,
 		type SourceSemanticToken,
 		type SourceSymbol,
 		type SourceTextEdit,
@@ -28,6 +29,7 @@
 		| "implementation"
 		| "format"
 		| "references"
+		| "rename"
 		| "type-definition";
 
 	type SourceEditorIntelligenceCommand = {
@@ -71,6 +73,16 @@
 		| null
 		| undefined;
 
+	type SourceEditorRenameRequest = {
+		line: number;
+		column: number;
+		newName: string;
+	};
+
+	type SourceEditorRename = (
+		request: SourceEditorRenameRequest
+	) => SourceRenameResult | Promise<SourceRenameResult | null> | null | undefined;
+
 	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
@@ -94,6 +106,7 @@
 		onProblemsRequest?: () => void;
 		onQuickOpenRequest?: () => void;
 		onReferenceLookup?: SourceEditorReferenceLookup;
+		onRename?: SourceEditorRename;
 		onSaveRequest?: () => void;
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
@@ -121,6 +134,7 @@
 		onProblemsRequest,
 		onQuickOpenRequest,
 		onReferenceLookup,
+		onRename,
 		onSaveRequest,
 		onSymbolsRequest,
 		onSymbolsChange,
@@ -139,6 +153,7 @@
 	let implementationProviderDisposable: Monaco.IDisposable | null = null;
 	let typeDefinitionProviderDisposable: Monaco.IDisposable | null = null;
 	let formattingProviderDisposable: Monaco.IDisposable | null = null;
+	let renameProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -342,6 +357,34 @@
 				provideDocumentFormattingEdits: async () => {
 					const edits = await onFormatDocument?.();
 					return (edits ?? []).map((edit) => sourceTextEditToMonacoEdit(monaco, edit));
+				},
+			}
+		);
+	}
+
+	function registerSourceRenameProvider(monaco: typeof Monaco) {
+		renameProviderDisposable?.dispose();
+		renameProviderDisposable = monaco.languages.registerRenameProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideRenameEdits: async (model, position, newName) => {
+					const normalizedName = newName.trim();
+					if (!normalizedName) return { edits: [] };
+
+					const result = await onRename?.({
+						line: position.lineNumber,
+						column: position.column,
+						newName: normalizedName,
+					});
+					const currentFileEdits =
+						(result?.files ?? []).find((file) => file.path === currentPath)?.edits ?? [];
+
+					return {
+						edits: currentFileEdits.map((edit) => ({
+							resource: model.uri,
+							edit: sourceTextEditToMonacoEdit(monaco, edit),
+						})),
+					};
 				},
 			}
 		);
@@ -788,6 +831,10 @@
 			requestFormatDocumentAtCursor();
 			return;
 		}
+		if (intelligenceCommand.action === "rename") {
+			requestRenameAtCursor();
+			return;
+		}
 
 		requestHoverAtCursor();
 	}
@@ -827,6 +874,10 @@
 
 	function requestFormatDocumentAtCursor() {
 		void editor?.getAction("editor.action.formatDocument")?.run();
+	}
+
+	function requestRenameAtCursor() {
+		void editor?.getAction("editor.action.rename")?.run();
 	}
 
 	function requestHoverAtCursor() {
@@ -939,6 +990,7 @@
 		registerSourceImplementationProvider(monaco);
 		registerSourceTypeDefinitionProvider(monaco);
 		registerSourceFormattingProvider(monaco);
+		registerSourceRenameProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -1032,6 +1084,14 @@
 				run: () => requestFormatDocumentAtCursor(),
 			}),
 			editor.addAction({
+				id: "mcb.source.renameSymbol",
+				label: "Rename Symbol",
+				keybindings: [monaco.KeyCode.F2],
+				contextMenuGroupId: "1_modification",
+				contextMenuOrder: 0.6,
+				run: () => requestRenameAtCursor(),
+			}),
+			editor.addAction({
 				id: "mcb.source.save",
 				label: "Save",
 				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
@@ -1091,26 +1151,26 @@
 		layoutObserver.observe(host);
 
 		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
-			markerChangeDisposable = monaco.editor.onDidChangeMarkers((uris) => {
-				const modelUri = editor?.getModel()?.uri.toString();
-				if (modelUri && uris.some((uri) => uri.toString() === modelUri)) {
-					publishDiagnostics();
-				}
-			});
-			mouseDefinitionDisposable = editor.onMouseDown((event) => {
-				if (
-					event.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT ||
-					!event.target.position ||
-					(!event.event.browserEvent.metaKey && !event.event.browserEvent.ctrlKey)
-				) {
-					return;
-				}
+		markerChangeDisposable = monaco.editor.onDidChangeMarkers((uris) => {
+			const modelUri = editor?.getModel()?.uri.toString();
+			if (modelUri && uris.some((uri) => uri.toString() === modelUri)) {
+				publishDiagnostics();
+			}
+		});
+		mouseDefinitionDisposable = editor.onMouseDown((event) => {
+			if (
+				event.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT ||
+				!event.target.position ||
+				(!event.event.browserEvent.metaKey && !event.event.browserEvent.ctrlKey)
+			) {
+				return;
+			}
 
-				event.event.preventDefault();
-				event.event.stopPropagation();
-				requestDefinitionAtPosition(event.target.position);
-			});
-			isReady = true;
+			event.event.preventDefault();
+			event.event.stopPropagation();
+			requestDefinitionAtPosition(event.target.position);
+		});
+		isReady = true;
 		applyAppearance();
 		applyPreview();
 		runIntelligenceCommand();
@@ -1139,6 +1199,7 @@
 		implementationProviderDisposable?.dispose();
 		typeDefinitionProviderDisposable?.dispose();
 		formattingProviderDisposable?.dispose();
+		renameProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();

@@ -57,6 +57,13 @@ export type SourceLspLookupRequest = {
   limit?: number;
 };
 
+export type SourceLspRenameRequest = {
+  root: string;
+  line: number;
+  column: number;
+  newName: string;
+};
+
 export type SourceLspHover = {
   contents: string[];
 };
@@ -74,6 +81,16 @@ export type SourceTextEdit = {
   endLine: number;
   endColumn: number;
   newText: string;
+};
+
+export type SourceRenameFileEdit = {
+  path: string;
+  relativePath: string;
+  edits: SourceTextEdit[];
+};
+
+export type SourceRenameResult = {
+  files: SourceRenameFileEdit[];
 };
 
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';

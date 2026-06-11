@@ -5,10 +5,12 @@ import type {
   SourceDefinitionTarget,
   SourceLspHover,
   SourceLspLookupRequest,
+  SourceLspRenameRequest,
   SourceLspStatus,
   SourcePreview,
   SourceRecord,
   SourceReferenceTarget,
+  SourceRenameResult,
   SourceScanResult,
   SourceSearchMatch,
   SourceSymbol,
@@ -772,6 +774,21 @@ export async function formatSourceWithLspFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceTextEdit[]>('format_source_with_lsp', {
+    preview,
+    request
+  });
+}
+
+export async function renameSourceWithLspFromTauri(
+  preview: SourcePreview,
+  request: SourceLspRenameRequest
+): Promise<SourceRenameResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceRenameResult>('rename_source_with_lsp', {
     preview,
     request
   });

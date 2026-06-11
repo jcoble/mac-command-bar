@@ -135,6 +135,7 @@
     type SourceDiagnostic,
     type SourceLspHover,
     type SourceLspStatus,
+    type SourceRenameResult,
     type SourceSymbol,
     type SourceTextEdit,
     type SourceLanguage,
@@ -179,6 +180,7 @@
     readTerminalSessionScrollbackFromTauri,
     revealPathFromTauri,
     revealSourceFileFromTauri,
+    renameSourceWithLspFromTauri,
     resizeTerminalSessionFromTauri,
     pullGitRepositoryFromTauri,
     pushGitRepositoryFromTauri,
@@ -273,6 +275,7 @@
     | 'hover'
     | 'implementation'
     | 'references'
+    | 'rename'
     | 'type-definition';
   type SourceEditorIntelligenceCommand = {
     id: number;
@@ -1098,6 +1101,13 @@
       detail: preview?.fileName ?? 'No file',
       disabled: !preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('format')
+    },
+    {
+      id: 'rename-symbol',
+      label: 'Rename symbol',
+      detail: 'F2',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('rename')
     },
     {
       id: 'revert-file',
@@ -5513,6 +5523,39 @@
     }
   }
 
+  async function handleEditorRename(request: {
+    line: number;
+    column: number;
+    newName: string;
+  }): Promise<SourceRenameResult | null> {
+    if (!preview || !sourceIntelligenceAvailable) return null;
+
+    fileActionStatus = 'Renaming symbol';
+    try {
+      const result = await renameSourceWithLspFromTauri(
+        { ...preview, content: selectedSourceDraftContent },
+        {
+          root: selectedProject.path,
+          line: request.line,
+          column: request.column,
+          newName: request.newName
+        }
+      );
+      const files = result?.files ?? [];
+      const currentFileEditCount =
+        files.find((file) => file.path === preview.path)?.edits.length ?? 0;
+      const totalEditCount = files.reduce((count, file) => count + file.edits.length, 0);
+      fileActionStatus =
+        totalEditCount === 0
+          ? 'No rename edits'
+          : `${currentFileEditCount.toLocaleString()} of ${totalEditCount.toLocaleString()} rename ${totalEditCount === 1 ? 'edit' : 'edits'} applied to current draft`;
+      return result;
+    } catch (renameError) {
+      fileActionStatus = renameError instanceof Error ? renameError.message : 'Rename unavailable';
+      return null;
+    }
+  }
+
   async function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
     return runSourceReferenceLookup(request);
   }
@@ -5531,7 +5574,8 @@
       (action === 'hover' ||
         action === 'implementation' ||
         action === 'type-definition' ||
-        action === 'format') &&
+        action === 'format' ||
+        action === 'rename') &&
       !sourceIntelligenceAvailable
     ) {
       return;
@@ -9408,6 +9452,20 @@
                 <button
                   type="button"
                   role="menuitem"
+                  aria-label="Rename symbol"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('rename');
+                  }}
+                >
+                  <Braces size={13} strokeWidth={2} />
+                  <span>Rename</span>
+                  <kbd>F2</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   aria-label="Revert source file"
                   disabled={!selectedSourceDirty || fileActionBusy === 'save'}
                   onclick={() => {
@@ -9605,6 +9663,7 @@
                 onProblemsRequest={() => showEditorInsightPanel('problems')}
                 onQuickOpenRequest={openQuickOpen}
                 onReferenceLookup={handleEditorReferenceLookup}
+                onRename={handleEditorRename}
                 onSaveRequest={saveSelectedSourceFile}
                 onSymbolsRequest={() => showEditorInsightPanel('symbols')}
                 onSymbolsChange={handleEditorSymbolsChange}

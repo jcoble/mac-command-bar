@@ -811,6 +811,10 @@ assert.ok(
   'Editor should return native formatting edits to Monaco'
 );
 assert.ok(
+  editorSource.includes('onRename?: SourceEditorRename'),
+  'Editor should return native rename edits to Monaco'
+);
+assert.ok(
   editorSource.includes('onCompletionLookup?: SourceEditorCompletionLookup'),
   'Editor should return native completion items to Monaco'
 );
@@ -860,6 +864,7 @@ assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page 
 assert.ok(pageSource.includes('findSourceLspImplementationsFromTauri'), 'Source page should use LSP implementation lookup');
 assert.ok(pageSource.includes('findSourceLspTypeDefinitionsFromTauri'), 'Source page should use LSP type-definition lookup');
 assert.ok(pageSource.includes('formatSourceWithLspFromTauri'), 'Source page should use LSP document formatting');
+assert.ok(pageSource.includes('renameSourceWithLspFromTauri'), 'Source page should use LSP rename');
 assert.ok(pageSource.includes('findSourceLspCompletionsFromTauri'), 'Source page should use LSP for completion lookup');
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
@@ -886,12 +891,14 @@ assert.ok(pageSource.includes('function handleEditorImplementationLookup'), 'Sou
 assert.ok(pageSource.includes('function handleEditorTypeDefinitionLookup'), 'Source page should receive editor type-definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source page should receive editor completion lookup requests');
 assert.ok(pageSource.includes('function handleEditorFormatDocument'), 'Source page should receive editor formatting requests');
+assert.ok(pageSource.includes('function handleEditorRename'), 'Source page should receive editor rename requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
 assert.ok(pageSource.includes('onImplementationLookup={handleEditorImplementationLookup}'), 'Editor should be wired to LSP implementation lookup');
 assert.ok(pageSource.includes('onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}'), 'Editor should be wired to LSP type-definition lookup');
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
 assert.ok(pageSource.includes('onFormatDocument={handleEditorFormatDocument}'), 'Editor should be wired to LSP document formatting');
+assert.ok(pageSource.includes('onRename={handleEditorRename}'), 'Editor should be wired to LSP rename');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
 assert.ok(pageSource.includes("id: 'save-all-files'"), 'Command palette should expose Save All');
 assert.ok(pageSource.includes('aria-label="Save all source files"'), 'Editor action menu should expose Save All');
@@ -948,6 +955,14 @@ assert.ok(
 assert.ok(
   tauriSource.includes("'format_source_with_lsp'"),
   'Tauri source bridge should invoke native formatting'
+);
+assert.ok(
+  tauriSource.includes('renameSourceWithLspFromTauri'),
+  'Tauri source bridge should expose native LSP rename'
+);
+assert.ok(
+  tauriSource.includes("'rename_source_with_lsp'"),
+  'Tauri source bridge should invoke native rename'
 );
 assert.ok(
   appearanceSource.includes('encodedTokensColors'),
