@@ -633,6 +633,12 @@ assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should d
 assert.ok(pageSource.includes("id: 'layout-focus-editor'"), 'Command palette should expose focused editor layout');
 assert.ok(pageSource.includes('function focusSourceEditorLayout'), 'Source page should provide a focused editor layout action');
 assert.ok(pageSource.includes('Editor canvas focused'), 'Focused editor layout should report status after applying');
+assert.ok(pageSource.includes('sourceFocusRestoreLayout = captureSourceLayoutSnapshot()'), 'Focused editor layout should capture a restore point');
+assert.ok(pageSource.includes("id: 'layout-restore-before-focus'"), 'Command palette should restore the pre-focus layout');
+assert.ok(pageSource.includes('function restoreSourceLayoutBeforeFocus'), 'Source page should restore the pre-focus layout snapshot');
+assert.ok(pageSource.includes('Previous layout restored'), 'Pre-focus restore should report status after applying');
+assert.ok(pageSource.includes('aria-label="Restore layout before focus"'), 'View menu should expose the pre-focus restore action');
+assert.ok(pageSource.includes('persistSourceFocusRestoreLayout(null)'), 'Pre-focus restore should clear the saved restore point');
 assert.ok(
   pageSource.includes("const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser']"),
   'Focused editor layout should hide Activity as well as context docks'

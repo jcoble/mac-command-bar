@@ -267,6 +267,7 @@
   const sourceChromeCompactStorageKey = 'mac-command-bar.source-browser.chrome-compact';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const sourceDockLayoutStorageKey = 'mac-command-bar.source-browser.dock-layout';
+  const sourceFocusRestoreLayoutStorageKey = 'mac-command-bar.source-browser.focus-restore-layout';
   const browserDockUrlStorageKey = 'mac-command-bar.source-browser.browser-url';
   const activeWorkspaceSessionStorageKey = 'mac-command-bar.source-browser.active-workspace-session';
   const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
@@ -402,6 +403,9 @@
     dockLayout: SourceDockLayout;
     hiddenContextCardIDs: SourceContextCardID[];
     activeContextCardID: SourceContextCardID;
+  };
+  type SourceLayoutSnapshot = SourceLayoutPresetOverride & {
+    preset: SourceLayoutPresetID;
   };
   type SourceLayoutPresetOverrides = Partial<Record<ConcreteSourceLayoutPresetID, SourceLayoutPresetOverride>>;
 
@@ -621,6 +625,7 @@
   let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
   let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
+  let sourceFocusRestoreLayout = $state<SourceLayoutSnapshot | null>(null);
   let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
   let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
   let dockDropTargetPanelID = $state<SourceDockPanelID | null>(null);
@@ -1617,6 +1622,13 @@
       label: 'Focus editor canvas',
       detail: 'Hide context, insights, terminal, and browser',
       perform: focusSourceEditorLayout
+    },
+    {
+      id: 'layout-restore-before-focus',
+      label: 'Restore layout before focus',
+      detail: sourceFocusRestoreLayout ? 'Return to the previous pane arrangement' : 'No focus restore point',
+      disabled: !sourceFocusRestoreLayout,
+      perform: restoreSourceLayoutBeforeFocus
     },
     {
       id: 'layout-toggle-chrome',
@@ -7610,6 +7622,56 @@
     };
   }
 
+  function captureSourceLayoutSnapshot(): SourceLayoutSnapshot {
+    return {
+      preset: sourceLayoutPreset,
+      ...captureSourceLayoutPresetOverride()
+    };
+  }
+
+  function applySourceLayoutSnapshot(snapshot: SourceLayoutSnapshot, status: string) {
+    sourceLayoutPreset = snapshot.preset;
+    rememberSourceActivityFilter();
+    sourceActivityMode = snapshot.activityMode;
+    sourceActivityFilter = sourceActivityFiltersByMode[snapshot.activityMode] ?? '';
+    sidePaneWidth = clampSidePaneWidth(snapshot.sidePaneWidth);
+    sidePanePosition = snapshot.sidePanePosition;
+    editorInsightWidth = clampEditorInsightWidth(snapshot.editorInsightWidth);
+    editorInsightCollapsed = snapshot.editorInsightCollapsed;
+    contextPaneWidth = clampContextPaneWidth(snapshot.contextPaneWidth);
+    contextPaneHeight = clampContextPaneHeight(snapshot.contextPaneHeight);
+    contextPanelCollapsed = snapshot.contextPanelCollapsed;
+    contextPanelMode = snapshot.contextPanelMode;
+    contextPanelPlacement = snapshot.contextPanelPlacement;
+    sourceChromeCompact = snapshot.chromeCompact;
+    sourceIntelligencePanel = snapshot.intelligencePanel;
+    hiddenContextCardIDs = new Set(snapshot.hiddenContextCardIDs);
+    activeContextCardID = snapshot.activeContextCardID;
+    sourceDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
+
+    persistSourceLayoutPreset(sourceLayoutPreset);
+    persistSourceActivityMode(sourceActivityMode);
+    persistSidePaneWidth(sidePaneWidth);
+    persistSidePanePosition(sidePanePosition);
+    persistEditorInsightWidth(editorInsightWidth);
+    persistEditorInsightCollapsed(editorInsightCollapsed);
+    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneHeight(contextPaneHeight);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+    persistContextPanelMode(contextPanelMode);
+    persistContextPanelPlacement(contextPanelPlacement);
+    persistSourceChromeCompact(sourceChromeCompact);
+    persistHiddenContextCards(hiddenContextCardIDs);
+    persistActiveContextCard(activeContextCardID);
+    syncSourceDockLayoutToWorkspace(sourceDockLayout);
+    persistSourceDockLayout(sourceDockLayout);
+    fileActionStatus = status;
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(measureFileTreeViewport, 0);
+    }
+  }
+
   function saveSourceLayoutPresetOverride(presetID: ConcreteSourceLayoutPresetID) {
     const preset = sourceLayoutPresets.find((candidate) => candidate.id === presetID);
     if (!preset) return;
@@ -7953,6 +8015,50 @@
     };
   }
 
+  function loadStoredSourceFocusRestoreLayout(): SourceLayoutSnapshot | null {
+    if (typeof window === 'undefined') return null;
+
+    const storedSnapshot = window.localStorage.getItem(sourceFocusRestoreLayoutStorageKey);
+    if (!storedSnapshot) return null;
+
+    try {
+      return normalizeStoredSourceLayoutSnapshot(JSON.parse(storedSnapshot));
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizeStoredSourceLayoutSnapshot(value: unknown): SourceLayoutSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+    const candidate = value as Record<string, unknown>;
+    const presetID = isSourceLayoutPresetID(candidate.preset) ? candidate.preset : 'custom';
+    const fallbackPreset =
+      sourceLayoutPresets.find((preset) => preset.id === presetID) ??
+      sourceLayoutPresets.find((preset) => preset.id === 'code') ??
+      sourceLayoutPresets[0];
+    const normalizedOverride = normalizeStoredSourceLayoutPresetOverride(candidate, fallbackPreset);
+    if (!normalizedOverride) return null;
+
+    return {
+      preset: presetID,
+      ...normalizedOverride
+    };
+  }
+
+  function persistSourceFocusRestoreLayout(snapshot: SourceLayoutSnapshot | null) {
+    if (typeof window === 'undefined') return;
+    if (!snapshot) {
+      window.localStorage.removeItem(sourceFocusRestoreLayoutStorageKey);
+      return;
+    }
+
+    window.localStorage.setItem(
+      sourceFocusRestoreLayoutStorageKey,
+      JSON.stringify(snapshot)
+    );
+  }
+
   function persistSourceLayoutPresetOverrides(overrides: SourceLayoutPresetOverrides) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutPresetOverridesStorageKey, JSON.stringify(overrides));
@@ -8054,6 +8160,11 @@
   }
 
   function focusSourceEditorLayout() {
+    if (!sourceEditorFocusActive()) {
+      sourceFocusRestoreLayout = captureSourceLayoutSnapshot();
+      persistSourceFocusRestoreLayout(sourceFocusRestoreLayout);
+    }
+
     markSourceLayoutCustom();
     rememberSourceActivityFilter();
     sourceActivityMode = 'files';
@@ -8077,6 +8188,22 @@
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
+  }
+
+  function restoreSourceLayoutBeforeFocus() {
+    if (!sourceFocusRestoreLayout) return;
+
+    applySourceLayoutSnapshot(sourceFocusRestoreLayout, 'Previous layout restored');
+    sourceFocusRestoreLayout = null;
+    persistSourceFocusRestoreLayout(null);
+  }
+
+  function sourceEditorFocusActive() {
+    const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
+    return (
+      sourceChromeCompact &&
+      editorFocusHiddenPanelIDs.every((panelID) => !sourceDockPanelVisible(panelID))
+    );
   }
 
   function toggleDockPanelVisibility(panelID: SourceDockPanelID) {
@@ -9596,6 +9723,7 @@
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSourceLayoutPresetOverrides = loadStoredSourceLayoutPresetOverrides();
+    const storedSourceFocusRestoreLayout = loadStoredSourceFocusRestoreLayout();
     const storedSourceChromeCompact = loadStoredSourceChromeCompact();
     const storedSourceTerminalApp = loadStoredSourceTerminalApp();
     const storedBrowserDockUrl = loadStoredBrowserDockUrl();
@@ -9656,6 +9784,7 @@
     pasteCleanupMode = storedPasteCleanupMode;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceLayoutPresetOverrides = storedSourceLayoutPresetOverrides;
+    sourceFocusRestoreLayout = migrateSourceLayout ? null : storedSourceFocusRestoreLayout;
     sourceChromeCompact = migrateSourceLayout ? compactPreset.chromeCompact : storedSourceChromeCompact;
     sourceTerminalApp = storedSourceTerminalApp;
     browserUrl = storedBrowserDockUrl;
@@ -9689,6 +9818,7 @@
       persistContextPanelMode(contextPanelMode);
       persistContextPanelPlacement(contextPanelPlacement);
       persistSourceChromeCompact(sourceChromeCompact);
+      persistSourceFocusRestoreLayout(sourceFocusRestoreLayout);
     }
     persistSourceDockLayout(sourceDockLayout);
     persistSourceLayoutVersion();
@@ -11245,6 +11375,20 @@
                   }}
                 >
                   Focus editor
+                </button>
+                <button
+                  class="view-menu-wide-button"
+                  type="button"
+                  role="menuitem"
+                  aria-label="Restore layout before focus"
+                  title="Restore the pane arrangement saved before Focus editor"
+                  disabled={!sourceFocusRestoreLayout}
+                  onclick={() => {
+                    restoreSourceLayoutBeforeFocus();
+                    closeViewMenu();
+                  }}
+                >
+                  Restore previous
                 </button>
                 <div class="view-menu-button-grid two">
                   <button
