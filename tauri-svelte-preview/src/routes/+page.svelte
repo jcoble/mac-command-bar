@@ -58,6 +58,7 @@
     buildWorktreeCleanupBrief,
     buildWorktreeCleanupScript,
     buildWorktreeSafetySummary,
+    prioritizeWorktreesForCleanup,
     worktreePrimaryAction
   } from '$lib/worktreeSafety';
   import {
@@ -864,8 +865,14 @@
       ? workspaceSnapshots.find((snapshot) => snapshot.id === activeWorkspaceSessionKey) ?? null
       : null
   );
+  let prioritizedProjectWorktrees = $derived(
+    prioritizeWorktreesForCleanup(projectWorktrees, {
+      primaryPath: selectedProject.path,
+      activeSessionPaths: selectedProjectAgentSessionPaths
+    })
+  );
   let filteredProjectWorktrees = $derived(
-    projectWorktrees.filter((worktree) => {
+    prioritizedProjectWorktrees.filter((worktree) => {
       const safety = projectWorktreeSafety(worktree);
       return activityTextMatchesFilter(
         sourceActivityFilter,
@@ -932,7 +939,7 @@
         sourceLabel: 'repo',
         sourceDetail: `${summary.rootLabel} · ${summary.branch}`
       })),
-      projectWorktrees.map((worktree) => ({
+      prioritizedProjectWorktrees.map((worktree) => ({
         taskID: worktree.taskID,
         sourceLabel: 'worktree',
         sourceDetail: `${worktree.branch} · ${projectWorktreeActivityLabel(worktree)}`
@@ -1672,7 +1679,7 @@
       disabled: sourceActivityRefreshing(sourceActivityMode),
       perform: () => refreshSourceActivityMode(sourceActivityMode)
     },
-    ...projectWorktrees.slice(0, 8).map((worktree) => {
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => {
       const action = projectWorktreePrimaryAction(worktree);
       return {
         id: `worktree-primary-action-${worktree.path}`,
@@ -1682,28 +1689,28 @@
         perform: () => runWorktreePrimaryAction(worktree)
       };
     }),
-    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-cleanup-plan-${worktree.path}`,
       label: `Copy worktree cleanup plan: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).recommendation,
       disabled: false,
       perform: () => copyWorktreeCleanupPlan(worktree)
     })),
-    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-audit-command-${worktree.path}`,
       label: `Copy worktree audit command: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).reason,
       disabled: false,
       perform: () => copyWorktreeAuditCommand(worktree)
     })),
-    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-remove-command-${worktree.path}`,
       label: `Copy worktree remove command: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).cleanupCommand,
       disabled: projectWorktreeSafety(worktree).kind === 'protected',
       perform: () => copyWorktreeCleanupCommand(worktree)
     })),
-    ...projectWorktrees.slice(0, 8).map((worktree) => ({
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-backup-command-${worktree.path}`,
       label: `Copy worktree backup command: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).reason,
@@ -9797,7 +9804,7 @@
         </div>
         {#if projectWorktrees.length > 0}
           <div class="worktree-context-list">
-            {#each projectWorktrees as worktree (worktree.path)}
+            {#each prioritizedProjectWorktrees as worktree (worktree.path)}
               {@const safety = projectWorktreeSafety(worktree)}
               {@const primaryAction = projectWorktreePrimaryAction(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
@@ -11148,7 +11155,7 @@
               {#if projectWorktrees.length === 0}
                 <div class="terminal-launchpad-empty">No worktrees</div>
               {:else}
-                {#each projectWorktrees.slice(0, 3) as worktree (`terminal:${worktree.path}`)}
+                {#each prioritizedProjectWorktrees.slice(0, 3) as worktree (`terminal:${worktree.path}`)}
                   {@const safety = projectWorktreeSafety(worktree)}
                   <div class="terminal-launchpad-row" title={safety.cleanupPlan}>
                     <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>

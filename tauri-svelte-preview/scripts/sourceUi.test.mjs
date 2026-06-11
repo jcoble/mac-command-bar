@@ -146,7 +146,9 @@ assert.ok(pageSource.includes('let pasteCleanupMode'), 'Clipboard cleanup should
 assert.ok(pageSource.includes('pasteCleanupOutput'), 'Clipboard cleanup should derive cleaned output');
 assert.ok(pageSource.includes('buildWorktreeSafetySummary'), 'Worktree UI should use the shared safety model');
 assert.ok(pageSource.includes('buildWorktreeCleanupBrief'), 'Worktree UI should use the shared cleanup brief model');
+assert.ok(pageSource.includes('prioritizeWorktreesForCleanup'), 'Worktree UI should use shared cleanup priority ordering');
 assert.ok(pageSource.includes('let projectWorktreeSafetyStats'), 'Worktree context should summarize safety counts');
+assert.ok(pageSource.includes('let prioritizedProjectWorktrees'), 'Worktree context should derive prioritized worktrees');
 assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
 assert.ok(pageSource.includes('let contextPaneWidth'), 'Workspace should track the resizable side context pane width');
 assert.ok(pageSource.includes('let sidePanePosition'), 'Source shell should track the side pane position');
@@ -284,6 +286,7 @@ assert.ok(pageSource.includes('onclick={() => hideDockPanel(panelID)}'), 'Dock t
 assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');
 assert.ok(pageSource.includes('function projectWorktreeSafety'), 'Worktree rows should derive cleanup safety details');
 assert.ok(pageSource.includes('function formatProjectWorktreeSafetyStats'), 'Worktree context should derive compact safety stats');
+assert.ok(pageSource.includes('prioritizedProjectWorktrees.filter'), 'Worktree activity list should filter priority-ordered rows');
 assert.ok(pageSource.includes('projectWorktreeCleanupBrief'), 'Worktree context should derive a cleanup brief');
 assert.ok(pageSource.includes('function copyWorktreeCleanupPlan'), 'Worktree rows should copy cleanup plans');
 assert.ok(pageSource.includes('function copyWorktreeAuditCommand'), 'Worktree commands should copy audit commands');
@@ -406,6 +409,7 @@ assert.ok(pageSource.includes("id: 'activity-clipboard'"), 'Command palette shou
 assert.ok(pageSource.includes("id: 'activity-conversations'"), 'Command palette should switch to conversations');
 assert.ok(pageSource.includes("id: 'activity-refresh'"), 'Command palette should refresh the current activity lane');
 assert.ok(pageSource.includes('worktree-cleanup-plan-${worktree.path}'), 'Command palette should copy worktree cleanup plans');
+assert.ok(pageSource.includes('prioritizedProjectWorktrees.slice(0, 8)'), 'Command palette should expose the highest-priority worktrees first');
 assert.ok(pageSource.includes('worktree-audit-command-${worktree.path}'), 'Command palette should copy worktree audit commands');
 assert.ok(pageSource.includes('worktree-remove-command-${worktree.path}'), 'Command palette should copy worktree remove commands');
 assert.ok(pageSource.includes('worktree-backup-command-${worktree.path}'), 'Command palette should copy worktree backup commands');

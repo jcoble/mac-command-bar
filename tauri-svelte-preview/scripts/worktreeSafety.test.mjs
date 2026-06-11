@@ -3,6 +3,7 @@ import {
   buildWorktreeCleanupBrief,
   buildWorktreeCleanupScript,
   buildWorktreeSafetySummary,
+  prioritizeWorktreesForCleanup,
   worktreePrimaryAction,
   worktreeAuditCommand,
   worktreeBackupCommand,
@@ -216,6 +217,60 @@ function worktree(overrides = {}) {
   assert.match(brief.report, /cdx\/tsk-121-dirty/);
   assert.match(brief.report, /Review:/);
   assert.match(brief.report, /cdx\/tsk-122-review/);
+}
+
+{
+  const ordered = prioritizeWorktreesForCleanup(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/EdiPlatform',
+        branch: 'main',
+        taskID: null
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-140-review',
+        branch: 'cdx/tsk-140-review',
+        taskID: 'TSK-140',
+        lastActivity: null
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-141-clean',
+        branch: 'cdx/tsk-141-clean',
+        taskID: 'TSK-141',
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-142-dirty',
+        branch: 'cdx/tsk-142-dirty',
+        taskID: 'TSK-142',
+        isDirty: true
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-143-active',
+        branch: 'cdx/tsk-143-active',
+        taskID: 'TSK-143'
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      activeSessionPaths: [
+        '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-143-active/.codex/session'
+      ],
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.deepEqual(
+    ordered.map((entry) => entry.branch),
+    [
+      'cdx/tsk-143-active',
+      'cdx/tsk-142-dirty',
+      'cdx/tsk-141-clean',
+      'cdx/tsk-140-review',
+      'main'
+    ]
+  );
 }
 
 {

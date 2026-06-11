@@ -165,6 +165,31 @@ export function buildWorktreeCleanupBrief(
   };
 }
 
+export function prioritizeWorktreesForCleanup(
+  worktrees: ProjectWorktree[],
+  options: WorktreeSafetyOptions = {}
+): ProjectWorktree[] {
+  return worktrees
+    .map((worktree, index) => ({
+      worktree,
+      safety: buildWorktreeSafetySummary(worktree, options),
+      index
+    }))
+    .sort((left, right) => {
+      const priorityDelta = worktreeCleanupPriority(left.safety) - worktreeCleanupPriority(right.safety);
+      if (priorityDelta) return priorityDelta;
+
+      const activityDelta = worktreeActivitySortValue(left.worktree) - worktreeActivitySortValue(right.worktree);
+      if (activityDelta) return activityDelta;
+
+      const branchDelta = left.worktree.branch.localeCompare(right.worktree.branch);
+      if (branchDelta) return branchDelta;
+
+      return left.index - right.index;
+    })
+    .map((entry) => entry.worktree);
+}
+
 export function buildWorktreeCleanupScript(
   worktrees: ProjectWorktree[],
   options: WorktreeSafetyOptions = {}
@@ -372,6 +397,24 @@ function formatBriefHeadline(counts: {
   ].filter(Boolean);
 
   return parts.join(' · ') || 'no worktrees';
+}
+
+function worktreeCleanupPriority(safety: WorktreeSafetySummary): number {
+  if (safety.kind === 'blocked' && safety.activeSessionCount > 0) return 0;
+  if (safety.kind === 'blocked' && safety.badge === 'Dirty') return 1;
+  if (safety.kind === 'blocked' && safety.badge === 'Unmerged') return 2;
+  if (safety.kind === 'blocked') return 3;
+  if (safety.kind === 'ready' && safety.ageBucket === 'stale') return 4;
+  if (safety.kind === 'ready') return 5;
+  if (safety.kind === 'review') return 6;
+  if (safety.kind === 'protected') return 7;
+  return 8;
+}
+
+function worktreeActivitySortValue(worktree: ProjectWorktree): number {
+  if (!worktree.lastActivity) return Number.POSITIVE_INFINITY;
+  const value = new Date(worktree.lastActivity).getTime();
+  return Number.isNaN(value) ? Number.POSITIVE_INFINITY : value;
 }
 
 function formatCleanupBriefReport(details: {
