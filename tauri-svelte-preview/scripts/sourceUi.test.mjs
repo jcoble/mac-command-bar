@@ -403,9 +403,16 @@ assert.ok(pageSource.includes('class="command-palette-layer"'), 'Source shell sh
 assert.ok(pageSource.includes('aria-label="Command palette"'), 'Command palette should be accessible');
 assert.ok(pageSource.includes("event.key.toLowerCase() === 'k'"), 'Command palette should open from Cmd+K');
 assert.ok(pageSource.includes("id: 'go-to-line'"), 'Command palette should expose current-file line navigation');
+assert.ok(pageSource.includes("id: 'source-search-focus'"), 'Command palette should expose source content search');
 assert.ok(pageSource.includes("id: 'workspace-symbols'"), 'Command palette should expose workspace symbol search');
 assert.ok(pageSource.includes('function openCurrentFileGoToLine'), 'Line navigation should reuse quick open');
 assert.ok(pageSource.includes('quickOpenQuery = `${selectedRecord.relativePath}:`'), 'Line navigation should prefill the current file path');
+assert.ok(pageSource.includes('function focusGlobalSourceSearch'), 'Source page should focus global source search');
+assert.ok(pageSource.includes('bind:this={sourceSearchInput}'), 'Global source search input should expose a focus target');
+assert.ok(
+  pageSource.includes("event.shiftKey && event.key.toLowerCase() === 'f'"),
+  'Window shortcuts should bind Cmd+Shift+F for source content search'
+);
 assert.ok(pageSource.includes("quickOpenQuery = '#'"), 'Workspace symbol search should prefill the quick-open symbol prefix');
 assert.ok(pageSource.includes('function chooseQuickOpenWorkspaceSymbol'), 'Quick open should select workspace symbols directly');
 assert.ok(pageSource.includes("id: 'scan-project-expanded'"), 'Command palette should expose expanded source scans');

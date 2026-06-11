@@ -545,6 +545,7 @@
   let sourceSearchResults = $state<SourceSearchMatch[]>([]);
   let sourceSearchLoading = $state(false);
   let sourceSearchError = $state('');
+  let sourceSearchInput = $state<HTMLInputElement | null>(null);
   let sourceActivityMode = $state<SourceActivityMode>('files');
   let sourceActivityFilter = $state('');
   let pasteCleanupInput = $state('');
@@ -1101,6 +1102,12 @@
       detail: selectedRecord ? `${selectedRecord.relativePath}:line` : 'No file',
       disabled: !selectedRecord,
       perform: openCurrentFileGoToLine
+    },
+    {
+      id: 'source-search-focus',
+      label: 'Search file contents',
+      detail: 'Cmd+Shift+F',
+      perform: focusGlobalSourceSearch
     },
     {
       id: 'navigate-back',
@@ -5127,6 +5134,12 @@
       return;
     }
 
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      focusGlobalSourceSearch();
+      return;
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.key === '[') {
       event.preventDefault();
       void navigateSourceBack();
@@ -5256,6 +5269,14 @@
       const cursor = quickOpenQuery.length;
       quickOpenInput?.setSelectionRange(cursor, cursor);
     }, 0);
+  }
+
+  function focusGlobalSourceSearch() {
+    selectSourceActivityMode('files');
+    closeCommandPalette();
+    closeViewMenu();
+    closeEditorActionMenu();
+    window.setTimeout(() => sourceSearchInput?.focus(), 0);
   }
 
   function closeQuickOpen() {
@@ -8421,7 +8442,7 @@
       <form class="global-search-panel" onsubmit={handleGlobalSourceSearchSubmit}>
         <div class="global-search-box">
           <Search size={15} strokeWidth={1.8} />
-          <input bind:value={sourceSearchQuery} placeholder="Search file contents" />
+          <input bind:this={sourceSearchInput} bind:value={sourceSearchQuery} placeholder="Search file contents" />
           <button
             class="source-search-submit"
             type="submit"
