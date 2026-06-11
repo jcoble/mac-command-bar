@@ -940,6 +940,16 @@
       }
     },
     {
+      id: 'conversation-delete-latest',
+      label: 'Delete latest workspace snapshot',
+      detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
+      disabled: workspaceSnapshots.length === 0,
+      perform: () => {
+        const snapshot = workspaceSnapshots[0];
+        if (snapshot) deleteWorkspaceSnapshot(snapshot);
+      }
+    },
+    {
       id: 'save-file',
       label: 'Save file',
       detail: 'Cmd+S',
@@ -2685,6 +2695,13 @@
     } finally {
       fileActionBusy = '';
     }
+  }
+
+  function deleteWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
+    const nextSnapshots = workspaceSnapshots.filter((candidate) => candidate.id !== snapshot.id);
+    workspaceSnapshots = nextSnapshots;
+    persistWorkspaceSnapshots(nextSnapshots);
+    fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
   }
 
   async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
@@ -6665,6 +6682,14 @@
                           onclick={() => openActivityTerminalPath(snapshot.worktreePath ?? snapshot.cwd)}
                         >
                           <Terminal size={12} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Delete workspace snapshot"
+                          title="Delete workspace snapshot"
+                          onclick={() => deleteWorkspaceSnapshot(snapshot)}
+                        >
+                          <Trash2 size={12} strokeWidth={2} />
                         </button>
                       </div>
                     </div>
