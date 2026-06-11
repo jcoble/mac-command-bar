@@ -508,6 +508,9 @@ assert.ok(pageSource.includes("selectContextPanelPlacement('top')"), 'Context pl
 assert.ok(pageSource.includes("selectContextPanelPlacement('side')"), 'Context placement controls should select side placement');
 assert.ok(pageSource.includes("moveDockPanelToGroup('context', 'bottom')"), 'Context placement controls should dock context at the bottom');
 assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should dock context at the bottom');
+assert.ok(pageSource.includes("id: 'layout-focus-editor'"), 'Command palette should expose focused editor layout');
+assert.ok(pageSource.includes('function focusSourceEditorLayout'), 'Source page should provide a focused editor layout action');
+assert.ok(pageSource.includes('Editor canvas focused'), 'Focused editor layout should report status after applying');
 assert.ok(pageSource.includes("id: 'layout-reset-dock'"), 'Command palette should reset the dock layout');
 assert.ok(pageSource.includes('layout-save-${preset.id}'), 'Command palette should save custom layout presets');
 assert.ok(pageSource.includes('layout-reset-${preset.id}'), 'Command palette should reset saved layout presets');

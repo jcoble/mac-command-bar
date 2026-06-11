@@ -1534,6 +1534,12 @@
       perform: () => applySourceLayoutPreset(preset.id)
     })),
     {
+      id: 'layout-focus-editor',
+      label: 'Focus editor canvas',
+      detail: 'Hide context, insights, terminal, and browser',
+      perform: focusSourceEditorLayout
+    },
+    {
       id: 'layout-reset-dock',
       label: 'Reset dock layout',
       detail: 'Code layout',
@@ -7440,6 +7446,28 @@
     fileActionStatus = 'Dock layout reset';
   }
 
+  function focusSourceEditorLayout() {
+    markSourceLayoutCustom();
+    sourceActivityMode = 'files';
+    contextPanelCollapsed = true;
+    editorInsightCollapsed = true;
+    persistSourceActivityMode(sourceActivityMode);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+    persistEditorInsightCollapsed(editorInsightCollapsed);
+
+    const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['context', 'insights', 'terminal', 'browser'];
+    let nextLayout = sourceDockLayout;
+    for (const panelID of editorFocusHiddenPanelIDs) {
+      nextLayout = hideSourceDockPanel(nextLayout, panelID);
+    }
+
+    applySourceDockLayout(activateSourceDockPanel(nextLayout, 'editor'));
+    fileActionStatus = 'Editor canvas focused';
+    if (typeof window !== 'undefined') {
+      window.setTimeout(measureFileTreeViewport, 0);
+    }
+  }
+
   function toggleDockPanelVisibility(panelID: SourceDockPanelID) {
     if (!dockPanelCanHide(panelID)) return;
     if (sourceDockPanelVisible(panelID)) {
@@ -10255,6 +10283,19 @@
                     Reset
                   </button>
                 </div>
+                <button
+                  class="view-menu-wide-button"
+                  type="button"
+                  role="menuitem"
+                  aria-label="Focus editor canvas"
+                  title="Hide context, insights, terminal, and browser"
+                  onclick={() => {
+                    focusSourceEditorLayout();
+                    closeViewMenu();
+                  }}
+                >
+                  Focus editor
+                </button>
               </section>
 
               <section class="view-menu-section" aria-label="Side pane position">
