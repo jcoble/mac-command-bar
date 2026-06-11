@@ -1,8 +1,10 @@
 import type {
   ProjectRoot,
+  SourceCodeAction,
   SourceDiagnostic,
   SourceCompletionItem,
   SourceDefinitionTarget,
+  SourceLspCodeActionRequest,
   SourceLspHover,
   SourceLspLookupRequest,
   SourceLspRenameRequest,
@@ -789,6 +791,21 @@ export async function renameSourceWithLspFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceRenameResult>('rename_source_with_lsp', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspCodeActionsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspCodeActionRequest
+): Promise<SourceCodeAction[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceCodeAction[]>('find_source_lsp_code_actions', {
     preview,
     request
   });

@@ -11,6 +11,8 @@
 		extractSourceSymbols,
 		monacoLanguageForSource,
 		sourceSemanticTokenLegend,
+		type SourceCodeAction,
+		type SourceCodeActionLookupRequest,
 		type SourceCompletionItem,
 		type SourceDiagnostic,
 		type SourceDiagnosticSeverity,
@@ -28,6 +30,7 @@
 		| "hover"
 		| "implementation"
 		| "format"
+		| "quick-fix"
 		| "references"
 		| "rename"
 		| "type-definition";
@@ -67,6 +70,10 @@
 		request: SourceEditorLookupRequest
 	) => SourceCompletionItem[] | Promise<SourceCompletionItem[]> | null | undefined;
 
+	type SourceEditorCodeActionLookup = (
+		request: SourceCodeActionLookupRequest
+	) => SourceCodeAction[] | Promise<SourceCodeAction[] | null> | null | undefined;
+
 	type SourceEditorFormatDocument = () =>
 		| SourceTextEdit[]
 		| Promise<SourceTextEdit[]>
@@ -95,6 +102,7 @@
 		targetLineRequestId?: number;
 		intelligenceCommand?: SourceEditorIntelligenceCommand | null;
 		onContentChange?: (content: string) => void;
+		onCodeActionLookup?: SourceEditorCodeActionLookup;
 		onCommandPaletteRequest?: () => void;
 		onCompletionLookup?: SourceEditorCompletionLookup;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
@@ -123,6 +131,7 @@
 		targetLineRequestId = 0,
 		intelligenceCommand = null,
 		onContentChange,
+		onCodeActionLookup,
 		onCommandPaletteRequest,
 		onCompletionLookup,
 		onDiagnosticsChange,
@@ -154,6 +163,7 @@
 	let typeDefinitionProviderDisposable: Monaco.IDisposable | null = null;
 	let formattingProviderDisposable: Monaco.IDisposable | null = null;
 	let renameProviderDisposable: Monaco.IDisposable | null = null;
+	let codeActionProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -382,10 +392,45 @@
 					return {
 						edits: currentFileEdits.map((edit) => ({
 							resource: model.uri,
-							edit: sourceTextEditToMonacoEdit(monaco, edit),
+							textEdit: sourceTextEditToMonacoEdit(monaco, edit),
+							versionId: model.getVersionId(),
 						})),
 					};
 				},
+			}
+		);
+	}
+
+	function registerSourceCodeActionProvider(monaco: typeof Monaco) {
+		codeActionProviderDisposable?.dispose();
+		codeActionProviderDisposable = monaco.languages.registerCodeActionProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideCodeActions: async (_model, range, context) => {
+					const actions = await onCodeActionLookup?.({
+						startLine: range.startLineNumber,
+						startColumn: range.startColumn,
+						endLine: range.endLineNumber,
+						endColumn: range.endColumn,
+						diagnostics: context.markers.map((marker) => ({
+							severity: markerSeverityToSourceSeverity(marker.severity),
+							message: marker.message,
+							startLine: marker.startLineNumber,
+							startColumn: marker.startColumn,
+							endLine: marker.endLineNumber,
+							endColumn: marker.endColumn,
+							source: marker.source ?? undefined,
+						})),
+					});
+
+					return {
+						actions: (actions ?? []).map((action) => sourceCodeActionToMonacoAction(monaco, action)),
+						dispose() {},
+					};
+				},
+			},
+			{
+				providedCodeActionKinds: ["quickfix", "refactor", "source"],
 			}
 		);
 	}
@@ -469,6 +514,35 @@
 				Math.max(1, edit.endColumn)
 			),
 			text: edit.newText,
+		};
+	}
+
+	function sourceCodeActionToMonacoAction(
+		monaco: typeof Monaco,
+		action: SourceCodeAction
+	): Monaco.languages.CodeAction {
+		const model = editor?.getModel();
+		const currentFile = action.files.find((file) => file.path === currentPath);
+		const currentFileEdits = currentFile?.edits ?? [];
+		const edit =
+			model && currentFileEdits.length > 0
+				? {
+						edits: currentFileEdits.map((textEdit) => ({
+							resource: model.uri,
+							textEdit: sourceTextEditToMonacoEdit(monaco, textEdit),
+							versionId: model.getVersionId(),
+						})),
+					}
+				: undefined;
+		const disabled =
+			action.disabledReason ?? (edit ? undefined : "No current-file edit available");
+
+		return {
+			title: action.title,
+			kind: action.kind || "quickfix",
+			isPreferred: action.isPreferred,
+			disabled,
+			edit,
 		};
 	}
 
@@ -835,6 +909,10 @@
 			requestRenameAtCursor();
 			return;
 		}
+		if (intelligenceCommand.action === "quick-fix") {
+			requestQuickFixAtCursor();
+			return;
+		}
 
 		requestHoverAtCursor();
 	}
@@ -878,6 +956,10 @@
 
 	function requestRenameAtCursor() {
 		void editor?.getAction("editor.action.rename")?.run();
+	}
+
+	function requestQuickFixAtCursor() {
+		void editor?.getAction("editor.action.quickFix")?.run();
 	}
 
 	function requestHoverAtCursor() {
@@ -991,6 +1073,7 @@
 		registerSourceTypeDefinitionProvider(monaco);
 		registerSourceFormattingProvider(monaco);
 		registerSourceRenameProvider(monaco);
+		registerSourceCodeActionProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -1090,6 +1173,14 @@
 				contextMenuGroupId: "1_modification",
 				contextMenuOrder: 0.6,
 				run: () => requestRenameAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.quickFix",
+				label: "Quick Fix",
+				keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.Enter],
+				contextMenuGroupId: "1_modification",
+				contextMenuOrder: 0.7,
+				run: () => requestQuickFixAtCursor(),
 			}),
 			editor.addAction({
 				id: "mcb.source.save",
@@ -1200,6 +1291,7 @@
 		typeDefinitionProviderDisposable?.dispose();
 		formattingProviderDisposable?.dispose();
 		renameProviderDisposable?.dispose();
+		codeActionProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();

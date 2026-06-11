@@ -45,6 +45,30 @@ pub(crate) struct SourceLspRenameRequest {
     new_name: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspCodeActionDiagnostic {
+    severity: String,
+    message: String,
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspCodeActionRequest {
+    root: String,
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+    diagnostics: Vec<SourceLspCodeActionDiagnostic>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspStatus {
@@ -114,6 +138,16 @@ pub(crate) struct SourceLspWorkspaceEditFile {
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspRenameResult {
+    files: Vec<SourceLspWorkspaceEditFile>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspCodeAction {
+    title: String,
+    kind: String,
+    is_preferred: bool,
+    disabled_reason: Option<String>,
     files: Vec<SourceLspWorkspaceEditFile>,
 }
 
@@ -400,6 +434,49 @@ impl SourceLspRegistry {
         Ok(SourceLspRenameResult { files: Vec::new() })
     }
 
+    pub(crate) fn find_code_actions(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspCodeActionRequest,
+    ) -> Result<Vec<SourceLspCodeAction>, String> {
+        let lookup_request = SourceLspLookupRequest {
+            root: request.root.clone(),
+            line: request.start_line,
+            column: request.start_column,
+            limit: request.limit,
+        };
+
+        for attempt in 0..2 {
+            let Some(session) = self.session_for(&preview, &lookup_request)? else {
+                return Ok(Vec::new());
+            };
+            let (result, session_alive) = {
+                let mut session = lock_lsp_session(&session)?;
+                let result = session.request_code_actions(&preview, &request);
+                let session_alive = session.is_alive();
+                (result, session_alive)
+            };
+
+            match result {
+                Ok(Some(value)) => {
+                    return Ok(lsp_code_actions_from_result(
+                        &value,
+                        Path::new(&request.root),
+                        request.limit.unwrap_or(50),
+                    ));
+                }
+                Ok(None) => return Ok(Vec::new()),
+                Err(_) if attempt == 0 && !session_alive => {
+                    self.remove_session(&preview, &lookup_request)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
     pub(crate) fn read_diagnostics(
         &self,
         preview: SourceLspPreview,
@@ -670,6 +747,40 @@ impl SourceLspSession {
                         "character": request.column.saturating_sub(1)
                     },
                     "newName": request.new_name.clone()
+                }
+            }),
+        )?;
+        let response = self.wait_for_response(id, Instant::now() + LSP_REQUEST_TIMEOUT)?;
+        if let Some(error) = response.get("error") {
+            return Err(format!("Language server request failed: {error}"));
+        }
+
+        Ok(response.get("result").cloned())
+    }
+
+    fn request_code_actions(
+        &mut self,
+        preview: &SourceLspPreview,
+        request: &SourceLspCodeActionRequest,
+    ) -> Result<Option<Value>, String> {
+        let file_uri = self.ensure_document_open(preview)?;
+        let id = self.next_request_id();
+        write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/codeAction",
+                "params": {
+                    "textDocument": { "uri": file_uri },
+                    "range": lsp_code_action_range(request),
+                    "context": {
+                        "diagnostics": request
+                            .diagnostics
+                            .iter()
+                            .map(lsp_code_action_diagnostic)
+                            .collect::<Vec<_>>()
+                    }
                 }
             }),
         )?;
@@ -996,9 +1107,68 @@ fn lsp_position(request: &SourceLspLookupRequest) -> Value {
     })
 }
 
+fn lsp_code_action_range(request: &SourceLspCodeActionRequest) -> Value {
+    json!({
+        "start": {
+            "line": request.start_line.saturating_sub(1),
+            "character": request.start_column.saturating_sub(1)
+        },
+        "end": {
+            "line": request.end_line.saturating_sub(1),
+            "character": request.end_column.saturating_sub(1)
+        }
+    })
+}
+
+fn lsp_code_action_diagnostic(diagnostic: &SourceLspCodeActionDiagnostic) -> Value {
+    json!({
+        "range": {
+            "start": {
+                "line": diagnostic.start_line.saturating_sub(1),
+                "character": diagnostic.start_column.saturating_sub(1)
+            },
+            "end": {
+                "line": diagnostic.end_line.saturating_sub(1),
+                "character": diagnostic.end_column.saturating_sub(1)
+            }
+        },
+        "severity": lsp_diagnostic_severity_code(&diagnostic.severity),
+        "message": diagnostic.message,
+        "source": diagnostic.source
+    })
+}
+
+fn lsp_diagnostic_severity_code(severity: &str) -> u8 {
+    match severity {
+        "error" => 1,
+        "warning" => 2,
+        "info" => 3,
+        "hint" => 4,
+        _ => 3,
+    }
+}
+
 fn lsp_client_capabilities() -> Value {
     json!({
         "textDocument": {
+            "codeAction": {
+                "codeActionLiteralSupport": {
+                    "codeActionKind": {
+                        "valueSet": [
+                            "",
+                            "quickfix",
+                            "refactor",
+                            "refactor.extract",
+                            "refactor.inline",
+                            "refactor.rewrite",
+                            "source",
+                            "source.organizeImports",
+                            "source.fixAll"
+                        ]
+                    }
+                },
+                "isPreferredSupport": true
+            },
             "completion": {
                 "completionItem": {
                     "snippetSupport": false
@@ -1214,6 +1384,59 @@ fn push_lsp_workspace_edit_file(
         relative_path: relative_path_for(&path, root),
         edits: parsed_edits,
     });
+}
+
+fn lsp_code_actions_from_result(
+    result: &Value,
+    root: &Path,
+    limit: usize,
+) -> Vec<SourceLspCodeAction> {
+    let Some(actions) = result.as_array() else {
+        return Vec::new();
+    };
+
+    actions
+        .iter()
+        .filter_map(|action| lsp_code_action_from_value(action, root))
+        .take(limit)
+        .collect()
+}
+
+fn lsp_code_action_from_value(value: &Value, root: &Path) -> Option<SourceLspCodeAction> {
+    let title = value.get("title").and_then(Value::as_str)?.to_string();
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("command")
+        .to_string();
+    let is_preferred = value
+        .get("isPreferred")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let files = value
+        .get("edit")
+        .map(|edit| lsp_workspace_edit_files_from_result(edit, root))
+        .unwrap_or_default();
+    let disabled_reason = value
+        .get("disabled")
+        .and_then(|disabled| disabled.get("reason"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            if files.is_empty() && value.get("command").is_some() {
+                Some("Command-only code action is not supported yet".to_string())
+            } else {
+                None
+            }
+        });
+
+    Some(SourceLspCodeAction {
+        title,
+        kind,
+        is_preferred,
+        disabled_reason,
+        files,
+    })
 }
 
 fn lsp_symbols_from_result(result: &Value, limit: usize) -> Vec<SourceLspSymbol> {
@@ -1753,6 +1976,14 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("codeAction"))
+                .and_then(|code_action| code_action.get("isPreferredSupport"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1837,6 +2068,72 @@ mod tests {
                         end_column: 15,
                         new_text: "nextName".to_string(),
                     }],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_code_actions_with_workspace_edits() {
+        let root = env::temp_dir().join("mcb-lsp-code-action-root");
+        let source_path = root.join("src/App.ts");
+        let result = json!([
+            {
+                "title": "Add missing import",
+                "kind": "quickfix",
+                "isPreferred": true,
+                "edit": {
+                    "changes": {
+                        path_to_file_uri(&source_path): [
+                            {
+                                "range": {
+                                    "start": { "line": 0, "character": 0 },
+                                    "end": { "line": 0, "character": 0 }
+                                },
+                                "newText": "import { thing } from './thing';\n"
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                "title": "Organize Imports",
+                "kind": "source.organizeImports",
+                "command": {
+                    "title": "Organize Imports",
+                    "command": "typescript.organizeImports"
+                }
+            }
+        ]);
+
+        assert_eq!(
+            lsp_code_actions_from_result(&result, &root, 10),
+            vec![
+                SourceLspCodeAction {
+                    title: "Add missing import".to_string(),
+                    kind: "quickfix".to_string(),
+                    is_preferred: true,
+                    disabled_reason: None,
+                    files: vec![SourceLspWorkspaceEditFile {
+                        path: source_path.display().to_string(),
+                        relative_path: "src/App.ts".to_string(),
+                        edits: vec![SourceLspTextEdit {
+                            start_line: 1,
+                            start_column: 1,
+                            end_line: 1,
+                            end_column: 1,
+                            new_text: "import { thing } from './thing';\n".to_string(),
+                        }],
+                    }],
+                },
+                SourceLspCodeAction {
+                    title: "Organize Imports".to_string(),
+                    kind: "source.organizeImports".to_string(),
+                    is_preferred: false,
+                    disabled_reason: Some(
+                        "Command-only code action is not supported yet".to_string()
+                    ),
+                    files: Vec::new(),
                 },
             ]
         );

@@ -64,6 +64,29 @@ export type SourceLspRenameRequest = {
   newName: string;
 };
 
+export type SourceCodeActionDiagnostic = {
+  severity: SourceDiagnosticSeverity;
+  message: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  source?: string;
+};
+
+export type SourceCodeActionLookupRequest = {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  diagnostics: SourceCodeActionDiagnostic[];
+};
+
+export type SourceLspCodeActionRequest = SourceCodeActionLookupRequest & {
+  root: string;
+  limit?: number;
+};
+
 export type SourceLspHover = {
   contents: string[];
 };
@@ -90,6 +113,14 @@ export type SourceRenameFileEdit = {
 };
 
 export type SourceRenameResult = {
+  files: SourceRenameFileEdit[];
+};
+
+export type SourceCodeAction = {
+  title: string;
+  kind: string;
+  isPreferred: boolean;
+  disabledReason: string | null;
   files: SourceRenameFileEdit[];
 };
 

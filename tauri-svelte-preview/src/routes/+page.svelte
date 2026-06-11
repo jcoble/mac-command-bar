@@ -123,6 +123,8 @@
     upsertRecentSourceRecord,
     virtualizeSourceTreeRows,
     type ProjectRoot,
+    type SourceCodeAction,
+    type SourceCodeActionLookupRequest,
     type SourceScanCache,
     type SourceOpenTab,
     type SourcePreview,
@@ -150,6 +152,7 @@
     fetchGitRepositoryFromTauri,
     findSourceDefinitionsFromTauri,
     findSourceLspCompletionsFromTauri,
+    findSourceLspCodeActionsFromTauri,
     findSourceLspDefinitionsFromTauri,
     findSourceLspHoverFromTauri,
     findSourceLspImplementationsFromTauri,
@@ -272,8 +275,10 @@
 
   type SourceIntelligenceAction =
     | 'definition'
+    | 'format'
     | 'hover'
     | 'implementation'
+    | 'quick-fix'
     | 'references'
     | 'rename'
     | 'type-definition';
@@ -1108,6 +1113,13 @@
       detail: 'F2',
       disabled: !preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('rename')
+    },
+    {
+      id: 'quick-fix',
+      label: 'Quick fix',
+      detail: 'Alt+Enter',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('quick-fix')
     },
     {
       id: 'revert-file',
@@ -5497,6 +5509,27 @@
     }
   }
 
+  async function handleEditorCodeActionLookup(
+    request: SourceCodeActionLookupRequest
+  ): Promise<SourceCodeAction[]> {
+    if (!preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
+        (await findSourceLspCodeActionsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            ...request,
+            root: selectedProject.path,
+            limit: 50
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async function handleEditorFormatDocument(): Promise<SourceTextEdit[]> {
     if (!preview || !sourceIntelligenceAvailable) return [];
 
@@ -5575,7 +5608,8 @@
         action === 'implementation' ||
         action === 'type-definition' ||
         action === 'format' ||
-        action === 'rename') &&
+        action === 'rename' ||
+        action === 'quick-fix') &&
       !sourceIntelligenceAvailable
     ) {
       return;
@@ -9466,6 +9500,20 @@
                 <button
                   type="button"
                   role="menuitem"
+                  aria-label="Quick fix"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('quick-fix');
+                  }}
+                >
+                  <Activity size={13} strokeWidth={2} />
+                  <span>Quick fix</span>
+                  <kbd>Alt+Enter</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   aria-label="Revert source file"
                   disabled={!selectedSourceDirty || fileActionBusy === 'save'}
                   onclick={() => {
@@ -9651,6 +9699,7 @@
                 targetLine={selectedSourceLine}
                 targetLineRequestId={selectedSourceLineRequestId}
                 intelligenceCommand={sourceIntelligenceCommand}
+                onCodeActionLookup={handleEditorCodeActionLookup}
                 onContentChange={updateSelectedSourceDraft}
                 onCommandPaletteRequest={openCommandPalette}
                 onCompletionLookup={handleEditorCompletionLookup}

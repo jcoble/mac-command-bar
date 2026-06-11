@@ -632,6 +632,18 @@ async fn rename_source_with_lsp(
 }
 
 #[tauri::command]
+async fn find_source_lsp_code_actions(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    preview: lsp::SourceLspPreview,
+    request: lsp::SourceLspCodeActionRequest,
+) -> Result<Vec<lsp::SourceLspCodeAction>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.find_code_actions(preview, request))
+        .await
+        .map_err(|error| format!("Source LSP code action task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn find_source_lsp_references(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
     preview: lsp::SourceLspPreview,
@@ -3150,6 +3162,7 @@ fn main() {
             find_source_lsp_type_definitions,
             format_source_with_lsp,
             rename_source_with_lsp,
+            find_source_lsp_code_actions,
             find_source_lsp_references,
             find_source_lsp_hover,
             find_source_lsp_symbols,
