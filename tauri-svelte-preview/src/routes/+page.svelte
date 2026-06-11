@@ -6053,7 +6053,7 @@
 <main
   class="shell"
   class:side-right={sidePanePosition === 'right'}
-  style={`--side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px`}
+  style={`--accent: #5ce2cf; --side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px`}
 >
   <aside class="activity-shell" aria-label="Workspace browser">
     <nav class="activity-rail" aria-label="Workspace views">
@@ -6694,7 +6694,11 @@
               {#if filteredWorkspaceSnapshots.length > 0}
                 <div class="workspace-snapshot-list">
                   {#each filteredWorkspaceSnapshots as snapshot (snapshot.id)}
-                    <div class="workspace-snapshot-row" title={snapshot.cwd}>
+                    <div
+                      class="workspace-snapshot-row"
+                      class:active={activeWorkspaceSessionKey === snapshot.id}
+                      title={snapshot.cwd}
+                    >
                       <button
                         type="button"
                         aria-label={`Restore ${snapshot.title}`}
@@ -6766,7 +6770,11 @@
             {#if filteredProjectAgentSessions.length > 0}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-                <div class="activity-session-row conversation-session-row" title={agentSessionResumePlan(session)}>
+                <div
+                  class="activity-session-row conversation-session-row"
+                  class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}
+                  title={agentSessionResumePlan(session)}
+                >
                   <button
                     type="button"
                     class="conversation-session-open"
@@ -9227,6 +9235,11 @@
     background: rgba(92, 226, 207, 0.045);
   }
 
+  .workspace-snapshot-row.active {
+    border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+    background: rgba(92, 226, 207, 0.095);
+  }
+
   .workspace-snapshot-row > button {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -9277,6 +9290,11 @@
 
   .conversation-session-row {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .conversation-session-row.active {
+    border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+    background: rgba(92, 226, 207, 0.085);
   }
 
   .conversation-session-open {

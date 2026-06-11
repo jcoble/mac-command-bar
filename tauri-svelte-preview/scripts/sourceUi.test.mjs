@@ -51,6 +51,8 @@ assertDeclaration('.context-pane-resizer', 'cursor: col-resize');
 assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer', 'cursor: row-resize');
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
+assertDeclaration('.workspace-snapshot-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
+assertDeclaration('.conversation-session-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
 assertDeclaration('.conversation-session-open', 'grid-template-columns: auto minmax(0, 1fr)');
 assert.ok(pageSource.includes('min-height: 58px'), 'Worktree rows should have stable dense height');
 assertDeclaration('.activity-filter-box', 'grid-template-columns: 18px minmax(0, 1fr)');
@@ -174,6 +176,8 @@ assert.ok(pageSource.includes('function loadStoredActiveWorkspaceSessionKey'), '
 assert.ok(pageSource.includes('function persistActiveWorkspaceSessionKey'), 'Workspace should persist active conversation switches');
 assert.ok(pageSource.includes('captureActiveWorkspaceBeforeSwitch();'), 'Conversation switching should save the previous active workspace first');
 assert.ok(pageSource.includes('activeWorkspaceSessionKey = workspaceSnapshotIDForAgentSession(session);'), 'Opening a conversation should mark it as active');
+assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === snapshot.id}'), 'Saved workspace rows should show the active workspace');
+assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}'), 'Conversation session rows should show the active workspace');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
 assert.ok(pageSource.includes('function shouldRenderContextCard'), 'Workspace should render stacked context cards through one predicate');
