@@ -1,6 +1,6 @@
-export type PasteCleanupMode = 'plain' | 'compact' | 'prompt';
+export type PasteCleanupMode = 'plain' | 'compact' | 'prompt' | 'reply';
 
-export const pasteCleanupModes: PasteCleanupMode[] = ['plain', 'compact', 'prompt'];
+export const pasteCleanupModes: PasteCleanupMode[] = ['plain', 'compact', 'prompt', 'reply'];
 
 export function cleanupPasteText(input: string, mode: PasteCleanupMode): string {
   const normalized = normalizePastedText(input);
@@ -10,6 +10,8 @@ export function cleanupPasteText(input: string, mode: PasteCleanupMode): string 
       return normalized.replace(/\s+/g, ' ').trim();
     case 'prompt':
       return stripWrappingCodeFence(normalized).trim();
+    case 'reply':
+      return cleanupReplyPaste(normalized);
     case 'plain':
     default:
       return normalized.trim();
@@ -38,4 +40,26 @@ function stripWrappingCodeFence(input: string): string {
   const trimmed = input.trim();
   const match = /^```[^\n]*\n(?<body>[\s\S]*?)\n```$/.exec(trimmed);
   return match?.groups?.body ?? trimmed;
+}
+
+function cleanupReplyPaste(input: string): string {
+  let insideCodeFence = false;
+  const lines: string[] = [];
+
+  for (const rawLine of input.split('\n')) {
+    const line = rawLine.replace(/^ {0,3}>\s?/, '');
+    const trimmedLine = line.trim();
+
+    if (!insideCodeFence && /^(copy code|copied!)$/i.test(trimmedLine)) {
+      continue;
+    }
+
+    if (/^```/.test(trimmedLine)) {
+      insideCodeFence = !insideCodeFence;
+    }
+
+    lines.push(line);
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
