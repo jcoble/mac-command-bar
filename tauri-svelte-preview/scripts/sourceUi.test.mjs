@@ -211,6 +211,9 @@ assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace
 assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
 assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 'Workspace should capture a specific agent session context');
 assert.ok(pageSource.includes('function workspaceSnapshotEmbeddedTerminal'), 'Workspace snapshots should preserve embedded terminal context');
+assert.ok(pageSource.includes('function workspaceSnapshotViewState'), 'Workspace snapshots should preserve compact pane view state');
+assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');
+assert.ok(pageSource.includes('function workspaceSnapshotViewStateLabel'), 'Workspace restore plans should summarize saved pane view state');
 assert.ok(pageSource.includes('function captureActiveWorkspaceBeforeSwitch'), 'Workspace should refresh the active snapshot before switching conversations');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
 assert.ok(pageSource.includes('function restoreWorkspaceEmbeddedTerminal'), 'Workspace restore should reconnect a live embedded terminal when possible');

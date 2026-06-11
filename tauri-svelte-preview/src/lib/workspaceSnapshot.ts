@@ -25,6 +25,16 @@ export type WorkspaceSnapshotTerminalApp =
   | 'Ghostty'
   | 'WezTerm'
   | 'Alacritty';
+export type WorkspaceSnapshotContextPanelMode = 'grid' | 'stack';
+export type WorkspaceSnapshotContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
+export type WorkspaceSnapshotIntelligencePanel = 'problems' | 'symbols' | 'git';
+
+export type WorkspaceSnapshotViewState = {
+  contextPanelMode: WorkspaceSnapshotContextPanelMode;
+  hiddenContextCardIDs: WorkspaceSnapshotContextCardID[];
+  activeContextCardID: WorkspaceSnapshotContextCardID;
+  sourceIntelligencePanel: WorkspaceSnapshotIntelligencePanel;
+};
 
 export type WorkspaceSnapshotEmbeddedTerminal = {
   sessionID: string;
@@ -48,6 +58,7 @@ export type WorkspaceSnapshot = {
   openPaths: string[];
   sourceActivityMode: WorkspaceSnapshotActivityMode;
   sourceTerminalApp: WorkspaceSnapshotTerminalApp;
+  viewState: WorkspaceSnapshotViewState;
   embeddedTerminal: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout: SourceDockLayout;
   resumeCommand: string | null;
@@ -68,6 +79,7 @@ export type WorkspaceSnapshotInput = {
   openPaths?: string[];
   sourceActivityMode?: WorkspaceSnapshotActivityMode;
   sourceTerminalApp?: WorkspaceSnapshotTerminalApp;
+  viewState?: Partial<WorkspaceSnapshotViewState> | null;
   embeddedTerminal?: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout?: SourceDockLayout;
   resumeCommand?: string | null;
@@ -81,6 +93,7 @@ export type RestoredWorkspaceSnapshot = {
   selectedLine: number | null;
   sourceActivityMode: WorkspaceSnapshotActivityMode;
   sourceTerminalApp: WorkspaceSnapshotTerminalApp;
+  viewState: WorkspaceSnapshotViewState;
   cwd: string;
   worktreePath: string | null;
   branch: string | null;
@@ -109,6 +122,7 @@ export function createWorkspaceSnapshot(input: WorkspaceSnapshotInput): Workspac
     openPaths: normalizeOpenPaths(input.openPaths, selectedPath),
     sourceActivityMode: input.sourceActivityMode ?? 'conversations',
     sourceTerminalApp: input.sourceTerminalApp ?? 'Warp',
+    viewState: normalizeWorkspaceSnapshotViewState(input.viewState),
     embeddedTerminal: normalizeEmbeddedTerminal(input.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(input.dockLayout ?? createDefaultSourceDockLayout()),
     resumeCommand: normalizeOptionalString(input.resumeCommand),
@@ -127,6 +141,7 @@ export function restoreWorkspaceSnapshot(snapshot: WorkspaceSnapshot): RestoredW
     selectedLine: snapshot.selectedLine,
     sourceActivityMode: snapshot.sourceActivityMode,
     sourceTerminalApp: snapshot.sourceTerminalApp,
+    viewState: normalizeWorkspaceSnapshotViewState(snapshot.viewState),
     cwd: snapshot.cwd,
     worktreePath: snapshot.worktreePath,
     branch: snapshot.branch,
@@ -183,6 +198,7 @@ export function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot 
     sourceTerminalApp: isWorkspaceSnapshotTerminalApp(snapshot.sourceTerminalApp)
       ? snapshot.sourceTerminalApp
       : 'Warp',
+    viewState: normalizeWorkspaceSnapshotViewState(snapshot.viewState),
     embeddedTerminal: isWorkspaceSnapshotEmbeddedTerminal(snapshot.embeddedTerminal)
       ? snapshot.embeddedTerminal
       : null,
@@ -223,6 +239,46 @@ function isWorkspaceSnapshotTerminalApp(value: unknown): value is WorkspaceSnaps
     value === 'WezTerm' ||
     value === 'Alacritty'
   );
+}
+
+function isWorkspaceSnapshotContextPanelMode(value: unknown): value is WorkspaceSnapshotContextPanelMode {
+  return value === 'grid' || value === 'stack';
+}
+
+function isWorkspaceSnapshotContextCardID(value: unknown): value is WorkspaceSnapshotContextCardID {
+  return (
+    value === 'orchestration' ||
+    value === 'runtime' ||
+    value === 'agents' ||
+    value === 'worktrees' ||
+    value === 'repo'
+  );
+}
+
+function isWorkspaceSnapshotIntelligencePanel(value: unknown): value is WorkspaceSnapshotIntelligencePanel {
+  return value === 'problems' || value === 'symbols' || value === 'git';
+}
+
+function normalizeWorkspaceSnapshotViewState(
+  value: Partial<WorkspaceSnapshotViewState> | null | undefined
+): WorkspaceSnapshotViewState {
+  const candidate = typeof value === 'object' && value !== null ? value : {};
+  const hiddenContextCardIDs = Array.isArray(candidate.hiddenContextCardIDs)
+    ? [...new Set(candidate.hiddenContextCardIDs.filter(isWorkspaceSnapshotContextCardID))]
+    : [];
+
+  return {
+    contextPanelMode: isWorkspaceSnapshotContextPanelMode(candidate.contextPanelMode)
+      ? candidate.contextPanelMode
+      : 'grid',
+    hiddenContextCardIDs,
+    activeContextCardID: isWorkspaceSnapshotContextCardID(candidate.activeContextCardID)
+      ? candidate.activeContextCardID
+      : 'orchestration',
+    sourceIntelligencePanel: isWorkspaceSnapshotIntelligencePanel(candidate.sourceIntelligencePanel)
+      ? candidate.sourceIntelligencePanel
+      : 'symbols'
+  };
 }
 
 function isWorkspaceSnapshotEmbeddedTerminal(value: unknown): value is WorkspaceSnapshotEmbeddedTerminal {

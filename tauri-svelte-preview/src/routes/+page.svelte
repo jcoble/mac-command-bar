@@ -70,7 +70,8 @@
     upsertWorkspaceSnapshot,
     type WorkspaceSnapshot,
     type WorkspaceSnapshotEmbeddedTerminal,
-    type WorkspaceSnapshotProvider
+    type WorkspaceSnapshotProvider,
+    type WorkspaceSnapshotViewState
   } from '$lib/workspaceSnapshot';
   import {
     activateSourceDockPanel,
@@ -3695,6 +3696,7 @@
       openPaths: workspaceSnapshotOpenPathsForProject(project),
       sourceActivityMode,
       sourceTerminalApp,
+      viewState: workspaceSnapshotViewState(),
       embeddedTerminal: workspaceSnapshotEmbeddedTerminal(),
       dockLayout: sourceDockLayout,
       resumeCommand: session ? agentSessionTerminalCommand(session) : null,
@@ -3876,6 +3878,7 @@
       openPathOverflow,
       `Activity pane: ${sourceActivityLabel(snapshot.sourceActivityMode)}`,
       `Terminal app: ${snapshot.sourceTerminalApp}`,
+      `View state: ${workspaceSnapshotViewStateLabel(snapshot.viewState)}`,
       `Embedded terminal: ${embeddedTerminal}`,
       `Resume command: ${snapshot.resumeCommand ?? 'none'}`,
       `Captured: ${formatWorkspaceSnapshotTime(snapshot.capturedAt)}`
@@ -3946,6 +3949,7 @@
     persistSourceActivityMode(sourceActivityMode);
     sourceTerminalApp = restored.sourceTerminalApp;
     persistSourceTerminalApp(sourceTerminalApp);
+    applyWorkspaceSnapshotViewState(restored.viewState);
     sourceDockLayout = restored.dockLayout;
     syncSourceDockLayoutToWorkspace(sourceDockLayout);
     persistSourceDockLayout(sourceDockLayout);
@@ -3974,6 +3978,35 @@
       shell: embeddedTerminalSession.shell,
       startedAt: embeddedTerminalSession.startedAt
     };
+  }
+
+  function workspaceSnapshotViewState(): WorkspaceSnapshotViewState {
+    return {
+      contextPanelMode,
+      hiddenContextCardIDs: [...hiddenContextCardIDs],
+      activeContextCardID,
+      sourceIntelligencePanel
+    };
+  }
+
+  function applyWorkspaceSnapshotViewState(viewState: WorkspaceSnapshotViewState) {
+    contextPanelMode = viewState.contextPanelMode;
+    hiddenContextCardIDs = new Set(viewState.hiddenContextCardIDs);
+    activeContextCardID = viewState.activeContextCardID;
+    sourceIntelligencePanel = viewState.sourceIntelligencePanel;
+    persistContextPanelMode(contextPanelMode);
+    persistHiddenContextCards(hiddenContextCardIDs);
+    persistActiveContextCard(activeContextCardID);
+  }
+
+  function workspaceSnapshotViewStateLabel(viewState: WorkspaceSnapshotViewState) {
+    const hiddenCount = viewState.hiddenContextCardIDs.length;
+    return [
+      `context ${viewState.contextPanelMode}`,
+      `active ${contextCardLabels[viewState.activeContextCardID]}`,
+      hiddenCount === 0 ? 'no hidden cards' : `${hiddenCount} hidden`,
+      `insights ${viewState.sourceIntelligencePanel}`
+    ].join(' · ');
   }
 
   async function restoreWorkspaceEmbeddedTerminal(

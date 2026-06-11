@@ -33,6 +33,12 @@ const snapshot = createWorkspaceSnapshot({
   ],
   sourceActivityMode: 'conversations',
   sourceTerminalApp: 'Warp',
+  viewState: {
+    contextPanelMode: 'stack',
+    hiddenContextCardIDs: ['runtime', 'runtime', 'repo'],
+    activeContextCardID: 'agents',
+    sourceIntelligencePanel: 'git'
+  },
   dockLayout,
   embeddedTerminal: {
     sessionID: 'terminal-123',
@@ -61,6 +67,12 @@ assert.deepEqual(snapshot.openPaths, [
   '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/src/App.ts',
   '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/src/routes/+page.svelte'
 ]);
+assert.deepEqual(snapshot.viewState, {
+  contextPanelMode: 'stack',
+  hiddenContextCardIDs: ['runtime', 'repo'],
+  activeContextCardID: 'agents',
+  sourceIntelligencePanel: 'git'
+});
 assert.equal(snapshot.dockLayout.activePanelByGroup.right, 'context');
 
 const restored = restoreWorkspaceSnapshot(snapshot);
@@ -72,6 +84,7 @@ assert.equal(restored.selectedPath, '/Users/blackcolours/dev/work/worktrees/EdiP
 assert.equal(restored.selectedLine, 43);
 assert.equal(restored.sourceActivityMode, 'conversations');
 assert.equal(restored.sourceTerminalApp, 'Warp');
+assert.deepEqual(restored.viewState, snapshot.viewState);
 assert.equal(restored.cwd, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center');
 assert.deepEqual(restored.embeddedTerminal, snapshot.embeddedTerminal);
 assert.equal(restored.dockLayout.activePanelByGroup.right, 'context');
@@ -113,6 +126,12 @@ assert.equal(
 
 const storedSnapshot = parseStoredWorkspaceSnapshot({
   ...snapshot,
+  viewState: {
+    contextPanelMode: 'stack',
+    hiddenContextCardIDs: ['runtime', 'bad-card', 'repo'],
+    activeContextCardID: 'worktrees',
+    sourceIntelligencePanel: 'symbols'
+  },
   embeddedTerminal: {
     sessionID: 'terminal-456',
     cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center',
@@ -121,6 +140,16 @@ const storedSnapshot = parseStoredWorkspaceSnapshot({
   }
 });
 
+assert.deepEqual(
+  storedSnapshot?.viewState,
+  {
+    contextPanelMode: 'stack',
+    hiddenContextCardIDs: ['runtime', 'repo'],
+    activeContextCardID: 'worktrees',
+    sourceIntelligencePanel: 'symbols'
+  },
+  'stored snapshots should preserve normalized workspace view state'
+);
 assert.deepEqual(
   storedSnapshot?.embeddedTerminal,
   {
