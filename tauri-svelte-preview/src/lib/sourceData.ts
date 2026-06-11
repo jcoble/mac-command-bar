@@ -149,6 +149,16 @@ export type SourceSignatureHelp = {
   activeParameter: number;
 };
 
+export type SourceInlayHint = {
+  label: string;
+  tooltip: string;
+  kind: 'type' | 'parameter' | 'other';
+  line: number;
+  column: number;
+  paddingLeft: boolean;
+  paddingRight: boolean;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {

@@ -137,6 +137,7 @@
     type SourceSearchMatch,
     type SourceCompletionItem,
     type SourceDiagnostic,
+    type SourceInlayHint,
     type SourceLspHover,
     type SourceLspStatus,
     type SourceRenameFileEdit,
@@ -160,6 +161,7 @@
     findSourceLspDefinitionsFromTauri,
     findSourceLspDocumentHighlightsFromTauri,
     findSourceLspHoverFromTauri,
+    findSourceLspInlayHintsFromTauri,
     findSourceLspImplementationsFromTauri,
     findSourceLspReferencesFromTauri,
     findSourceLspSignatureHelpFromTauri,
@@ -296,6 +298,12 @@
     symbolName: string;
     line: number;
     column: number;
+  };
+  type SourceEditorInlayHintLookupRequest = {
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
   type SourceActivityMode =
@@ -5648,6 +5656,28 @@
     }
   }
 
+  async function handleEditorInlayHintLookup(
+    request: SourceEditorInlayHintLookupRequest
+  ): Promise<SourceInlayHint[]> {
+    if (!preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
+        (await findSourceLspInlayHintsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.startLine,
+            column: request.startColumn,
+            limit: 200
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async function handleEditorCodeActionLookup(
     request: SourceCodeActionLookupRequest
   ): Promise<SourceCodeAction[]> {
@@ -9895,6 +9925,7 @@
                 onGoToLineRequest={openCurrentFileGoToLine}
                 onHoverLookup={handleEditorHoverLookup}
                 onImplementationLookup={handleEditorImplementationLookup}
+                onInlayHintLookup={handleEditorInlayHintLookup}
                 onProblemsRequest={() => showEditorInsightPanel('problems')}
                 onQuickOpenRequest={openQuickOpen}
                 onReferenceLookup={handleEditorReferenceLookup}

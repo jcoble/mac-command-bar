@@ -18,6 +18,7 @@
 		type SourceDiagnosticSeverity,
 		type SourceDefinitionTarget,
 		type SourceDocumentHighlight,
+		type SourceInlayHint,
 		type SourcePreview,
 		type SourceReferenceTarget,
 		type SourceRenameResult,
@@ -84,6 +85,17 @@
 		request: SourceEditorLookupRequest
 	) => SourceSignatureHelp | Promise<SourceSignatureHelp | null> | null | undefined;
 
+	type SourceEditorInlayHintLookupRequest = {
+		startLine: number;
+		startColumn: number;
+		endLine: number;
+		endColumn: number;
+	};
+
+	type SourceEditorInlayHintLookup = (
+		request: SourceEditorInlayHintLookupRequest
+	) => SourceInlayHint[] | Promise<SourceInlayHint[] | null> | null | undefined;
+
 	type SourceEditorFormatDocument = () =>
 		| SourceTextEdit[]
 		| Promise<SourceTextEdit[]>
@@ -127,6 +139,7 @@
 		onReferenceLookup?: SourceEditorReferenceLookup;
 		onRename?: SourceEditorRename;
 		onSaveRequest?: () => void;
+		onInlayHintLookup?: SourceEditorInlayHintLookup;
 		onSignatureHelpLookup?: SourceEditorSignatureHelpLookup;
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
@@ -159,6 +172,7 @@
 		onReferenceLookup,
 		onRename,
 		onSaveRequest,
+		onInlayHintLookup,
 		onSignatureHelpLookup,
 		onSymbolsRequest,
 		onSymbolsChange,
@@ -182,6 +196,7 @@
 	let renameProviderDisposable: Monaco.IDisposable | null = null;
 	let codeActionProviderDisposable: Monaco.IDisposable | null = null;
 	let signatureHelpProviderDisposable: Monaco.IDisposable | null = null;
+	let inlayHintsProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -493,6 +508,29 @@
 		);
 	}
 
+	function registerSourceInlayHintsProvider(monaco: typeof Monaco) {
+		inlayHintsProviderDisposable?.dispose();
+		inlayHintsProviderDisposable = monaco.languages.registerInlayHintsProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				displayName: "MacCommandBar LSP",
+				provideInlayHints: async (_model, range) => {
+					const hints = await onInlayHintLookup?.({
+						startLine: range.startLineNumber,
+						startColumn: range.startColumn,
+						endLine: range.endLineNumber,
+						endColumn: range.endColumn,
+					});
+
+					return {
+						hints: (hints ?? []).map((hint) => sourceInlayHintToMonacoHint(monaco, hint)),
+						dispose() {},
+					};
+				},
+			}
+		);
+	}
+
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
@@ -629,6 +667,30 @@
 					documentation: parameter.documentation ? { value: parameter.documentation } : undefined,
 				})),
 			})),
+		};
+	}
+
+	function sourceInlayHintToMonacoHint(
+		monaco: typeof Monaco,
+		hint: SourceInlayHint
+	): Monaco.languages.InlayHint {
+		const kind =
+			hint.kind === "parameter"
+				? monaco.languages.InlayHintKind.Parameter
+				: hint.kind === "type"
+					? monaco.languages.InlayHintKind.Type
+					: undefined;
+
+		return {
+			label: hint.label,
+			tooltip: hint.tooltip ? { value: hint.tooltip } : undefined,
+			kind,
+			position: {
+				lineNumber: Math.max(1, hint.line),
+				column: Math.max(1, hint.column),
+			},
+			paddingLeft: hint.paddingLeft,
+			paddingRight: hint.paddingRight,
 		};
 	}
 
@@ -1197,6 +1259,7 @@
 		registerSourceRenameProvider(monaco);
 		registerSourceCodeActionProvider(monaco);
 		registerSourceSignatureHelpProvider(monaco);
+		registerSourceInlayHintsProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -1237,6 +1300,9 @@
 				verticalScrollbarSize: 12,
 			},
 			"semanticHighlighting.enabled": true,
+			inlayHints: {
+				enabled: "on",
+			},
 			smoothScrolling: true,
 			stickyScroll: { enabled: false },
 			tabSize: 4,
@@ -1422,6 +1488,7 @@
 		renameProviderDisposable?.dispose();
 		codeActionProviderDisposable?.dispose();
 		signatureHelpProviderDisposable?.dispose();
+		inlayHintsProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();

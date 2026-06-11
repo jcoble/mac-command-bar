@@ -113,6 +113,18 @@ pub(crate) struct SourceLspSignatureHelp {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspInlayHint {
+    label: String,
+    tooltip: String,
+    kind: String,
+    line: usize,
+    column: usize,
+    padding_left: bool,
+    padding_right: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspDiagnostic {
     severity: String,
     message: String,
@@ -404,6 +416,19 @@ impl SourceLspRegistry {
         };
 
         Ok(lsp_signature_help_from_result(&result))
+    }
+
+    pub(crate) fn find_inlay_hints(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Vec<SourceLspInlayHint>, String> {
+        let limit = request.limit.unwrap_or(200);
+        let Some(result) = self.request(&preview, &request, "textDocument/inlayHint")? else {
+            return Ok(Vec::new());
+        };
+
+        Ok(lsp_inlay_hints_from_result(&result, limit))
     }
 
     pub(crate) fn find_symbols(
@@ -761,6 +786,10 @@ impl SourceLspSession {
                     "insertFinalNewline": true,
                     "trimFinalNewlines": true
                 }
+            }),
+            "textDocument/inlayHint" => json!({
+                "textDocument": { "uri": file_uri },
+                "range": lsp_full_document_range(preview)
             }),
             _ => json!({
                 "textDocument": { "uri": file_uri },
@@ -1178,6 +1207,29 @@ fn lsp_code_action_range(request: &SourceLspCodeActionRequest) -> Value {
     })
 }
 
+fn lsp_full_document_range(preview: &SourceLspPreview) -> Value {
+    let line_count = preview.line_count.max(1);
+    json!({
+        "start": {
+            "line": 0,
+            "character": 0
+        },
+        "end": {
+            "line": line_count.saturating_sub(1),
+            "character": last_line_utf16_len(&preview.content)
+        }
+    })
+}
+
+fn last_line_utf16_len(content: &str) -> usize {
+    content
+        .rsplit_once('\n')
+        .map(|(_, last_line)| last_line)
+        .unwrap_or(content)
+        .encode_utf16()
+        .count()
+}
+
 fn lsp_code_action_diagnostic(diagnostic: &SourceLspCodeActionDiagnostic) -> Value {
     json!({
         "range": {
@@ -1238,6 +1290,18 @@ fn lsp_client_capabilities() -> Value {
                     "parameterInformation": {
                         "labelOffsetSupport": true
                     }
+                }
+            },
+            "inlayHint": {
+                "dynamicRegistration": false,
+                "resolveSupport": {
+                    "properties": [
+                        "tooltip",
+                        "textEdits",
+                        "label.tooltip",
+                        "label.location",
+                        "label.command"
+                    ]
                 }
             },
             "definition": {
@@ -1336,6 +1400,88 @@ fn lsp_signature_help_from_result(result: &Value) -> Option<SourceLspSignatureHe
             .unwrap_or(0) as usize,
         signatures,
     })
+}
+
+fn lsp_inlay_hints_from_result(result: &Value, limit: usize) -> Vec<SourceLspInlayHint> {
+    let Some(items) = result.as_array() else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(lsp_inlay_hint_from_value)
+        .take(limit)
+        .collect()
+}
+
+fn lsp_inlay_hint_from_value(value: &Value) -> Option<SourceLspInlayHint> {
+    let position = value.get("position")?;
+    let label = lsp_inlay_hint_label(value.get("label")?);
+    if label.trim().is_empty() {
+        return None;
+    }
+    let mut tooltip = lsp_documentation_from_value(value.get("tooltip"));
+    if tooltip.is_empty() {
+        tooltip = lsp_inlay_hint_label_tooltip(value.get("label"));
+    }
+
+    Some(SourceLspInlayHint {
+        label,
+        tooltip,
+        kind: lsp_inlay_hint_kind(value.get("kind").and_then(Value::as_u64)).to_string(),
+        line: position.get("line")?.as_u64()? as usize + 1,
+        column: position.get("character")?.as_u64()? as usize + 1,
+        padding_left: value
+            .get("paddingLeft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        padding_right: value
+            .get("paddingRight")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn lsp_inlay_hint_label(value: &Value) -> String {
+    if let Some(label) = value.as_str() {
+        return label.to_string();
+    }
+
+    value
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.get("value").and_then(Value::as_str))
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
+fn lsp_inlay_hint_label_tooltip(value: Option<&Value>) -> String {
+    let Some(Value::Array(parts)) = value else {
+        return String::new();
+    };
+
+    parts
+        .iter()
+        .find_map(|part| {
+            let tooltip = lsp_documentation_from_value(part.get("tooltip"));
+            if tooltip.is_empty() {
+                None
+            } else {
+                Some(tooltip)
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn lsp_inlay_hint_kind(kind: Option<u64>) -> &'static str {
+    match kind {
+        Some(1) => "type",
+        Some(2) => "parameter",
+        _ => "other",
+    }
 }
 
 fn lsp_signature_from_value(value: &Value) -> Option<SourceLspSignature> {
@@ -2191,6 +2337,14 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("inlayHint"))
+                .and_then(|inlay_hint| inlay_hint.get("dynamicRegistration"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]
@@ -2423,6 +2577,52 @@ mod tests {
                     ],
                 }],
             })
+        );
+    }
+
+    #[test]
+    fn extracts_inlay_hints() {
+        let result = json!([
+            {
+                "position": { "line": 8, "character": 16 },
+                "label": ": string",
+                "kind": 1,
+                "tooltip": { "kind": "markdown", "value": "Inferred type" },
+                "paddingLeft": true
+            },
+            {
+                "position": { "line": 10, "character": 22 },
+                "label": [
+                    { "value": "value", "tooltip": "Parameter name" },
+                    { "value": ": " }
+                ],
+                "kind": 2,
+                "paddingRight": true
+            }
+        ]);
+
+        assert_eq!(
+            lsp_inlay_hints_from_result(&result, 10),
+            vec![
+                SourceLspInlayHint {
+                    label: ": string".to_string(),
+                    tooltip: "Inferred type".to_string(),
+                    kind: "type".to_string(),
+                    line: 9,
+                    column: 17,
+                    padding_left: true,
+                    padding_right: false,
+                },
+                SourceLspInlayHint {
+                    label: "value: ".to_string(),
+                    tooltip: "Parameter name".to_string(),
+                    kind: "parameter".to_string(),
+                    line: 11,
+                    column: 23,
+                    padding_left: false,
+                    padding_right: true,
+                },
+            ]
         );
     }
 

@@ -5,6 +5,7 @@ import type {
   SourceCompletionItem,
   SourceDefinitionTarget,
   SourceDocumentHighlight,
+  SourceInlayHint,
   SourceLspCodeActionRequest,
   SourceLspHover,
   SourceLspLookupRequest,
@@ -838,6 +839,21 @@ export async function findSourceLspSignatureHelpFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceSignatureHelp | null>('find_source_lsp_signature_help', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspInlayHintsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceInlayHint[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceInlayHint[]>('find_source_lsp_inlay_hints', {
     preview,
     request
   });

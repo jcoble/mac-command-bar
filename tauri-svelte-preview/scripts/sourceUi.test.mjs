@@ -762,6 +762,10 @@ assert.ok(
   'Editor should map native completion items into Monaco suggestions'
 );
 assert.ok(
+  editorSource.includes('sourceInlayHintToMonacoHint'),
+  'Editor should map native inlay hints into Monaco hints'
+);
+assert.ok(
   editorSource.includes('sourceSymbolToDocumentSymbol'),
   'Editor should map source symbols into Monaco document symbols'
 );
@@ -850,6 +854,10 @@ assert.ok(
   editorSource.includes('onCompletionLookup?: SourceEditorCompletionLookup'),
   'Editor should return native completion items to Monaco'
 );
+assert.ok(
+  editorSource.includes('onInlayHintLookup?: SourceEditorInlayHintLookup'),
+  'Editor should return native inlay hints to Monaco'
+);
 assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the symbol under the cursor');
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
@@ -901,6 +909,7 @@ assert.ok(pageSource.includes('renameSourceWithLspFromTauri'), 'Source page shou
 assert.ok(pageSource.includes('findSourceLspCodeActionsFromTauri'), 'Source page should use LSP code actions');
 assert.ok(pageSource.includes('findSourceLspCompletionsFromTauri'), 'Source page should use LSP for completion lookup');
 assert.ok(pageSource.includes('findSourceLspSignatureHelpFromTauri'), 'Source page should use LSP signature help');
+assert.ok(pageSource.includes('findSourceLspInlayHintsFromTauri'), 'Source page should use LSP inlay hints');
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
 assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
@@ -928,6 +937,7 @@ assert.ok(pageSource.includes('function handleEditorTypeDefinitionLookup'), 'Sou
 assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source page should receive editor completion lookup requests');
 assert.ok(pageSource.includes('function handleEditorCodeActionLookup'), 'Source page should receive editor code action requests');
 assert.ok(pageSource.includes('function handleEditorSignatureHelpLookup'), 'Source page should receive editor signature help requests');
+assert.ok(pageSource.includes('function handleEditorInlayHintLookup'), 'Source page should receive editor inlay hint requests');
 assert.ok(pageSource.includes('function handleEditorFormatDocument'), 'Source page should receive editor formatting requests');
 assert.ok(pageSource.includes('function handleEditorRename'), 'Source page should receive editor rename requests');
 assert.ok(pageSource.includes('function stageExternalWorkspaceEditDrafts'), 'Source page should stage external workspace edits as drafts');
@@ -943,6 +953,7 @@ assert.ok(pageSource.includes('onWorkspaceEditAction={handleEditorWorkspaceEditA
 assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
 assert.ok(pageSource.includes('onCodeActionLookup={handleEditorCodeActionLookup}'), 'Editor should be wired to LSP code actions');
 assert.ok(pageSource.includes('onSignatureHelpLookup={handleEditorSignatureHelpLookup}'), 'Editor should be wired to LSP signature help');
+assert.ok(pageSource.includes('onInlayHintLookup={handleEditorInlayHintLookup}'), 'Editor should be wired to LSP inlay hints');
 assert.ok(pageSource.includes('onFormatDocument={handleEditorFormatDocument}'), 'Editor should be wired to LSP document formatting');
 assert.ok(pageSource.includes('onRename={handleEditorRename}'), 'Editor should be wired to LSP rename');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
