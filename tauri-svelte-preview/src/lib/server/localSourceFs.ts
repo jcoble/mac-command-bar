@@ -26,6 +26,52 @@ type LocalSourceScanInput = {
   limit?: number | null;
 };
 
+export type LocalProjectRootValidationResult = {
+  path: string;
+  exists: boolean;
+  isDirectory: boolean;
+  isGitRepository: boolean;
+  message: string;
+};
+
+export async function validateLocalProjectRoot(root: string): Promise<LocalProjectRootValidationResult> {
+  const normalizedRoot = normalizeRootPath(root);
+  const rootStats = await stat(normalizedRoot).catch(() => null);
+
+  if (!rootStats) {
+    return {
+      path: normalizedRoot,
+      exists: false,
+      isDirectory: false,
+      isGitRepository: false,
+      message: 'Project path not found'
+    };
+  }
+
+  if (!rootStats.isDirectory()) {
+    return {
+      path: normalizedRoot,
+      exists: true,
+      isDirectory: false,
+      isGitRepository: false,
+      message: 'Project path points to a file. Choose the repository folder instead.'
+    };
+  }
+
+  const gitPath = path.join(normalizedRoot, '.git');
+  const isGitRepository = Boolean(await stat(gitPath).catch(() => null));
+
+  return {
+    path: normalizedRoot,
+    exists: true,
+    isDirectory: true,
+    isGitRepository,
+    message: isGitRepository
+      ? 'Project root ready'
+      : 'Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable.'
+  };
+}
+
 export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise<SourceScanResult> {
   const root = normalizeRootPath(input.root);
   const rootStats = await stat(root).catch((error: unknown) => {

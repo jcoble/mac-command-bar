@@ -334,8 +334,8 @@ assert.ok(pageSource.includes('function sourceProjectNameForWorktree'), 'Worktre
 assert.ok(pageSource.includes('function openWorktreeInSourceBrowser'), 'Worktree rows should open worktrees as source browser roots');
 assert.ok(pageSource.includes('validateProjectRootFromTauri'), 'Project onboarding should validate roots through the native bridge');
 assert.ok(pageSource.includes('async function validateProjectRootBeforeAdd'), 'Project onboarding should validate roots before persisting them');
-assert.ok(pageSource.includes('projectFormError = validation.message'), 'Invalid project roots should show the native validation message');
-assert.ok(pageSource.includes('if (!validation.isGitRepository)'), 'Non-Git project roots should warn without blocking source browsing');
+assert.ok(pageSource.includes("projectFormError = fileActionStatus || 'Could not validate project root'"), 'Invalid project roots should show the validation message');
+assert.ok(pageSource.includes('report || !validation.isGitRepository'), 'Non-Git project roots should warn without blocking source browsing');
 assert.ok(pageSource.includes('await validateProjectRootBeforeAdd(nextProject)'), 'Project onboarding should wait for validation before adding a root');
 assert.ok(pageSource.includes('void addCustomProjectRoot(projectNameInput, projectPathInput, true)'), 'Project form submission should run async root onboarding');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Worktree panel should copy a guarded cleanup script');
@@ -371,6 +371,10 @@ assert.ok(pageSource.includes('function sourceScanDiagnosticBrief'), 'Source sca
 assert.ok(pageSource.includes('function copySourceScanDiagnosticBrief'), 'Source scan diagnostics should be copyable');
 assert.ok(pageSource.includes('aria-label="Copy source scan diagnostic"'), 'Tree scan summary should expose a copy diagnostic action');
 assert.ok(pageSource.includes('Scan diagnostic copied'), 'Source scan diagnostic copy should confirm success');
+assert.ok(
+  pageSource.includes('Root validation: ${selectedProjectRootValidationSummary}'),
+  'Source scan diagnostic should include project root validation'
+);
 assert.ok(pageSource.includes('function resetProjectOnboardingScanState'), 'Forced project activation should clear stale onboarding scan state');
 assert.ok(pageSource.includes('delete nextSelectedSourcePaths[project.id]'), 'Forced project activation should clear stale selected source paths');
 assert.ok(pageSource.includes('sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);'), 'Forced project activation should clear stale source indexes');
@@ -465,6 +469,7 @@ assert.ok(pageSource.includes("id: 'scan-reset-index'"), 'Command palette should
 assert.ok(pageSource.includes("id: 'source-copy-scan-diagnostic'"), 'Command palette should copy a source scan diagnostic');
 assert.ok(pageSource.includes("id: 'scan-stop'"), 'Command palette should expose scan cancellation');
 assert.ok(pageSource.includes("id: 'project-add-folder'"), 'Command palette should expose project folder selection');
+assert.ok(pageSource.includes("id: 'project-validate-root'"), 'Command palette should validate the selected project root');
 assert.ok(pageSource.includes("id: 'project-open-folder'"), 'Command palette should open the current project folder');
 assert.ok(pageSource.includes("id: 'project-reveal-folder'"), 'Command palette should reveal the current project folder');
 assert.ok(pageSource.includes("id: 'project-open-terminal'"), 'Command palette should open the current project in the selected terminal');
@@ -689,6 +694,8 @@ assert.ok(pageSource.includes('tauriScan.stats'), 'Source scans should preserve 
 assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
 assert.ok(pageSource.includes('isSuspiciousSourceScanResult'), 'Source scans should share one suspicious-result predicate for repair and health');
 assert.ok(pageSource.includes('shouldRepairSuspiciousSourceScan'), 'Source scans should auto-repair suspiciously tiny indexes');
+assert.ok(pageSource.includes('shouldCacheScanResult'), 'Source scans should avoid caching failed tiny-index repair results');
+assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Source scans should clear tiny stale indexes from cache');
 assert.ok(
   pageSource.includes('fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`'),
   'Suspicious scan repair should explain that the project index is being rebuilt'

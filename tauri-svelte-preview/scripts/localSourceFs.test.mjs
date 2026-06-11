@@ -7,6 +7,7 @@ import {
   readLocalSourceFile,
   scanLocalSourceFiles,
   searchLocalSourceFiles,
+  validateLocalProjectRoot,
   writeLocalSourceFile
 } from '../src/lib/server/localSourceFs.ts';
 
@@ -19,6 +20,8 @@ try {
   await mkdir(join(root, '.vscode'), { recursive: true });
   await mkdir(join(root, 'node_modules'), { recursive: true });
   await mkdir(join(root, 'bin'), { recursive: true });
+  await mkdir(join(root, 'plain-folder'), { recursive: true });
+  await writeFile(join(root, '.git'), 'gitdir: /tmp/mcb-local-source-fake-git\n', 'utf8');
   await writeFile(
     join(root, 'src', 'Services', 'FormatResolver.cs'),
     'namespace Demo;\npublic sealed class FormatResolver {}',
@@ -30,6 +33,29 @@ try {
   await writeFile(join(root, '.vscode', 'settings.json'), '{}\n', 'utf8');
   await writeFile(join(root, 'node_modules', 'Ignored.ts'), 'export const ignored = true;\n', 'utf8');
   await writeFile(join(root, 'bin', 'Ignored.cs'), 'public sealed class Ignored {}\n', 'utf8');
+
+  assert.deepEqual(await validateLocalProjectRoot(root), {
+    path: root,
+    exists: true,
+    isDirectory: true,
+    isGitRepository: true,
+    message: 'Project root ready'
+  });
+  assert.deepEqual(await validateLocalProjectRoot(join(root, 'plain-folder')), {
+    path: join(root, 'plain-folder'),
+    exists: true,
+    isDirectory: true,
+    isGitRepository: false,
+    message:
+      'Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable.'
+  });
+  assert.deepEqual(await validateLocalProjectRoot(join(root, 'missing')), {
+    path: join(root, 'missing'),
+    exists: false,
+    isDirectory: false,
+    isGitRepository: false,
+    message: 'Project path not found'
+  });
 
   const scan = await scanLocalSourceFiles({ root, limit: 20 });
   assert.deepEqual(

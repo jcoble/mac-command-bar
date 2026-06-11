@@ -265,8 +265,12 @@ export function createSourceScanId(): string {
 export async function validateProjectRootFromTauri(
   path: string
 ): Promise<ProjectRootValidationResult | null> {
-  if (!isTauriRuntime() || !path.trim()) {
+  if (!path.trim()) {
     return null;
+  }
+
+  if (!isTauriRuntime()) {
+    return postLocalSourceBridge<ProjectRootValidationResult>('validate', { path });
   }
 
   const { invoke } = await import('@tauri-apps/api/core');

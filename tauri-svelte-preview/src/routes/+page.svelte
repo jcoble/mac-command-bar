@@ -606,6 +606,7 @@
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
   let projectRootValidating = $state(false);
+  let projectRootValidationByPath = $state<Record<string, ProjectRootValidationResult>>({});
   let quickOpenVisible = $state(false);
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
@@ -663,6 +664,12 @@
   let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
   let selectedProject = $derived(
     projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject
+  );
+  let selectedProjectRootValidation = $derived(
+    projectRootValidationByPath[projectRootValidationKey(selectedProject.path)] ?? null
+  );
+  let selectedProjectRootValidationSummary = $derived(
+    projectRootValidationSummary(selectedProjectRootValidation)
   );
   let selectedProjectIsCustom = $derived(
     customProjectRoots.some((project) => project.id === selectedProject.id)
@@ -1195,6 +1202,13 @@
       detail: 'Choose a local repository',
       disabled: choosingProjectRoot,
       perform: chooseProjectRoot
+    },
+    {
+      id: 'project-validate-root',
+      label: 'Validate project root',
+      detail: selectedProjectRootValidationSummary,
+      disabled: projectRootValidating,
+      perform: () => validateProjectRootForProject(selectedProject, true)
     },
     {
       id: 'project-open-folder',
@@ -2255,16 +2269,21 @@
         return;
       }
 
-      sourceScanCache = upsertSourceScanCacheEntry(
-        sourceScanCache,
-        project,
-        nextRecords,
-        tauriScan.limit,
-        Date.now(),
-        maxSourceScanCacheEntries,
-        tauriScan.truncated,
-        tauriScan.stats
-      );
+      const shouldCacheScanResult = !(options.skipTinyIndexRepair && suspiciousScanResult);
+      if (shouldCacheScanResult) {
+        sourceScanCache = upsertSourceScanCacheEntry(
+          sourceScanCache,
+          project,
+          nextRecords,
+          tauriScan.limit,
+          Date.now(),
+          maxSourceScanCacheEntries,
+          tauriScan.truncated,
+          tauriScan.stats
+        );
+      } else {
+        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+      }
       clearBackgroundIndexError(project.id);
 
       if (options.skipTinyIndexRepair && suspiciousScanResult) {
@@ -3142,6 +3161,7 @@
       `Project: ${selectedProject.name}`,
       `Root: ${selectedProject.path}`,
       `Root label: ${sourceContextIdentity.rootLabel}`,
+      `Root validation: ${selectedProjectRootValidationSummary}`,
       `Scan limit: ${expandedSourceScanLimit.toLocaleString()}`,
       `Indexed files: ${records.length.toLocaleString()}`,
       `Filtered files: ${filteredRecords.length.toLocaleString()}`,
@@ -8487,31 +8507,65 @@
     void addCustomProjectRoot(projectNameInput, projectPathInput, true);
   }
 
-  async function validateProjectRootBeforeAdd(project: ProjectRoot): Promise<ProjectRootValidationResult | null | false> {
+  function projectRootValidationKey(path: string) {
+    return normalizeProjectPath(path);
+  }
+
+  function rememberProjectRootValidation(validation: ProjectRootValidationResult) {
+    projectRootValidationByPath = {
+      ...projectRootValidationByPath,
+      [projectRootValidationKey(validation.path)]: validation
+    };
+  }
+
+  function projectRootValidationSummary(validation: ProjectRootValidationResult | null) {
+    if (!validation) return 'Root not checked';
+    if (!validation.exists) return `Missing root: ${validation.path}`;
+    if (!validation.isDirectory) return 'Path is a file';
+    return validation.isGitRepository ? 'Git root ready' : 'Not a Git root';
+  }
+
+  async function validateProjectRootForProject(project: ProjectRoot, report = false): Promise<ProjectRootValidationResult | null | false> {
     projectRootValidating = true;
 
     try {
       const validation = await validateProjectRootFromTauri(project.path);
-      if (!validation) return null;
+      if (!validation) {
+        if (report) {
+          fileActionStatus = 'Project root validation unavailable in this runtime';
+        }
+        return null;
+      }
+
+      rememberProjectRootValidation(validation);
 
       if (!validation.exists || !validation.isDirectory) {
-        projectFormError = validation.message;
         fileActionStatus = validation.message;
         return false;
       }
 
-      if (!validation.isGitRepository) {
+      if (report || !validation.isGitRepository) {
         fileActionStatus = validation.message;
       }
 
       return validation;
     } catch (validationError) {
-      projectFormError =
-        validationError instanceof Error ? validationError.message : 'Could not validate project root';
+      if (report) {
+        fileActionStatus =
+          validationError instanceof Error ? validationError.message : 'Could not validate project root';
+      }
       return false;
     } finally {
       projectRootValidating = false;
     }
+  }
+
+  async function validateProjectRootBeforeAdd(project: ProjectRoot): Promise<ProjectRootValidationResult | null | false> {
+    const validation = await validateProjectRootForProject(project, true);
+    if (validation === false) {
+      projectFormError = fileActionStatus || 'Could not validate project root';
+    }
+    return validation;
   }
 
   async function addCustomProjectRoot(name: string, path: string, reportDuplicate: boolean) {
@@ -8574,6 +8628,7 @@
     if (options.forceScan) {
       resetProjectOnboardingScanState(project);
     }
+    void validateProjectRootForProject(project);
     void loadProjectGitStatus(project);
     void loadGitCommitHistory(project);
     void loadRuntimeContexts(projects);

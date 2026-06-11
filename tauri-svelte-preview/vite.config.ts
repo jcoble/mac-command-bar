@@ -8,6 +8,7 @@ import {
   readLocalSourceFile,
   scanLocalSourceFiles,
   searchLocalSourceFiles,
+  validateLocalProjectRoot,
   writeLocalSourceFile
 } from './src/lib/server/localSourceFs';
 import type { SourceRecord } from './src/lib/sourceData';
@@ -40,6 +41,9 @@ function createLocalSourceBridgeMiddleware() {
     try {
       const body = await readJSONBody(request);
       switch (pathname) {
+        case '/__mcb/source/validate':
+          sendJSON(response, 200, await validateLocalProjectRoot(String(body.path ?? '')));
+          break;
         case '/__mcb/source/list':
           sendJSON(
             response,
