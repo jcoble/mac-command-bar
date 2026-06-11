@@ -312,6 +312,9 @@
   const contextPaneDefaultHeight = 260;
   const contextPaneMinHeight = 180;
   const contextPaneMaxHeight = 520;
+  const bottomDockDefaultHeight = 300;
+  const bottomDockMinHeight = 180;
+  const bottomDockMaxHeight = 620;
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-editor-canvas';
@@ -8654,6 +8657,52 @@
     persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
   }
 
+  function bottomDockPanelVisible() {
+    return shouldRenderDockPanel('terminal') || shouldRenderDockPanel('browser');
+  }
+
+  function bottomDockHeight() {
+    return clampBottomDockHeight(sourceDockGroupSize(sourceDockLayout, 'bottom'));
+  }
+
+  function clampBottomDockHeight(height: number) {
+    if (!Number.isFinite(height)) return bottomDockDefaultHeight;
+    return Math.min(bottomDockMaxHeight, Math.max(bottomDockMinHeight, Math.round(height)));
+  }
+
+  function beginBottomDockResize(event: PointerEvent) {
+    if (event.button !== 0 || typeof window === 'undefined') return;
+
+    const startY = event.clientY;
+    const startHeight = bottomDockHeight();
+    event.preventDefault();
+    markSourceLayoutCustom();
+    window.document.body.classList.add('resizing-bottom-dock');
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      persistDockGroupSize('bottom', clampBottomDockHeight(startHeight - (moveEvent.clientY - startY)));
+    };
+    const finishResize = () => {
+      window.document.body.classList.remove('resizing-bottom-dock');
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishResize);
+      window.removeEventListener('pointercancel', finishResize);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('pointercancel', finishResize);
+  }
+
+  function handleBottomDockResizerKeydown(event: KeyboardEvent) {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+
+    event.preventDefault();
+    markSourceLayoutCustom();
+    const direction = event.key === 'ArrowUp' ? 1 : -1;
+    persistDockGroupSize('bottom', clampBottomDockHeight(bottomDockHeight() + direction * 24));
+  }
+
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
     if (typeof window === 'undefined') return [];
 
@@ -9368,7 +9417,7 @@
   class="shell"
   class:side-right={sidePanePosition === 'right'}
   class:activity-hidden={!shouldRenderDockPanel('activity')}
-  style={`--accent: #5ce2cf; --side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px`}
+  style={`--accent: #5ce2cf; --side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
 >
   {#if shouldRenderDockPanel('activity')}
   <aside class="activity-shell" aria-label="Workspace browser">
@@ -12665,6 +12714,17 @@
         <span>Scan a project or choose a file from the tree.</span>
       </div>
     {/if}
+
+      {#if bottomDockPanelVisible()}
+        <button
+          class="bottom-dock-resizer"
+          type="button"
+          aria-label="Resize bottom dock"
+          title="Resize bottom dock"
+          onpointerdown={beginBottomDockResize}
+          onkeydown={handleBottomDockResizerKeydown}
+        ></button>
+      {/if}
 
       {#if shouldRenderDockPanel('terminal')}
         <section class="terminal-launchpad" aria-label="Terminal dock">
@@ -15985,6 +16045,31 @@
     user-select: none;
   }
 
+  .bottom-dock-resizer {
+    flex: 0 0 6px;
+    width: auto;
+    height: 6px;
+    min-height: 6px;
+    margin: 5px 0 0;
+    padding: 0;
+    cursor: row-resize;
+    border: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.045);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .bottom-dock-resizer:hover,
+  .bottom-dock-resizer:focus-visible {
+    outline: 0;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
+  :global(body.resizing-bottom-dock) {
+    cursor: row-resize;
+    user-select: none;
+  }
+
   .context-panel-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -16873,8 +16958,9 @@
     display: grid;
     flex: 0 0 auto;
     gap: 6px;
+    height: min(var(--bottom-dock-height), 55dvh);
     min-width: 0;
-    max-height: 392px;
+    max-height: min(var(--bottom-dock-height), 55dvh);
     margin-top: 6px;
     overflow: hidden;
     padding: 7px;
@@ -17010,8 +17096,8 @@
   }
 
   .embedded-terminal-host {
-    height: 168px;
-    min-height: 128px;
+    height: clamp(96px, calc(var(--bottom-dock-height) - 194px), 360px);
+    min-height: 96px;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 6px;
@@ -17143,8 +17229,9 @@
     grid-template-rows: auto auto auto minmax(0, 1fr);
     flex: 0 0 auto;
     gap: 6px;
+    height: min(var(--bottom-dock-height), 55dvh);
     min-width: 0;
-    max-height: 428px;
+    max-height: min(var(--bottom-dock-height), 55dvh);
     margin-top: 6px;
     overflow: hidden;
     padding: 7px;
@@ -17303,9 +17390,9 @@
   }
 
   .browser-frame-wrap {
-    min-height: 280px;
+    min-height: 128px;
     min-width: 0;
-    height: 280px;
+    height: clamp(128px, calc(var(--bottom-dock-height) - 122px), 520px);
     overflow: hidden;
     border: 1px solid rgba(92, 226, 207, 0.11);
     border-radius: 7px;
@@ -17316,7 +17403,7 @@
     display: block;
     width: 100%;
     height: 100%;
-    min-height: 280px;
+    min-height: 128px;
     border: 0;
     background: #101414;
   }
