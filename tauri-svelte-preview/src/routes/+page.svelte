@@ -196,6 +196,7 @@
   const sourceLayoutVersionStorageKey = 'mac-command-bar.source-browser.layout-version';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const sourceDockLayoutStorageKey = 'mac-command-bar.source-browser.dock-layout';
+  const activeWorkspaceSessionStorageKey = 'mac-command-bar.source-browser.active-workspace-session';
   const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
   const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
   const contextPanelPlacementStorageKey = 'mac-command-bar.source-browser.context-panel-placement';
@@ -382,6 +383,7 @@
   let recentSourceRecords = $state<SourceRecentRecord[]>([]);
   let openSourceTabs = $state<SourceOpenTab[]>([]);
   let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
+  let activeWorkspaceSessionKey = $state<string | null>(null);
   let sourceScanCache = $state<SourceScanCache>({});
   let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
   let backgroundIndexErrorByProject = $state<Record<string, string>>({});
@@ -2609,6 +2611,17 @@
     return captureWorkspaceSnapshot(session);
   }
 
+  function captureActiveWorkspaceBeforeSwitch() {
+    if (!activeWorkspaceSessionKey) return;
+
+    const activeSession = agentSessions.find(
+      (session) => workspaceSnapshotIDForAgentSession(session) === activeWorkspaceSessionKey
+    );
+    if (!activeSession) return;
+
+    captureAgentSessionWorkspaceSnapshot(activeSession);
+  }
+
   function captureWorkspaceSnapshot(session: AgentSession | null): WorkspaceSnapshot {
     const cwd = session?.projectPath ?? selectedProject.path;
     const project = workspaceSnapshotProjectForSession(session);
@@ -2653,8 +2666,11 @@
   }
 
   async function openAgentSessionWorkspace(session: AgentSession) {
+    captureActiveWorkspaceBeforeSwitch();
     const snapshot = workspaceSnapshotForAgentSession(session) ?? captureAgentSessionWorkspaceSnapshot(session);
     await restoreConversationWorkspaceSnapshot(snapshot);
+    activeWorkspaceSessionKey = workspaceSnapshotIDForAgentSession(session);
+    persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
   }
 
   async function openWorkspaceSnapshotTerminal(snapshot: WorkspaceSnapshot) {
@@ -2713,6 +2729,10 @@
     const nextSnapshots = workspaceSnapshots.filter((candidate) => candidate.id !== snapshot.id);
     workspaceSnapshots = nextSnapshots;
     persistWorkspaceSnapshots(nextSnapshots);
+    if (activeWorkspaceSessionKey === snapshot.id) {
+      activeWorkspaceSessionKey = null;
+      persistActiveWorkspaceSessionKey(null);
+    }
     fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
   }
 
@@ -2733,6 +2753,8 @@
     sourceDockLayout = restored.dockLayout;
     syncSourceDockLayoutToWorkspace(sourceDockLayout);
     persistSourceDockLayout(sourceDockLayout);
+    activeWorkspaceSessionKey = snapshot.id;
+    persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
     fileActionStatus = `Workspace restored: ${snapshot.title}`;
 
     await activateWorkspaceSnapshotProject(project);
@@ -5440,6 +5462,22 @@
     window.localStorage.setItem(snapshotStorageKey, JSON.stringify(snapshots));
   }
 
+  function loadStoredActiveWorkspaceSessionKey(): string | null {
+    if (typeof window === 'undefined') return null;
+    const storedKey = window.localStorage.getItem(activeWorkspaceSessionStorageKey)?.trim();
+    return storedKey ? storedKey : null;
+  }
+
+  function persistActiveWorkspaceSessionKey(sessionKey: string | null) {
+    if (typeof window === 'undefined') return;
+    const normalizedKey = sessionKey?.trim();
+    if (normalizedKey) {
+      window.localStorage.setItem(activeWorkspaceSessionStorageKey, normalizedKey);
+    } else {
+      window.localStorage.removeItem(activeWorkspaceSessionStorageKey);
+    }
+  }
+
   function loadStoredSelectedProjectID(roots: ProjectRoot[]): string {
     if (typeof window === 'undefined') return initialProject.id;
 
@@ -5919,6 +5957,7 @@
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedWorkspaceSnapshots = loadStoredWorkspaceSnapshots();
+    const storedActiveWorkspaceSessionKey = loadStoredActiveWorkspaceSessionKey();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
@@ -5948,6 +5987,7 @@
     recentSourceRecords = storedRecentSourceRecords;
     openSourceTabs = storedOpenSourceTabs;
     workspaceSnapshots = storedWorkspaceSnapshots;
+    activeWorkspaceSessionKey = storedActiveWorkspaceSessionKey;
     selectedProjectID = storedProject.id;
     sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;

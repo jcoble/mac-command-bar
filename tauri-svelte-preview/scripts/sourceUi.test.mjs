@@ -95,6 +95,7 @@ assert.ok(pageSource.includes('sourceLayoutVersionStorageKey'), 'Source shell sh
 assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes('sourceDockLayoutStorageKey'), 'Workspace should persist dock layout state');
 assert.ok(pageSource.includes('snapshotStorageKey'), 'Workspace should persist conversation workspace snapshots');
+assert.ok(pageSource.includes('activeWorkspaceSessionStorageKey'), 'Workspace should persist the active conversation session key');
 assert.ok(pageSource.includes('contextPanelModeStorageKey'), 'Workspace should persist the context card layout mode');
 assert.ok(pageSource.includes('contextPanelPlacementStorageKey'), 'Workspace should persist the context card placement');
 assert.ok(pageSource.includes('hiddenContextCardsStorageKey'), 'Workspace should persist hidden context cards');
@@ -127,6 +128,7 @@ assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should tr
 assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('let embeddedTerminalSession'), 'Source shell should track an embedded terminal session');
 assert.ok(pageSource.includes('let workspaceSnapshots'), 'Source shell should track conversation workspace snapshots');
+assert.ok(pageSource.includes('let activeWorkspaceSessionKey'), 'Source shell should track the active conversation workspace');
 assert.ok(pageSource.includes('let embeddedTerminalElement'), 'Source shell should bind the embedded terminal host');
 assert.ok(pageSource.includes('let contextPanelMode'), 'Workspace should track the context card layout mode');
 assert.ok(pageSource.includes('let contextPanelPlacement'), 'Workspace should track context card placement');
@@ -153,6 +155,7 @@ assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace sh
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
 assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
 assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 'Workspace should capture a specific agent session context');
+assert.ok(pageSource.includes('function captureActiveWorkspaceBeforeSwitch'), 'Workspace should refresh the active snapshot before switching conversations');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
 assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
 assert.ok(pageSource.includes('function openAgentSessionWorkspace'), 'Conversation rows should open their saved workspace on row click');
@@ -167,6 +170,10 @@ assert.ok(pageSource.includes('function activateWorkspaceSnapshotProject'), 'Wor
 assert.ok(pageSource.includes('function sourceRecordFromRestoredPath'), 'Workspace restore should reopen saved paths even when they are missing from the index');
 assert.ok(pageSource.includes('function sourceLanguageForRestoredPath'), 'Workspace restore should infer language for direct saved-path previews');
 assert.ok(pageSource.includes('function persistWorkspaceSnapshots'), 'Workspace should persist captured conversation contexts');
+assert.ok(pageSource.includes('function loadStoredActiveWorkspaceSessionKey'), 'Workspace should restore the active conversation key');
+assert.ok(pageSource.includes('function persistActiveWorkspaceSessionKey'), 'Workspace should persist active conversation switches');
+assert.ok(pageSource.includes('captureActiveWorkspaceBeforeSwitch();'), 'Conversation switching should save the previous active workspace first');
+assert.ok(pageSource.includes('activeWorkspaceSessionKey = workspaceSnapshotIDForAgentSession(session);'), 'Opening a conversation should mark it as active');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
 assert.ok(pageSource.includes('function shouldRenderContextCard'), 'Workspace should render stacked context cards through one predicate');
