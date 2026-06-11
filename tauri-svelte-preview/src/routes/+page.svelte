@@ -2317,6 +2317,18 @@
     return scanProject(project, selectedSourcePaths[project.id], { force: true, limit });
   }
 
+  function resetProjectOnboardingScanState(project: ProjectRoot) {
+    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+    clearBackgroundIndexError(project.id);
+
+    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    delete nextSelectedSourcePaths[project.id];
+    selectedSourcePaths = nextSelectedSourcePaths;
+    persistSelectedSourcePaths(nextSelectedSourcePaths);
+
+    clearSourceRecordsForIncomingProject(project, true);
+  }
+
   function sourceOnboardingScanStatus(project: ProjectRoot) {
     return `Scanning ${project.name} up to ${expandedSourceScanLimit.toLocaleString()} source files`;
   }
@@ -8335,6 +8347,9 @@
     const projects = options.projects ?? projectOptions;
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
+    if (options.forceScan) {
+      resetProjectOnboardingScanState(project);
+    }
     void loadProjectGitStatus(project);
     void loadGitCommitHistory(project);
     void loadRuntimeContexts(projects);

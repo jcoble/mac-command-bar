@@ -352,6 +352,10 @@ assert.ok(pageSource.includes('function sourceScanDiagnosticBrief'), 'Source sca
 assert.ok(pageSource.includes('function copySourceScanDiagnosticBrief'), 'Source scan diagnostics should be copyable');
 assert.ok(pageSource.includes('aria-label="Copy source scan diagnostic"'), 'Tree scan summary should expose a copy diagnostic action');
 assert.ok(pageSource.includes('Scan diagnostic copied'), 'Source scan diagnostic copy should confirm success');
+assert.ok(pageSource.includes('function resetProjectOnboardingScanState'), 'Forced project activation should clear stale onboarding scan state');
+assert.ok(pageSource.includes('delete nextSelectedSourcePaths[project.id]'), 'Forced project activation should clear stale selected source paths');
+assert.ok(pageSource.includes('sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);'), 'Forced project activation should clear stale source indexes');
+assert.ok(pageSource.includes('resetProjectOnboardingScanState(project);'), 'Project activation should run the stale scan reset helper');
 assert.ok(pageSource.includes("class:side-right={sidePanePosition === 'right'}"), 'Source shell should support moving the side pane to the right');
 assert.ok(pageSource.includes("class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}"), 'Workspace should support top context placement only when the context dock is active');
 assert.ok(pageSource.includes("class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}"), 'Workspace should support side context placement only when the context dock is active');
