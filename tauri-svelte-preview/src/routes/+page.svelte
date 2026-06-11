@@ -39,6 +39,7 @@
     type PasteCleanupMode
   } from '$lib/pasteCleanup';
   import {
+    orchestrationAgentActivityItems,
     orchestrationArtifactChips,
     orchestrationAttentionQueue,
     orchestrationCurrentActivity,
@@ -8511,6 +8512,7 @@
                 {@const runMetrics = orchestrationRunMetrics(run)}
                 {@const runStage = orchestrationRunStage(run, runMetrics)}
                 {@const runLoopStages = orchestrationLoopStageMetrics(runMetrics)}
+                {@const runAgentItems = orchestrationAgentActivityItems(run, 4)}
                 {@const runAttentionItems = orchestrationAttentionQueue(run, 3)}
                 {@const runTimeline = orchestrationTimelineItems(run, 6)}
                 {@const runArtifacts = orchestrationArtifactChips(run)}
@@ -8550,6 +8552,16 @@
                     <span>Now</span>
                     <strong>{orchestrationCurrentActivity(run)}</strong>
                   </div>
+                  {#if runAgentItems.length > 0}
+                    <div class="run-agent-strip" aria-label="Run agent activity">
+                      {#each runAgentItems as agent (agent.id)}
+                        <span class={`run-agent-pill ${agent.tone}`} title={agent.title}>
+                          <em>{agent.label}</em>
+                          <strong>{agent.activity}</strong>
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
                   <div class="run-progress-track" aria-label={`Run progress ${run.progress}%`}>
                     <span style={`width: ${Math.max(0, Math.min(100, run.progress))}%`}></span>
                   </div>
@@ -12236,6 +12248,94 @@
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .run-agent-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .run-agent-pill {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    height: 24px;
+    padding: 0 6px;
+    color: #9aa7a3;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.028);
+  }
+
+  .run-agent-pill em,
+  .run-agent-pill strong {
+    min-width: 0;
+    overflow: hidden;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-agent-pill em {
+    color: #8d9995;
+    font-size: 8px;
+    font-style: normal;
+    font-weight: 860;
+    text-transform: uppercase;
+  }
+
+  .run-agent-pill strong {
+    color: #d7dfdd;
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  .run-agent-pill.live {
+    color: #8fd8cf;
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.06);
+  }
+
+  .run-agent-pill.good {
+    color: #a6d8ad;
+    border-color: rgba(139, 220, 155, 0.16);
+    background: rgba(139, 220, 155, 0.055);
+  }
+
+  .run-agent-pill.attention {
+    color: #e0bf7b;
+    border-color: rgba(216, 170, 85, 0.22);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .run-agent-pill.bad {
+    color: #f6aaaa;
+    border-color: rgba(243, 111, 111, 0.22);
+    background: rgba(243, 111, 111, 0.08);
+  }
+
+  .run-agent-pill.live em,
+  .run-agent-pill.live strong {
+    color: #9cebe0;
+  }
+
+  .run-agent-pill.good em,
+  .run-agent-pill.good strong {
+    color: #b8e6be;
+  }
+
+  .run-agent-pill.attention em,
+  .run-agent-pill.attention strong {
+    color: #f0cf8e;
+  }
+
+  .run-agent-pill.bad em,
+  .run-agent-pill.bad strong {
+    color: #ffb8b8;
   }
 
   .run-progress-track {

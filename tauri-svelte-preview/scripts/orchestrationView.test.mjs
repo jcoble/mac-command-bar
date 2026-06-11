@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   orchestrationArtifactChips,
+  orchestrationAgentActivityItems,
   orchestrationAttentionQueue,
   orchestrationCurrentActivity,
   orchestrationLinkChips,
@@ -217,6 +218,26 @@ assert.deepEqual(
     ['resolved', 'Done', 0, 'idle', '0 resolved'],
     ['decision', 'Decide', 1, 'attention', '1 decision needed'],
     ['approval', 'Sign', 1, 'attention', '1 sign-off needed']
+  ]
+);
+
+assert.deepEqual(
+  orchestrationAgentActivityItems(run).map((agent) => [
+    agent.id,
+    agent.label,
+    agent.tone,
+    agent.activity,
+    agent.detail
+  ]),
+  [
+    [
+      'fixer-1',
+      'claude fix-agent',
+      'attention',
+      'Needs sign-off',
+      'Manual decision before deleting dirty worktree'
+    ],
+    ['controller', 'codex orchestrator', 'live', 'Customer trading-partner pass', 'Scenario created and executed']
   ]
 );
 

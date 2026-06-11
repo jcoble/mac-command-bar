@@ -1,5 +1,6 @@
 import type {
   OrchestrationArtifact,
+  OrchestrationAgent,
   OrchestrationEvent,
   OrchestrationLink,
   OrchestrationRun,
@@ -52,6 +53,17 @@ export type OrchestrationAttentionItem = {
   agentLabel: string;
   href: string | null;
   path: string | null;
+};
+
+export type OrchestrationAgentActivityItem = {
+  id: string;
+  tone: OrchestrationStatusTone;
+  label: string;
+  status: string;
+  activity: string;
+  detail: string;
+  title: string;
+  timestamp: string | null;
 };
 
 export type OrchestrationChip = {
@@ -382,6 +394,20 @@ export function orchestrationAttentionQueue(
     }));
 }
 
+export function orchestrationAgentActivityItems(
+  run: OrchestrationRun,
+  limit = 4
+): OrchestrationAgentActivityItem[] {
+  return run.agents
+    .map((agent, index) => orchestrationAgentActivityItem(run, agent, index))
+    .sort((left, right) => {
+      const toneDelta = orchestrationTonePriority(left.tone) - orchestrationTonePriority(right.tone);
+      if (toneDelta) return toneDelta;
+      return timestampValue(right.timestamp) - timestampValue(left.timestamp);
+    })
+    .slice(0, Math.max(0, limit));
+}
+
 export function orchestrationRunSummaryText(run: OrchestrationRun): string {
   const metrics = orchestrationRunMetrics(run);
   const attentionQueue = orchestrationAttentionQueue(run, 3);
@@ -504,6 +530,64 @@ function orchestrationArtifactTimelineItem(
   };
 }
 
+function orchestrationAgentActivityItem(
+  run: OrchestrationRun,
+  agent: OrchestrationAgent,
+  index: number
+): OrchestrationAgentActivityItem {
+  const latestItem = latestAgentTimelineItem(run, agent);
+  const agentTone = orchestrationStatusTone(agent.status);
+  const tone =
+    agentTone === 'bad' || agentTone === 'attention' || agentTone === 'live'
+      ? agentTone
+      : latestItem?.tone ?? agentTone;
+  const label =
+    [agent.provider, agent.role].map((value) => value.trim()).filter(Boolean).join(' ') ||
+    agent.title ||
+    agent.id ||
+    `agent ${index + 1}`;
+  const status = agent.status || latestItem?.status || 'unknown';
+  const activity = latestItem?.title || agent.title || titleFromKind(agent.role || agent.provider || status);
+  const detail = latestItem?.summary || status;
+  const timestamp = latestItem?.timestamp ?? agent.lastActivity;
+  const title = [label, status, activity, detail].filter(Boolean).join('\n');
+
+  return {
+    id: agent.id || `${run.id}:agent:${index}`,
+    tone,
+    label,
+    status,
+    activity,
+    detail,
+    title,
+    timestamp
+  };
+}
+
+function latestAgentTimelineItem(
+  run: OrchestrationRun,
+  agent: OrchestrationAgent
+): OrchestrationTimelineItem | null {
+  const items = [
+    ...run.events
+      .filter((event) => eventMatchesAgent(event, agent))
+      .map((event, index) => orchestrationEventTimelineItem(event, index)),
+    ...run.steps
+      .filter((step) => step.agentId === agent.id)
+      .map((step, index) => orchestrationStepTimelineItem(run, step, index))
+  ];
+
+  return items.sort((left, right) => timestampValue(right.timestamp) - timestampValue(left.timestamp))[0] ?? null;
+}
+
+function eventMatchesAgent(event: OrchestrationEvent, agent: OrchestrationAgent): boolean {
+  if (event.agentId && event.agentId === agent.id) return true;
+  if (event.agentProvider && event.agentRole) {
+    return event.agentProvider === agent.provider && event.agentRole === agent.role;
+  }
+  return false;
+}
+
 function formatAgentLabel(
   provider: string | null | undefined,
   role: string | null | undefined,
@@ -526,6 +610,21 @@ function timestampValue(value: string | null): number {
   const numericValue = Number(value);
   const date = Number.isFinite(numericValue) ? new Date(numericValue) : new Date(value);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function orchestrationTonePriority(tone: OrchestrationStatusTone): number {
+  switch (tone) {
+    case 'bad':
+      return 0;
+    case 'attention':
+      return 1;
+    case 'live':
+      return 2;
+    case 'idle':
+      return 3;
+    case 'good':
+      return 4;
+  }
 }
 
 function searchTextForTimelineItem(item: OrchestrationTimelineItem): string {
