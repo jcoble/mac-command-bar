@@ -1511,6 +1511,16 @@ fn terminal_path_action_command(
     }
 
     let terminal_app = normalize_terminal_app(terminal.as_deref())?;
+    if terminal_app == "Warp" {
+        return Ok(SourceFileActionCommand {
+            program: "open".to_string(),
+            args: vec![format!(
+                "warp://action/new_tab?path={}",
+                uri_query_encode(&path.display().to_string())
+            )],
+        });
+    }
+
     Ok(SourceFileActionCommand {
         program: "open".to_string(),
         args: vec!["-a".to_string(), terminal_app, path.display().to_string()],
@@ -1605,6 +1615,19 @@ fn shell_quote(value: &str) -> String {
         return "''".to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn uri_query_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn applescript_string_escape(value: &str) -> String {
@@ -3489,11 +3512,10 @@ mod tests {
         assert_eq!(warp_command.program, "open");
         assert_eq!(
             warp_command.args,
-            vec![
-                "-a".to_string(),
-                "Warp".to_string(),
-                root.display().to_string()
-            ]
+            vec![format!(
+                "warp://action/new_tab?path={}",
+                uri_query_encode(&root.display().to_string())
+            )]
         );
 
         let default_command = terminal_path_action_command(&root, None).unwrap();

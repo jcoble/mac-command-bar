@@ -1340,7 +1340,7 @@
       id: `agent-resume-${session.provider}-${session.id}`,
       label: `Resume ${session.provider}: ${session.title}`,
       detail: agentSessionProjectLabel(session),
-      disabled: !agentSessionResumeCommand(session).trim(),
+      disabled: !agentSessionTerminalCommand(session).trim(),
       perform: () => openAgentSessionTerminal(session)
     })),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
@@ -1361,14 +1361,14 @@
       id: `agent-copy-plan-${session.provider}-${session.id}`,
       label: `Copy session resume plan: ${session.title}`,
       detail: agentSessionProjectLabel(session),
-      disabled: !agentSessionResumeCommand(session).trim(),
+      disabled: !agentSessionTerminalCommand(session).trim(),
       perform: () => copyAgentSessionResumePlan(session)
     })),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-copy-shell-command-${session.provider}-${session.id}`,
       label: `Copy shell resume command: ${session.title}`,
       detail: agentSessionResumeShellCommand(session),
-      disabled: !agentSessionResumeCommand(session).trim(),
+      disabled: !agentSessionTerminalCommand(session).trim(),
       perform: () => copyAgentSessionResumeShellCommand(session)
     })),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
@@ -2680,8 +2680,31 @@
     return agentSessionResumeCommandList(session)[0] ?? '';
   }
 
+  function isLeadingShellCdCommand(command: string) {
+    const trimmed = command.trim();
+    return /^cd\s+/.test(trimmed) && trimmed.includes('&&');
+  }
+
+  function stripLeadingShellCdCommand(command: string) {
+    const trimmed = command.trim();
+    if (!isLeadingShellCdCommand(trimmed)) return trimmed;
+
+    const separatorIndex = trimmed.indexOf('&&');
+    return separatorIndex >= 0 ? trimmed.slice(separatorIndex + 2).trim() : trimmed;
+  }
+
+  function agentSessionTerminalCommand(session: AgentSession) {
+    const commands = agentSessionResumeCommandList(session);
+    return commands.find((command) => !isLeadingShellCdCommand(command))
+      ?? stripLeadingShellCdCommand(commands[0] ?? '');
+  }
+
   function agentSessionResumeShellCommand(session: AgentSession) {
-    const command = agentSessionResumeCommand(session);
+    const commands = agentSessionResumeCommandList(session);
+    const shellCommand = commands.find(isLeadingShellCdCommand);
+    if (shellCommand) return shellCommand;
+
+    const command = agentSessionTerminalCommand(session);
     const path = agentSessionProjectPath(session);
     return path.trim() ? `cd ${shellQuoteForCommand(path)} && ${command}` : command;
   }
@@ -2723,7 +2746,7 @@
       sourceActivityMode,
       sourceTerminalApp,
       dockLayout: sourceDockLayout,
-      resumeCommand: session ? agentSessionResumeShellCommand(session) : null,
+      resumeCommand: session ? agentSessionTerminalCommand(session) : null,
       capturedAt: Date.now()
     });
     const nextSnapshots = upsertWorkspaceSnapshot(
@@ -2762,7 +2785,7 @@
   }
 
   async function openWorkspaceSnapshotTerminal(snapshot: WorkspaceSnapshot) {
-    const command = snapshot.resumeCommand?.trim() ?? '';
+    const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
 
@@ -4234,7 +4257,7 @@
   }
 
   async function openAgentSessionTerminal(session: AgentSession) {
-    const command = agentSessionResumeCommand(session);
+    const command = agentSessionTerminalCommand(session);
     if (!command.trim()) return;
 
     captureActiveWorkspaceBeforeSwitch();

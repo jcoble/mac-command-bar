@@ -297,8 +297,8 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             project_path: (!cwd.is_empty()).then_some(cwd.clone()),
             last_activity: timestamp,
             resume_commands: vec![
-                format!("cd {} && claude --resume {id}", shell_quote(&cwd)),
                 format!("claude --resume {id}"),
+                format!("cd {} && claude --resume {id}", shell_quote(&cwd)),
             ],
         });
     }
@@ -321,7 +321,10 @@ fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String>
     };
 
     match cwd.filter(|value| !value.trim().is_empty()) {
-        Some(cwd) => vec![format!("cd {} && {command}", shell_quote(cwd)), command],
+        Some(cwd) => vec![
+            command.clone(),
+            format!("cd {} && {command}", shell_quote(cwd)),
+        ],
         None => vec![command],
     }
 }

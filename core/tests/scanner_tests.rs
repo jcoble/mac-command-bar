@@ -49,6 +49,13 @@ fn parses_codex_and_claude_session_indexes() {
     assert_eq!(claude[0].provider, "claude");
     assert_eq!(claude[0].project_path.as_deref(), Some("/repo"));
     assert_eq!(claude[0].model.as_deref(), Some("claude-opus-4-8"));
+    assert_eq!(
+        claude[0].resume_commands,
+        vec![
+            "claude --resume abc".to_string(),
+            "cd '/repo' && claude --resume abc".to_string()
+        ]
+    );
 }
 
 #[test]
@@ -122,8 +129,8 @@ fn parses_cmux_hook_sessions_without_body_content() {
     assert_eq!(
         records[0].resume_commands,
         vec![
-            "cd '/Users/blackcolours/dev/work/mac-command-bar' && codex resume 019e",
-            "codex resume 019e"
+            "codex resume 019e",
+            "cd '/Users/blackcolours/dev/work/mac-command-bar' && codex resume 019e"
         ]
     );
 }
@@ -156,10 +163,7 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
 
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].title, "Newer title");
-    assert_eq!(
-        records[0].project_path.as_deref(),
-        Some("/repo/worktree")
-    );
+    assert_eq!(records[0].project_path.as_deref(), Some("/repo/worktree"));
     assert_eq!(
         records[0].last_activity.as_deref(),
         Some("2026-06-09T02:00:00Z")
