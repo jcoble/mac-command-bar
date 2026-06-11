@@ -1788,6 +1788,15 @@
       perform: copySelectedGitCommitDetail
     },
     {
+      id: 'git-copy-selected-commit-handoff',
+      label: 'Copy selected commit handoff',
+      detail: selectedGitCommit ? gitCommitSummaryText(selectedGitCommit) : gitCommitHistorySummary,
+      disabled: !selectedGitCommit,
+      perform: () => {
+        if (selectedGitCommit) copyGitCommitHandoff(selectedGitCommit);
+      }
+    },
+    {
       id: 'git-copy-workspace-brief',
       label: 'Copy Git workspace brief',
       detail: `${selectedProject.name} · ${repoDashboardSummary} · ${projectWorktreeCleanupBrief.headline}`,
@@ -1805,6 +1814,12 @@
       label: `Copy commit: ${entry.shortSha}`,
       detail: entry.subject,
       perform: () => copyGitCommitSummary(entry)
+    })),
+    ...gitCommitHistory.slice(0, 8).map((entry) => ({
+      id: `git-copy-commit-handoff-${entry.sha}`,
+      label: `Copy commit handoff: ${entry.shortSha}`,
+      detail: entry.subject,
+      perform: () => copyGitCommitHandoff(entry)
     })),
     {
       id: 'activity-refresh',
@@ -3072,6 +3087,43 @@
     ].filter(Boolean).join('\n');
   }
 
+  function gitCommitHandoffText(entry: GitCommitHistoryEntry) {
+    const refs = gitCommitRefChips(entry).join(', ') || 'none';
+    const parents = entry.parentShas.length > 0 ? entry.parentShas.join(', ') : 'none';
+    const firstParent = entry.parentShas[0] ?? '';
+    const taskReference = entry.taskID ? gitTaskReferenceText(entry.taskID) : 'none';
+    const branch = projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
+    const inspectCommands = [
+      `cd ${shellQuoteForCommand(selectedProject.path)}`,
+      `git show --stat --oneline ${entry.sha}`,
+      `git show --name-status --format=fuller ${entry.sha}`,
+      firstParent ? `git diff --stat ${firstParent} ${entry.sha}` : '',
+      firstParent ? `git diff ${firstParent} ${entry.sha} --` : '',
+      `git branch --contains ${entry.sha}`
+    ].filter(Boolean);
+
+    return [
+      'Git commit handoff',
+      `Project: ${selectedProject.name}`,
+      `Path: ${selectedProject.path}`,
+      `Current branch: ${branch}`,
+      `Commit: ${entry.sha}`,
+      `Short SHA: ${entry.shortSha}`,
+      `Subject: ${entry.subject}`,
+      `Author: ${entry.author}`,
+      `Committed: ${formatGitCommitTime(entry.committedAt)}`,
+      `Refs: ${refs}`,
+      `Parents: ${parents}`,
+      `Topology: ${gitCommitParentSummary(entry) || 'linear'}`,
+      `Task: ${entry.taskID ?? 'none'}`,
+      `Task reference: ${taskReference}`,
+      `Task source: ${gitCommitTaskSourceLabel(entry) || 'none'}`,
+      '',
+      'Inspect commands:',
+      inspectCommands.map((command) => `- ${command}`).join('\n')
+    ].join('\n');
+  }
+
   function gitTaskUrl(taskID: string | null) {
     return taskReferenceUrl(taskID, commandCenterTaskUrls);
   }
@@ -3092,6 +3144,10 @@
     if (!selectedGitCommit) return;
 
     await copyActivityCommand(gitCommitDetailText(selectedGitCommit), 'Commit detail copied');
+  }
+
+  async function copyGitCommitHandoff(entry: GitCommitHistoryEntry) {
+    await copyActivityCommand(gitCommitHandoffText(entry), 'Commit handoff copied');
   }
 
   async function copyGitTaskReference(taskID: string | null) {
@@ -11395,6 +11451,14 @@
                         </button>
                         <button
                           type="button"
+                          aria-label="Copy selected commit handoff"
+                          title="Copy selected commit handoff"
+                          onclick={() => copyGitCommitHandoff(selectedGitCommit)}
+                        >
+                          <FileCode2 size={11} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
                           aria-label="Copy selected commit SHA"
                           title="Copy selected commit SHA"
                           onclick={() => copyGitCommitSha(selectedGitCommit)}
@@ -11479,6 +11543,14 @@
                                 onclick={() => copyGitCommitSummary(entry)}
                               >
                                 <History size={11} strokeWidth={2} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Copy commit handoff"
+                                title="Copy commit handoff"
+                                onclick={() => copyGitCommitHandoff(entry)}
+                              >
+                                <FileCode2 size={11} strokeWidth={2} />
                               </button>
                               {#if entry.taskID}
                                 <button

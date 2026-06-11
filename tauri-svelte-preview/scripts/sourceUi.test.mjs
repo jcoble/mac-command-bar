@@ -1301,6 +1301,8 @@ assert.ok(pageSource.includes('selectedGitCommit'), 'Git panel should derive the
 assert.ok(pageSource.includes('function selectGitCommit'), 'Git history should allow selecting a commit row');
 assert.ok(pageSource.includes('function gitCommitDetailText'), 'Git history should build a detailed selected-commit handoff');
 assert.ok(pageSource.includes('function copySelectedGitCommitDetail'), 'Git history should expose selected commit detail copying');
+assert.ok(pageSource.includes('function gitCommitHandoffText'), 'Git history should build an agent-ready commit handoff');
+assert.ok(pageSource.includes('function copyGitCommitHandoff'), 'Git history should expose commit handoff copying');
 assert.ok(pageSource.includes('function runGitPathAction'), 'Source page should expose reusable stage/unstage handling');
 assert.ok(pageSource.includes('type GitStatusGroupID'), 'Git panel should define staged/unstaged/untracked groups');
 assert.ok(pageSource.includes('function buildGitStatusFileGroups'), 'Git panel should group changed files by index state');
@@ -1342,6 +1344,7 @@ assert.ok(pageSource.includes('id: `git-copy-commit-${entry.sha}`'), 'Command pa
 assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should render commit history rows');
 assert.ok(pageSource.includes('class="git-commit-detail"'), 'Git tab should render selected commit details');
 assert.ok(pageSource.includes("id: 'git-copy-selected-commit-detail'"), 'Command palette should copy selected commit details');
+assert.ok(pageSource.includes("id: 'git-copy-selected-commit-handoff'"), 'Command palette should copy selected commit handoffs');
 assert.ok(
   pageSource.includes('git-history-row ${gitCommitGraphClass(entry, index)}'),
   'Git tab should render individual commit history rows with graph styling'
@@ -1355,6 +1358,8 @@ assert.ok(pageSource.includes('class="activity-commit-meta"'), 'Activity Git com
 assert.ok(pageSource.includes('class="git-history-actions"'), 'Git history rows should render compact quick actions');
 assert.ok(pageSource.includes('aria-label="Copy commit SHA"'), 'Git rows should expose copy SHA actions');
 assert.ok(pageSource.includes('aria-label="Copy commit summary"'), 'Git rows should expose copy summary actions');
+assert.ok(pageSource.includes('aria-label="Copy selected commit handoff"'), 'Selected commit detail should expose handoff copy');
+assert.ok(pageSource.includes('aria-label="Copy commit handoff"'), 'Git rows should expose copy handoff actions');
 assert.ok(pageSource.includes('aria-label="Copy task reference"'), 'Git rows should expose copy task reference actions');
 assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should render diff text in a monospace block');
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
