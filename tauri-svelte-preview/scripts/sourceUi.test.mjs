@@ -403,6 +403,12 @@ assert.ok(pageSource.includes('class="dock-panel-tab"'), 'Dock tabs should wrap 
 assert.ok(pageSource.includes('class="dock-panel-tab-move"'), 'Dock tabs should expose direct move controls');
 assert.ok(pageSource.includes('draggable={dockPanelMoveTargets(panelID).length > 1}'), 'Dock tabs should be draggable when the panel has multiple targets');
 assert.ok(pageSource.includes('ondragstart={(event) => beginDockPanelDrag(panelID, event)}'), 'Dock tabs should begin drag moves');
+assert.ok(pageSource.includes("let dockDropTargetPanelPlacement = $state<'before' | 'after' | null>(null)"), 'Dock tab drag state should track before/after insertion placement');
+assert.ok(pageSource.includes('function dragOverDockPanelTab'), 'Dock tabs should accept direct tab reorder drags');
+assert.ok(pageSource.includes('function dropDockPanelOnTab'), 'Dock tabs should reorder panels when dropped on another tab');
+assert.ok(pageSource.includes('function dockPanelTabDropPlacement'), 'Dock tab reorder should use pointer position for before/after placement');
+assert.ok(pageSource.includes('class:drop-after={dockDropTargetPanelID === panelID && dockDropTargetPanelPlacement ==='), 'Dock tabs should expose a visual after-drop target');
+assert.ok(pageSource.includes('moveDockPanelToManagedGroup(panelID, targetGroupID, insertionIndex)'), 'Dock tab drops should move panels with an insertion index');
 assert.ok(pageSource.includes('class="dock-drop-zones"'), 'Dock tabs should reveal drag drop zones');
 assert.ok(pageSource.includes('ondrop={(event) => dropDockPanelOnGroup(event, groupID)}'), 'Dock drop zones should move panels through the dock model');
 assert.ok(pageSource.includes('function dockGroupShortcutLabel'), 'Dock tab move controls should use compact placement labels');

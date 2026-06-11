@@ -623,6 +623,8 @@
   let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
   let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
   let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
+  let dockDropTargetPanelID = $state<SourceDockPanelID | null>(null);
+  let dockDropTargetPanelPlacement = $state<'before' | 'after' | null>(null);
   let hiddenContextCardIDs = $state<Set<SourceContextCardID>>(new Set());
   let activeContextCardID = $state<SourceContextCardID>('orchestration');
   let viewMenuOpen = $state(false);
@@ -8010,8 +8012,8 @@
     window.localStorage.setItem(sourceTerminalAppStorageKey, app);
   }
 
-  function moveDockPanelToGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID) {
-    applySourceDockLayout(moveSourceDockPanel(sourceDockLayout, panelID, groupID));
+  function moveDockPanelToGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID, targetIndex?: number) {
+    applySourceDockLayout(moveSourceDockPanel(sourceDockLayout, panelID, groupID, targetIndex));
   }
 
   function hideDockPanel(panelID: SourceDockPanelID) {
@@ -8087,14 +8089,18 @@
     showDockPanel(panelID);
   }
 
-  function moveDockPanelToManagedGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID) {
+  function moveDockPanelToManagedGroup(
+    panelID: SourceDockPanelID,
+    groupID: SourceDockGroupID,
+    targetIndex?: number
+  ) {
     if (!dockPanelMoveTargets(panelID).includes(groupID)) return;
     if (panelID === 'activity' && (groupID === 'left' || groupID === 'right')) {
       selectSidePanePosition(groupID);
       return;
     }
 
-    moveDockPanelToGroup(panelID, groupID);
+    moveDockPanelToGroup(panelID, groupID, targetIndex);
   }
 
   function moveDockPanelFromTab(panelID: SourceDockPanelID, event: Event) {
@@ -8109,6 +8115,7 @@
 
     draggingDockPanelID = panelID;
     dockDropTargetGroupID = null;
+    dockDropTargetPanelID = null;
     event.dataTransfer?.setData(dockPanelDragDataType, panelID);
     event.dataTransfer?.setData('text/plain', panelID);
     if (event.dataTransfer) {
@@ -8122,9 +8129,35 @@
 
     event.preventDefault();
     dockDropTargetGroupID = groupID;
+    dockDropTargetPanelID = null;
+    dockDropTargetPanelPlacement = null;
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'move';
     }
+  }
+
+  function dragOverDockPanelTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
+    const panelID = draggedDockPanelID(event);
+    if (!panelID || panelID === targetPanelID) return;
+
+    const targetGroupID = dockGroupIDForPanel(sourceDockLayout, targetPanelID);
+    if (!targetGroupID || !dockPanelMoveTargets(panelID).includes(targetGroupID)) return;
+
+    event.preventDefault();
+    dockDropTargetGroupID = targetGroupID;
+    dockDropTargetPanelID = targetPanelID;
+    dockDropTargetPanelPlacement = dockPanelTabDropPlacement(event);
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move';
+    }
+  }
+
+  function dockPanelTabDropPlacement(event: DragEvent): 'before' | 'after' {
+    const target = event.currentTarget as HTMLElement | null;
+    const rect = target?.getBoundingClientRect();
+    if (!rect) return 'before';
+
+    return event.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
   }
 
   function dropDockPanelOnGroup(event: DragEvent, groupID: SourceDockGroupID) {
@@ -8139,9 +8172,37 @@
     clearDockPanelDrag();
   }
 
+  function dropDockPanelOnTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
+    const panelID = draggedDockPanelID(event);
+    const targetGroupID = dockGroupIDForPanel(sourceDockLayout, targetPanelID);
+    if (
+      !panelID ||
+      panelID === targetPanelID ||
+      !targetGroupID ||
+      !dockPanelMoveTargets(panelID).includes(targetGroupID)
+    ) {
+      clearDockPanelDrag();
+      return;
+    }
+
+    event.preventDefault();
+    const targetPanelIDs = dockGroupPanelIDs(targetGroupID);
+    const targetIndex = targetPanelIDs.indexOf(targetPanelID);
+    const currentIndex = targetPanelIDs.indexOf(panelID);
+    const dropPlacement = dockPanelTabDropPlacement(event);
+    let insertionIndex = targetIndex + (dropPlacement === 'after' ? 1 : 0);
+    if (currentIndex >= 0 && currentIndex < insertionIndex) {
+      insertionIndex -= 1;
+    }
+    moveDockPanelToManagedGroup(panelID, targetGroupID, insertionIndex);
+    clearDockPanelDrag();
+  }
+
   function clearDockPanelDrag() {
     draggingDockPanelID = null;
     dockDropTargetGroupID = null;
+    dockDropTargetPanelID = null;
+    dockDropTargetPanelPlacement = null;
   }
 
   function draggedDockPanelID(event: DragEvent): SourceDockPanelID | null {
@@ -11419,9 +11480,17 @@
                 <div
                   class="dock-panel-tab"
                   class:active={activeDockPanelForGroup(groupID) === panelID}
+                  class:drop-target={dockDropTargetPanelID === panelID}
+                  class:drop-after={dockDropTargetPanelID === panelID && dockDropTargetPanelPlacement === 'after'}
                   role="presentation"
                   draggable={dockPanelMoveTargets(panelID).length > 1}
                   ondragstart={(event) => beginDockPanelDrag(panelID, event)}
+                  ondragenter={(event) => dragOverDockPanelTab(event, panelID)}
+                  ondragover={(event) => dragOverDockPanelTab(event, panelID)}
+                  ondragleave={() => {
+                    if (dockDropTargetPanelID === panelID) dockDropTargetPanelID = null;
+                  }}
+                  ondrop={(event) => dropDockPanelOnTab(event, panelID)}
                   ondragend={clearDockPanelDrag}
                 >
                   <button
@@ -16292,6 +16361,18 @@
 
   .dock-panel-tab.active {
     background: rgba(92, 226, 207, 0.18);
+  }
+
+  .dock-panel-tab.drop-target {
+    background: rgba(92, 226, 207, 0.09);
+  }
+
+  .dock-panel-tab.drop-target:not(.drop-after) {
+    box-shadow: inset 2px 0 0 #5ce2cf;
+  }
+
+  .dock-panel-tab.drop-target.drop-after {
+    box-shadow: inset -2px 0 0 #5ce2cf;
   }
 
   .dock-panel-tab.active .dock-panel-tab-label {
