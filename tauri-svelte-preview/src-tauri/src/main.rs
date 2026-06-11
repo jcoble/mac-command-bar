@@ -2447,15 +2447,7 @@ fn project_worktree_is_dirty(path: &str) -> bool {
 
 fn project_worktree_has_unmerged_commits(path: &str) -> bool {
     let output = Command::new("git")
-        .args([
-            "-C",
-            path,
-            "log",
-            "--branches",
-            "--not",
-            "--remotes",
-            "--oneline",
-        ])
+        .args(["-C", path, "log", "--oneline", "-1", "HEAD", "--not", "--remotes"])
         .output();
     output
         .ok()
@@ -4713,6 +4705,80 @@ mod tests {
         assert_eq!(
             project_worktree_delete_eligibility(false, false),
             "requires-confirmation"
+        );
+    }
+
+    #[test]
+    fn project_worktree_unmerged_detection_is_scoped_to_the_worktree_branch() {
+        let root = unique_temp_root();
+        let clean_sibling = unique_temp_root();
+        let local_commit_sibling = unique_temp_root();
+        let remote = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&remote, &["init", "--bare"]);
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(&root, &["branch", "-M", "main"]);
+        run_git_for_test(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        run_git_for_test(&root, &["push", "-u", "origin", "main"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-200-clean",
+                clean_sibling.to_str().unwrap(),
+            ],
+        );
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-201-local",
+                local_commit_sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(local_commit_sibling.join("src/App.ts"), "export const value = 2;\n")
+            .unwrap();
+        run_git_for_test(&local_commit_sibling, &["commit", "-am", "local worktree commit"]);
+
+        let clean_has_unmerged =
+            project_worktree_has_unmerged_commits(clean_sibling.to_str().unwrap());
+        let local_has_unmerged =
+            project_worktree_has_unmerged_commits(local_commit_sibling.to_str().unwrap());
+
+        run_git_for_test(
+            &root,
+            &["worktree", "remove", "--force", clean_sibling.to_str().unwrap()],
+        );
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                local_commit_sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(remote).unwrap();
+
+        assert!(
+            local_has_unmerged,
+            "the worktree branch with a local commit should be blocked"
+        );
+        assert!(
+            !clean_has_unmerged,
+            "a clean sibling should not inherit unmerged state from another local branch"
         );
     }
 
