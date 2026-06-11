@@ -29,37 +29,153 @@ export function orchestrationEventStorePath(env = process.env) {
 }
 
 export function normalizeOrchestrationEvent(input) {
-  const runId = String(input.runId ?? '').trim();
+  const expandedInput = applyOrchestrationEventPreset(input);
+  const runId = String(expandedInput.runId ?? '').trim();
   if (!runId) {
     throw new Error('runId is required');
   }
 
   return {
-    schemaVersion: Number(input.schemaVersion ?? orchestrationSchemaVersion),
-    id: String(input.id ?? `evt-${Date.now()}-${randomUUID().slice(0, 8)}`),
+    schemaVersion: Number(expandedInput.schemaVersion ?? orchestrationSchemaVersion),
+    id: String(expandedInput.id ?? `evt-${Date.now()}-${randomUUID().slice(0, 8)}`),
     runId,
-    timestamp: String(input.timestamp ?? new Date().toISOString()),
-    kind: String(input.kind ?? 'run.updated'),
-    status: String(input.status ?? 'running'),
-    title: optionalString(input.title),
-    message: optionalString(input.message),
-    projectID: optionalString(input.projectID),
-    projectName: optionalString(input.projectName),
-    projectPath: optionalString(input.projectPath),
-    rootLabel: optionalString(input.rootLabel),
-    taskID: optionalString(input.taskID),
-    agentId: optionalString(input.agentId),
-    agentProvider: optionalString(input.agentProvider),
-    agentRole: optionalString(input.agentRole),
-    stepId: optionalString(input.stepId),
-    stepKind: optionalString(input.stepKind),
-    artifactId: optionalString(input.artifactId),
-    artifactKind: optionalString(input.artifactKind),
-    artifactPath: optionalString(input.artifactPath),
-    artifactUrl: optionalString(input.artifactUrl),
-    linkKind: optionalString(input.linkKind),
-    linkLabel: optionalString(input.linkLabel),
-    linkUrl: optionalString(input.linkUrl)
+    timestamp: String(expandedInput.timestamp ?? new Date().toISOString()),
+    kind: String(expandedInput.kind ?? 'run.updated'),
+    status: String(expandedInput.status ?? 'running'),
+    title: optionalString(expandedInput.title),
+    message: optionalString(expandedInput.message),
+    projectID: optionalString(expandedInput.projectID),
+    projectName: optionalString(expandedInput.projectName),
+    projectPath: optionalString(expandedInput.projectPath),
+    rootLabel: optionalString(expandedInput.rootLabel),
+    taskID: optionalString(expandedInput.taskID),
+    agentId: optionalString(expandedInput.agentId),
+    agentProvider: optionalString(expandedInput.agentProvider),
+    agentRole: optionalString(expandedInput.agentRole),
+    stepId: optionalString(expandedInput.stepId),
+    stepKind: optionalString(expandedInput.stepKind),
+    artifactId: optionalString(expandedInput.artifactId),
+    artifactKind: optionalString(expandedInput.artifactKind),
+    artifactPath: optionalString(expandedInput.artifactPath),
+    artifactUrl: optionalString(expandedInput.artifactUrl),
+    linkKind: optionalString(expandedInput.linkKind),
+    linkLabel: optionalString(expandedInput.linkLabel),
+    linkUrl: optionalString(expandedInput.linkUrl)
+  };
+}
+
+export function applyOrchestrationEventPreset(input) {
+  const preset = optionalString(input.preset)?.toLowerCase();
+  if (!preset) {
+    return input;
+  }
+
+  const scenario = optionalString(input.scenario);
+  const issueId = optionalString(input.issueId);
+  const subject = issueId ?? scenario;
+  const counts = orchestrationPresetCountMessage(input);
+  const presets = {
+    'run-started': {
+      kind: 'run.started',
+      status: 'running',
+      title: 'Run started'
+    },
+    'run-completed': {
+      kind: 'run.completed',
+      status: 'succeeded',
+      title: 'Run completed'
+    },
+    'scenario-started': {
+      kind: 'scenario.started',
+      status: 'running',
+      stepKind: 'scenario',
+      title: formatPresetTitle('Scenario started', scenario),
+      message: scenario
+    },
+    'scenario-passed': {
+      kind: 'scenario.passed',
+      status: 'succeeded',
+      stepKind: 'scenario',
+      title: formatPresetTitle('Scenario passed', scenario),
+      message: scenario
+    },
+    'test-started': {
+      kind: 'test.started',
+      status: 'running',
+      stepKind: 'test',
+      title: formatPresetTitle('Test started', subject),
+      message: scenario
+    },
+    'test-failed': {
+      kind: 'test.failed',
+      status: 'failed',
+      stepKind: 'test',
+      title: formatPresetTitle('Test failed', subject),
+      message: counts ?? scenario
+    },
+    'fix-started': {
+      kind: 'fix.started',
+      status: 'running',
+      stepKind: 'fix',
+      title: formatPresetTitle('Fix started', subject),
+      message: scenario
+    },
+    'fix-resolved': {
+      kind: 'fix.resolved',
+      status: 'succeeded',
+      stepKind: 'fix',
+      title: formatPresetTitle('Fix resolved', subject),
+      message: counts ?? scenario
+    },
+    'retest-started': {
+      kind: 'retest.started',
+      status: 'running',
+      stepKind: 'retest',
+      title: formatPresetTitle('Retest started', subject),
+      message: scenario
+    },
+    'retest-passed': {
+      kind: 'retest.passed',
+      status: 'succeeded',
+      stepKind: 'retest',
+      title: formatPresetTitle('Retest passed', subject),
+      message: counts ?? scenario
+    },
+    'retest-failed': {
+      kind: 'retest.failed',
+      status: 'failed',
+      stepKind: 'retest',
+      title: formatPresetTitle('Retest failed', subject),
+      message: counts ?? scenario
+    },
+    'approval-required': {
+      kind: 'approval.required',
+      status: 'waiting-for-approval',
+      stepKind: 'approval',
+      title: 'Approval required'
+    },
+    handoff: {
+      kind: 'handoff.available',
+      status: 'succeeded',
+      stepKind: 'handoff',
+      artifactKind: 'handoff',
+      title: 'Handoff available'
+    }
+  };
+  const defaults = presets[preset];
+  if (!defaults) {
+    throw new Error(`Unknown orchestration event preset: ${input.preset}`);
+  }
+
+  return {
+    ...defaults,
+    ...input,
+    kind: input.kind ?? defaults.kind,
+    status: input.status ?? defaults.status,
+    title: input.title ?? defaults.title,
+    message: input.message ?? defaults.message,
+    stepKind: input.stepKind ?? defaults.stepKind,
+    artifactKind: input.artifactKind ?? defaults.artifactKind
   };
 }
 
@@ -119,9 +235,30 @@ function optionalString(value) {
   return text ? text : null;
 }
 
+function formatPresetTitle(prefix, subject) {
+  return subject ? `${prefix}: ${subject}` : prefix;
+}
+
+function orchestrationPresetCountMessage(input) {
+  const parts = [
+    formatPresetCount(input.issueCount, 'issue'),
+    formatPresetCount(input.resolvedCount, 'resolved'),
+    formatPresetCount(input.failedCount, 'failed')
+  ].filter(Boolean);
+
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function formatPresetCount(value, label) {
+  const text = optionalString(value);
+  return text ? `${text} ${label}` : null;
+}
+
 function printHelp() {
   console.log(`Usage:
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --kind test.started --status running
+  node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset scenario-started --scenario "Trading partner setup"
+  node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset approval-required --message "Needs deletion sign-off"
   node scripts/orchestrationEvent.mjs --json '{"runId":"run-tsk-127","kind":"run.created"}'
 
 Writes one JSONL event to:

@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   appendOrchestrationEvent,
   defaultOrchestrationEventStorePath,
+  normalizeOrchestrationEvent,
   orchestrationEventStorePath,
   parseOrchestrationEventArgs
 } from './orchestrationEvent.mjs';
@@ -40,13 +41,63 @@ try {
   assert.equal(parsed.agentProvider, 'codex');
   assert.equal(parsed.stepKind, 'test');
 
+  const presetParsed = parseOrchestrationEventArgs([
+    '--preset',
+    'scenario-started',
+    '--run-id',
+    'run-tsk-127',
+    '--scenario',
+    'Trading partner setup',
+    '--agent-provider',
+    'codex'
+  ]);
+  assert.equal(presetParsed.preset, 'scenario-started');
+  assert.equal(presetParsed.scenario, 'Trading partner setup');
+  assert.equal(presetParsed.agentProvider, 'codex');
+
+  const scenarioEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'scenario-started',
+    scenario: 'Trading partner setup',
+    taskID: 'TSK-127'
+  });
+  assert.equal(scenarioEvent.kind, 'scenario.started');
+  assert.equal(scenarioEvent.status, 'running');
+  assert.equal(scenarioEvent.stepKind, 'scenario');
+  assert.equal(scenarioEvent.title, 'Scenario started: Trading partner setup');
+  assert.equal(scenarioEvent.message, 'Trading partner setup');
+
+  const resolvedEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'fix-resolved',
+    issueId: 'AUTH-7',
+    resolvedCount: '3',
+    failedCount: '1'
+  });
+  assert.equal(resolvedEvent.kind, 'fix.resolved');
+  assert.equal(resolvedEvent.status, 'succeeded');
+  assert.equal(resolvedEvent.stepKind, 'fix');
+  assert.equal(resolvedEvent.title, 'Fix resolved: AUTH-7');
+  assert.match(resolvedEvent.message, /3 resolved/);
+  assert.match(resolvedEvent.message, /1 failed/);
+
+  const approvalEvent = normalizeOrchestrationEvent({
+    runId: 'run-tsk-127',
+    preset: 'approval-required',
+    message: 'Delete dirty worktree?'
+  });
+  assert.equal(approvalEvent.kind, 'approval.required');
+  assert.equal(approvalEvent.status, 'waiting-for-approval');
+  assert.equal(approvalEvent.stepKind, 'approval');
+  assert.equal(approvalEvent.title, 'Approval required');
+  assert.equal(approvalEvent.message, 'Delete dirty worktree?');
+
   const storePath = path.join(tempRoot, 'events.jsonl');
   const { event } = await appendOrchestrationEvent(
     {
       runId: 'run-tsk-127',
-      kind: 'test.started',
-      status: 'running',
-      title: 'Run tests',
+      preset: 'retest-passed',
+      scenario: 'Trading partner setup',
       taskID: 'TSK-127'
     },
     { storePath }
@@ -57,6 +108,9 @@ try {
   assert.equal(event.schemaVersion, 1);
   assert.equal(event.runId, 'run-tsk-127');
   assert.equal(event.taskID, 'TSK-127');
+  assert.equal(event.kind, 'retest.passed');
+  assert.equal(event.status, 'succeeded');
+  assert.equal(event.stepKind, 'retest');
   assert.equal(event.artifactPath, null);
 } finally {
   await fs.rm(tempRoot, { recursive: true, force: true });
