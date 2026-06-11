@@ -5786,18 +5786,11 @@
     );
 
     if (duplicateProject) {
-      if (reportDuplicate) {
-        projectFormError = 'That path is already listed';
-      } else {
-        addingProject = false;
-        projectFormError = '';
-        fileActionStatus = sourceOnboardingScanStatus(duplicateProject);
-        void activateProject(duplicateProject, {
-          forceScan: true,
-          scanLimit: expandedSourceScanLimit,
-          projects: projectOptions
-        });
-      }
+      activateDuplicateProjectRoot(
+        duplicateProject,
+        projectOptions,
+        reportDuplicate ? 'Project already listed. Switching to it now.' : ''
+      );
       return false;
     }
 
@@ -5814,6 +5807,17 @@
       projects: nextProjectOptions
     });
     return true;
+  }
+
+  function activateDuplicateProjectRoot(project: ProjectRoot, projects: ProjectRoot[], message: string) {
+    addingProject = false;
+    projectFormError = message;
+    fileActionStatus = sourceOnboardingScanStatus(project);
+    void activateProject(project, {
+      forceScan: true,
+      scanLimit: expandedSourceScanLimit,
+      projects
+    });
   }
 
   async function activateProject(project: ProjectRoot, options: ProjectActivationOptions = {}) {

@@ -206,6 +206,11 @@ assert.ok(pageSource.includes('function resetProjectScanCache'), 'Source shell s
 assert.ok(pageSource.includes('function sourceOnboardingScanStatus'), 'Project onboarding should explain expanded source scans');
 assert.ok(pageSource.includes('function clearSourceRecordsForIncomingProject'), 'Source shell should clear stale records when switching roots');
 assert.ok(pageSource.includes('function sourceRecordBelongsToProject'), 'Source shell should guard scan records by project path');
+assert.ok(pageSource.includes('function activateDuplicateProjectRoot'), 'Duplicate project adds should activate the existing root');
+assert.ok(
+  pageSource.includes("'Project already listed. Switching to it now.'"),
+  'Duplicate project adds should explain that the existing root is being activated'
+);
 assert.ok(pageSource.includes('function copyTextToClipboard'), 'Activity rows should share clipboard copy behavior');
 assert.ok(pageSource.includes('function copyActivityCommand'), 'Activity rows should copy resume commands and paths');
 assert.ok(pageSource.includes('function openActivityPath'), 'Activity rows should open repo and worktree paths');
@@ -494,7 +499,7 @@ assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, pro
 assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
 assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');
 assert.ok(pageSource.includes('scanLimit: expandedSourceScanLimit'), 'New or duplicate project activation should run expanded onboarding scans');
-assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(duplicateProject)'), 'Duplicate project selection should announce the expanded onboarding scan');
+assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(project)'), 'Duplicate project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nextProject)'), 'New project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
