@@ -1641,6 +1641,39 @@ function nextActivePathAfterBulkClose(
   return nextTabs[0]?.path ?? null;
 }
 
+export function findAdjacentSourceDiagnostic(
+  diagnostics: SourceDiagnostic[],
+  currentLine: number,
+  currentColumn: number,
+  direction: 1 | -1
+): SourceDiagnostic | null {
+  if (diagnostics.length === 0) return null;
+
+  const sortedDiagnostics = [...diagnostics].sort((left, right) =>
+    left.line === right.line ? left.column - right.column : left.line - right.line
+  );
+  const line = Math.max(1, Math.floor(currentLine));
+  const column = Math.max(1, Math.floor(currentColumn));
+
+  if (direction === 1) {
+    return (
+      sortedDiagnostics.find((diagnostic) =>
+        diagnostic.line > line || (diagnostic.line === line && diagnostic.column > column)
+      ) ?? sortedDiagnostics[0] ?? null
+    );
+  }
+
+  for (let index = sortedDiagnostics.length - 1; index >= 0; index -= 1) {
+    const diagnostic = sortedDiagnostics[index];
+    if (!diagnostic) continue;
+    if (diagnostic.line < line || (diagnostic.line === line && diagnostic.column < column)) {
+      return diagnostic;
+    }
+  }
+
+  return sortedDiagnostics[sortedDiagnostics.length - 1] ?? null;
+}
+
 export function filterSourceRecords(records: SourceRecord[], query: string): SourceRecord[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return records;

@@ -8,6 +8,7 @@ import {
   extractSourceSemanticTokens,
   extractSourceSymbols,
   findSourceDefinitionTargets,
+  findAdjacentSourceDiagnostic,
   findSourceReferenceTargets,
   findSourceSearchMatches,
   formatGitBranchHealthSummary,
@@ -376,6 +377,18 @@ assert.deepEqual(
 assert.equal(closeAllClean.nextActivePath, '/repo/src/C.ts');
 assert.equal(closeAllClean.closedCount, 2);
 assert.equal(closeAllClean.retainedDirtyCount, 1);
+
+const sortedDiagnostics = [
+  { severity: 'warning', message: 'middle', line: 4, column: 2 },
+  { severity: 'error', message: 'first', line: 2, column: 10 },
+  { severity: 'hint', message: 'last', line: 8, column: 1 }
+];
+assert.equal(findAdjacentSourceDiagnostic([], 1, 1, 1), null);
+assert.equal(findAdjacentSourceDiagnostic(sortedDiagnostics, 1, 1, 1)?.message, 'first');
+assert.equal(findAdjacentSourceDiagnostic(sortedDiagnostics, 4, 2, 1)?.message, 'last');
+assert.equal(findAdjacentSourceDiagnostic(sortedDiagnostics, 9, 1, 1)?.message, 'first');
+assert.equal(findAdjacentSourceDiagnostic(sortedDiagnostics, 4, 2, -1)?.message, 'first');
+assert.equal(findAdjacentSourceDiagnostic(sortedDiagnostics, 1, 1, -1)?.message, 'last');
 
 const rankedByFileName = rankSourceRecords(records, 'b', 5);
 assert.deepEqual(

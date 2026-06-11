@@ -96,6 +96,7 @@
     defaultProjectRoots,
     demoPreviewFor,
     filterSourceRecords,
+    findAdjacentSourceDiagnostic,
     findSourceDefinitionTargets,
     findSourceReferenceTargets,
     findSourceSearchMatches,
@@ -1384,6 +1385,20 @@
       label: 'Show problems',
       detail: sourceDiagnosticSummary,
       perform: () => showEditorInsightPanel('problems')
+    },
+    {
+      id: 'next-problem',
+      label: 'Go to next problem',
+      detail: 'F8',
+      disabled: sourceDiagnostics.length === 0,
+      perform: () => selectNextSourceDiagnostic()
+    },
+    {
+      id: 'previous-problem',
+      label: 'Go to previous problem',
+      detail: 'Shift+F8',
+      disabled: sourceDiagnostics.length === 0,
+      perform: () => selectPreviousSourceDiagnostic()
     },
     {
       id: 'insights-symbols',
@@ -5121,6 +5136,17 @@
     if ((event.metaKey || event.ctrlKey) && event.key === ']') {
       event.preventDefault();
       void navigateSourceForward();
+      return;
+    }
+
+    if (event.key === 'F8') {
+      event.preventDefault();
+      if (event.shiftKey) {
+        selectPreviousSourceDiagnostic();
+        return;
+      }
+
+      selectNextSourceDiagnostic();
     }
   }
 
@@ -6299,6 +6325,44 @@
 
   function selectSourceDiagnostic(diagnostic: SourceDiagnostic) {
     revealSourceLine(diagnostic.line);
+  }
+
+  function selectNextSourceDiagnostic(
+    request: { line: number; column: number } = currentSourceDiagnosticNavigationRequest()
+  ) {
+    selectAdjacentSourceDiagnostic(request, 1);
+  }
+
+  function selectPreviousSourceDiagnostic(
+    request: { line: number; column: number } = currentSourceDiagnosticNavigationRequest()
+  ) {
+    selectAdjacentSourceDiagnostic(request, -1);
+  }
+
+  function selectAdjacentSourceDiagnostic(
+    request: { line: number; column: number },
+    direction: 1 | -1
+  ) {
+    const diagnostic = findAdjacentSourceDiagnostic(
+      sourceDiagnostics,
+      request.line,
+      request.column,
+      direction
+    );
+
+    if (!diagnostic) {
+      fileActionStatus = 'No problems';
+      return;
+    }
+
+    selectSourceDiagnostic(diagnostic);
+  }
+
+  function currentSourceDiagnosticNavigationRequest() {
+    return {
+      line: selectedSourceLine ?? 1,
+      column: 1
+    };
   }
 
   function selectSourceSymbol(symbol: SourceSymbol) {
@@ -10550,7 +10614,9 @@
                 onInlayHintLookup={handleEditorInlayHintLookup}
                 onNavigateBackRequest={navigateSourceBack}
                 onNavigateForwardRequest={navigateSourceForward}
+                onNextProblemRequest={selectNextSourceDiagnostic}
                 onProblemsRequest={() => showEditorInsightPanel('problems')}
+                onPreviousProblemRequest={selectPreviousSourceDiagnostic}
                 onQuickOpenRequest={openQuickOpen}
                 onReferenceLookup={handleEditorReferenceLookup}
                 onRename={handleEditorRename}

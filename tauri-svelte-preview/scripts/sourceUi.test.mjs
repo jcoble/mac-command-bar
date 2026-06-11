@@ -437,6 +437,10 @@ assert.ok(pageSource.includes('Go to symbol: ${symbol.name}'), 'Command palette 
 assert.ok(pageSource.includes('selectSourceSymbol(symbol)'), 'Command palette symbol commands should reveal source lines');
 assert.ok(pageSource.includes('Go to problem: ${diagnostic.message}'), 'Command palette should expose current-file diagnostics');
 assert.ok(pageSource.includes('selectSourceDiagnostic(diagnostic)'), 'Command palette diagnostic commands should reveal source lines');
+assert.ok(pageSource.includes("id: 'next-problem'"), 'Command palette should expose next problem navigation');
+assert.ok(pageSource.includes("id: 'previous-problem'"), 'Command palette should expose previous problem navigation');
+assert.ok(pageSource.includes('function selectNextSourceDiagnostic'), 'Source page should navigate to the next problem');
+assert.ok(pageSource.includes('function selectPreviousSourceDiagnostic'), 'Source page should navigate to the previous problem');
 assert.ok(pageSource.includes('class="view-menu-button-grid"'), 'Workspace should render context card layout controls inside the view menu');
 assert.ok(pageSource.includes('aria-label="Context card layout"'), 'Context card layout controls should be accessible');
 assert.ok(pageSource.includes('aria-label="Side pane position"'), 'Side pane placement controls should be accessible');
@@ -945,6 +949,8 @@ assert.ok(editorSource.includes('onCommandPaletteRequest?: () => void'), 'Editor
 assert.ok(editorSource.includes('onGoToLineRequest?: () => void'), 'Editor should accept a native go-to-line shortcut callback');
 assert.ok(editorSource.includes('onNavigateBackRequest?: () => void'), 'Editor should accept a source back-navigation shortcut callback');
 assert.ok(editorSource.includes('onNavigateForwardRequest?: () => void'), 'Editor should accept a source forward-navigation shortcut callback');
+assert.ok(editorSource.includes('onNextProblemRequest?: SourceEditorProblemNavigation'), 'Editor should accept a native next-problem callback');
+assert.ok(editorSource.includes('onPreviousProblemRequest?: SourceEditorProblemNavigation'), 'Editor should accept a native previous-problem callback');
 assert.ok(editorSource.includes('onProblemsRequest?: () => void'), 'Editor should accept a native problems shortcut callback');
 assert.ok(editorSource.includes('onSymbolsRequest?: () => void'), 'Editor should accept a native symbols shortcut callback');
 assert.ok(editorSource.includes('monaco.KeyCode.F12'), 'Editor should bind F12 for definition lookup');
@@ -957,6 +963,8 @@ assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.BracketL
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyCode.BracketRight'), 'Editor should bind Cmd+] inside Monaco');
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO'), 'Editor should bind Cmd+Shift+O inside Monaco');
 assert.ok(editorSource.includes('monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM'), 'Editor should bind Cmd+Shift+M inside Monaco');
+assert.ok(editorSource.includes('monaco.KeyCode.F8'), 'Editor should bind F8 for next problem');
+assert.ok(editorSource.includes('monaco.KeyMod.Shift | monaco.KeyCode.F8'), 'Editor should bind Shift+F8 for previous problem');
 assert.ok(editorSource.includes('editor.addAction'), 'Editor should register Monaco command-palette/context-menu actions');
 assert.ok(editorSource.includes('registerHoverProvider'), 'Editor should register an in-editor hover provider');
 assert.ok(editorSource.includes('editor.onMouseDown'), 'Editor should handle mouse navigation gestures');
@@ -1062,6 +1070,8 @@ assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), '
 assert.ok(pageSource.includes('onGoToLineRequest={openCurrentFileGoToLine}'), 'Editor Cmd+G should call current-file line navigation');
 assert.ok(pageSource.includes('onNavigateBackRequest={navigateSourceBack}'), 'Editor Cmd+[ should call page source back navigation');
 assert.ok(pageSource.includes('onNavigateForwardRequest={navigateSourceForward}'), 'Editor Cmd+] should call page source forward navigation');
+assert.ok(pageSource.includes('onNextProblemRequest={selectNextSourceDiagnostic}'), 'Editor F8 should call page next-problem navigation');
+assert.ok(pageSource.includes('onPreviousProblemRequest={selectPreviousSourceDiagnostic}'), 'Editor Shift+F8 should call page previous-problem navigation');
 assert.ok(pageSource.includes("onProblemsRequest={() => showEditorInsightPanel('problems')}"), 'Editor Cmd+Shift+M should show problems');
 assert.ok(pageSource.includes('title={sourceLspStatusTitle()}'), 'LSP badge should explain server or fallback status');
 assert.ok(pageSource.includes('class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}'), 'LSP badge should style fallback status distinctly');

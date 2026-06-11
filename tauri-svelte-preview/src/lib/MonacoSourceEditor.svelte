@@ -49,6 +49,13 @@
 		column: number;
 	};
 
+	type SourceEditorProblemNavigationRequest = {
+		line: number;
+		column: number;
+	};
+
+	type SourceEditorProblemNavigation = (request: SourceEditorProblemNavigationRequest) => void;
+
 	type SourceEditorHoverResult = {
 		contents: string[];
 	};
@@ -144,7 +151,9 @@
 		onImplementationLookup?: SourceEditorImplementationLookup;
 		onNavigateBackRequest?: () => void;
 		onNavigateForwardRequest?: () => void;
+		onNextProblemRequest?: SourceEditorProblemNavigation;
 		onProblemsRequest?: () => void;
+		onPreviousProblemRequest?: SourceEditorProblemNavigation;
 		onQuickOpenRequest?: () => void;
 		onReferenceLookup?: SourceEditorReferenceLookup;
 		onRename?: SourceEditorRename;
@@ -180,7 +189,9 @@
 		onImplementationLookup,
 		onNavigateBackRequest,
 		onNavigateForwardRequest,
+		onNextProblemRequest,
 		onProblemsRequest,
+		onPreviousProblemRequest,
 		onQuickOpenRequest,
 		onReferenceLookup,
 		onRename,
@@ -1165,6 +1176,23 @@
 		onSymbolsRequest?.();
 	}
 
+	function requestProblemNavigationAtCursor(direction: 1 | -1) {
+		const position = editor?.getPosition();
+		if (!position) return;
+
+		const request = {
+			line: position.lineNumber,
+			column: position.column,
+		};
+
+		if (direction === 1) {
+			onNextProblemRequest?.(request);
+			return;
+		}
+
+		onPreviousProblemRequest?.(request);
+	}
+
 	function lookupRequestAtCursor(): SourceEditorLookupRequest | null {
 		const position = editor?.getPosition();
 		if (!position) return null;
@@ -1457,6 +1485,22 @@
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 0.4,
 				run: () => onProblemsRequest?.(),
+			}),
+			editor.addAction({
+				id: "mcb.source.nextProblem",
+				label: "Next Problem",
+				keybindings: [monaco.KeyCode.F8],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.41,
+				run: () => requestProblemNavigationAtCursor(1),
+			}),
+			editor.addAction({
+				id: "mcb.source.previousProblem",
+				label: "Previous Problem",
+				keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F8],
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 0.42,
+				run: () => requestProblemNavigationAtCursor(-1),
 			}),
 		];
 
