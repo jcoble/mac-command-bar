@@ -269,6 +269,7 @@ assert.ok(pageSource.includes('function copyWorktreeCleanupPlan'), 'Worktree row
 assert.ok(pageSource.includes('function copyWorktreeAuditCommand'), 'Worktree commands should copy audit commands');
 assert.ok(pageSource.includes('function copyWorktreeCleanupCommand'), 'Worktree commands should copy remove commands');
 assert.ok(pageSource.includes('function copyWorktreeBackupCommand'), 'Worktree rows should copy backup commands');
+assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Worktree panel should copy a guarded cleanup script');
 assert.ok(pageSource.includes('worktreePrimaryAction'), 'Worktree rows should derive a recommended next action');
 assert.ok(pageSource.includes('function copyWorktreePrimaryAction'), 'Worktree rows should copy the recommended next action command');
 assert.ok(pageSource.includes('Copy recommended worktree action'), 'Worktree rows should expose a compact recommended action button');
@@ -384,6 +385,7 @@ assert.ok(pageSource.includes('worktree-audit-command-${worktree.path}'), 'Comma
 assert.ok(pageSource.includes('worktree-remove-command-${worktree.path}'), 'Command palette should copy worktree remove commands');
 assert.ok(pageSource.includes('worktree-backup-command-${worktree.path}'), 'Command palette should copy worktree backup commands');
 assert.ok(pageSource.includes("id: 'worktree-cleanup-brief'"), 'Command palette should copy the aggregate worktree cleanup brief');
+assert.ok(pageSource.includes("id: 'worktree-cleanup-script'"), 'Command palette should copy the guarded worktree cleanup script');
 assert.ok(pageSource.includes('agent-resume-${session.provider}-${session.id}'), 'Command palette should expose agent resume targets');
 assert.ok(pageSource.includes('agent-copy-plan-${session.provider}-${session.id}'), 'Command palette should copy session resume plans');
 assert.ok(pageSource.includes('agent-copy-shell-command-${session.provider}-${session.id}'), 'Command palette should copy shell-ready session commands');
@@ -1061,6 +1063,7 @@ assert.ok(pageSource.includes('aria-label="Refresh worktrees"'), 'Worktree panel
 assert.ok(pageSource.includes('class="worktree-context-panel"'), 'Source page should render a worktree safety panel');
 assert.ok(pageSource.includes('{projectWorktreeCleanupBrief.headline}'), 'Worktree panel should show the aggregate cleanup headline');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupBrief'), 'Worktree panel should copy the aggregate cleanup brief');
+assert.ok(pageSource.includes('aria-label="Copy worktree cleanup script"'), 'Worktree panel should expose the guarded cleanup script');
 assert.ok(pageSource.includes('class="worktree-context-list"'), 'Worktree panel should render a scrollable list');
 assert.ok(pageSource.includes('worktree-status-badge ${safety.kind}'), 'Worktree rows should show safety status');
 assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');

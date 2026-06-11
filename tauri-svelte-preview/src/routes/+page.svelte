@@ -52,7 +52,12 @@
     type OrchestrationTimelineItem
   } from '$lib/orchestrationView';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
-  import { buildWorktreeCleanupBrief, buildWorktreeSafetySummary, worktreePrimaryAction } from '$lib/worktreeSafety';
+  import {
+    buildWorktreeCleanupBrief,
+    buildWorktreeCleanupScript,
+    buildWorktreeSafetySummary,
+    worktreePrimaryAction
+  } from '$lib/worktreeSafety';
   import {
     createWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
@@ -1425,6 +1430,13 @@
       detail: projectWorktreeCleanupBrief.headline,
       disabled: projectWorktrees.length === 0,
       perform: copyProjectWorktreeCleanupBrief
+    },
+    {
+      id: 'worktree-cleanup-script',
+      label: 'Copy guarded worktree cleanup script',
+      detail: projectWorktreeCleanupBrief.headline,
+      disabled: projectWorktrees.length === 0,
+      perform: copyProjectWorktreeCleanupScript
     },
     {
       id: 'activity-git',
@@ -3712,6 +3724,15 @@
 
   function copyProjectWorktreeCleanupBrief() {
     return copyActivityCommand(projectWorktreeCleanupBrief.report, 'Worktree cleanup brief copied');
+  }
+
+  function copyProjectWorktreeCleanupScript() {
+    const script = buildWorktreeCleanupScript(projectWorktrees, {
+      primaryPath: selectedProject.path,
+      activeSessionPaths: selectedProjectAgentSessionPaths
+    });
+
+    return copyActivityCommand(script, 'Guarded worktree cleanup script copied');
   }
 
   function copyAgentSessionResumePlan(session: AgentSession) {
@@ -8749,6 +8770,16 @@
               onclick={copyProjectWorktreeCleanupBrief}
             >
               <Copy size={13} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Copy worktree cleanup script"
+              title="Copy guarded cleanup script"
+              disabled={projectWorktrees.length === 0}
+              onclick={copyProjectWorktreeCleanupScript}
+            >
+              <FileCode2 size={13} strokeWidth={1.9} />
             </button>
             <button
               class="file-action-button"

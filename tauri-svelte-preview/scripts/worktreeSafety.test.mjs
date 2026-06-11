@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildWorktreeCleanupBrief,
+  buildWorktreeCleanupScript,
   buildWorktreeSafetySummary,
   worktreePrimaryAction,
   worktreeAuditCommand,
@@ -215,4 +216,42 @@ function worktree(overrides = {}) {
   assert.match(brief.report, /cdx\/tsk-121-dirty/);
   assert.match(brief.report, /Review:/);
   assert.match(brief.report, /cdx\/tsk-122-review/);
+}
+
+{
+  const script = buildWorktreeCleanupScript(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/EdiPlatform',
+        branch: 'main',
+        taskID: null
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-120-clean',
+        branch: 'cdx/tsk-120-clean',
+        taskID: 'TSK-120',
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-121-dirty',
+        branch: 'cdx/tsk-121-dirty',
+        taskID: 'TSK-121',
+        isDirty: true
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.match(script, /^#!\/usr\/bin\/env bash/);
+  assert.match(script, /RUN_BACKUP="\$\{RUN_BACKUP:-0\}"/);
+  assert.match(script, /RUN_REMOVE="\$\{RUN_REMOVE:-0\}"/);
+  assert.match(script, /Audit cdx\/tsk-121-dirty/);
+  assert.match(script, /Backup cdx\/tsk-121-dirty/);
+  assert.match(script, /Remove cdx\/tsk-120-clean/);
+  assert.doesNotMatch(script, /worktree remove '\/Users\/blackcolours\/dev\/work\/EdiPlatform'/);
+  assert.match(script, /echo "Dry run complete/);
 }

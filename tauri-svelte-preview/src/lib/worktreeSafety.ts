@@ -165,6 +165,59 @@ export function buildWorktreeCleanupBrief(
   };
 }
 
+export function buildWorktreeCleanupScript(
+  worktrees: ProjectWorktree[],
+  options: WorktreeSafetyOptions = {}
+): string {
+  const entries = worktrees.map((worktree) => ({
+    worktree,
+    safety: buildWorktreeSafetySummary(worktree, options)
+  }));
+  const brief = buildWorktreeCleanupBrief(worktrees, options);
+  const lines = [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    'RUN_BACKUP="${RUN_BACKUP:-0}"',
+    'RUN_REMOVE="${RUN_REMOVE:-0}"',
+    '',
+    `echo ${shellQuote(`Worktree cleanup: ${brief.headline}`)}`,
+    ''
+  ];
+
+  for (const { worktree, safety } of entries) {
+    const branch = worktree.branch || worktree.path;
+    lines.push(`# ${branch} - ${safety.reason}`);
+    lines.push(`echo ${shellQuote(`Audit ${branch}`)}`);
+    lines.push(safety.auditCommand);
+
+    if (safety.kind === 'blocked' && safety.activeSessionCount === 0) {
+      lines.push('if [ "$RUN_BACKUP" = "1" ]; then');
+      lines.push(`  echo ${shellQuote(`Backup ${branch}`)}`);
+      lines.push(`  ${safety.backupCommand}`);
+      lines.push('else');
+      lines.push(`  echo ${shellQuote(`Backup ${branch}: set RUN_BACKUP=1 to execute`)}`);
+      lines.push(`  printf '%s\\n' ${shellQuote(safety.backupCommand)}`);
+      lines.push('fi');
+    } else if (safety.kind === 'ready') {
+      lines.push('if [ "$RUN_REMOVE" = "1" ]; then');
+      lines.push(`  echo ${shellQuote(`Remove ${branch}`)}`);
+      lines.push(`  ${safety.cleanupCommand}`);
+      lines.push('else');
+      lines.push(`  echo ${shellQuote(`Remove ${branch}: set RUN_REMOVE=1 to execute`)}`);
+      lines.push(`  printf '%s\\n' ${shellQuote(safety.cleanupCommand)}`);
+      lines.push('fi');
+    } else {
+      lines.push(`echo ${shellQuote(`Review ${branch}: ${safety.recommendation}`)}`);
+    }
+
+    lines.push('');
+  }
+
+  lines.push('echo "Dry run complete. Set RUN_BACKUP=1 and/or RUN_REMOVE=1 to execute guarded actions."');
+  return `${lines.join('\n')}\n`;
+}
+
 export function worktreePrimaryAction(summary: WorktreeSafetySummary): WorktreePrimaryAction {
   if (summary.kind === 'ready') {
     return {
