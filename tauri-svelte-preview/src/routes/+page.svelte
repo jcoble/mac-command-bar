@@ -4164,6 +4164,7 @@
     const command = agentSessionResumeCommand(session);
     if (!command.trim()) return;
 
+    captureActiveWorkspaceBeforeSwitch();
     captureAgentSessionWorkspaceSnapshot(session);
     markAgentSessionWorkspaceActive(session);
     const path = session.projectPath ?? selectedProject.path;

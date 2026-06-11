@@ -176,7 +176,10 @@ assert.ok(pageSource.includes('function persistWorkspaceSnapshots'), 'Workspace 
 assert.ok(pageSource.includes('function loadStoredActiveWorkspaceSessionKey'), 'Workspace should restore the active conversation key');
 assert.ok(pageSource.includes('function persistActiveWorkspaceSessionKey'), 'Workspace should persist active conversation switches');
 assert.ok(pageSource.includes('function markAgentSessionWorkspaceActive'), 'Workspace should share active-session marking across open and resume actions');
-assert.ok(pageSource.includes('captureActiveWorkspaceBeforeSwitch();'), 'Conversation switching should save the previous active workspace first');
+assert.ok(
+  (pageSource.match(/captureActiveWorkspaceBeforeSwitch\(\);/g) ?? []).length >= 2,
+  'Conversation workspace or terminal switching should save the previous active workspace first'
+);
 assert.ok(
   (pageSource.match(/markAgentSessionWorkspaceActive\(session\);/g) ?? []).length >= 2,
   'Opening or resuming a conversation should mark it as active'
