@@ -348,6 +348,10 @@ assert.ok(pageSource.includes('if (storedWidth === null) return sidePaneDefaultW
 assert.ok(pageSource.includes('if (storedWidth === null) return editorInsightDefaultWidth'), 'Missing editor inspector storage should use the designed default width');
 assert.ok(pageSource.includes('if (storedWidth === null) return contextPaneDefaultWidth'), 'Missing context pane storage should use the designed default width');
 assert.ok(pageSource.includes('class="activity-rail"'), 'Source shell should render an activity rail');
+assert.ok(pageSource.includes('function sourceScanDiagnosticBrief'), 'Source scan diagnostics should expose a copyable brief');
+assert.ok(pageSource.includes('function copySourceScanDiagnosticBrief'), 'Source scan diagnostics should be copyable');
+assert.ok(pageSource.includes('aria-label="Copy source scan diagnostic"'), 'Tree scan summary should expose a copy diagnostic action');
+assert.ok(pageSource.includes('Scan diagnostic copied'), 'Source scan diagnostic copy should confirm success');
 assert.ok(pageSource.includes("class:side-right={sidePanePosition === 'right'}"), 'Source shell should support moving the side pane to the right');
 assert.ok(pageSource.includes("class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}"), 'Workspace should support top context placement only when the context dock is active');
 assert.ok(pageSource.includes("class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}"), 'Workspace should support side context placement only when the context dock is active');
@@ -435,6 +439,7 @@ assert.ok(pageSource.includes("quickOpenQuery = '#'"), 'Workspace symbol search 
 assert.ok(pageSource.includes('function chooseQuickOpenWorkspaceSymbol'), 'Quick open should select workspace symbols directly');
 assert.ok(pageSource.includes("id: 'scan-project-expanded'"), 'Command palette should expose expanded source scans');
 assert.ok(pageSource.includes("id: 'scan-reset-index'"), 'Command palette should expose source index reset');
+assert.ok(pageSource.includes("id: 'source-copy-scan-diagnostic'"), 'Command palette should copy a source scan diagnostic');
 assert.ok(pageSource.includes("id: 'scan-stop'"), 'Command palette should expose scan cancellation');
 assert.ok(pageSource.includes("id: 'project-add-folder'"), 'Command palette should expose project folder selection');
 assert.ok(pageSource.includes("id: 'project-open-folder'"), 'Command palette should open the current project folder');

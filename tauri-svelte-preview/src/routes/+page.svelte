@@ -1146,6 +1146,12 @@
       perform: () => resetProjectScanCache(selectedProject)
     },
     {
+      id: 'source-copy-scan-diagnostic',
+      label: 'Copy source scan diagnostic',
+      detail: sourceScanHealthNote || selectedProjectIndexSummary,
+      perform: copySourceScanDiagnosticBrief
+    },
+    {
       id: 'scan-stop',
       label: 'Stop source scan',
       detail: sourceScanProgress?.status ?? 'Cancel the active scanner',
@@ -3031,6 +3037,77 @@
     ].join('\n');
   }
 
+  function sourceScanDiagnosticBrief() {
+    const indexEntry = selectedProjectIndexEntry;
+    const stats = sourceScanStats ?? indexEntry?.stats ?? null;
+    const activeScan = scanning
+      ? `running (${(sourceScanProgress?.matchedFiles ?? records.length).toLocaleString()} matched / ${(
+          sourceScanProgress?.visitedEntries ?? 0
+        ).toLocaleString()} visited)`
+      : 'idle';
+    const cacheState = indexEntry
+      ? `${indexEntry.records.length.toLocaleString()} ${indexEntry.records.length === 1 ? 'file' : 'files'}, limit ${indexEntry.limit.toLocaleString()}, ${
+          indexEntry.truncated ? 'truncated' : 'complete'
+        }, ${formatRelativeAge(indexEntry.scannedAt)} old`
+      : 'none';
+    const selectedPath = selectedSourcePaths[selectedProject.id] ?? 'none';
+    const currentFile = selectedRecord
+      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+      : 'none';
+    const recentFiles = projectRecentRecords.slice(0, 6).map((record) => `- ${record.relativePath}`);
+    const openTabs = projectOpenSourceTabs.slice(0, 6).map((tab) => {
+      const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
+      return `${dirtyPrefix}${tab.relativePath}`;
+    });
+    const statLines = stats
+      ? [
+          `Visited entries: ${stats.visitedEntries.toLocaleString()}`,
+          `Matched files: ${stats.matchedFiles.toLocaleString()}`,
+          `Skipped directories: ${stats.skippedDirectories.toLocaleString()}`,
+          `Unsupported files: ${stats.unsupportedFiles.toLocaleString()}`,
+          `Unreadable entries: ${stats.unreadableEntries.toLocaleString()}`
+        ]
+      : ['Scanner stats: none'];
+
+    return [
+      'Source scan diagnostic',
+      `Project: ${selectedProject.name}`,
+      `Root: ${selectedProject.path}`,
+      `Root label: ${sourceContextIdentity.rootLabel}`,
+      `Scan limit: ${expandedSourceScanLimit.toLocaleString()}`,
+      `Indexed files: ${records.length.toLocaleString()}`,
+      `Filtered files: ${filteredRecords.length.toLocaleString()}`,
+      `Query: ${query.trim() || 'none'}`,
+      `Limit reached: ${scanLimitReached ? 'yes' : 'no'}`,
+      `Needs attention: ${sourceScanNeedsAttention ? 'yes' : 'no'}`,
+      `Health: ${sourceScanHealthNote || 'ok'}`,
+      `Index cache: ${cacheState}`,
+      `Index summary: ${selectedProjectIndexSummary}`,
+      `Scan summary: ${scanSummaryLabel}`,
+      `Scan stats: ${sourceScanStatsLabel || 'none'}`,
+      `Active scan: ${activeScan}`,
+      `Loading: ${loading ? 'yes' : 'no'}`,
+      `Runtime: ${runtime}`,
+      error ? `Error: ${error}` : 'Error: none',
+      `Current file: ${currentFile}`,
+      `Saved selected path: ${selectedPath}`,
+      '',
+      'Raw scanner stats:',
+      statLines.join('\n'),
+      '',
+      `Open tabs: ${projectOpenSourceTabs.length}`,
+      openTabs.length > 0 ? openTabs.join('\n') : '- none',
+      '',
+      `Recent files: ${projectRecentRecords.length}`,
+      recentFiles.length > 0 ? recentFiles.join('\n') : '- none',
+      '',
+      'Next actions:',
+      `- Reset index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`,
+      '- Confirm the project root is the repository root, not a nested folder',
+      '- If indexed files stay tiny, inspect skipped directories and unreadable entries'
+    ].join('\n');
+  }
+
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
     return gitRefLabels(entry.refs);
   }
@@ -3169,6 +3246,10 @@
 
   async function copySourceContextBrief() {
     await copyActivityCommand(sourceContextBriefText(), 'Source context brief copied');
+  }
+
+  async function copySourceScanDiagnosticBrief() {
+    await copyActivityCommand(sourceScanDiagnosticBrief(), 'Scan diagnostic copied');
   }
 
   function repoDashboardTaskLabel(summary: GitRepositorySummary) {
@@ -8830,7 +8911,18 @@
             <span>{selectedProject.name}</span>
             <strong>{recordCountLabel}</strong>
           </div>
-          <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
+          <div class="scan-summary-row">
+            <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
+            <button
+              class="scan-diagnostic-button"
+              type="button"
+              aria-label="Copy source scan diagnostic"
+              title="Copy source scan diagnostic"
+              onclick={copySourceScanDiagnosticBrief}
+            >
+              <Copy size={12} strokeWidth={1.9} />
+            </button>
+          </div>
           <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
           {#if sourceScanStatsLabel}
             <div class="scan-stats" title={sourceScanStatsLabel}>{sourceScanStatsLabel}</div>
@@ -13837,9 +13929,16 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
   }
 
+  .scan-summary-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px;
+    align-items: center;
+    gap: 5px;
+    margin: -3px 0 7px;
+  }
+
   .scan-summary {
     min-width: 0;
-    margin: -3px 0 7px;
     overflow: hidden;
     color: #7f8b87;
     font-size: 10px;
@@ -13847,6 +13946,25 @@
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .scan-diagnostic-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 20px;
+    border: 1px solid rgba(143, 216, 207, 0.14);
+    border-radius: 5px;
+    padding: 0;
+    background: rgba(143, 216, 207, 0.06);
+    color: #8a9693;
+  }
+
+  .scan-diagnostic-button:hover {
+    border-color: rgba(143, 216, 207, 0.34);
+    background: rgba(143, 216, 207, 0.12);
+    color: #b8d6d1;
   }
 
   .index-summary {
