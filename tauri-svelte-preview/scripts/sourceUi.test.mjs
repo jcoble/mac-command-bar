@@ -221,6 +221,9 @@ assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace sh
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
 assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
 assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 'Workspace should capture a specific agent session context');
+assert.ok(pageSource.includes('function activeWorkspaceAgentSession'), 'Workspace should resolve the currently active conversation before saving');
+assert.ok(pageSource.includes('captureWorkspaceSnapshot(activeWorkspaceAgentSession())'), 'Saving the current workspace should use the active conversation or a manual workspace');
+assert.ok(!pageSource.includes('captureWorkspaceSnapshot(selectedProjectAgentSessions[0] ?? null)'), 'Saving the current workspace should not silently snapshot the first listed agent');
 assert.ok(pageSource.includes('function workspaceSnapshotEmbeddedTerminal'), 'Workspace snapshots should preserve embedded terminal context');
 assert.ok(pageSource.includes('function workspaceSnapshotViewState'), 'Workspace snapshots should preserve compact pane view state');
 assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');

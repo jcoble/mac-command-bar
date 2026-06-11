@@ -3860,19 +3860,25 @@
   }
 
   function captureCurrentWorkspaceSnapshot() {
-    captureWorkspaceSnapshot(selectedProjectAgentSessions[0] ?? null);
+    captureWorkspaceSnapshot(activeWorkspaceAgentSession());
   }
 
   function captureAgentSessionWorkspaceSnapshot(session: AgentSession): WorkspaceSnapshot {
     return captureWorkspaceSnapshot(session);
   }
 
+  function activeWorkspaceAgentSession(): AgentSession | null {
+    if (!activeWorkspaceSessionKey) return null;
+
+    return agentSessions.find(
+      (session) => workspaceSnapshotIDForAgentSession(session) === activeWorkspaceSessionKey
+    ) ?? null;
+  }
+
   function captureActiveWorkspaceBeforeSwitch() {
     if (!activeWorkspaceSessionKey) return;
 
-    const activeSession = agentSessions.find(
-      (session) => workspaceSnapshotIDForAgentSession(session) === activeWorkspaceSessionKey
-    );
+    const activeSession = activeWorkspaceAgentSession();
     if (!activeSession) return;
 
     captureAgentSessionWorkspaceSnapshot(activeSession);
