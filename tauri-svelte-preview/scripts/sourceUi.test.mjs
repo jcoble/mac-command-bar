@@ -220,6 +220,10 @@ assert.ok(pageSource.includes('function workspaceSnapshotViewStateLabel'), 'Work
 assert.ok(pageSource.includes('describeWorkspaceSnapshotRestoreReadiness'), 'Workspace restore should use shared readiness rules');
 assert.ok(pageSource.includes('function workspaceSnapshotRestoreReadiness'), 'Workspace should classify saved snapshot restore readiness');
 assert.ok(pageSource.includes('Restore status: ${readiness.label}'), 'Workspace restore plans should include restore readiness status');
+assert.ok(pageSource.includes('selectStartupWorkspaceSnapshot'), 'Workspace startup should choose a restorable saved conversation snapshot');
+assert.ok(pageSource.includes('const startupWorkspaceSnapshot = selectStartupWorkspaceSnapshot'), 'Workspace startup should compute the initial snapshot before scanning');
+assert.ok(pageSource.includes('customProjectRoots = startupCustomProjectRoots'), 'Workspace startup should retain snapshot-only worktree project roots');
+assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(startupWorkspaceSnapshot)'), 'Workspace startup should restore the saved conversation workspace directly');
 assert.ok(pageSource.includes('function captureActiveWorkspaceBeforeSwitch'), 'Workspace should refresh the active snapshot before switching conversations');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
 assert.ok(pageSource.includes('function restoreWorkspaceEmbeddedTerminal'), 'Workspace restore should reconnect a live embedded terminal when possible');
@@ -709,8 +713,8 @@ assert.ok(
   'Expanded source scans should rescan the active project at the larger limit'
 );
 assert.ok(
-  pageSource.includes('scanProject(storedProject, storedSelectedSourcePaths[storedProject.id], { limit: expandedSourceScanLimit })'),
-  'Startup should request an expanded project scan'
+  pageSource.includes('scanProject(startupProject, storedSelectedSourcePaths[startupProject.id], { limit: expandedSourceScanLimit })'),
+  'Startup should request an expanded fallback project scan'
 );
 assert.ok(
   pageSource.includes('getSourceScanCacheEntry(\n      sourceScanCache,\n      selectedProject,\n      expandedSourceScanLimit'),

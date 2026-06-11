@@ -5,6 +5,7 @@ import {
   describeWorkspaceSnapshotRestoreReadiness,
   parseStoredWorkspaceSnapshot,
   restoreWorkspaceSnapshot,
+  selectStartupWorkspaceSnapshot,
   snapshotStorageKey,
   upsertWorkspaceSnapshot
 } from '../src/lib/workspaceSnapshot.ts';
@@ -99,6 +100,20 @@ const olderSnapshot = createWorkspaceSnapshot({
   capturedAt: 500
 });
 
+const selectedProjectSnapshot = createWorkspaceSnapshot({
+  provider: 'manual',
+  sessionID: 'ediplatform',
+  title: 'Latest selected project snapshot',
+  project: {
+    id: 'ediplatform',
+    name: 'EdiPlatform',
+    path: '/Users/blackcolours/dev/work/EdiPlatform'
+  },
+  cwd: '/Users/blackcolours/dev/work/EdiPlatform',
+  selectedPath: '/Users/blackcolours/dev/work/EdiPlatform/EdiPlatform.Core/Services/FormatResolver.cs',
+  capturedAt: 1_500
+});
+
 const updatedSnapshot = createWorkspaceSnapshot({
   ...snapshot,
   title: 'Review checkout flow resumed',
@@ -123,6 +138,35 @@ assert.equal(
   upsertWorkspaceSnapshot([updatedSnapshot, olderSnapshot], olderSnapshot, 1).length,
   1,
   'snapshot history should be bounded'
+);
+
+assert.equal(
+  selectStartupWorkspaceSnapshot([olderSnapshot, selectedProjectSnapshot, snapshot], {
+    activeSessionKey: snapshot.id,
+    selectedProjectID: 'ediplatform',
+    selectedProjectPath: '/Users/blackcolours/dev/work/EdiPlatform'
+  })?.id,
+  snapshot.id,
+  'startup restore should prefer the active conversation snapshot'
+);
+
+assert.equal(
+  selectStartupWorkspaceSnapshot([olderSnapshot, selectedProjectSnapshot, snapshot], {
+    selectedProjectID: 'ediplatform',
+    selectedProjectPath: '/Users/blackcolours/dev/work/EdiPlatform'
+  })?.id,
+  selectedProjectSnapshot.id,
+  'startup restore should fall back to the newest snapshot for the stored project'
+);
+
+assert.equal(
+  selectStartupWorkspaceSnapshot([olderSnapshot, selectedProjectSnapshot], {
+    activeSessionKey: 'missing-session',
+    selectedProjectID: 'missing-project',
+    selectedProjectPath: '/missing/project'
+  }),
+  null,
+  'startup restore should ignore stale active keys when no stored project snapshot matches'
 );
 
 const storedSnapshot = parseStoredWorkspaceSnapshot({

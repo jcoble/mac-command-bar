@@ -127,6 +127,12 @@ export type WorkspaceSnapshotRestoreReadiness = {
   canResumeEmbedded: boolean;
 };
 
+export type StartupWorkspaceSnapshotContext = {
+  activeSessionKey?: string | null;
+  selectedProjectID?: string | null;
+  selectedProjectPath?: string | null;
+};
+
 export function createWorkspaceSnapshot(input: WorkspaceSnapshotInput): WorkspaceSnapshot {
   const project = normalizeProjectRoot(input.project);
   const selectedPath = normalizeOptionalPath(input.selectedPath);
@@ -246,6 +252,30 @@ export function describeWorkspaceSnapshotRestoreReadiness(
     canRestoreWorkspace: true,
     canResumeEmbedded: false
   };
+}
+
+export function selectStartupWorkspaceSnapshot(
+  snapshots: WorkspaceSnapshot[],
+  context: StartupWorkspaceSnapshotContext = {}
+): WorkspaceSnapshot | null {
+  const sortedSnapshots = [...snapshots].sort((left, right) => right.capturedAt - left.capturedAt);
+  const activeSessionKey = normalizeOptionalString(context.activeSessionKey);
+  if (activeSessionKey) {
+    const activeSnapshot = sortedSnapshots.find((snapshot) => snapshot.id === activeSessionKey);
+    if (activeSnapshot) return activeSnapshot;
+  }
+
+  const selectedProjectID = normalizeOptionalString(context.selectedProjectID);
+  const selectedProjectPath = normalizeOptionalPath(context.selectedProjectPath);
+  if (!selectedProjectID && !selectedProjectPath) return null;
+
+  return sortedSnapshots.find((snapshot) => {
+    if (selectedProjectID && snapshot.project.id === selectedProjectID) return true;
+    return Boolean(
+      selectedProjectPath &&
+        normalizePath(snapshot.project.path) === selectedProjectPath
+    );
+  }) ?? null;
 }
 
 export function upsertWorkspaceSnapshot(

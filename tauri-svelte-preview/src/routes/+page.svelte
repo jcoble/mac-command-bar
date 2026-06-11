@@ -67,6 +67,7 @@
     describeWorkspaceSnapshotRestoreReadiness,
     parseStoredWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
+    selectStartupWorkspaceSnapshot,
     snapshotStorageKey,
     upsertWorkspaceSnapshot,
     type WorkspaceSnapshot,
@@ -8742,14 +8743,40 @@
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
       initialProject;
+    const startupWorkspaceSnapshot = selectStartupWorkspaceSnapshot(storedWorkspaceSnapshots, {
+      activeSessionKey: storedActiveWorkspaceSessionKey,
+      selectedProjectID: storedProject.id,
+      selectedProjectPath: storedProject.path
+    });
+    const startupSnapshotProjectAlreadyKnown = startupWorkspaceSnapshot
+      ? storedProjectOptions.some(
+          (project) =>
+            project.id === startupWorkspaceSnapshot.project.id ||
+            normalizeProjectPath(project.path) === normalizeProjectPath(startupWorkspaceSnapshot.project.path)
+        )
+      : true;
+    const startupCustomProjectRoots = startupWorkspaceSnapshot && !startupSnapshotProjectAlreadyKnown
+      ? mergeProjectRoots([], [...storedCustomProjectRoots, startupWorkspaceSnapshot.project])
+      : storedCustomProjectRoots;
+    const startupProjectOptions = mergeProjectRoots(defaultProjectRoots, startupCustomProjectRoots);
+    const startupProject = startupWorkspaceSnapshot
+      ? startupProjectOptions.find(
+          (project) =>
+            project.id === startupWorkspaceSnapshot.project.id ||
+            normalizeProjectPath(project.path) === normalizeProjectPath(startupWorkspaceSnapshot.project.path)
+        ) ?? startupWorkspaceSnapshot.project
+      : storedProject;
 
-    customProjectRoots = storedCustomProjectRoots;
+    customProjectRoots = startupCustomProjectRoots;
+    if (!startupSnapshotProjectAlreadyKnown) {
+      persistCustomProjectRoots(startupCustomProjectRoots);
+    }
     selectedSourcePaths = storedSelectedSourcePaths;
     recentSourceRecords = storedRecentSourceRecords;
     openSourceTabs = storedOpenSourceTabs;
     workspaceSnapshots = storedWorkspaceSnapshots;
-    activeWorkspaceSessionKey = storedActiveWorkspaceSessionKey;
-    selectedProjectID = storedProject.id;
+    activeWorkspaceSessionKey = startupWorkspaceSnapshot?.id ?? storedActiveWorkspaceSessionKey;
+    selectedProjectID = startupProject.id;
     sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
@@ -8774,7 +8801,7 @@
     if (!migrateSourceLayout && storedSourceDockLayout) {
       syncSourceDockLayoutToWorkspace(storedSourceDockLayout);
     }
-    persistSelectedProjectID(storedProject.id);
+    persistSelectedProjectID(startupProject.id);
     if (migrateSourceLayout) {
       persistSourceLayoutPreset(sourceLayoutPreset);
       persistSourceActivityMode(sourceActivityMode);
@@ -8789,17 +8816,24 @@
     persistSourceDockLayout(sourceDockLayout);
     persistSourceLayoutVersion();
     window.setTimeout(measureFileTreeViewport, 0);
-    void loadProjectGitStatus(storedProject);
-    void loadGitCommitHistory(storedProject);
-    void loadRuntimeContexts(storedProjectOptions);
-    void loadProjectWorktrees(storedProject);
-    void loadGitRepositorySummaries(storedProjectOptions);
-    void loadAgentSessions();
-    void loadOrchestrationRuns(storedProjectOptions);
     void loadEmbeddedTerminalSessions();
-    void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id], { limit: expandedSourceScanLimit }).then(
-      () => indexProjectsInBackground(storedProjectOptions)
-    );
+    if (startupWorkspaceSnapshot) {
+      fileActionStatus = `Restoring workspace snapshot: ${startupWorkspaceSnapshot.title}`;
+      void restoreConversationWorkspaceSnapshot(startupWorkspaceSnapshot).then(() =>
+        indexProjectsInBackground(startupProjectOptions)
+      );
+    } else {
+      void loadProjectGitStatus(startupProject);
+      void loadGitCommitHistory(startupProject);
+      void loadRuntimeContexts(startupProjectOptions);
+      void loadProjectWorktrees(startupProject);
+      void loadGitRepositorySummaries(startupProjectOptions);
+      void loadAgentSessions();
+      void loadOrchestrationRuns(startupProjectOptions);
+      void scanProject(startupProject, storedSelectedSourcePaths[startupProject.id], { limit: expandedSourceScanLimit }).then(
+        () => indexProjectsInBackground(startupProjectOptions)
+      );
+    }
 
     return () => {
       window.removeEventListener('beforeunload', captureActiveWorkspaceSnapshotBeforeUnload);
