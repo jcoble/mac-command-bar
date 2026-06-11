@@ -160,6 +160,8 @@ assert.ok(pageSource.includes('function sourceDockPanelVisible'), 'Workspace sho
 assert.ok(pageSource.includes('function terminalDockSummary'), 'Terminal dock should summarize launch targets');
 assert.ok(pageSource.includes('function ensureEmbeddedTerminalRenderer'), 'Terminal dock should lazily load xterm');
 assert.ok(pageSource.includes('function startEmbeddedTerminalSession'), 'Terminal dock should start native PTY sessions');
+assert.ok(pageSource.includes("startupCommand = ''"), 'Terminal dock should optionally start a PTY with an initial command');
+assert.ok(pageSource.includes('function resumeAgentSessionEmbeddedTerminal'), 'Terminal dock should resume agents inside the embedded PTY');
 assert.ok(pageSource.includes('function loadEmbeddedTerminalSessions'), 'Terminal dock should refresh native PTY sessions');
 assert.ok(pageSource.includes('function attachEmbeddedTerminalSession'), 'Terminal dock should attach to existing native PTY sessions');
 assert.ok(pageSource.includes('function closeListedEmbeddedTerminalSession'), 'Terminal dock should close listed native PTY sessions');
@@ -318,6 +320,7 @@ assert.ok(pageSource.includes('aria-label="Stop embedded terminal"'), 'Terminal 
 assert.ok(pageSource.includes('aria-label="Fit embedded terminal"'), 'Terminal launchpad should resize embedded sessions');
 assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 'Terminal launchpad should attach embedded sessions');
 assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
+assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Terminal launchpad should run agent resumes inside the embedded PTY');
 assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
 assert.ok(pageSource.includes('listenToTerminalOutput(handleTerminalOutput)'), 'Source shell should subscribe to terminal output events');
 assert.ok(pageSource.includes('writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data)'), 'Embedded terminal should write input to the native PTY');
@@ -326,6 +329,7 @@ assert.ok(pageSource.includes('resizeTerminalSessionFromTauri('), 'Embedded term
 assert.ok(pageSource.includes('embeddedTerminalSession.sessionId'), 'Embedded terminal should address the active native PTY session');
 assert.ok(pageSource.includes('closeTerminalSessionFromTauri(session.sessionId)'), 'Embedded terminal should close the native PTY');
 assert.ok(pageSource.includes("id: 'terminal-refresh-embedded'"), 'Command palette should refresh embedded terminal sessions');
+assert.ok(pageSource.includes('id: `terminal-embedded-resume-${session.provider}-${session.id}`'), 'Command palette should expose embedded agent resumes');
 assert.ok(pageSource.includes('id: `terminal-attach-${session.sessionId}`'), 'Command palette should attach embedded terminal sessions');
 assert.ok(pageSource.includes('id: `terminal-close-${session.sessionId}`'), 'Command palette should close embedded terminal sessions');
 assert.ok(pageSource.includes('class="command-palette-layer"'), 'Source shell should render a command palette overlay');

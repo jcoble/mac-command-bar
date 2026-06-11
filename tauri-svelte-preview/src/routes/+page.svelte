@@ -1230,6 +1230,13 @@
       disabled: embeddedTerminalSessionsLoading,
       perform: loadEmbeddedTerminalSessions
     },
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `terminal-embedded-resume-${session.provider}-${session.id}`,
+      label: `Resume in embedded terminal: ${session.title}`,
+      detail: agentSessionProjectLabel(session),
+      disabled: !agentSessionTerminalCommand(session).trim(),
+      perform: () => resumeAgentSessionEmbeddedTerminal(session)
+    })),
     ...embeddedTerminalSessions.slice(0, 8).map((session) => ({
       id: `terminal-attach-${session.sessionId}`,
       label: `Attach terminal: ${embeddedTerminalSessionTitle(session)}`,
@@ -3478,13 +3485,14 @@
     }
   }
 
-  async function startEmbeddedTerminalSession(cwd = selectedProject.path) {
+  async function startEmbeddedTerminalSession(cwd = selectedProject.path, startupCommand = '') {
     const root = cwd.trim();
     if (!root || embeddedTerminalStarting || embeddedTerminalSession) return;
+    const command = startupCommand.trim();
 
     embeddedTerminalStarting = true;
     embeddedTerminalError = '';
-    embeddedTerminalStatus = 'Starting native terminal';
+    embeddedTerminalStatus = command ? 'Starting embedded command' : 'Starting native terminal';
 
     try {
       await ensureEmbeddedTerminalRenderer();
@@ -3510,10 +3518,13 @@
 
       embeddedTerminalSession = session;
       embeddedTerminalSessions = upsertEmbeddedTerminalSession(embeddedTerminalSessions, session);
-      embeddedTerminalStatus = 'Native terminal running';
+      embeddedTerminalStatus = command ? 'Running embedded command' : 'Native terminal running';
       embeddedTerminal.reset();
       embeddedTerminal.focus();
       window.setTimeout(fitEmbeddedTerminal, 0);
+      if (command) {
+        await writeTerminalSessionFromTauri(session.sessionId, `${command}\r`);
+      }
     } catch (terminalError) {
       embeddedTerminalError =
         terminalError instanceof Error ? terminalError.message : 'Could not start embedded terminal';
@@ -4499,6 +4510,47 @@
       fileActionStatus = opened ? 'Opened terminal' : 'Native action unavailable';
     } catch (terminalError) {
       error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal';
+    } finally {
+      fileActionBusy = '';
+    }
+  }
+
+  async function resumeAgentSessionEmbeddedTerminal(session: AgentSession) {
+    const command = agentSessionTerminalCommand(session);
+    if (!command.trim()) return;
+
+    captureActiveWorkspaceBeforeSwitch();
+    captureAgentSessionWorkspaceSnapshot(session);
+    markAgentSessionWorkspaceActive(session);
+    showDockPanel('terminal');
+    await tick();
+
+    const path = agentSessionProjectPath(session);
+    fileActionBusy = `embedded-terminal-command:${session.provider}:${session.id}`;
+    fileActionStatus = '';
+    error = '';
+    embeddedTerminalError = '';
+
+    try {
+      if (embeddedTerminalSession) {
+        if (normalizeProjectPath(embeddedTerminalSession.cwd) !== normalizeProjectPath(path)) {
+          fileActionStatus = 'Embedded terminal is active in another project';
+          embeddedTerminalStatus = 'Stop or attach a matching terminal before resume';
+          return;
+        }
+
+        await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
+        embeddedTerminalStatus = 'Running embedded resume command';
+        fileActionStatus = 'Sent resume command to embedded terminal';
+        embeddedTerminal?.focus();
+        return;
+      }
+
+      await startEmbeddedTerminalSession(path, command);
+      fileActionStatus = 'Started embedded resume command';
+    } catch (terminalError) {
+      error = terminalError instanceof Error ? terminalError.message : 'Could not resume agent in embedded terminal';
+      embeddedTerminalStatus = 'Embedded resume failed';
     } finally {
       fileActionBusy = '';
     }
@@ -9169,8 +9221,8 @@
                     <button
                       type="button"
                       aria-label="Resume agent from terminal dock"
-                      title="Resume agent"
-                      onclick={() => openAgentSessionTerminal(session)}
+                      title="Resume agent in embedded terminal"
+                      onclick={() => resumeAgentSessionEmbeddedTerminal(session)}
                     >
                       <Terminal size={12} strokeWidth={2} />
                     </button>
