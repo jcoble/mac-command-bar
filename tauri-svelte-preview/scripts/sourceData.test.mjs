@@ -19,6 +19,7 @@ import {
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
   formatSourceScanHealth,
+  formatSourceScanRecovery,
   formatSourceRecordCount,
   formatSourceScanStats,
   formatSourceScanSummary,
@@ -317,6 +318,99 @@ assert.deepEqual(
     summary:
       'Only 2 files indexed from a 25,000-file scan. Confirm the project root is the repository root, then reset the index.',
     action: 'Reset index'
+  }
+);
+assert.deepEqual(
+  formatSourceScanRecovery({
+    totalCount: 2,
+    filteredCount: 2,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: '',
+    stats: {
+      visitedEntries: 320,
+      matchedFiles: 2,
+      skippedDirectories: 14,
+      unsupportedFiles: 80,
+      unreadableEntries: 0
+    }
+  }),
+  {
+    visible: true,
+    title: 'Tiny source index',
+    detail:
+      'Only 2 files were indexed from a 25,000-file scan. Reset the index; if it stays tiny, choose the repo or worktree root. 320 entries checked · 80 unsupported · 14 dirs skipped',
+    primaryAction: 'reset-index',
+    secondaryAction: 'copy-diagnostic'
+  }
+);
+assert.deepEqual(
+  formatSourceScanRecovery({
+    totalCount: 0,
+    filteredCount: 0,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: '',
+    stats: null
+  }),
+  {
+    visible: true,
+    title: 'No source files indexed',
+    detail: 'Choose the repo or worktree root, then scan again. No native scan stats are available yet.',
+    primaryAction: 'choose-root',
+    secondaryAction: 'copy-diagnostic'
+  }
+);
+assert.equal(
+  formatSourceScanRecovery({
+    totalCount: 2,
+    filteredCount: 1,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: 'format',
+    scanning: false,
+    loading: false,
+    error: '',
+    stats: null
+  }).visible,
+  false,
+  'filtered source views should not show recovery prompts'
+);
+assert.deepEqual(
+  formatSourceScanRecovery({
+    totalCount: 0,
+    filteredCount: 0,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: 'No access',
+    stats: {
+      visitedEntries: 0,
+      matchedFiles: 0,
+      skippedDirectories: 0,
+      unsupportedFiles: 0,
+      unreadableEntries: 1
+    }
+  }),
+  {
+    visible: true,
+    title: 'Scan failed',
+    detail:
+      'No access. Check folder access or choose the correct project root. 0 entries checked · 0 unsupported · 0 dirs skipped · 1 unreadable',
+    primaryAction: 'choose-root',
+    secondaryAction: 'copy-diagnostic'
   }
 );
 assert.equal(

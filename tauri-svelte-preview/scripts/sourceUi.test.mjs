@@ -674,10 +674,14 @@ assert.ok(
 );
 assert.ok(pageSource.includes('sourceScanNeedsAttention'), 'Source tree should detect suspiciously tiny scan indexes');
 assert.ok(pageSource.includes('formatSourceScanHealth'), 'Source tree should use shared scan health classification');
+assert.ok(pageSource.includes('formatSourceScanRecovery'), 'Source tree should use shared scan recovery guidance');
 assert.ok(pageSource.includes('sourceScanHealth.summary'), 'Source tree should explain suspicious scan results from shared health state');
+assert.ok(pageSource.includes('sourceScanRecovery.visible'), 'Source tree should render recovery guidance for suspicious or empty scans');
 assert.ok(pageSource.includes('sourceScanStatsLabel'), 'Source tree should derive a compact native scan telemetry label');
 assert.ok(pageSource.includes('formatSourceScanStats'), 'Source tree should format native scan telemetry');
 assert.ok(pageSource.includes('class="scan-stats"'), 'Source tree should render scan telemetry below the index summary');
+assert.ok(pageSource.includes('class="scan-recovery-panel"'), 'Source tree should expose compact scan recovery guidance');
+assert.ok(pageSource.includes('aria-label="Choose project root"'), 'Scan recovery should expose a direct project-root chooser');
 assert.ok(pageSource.includes('tauriScan.stats'), 'Source scans should preserve native scanner telemetry');
 assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
 assert.ok(pageSource.includes('isSuspiciousSourceScanResult'), 'Source scans should share one suspicious-result predicate for repair and health');
@@ -700,6 +704,9 @@ assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
 assertDeclaration('.scan-health-note', 'grid-template-columns: minmax(0, 1fr) auto');
 assertDeclaration('.scan-health-note span', 'text-overflow: ellipsis');
+assertDeclaration('.scan-recovery-panel', 'grid-template-columns: minmax(0, 1fr) auto');
+assertDeclaration('.scan-recovery-panel > span', 'text-overflow: ellipsis');
+assertDeclaration('.scan-recovery-actions button', 'width: 21px');
 assert.ok(pageSource.includes('expandedSourceScanLimit'), 'Source preview should expose an expanded scan limit');
 assert.ok(
   pageSource.includes('expandedSourceScanLimitShortLabel'),

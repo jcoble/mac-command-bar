@@ -279,6 +279,20 @@ export type SourceScanHealthInput = {
   error: string;
 };
 
+export type SourceScanRecoveryAction = 'reset-index' | 'choose-root' | 'copy-diagnostic';
+
+export type SourceScanRecovery = {
+  visible: boolean;
+  title: string;
+  detail: string;
+  primaryAction: SourceScanRecoveryAction | null;
+  secondaryAction: SourceScanRecoveryAction | null;
+};
+
+export type SourceScanRecoveryInput = SourceScanHealthInput & {
+  stats?: SourceScanStats | null;
+};
+
 export type SourceRecentRecord = SourceRecord & {
   projectID: string;
   projectName: string;
@@ -945,6 +959,82 @@ export function formatSourceScanHealth(input: SourceScanHealthInput): SourceScan
     summary: `Index healthy: ${formatCount(totalCount)} ${totalCount === 1 ? 'file' : 'files'} indexed`,
     action: null
   };
+}
+
+export function formatSourceScanRecovery(input: SourceScanRecoveryInput): SourceScanRecovery {
+  const totalCount = Math.max(0, Math.floor(input.totalCount));
+  const requestedLimit = Math.max(0, Math.floor(input.requestedLimit));
+  const query = input.query.trim();
+  const error = input.error.trim();
+  const statsSummary = sourceScanRecoveryStatsSummary(input.stats);
+
+  if (input.scanning || input.loading || query || input.truncated) {
+    return emptySourceScanRecovery();
+  }
+
+  if (error) {
+    return {
+      visible: true,
+      title: 'Scan failed',
+      detail: `${error}. Check folder access or choose the correct project root. ${statsSummary}`,
+      primaryAction: 'choose-root',
+      secondaryAction: 'copy-diagnostic'
+    };
+  }
+
+  if (
+    isSuspiciousSourceScanResult(
+      totalCount,
+      input.truncated,
+      requestedLimit,
+      input.suspiciousThreshold
+    )
+  ) {
+    return {
+      visible: true,
+      title: 'Tiny source index',
+      detail: `Only ${formatCount(totalCount)} ${
+        totalCount === 1 ? 'file was' : 'files were'
+      } indexed from a ${formatCount(requestedLimit)}-file scan. Reset the index; if it stays tiny, choose the repo or worktree root. ${statsSummary}`,
+      primaryAction: 'reset-index',
+      secondaryAction: 'copy-diagnostic'
+    };
+  }
+
+  if (totalCount === 0) {
+    return {
+      visible: true,
+      title: 'No source files indexed',
+      detail: `Choose the repo or worktree root, then scan again. ${statsSummary}`,
+      primaryAction: 'choose-root',
+      secondaryAction: 'copy-diagnostic'
+    };
+  }
+
+  return emptySourceScanRecovery();
+}
+
+function emptySourceScanRecovery(): SourceScanRecovery {
+  return {
+    visible: false,
+    title: '',
+    detail: '',
+    primaryAction: null,
+    secondaryAction: null
+  };
+}
+
+function sourceScanRecoveryStatsSummary(stats: SourceScanStats | null | undefined): string {
+  if (!stats) return 'No native scan stats are available yet.';
+
+  const parts = [
+    `${formatCount(Math.max(0, Math.floor(stats.visitedEntries)))} entries checked`,
+    `${formatCount(Math.max(0, Math.floor(stats.unsupportedFiles)))} unsupported`,
+    `${formatCount(Math.max(0, Math.floor(stats.skippedDirectories)))} dirs skipped`
+  ];
+  const unreadableEntries = Math.max(0, Math.floor(stats.unreadableEntries));
+  if (unreadableEntries > 0) parts.push(`${formatCount(unreadableEntries)} unreadable`);
+  return parts.join(' · ');
 }
 
 export function selectBackgroundIndexProjects(

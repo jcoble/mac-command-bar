@@ -116,6 +116,7 @@
     flattenSourceTree,
     formatSourceRecordCount,
     formatSourceScanHealth,
+    formatSourceScanRecovery,
     formatSourceScanStats,
     formatSourceScanSummary,
     folderIdsForSourceRecord,
@@ -748,6 +749,20 @@
       Date.now(),
       sourceScanCacheMaxAgeMs
     )
+  );
+  let sourceScanRecovery = $derived(
+    formatSourceScanRecovery({
+      totalCount: records.length,
+      filteredCount: filteredRecords.length,
+      truncated: scanLimitReached,
+      requestedLimit: expandedSourceScanLimit,
+      suspiciousThreshold: suspiciousSourceIndexFileThreshold,
+      query,
+      scanning,
+      loading,
+      error,
+      stats: sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null
+    })
   );
   let selectedProjectIndexSummary = $derived(
     formatSourceIndexSummary(
@@ -9146,6 +9161,41 @@
               </button>
             </div>
           {/if}
+          {#if sourceScanRecovery.visible}
+            <div class="scan-recovery-panel" title={sourceScanRecovery.detail}>
+              <span>
+                <strong>{sourceScanRecovery.title}</strong>
+                {sourceScanRecovery.detail}
+              </span>
+              <div class="scan-recovery-actions">
+                <button
+                  type="button"
+                  aria-label="Reset source index"
+                  title="Reset source index"
+                  onclick={() => resetProjectScanCache(selectedProject)}
+                >
+                  <RotateCcw size={12} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Choose project root"
+                  title="Choose project root"
+                  disabled={choosingProjectRoot || projectRootValidating}
+                  onclick={chooseProjectRoot}
+                >
+                  <FolderSearch size={12} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Copy source scan diagnostic"
+                  title="Copy source scan diagnostic"
+                  onclick={copySourceScanDiagnosticBrief}
+                >
+                  <Copy size={12} strokeWidth={2} />
+                </button>
+              </div>
+            </div>
+          {/if}
           {#if scanLimitReached && !scanning}
             <button
               class="scan-more-button"
@@ -14261,6 +14311,64 @@
     color: #f1d99b;
     font-size: 10px;
     font-weight: 820;
+  }
+
+  .scan-recovery-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    margin: -2px 0 8px;
+    border: 1px solid rgba(111, 223, 207, 0.18);
+    border-radius: 6px;
+    padding: 6px 7px;
+    background: rgba(111, 223, 207, 0.07);
+    color: #a8c8c3;
+    font-size: 10px;
+    font-weight: 690;
+    line-height: 1.25;
+  }
+
+  .scan-recovery-panel > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-recovery-panel strong {
+    margin-right: 6px;
+    color: #6fdfcf;
+    font-weight: 820;
+  }
+
+  .scan-recovery-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .scan-recovery-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 21px;
+    height: 20px;
+    border: 1px solid rgba(143, 216, 207, 0.18);
+    border-radius: 5px;
+    padding: 0;
+    background: rgba(143, 216, 207, 0.08);
+    color: #9fc5bf;
+  }
+
+  .scan-recovery-actions button:hover:not(:disabled) {
+    border-color: rgba(143, 216, 207, 0.38);
+    background: rgba(143, 216, 207, 0.14);
+    color: #d6f2ed;
+  }
+
+  .scan-recovery-actions button:disabled {
+    opacity: 0.44;
   }
 
   .scan-more-button {
