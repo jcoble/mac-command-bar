@@ -313,6 +313,52 @@ assert.deepEqual(orchestrationRunStage(autoResolveRun, autoResolveMetrics), {
   title: '1 UI verification'
 });
 
+const batchedAutoResolveRun = {
+  ...autoResolveRun,
+  id: 'run-batched-auto-resolve',
+  events: [
+    {
+      ...autoResolveRun.events[0],
+      id: 'batch-issues',
+      runId: 'run-batched-auto-resolve',
+      issueCount: 4,
+      message: '4 issues'
+    },
+    {
+      ...autoResolveRun.events[1],
+      id: 'batch-delegated',
+      runId: 'run-batched-auto-resolve',
+      delegatedCount: 2,
+      fixCount: 2,
+      message: '2 delegated · 2 fixes'
+    },
+    {
+      ...autoResolveRun.events[2],
+      id: 'batch-resolved',
+      runId: 'run-batched-auto-resolve',
+      resolvedCount: 3,
+      message: '3 resolved'
+    },
+    {
+      ...autoResolveRun.events[3],
+      id: 'batch-verified',
+      runId: 'run-batched-auto-resolve',
+      verifiedCount: 2,
+      message: '2 UI verified'
+    }
+  ]
+};
+const batchedAutoResolveMetrics = orchestrationRunMetrics(batchedAutoResolveRun);
+assert.equal(batchedAutoResolveMetrics.issueCount, 4);
+assert.equal(batchedAutoResolveMetrics.fixCount, 2);
+assert.equal(batchedAutoResolveMetrics.resolvedCount, 3);
+assert.equal(batchedAutoResolveMetrics.verifiedCount, 2);
+assert.equal(batchedAutoResolveMetrics.delegationCount, 2);
+assert.equal(
+  orchestrationLoopTallyText(batchedAutoResolveMetrics),
+  '4 issues · 2 fixes · 3 resolved · 2 UI verified · 2 delegations'
+);
+
 assert.deepEqual(
   orchestrationAgentActivityItems(run).map((agent) => [
     agent.id,

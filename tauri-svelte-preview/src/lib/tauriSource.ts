@@ -201,6 +201,17 @@ export type OrchestrationEvent = {
   linkKind: string | null;
   linkLabel: string | null;
   linkUrl: string | null;
+  scenarioCount?: number | null;
+  issueCount?: number | null;
+  testCount?: number | null;
+  retestCount?: number | null;
+  fixCount?: number | null;
+  resolvedCount?: number | null;
+  verifiedCount?: number | null;
+  delegatedCount?: number | null;
+  decisionCount?: number | null;
+  approvalCount?: number | null;
+  failedCount?: number | null;
 };
 
 export type OrchestrationRun = {

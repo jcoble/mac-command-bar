@@ -54,9 +54,13 @@ bridge:
 
 ```bash
 scripts/mcb-orch --run-id run-tsk-127 --preset issue-found --issue-id AUTH-7
-scripts/mcb-orch --run-id run-tsk-127 --preset batch-delegated --agent-role fix-agent
-scripts/mcb-orch --run-id run-tsk-127 --preset ui-verified --scenario "Google auth"
+scripts/mcb-orch --run-id run-tsk-127 --preset batch-delegated --agent-role fix-agent --issue-count 4 --fix-count 2
+scripts/mcb-orch --run-id run-tsk-127 --preset ui-verified --scenario "Google auth" --resolved-count 3 --verified-count 2
 ```
+
+Count flags such as `--issue-count`, `--fix-count`, `--resolved-count`, and
+`--verified-count` feed the run tally directly, so a batched agent update can
+represent more than one issue or fix.
 
 Events are appended to
 `~/Library/Application Support/MacCommandBar/orchestration-events.jsonl` by

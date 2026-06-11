@@ -45,6 +45,7 @@ export type OrchestrationTimelineItem = {
   timestamp: string | null;
   href: string | null;
   path: string | null;
+  loopCounts: OrchestrationLoopCountMap;
 };
 
 export type OrchestrationAttentionItem = {
@@ -120,6 +121,9 @@ type OrchestrationLoopKind =
   | 'verified'
   | 'delegation'
   | 'handoff';
+
+type OrchestrationLoopMetricKind = OrchestrationLoopKind | 'decision' | 'approval';
+type OrchestrationLoopCountMap = Partial<Record<OrchestrationLoopMetricKind, number>>;
 
 const retryPattern = /\b(retry|retries|retried|rerun|re-run)\b/i;
 const approvalPattern = /\b(approval|approve|approved|signoff|sign-off|confirm|confirmation|decision|manual review)\b/i;
@@ -213,7 +217,6 @@ export function orchestrationRunMetrics(run: OrchestrationRun): OrchestrationRun
   }
 
   const timelineText = timeline.map(searchTextForTimelineItem);
-  const loopKinds = timeline.map(orchestrationLoopKindForTimelineItem);
 
   return {
     agentCount: run.agents.length,
@@ -226,17 +229,19 @@ export function orchestrationRunMetrics(run: OrchestrationRun): OrchestrationRun
     failedCount,
     attentionCount,
     retryCount: timelineText.filter((text) => retryPattern.test(text)).length,
-    approvalCount: timelineText.filter((text) => approvalPattern.test(text)).length,
-    decisionCount: timelineText.filter((text) => decisionPattern.test(text)).length,
-    scenarioCount: loopKinds.filter((kind) => kind === 'scenario').length,
-    issueCount: loopKinds.filter((kind) => kind === 'issue').length,
-    testCount: loopKinds.filter((kind) => kind === 'test' || kind === 'retest').length,
-    retestCount: loopKinds.filter((kind) => kind === 'retest').length,
-    fixCount: loopKinds.filter((kind) => kind === 'fix').length,
-    resolvedCount: loopKinds.filter((kind) => kind === 'resolved').length,
-    verifiedCount: loopKinds.filter((kind) => kind === 'verified').length,
-    delegationCount: loopKinds.filter((kind) => kind === 'delegation').length,
-    handoffCount: loopKinds.filter((kind) => kind === 'handoff').length
+    approvalCount: orchestrationPatternMetricCount(timeline, 'approval', approvalPattern),
+    decisionCount: orchestrationPatternMetricCount(timeline, 'decision', decisionPattern),
+    scenarioCount: orchestrationLoopMetricCount(timeline, 'scenario'),
+    issueCount: orchestrationLoopMetricCount(timeline, 'issue'),
+    testCount:
+      orchestrationLoopMetricCount(timeline, 'test') +
+      orchestrationLoopMetricCount(timeline, 'retest'),
+    retestCount: orchestrationLoopMetricCount(timeline, 'retest'),
+    fixCount: orchestrationLoopMetricCount(timeline, 'fix'),
+    resolvedCount: orchestrationLoopMetricCount(timeline, 'resolved'),
+    verifiedCount: orchestrationLoopMetricCount(timeline, 'verified'),
+    delegationCount: orchestrationLoopMetricCount(timeline, 'delegation'),
+    handoffCount: orchestrationLoopMetricCount(timeline, 'handoff')
   };
 }
 
@@ -643,7 +648,8 @@ function orchestrationEventTimelineItem(
     agentLabel: formatAgentLabel(event.agentProvider, event.agentRole, event.agentId),
     timestamp: event.timestamp,
     href: event.artifactUrl ?? event.linkUrl,
-    path: event.artifactPath
+    path: event.artifactPath,
+    loopCounts: orchestrationEventLoopCounts(event)
   };
 }
 
@@ -663,7 +669,8 @@ function orchestrationStepTimelineItem(
     agentLabel: formatAgentLabel(null, null, step.agentId),
     timestamp: step.finishedAt ?? step.startedAt,
     href: null,
-    path: null
+    path: null,
+    loopCounts: {}
   };
 }
 
@@ -683,7 +690,8 @@ function orchestrationArtifactTimelineItem(
     agentLabel: '',
     timestamp: null,
     href: artifact.url,
-    path: artifact.path
+    path: artifact.path,
+    loopCounts: {}
   };
 }
 
@@ -788,6 +796,51 @@ function searchTextForTimelineItem(item: OrchestrationTimelineItem): string {
   return [item.kind, item.status, item.title, item.summary, item.agentLabel]
     .filter(Boolean)
     .join(' ');
+}
+
+function orchestrationLoopMetricCount(
+  timeline: OrchestrationTimelineItem[],
+  kind: OrchestrationLoopMetricKind
+): number {
+  return timeline.reduce((sum, item) => {
+    const explicitCount = normalizeCount(item.loopCounts[kind]);
+    if (explicitCount > 0) return sum + explicitCount;
+
+    return orchestrationLoopKindForTimelineItem(item) === kind ? sum + 1 : sum;
+  }, 0);
+}
+
+function orchestrationPatternMetricCount(
+  timeline: OrchestrationTimelineItem[],
+  kind: OrchestrationLoopMetricKind,
+  pattern: RegExp
+): number {
+  return timeline.reduce((sum, item) => {
+    const explicitCount = normalizeCount(item.loopCounts[kind]);
+    if (explicitCount > 0) return sum + explicitCount;
+
+    return pattern.test(searchTextForTimelineItem(item)) ? sum + 1 : sum;
+  }, 0);
+}
+
+function orchestrationEventLoopCounts(event: OrchestrationEvent): OrchestrationLoopCountMap {
+  return {
+    scenario: normalizeCount(event.scenarioCount),
+    issue: normalizeCount(event.issueCount),
+    test: normalizeCount(event.testCount),
+    retest: normalizeCount(event.retestCount),
+    fix: normalizeCount(event.fixCount),
+    resolved: normalizeCount(event.resolvedCount),
+    verified: normalizeCount(event.verifiedCount),
+    delegation: normalizeCount(event.delegatedCount),
+    decision: normalizeCount(event.decisionCount),
+    approval: normalizeCount(event.approvalCount)
+  };
+}
+
+function normalizeCount(value: number | null | undefined): number {
+  if (!Number.isFinite(value ?? Number.NaN)) return 0;
+  return Math.max(0, Math.floor(Number(value)));
 }
 
 function attentionLabelForTimelineItem(item: OrchestrationTimelineItem): string {

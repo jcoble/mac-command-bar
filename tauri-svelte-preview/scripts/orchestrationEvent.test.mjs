@@ -34,13 +34,16 @@ try {
     '--agent-provider',
     'codex',
     '--step-kind',
-    'test'
+    'test',
+    '--resolved-count',
+    '3'
   ]);
   assert.equal(parsed.runId, 'run-tsk-127');
   assert.equal(parsed.projectID, 'mac-command-bar');
   assert.equal(parsed.taskID, 'TSK-127');
   assert.equal(parsed.agentProvider, 'codex');
   assert.equal(parsed.stepKind, 'test');
+  assert.equal(parsed.resolvedCount, '3');
 
   const presetParsed = parseOrchestrationEventArgs([
     '--preset',
@@ -79,8 +82,19 @@ try {
   assert.equal(resolvedEvent.status, 'succeeded');
   assert.equal(resolvedEvent.stepKind, 'fix');
   assert.equal(resolvedEvent.title, 'Fix resolved: AUTH-7');
+  assert.equal(resolvedEvent.resolvedCount, 3);
+  assert.equal(resolvedEvent.failedCount, 1);
   assert.match(resolvedEvent.message, /3 resolved/);
   assert.match(resolvedEvent.message, /1 failed/);
+  assert.throws(
+    () =>
+      normalizeOrchestrationEvent({
+        runId: 'run-tsk-127',
+        preset: 'fix-resolved',
+        resolvedCount: 'many'
+      }),
+    /resolvedCount must be a non-negative integer/
+  );
 
   const issueEvent = normalizeOrchestrationEvent({
     runId: 'run-tsk-127',
@@ -104,6 +118,7 @@ try {
   assert.equal(delegatedEvent.status, 'running');
   assert.equal(delegatedEvent.stepKind, 'fix');
   assert.equal(delegatedEvent.title, 'Fix batch delegated');
+  assert.equal(delegatedEvent.resolvedCount, 3);
   assert.match(delegatedEvent.message, /3 resolved/);
 
   const agentEvent = normalizeOrchestrationEvent({

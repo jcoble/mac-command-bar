@@ -60,7 +60,18 @@ export function normalizeOrchestrationEvent(input) {
     artifactUrl: optionalString(expandedInput.artifactUrl),
     linkKind: optionalString(expandedInput.linkKind),
     linkLabel: optionalString(expandedInput.linkLabel),
-    linkUrl: optionalString(expandedInput.linkUrl)
+    linkUrl: optionalString(expandedInput.linkUrl),
+    scenarioCount: optionalCount(expandedInput.scenarioCount, 'scenarioCount'),
+    issueCount: optionalCount(expandedInput.issueCount, 'issueCount'),
+    testCount: optionalCount(expandedInput.testCount, 'testCount'),
+    retestCount: optionalCount(expandedInput.retestCount, 'retestCount'),
+    fixCount: optionalCount(expandedInput.fixCount, 'fixCount'),
+    resolvedCount: optionalCount(expandedInput.resolvedCount, 'resolvedCount'),
+    verifiedCount: optionalCount(expandedInput.verifiedCount, 'verifiedCount'),
+    delegatedCount: optionalCount(expandedInput.delegatedCount, 'delegatedCount'),
+    decisionCount: optionalCount(expandedInput.decisionCount, 'decisionCount'),
+    approvalCount: optionalCount(expandedInput.approvalCount, 'approvalCount'),
+    failedCount: optionalCount(expandedInput.failedCount, 'failedCount')
   };
 }
 
@@ -287,14 +298,35 @@ function optionalString(value) {
   return text ? text : null;
 }
 
+function optionalCount(value, fieldName) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
+  }
+
+  return count;
+}
+
 function formatPresetTitle(prefix, subject) {
   return subject ? `${prefix}: ${subject}` : prefix;
 }
 
 function orchestrationPresetCountMessage(input) {
   const parts = [
+    formatPresetCount(input.scenarioCount, 'scenario'),
     formatPresetCount(input.issueCount, 'issue'),
+    formatPresetCount(input.testCount, 'test'),
+    formatPresetCount(input.retestCount, 'retest'),
+    formatPresetCount(input.fixCount, 'fix'),
     formatPresetCount(input.resolvedCount, 'resolved'),
+    formatPresetCount(input.verifiedCount, 'UI verified'),
+    formatPresetCount(input.delegatedCount, 'delegated'),
+    formatPresetCount(input.decisionCount, 'decision'),
+    formatPresetCount(input.approvalCount, 'approval'),
     formatPresetCount(input.failedCount, 'failed')
   ].filter(Boolean);
 
