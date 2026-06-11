@@ -26,11 +26,17 @@ export type WorkspaceSnapshotTerminalApp =
   | 'WezTerm'
   | 'Alacritty';
 export type WorkspaceSnapshotContextPanelMode = 'grid' | 'stack';
+export type WorkspaceSnapshotContextPanelPlacement = 'top' | 'side' | 'bottom';
+export type WorkspaceSnapshotSidePanePosition = 'left' | 'right';
 export type WorkspaceSnapshotContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
 export type WorkspaceSnapshotIntelligencePanel = 'problems' | 'symbols' | 'git';
 
 export type WorkspaceSnapshotViewState = {
   contextPanelMode: WorkspaceSnapshotContextPanelMode;
+  contextPanelPlacement: WorkspaceSnapshotContextPanelPlacement;
+  contextPanelCollapsed: boolean;
+  editorInsightCollapsed: boolean;
+  sidePanePosition: WorkspaceSnapshotSidePanePosition;
   hiddenContextCardIDs: WorkspaceSnapshotContextCardID[];
   activeContextCardID: WorkspaceSnapshotContextCardID;
   sourceIntelligencePanel: WorkspaceSnapshotIntelligencePanel;
@@ -371,6 +377,16 @@ function isWorkspaceSnapshotContextPanelMode(value: unknown): value is Workspace
   return value === 'grid' || value === 'stack';
 }
 
+function isWorkspaceSnapshotContextPanelPlacement(
+  value: unknown
+): value is WorkspaceSnapshotContextPanelPlacement {
+  return value === 'top' || value === 'side' || value === 'bottom';
+}
+
+function isWorkspaceSnapshotSidePanePosition(value: unknown): value is WorkspaceSnapshotSidePanePosition {
+  return value === 'left' || value === 'right';
+}
+
 function isWorkspaceSnapshotContextCardID(value: unknown): value is WorkspaceSnapshotContextCardID {
   return (
     value === 'orchestration' ||
@@ -397,6 +413,20 @@ function normalizeWorkspaceSnapshotViewState(
     contextPanelMode: isWorkspaceSnapshotContextPanelMode(candidate.contextPanelMode)
       ? candidate.contextPanelMode
       : 'grid',
+    contextPanelPlacement: isWorkspaceSnapshotContextPanelPlacement(candidate.contextPanelPlacement)
+      ? candidate.contextPanelPlacement
+      : 'top',
+    contextPanelCollapsed:
+      typeof candidate.contextPanelCollapsed === 'boolean'
+        ? candidate.contextPanelCollapsed
+        : false,
+    editorInsightCollapsed:
+      typeof candidate.editorInsightCollapsed === 'boolean'
+        ? candidate.editorInsightCollapsed
+        : true,
+    sidePanePosition: isWorkspaceSnapshotSidePanePosition(candidate.sidePanePosition)
+      ? candidate.sidePanePosition
+      : 'left',
     hiddenContextCardIDs,
     activeContextCardID: isWorkspaceSnapshotContextCardID(candidate.activeContextCardID)
       ? candidate.activeContextCardID

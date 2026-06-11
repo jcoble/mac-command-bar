@@ -11,6 +11,10 @@ const appearanceSource = await readFile(
   'utf8'
 );
 const tauriSource = await readFile(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
+const workspaceSnapshotSource = await readFile(
+  new URL('../src/lib/workspaceSnapshot.ts', import.meta.url),
+  'utf8'
+);
 
 function blockFor(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -226,7 +230,15 @@ assert.ok(pageSource.includes('captureWorkspaceSnapshot(activeWorkspaceAgentSess
 assert.ok(!pageSource.includes('captureWorkspaceSnapshot(selectedProjectAgentSessions[0] ?? null)'), 'Saving the current workspace should not silently snapshot the first listed agent');
 assert.ok(pageSource.includes('function workspaceSnapshotEmbeddedTerminal'), 'Workspace snapshots should preserve embedded terminal context');
 assert.ok(pageSource.includes('function workspaceSnapshotViewState'), 'Workspace snapshots should preserve compact pane view state');
+assert.ok(workspaceSnapshotSource.includes('contextPanelPlacement'), 'Workspace snapshots should serialize context pane placement');
+assert.ok(workspaceSnapshotSource.includes('contextPanelCollapsed'), 'Workspace snapshots should serialize context pane visibility');
+assert.ok(workspaceSnapshotSource.includes('editorInsightCollapsed'), 'Workspace snapshots should serialize editor insight visibility');
+assert.ok(workspaceSnapshotSource.includes('sidePanePosition'), 'Workspace snapshots should serialize explorer side placement');
 assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');
+assert.ok(pageSource.includes('persistContextPanelPlacement(contextPanelPlacement)'), 'Workspace restore should persist restored context placement');
+assert.ok(pageSource.includes('persistContextPanelCollapsed(contextPanelCollapsed)'), 'Workspace restore should persist restored context visibility');
+assert.ok(pageSource.includes('persistEditorInsightCollapsed(editorInsightCollapsed)'), 'Workspace restore should persist restored insight visibility');
+assert.ok(pageSource.includes('persistSidePanePosition(sidePanePosition)'), 'Workspace restore should persist restored explorer side placement');
 assert.ok(pageSource.includes('function workspaceSnapshotViewStateLabel'), 'Workspace restore plans should summarize saved pane view state');
 assert.ok(pageSource.includes('describeWorkspaceSnapshotRestoreReadiness'), 'Workspace restore should use shared readiness rules');
 assert.ok(pageSource.includes('function workspaceSnapshotRestoreReadiness'), 'Workspace should classify saved snapshot restore readiness');

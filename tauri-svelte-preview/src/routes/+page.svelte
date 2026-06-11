@@ -4307,6 +4307,10 @@
   function workspaceSnapshotViewState(): WorkspaceSnapshotViewState {
     return {
       contextPanelMode,
+      contextPanelPlacement,
+      contextPanelCollapsed,
+      editorInsightCollapsed,
+      sidePanePosition,
       hiddenContextCardIDs: [...hiddenContextCardIDs],
       activeContextCardID,
       sourceIntelligencePanel
@@ -4315,10 +4319,18 @@
 
   function applyWorkspaceSnapshotViewState(viewState: WorkspaceSnapshotViewState) {
     contextPanelMode = viewState.contextPanelMode;
+    contextPanelPlacement = viewState.contextPanelPlacement;
+    contextPanelCollapsed = viewState.contextPanelCollapsed;
+    editorInsightCollapsed = viewState.editorInsightCollapsed;
+    sidePanePosition = viewState.sidePanePosition;
     hiddenContextCardIDs = new Set(viewState.hiddenContextCardIDs);
     activeContextCardID = viewState.activeContextCardID;
     sourceIntelligencePanel = viewState.sourceIntelligencePanel;
     persistContextPanelMode(contextPanelMode);
+    persistContextPanelPlacement(contextPanelPlacement);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+    persistEditorInsightCollapsed(editorInsightCollapsed);
+    persistSidePanePosition(sidePanePosition);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
   }
@@ -4326,10 +4338,11 @@
   function workspaceSnapshotViewStateLabel(viewState: WorkspaceSnapshotViewState) {
     const hiddenCount = viewState.hiddenContextCardIDs.length;
     return [
-      `context ${viewState.contextPanelMode}`,
+      `context ${viewState.contextPanelMode} ${viewState.contextPanelPlacement}${viewState.contextPanelCollapsed ? ' hidden' : ''}`,
       `active ${contextCardLabels[viewState.activeContextCardID]}`,
+      `explorer ${viewState.sidePanePosition}`,
       hiddenCount === 0 ? 'no hidden cards' : `${hiddenCount} hidden`,
-      `insights ${viewState.sourceIntelligencePanel}`
+      `insights ${viewState.editorInsightCollapsed ? 'hidden' : viewState.sourceIntelligencePanel}`
     ].join(' · ');
   }
 
