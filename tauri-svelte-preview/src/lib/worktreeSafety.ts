@@ -39,6 +39,22 @@ export type WorktreeCleanupBrief = {
   report: string;
 };
 
+export type WorktreeDecisionQueueID = 'blocked' | 'ready' | 'review' | 'protected';
+
+export type WorktreeDecisionQueueEntry = {
+  worktree: ProjectWorktree;
+  safety: WorktreeSafetySummary;
+  primaryAction: WorktreePrimaryAction;
+};
+
+export type WorktreeDecisionQueueGroup = {
+  id: WorktreeDecisionQueueID;
+  label: string;
+  summary: string;
+  actionLabel: string;
+  entries: WorktreeDecisionQueueEntry[];
+};
+
 export type WorktreeSafetyOptions = {
   primaryPath?: string | null;
   activeSessionPaths?: Array<string | null | undefined>;
@@ -201,6 +217,32 @@ export function prioritizeWorktreesForCleanup(
     .map((entry) => entry.worktree);
 }
 
+export function buildWorktreeDecisionQueue(
+  worktrees: ProjectWorktree[],
+  options: WorktreeSafetyOptions = {}
+): WorktreeDecisionQueueGroup[] {
+  const groups = createDecisionQueueGroups();
+
+  for (const worktree of prioritizeWorktreesForCleanup(worktrees, options)) {
+    const safety = buildWorktreeSafetySummary(worktree, options);
+    const group = groups.find((candidateGroup) => candidateGroup.id === worktreeDecisionQueueID(safety));
+    if (!group) continue;
+
+    group.entries.push({
+      worktree,
+      safety,
+      primaryAction: worktreePrimaryAction(safety)
+    });
+  }
+
+  return groups
+    .filter((group) => group.entries.length > 0)
+    .map((group) => ({
+      ...group,
+      summary: formatDecisionQueueGroupSummary(group.entries)
+    }));
+}
+
 export function buildWorktreeCleanupScript(
   worktrees: ProjectWorktree[],
   options: WorktreeSafetyOptions = {}
@@ -252,6 +294,46 @@ export function buildWorktreeCleanupScript(
 
   lines.push('echo "Dry run complete. Set RUN_BACKUP=1 and/or RUN_REMOVE=1 to execute guarded actions."');
   return `${lines.join('\n')}\n`;
+}
+
+function createDecisionQueueGroups(): WorktreeDecisionQueueGroup[] {
+  return [
+    {
+      id: 'blocked',
+      label: 'Needs decision',
+      summary: '',
+      actionLabel: 'Audit or backup before cleanup',
+      entries: []
+    },
+    {
+      id: 'ready',
+      label: 'Cleanup ready',
+      summary: '',
+      actionLabel: 'Remove after final confirmation',
+      entries: []
+    },
+    {
+      id: 'review',
+      label: 'Review',
+      summary: '',
+      actionLabel: 'Audit ownership',
+      entries: []
+    },
+    {
+      id: 'protected',
+      label: 'Protected',
+      summary: '',
+      actionLabel: 'Keep as repo anchor',
+      entries: []
+    }
+  ];
+}
+
+function worktreeDecisionQueueID(summary: WorktreeSafetySummary): WorktreeDecisionQueueID {
+  if (summary.kind === 'blocked') return 'blocked';
+  if (summary.kind === 'ready') return 'ready';
+  if (summary.kind === 'review') return 'review';
+  return 'protected';
 }
 
 export function worktreePrimaryAction(summary: WorktreeSafetySummary): WorktreePrimaryAction {
@@ -517,6 +599,25 @@ function formatCleanupBriefReport(details: {
   appendBriefSection(lines, 'Protected main checkouts:', details.protectedEntries);
 
   return lines.join('\n');
+}
+
+function formatDecisionQueueGroupSummary(entries: WorktreeDecisionQueueEntry[]): string {
+  const staleCount = entries.filter((entry) => entry.safety.ageBucket === 'stale').length;
+  const activeCount = entries.reduce((total, entry) => total + entry.safety.activeSessionCount, 0);
+  const taskIDs = uniqueTaskIDs(entries.map((entry) => entry.worktree.taskID));
+  const parts = [`${entries.length} ${entries.length === 1 ? 'worktree' : 'worktrees'}`];
+
+  if (staleCount > 0) {
+    parts.push(`${staleCount} stale`);
+  }
+  if (activeCount > 0) {
+    parts.push(`${activeCount} active ${activeCount === 1 ? 'session' : 'sessions'}`);
+  }
+  if (taskIDs.length > 0) {
+    parts.push(`${taskIDs.length} ${taskIDs.length === 1 ? 'task' : 'tasks'}`);
+  }
+
+  return parts.join(' · ');
 }
 
 function appendBriefSection(

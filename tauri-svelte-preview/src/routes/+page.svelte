@@ -61,6 +61,7 @@
   import {
     buildWorktreeCleanupBrief,
     buildWorktreeCleanupScript,
+    buildWorktreeDecisionQueue,
     buildWorktreeSafetySummary,
     prioritizeWorktreesForCleanup,
     worktreePrimaryAction
@@ -1106,6 +1107,12 @@
   let projectWorktreeSafetyStats = $derived(formatProjectWorktreeSafetyStats(projectWorktrees));
   let projectWorktreeCleanupBrief = $derived(
     buildWorktreeCleanupBrief(projectWorktrees, {
+      primaryPath: selectedProject.path,
+      activeSessionPaths: selectedProjectAgentSessionPaths
+    })
+  );
+  let projectWorktreeDecisionQueue = $derived(
+    buildWorktreeDecisionQueue(projectWorktrees, {
       primaryPath: selectedProject.path,
       activeSessionPaths: selectedProjectAgentSessionPaths
     })
@@ -11981,6 +11988,69 @@
             </button>
           </div>
         </div>
+        {#if projectWorktreeDecisionQueue.length > 0}
+          <div class="worktree-decision-queue" aria-label="Worktree cleanup decision queue">
+            {#each projectWorktreeDecisionQueue as group (group.id)}
+              <div class={`worktree-decision-group ${group.id}`}>
+                <div class="worktree-decision-group-header">
+                  <div>
+                    <strong>{group.label}</strong>
+                    <small>{group.summary}</small>
+                  </div>
+                  <span>{group.actionLabel}</span>
+                </div>
+                <div class="worktree-decision-items">
+                  {#each group.entries.slice(0, 3) as entry (entry.worktree.path)}
+                    <div class="worktree-decision-item" title={entry.safety.cleanupPlan}>
+                      <span class={`worktree-status-badge ${entry.safety.kind}`}>{entry.safety.badge}</span>
+                      <div>
+                        <strong>{entry.worktree.branch}</strong>
+                        <small>
+                          {entry.worktree.taskID ?? entry.worktree.repo} · {entry.safety.reason} · {entry.safety.activityLabel}
+                        </small>
+                      </div>
+                      <button
+                        class={`worktree-primary-action ${entry.primaryAction.kind}`}
+                        type="button"
+                        aria-label={`${entry.primaryAction.label} worktree: ${entry.worktree.branch}`}
+                        title={entry.primaryAction.title}
+                        disabled={fileActionBusy === `worktree-primary:${entry.worktree.path}`}
+                        onclick={() => runWorktreePrimaryAction(entry.worktree)}
+                      >
+                        {#if entry.primaryAction.kind === 'cleanup'}
+                          <Trash2 size={11} strokeWidth={2} />
+                        {:else if entry.primaryAction.kind === 'backup'}
+                          <Save size={11} strokeWidth={2} />
+                        {:else}
+                          <History size={11} strokeWidth={2} />
+                        {/if}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Open queued worktree in source browser"
+                        title="Open in source browser"
+                        onclick={() => openWorktreeInSourceBrowser(entry.worktree)}
+                      >
+                        <FolderOpen size={11} strokeWidth={2} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Open queued worktree in embedded terminal"
+                        title="Open embedded terminal"
+                        onclick={() => openPathEmbeddedTerminal(entry.worktree.path)}
+                      >
+                        <PanelBottom size={11} strokeWidth={2} />
+                      </button>
+                    </div>
+                  {/each}
+                  {#if group.entries.length > 3}
+                    <small class="worktree-decision-more">+{group.entries.length - 3} more in the full list</small>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if projectWorktrees.length > 0}
           <div class="worktree-context-list">
             {#each prioritizedProjectWorktrees as worktree (worktree.path)}
@@ -16762,6 +16832,7 @@
   .workspace-arrangement.context-side .orchestration-decision-queue,
   .workspace-arrangement.context-side .runtime-context-list,
   .workspace-arrangement.context-side .agent-session-list,
+  .workspace-arrangement.context-side .worktree-decision-queue,
   .workspace-arrangement.context-side .worktree-context-list,
   .workspace-arrangement.context-side .repo-dashboard-list {
     max-height: 180px;
@@ -17032,6 +17103,164 @@
     color: #f4d08b;
     outline: 0;
     background: rgba(216, 170, 85, 0.14);
+  }
+
+  .worktree-decision-queue {
+    display: grid;
+    gap: 4px;
+    max-height: 132px;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .worktree-decision-group {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.12);
+  }
+
+  .worktree-decision-group.blocked {
+    border-color: rgba(216, 170, 85, 0.2);
+    background: rgba(216, 170, 85, 0.07);
+  }
+
+  .worktree-decision-group.ready {
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.055);
+  }
+
+  .worktree-decision-group.review,
+  .worktree-decision-group.protected {
+    background: rgba(255, 255, 255, 0.032);
+  }
+
+  .worktree-decision-group-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .worktree-decision-group-header div,
+  .worktree-decision-item div {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .worktree-decision-group-header strong,
+  .worktree-decision-group-header small,
+  .worktree-decision-group-header span,
+  .worktree-decision-item strong,
+  .worktree-decision-item small,
+  .worktree-decision-more {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worktree-decision-group-header strong {
+    color: #f0f4f3;
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .worktree-decision-group-header small {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 730;
+  }
+
+  .worktree-decision-group-header span {
+    max-width: 132px;
+    color: #8fbdb6;
+    font-size: 8px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .worktree-decision-items {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .worktree-decision-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 20px 20px 20px;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    min-height: 24px;
+    padding: 3px 4px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.16);
+  }
+
+  .worktree-decision-item strong {
+    color: #edf4f2;
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  .worktree-decision-item small,
+  .worktree-decision-more {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 720;
+  }
+
+  .worktree-decision-item button {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .worktree-decision-item button.worktree-primary-action.backup {
+    color: #d8aa55;
+    border-color: rgba(216, 170, 85, 0.22);
+    background: rgba(216, 170, 85, 0.09);
+  }
+
+  .worktree-decision-item button.worktree-primary-action.cleanup {
+    color: #79eadb;
+    border-color: rgba(92, 226, 207, 0.3);
+    background: rgba(92, 226, 207, 0.11);
+  }
+
+  .worktree-decision-item button:hover,
+  .worktree-decision-item button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.36);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .worktree-decision-item button:disabled {
+    opacity: 0.38;
+    cursor: default;
+  }
+
+  .worktree-decision-more {
+    padding: 1px 4px 0;
   }
 
   .orchestration-context-row,

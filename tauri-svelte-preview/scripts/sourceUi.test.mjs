@@ -95,6 +95,11 @@ assertDeclaration('.worktree-row-main', 'gap: 2px');
 assertDeclaration('.worktree-safety-line', 'display: flex');
 assertDeclaration('.worktree-context-main', 'display: grid');
 assertDeclaration('.worktree-context-actions', 'display: inline-flex');
+assertDeclaration('.worktree-decision-queue', 'display: grid');
+assertDeclaration('.worktree-decision-queue', 'overflow-y: auto');
+assertDeclaration('.worktree-decision-items', 'overflow: hidden');
+assertDeclaration('.worktree-decision-item', 'grid-template-columns: auto minmax(0, 1fr) 20px 20px 20px');
+assertDeclaration('.worktree-decision-item button', 'width: 20px');
 assertDeclaration('.worktree-status-badge.blocked', 'background: #d8aa55');
 assertDeclaration('.run-loop-row', 'text-overflow: ellipsis');
 assertDeclaration('.paste-cleanup-panel', 'overflow: hidden');
@@ -1720,12 +1725,32 @@ assertDeclaration('.runtime-context-list', 'scrollbar-width: thin');
 assertDeclaration('.runtime-url-link', 'white-space: nowrap');
 assert.ok(pageSource.includes('listProjectWorktreesFromTauri'), 'Source page should load native project worktrees');
 assert.ok(pageSource.includes('projectWorktrees'), 'Source page should track project worktrees');
+assert.ok(pageSource.includes('projectWorktreeDecisionQueue'), 'Source page should derive a worktree decision queue');
+assert.ok(
+  pageSource.includes('buildWorktreeDecisionQueue(projectWorktrees'),
+  'Source page should group worktrees into cleanup decision queues'
+);
 assert.ok(pageSource.includes('function loadProjectWorktrees'), 'Source page should expose a worktree refresh action');
 assert.ok(pageSource.includes('aria-label="Refresh worktrees"'), 'Worktree panel should expose a refresh action');
 assert.ok(pageSource.includes('class="worktree-context-panel"'), 'Source page should render a worktree safety panel');
 assert.ok(pageSource.includes('{projectWorktreeCleanupBrief.headline}'), 'Worktree panel should show the aggregate cleanup headline');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupBrief'), 'Worktree panel should copy the aggregate cleanup brief');
 assert.ok(pageSource.includes('aria-label="Copy worktree cleanup script"'), 'Worktree panel should expose the guarded cleanup script');
+assert.ok(pageSource.includes('class="worktree-decision-queue"'), 'Worktree panel should render a cleanup decision queue');
+assert.ok(
+  pageSource.includes('aria-label="Worktree cleanup decision queue"'),
+  'Worktree decision queue should expose a readable landmark'
+);
+assert.ok(pageSource.includes('group.entries.slice(0, 3)'), 'Worktree decision queue should cap visible entries per group');
+assert.ok(
+  pageSource.includes('Open queued worktree in source browser'),
+  'Worktree decision queue should expose source-browser launch actions'
+);
+assert.ok(
+  pageSource.includes('Open queued worktree in embedded terminal'),
+  'Worktree decision queue should expose embedded-terminal launch actions'
+);
+assert.ok(pageSource.includes('worktree-decision-more'), 'Worktree decision queue should summarize overflow entries');
 assert.ok(pageSource.includes('class="worktree-context-list"'), 'Worktree panel should render a scrollable list');
 assert.ok(pageSource.includes('worktree-status-badge ${safety.kind}'), 'Worktree rows should show safety status');
 assert.ok(pageSource.includes('safety.decisionChecklist[0]'), 'Worktree rows should show the next cleanup decision');

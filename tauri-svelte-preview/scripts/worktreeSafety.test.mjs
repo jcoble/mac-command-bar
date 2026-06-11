@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   buildWorktreeCleanupBrief,
   buildWorktreeCleanupScript,
+  buildWorktreeDecisionQueue,
   buildWorktreeSafetySummary,
   prioritizeWorktreesForCleanup,
   worktreePrimaryAction,
@@ -296,6 +297,66 @@ function worktree(overrides = {}) {
       'main'
     ]
   );
+}
+
+{
+  const queue = buildWorktreeDecisionQueue(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/EdiPlatform',
+        branch: 'main',
+        taskID: null
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-141-clean',
+        branch: 'cdx/tsk-141-clean',
+        taskID: 'TSK-141',
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-142-dirty',
+        branch: 'cdx/tsk-142-dirty',
+        taskID: 'TSK-142',
+        isDirty: true
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-143-active',
+        branch: 'cdx/tsk-143-active',
+        taskID: 'TSK-143'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-144-review',
+        branch: 'cdx/tsk-144-review',
+        taskID: 'TSK-144',
+        lastActivity: null
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      activeSessionPaths: [
+        '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-143-active/.codex/session'
+      ],
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.deepEqual(
+    queue.map((group) => group.id),
+    ['blocked', 'ready', 'review', 'protected']
+  );
+  assert.equal(queue[0].label, 'Needs decision');
+  assert.match(queue[0].summary, /2 worktrees/);
+  assert.match(queue[0].summary, /1 active session/);
+  assert.deepEqual(
+    queue[0].entries.map((entry) => entry.primaryAction.kind),
+    ['audit', 'backup']
+  );
+  assert.equal(queue[1].label, 'Cleanup ready');
+  assert.equal(queue[1].entries[0].primaryAction.kind, 'cleanup');
+  assert.match(queue[1].summary, /1 stale/);
+  assert.equal(queue[2].entries[0].primaryAction.kind, 'audit');
+  assert.equal(queue[3].label, 'Protected');
 }
 
 {
