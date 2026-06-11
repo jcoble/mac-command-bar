@@ -1282,6 +1282,13 @@
       disabled: gitCommitHistoryLoading,
       perform: () => loadGitCommitHistory(selectedProject)
     },
+    {
+      id: 'git-copy-workspace-brief',
+      label: 'Copy Git workspace brief',
+      detail: `${selectedProject.name} · ${repoDashboardSummary} · ${projectWorktreeCleanupBrief.headline}`,
+      disabled: !selectedProject.path,
+      perform: copyGitWorkspaceBrief
+    },
     ...selectedProjectGitTaskIDs.slice(0, 8).map((taskID) => ({
       id: `git-copy-task-${taskID}`,
       label: `Copy task link: ${taskID}`,
@@ -2296,6 +2303,44 @@
     ].filter(Boolean).join(' · ');
   }
 
+  function gitWorkspaceBriefText() {
+    const branch = projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
+    const aheadBehind =
+      projectGitStatus
+        ? `ahead ${projectGitStatus.ahead} / behind ${projectGitStatus.behind}`
+        : 'ahead/behind unknown';
+    const changedFiles =
+      projectGitStatus
+        ? `${selectedProjectGitChangedFiles.length} changed file${selectedProjectGitChangedFiles.length === 1 ? '' : 's'}`
+        : 'changed files unknown';
+    const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
+    const repoLines = selectedProjectRepositorySummaries.slice(0, 6).map((summary) => {
+      const dirty = summary.isDirty ? `${summary.dirtyCount} dirty` : 'clean';
+      const task = summary.taskID ? ` · ${summary.taskID}` : '';
+      const remote = `${summary.ahead} ahead / ${summary.behind} behind`;
+      return `- ${summary.repo} (${summary.rootLabel}): ${summary.branch}${task} · ${dirty} · ${remote} · ${summary.path}`;
+    });
+    const commitLines = gitCommitHistory.slice(0, 6).map((entry) => `- ${gitCommitSummaryText(entry)}`);
+
+    return [
+      'Git workspace brief',
+      `Project: ${selectedProject.name}`,
+      `Path: ${selectedProject.path}`,
+      `Branch: ${branch}`,
+      `Status: ${changedFiles} · ${aheadBehind}`,
+      `Tasks: ${tasks}`,
+      '',
+      'Repositories:',
+      repoLines.length > 0 ? repoLines.join('\n') : '- none loaded',
+      '',
+      'Worktree cleanup:',
+      projectWorktreeCleanupBrief.report,
+      '',
+      'Recent commits:',
+      commitLines.length > 0 ? commitLines.join('\n') : '- none loaded'
+    ].join('\n');
+  }
+
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
     return gitRefLabels(entry.refs);
   }
@@ -2324,6 +2369,10 @@
     if (!taskID) return;
 
     await copyActivityCommand(gitTaskReferenceText(taskID), gitTaskUrl(taskID) ? 'Task link copied' : 'Task ID copied');
+  }
+
+  async function copyGitWorkspaceBrief() {
+    await copyActivityCommand(gitWorkspaceBriefText(), 'Git workspace brief copied');
   }
 
   function repoDashboardTaskLabel(summary: GitRepositorySummary) {
