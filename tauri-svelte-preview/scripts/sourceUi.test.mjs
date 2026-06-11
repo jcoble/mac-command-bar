@@ -155,6 +155,7 @@ assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
 assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
 assert.ok(pageSource.includes('function openWorkspaceSnapshotTerminal'), 'Workspace snapshots should launch saved resume commands in a terminal');
+assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
 assert.ok(pageSource.includes('function workspaceSnapshotProjectForSession'), 'Workspace should store agent worktrees as restorable project roots');
 assert.ok(pageSource.includes('function activateWorkspaceSnapshotProject'), 'Workspace restore should force a full project scan before reopening files');

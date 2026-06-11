@@ -4086,6 +4086,7 @@
     const command = agentSessionResumeCommand(session);
     if (!command.trim()) return;
 
+    captureAgentSessionWorkspaceSnapshot(session);
     const path = session.projectPath ?? selectedProject.path;
     fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
     fileActionStatus = '';
