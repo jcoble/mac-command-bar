@@ -1649,7 +1649,7 @@
         label: `Recommended worktree action: ${action.label} ${worktree.branch}`,
         detail: action.title,
         disabled: false,
-        perform: () => copyWorktreePrimaryAction(worktree)
+        perform: () => runWorktreePrimaryAction(worktree)
       };
     }),
     ...projectWorktrees.slice(0, 8).map((worktree) => ({

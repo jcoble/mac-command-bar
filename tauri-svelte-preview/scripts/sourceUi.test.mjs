@@ -517,6 +517,7 @@ assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktr
 assert.ok(pageSource.includes('aria-label="Open worktree in embedded terminal"'), 'Worktree rows should expose embedded terminal open');
 assert.ok(pageSource.includes('function runWorktreePrimaryAction'), 'Worktree rows should execute safe primary actions');
 assert.ok(pageSource.includes('removeProjectWorktreeFromTauri'), 'Worktree cleanup should use the native guarded remove command');
+assert.ok(pageSource.includes('perform: () => runWorktreePrimaryAction(worktree)'), 'Command palette recommended worktree actions should execute the guarded handler');
 assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree primary action labels should describe the real action');
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open active session in terminal"'), 'Active session rows should expose terminal open');
