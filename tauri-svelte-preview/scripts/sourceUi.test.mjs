@@ -660,7 +660,8 @@ assert.ok(
   'Source preview should label the startup state as a pending scan'
 );
 assert.ok(pageSource.includes('sourceScanNeedsAttention'), 'Source tree should detect suspiciously tiny scan indexes');
-assert.ok(pageSource.includes('function formatSourceScanHealthNote'), 'Source tree should explain suspicious scan results');
+assert.ok(pageSource.includes('formatSourceScanHealth'), 'Source tree should use shared scan health classification');
+assert.ok(pageSource.includes('sourceScanHealth.summary'), 'Source tree should explain suspicious scan results from shared health state');
 assert.ok(pageSource.includes('sourceScanStatsLabel'), 'Source tree should derive a compact native scan telemetry label');
 assert.ok(pageSource.includes('formatSourceScanStats'), 'Source tree should format native scan telemetry');
 assert.ok(pageSource.includes('class="scan-stats"'), 'Source tree should render scan telemetry below the index summary');

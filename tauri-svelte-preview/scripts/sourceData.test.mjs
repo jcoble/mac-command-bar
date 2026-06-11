@@ -18,6 +18,7 @@ import {
   formatSourceContextRuntime,
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
+  formatSourceScanHealth,
   formatSourceRecordCount,
   formatSourceScanStats,
   formatSourceScanSummary,
@@ -279,6 +280,92 @@ assert.equal(isSuspiciousSourceScanResult(0, false, 25_000, 2), false);
 assert.equal(isSuspiciousSourceScanResult(3, false, 25_000, 2), false);
 assert.equal(isSuspiciousSourceScanResult(2, true, 25_000, 2), false);
 assert.equal(isSuspiciousSourceScanResult(2, false, 2, 2), false);
+assert.deepEqual(
+  formatSourceScanHealth({
+    totalCount: 220,
+    filteredCount: 220,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: ''
+  }),
+  {
+    status: 'ready',
+    needsAttention: false,
+    summary: 'Index healthy: 220 files indexed',
+    action: null
+  }
+);
+assert.deepEqual(
+  formatSourceScanHealth({
+    totalCount: 2,
+    filteredCount: 2,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: ''
+  }),
+  {
+    status: 'suspicious',
+    needsAttention: true,
+    summary:
+      'Only 2 files indexed from a 25,000-file scan. Confirm the project root is the repository root, then reset the index.',
+    action: 'Reset index'
+  }
+);
+assert.equal(
+  formatSourceScanHealth({
+    totalCount: 2,
+    filteredCount: 1,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: 'format',
+    scanning: false,
+    loading: false,
+    error: ''
+  }).needsAttention,
+  false
+);
+assert.equal(
+  formatSourceScanHealth({
+    totalCount: 2,
+    filteredCount: 2,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: true,
+    loading: true,
+    error: ''
+  }).status,
+  'scanning'
+);
+assert.deepEqual(
+  formatSourceScanHealth({
+    totalCount: 0,
+    filteredCount: 0,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: 'No access'
+  }),
+  {
+    status: 'error',
+    needsAttention: true,
+    summary: 'Scan failed: No access',
+    action: 'Check root'
+  }
+);
 
 const boundedScanCache = upsertSourceScanCacheEntry(
   upsertSourceScanCacheEntry(

@@ -250,6 +250,35 @@ export type SourceScanStats = {
   unreadableEntries: number;
 };
 
+export type SourceScanHealthStatus =
+  | 'scanning'
+  | 'loading'
+  | 'error'
+  | 'empty'
+  | 'filtered'
+  | 'suspicious'
+  | 'truncated'
+  | 'ready';
+
+export type SourceScanHealth = {
+  status: SourceScanHealthStatus;
+  needsAttention: boolean;
+  summary: string;
+  action: string | null;
+};
+
+export type SourceScanHealthInput = {
+  totalCount: number;
+  filteredCount: number;
+  truncated: boolean;
+  requestedLimit: number;
+  suspiciousThreshold: number;
+  query: string;
+  scanning: boolean;
+  loading: boolean;
+  error: string;
+};
+
 export type SourceRecentRecord = SourceRecord & {
   projectID: string;
   projectName: string;
@@ -829,6 +858,93 @@ export function formatSourceScanStats(stats: SourceScanStats | null | undefined)
   }
 
   return parts.join(' · ');
+}
+
+export function formatSourceScanHealth(input: SourceScanHealthInput): SourceScanHealth {
+  const totalCount = Math.max(0, Math.floor(input.totalCount));
+  const filteredCount = Math.max(0, Math.floor(input.filteredCount));
+  const requestedLimit = Math.max(0, Math.floor(input.requestedLimit));
+  const query = input.query.trim();
+  const error = input.error.trim();
+
+  if (input.scanning) {
+    return {
+      status: 'scanning',
+      needsAttention: false,
+      summary: `Scanning source files: ${formatCount(totalCount)} indexed so far`,
+      action: null
+    };
+  }
+
+  if (input.loading) {
+    return {
+      status: 'loading',
+      needsAttention: false,
+      summary: 'Loading source index',
+      action: null
+    };
+  }
+
+  if (error) {
+    return {
+      status: 'error',
+      needsAttention: true,
+      summary: `Scan failed: ${error}`,
+      action: 'Check root'
+    };
+  }
+
+  if (query) {
+    return {
+      status: 'filtered',
+      needsAttention: false,
+      summary: `${formatCount(filteredCount)} ${filteredCount === 1 ? 'match' : 'matches'} for "${query}"`,
+      action: null
+    };
+  }
+
+  if (
+    isSuspiciousSourceScanResult(
+      totalCount,
+      input.truncated,
+      requestedLimit,
+      input.suspiciousThreshold
+    )
+  ) {
+    return {
+      status: 'suspicious',
+      needsAttention: true,
+      summary: `Only ${formatCount(totalCount)} ${
+        totalCount === 1 ? 'file' : 'files'
+      } indexed from a ${formatCount(requestedLimit)}-file scan. Confirm the project root is the repository root, then reset the index.`,
+      action: 'Reset index'
+    };
+  }
+
+  if (input.truncated) {
+    return {
+      status: 'truncated',
+      needsAttention: false,
+      summary: `Scan limit reached after ${formatCount(totalCount)} files`,
+      action: 'Scan more'
+    };
+  }
+
+  if (totalCount === 0) {
+    return {
+      status: 'empty',
+      needsAttention: false,
+      summary: 'No source files indexed yet',
+      action: null
+    };
+  }
+
+  return {
+    status: 'ready',
+    needsAttention: false,
+    summary: `Index healthy: ${formatCount(totalCount)} ${totalCount === 1 ? 'file' : 'files'} indexed`,
+    action: null
+  };
 }
 
 export function selectBackgroundIndexProjects(

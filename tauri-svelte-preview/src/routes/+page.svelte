@@ -113,6 +113,7 @@
     formatSourceIndexSummary,
     flattenSourceTree,
     formatSourceRecordCount,
+    formatSourceScanHealth,
     formatSourceScanStats,
     formatSourceScanSummary,
     folderIdsForSourceRecord,
@@ -721,18 +722,21 @@
   let scanSummaryLabel = $derived(
     formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
   );
-  let sourceScanNeedsAttention = $derived(
-    !scanning &&
-      !loading &&
-      query.trim().length === 0 &&
-      isSuspiciousSourceScanResult(
-        records.length,
-        scanLimitReached,
-        expandedSourceScanLimit,
-        suspiciousSourceIndexFileThreshold
-      )
+  let sourceScanHealth = $derived(
+    formatSourceScanHealth({
+      totalCount: records.length,
+      filteredCount: filteredRecords.length,
+      truncated: scanLimitReached,
+      requestedLimit: expandedSourceScanLimit,
+      suspiciousThreshold: suspiciousSourceIndexFileThreshold,
+      query,
+      scanning,
+      loading,
+      error
+    })
   );
-  let sourceScanHealthNote = $derived(formatSourceScanHealthNote(records.length, sourceScanNeedsAttention));
+  let sourceScanNeedsAttention = $derived(sourceScanHealth.needsAttention);
+  let sourceScanHealthNote = $derived(sourceScanHealth.needsAttention ? sourceScanHealth.summary : '');
   let selectedProjectIndexEntry = $derived(
     getSourceScanCacheEntry(
       sourceScanCache,
@@ -2342,12 +2346,6 @@
 
   function sourceOnboardingScanStatus(project: ProjectRoot) {
     return `Scanning ${project.name} up to ${expandedSourceScanLimit.toLocaleString()} source files`;
-  }
-
-  function formatSourceScanHealthNote(totalCount: number, needsAttention: boolean) {
-    if (!needsAttention) return '';
-    const fileLabel = totalCount === 1 ? 'file' : 'files';
-    return `Only ${totalCount.toLocaleString()} ${fileLabel} indexed. If that looks wrong, reset and scan up to ${expandedSourceScanLimit.toLocaleString()} files.`;
   }
 
   async function indexProjectsInBackground(projects: ProjectRoot[]) {
