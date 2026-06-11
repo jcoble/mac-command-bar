@@ -1049,6 +1049,14 @@ assert.ok(pageSource.includes('onRename={handleEditorRename}'), 'Editor should b
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
 assert.ok(pageSource.includes("id: 'save-all-files'"), 'Command palette should expose Save All');
 assert.ok(pageSource.includes('aria-label="Save all source files"'), 'Editor action menu should expose Save All');
+assert.ok(pageSource.includes("id: 'close-current-tab'"), 'Command palette should expose closing the current source tab');
+assert.ok(pageSource.includes("id: 'close-other-clean-tabs'"), 'Command palette should expose closing other clean source tabs');
+assert.ok(pageSource.includes("id: 'close-clean-tabs'"), 'Command palette should expose closing all clean source tabs');
+assert.ok(pageSource.includes('function closeSelectedSourceTab'), 'Source page should close the selected source tab from commands');
+assert.ok(pageSource.includes('function closeOtherCleanSourceTabs'), 'Source page should bulk-close other clean source tabs');
+assert.ok(pageSource.includes('function closeAllCleanSourceTabs'), 'Source page should bulk-close all clean source tabs');
+assert.ok(pageSource.includes('aria-label="Close current source tab"'), 'Editor action menu should expose close current tab');
+assert.ok(pageSource.includes('aria-label="Close other clean source tabs"'), 'Editor action menu should expose close other clean tabs');
 assert.ok(pageSource.includes('onQuickOpenRequest={openQuickOpen}'), 'Editor Cmd+P should call the page quick-open path');
 assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), 'Editor Cmd+K should call the page command palette');
 assert.ok(pageSource.includes('onGoToLineRequest={openCurrentFileGoToLine}'), 'Editor Cmd+G should call current-file line navigation');

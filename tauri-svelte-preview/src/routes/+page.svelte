@@ -89,7 +89,9 @@
     applySourceTextEdits,
     buildSourceTree,
     buildGitTaskSourceGroups,
+    closeAllCleanOpenSourceTabs,
     closeOpenSourceTab,
+    closeOtherCleanOpenSourceTabs,
     createProjectRoot,
     defaultProjectRoots,
     demoPreviewFor,
@@ -695,6 +697,12 @@
   let dirtyProjectSourceRecords = $derived(
     dirtySourceRecordsForProject(projectOpenSourceTabs, workspaceEditSourceRecordsByPath, selectedProject)
   );
+  let cleanProjectOpenSourceTabCount = $derived(
+    projectOpenSourceTabs.filter((tab) => !isSourcePathDirty(tab.path)).length
+  );
+  let otherCleanProjectOpenSourceTabCount = $derived(
+    projectOpenSourceTabs.filter((tab) => tab.path !== selectedRecord?.path && !isSourcePathDirty(tab.path)).length
+  );
   let sourceIntelligenceAvailable = $derived(
     preview ? sourceSupportsLanguageIntelligence(preview.language) : false
   );
@@ -1238,6 +1246,27 @@
       detail: `${dirtyProjectSourceRecords.length} dirty`,
       disabled: dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all',
       perform: saveAllDirtySourceFiles
+    },
+    {
+      id: 'close-current-tab',
+      label: 'Close current tab',
+      detail: selectedRecord?.fileName ?? 'No file',
+      disabled: !selectedRecord,
+      perform: closeSelectedSourceTab
+    },
+    {
+      id: 'close-other-clean-tabs',
+      label: 'Close other clean tabs',
+      detail: `${otherCleanProjectOpenSourceTabCount} clean`,
+      disabled: !selectedRecord || otherCleanProjectOpenSourceTabCount === 0,
+      perform: closeOtherCleanSourceTabs
+    },
+    {
+      id: 'close-clean-tabs',
+      label: 'Close all clean tabs',
+      detail: `${cleanProjectOpenSourceTabCount} clean`,
+      disabled: cleanProjectOpenSourceTabCount === 0,
+      perform: closeAllCleanSourceTabs
     },
     {
       id: 'format-document',
@@ -5263,21 +5292,84 @@
     event.stopPropagation();
 
     const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, selectedRecord?.path);
+    await applySourceTabCloseResult(closeResult, isSourcePathDirty(tab.path) ? 'Closed tab; draft retained' : 'Closed tab');
+  }
+
+  async function closeSelectedSourceTab() {
+    if (!selectedRecord) return;
+
+    const selectedTab = projectOpenSourceTabs.find((tab) => tab.path === selectedRecord?.path);
+    if (!selectedTab) return;
+
+    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, selectedTab.path, selectedRecord.path);
+    await applySourceTabCloseResult(
+      closeResult,
+      isSourcePathDirty(selectedTab.path) ? 'Closed current tab; draft retained' : 'Closed current tab'
+    );
+  }
+
+  async function closeOtherCleanSourceTabs() {
+    if (!selectedRecord) return;
+
+    const closeResult = closeOtherCleanOpenSourceTabs(
+      projectOpenSourceTabs,
+      selectedRecord.path,
+      dirtyProjectSourcePathSet()
+    );
+    await applySourceTabCloseResult(
+      closeResult,
+      closeResult.closedCount === 0
+        ? 'No other clean tabs to close'
+        : `Closed ${closeResult.closedCount} clean ${closeResult.closedCount === 1 ? 'tab' : 'tabs'}`
+    );
+  }
+
+  async function closeAllCleanSourceTabs() {
+    const closeResult = closeAllCleanOpenSourceTabs(
+      projectOpenSourceTabs,
+      selectedRecord?.path,
+      dirtyProjectSourcePathSet()
+    );
+    const retainedDraftNote =
+      closeResult.retainedDirtyCount > 0
+        ? `; kept ${closeResult.retainedDirtyCount} dirty ${closeResult.retainedDirtyCount === 1 ? 'tab' : 'tabs'}`
+        : '';
+    await applySourceTabCloseResult(
+      closeResult,
+      closeResult.closedCount === 0
+        ? 'No clean tabs to close'
+        : `Closed ${closeResult.closedCount} clean ${closeResult.closedCount === 1 ? 'tab' : 'tabs'}${retainedDraftNote}`
+    );
+  }
+
+  function dirtyProjectSourcePathSet() {
+    return new Set(dirtyProjectSourceRecords.map((record) => record.path));
+  }
+
+  async function applySourceTabCloseResult(
+    closeResult: { tabs: SourceOpenTab[]; nextActivePath: string | null },
+    status: string
+  ) {
     const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, closeResult.tabs);
     openSourceTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
-    if (closeResult.nextActivePath === selectedRecord?.path) return;
+    if (closeResult.nextActivePath === selectedRecord?.path) {
+      fileActionStatus = status;
+      return;
+    }
 
     if (closeResult.nextActivePath) {
       const nextTab = closeResult.tabs.find((openTab) => openTab.path === closeResult.nextActivePath);
       if (nextTab) {
         await selectOpenTab(nextTab);
       }
+      fileActionStatus = status;
       return;
     }
 
     clearSelectedSourceRecordForProject(selectedProject.id);
+    fileActionStatus = status;
   }
 
   function trackSelectedSourceRecord(record: SourceRecord, project: ProjectRoot) {
@@ -10173,6 +10265,47 @@
                   <Save size={13} strokeWidth={2} />
                   <span>Save all</span>
                   <kbd>{dirtyProjectSourceRecords.length}</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Close current source tab"
+                  disabled={!selectedRecord}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void closeSelectedSourceTab();
+                  }}
+                >
+                  <X size={13} strokeWidth={2} />
+                  <span>Close tab</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Close other clean source tabs"
+                  disabled={!selectedRecord || otherCleanProjectOpenSourceTabCount === 0}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void closeOtherCleanSourceTabs();
+                  }}
+                >
+                  <X size={13} strokeWidth={2} />
+                  <span>Close other clean</span>
+                  <kbd>{otherCleanProjectOpenSourceTabCount}</kbd>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Close all clean source tabs"
+                  disabled={cleanProjectOpenSourceTabCount === 0}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    void closeAllCleanSourceTabs();
+                  }}
+                >
+                  <X size={13} strokeWidth={2} />
+                  <span>Close clean tabs</span>
+                  <kbd>{cleanProjectOpenSourceTabCount}</kbd>
                 </button>
                 <button
                   type="button"

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import {
   applySourceTextEdits,
   buildGitTaskSourceGroups,
+  closeAllCleanOpenSourceTabs,
   closeOpenSourceTab,
+  closeOtherCleanOpenSourceTabs,
   extractSourceSemanticTokens,
   extractSourceSymbols,
   findSourceDefinitionTargets,
@@ -69,6 +71,14 @@ const records = [
     byteCount: 20
   }
 ];
+
+const recordC = {
+  path: '/repo/src/C.ts',
+  relativePath: 'src/C.ts',
+  fileName: 'C.ts',
+  language: 'typescript',
+  byteCount: 30
+};
 
 const otherProject = {
   id: 'project-2',
@@ -333,6 +343,39 @@ assert.equal(closeActive.nextActivePath, '/repo/src/B.ts');
 const closeOnly = closeOpenSourceTab(firstTab, '/repo/src/A.ts', '/repo/src/A.ts');
 assert.deepEqual(closeOnly.tabs, []);
 assert.equal(closeOnly.nextActivePath, null);
+
+const threeTabs = upsertOpenSourceTab(
+  upsertOpenSourceTab(reselectedTab, recordC, project, 4000, 4),
+  records[1],
+  project,
+  5000,
+  4
+);
+const closeOtherClean = closeOtherCleanOpenSourceTabs(
+  threeTabs,
+  '/repo/src/A.ts',
+  new Set(['/repo/src/C.ts'])
+);
+assert.deepEqual(
+  closeOtherClean.tabs.map((record) => record.path),
+  ['/repo/src/A.ts', '/repo/src/C.ts']
+);
+assert.equal(closeOtherClean.nextActivePath, '/repo/src/A.ts');
+assert.equal(closeOtherClean.closedCount, 1);
+assert.equal(closeOtherClean.retainedDirtyCount, 1);
+
+const closeAllClean = closeAllCleanOpenSourceTabs(
+  threeTabs,
+  '/repo/src/A.ts',
+  new Set(['/repo/src/C.ts'])
+);
+assert.deepEqual(
+  closeAllClean.tabs.map((record) => record.path),
+  ['/repo/src/C.ts']
+);
+assert.equal(closeAllClean.nextActivePath, '/repo/src/C.ts');
+assert.equal(closeAllClean.closedCount, 2);
+assert.equal(closeAllClean.retainedDirtyCount, 1);
 
 const rankedByFileName = rankSourceRecords(records, 'b', 5);
 assert.deepEqual(

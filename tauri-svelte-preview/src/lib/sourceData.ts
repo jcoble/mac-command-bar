@@ -342,6 +342,11 @@ export type CloseOpenSourceTabResult = {
   nextActivePath: string | null;
 };
 
+export type CloseOpenSourceTabsResult = CloseOpenSourceTabResult & {
+  closedCount: number;
+  retainedDirtyCount: number;
+};
+
 export type QuickOpenQuery = {
   searchQuery: string;
   targetLine: number | null;
@@ -1570,6 +1575,70 @@ export function closeOpenSourceTab(
     tabs: nextTabs,
     nextActivePath: nextTabs[closedTabIndex]?.path ?? nextTabs[closedTabIndex - 1]?.path ?? null
   };
+}
+
+export function closeOtherCleanOpenSourceTabs(
+  tabs: SourceOpenTab[],
+  activePath: string | null | undefined,
+  dirtyPaths: ReadonlySet<string>
+): CloseOpenSourceTabsResult {
+  return closeOpenSourceTabsWhere(
+    tabs,
+    activePath,
+    dirtyPaths,
+    (tab) => tab.path !== activePath && !dirtyPaths.has(tab.path)
+  );
+}
+
+export function closeAllCleanOpenSourceTabs(
+  tabs: SourceOpenTab[],
+  activePath: string | null | undefined,
+  dirtyPaths: ReadonlySet<string>
+): CloseOpenSourceTabsResult {
+  return closeOpenSourceTabsWhere(tabs, activePath, dirtyPaths, (tab) => !dirtyPaths.has(tab.path));
+}
+
+function closeOpenSourceTabsWhere(
+  tabs: SourceOpenTab[],
+  activePath: string | null | undefined,
+  dirtyPaths: ReadonlySet<string>,
+  shouldClose: (tab: SourceOpenTab) => boolean
+): CloseOpenSourceTabsResult {
+  const nextTabs = tabs.filter((tab) => !shouldClose(tab));
+  const closedCount = tabs.length - nextTabs.length;
+  const retainedDirtyCount = nextTabs.filter((tab) => dirtyPaths.has(tab.path)).length;
+
+  return {
+    tabs: nextTabs,
+    nextActivePath: nextActivePathAfterBulkClose(tabs, nextTabs, activePath),
+    closedCount,
+    retainedDirtyCount
+  };
+}
+
+function nextActivePathAfterBulkClose(
+  previousTabs: SourceOpenTab[],
+  nextTabs: SourceOpenTab[],
+  activePath: string | null | undefined
+): string | null {
+  if (activePath && nextTabs.some((tab) => tab.path === activePath)) return activePath;
+  if (nextTabs.length === 0) return null;
+
+  const nextPaths = new Set(nextTabs.map((tab) => tab.path));
+  const activeIndex = previousTabs.findIndex((tab) => tab.path === activePath);
+  if (activeIndex === -1) return nextTabs[0]?.path ?? null;
+
+  for (let index = activeIndex; index < previousTabs.length; index += 1) {
+    const candidate = previousTabs[index];
+    if (candidate && nextPaths.has(candidate.path)) return candidate.path;
+  }
+
+  for (let index = activeIndex - 1; index >= 0; index -= 1) {
+    const candidate = previousTabs[index];
+    if (candidate && nextPaths.has(candidate.path)) return candidate.path;
+  }
+
+  return nextTabs[0]?.path ?? null;
 }
 
 export function filterSourceRecords(records: SourceRecord[], query: string): SourceRecord[] {
