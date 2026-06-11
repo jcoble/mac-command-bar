@@ -26,6 +26,7 @@ import {
   scrollTopForSourceTreeReveal,
   selectPreferredSourceRecord,
   selectBackgroundIndexProjects,
+  shouldRepairSuspiciousSourceScan,
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
   taskReferenceUrl,
@@ -191,6 +192,11 @@ assert.equal(
 assert.equal(formatSourceIndexSummary(null, true, ''), 'Indexing in background');
 assert.equal(formatSourceIndexSummary(null, false, 'No access'), 'Index failed: No access');
 assert.equal(formatSourceIndexSummary(null, false, ''), 'Index not ready');
+assert.equal(shouldRepairSuspiciousSourceScan(2, false, 25_000, 2), true);
+assert.equal(shouldRepairSuspiciousSourceScan(0, false, 25_000, 2), false);
+assert.equal(shouldRepairSuspiciousSourceScan(3, false, 25_000, 2), false);
+assert.equal(shouldRepairSuspiciousSourceScan(2, true, 25_000, 2), false);
+assert.equal(shouldRepairSuspiciousSourceScan(2, false, 2, 2), false);
 
 const boundedScanCache = upsertSourceScanCacheEntry(
   upsertSourceScanCacheEntry(

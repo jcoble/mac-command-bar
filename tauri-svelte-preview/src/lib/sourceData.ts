@@ -560,6 +560,24 @@ export function formatSourceIndexSummary(
   }`;
 }
 
+export function shouldRepairSuspiciousSourceScan(
+  totalCount: number,
+  truncated: boolean,
+  requestedLimit: number,
+  suspiciousThreshold: number
+): boolean {
+  const safeTotalCount = Math.max(0, Math.floor(totalCount));
+  const safeRequestedLimit = Math.max(0, Math.floor(requestedLimit));
+  const safeSuspiciousThreshold = Math.max(0, Math.floor(suspiciousThreshold));
+
+  return (
+    !truncated &&
+    safeTotalCount > 0 &&
+    safeTotalCount <= safeSuspiciousThreshold &&
+    safeRequestedLimit > safeSuspiciousThreshold
+  );
+}
+
 export function monacoLanguageForSource(language: SourceLanguage): string {
   switch (language) {
     case 'tsx':

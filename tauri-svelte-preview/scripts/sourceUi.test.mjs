@@ -540,6 +540,12 @@ assert.ok(
 );
 assert.ok(pageSource.includes('sourceScanNeedsAttention'), 'Source tree should detect suspiciously tiny scan indexes');
 assert.ok(pageSource.includes('function formatSourceScanHealthNote'), 'Source tree should explain suspicious scan results');
+assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
+assert.ok(pageSource.includes('shouldRepairSuspiciousSourceScan'), 'Source scans should auto-repair suspiciously tiny indexes');
+assert.ok(
+  pageSource.includes('fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`'),
+  'Suspicious scan repair should explain that the project index is being rebuilt'
+);
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
 assert.ok(pageSource.includes('class="scan-health-note"'), 'Source tree should render compact scan health guidance');
 assertDeclaration('.scan-summary', 'overflow: hidden');

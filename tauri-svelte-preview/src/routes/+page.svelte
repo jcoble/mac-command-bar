@@ -107,6 +107,7 @@
     scrollTopForSourceTreeReveal,
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
+    shouldRepairSuspiciousSourceScan,
     sourceSupportsLanguageIntelligence,
     taskReferenceUrl,
     textMatchesSearchTokens,
@@ -544,6 +545,7 @@
   type SourceScanOptions = {
     force?: boolean;
     limit?: number;
+    skipTinyIndexRepair?: boolean;
   };
   type ProjectActivationOptions = {
     projects?: ProjectRoot[];
@@ -1714,6 +1716,25 @@
       }
 
       const nextRecords = tauriScan.records;
+      if (
+        !options.skipTinyIndexRepair &&
+        shouldRepairSuspiciousSourceScan(
+          nextRecords.length,
+          tauriScan.truncated,
+          scanLimit,
+          suspiciousSourceIndexFileThreshold
+        )
+      ) {
+        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
+        await scanProject(project, preferredPath, {
+          force: true,
+          limit: Math.max(scanLimit, expandedSourceScanLimit),
+          skipTinyIndexRepair: true
+        });
+        return;
+      }
+
       sourceScanCache = upsertSourceScanCacheEntry(
         sourceScanCache,
         project,
