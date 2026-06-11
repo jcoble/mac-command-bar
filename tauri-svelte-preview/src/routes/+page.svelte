@@ -1283,6 +1283,20 @@
       perform: () => openAgentSessionTerminal(session)
     })),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `conversation-save-session-workspace-${session.provider}-${session.id}`,
+      label: `Save workspace snapshot: ${session.title}`,
+      detail: agentSessionProjectLabel(session),
+      disabled: !agentSessionProjectPath(session).trim(),
+      perform: () => captureAgentSessionWorkspaceSnapshot(session)
+    })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `conversation-restore-session-workspace-${session.provider}-${session.id}`,
+      label: `Restore workspace snapshot: ${session.title}`,
+      detail: workspaceSnapshotForAgentSession(session)?.project.path ?? 'No saved workspace',
+      disabled: !workspaceSnapshotForAgentSession(session),
+      perform: () => restoreAgentSessionWorkspaceSnapshot(session)
+    })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-copy-plan-${session.provider}-${session.id}`,
       label: `Copy session resume plan: ${session.title}`,
       detail: agentSessionProjectLabel(session),
@@ -2561,20 +2575,28 @@
   }
 
   function captureCurrentWorkspaceSnapshot() {
-    const session = selectedProjectAgentSessions[0] ?? null;
+    captureWorkspaceSnapshot(selectedProjectAgentSessions[0] ?? null);
+  }
+
+  function captureAgentSessionWorkspaceSnapshot(session: AgentSession) {
+    captureWorkspaceSnapshot(session);
+  }
+
+  function captureWorkspaceSnapshot(session: AgentSession | null) {
     const cwd = session?.projectPath ?? selectedProject.path;
+    const project = workspaceSnapshotProjectForSession(session);
     const snapshot = createWorkspaceSnapshot({
       provider: workspaceSnapshotProviderForSession(session),
       sessionID: session?.id ?? selectedProject.id,
       title: session?.title ?? `${selectedProject.name} workspace`,
       model: null,
-      project: selectedProject,
+      project,
       cwd,
       worktreePath: snapshotWorktreePathForPath(cwd),
       branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
-      selectedPath: selectedRecord?.path ?? selectedSourcePaths[selectedProject.id] ?? null,
+      selectedPath: workspaceSnapshotSelectedPathForProject(project),
       selectedLine: selectedSourceLine,
-      openPaths: projectOpenSourceTabs.map((tab) => tab.path),
+      openPaths: workspaceSnapshotOpenPathsForProject(project),
       sourceActivityMode,
       sourceTerminalApp,
       dockLayout: sourceDockLayout,
@@ -2590,6 +2612,16 @@
     workspaceSnapshots = nextSnapshots;
     persistWorkspaceSnapshots(nextSnapshots);
     fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
+  }
+
+  async function restoreAgentSessionWorkspaceSnapshot(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session);
+    if (!snapshot) {
+      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      return;
+    }
+
+    await restoreConversationWorkspaceSnapshot(snapshot);
   }
 
   async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
@@ -2659,6 +2691,50 @@
     const provider = session?.provider.trim().toLowerCase();
     if (provider === 'codex' || provider === 'claude' || provider === 'cmux') return provider;
     return 'manual';
+  }
+
+  function workspaceSnapshotProjectForSession(session: AgentSession | null): ProjectRoot {
+    const sessionPath = session?.projectPath?.trim();
+    if (!sessionPath) return selectedProject;
+
+    const normalizedSessionPath = normalizeProjectPath(sessionPath);
+    const existingProject = projectOptions.find(
+      (project) => normalizeProjectPath(project.path) === normalizedSessionPath
+    );
+    if (existingProject) return existingProject;
+
+    if (normalizedSessionPath === normalizeProjectPath(selectedProject.path)) return selectedProject;
+
+    return createProjectRoot(selectedProject.name, normalizedSessionPath);
+  }
+
+  function workspaceSnapshotForAgentSession(session: AgentSession): WorkspaceSnapshot | null {
+    const snapshotID = workspaceSnapshotIDForAgentSession(session);
+    return workspaceSnapshots.find((snapshot) => snapshot.id === snapshotID) ?? null;
+  }
+
+  function workspaceSnapshotIDForAgentSession(session: AgentSession) {
+    const provider = workspaceSnapshotProviderForSession(session);
+    return `${provider}:${session.id.trim() || 'session'}`;
+  }
+
+  function workspaceSnapshotSelectedPathForProject(project: ProjectRoot) {
+    if (!selectedRecord) return selectedSourcePaths[project.id] ?? null;
+
+    const projectPath = normalizeProjectPath(project.path);
+    const selectedPath = normalizeProjectPath(selectedRecord.path);
+    if (selectedPath === projectPath || selectedPath.startsWith(`${projectPath}/`)) return selectedRecord.path;
+
+    return `${project.path}/${selectedRecord.relativePath}`;
+  }
+
+  function workspaceSnapshotOpenPathsForProject(project: ProjectRoot) {
+    const projectPath = normalizeProjectPath(project.path);
+    return projectOpenSourceTabs.map((tab) => {
+      const tabPath = normalizeProjectPath(tab.path);
+      if (tabPath === projectPath || tabPath.startsWith(`${projectPath}/`)) return tab.path;
+      return `${project.path}/${tab.relativePath}`;
+    });
   }
 
   function snapshotWorktreePathForPath(path: string) {
@@ -6465,6 +6541,7 @@
             {/if}
             {#if filteredProjectAgentSessions.length > 0}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
+                {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                 <div class="activity-session-row" title={agentSessionResumePlan(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -6472,6 +6549,23 @@
                     <small>{agentSessionProjectLabel(session)} · {agentSessionActivityLabel(session)}</small>
                   </div>
                   <div class="activity-row-actions" aria-label="Conversation actions">
+                    <button
+                      type="button"
+                      aria-label="Save conversation workspace snapshot"
+                      title="Save workspace snapshot"
+                      onclick={() => captureAgentSessionWorkspaceSnapshot(session)}
+                    >
+                      <Save size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Restore conversation workspace"
+                      title={sessionSnapshot ? 'Restore workspace snapshot' : 'No saved workspace snapshot'}
+                      disabled={!sessionSnapshot}
+                      onclick={() => restoreAgentSessionWorkspaceSnapshot(session)}
+                    >
+                      <RotateCcw size={12} strokeWidth={2} />
+                    </button>
                     <button
                       type="button"
                       aria-label="Copy agent resume command"
@@ -6489,14 +6583,14 @@
                       >
                         <ExternalLink size={12} strokeWidth={2} />
                       </button>
-	                      <button
-	                        type="button"
-	                        aria-label="Resume agent in terminal"
-	                        title="Resume in terminal"
-	                        onclick={() => openAgentSessionTerminal(session)}
-	                      >
-	                        <Terminal size={12} strokeWidth={2} />
-	                      </button>
+                      <button
+                        type="button"
+                        aria-label="Resume agent in terminal"
+                        title="Resume in terminal"
+                        onclick={() => openAgentSessionTerminal(session)}
+                      >
+                        <Terminal size={12} strokeWidth={2} />
+                      </button>
                     {/if}
                   </div>
                 </div>

@@ -151,7 +151,11 @@ assert.ok(pageSource.includes('function disposeEmbeddedTerminal'), 'Terminal doc
 assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace should persist source dock layout state');
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
 assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
+assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 'Workspace should capture a specific agent session context');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
+assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
+assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
+assert.ok(pageSource.includes('function workspaceSnapshotProjectForSession'), 'Workspace should store agent worktrees as restorable project roots');
 assert.ok(pageSource.includes('function persistWorkspaceSnapshots'), 'Workspace should persist captured conversation contexts');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
@@ -307,6 +311,8 @@ assert.ok(pageSource.includes("id: 'dock-hide-terminal'"), 'Command palette shou
 assert.ok(pageSource.includes("id: 'terminal-open-project'"), 'Command palette should open the current project shell');
 assert.ok(pageSource.includes("id: 'conversation-save-snapshot'"), 'Command palette should save the current conversation workspace');
 assert.ok(pageSource.includes("id: 'conversation-restore-latest'"), 'Command palette should restore the latest conversation workspace');
+assert.ok(pageSource.includes('conversation-save-session-workspace'), 'Command palette should save a specific session workspace');
+assert.ok(pageSource.includes('conversation-restore-session-workspace'), 'Command palette should restore a specific session workspace');
 assert.ok(pageSource.includes('orchestrationLoopTallyText'), 'Runs should render shared orchestration loop tally text');
 assert.ok(pageSource.includes('class="run-loop-row"'), 'Runs should render a compact loop tally row');
 assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally should be accessible');
@@ -371,7 +377,10 @@ assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent 
 assert.ok(pageSource.includes('aria-label="Resume agent in terminal"'), 'Agent rows should expose one-click terminal resume');
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
 assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
+assert.ok(pageSource.includes('aria-label="Save conversation workspace snapshot"'), 'Conversation rows should capture their session workspace');
+assert.ok(pageSource.includes('aria-label="Restore conversation workspace"'), 'Conversation rows should restore their saved session workspace');
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(snapshot)'), 'Snapshot rows should restore saved workspace context');
+assert.ok(pageSource.includes('workspaceSnapshotForAgentSession(session)'), 'Conversation rows should read their saved workspace context');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
