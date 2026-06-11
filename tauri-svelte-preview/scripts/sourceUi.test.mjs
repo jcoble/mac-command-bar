@@ -217,6 +217,9 @@ assert.ok(pageSource.includes('function restoreWorkspaceEmbeddedTerminal'), 'Wor
 assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
 assert.ok(pageSource.includes('function openAgentSessionWorkspace'), 'Conversation rows should open their saved workspace on row click');
 assert.ok(pageSource.includes('function openWorkspaceSnapshotTerminal'), 'Workspace snapshots should launch saved resume commands in a terminal');
+assert.ok(pageSource.includes('function workspaceSnapshotRestorePlan'), 'Workspace snapshots should produce a copyable restore plan');
+assert.ok(pageSource.includes('function copyWorkspaceSnapshotRestorePlan'), 'Workspace snapshots should copy their restore plan');
+assert.ok(pageSource.includes('function copyAgentSessionWorkspaceRestorePlan'), 'Conversation rows should copy their saved workspace restore plan');
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
@@ -243,6 +246,9 @@ assert.ok(pageSource.includes('class:active={activeWorkspaceSessionKey === works
 assert.ok(pageSource.includes("id: 'conversation-restore-active'"), 'Command palette should restore the active workspace snapshot');
 assert.ok(pageSource.includes("activeWorkspaceSnapshot?.title ?? 'No active workspace'"), 'Active workspace command should explain when nothing can be restored');
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(activeWorkspaceSnapshot)'), 'Active workspace command should restore the active snapshot');
+assert.ok(pageSource.includes("id: 'conversation-copy-active-restore-plan'"), 'Command palette should copy the active workspace restore plan');
+assert.ok(pageSource.includes("id: 'conversation-copy-latest-restore-plan'"), 'Command palette should copy the latest workspace restore plan');
+assert.ok(pageSource.includes('id: `conversation-copy-restore-plan-${snapshot.id}`'), 'Command palette should expose direct saved workspace plan copies');
 assert.ok(pageSource.includes('function hideContextCard'), 'Workspace should expose per-card hiding');
 assert.ok(pageSource.includes('function showAllContextCards'), 'Workspace should expose hidden-card restore');
 assert.ok(pageSource.includes('function shouldRenderContextCard'), 'Workspace should render stacked context cards through one predicate');
@@ -559,11 +565,14 @@ assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'),
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
 assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
 assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in embedded terminal"'), 'Saved workspace rows should launch their resume command in the embedded terminal');
+assert.ok(pageSource.includes('aria-label="Copy workspace restore plan"'), 'Saved workspace rows should expose restore-plan copy');
 assert.ok(pageSource.includes('aria-label="Delete workspace snapshot"'), 'Saved workspace rows should expose snapshot removal');
 assert.ok(pageSource.includes('aria-label="Open conversation workspace"'), 'Conversation row body should open that session workspace');
 assert.ok(pageSource.includes('class="activity-session-row conversation-session-row"'), 'Conversation rows should use a compact clickable row layout');
 assert.ok(pageSource.includes('aria-label="Save conversation workspace snapshot"'), 'Conversation rows should capture their session workspace');
 assert.ok(pageSource.includes('aria-label="Restore conversation workspace"'), 'Conversation rows should restore their saved session workspace');
+assert.ok(pageSource.includes('aria-label="Copy conversation workspace restore plan"'), 'Conversation rows should copy their saved workspace restore plan');
+assert.ok(pageSource.includes('id: `conversation-copy-session-restore-plan-${session.provider}-${session.id}`'), 'Command palette should copy saved session workspace restore plans');
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(snapshot)'), 'Snapshot rows should restore saved workspace context');
 assert.ok(pageSource.includes('await restoreWorkspaceEmbeddedTerminal(restored.embeddedTerminal)'), 'Snapshot restore should reattach saved embedded terminal context');
 assert.ok(pageSource.includes('workspaceSnapshotForAgentSession(session)'), 'Conversation rows should read their saved workspace context');

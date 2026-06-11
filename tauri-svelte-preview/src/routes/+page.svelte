@@ -1242,6 +1242,31 @@
       }
     },
     {
+      id: 'conversation-copy-active-restore-plan',
+      label: 'Copy active workspace restore plan',
+      detail: activeWorkspaceSnapshot?.title ?? 'No active workspace',
+      disabled: !activeWorkspaceSnapshot,
+      perform: () => {
+        if (activeWorkspaceSnapshot) copyWorkspaceSnapshotRestorePlan(activeWorkspaceSnapshot);
+      }
+    },
+    {
+      id: 'conversation-copy-latest-restore-plan',
+      label: 'Copy latest workspace restore plan',
+      detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
+      disabled: workspaceSnapshots.length === 0,
+      perform: () => {
+        const snapshot = workspaceSnapshots[0];
+        if (snapshot) copyWorkspaceSnapshotRestorePlan(snapshot);
+      }
+    },
+    ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
+      id: `conversation-copy-restore-plan-${snapshot.id}`,
+      label: `Copy restore plan: ${snapshot.title}`,
+      detail: workspaceSnapshotScopeLabel(snapshot),
+      perform: () => copyWorkspaceSnapshotRestorePlan(snapshot)
+    })),
+    {
       id: 'save-file',
       label: 'Save file',
       detail: 'Cmd+S',
@@ -1853,6 +1878,13 @@
       detail: workspaceSnapshotForAgentSession(session)?.project.path ?? 'No saved workspace',
       disabled: !workspaceSnapshotForAgentSession(session),
       perform: () => restoreAgentSessionWorkspaceSnapshot(session)
+    })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
+      id: `conversation-copy-session-restore-plan-${session.provider}-${session.id}`,
+      label: `Copy workspace restore plan: ${session.title}`,
+      detail: workspaceSnapshotForAgentSession(session)?.project.path ?? 'No saved workspace',
+      disabled: !workspaceSnapshotForAgentSession(session),
+      perform: () => copyAgentSessionWorkspaceRestorePlan(session)
     })),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-copy-plan-${session.provider}-${session.id}`,
@@ -3634,6 +3666,95 @@
       persistActiveWorkspaceSessionKey(null);
     }
     fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
+  }
+
+  function workspaceSnapshotRestorePlan(snapshot: WorkspaceSnapshot) {
+    const selectedFile = snapshot.selectedPath
+      ? `${workspaceSnapshotRelativePath(snapshot, snapshot.selectedPath)}${snapshot.selectedLine ? `:${snapshot.selectedLine}` : ''}`
+      : 'none';
+    const openPathLines = snapshot.openPaths
+      .slice(0, 12)
+      .map((path) => `- ${workspaceSnapshotRelativePath(snapshot, path)}`);
+    const openPathOverflow =
+      snapshot.openPaths.length > openPathLines.length
+        ? `- ... ${snapshot.openPaths.length - openPathLines.length} more`
+        : '';
+    const embeddedTerminal = snapshot.embeddedTerminal
+      ? `${snapshot.embeddedTerminal.cwd} (${snapshot.embeddedTerminal.sessionID})`
+      : 'none';
+
+    return [
+      'Workspace restore plan',
+      `Title: ${snapshot.title}`,
+      `Provider: ${snapshot.provider}`,
+      `Session: ${snapshot.sessionID}`,
+      `Model: ${snapshot.model ?? 'unknown'}`,
+      `Scope: ${workspaceSnapshotScopeLabel(snapshot)}`,
+      `Project: ${snapshot.project.name}`,
+      `Root: ${snapshot.project.path}`,
+      `CWD: ${snapshot.cwd}`,
+      `Worktree: ${snapshot.worktreePath ?? 'none'}`,
+      `Branch: ${snapshot.branch ?? 'unknown'}`,
+      `Selected file: ${selectedFile}`,
+      `Open files: ${snapshot.openPaths.length}`,
+      openPathLines.length > 0 ? openPathLines.join('\n') : '- none',
+      openPathOverflow,
+      `Activity pane: ${sourceActivityLabel(snapshot.sourceActivityMode)}`,
+      `Terminal app: ${snapshot.sourceTerminalApp}`,
+      `Embedded terminal: ${embeddedTerminal}`,
+      `Resume command: ${snapshot.resumeCommand ?? 'none'}`,
+      `Captured: ${formatWorkspaceSnapshotTime(snapshot.capturedAt)}`
+    ].filter(Boolean).join('\n');
+  }
+
+  function workspaceSnapshotRelativePath(snapshot: WorkspaceSnapshot, path: string) {
+    const normalizedPath = normalizeProjectPath(path);
+    const normalizedProjectPath = normalizeProjectPath(snapshot.project.path);
+    if (normalizedPath === normalizedProjectPath) return fileNameFromRestoredPath(normalizedPath);
+    if (normalizedPath.startsWith(`${normalizedProjectPath}/`)) {
+      return normalizedPath.slice(normalizedProjectPath.length + 1);
+    }
+    return normalizedPath;
+  }
+
+  function workspaceSnapshotScopeLabel(snapshot: WorkspaceSnapshot) {
+    const snapshotProjectPath = normalizeProjectPath(snapshot.project.path);
+    const selectedProjectPath = normalizeProjectPath(selectedProject.path);
+    const snapshotCwd = normalizeProjectPath(snapshot.cwd);
+    const snapshotWorktreePath = snapshot.worktreePath ? normalizeProjectPath(snapshot.worktreePath) : '';
+
+    if (snapshotProjectPath === selectedProjectPath) return 'current project';
+    if (snapshotCwd === selectedProjectPath || snapshotWorktreePath === selectedProjectPath) {
+      return 'current worktree';
+    }
+    if (snapshotWorktreePath) return formatSourceContextRootLabel(snapshotWorktreePath);
+    return formatSourceContextRootLabel(snapshot.project.path);
+  }
+
+  function formatWorkspaceSnapshotTime(capturedAt: number) {
+    const date = new Date(capturedAt);
+    if (Number.isNaN(date.getTime())) return 'unknown';
+
+    return `${new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    }).format(date)} (${formatRelativeAge(date.getTime())})`;
+  }
+
+  async function copyWorkspaceSnapshotRestorePlan(snapshot: WorkspaceSnapshot) {
+    await copyActivityCommand(workspaceSnapshotRestorePlan(snapshot), 'Workspace restore plan copied');
+  }
+
+  async function copyAgentSessionWorkspaceRestorePlan(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session);
+    if (!snapshot) {
+      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      return;
+    }
+
+    await copyWorkspaceSnapshotRestorePlan(snapshot);
   }
 
   async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
@@ -9081,6 +9202,14 @@
                         </button>
                         <button
                           type="button"
+                          aria-label="Copy workspace restore plan"
+                          title="Copy restore plan"
+                          onclick={() => copyWorkspaceSnapshotRestorePlan(snapshot)}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
                           aria-label="Copy workspace resume command"
                           title="Copy resume command"
                           disabled={!snapshot.resumeCommand}
@@ -9165,6 +9294,15 @@
                       onclick={() => restoreAgentSessionWorkspaceSnapshot(session)}
                     >
                       <RotateCcw size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Copy conversation workspace restore plan"
+                      title={sessionSnapshot ? 'Copy workspace restore plan' : 'No saved workspace snapshot'}
+                      disabled={!sessionSnapshot}
+                      onclick={() => copyAgentSessionWorkspaceRestorePlan(session)}
+                    >
+                      <FileCode2 size={12} strokeWidth={2} />
                     </button>
                     <button
                       type="button"
