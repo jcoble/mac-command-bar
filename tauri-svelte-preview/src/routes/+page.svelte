@@ -2599,11 +2599,11 @@
     captureWorkspaceSnapshot(selectedProjectAgentSessions[0] ?? null);
   }
 
-  function captureAgentSessionWorkspaceSnapshot(session: AgentSession) {
-    captureWorkspaceSnapshot(session);
+  function captureAgentSessionWorkspaceSnapshot(session: AgentSession): WorkspaceSnapshot {
+    return captureWorkspaceSnapshot(session);
   }
 
-  function captureWorkspaceSnapshot(session: AgentSession | null) {
+  function captureWorkspaceSnapshot(session: AgentSession | null): WorkspaceSnapshot {
     const cwd = session?.projectPath ?? selectedProject.path;
     const project = workspaceSnapshotProjectForSession(session);
     const snapshot = createWorkspaceSnapshot({
@@ -2633,6 +2633,7 @@
     workspaceSnapshots = nextSnapshots;
     persistWorkspaceSnapshots(nextSnapshots);
     fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
+    return snapshot;
   }
 
   async function restoreAgentSessionWorkspaceSnapshot(session: AgentSession) {
@@ -2642,6 +2643,11 @@
       return;
     }
 
+    await restoreConversationWorkspaceSnapshot(snapshot);
+  }
+
+  async function openAgentSessionWorkspace(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session) ?? captureAgentSessionWorkspaceSnapshot(session);
     await restoreConversationWorkspaceSnapshot(snapshot);
   }
 
@@ -6706,12 +6712,19 @@
             {#if filteredProjectAgentSessions.length > 0}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-                <div class="activity-session-row" title={agentSessionResumePlan(session)}>
-                  <span class="agent-provider-badge">{session.provider}</span>
-                  <div class="activity-row-main">
-                    <strong>{session.title}</strong>
-                    <small>{agentSessionProjectLabel(session)} · {agentSessionActivityLabel(session)}</small>
-                  </div>
+                <div class="activity-session-row conversation-session-row" title={agentSessionResumePlan(session)}>
+                  <button
+                    type="button"
+                    class="conversation-session-open"
+                    aria-label="Open conversation workspace"
+                    onclick={() => openAgentSessionWorkspace(session)}
+                  >
+                    <span class="agent-provider-badge">{session.provider}</span>
+                    <div class="activity-row-main">
+                      <strong>{session.title}</strong>
+                      <small>{agentSessionProjectLabel(session)} · {agentSessionActivityLabel(session)}</small>
+                    </div>
+                  </button>
                   <div class="activity-row-actions" aria-label="Conversation actions">
                     <button
                       type="button"
@@ -9198,6 +9211,34 @@
   .activity-runtime-row,
   .activity-worktree-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .conversation-session-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .conversation-session-open {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 0;
+    color: inherit;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .conversation-session-open:hover .activity-row-main strong,
+  .conversation-session-open:focus-visible .activity-row-main strong {
+    color: #9cebe0;
+  }
+
+  .conversation-session-open:focus-visible {
+    outline: 1px solid rgba(92, 226, 207, 0.34);
+    outline-offset: 2px;
   }
 
   .activity-worktree-row {

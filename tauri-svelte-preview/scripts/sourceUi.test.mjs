@@ -51,6 +51,7 @@ assertDeclaration('.context-pane-resizer', 'cursor: col-resize');
 assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer', 'cursor: row-resize');
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
+assertDeclaration('.conversation-session-open', 'grid-template-columns: auto minmax(0, 1fr)');
 assert.ok(pageSource.includes('min-height: 58px'), 'Worktree rows should have stable dense height');
 assertDeclaration('.activity-filter-box', 'grid-template-columns: 18px minmax(0, 1fr)');
 assertDeclaration('.worktree-row-main', 'gap: 2px');
@@ -154,6 +155,7 @@ assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Work
 assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 'Workspace should capture a specific agent session context');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
 assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
+assert.ok(pageSource.includes('function openAgentSessionWorkspace'), 'Conversation rows should open their saved workspace on row click');
 assert.ok(pageSource.includes('function openWorkspaceSnapshotTerminal'), 'Workspace snapshots should launch saved resume commands in a terminal');
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
@@ -387,6 +389,8 @@ assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conver
 assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
 assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in terminal"'), 'Saved workspace rows should launch their resume command');
 assert.ok(pageSource.includes('aria-label="Delete workspace snapshot"'), 'Saved workspace rows should expose snapshot removal');
+assert.ok(pageSource.includes('aria-label="Open conversation workspace"'), 'Conversation row body should open that session workspace');
+assert.ok(pageSource.includes('class="activity-session-row conversation-session-row"'), 'Conversation rows should use a compact clickable row layout');
 assert.ok(pageSource.includes('aria-label="Save conversation workspace snapshot"'), 'Conversation rows should capture their session workspace');
 assert.ok(pageSource.includes('aria-label="Restore conversation workspace"'), 'Conversation rows should restore their saved session workspace');
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(snapshot)'), 'Snapshot rows should restore saved workspace context');
