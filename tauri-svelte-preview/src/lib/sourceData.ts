@@ -1043,12 +1043,19 @@ export function selectBackgroundIndexProjects(
   cache: SourceScanCache,
   now: number,
   maxAgeMs: number,
-  limit: number
+  limit: number,
+  suspiciousThreshold = 0
 ): ProjectRoot[] {
   return projects.filter(
-    (project) =>
-      project.id !== activeProjectID &&
-      getSourceScanCacheEntry(cache, project, limit, now, maxAgeMs) === null
+    (project) => {
+      if (project.id === activeProjectID) return false;
+
+      const cacheEntry = getSourceScanCacheEntry(cache, project, limit, now, maxAgeMs);
+      return (
+        cacheEntry === null ||
+        sourceScanCacheEntryNeedsRepair(cacheEntry, limit, suspiciousThreshold)
+      );
+    }
   );
 }
 
@@ -1094,6 +1101,19 @@ export function shouldRepairSuspiciousSourceScan(
   suspiciousThreshold: number
 ): boolean {
   return isSuspiciousSourceScanResult(totalCount, truncated, requestedLimit, suspiciousThreshold);
+}
+
+export function sourceScanCacheEntryNeedsRepair(
+  entry: SourceScanCacheEntry,
+  requestedLimit: number,
+  suspiciousThreshold: number
+): boolean {
+  return isSuspiciousSourceScanResult(
+    entry.records.length,
+    entry.truncated,
+    Math.max(entry.limit, requestedLimit),
+    suspiciousThreshold
+  );
 }
 
 export function monacoLanguageForSource(language: SourceLanguage): string {

@@ -137,6 +137,7 @@
     selectBackgroundIndexProjects,
     selectPreferredSourceRecord,
     sourceNavigationLocationForRecord,
+    sourceScanCacheEntryNeedsRepair,
     shouldRepairSuspiciousSourceScan,
     sourceLanguageForPath,
     sourceSupportsLanguageIntelligence,
@@ -2308,7 +2309,14 @@
           sourceScanCacheMaxAgeMs
         );
 
-    if (cachedScan) {
+    const cachedScanNeedsRepair =
+      cachedScan !== null &&
+      sourceScanCacheEntryNeedsRepair(cachedScan, scanLimit, suspiciousSourceIndexFileThreshold);
+
+    if (cachedScanNeedsRepair) {
+      sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+      fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
+    } else if (cachedScan) {
       activeSourceScanId = '';
       sourceScanProgress = null;
       scanning = false;
@@ -2527,7 +2535,8 @@
       sourceScanCache,
       Date.now(),
       sourceScanCacheMaxAgeMs,
-      expandedSourceScanLimit
+      expandedSourceScanLimit,
+      suspiciousSourceIndexFileThreshold
     );
 
     for (const project of projectsToIndex) {
@@ -2553,6 +2562,22 @@
       }
 
       const nextRecords = tauriScan.records;
+      if (
+        isSuspiciousSourceScanResult(
+          nextRecords.length,
+          tauriScan.truncated,
+          tauriScan.limit,
+          suspiciousSourceIndexFileThreshold
+        )
+      ) {
+        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        backgroundIndexErrorByProject = {
+          ...backgroundIndexErrorByProject,
+          [project.id]: `Only ${nextRecords.length.toLocaleString()} files indexed. Open the project to repair the index.`
+        };
+        return;
+      }
+
       sourceScanCache = upsertSourceScanCacheEntry(
         sourceScanCache,
         project,

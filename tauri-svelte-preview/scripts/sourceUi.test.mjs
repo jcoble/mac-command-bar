@@ -786,8 +786,14 @@ assert.ok(pageSource.includes('tauriScan.stats'), 'Source scans should preserve 
 assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
 assert.ok(pageSource.includes('isSuspiciousSourceScanResult'), 'Source scans should share one suspicious-result predicate for repair and health');
 assert.ok(pageSource.includes('shouldRepairSuspiciousSourceScan'), 'Source scans should auto-repair suspiciously tiny indexes');
+assert.ok(pageSource.includes('sourceScanCacheEntryNeedsRepair'), 'Source scans should reject stale suspicious cached indexes');
+assert.ok(pageSource.includes('const cachedScanNeedsRepair'), 'Source scans should check cached scan health before using it');
 assert.ok(pageSource.includes('shouldCacheScanResult'), 'Source scans should avoid caching failed tiny-index repair results');
 assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Source scans should clear tiny stale indexes from cache');
+assert.ok(
+  pageSource.includes('Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.'),
+  'Cached tiny indexes should explain that the project index is being rebuilt'
+);
 assert.ok(
   pageSource.includes('fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`'),
   'Suspicious scan repair should explain that the project index is being rebuilt'
@@ -845,6 +851,14 @@ assert.ok(pageSource.includes('scanLimit: expandedSourceScanLimit'), 'New or dup
 assert.ok(
   pageSource.includes('selectBackgroundIndexProjects(\n      projects,\n      selectedProject.id,\n      sourceScanCache,\n      Date.now(),\n      sourceScanCacheMaxAgeMs,\n      expandedSourceScanLimit'),
   'Background project indexing should use the same expanded project scan limit'
+);
+assert.ok(
+  pageSource.includes('suspiciousSourceIndexFileThreshold\n    );'),
+  'Background project indexing should use the same suspicious-index threshold'
+);
+assert.ok(
+  pageSource.includes('Open the project to repair the index.'),
+  'Background tiny-index results should surface a repair warning instead of caching as ready'
 );
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(project)'), 'Duplicate project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nextProject)'), 'New project selection should announce the expanded onboarding scan');
