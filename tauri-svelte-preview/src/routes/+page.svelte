@@ -1725,6 +1725,13 @@
       perform: () => startEmbeddedTerminalSession(selectedProject.path)
     },
     {
+      id: 'terminal-open-or-attach-project',
+      label: 'Open or attach project terminal',
+      detail: selectedProject.path,
+      disabled: !selectedProject.path || embeddedTerminalStarting,
+      perform: attachOrStartProjectEmbeddedTerminal
+    },
+    {
       id: 'terminal-stop-embedded',
       label: 'Stop embedded terminal',
       detail: embeddedTerminalStatusLabel(),
@@ -5069,7 +5076,26 @@
       return;
     }
 
+    const matchingSession = embeddedTerminalSessionForPath(root);
+    if (matchingSession) {
+      await attachEmbeddedTerminalSession(matchingSession);
+      return;
+    }
+
     await startEmbeddedTerminalSession(root);
+  }
+
+  async function attachOrStartProjectEmbeddedTerminal() {
+    await openPathEmbeddedTerminal(selectedProject.path);
+  }
+
+  function embeddedTerminalSessionForPath(path: string) {
+    const root = normalizeProjectPath(path);
+    if (!root) return null;
+
+    return embeddedTerminalSessions.find(
+      (session) => normalizeProjectPath(session.cwd) === root
+    ) ?? null;
   }
 
   async function attachEmbeddedTerminalSession(session: TerminalSessionInfo) {
