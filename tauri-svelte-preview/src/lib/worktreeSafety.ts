@@ -16,6 +16,17 @@ export type WorktreeSafetySummary = {
   cleanupPlan: string;
 };
 
+export type WorktreeCleanupBrief = {
+  headline: string;
+  cleanupCandidateCount: number;
+  blockedCount: number;
+  reviewCount: number;
+  protectedCount: number;
+  staleCount: number;
+  taskIDs: string[];
+  report: string;
+};
+
 export type WorktreeSafetyOptions = {
   primaryPath?: string | null;
   now?: number | Date;
@@ -89,6 +100,47 @@ export function buildWorktreeSafetySummary(
       reason,
       recommendation,
       isPrimaryCheckout
+    })
+  };
+}
+
+export function buildWorktreeCleanupBrief(
+  worktrees: ProjectWorktree[],
+  options: WorktreeSafetyOptions = {}
+): WorktreeCleanupBrief {
+  const entries = worktrees.map((worktree) => ({
+    worktree,
+    safety: buildWorktreeSafetySummary(worktree, options)
+  }));
+  const blocked = entries.filter((entry) => entry.safety.kind === 'blocked');
+  const ready = entries.filter((entry) => entry.safety.kind === 'ready');
+  const review = entries.filter((entry) => entry.safety.kind === 'review');
+  const protectedEntries = entries.filter((entry) => entry.safety.kind === 'protected');
+  const stale = entries.filter((entry) => entry.safety.ageBucket === 'stale');
+  const taskIDs = uniqueTaskIDs(entries.map((entry) => entry.worktree.taskID));
+  const headline = formatBriefHeadline({
+    blocked: blocked.length,
+    ready: ready.length,
+    review: review.length,
+    stale: stale.length,
+    protected: protectedEntries.length
+  });
+
+  return {
+    headline,
+    cleanupCandidateCount: ready.length,
+    blockedCount: blocked.length,
+    reviewCount: review.length,
+    protectedCount: protectedEntries.length,
+    staleCount: stale.length,
+    taskIDs,
+    report: formatCleanupBriefReport({
+      headline,
+      taskIDs,
+      blocked,
+      ready,
+      review,
+      protectedEntries
     })
   };
 }
@@ -188,6 +240,81 @@ function worktreeCleanupPlan(
   }
 
   return lines.join('\n');
+}
+
+function formatBriefHeadline(counts: {
+  blocked: number;
+  ready: number;
+  review: number;
+  stale: number;
+  protected: number;
+}): string {
+  const parts = [
+    counts.blocked ? `${counts.blocked} blocked` : '',
+    counts.ready ? `${counts.ready} ready` : '',
+    counts.review ? `${counts.review} review` : '',
+    counts.stale ? `${counts.stale} stale` : '',
+    counts.protected ? `${counts.protected} main` : ''
+  ].filter(Boolean);
+
+  return parts.join(' · ') || 'no worktrees';
+}
+
+function formatCleanupBriefReport(details: {
+  headline: string;
+  taskIDs: string[];
+  blocked: Array<{ worktree: ProjectWorktree; safety: WorktreeSafetySummary }>;
+  ready: Array<{ worktree: ProjectWorktree; safety: WorktreeSafetySummary }>;
+  review: Array<{ worktree: ProjectWorktree; safety: WorktreeSafetySummary }>;
+  protectedEntries: Array<{ worktree: ProjectWorktree; safety: WorktreeSafetySummary }>;
+}): string {
+  const lines = [
+    'Worktree cleanup brief',
+    details.headline,
+    details.taskIDs.length > 0 ? `Tasks: ${details.taskIDs.join(', ')}` : '',
+    `Blocked: ${details.blocked.length}`,
+    `Cleanup candidates: ${details.ready.length}`,
+    `Review: ${details.review.length}`,
+    ''
+  ].filter(Boolean);
+
+  appendBriefSection(lines, 'Needs attention:', details.blocked);
+  appendBriefSection(lines, 'Cleanup candidates:', details.ready);
+  appendBriefSection(lines, 'Review:', details.review);
+  appendBriefSection(lines, 'Protected main checkouts:', details.protectedEntries);
+
+  return lines.join('\n');
+}
+
+function appendBriefSection(
+  lines: string[],
+  title: string,
+  entries: Array<{ worktree: ProjectWorktree; safety: WorktreeSafetySummary }>
+): void {
+  if (entries.length === 0) return;
+
+  lines.push(title);
+  for (const { worktree, safety } of entries) {
+    const task = worktree.taskID ? ` · ${worktree.taskID}` : '';
+    lines.push(`- ${worktree.branch}${task}: ${safety.reason} · ${safety.recommendation}`);
+    lines.push(`  ${worktree.path}`);
+  }
+  lines.push('');
+}
+
+function uniqueTaskIDs(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const taskIDs: string[] = [];
+
+  for (const value of values) {
+    const taskID = value?.trim();
+    if (!taskID || seen.has(taskID)) continue;
+
+    seen.add(taskID);
+    taskIDs.push(taskID);
+  }
+
+  return taskIDs;
 }
 
 function worktreeActivity(

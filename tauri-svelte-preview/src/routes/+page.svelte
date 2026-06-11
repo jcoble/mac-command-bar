@@ -49,7 +49,7 @@
     type OrchestrationTimelineItem
   } from '$lib/orchestrationView';
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
-  import { buildWorktreeSafetySummary } from '$lib/worktreeSafety';
+  import { buildWorktreeCleanupBrief, buildWorktreeSafetySummary } from '$lib/worktreeSafety';
   import {
     createWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
@@ -798,6 +798,9 @@
     )
   );
   let projectWorktreeSafetyStats = $derived(formatProjectWorktreeSafetyStats(projectWorktrees));
+  let projectWorktreeCleanupBrief = $derived(
+    buildWorktreeCleanupBrief(projectWorktrees, { primaryPath: selectedProject.path })
+  );
   let repoDashboardSummary = $derived(
     formatRepoDashboardSummary(
       gitRepositorySummaries,
@@ -1251,6 +1254,13 @@
       detail: sourceActivitySummary('worktrees'),
       disabled: sourceActivityMode === 'worktrees',
       perform: () => selectSourceActivityMode('worktrees')
+    },
+    {
+      id: 'worktree-cleanup-brief',
+      label: 'Copy worktree cleanup brief',
+      detail: projectWorktreeCleanupBrief.headline,
+      disabled: projectWorktrees.length === 0,
+      perform: copyProjectWorktreeCleanupBrief
     },
     {
       id: 'activity-git',
@@ -3121,6 +3131,10 @@
 
   function copyWorktreeBackupCommand(worktree: ProjectWorktree) {
     return copyActivityCommand(projectWorktreeSafety(worktree).backupCommand, 'Worktree backup command copied');
+  }
+
+  function copyProjectWorktreeCleanupBrief() {
+    return copyActivityCommand(projectWorktreeCleanupBrief.report, 'Worktree cleanup brief copied');
   }
 
   function copyAgentSessionResumePlan(session: AgentSession) {
@@ -7611,9 +7625,19 @@
         <div class="worktree-context-header">
           <div>
             <strong>Worktree Safety</strong>
-            <span>{projectWorktreeSummary} · {projectWorktreeSafetyStats}</span>
+            <span title={projectWorktreeSafetyStats}>{projectWorktreeSummary} · {projectWorktreeCleanupBrief.headline}</span>
           </div>
           <div class="context-card-actions">
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Copy worktree cleanup brief"
+              title="Copy cleanup brief"
+              disabled={projectWorktrees.length === 0}
+              onclick={copyProjectWorktreeCleanupBrief}
+            >
+              <Copy size={13} strokeWidth={1.9} />
+            </button>
             <button
               class="file-action-button"
               type="button"
