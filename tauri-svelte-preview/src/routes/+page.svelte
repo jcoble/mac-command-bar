@@ -150,6 +150,7 @@
     listOrchestrationRunsFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
+    listTerminalSessionsFromTauri,
     listenToTerminalOutput,
     listenToSourceScanProgress,
     listSourceFilesFromTauri,
@@ -464,6 +465,9 @@
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
   let embeddedTerminalSession = $state<TerminalSessionInfo | null>(null);
+  let embeddedTerminalSessions = $state<TerminalSessionInfo[]>([]);
+  let embeddedTerminalSessionsLoading = $state(false);
+  let embeddedTerminalSessionsError = $state('');
   let embeddedTerminalStarting = $state(false);
   let embeddedTerminalStatus = $state('Embedded terminal idle');
   let embeddedTerminalError = $state('');
@@ -1217,6 +1221,26 @@
       detail: embeddedTerminalStatusLabel(),
       perform: fitEmbeddedTerminal
     },
+    {
+      id: 'terminal-refresh-embedded',
+      label: 'Refresh embedded terminals',
+      detail: `${embeddedTerminalSessions.length} live`,
+      disabled: embeddedTerminalSessionsLoading,
+      perform: loadEmbeddedTerminalSessions
+    },
+    ...embeddedTerminalSessions.slice(0, 8).map((session) => ({
+      id: `terminal-attach-${session.sessionId}`,
+      label: `Attach terminal: ${embeddedTerminalSessionTitle(session)}`,
+      detail: session.cwd,
+      disabled: embeddedTerminalSession?.sessionId === session.sessionId,
+      perform: () => attachEmbeddedTerminalSession(session)
+    })),
+    ...embeddedTerminalSessions.slice(0, 8).map((session) => ({
+      id: `terminal-close-${session.sessionId}`,
+      label: `Close terminal: ${embeddedTerminalSessionTitle(session)}`,
+      detail: session.cwd,
+      perform: () => closeListedEmbeddedTerminalSession(session)
+    })),
     ...contextCardOrder.map((cardID) => ({
       id: `context-card-${cardID}`,
       label: `Show ${contextCardLabels[cardID]} card`,
@@ -3299,6 +3323,9 @@
   function terminalDockSummary() {
     const parts = [
       embeddedTerminalSession ? 'embedded live' : sourceTerminalApp,
+      embeddedTerminalSessions.length
+        ? `${embeddedTerminalSessions.length} embedded`
+        : '',
       selectedProjectAgentSessions.length
         ? `${selectedProjectAgentSessions.length} ${selectedProjectAgentSessions.length === 1 ? 'agent' : 'agents'}`
         : '',
@@ -3309,6 +3336,35 @@
     ].filter(Boolean);
 
     return parts.join(' · ') || sourceTerminalApp;
+  }
+
+  async function loadEmbeddedTerminalSessions() {
+    if (embeddedTerminalSessionsLoading) return;
+
+    embeddedTerminalSessionsLoading = true;
+    embeddedTerminalSessionsError = '';
+
+    try {
+      const sessions = await listTerminalSessionsFromTauri();
+      if (!sessions) {
+        embeddedTerminalSessions = [];
+        return;
+      }
+
+      embeddedTerminalSessions = sessions;
+      if (
+        embeddedTerminalSession &&
+        !sessions.some((session) => session.sessionId === embeddedTerminalSession?.sessionId)
+      ) {
+        embeddedTerminalSession = null;
+        embeddedTerminalStatus = 'Embedded terminal ended';
+      }
+    } catch (terminalError) {
+      embeddedTerminalSessionsError =
+        terminalError instanceof Error ? terminalError.message : 'Could not list embedded terminals';
+    } finally {
+      embeddedTerminalSessionsLoading = false;
+    }
   }
 
   async function ensureEmbeddedTerminalRenderer() {
@@ -3404,6 +3460,7 @@
       }
 
       embeddedTerminalSession = session;
+      embeddedTerminalSessions = upsertEmbeddedTerminalSession(embeddedTerminalSessions, session);
       embeddedTerminalStatus = 'Native terminal running';
       embeddedTerminal.reset();
       embeddedTerminal.focus();
@@ -3417,6 +3474,32 @@
     }
   }
 
+  async function attachEmbeddedTerminalSession(session: TerminalSessionInfo) {
+    embeddedTerminalError = '';
+    embeddedTerminalStatus = 'Attaching embedded terminal';
+
+    try {
+      await ensureEmbeddedTerminalRenderer();
+      if (!embeddedTerminal) {
+        embeddedTerminalStatus = 'Embedded terminal unavailable';
+        return;
+      }
+
+      embeddedTerminalSession = session;
+      embeddedTerminalSessions = upsertEmbeddedTerminalSession(embeddedTerminalSessions, session);
+      embeddedTerminal.reset();
+      embeddedTerminal.writeln(`Attached to ${embeddedTerminalSessionTitle(session)}`);
+      embeddedTerminal.writeln('New output will appear here. Earlier scrollback stays in the original PTY.\r\n');
+      embeddedTerminalStatus = 'Native terminal attached';
+      embeddedTerminal.focus();
+      window.setTimeout(fitEmbeddedTerminal, 0);
+    } catch (terminalError) {
+      embeddedTerminalError =
+        terminalError instanceof Error ? terminalError.message : 'Could not attach embedded terminal';
+      embeddedTerminalStatus = 'Embedded terminal attach failed';
+    }
+  }
+
   async function closeEmbeddedTerminalSession() {
     const session = embeddedTerminalSession;
     if (!session) return;
@@ -3426,12 +3509,34 @@
 
     try {
       await closeTerminalSessionFromTauri(session.sessionId);
+      embeddedTerminalSessions = embeddedTerminalSessions.filter(
+        (existing) => existing.sessionId !== session.sessionId
+      );
       embeddedTerminalStatus = 'Embedded terminal stopped';
       embeddedTerminal?.writeln('\r\n[terminal closed]');
     } catch (terminalError) {
       embeddedTerminalError =
         terminalError instanceof Error ? terminalError.message : 'Could not stop embedded terminal';
       embeddedTerminalStatus = 'Embedded terminal close failed';
+    }
+  }
+
+  async function closeListedEmbeddedTerminalSession(session: TerminalSessionInfo) {
+    embeddedTerminalSessionsError = '';
+
+    if (embeddedTerminalSession?.sessionId === session.sessionId) {
+      await closeEmbeddedTerminalSession();
+      return;
+    }
+
+    try {
+      await closeTerminalSessionFromTauri(session.sessionId);
+      embeddedTerminalSessions = embeddedTerminalSessions.filter(
+        (existing) => existing.sessionId !== session.sessionId
+      );
+    } catch (terminalError) {
+      embeddedTerminalSessionsError =
+        terminalError instanceof Error ? terminalError.message : 'Could not close embedded terminal';
     }
   }
 
@@ -3469,6 +3574,9 @@
             ? `signal ${payload.signal}`
             : 'terminated';
       embeddedTerminal?.writeln(`\r\n[process ${exitLabel}]`);
+      embeddedTerminalSessions = embeddedTerminalSessions.filter(
+        (existing) => existing.sessionId !== payload.sessionId
+      );
       embeddedTerminalSession = null;
       embeddedTerminalStatus = `Embedded terminal ${exitLabel}`;
     }
@@ -3492,9 +3600,22 @@
   function embeddedTerminalStatusLabel(session = embeddedTerminalSession) {
     if (!session) return embeddedTerminalStatus;
 
+    return `${embeddedTerminalSessionTitle(session)} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''}`;
+  }
+
+  function embeddedTerminalSessionTitle(session: TerminalSessionInfo) {
     const segments = session.cwd.split('/').filter(Boolean);
     const cwdName = segments[segments.length - 1] ?? session.cwd;
-    return `${cwdName} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''}`;
+    return cwdName || session.shell || session.sessionId;
+  }
+
+  function upsertEmbeddedTerminalSession(
+    sessions: TerminalSessionInfo[],
+    session: TerminalSessionInfo
+  ): TerminalSessionInfo[] {
+    const next = sessions.filter((existing) => existing.sessionId !== session.sessionId);
+    next.unshift(session);
+    return next;
   }
 
   function gitStatusForSourceRecord(record: SourceRecord | SourceOpenTab | null): ProjectGitFileStatus | null {
@@ -6295,6 +6416,7 @@
     void loadGitRepositorySummaries(storedProjectOptions);
     void loadAgentSessions();
     void loadOrchestrationRuns(storedProjectOptions);
+    void loadEmbeddedTerminalSessions();
     void scanProject(storedProject, storedSelectedSourcePaths[storedProject.id], { limit: expandedSourceScanLimit }).then(
       () => indexProjectsInBackground(storedProjectOptions)
     );
@@ -8909,6 +9031,44 @@
           </div>
 
           <div class="terminal-launchpad-grid">
+            <div class="terminal-launchpad-list" aria-label="Embedded terminal sessions">
+              <div class="terminal-launchpad-title">
+                <span>Embedded</span>
+                <strong>{embeddedTerminalSessions.length}</strong>
+              </div>
+              {#if embeddedTerminalSessionsLoading}
+                <div class="terminal-launchpad-empty">Refreshing terminals</div>
+              {:else if embeddedTerminalSessions.length === 0}
+                <div class="terminal-launchpad-empty">No embedded terminals</div>
+              {:else}
+                {#each embeddedTerminalSessions.slice(0, 3) as session (`terminal-session:${session.sessionId}`)}
+                  <div
+                    class:active={embeddedTerminalSession?.sessionId === session.sessionId}
+                    class="terminal-launchpad-row"
+                    title={session.cwd}
+                  >
+                    <span class="runtime-port">PTY</span>
+                    <div>
+                      <strong>{embeddedTerminalSessionTitle(session)}</strong>
+                      <small>{session.shell}{session.pid ? ` · pid ${session.pid}` : ''}</small>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Attach embedded terminal session"
+                      title="Attach embedded terminal"
+                      disabled={embeddedTerminalSession?.sessionId === session.sessionId}
+                      onclick={() => attachEmbeddedTerminalSession(session)}
+                    >
+                      <Terminal size={12} strokeWidth={2} />
+                    </button>
+                  </div>
+                {/each}
+              {/if}
+              {#if embeddedTerminalSessionsError}
+                <div class="terminal-launchpad-empty">{embeddedTerminalSessionsError}</div>
+              {/if}
+            </div>
+
             <div class="terminal-launchpad-list" aria-label="Active terminal contexts">
               <div class="terminal-launchpad-title">
                 <span>Active</span>
@@ -12313,7 +12473,7 @@
 
   .terminal-launchpad-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
     min-width: 0;
     min-height: 0;
@@ -12359,6 +12519,11 @@
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.035);
+  }
+
+  .terminal-launchpad-row.active {
+    border-color: rgba(92, 226, 207, 0.24);
+    background: rgba(92, 226, 207, 0.08);
   }
 
   .terminal-launchpad-row > div {
