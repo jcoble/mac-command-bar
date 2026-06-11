@@ -355,6 +355,22 @@
   type SourceContextPanelPlacement = 'top' | 'side' | 'bottom';
   type SourceSidePanePosition = 'left' | 'right';
   type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
+  type GitTaskLedgerTone = 'blocked' | 'ready' | 'review' | 'protected' | 'clean';
+  type GitTaskLedgerRow = {
+    taskID: string;
+    sourceSummary: string;
+    detailSummary: string;
+    worktreeCount: number;
+    blockedWorktreeCount: number;
+    readyWorktreeCount: number;
+    activeSessionCount: number;
+    commitCount: number;
+    runCount: number;
+    nextAction: string;
+    tone: GitTaskLedgerTone;
+    primaryWorktree: ProjectWorktree | null;
+    latestCommit: GitCommitHistoryEntry | null;
+  };
   type SourceLayoutPresetDefinition = {
     id: Exclude<SourceLayoutPresetID, 'custom'>;
     label: string;
@@ -1036,6 +1052,7 @@
       }))
     )
   );
+  let selectedProjectGitTaskLedger = $derived(buildGitTaskLedgerRows());
   let runtimeContextSummary = $derived(
     formatRuntimeContextSummary(
       selectedProjectRuntimeContexts.length,
@@ -1897,6 +1914,12 @@
       label: `Copy task link: ${taskID}`,
       detail: gitTaskUrl(taskID) ?? 'Task ID only',
       perform: () => copyGitTaskReference(taskID)
+    })),
+    ...selectedProjectGitTaskLedger.slice(0, 8).map((row) => ({
+      id: `git-task-ledger-${row.taskID}`,
+      label: `Copy task ledger: ${row.taskID}`,
+      detail: row.nextAction,
+      perform: () => copyGitTaskLedger(row)
     })),
     ...gitCommitHistory.slice(0, 8).map((entry) => ({
       id: `git-copy-commit-${entry.sha}`,
@@ -3304,6 +3327,117 @@
     return gitTaskUrl(taskID) ?? taskID;
   }
 
+  function normalizeGitTaskID(taskID: string | null | undefined) {
+    const normalized = String(taskID ?? '').trim().toUpperCase();
+    return /^TSK-\d+$/.test(normalized) ? normalized : null;
+  }
+
+  function buildGitTaskLedgerRows(): GitTaskLedgerRow[] {
+    return selectedProjectGitTaskSourceGroups
+      .map((group) => {
+        const taskID = normalizeGitTaskID(group.taskID) ?? group.taskID;
+        const worktrees = prioritizedProjectWorktrees.filter(
+          (worktree) => normalizeGitTaskID(worktree.taskID) === taskID
+        );
+        const commits = gitCommitHistory.filter(
+          (entry) => normalizeGitTaskID(entry.taskID) === taskID
+        );
+        const runs = selectedProjectOrchestrationRuns.filter(
+          (run) => normalizeGitTaskID(run.taskID) === taskID
+        );
+        const worktreeSafetySummaries = worktrees.map(projectWorktreeSafety);
+        const blockedWorktreeCount = worktreeSafetySummaries.filter((summary) => summary.kind === 'blocked').length;
+        const readyWorktreeCount = worktreeSafetySummaries.filter((summary) => summary.kind === 'ready').length;
+        const protectedWorktreeCount = worktreeSafetySummaries.filter((summary) => summary.kind === 'protected').length;
+        const activeSessionCount = worktreeSafetySummaries.reduce(
+          (total, summary) => total + summary.activeSessionCount,
+          0
+        );
+        const nextAction = gitTaskLedgerNextAction({
+          activeSessionCount,
+          blockedWorktreeCount,
+          readyWorktreeCount,
+          runCount: runs.length,
+          commitCount: commits.length,
+          worktreeCount: worktrees.length
+        });
+        const tone: GitTaskLedgerTone =
+          activeSessionCount > 0 || blockedWorktreeCount > 0
+            ? 'blocked'
+            : readyWorktreeCount > 0
+              ? 'ready'
+              : protectedWorktreeCount > 0
+                ? 'protected'
+                : worktrees.length > 0 || runs.length > 0
+                  ? 'review'
+                  : 'clean';
+
+        return {
+          taskID,
+          sourceSummary: group.sourceSummary,
+          detailSummary: group.detailSummary,
+          worktreeCount: worktrees.length,
+          blockedWorktreeCount,
+          readyWorktreeCount,
+          activeSessionCount,
+          commitCount: commits.length,
+          runCount: runs.length,
+          nextAction,
+          tone,
+          primaryWorktree: worktrees[0] ?? null,
+          latestCommit: commits[0] ?? null
+        };
+      })
+      .sort((left, right) => gitTaskLedgerPriority(left) - gitTaskLedgerPriority(right));
+  }
+
+  function gitTaskLedgerNextAction(input: {
+    activeSessionCount: number;
+    blockedWorktreeCount: number;
+    readyWorktreeCount: number;
+    runCount: number;
+    commitCount: number;
+    worktreeCount: number;
+  }) {
+    if (input.activeSessionCount > 0) return 'Resume active session';
+    if (input.blockedWorktreeCount > 0) return 'Archive or audit worktree';
+    if (input.readyWorktreeCount > 0) return 'Remove clean worktree';
+    if (input.runCount > 0) return 'Review run status';
+    if (input.worktreeCount > 0) return 'Review worktree';
+    if (input.commitCount > 0) return 'Review commits';
+    return 'Open task';
+  }
+
+  function gitTaskLedgerPriority(row: GitTaskLedgerRow) {
+    if (row.activeSessionCount > 0) return 0;
+    if (row.blockedWorktreeCount > 0) return 1;
+    if (row.readyWorktreeCount > 0) return 2;
+    if (row.runCount > 0) return 3;
+    if (row.worktreeCount > 0) return 4;
+    if (row.commitCount > 0) return 5;
+    return 6;
+  }
+
+  function gitTaskLedgerTitle(row: GitTaskLedgerRow) {
+    return gitTaskLedgerText(row);
+  }
+
+  function gitTaskLedgerText(row: GitTaskLedgerRow) {
+    const taskUrl = gitTaskUrl(row.taskID);
+    return [
+      `Task: ${row.taskID}`,
+      taskUrl ? `Task link: ${taskUrl}` : '',
+      `Next: ${row.nextAction}`,
+      `Sources: ${row.sourceSummary}`,
+      `Details: ${row.detailSummary}`,
+      `Worktrees: ${row.worktreeCount} (${row.blockedWorktreeCount} blocked, ${row.readyWorktreeCount} ready, ${row.activeSessionCount} active sessions)`,
+      `Runs: ${row.runCount}`,
+      `Commits: ${row.commitCount}`,
+      row.primaryWorktree ? `Primary worktree: ${row.primaryWorktree.branch} · ${row.primaryWorktree.path}` : '',
+      row.latestCommit ? `Latest commit: ${gitCommitSummaryText(row.latestCommit)}` : ''
+    ].filter(Boolean).join('\n');
+  }
+
   async function copyGitCommitSha(entry: GitCommitHistoryEntry) {
     await copyActivityCommand(entry.sha, 'Commit SHA copied');
   }
@@ -3326,6 +3460,10 @@
     if (!taskID) return;
 
     await copyActivityCommand(gitTaskReferenceText(taskID), gitTaskUrl(taskID) ? 'Task link copied' : 'Task ID copied');
+  }
+
+  async function copyGitTaskLedger(row: GitTaskLedgerRow) {
+    await copyActivityCommand(gitTaskLedgerText(row), 'Task ledger copied');
   }
 
   async function copyGitWorkspaceBrief() {
@@ -10177,6 +10315,87 @@
               {/each}
             {/if}
 
+            {#if selectedProjectGitTaskLedger.length > 0}
+              <div class="activity-subheading">Task ledger</div>
+              {#each selectedProjectGitTaskLedger as row (row.taskID)}
+                {@const ledgerWorktree = row.primaryWorktree}
+                {@const ledgerAction = ledgerWorktree ? projectWorktreePrimaryAction(ledgerWorktree) : null}
+                <div
+                  class={`activity-task-ledger-row ${row.tone}`}
+                  title={gitTaskLedgerTitle(row)}
+                >
+                  <div class="activity-row-main">
+                    <strong class="task-ledger-title">
+                      {#if gitTaskUrl(row.taskID)}
+                        <a class="git-task-link" href={gitTaskUrl(row.taskID) ?? ''} target="_blank" rel="noreferrer">
+                          {row.taskID}
+                        </a>
+                      {:else}
+                        <span>{row.taskID}</span>
+                      {/if}
+                      <span>{row.nextAction}</span>
+                    </strong>
+                    <small>{row.sourceSummary} · {row.detailSummary}</small>
+                  </div>
+                  <div class="activity-task-ledger-chips" aria-label={`${row.taskID} task metadata`}>
+                    {#if row.worktreeCount > 0}
+                      <span class="task-ledger-chip">wt {row.worktreeCount}</span>
+                    {/if}
+                    {#if row.blockedWorktreeCount > 0}
+                      <span class="task-ledger-chip blocked">blocked {row.blockedWorktreeCount}</span>
+                    {/if}
+                    {#if row.readyWorktreeCount > 0}
+                      <span class="task-ledger-chip ready">ready {row.readyWorktreeCount}</span>
+                    {/if}
+                    {#if row.activeSessionCount > 0}
+                      <span class="task-ledger-chip active">active {row.activeSessionCount}</span>
+                    {/if}
+                    {#if row.runCount > 0}
+                      <span class="task-ledger-chip">runs {row.runCount}</span>
+                    {/if}
+                    {#if row.commitCount > 0}
+                      <span class="task-ledger-chip">commits {row.commitCount}</span>
+                    {/if}
+                  </div>
+                  <div class="activity-row-actions" aria-label="Task ledger actions">
+                    <button
+                      type="button"
+                      aria-label={`Copy task ledger for ${row.taskID}`}
+                      title="Copy task ledger"
+                      onclick={() => copyGitTaskLedger(row)}
+                    >
+                      <Copy size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Open worktree for ${row.taskID}`}
+                      title="Open task worktree in source browser"
+                      disabled={!ledgerWorktree}
+                      onclick={() => ledgerWorktree && openWorktreeInSourceBrowser(ledgerWorktree)}
+                    >
+                      <FolderOpen size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      class={ledgerAction ? `worktree-primary-action ${ledgerAction.kind}` : 'worktree-primary-action'}
+                      type="button"
+                      aria-label={`Run worktree action for ${row.taskID}`}
+                      title={ledgerAction?.title ?? 'No worktree action'}
+                      disabled={!ledgerWorktree || (ledgerWorktree ? fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
+                      onclick={() => ledgerWorktree && runWorktreePrimaryAction(ledgerWorktree)}
+                    >
+                      {#if ledgerAction?.kind === 'cleanup'}
+                        <Trash2 size={12} strokeWidth={2} />
+                      {:else if ledgerAction?.kind === 'backup'}
+                        <Save size={12} strokeWidth={2} />
+                      {:else}
+                        <History size={12} strokeWidth={2} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+
             <div class="activity-subheading">Recent commits</div>
             {#if filteredGitCommitHistory.length === 0}
               <div class="activity-empty">No commits</div>
@@ -13833,6 +14052,81 @@
 
   .activity-repo-row > small {
     grid-column: 1 / 4;
+  }
+
+  .activity-task-ledger-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .activity-task-ledger-row.blocked {
+    border-color: rgba(216, 170, 85, 0.28);
+    background: rgba(216, 170, 85, 0.055);
+  }
+
+  .activity-task-ledger-row.ready {
+    border-color: rgba(92, 226, 207, 0.24);
+    background: rgba(92, 226, 207, 0.055);
+  }
+
+  .task-ledger-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .task-ledger-title > span {
+    min-width: 0;
+    overflow: hidden;
+    color: #dce6e3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-task-ledger-chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 3px;
+    max-width: 138px;
+    min-width: 0;
+  }
+
+  .task-ledger-chip {
+    max-width: 72px;
+    height: 18px;
+    padding: 0 6px;
+    overflow: hidden;
+    color: #9ba7a4;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 9px;
+    font-weight: 820;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-ledger-chip.blocked,
+  .task-ledger-chip.active {
+    color: #e6c170;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .task-ledger-chip.ready {
+    color: #7ff0df;
+    border-color: rgba(92, 226, 207, 0.26);
+    background: rgba(92, 226, 207, 0.08);
   }
 
   .activity-commit-meta {
