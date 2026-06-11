@@ -16,6 +16,7 @@
     MoreHorizontal,
     Network,
     PanelBottom,
+    PanelLeftOpen,
     Plus,
     RefreshCw,
     RotateCcw,
@@ -479,7 +480,7 @@
   const dockTabGroupIDs: SourceDockGroupID[] = ['right', 'bottom'];
   const dockPanelDragDataType = 'application/x-mcb-dock-panel';
   const managedDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
-  const hideableDockPanelIDs: SourceDockPanelID[] = ['context', 'insights', 'terminal', 'browser'];
+  const hideableDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
   const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
   const contextCardLabels: Record<SourceContextCardID, string> = {
     orchestration: 'Runs',
@@ -7137,6 +7138,9 @@
 
   function selectSourceActivityMode(mode: SourceActivityMode) {
     markSourceLayoutCustom();
+    if (!sourceDockPanelVisible('activity')) {
+      showDockPanel('activity');
+    }
     sourceActivityMode = mode;
     persistSourceActivityMode(mode);
     window.setTimeout(measureFileTreeViewport, 0);
@@ -7587,6 +7591,21 @@
   }
 
   function showDockPanel(panelID: SourceDockPanelID) {
+    if (panelID === 'activity') {
+      applySourceDockLayout(
+        resizeSourceDockGroup(
+          moveSourceDockPanel(sourceDockLayout, 'activity', sidePanePosition),
+          sidePanePosition,
+          sidePaneWidth
+        )
+      );
+      fileActionStatus = 'Activity panel shown';
+      if (typeof window !== 'undefined') {
+        window.setTimeout(measureFileTreeViewport, 0);
+      }
+      return;
+    }
+
     applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));
     if (panelID === 'terminal') {
       fileActionStatus = 'Terminal dock shown';
@@ -7613,7 +7632,7 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
 
-    const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['context', 'insights', 'terminal', 'browser'];
+    const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
     let nextLayout = sourceDockLayout;
     for (const panelID of editorFocusHiddenPanelIDs) {
       nextLayout = hideSourceDockPanel(nextLayout, panelID);
@@ -9114,8 +9133,10 @@
 <main
   class="shell"
   class:side-right={sidePanePosition === 'right'}
+  class:activity-hidden={!shouldRenderDockPanel('activity')}
   style={`--accent: #5ce2cf; --side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px`}
 >
+  {#if shouldRenderDockPanel('activity')}
   <aside class="activity-shell" aria-label="Workspace browser">
     <nav class="activity-rail" aria-label="Workspace views">
       <button
@@ -10471,6 +10492,18 @@
     onpointerdown={beginSidePaneResize}
     onkeydown={handleSidePaneResizerKeydown}
   ></button>
+  {:else}
+    <button
+      class="activity-restore-button"
+      type="button"
+      aria-label="Show Activity panel"
+      title="Show Activity panel"
+      onclick={() => showDockPanel('activity')}
+    >
+      <PanelLeftOpen size={15} strokeWidth={2} />
+      <span>Activity</span>
+    </button>
+  {/if}
 
   <section
     class="workspace"
@@ -12841,6 +12874,7 @@
 
 <style>
   .shell {
+    position: relative;
     display: grid;
     grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr);
     gap: 0;
@@ -12859,6 +12893,24 @@
 
   .shell.side-right {
     grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width);
+  }
+
+  .shell.activity-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell.side-right.activity-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell.activity-hidden .workspace {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .shell.side-right.activity-hidden .workspace {
+    grid-column: 1;
+    grid-row: 1;
   }
 
   .shell.side-right .workspace {
@@ -12971,6 +13023,47 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+
+  .activity-restore-button {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 24;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    max-width: 132px;
+    padding: 0 9px;
+    overflow: hidden;
+    color: #d9f8f3;
+    border: 1px solid rgba(92, 226, 207, 0.28);
+    border-radius: 8px;
+    background: rgba(18, 29, 28, 0.9);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+    font-size: 11px;
+    font-weight: 780;
+    cursor: pointer;
+  }
+
+  .activity-restore-button:hover,
+  .activity-restore-button:focus-visible {
+    outline: 0;
+    border-color: rgba(92, 226, 207, 0.55);
+    background: rgba(32, 75, 69, 0.86);
+  }
+
+  .activity-restore-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .shell.side-right .activity-restore-button {
+    right: 10px;
+    left: auto;
   }
 
   .side-pane-resizer {

@@ -26,10 +26,14 @@ function assertDeclaration(selector, declaration) {
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
 assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
 assertDeclaration('.shell.side-right', 'grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width)');
+assertDeclaration('.shell.activity-hidden', 'grid-template-columns: minmax(0, 1fr)');
+assertDeclaration('.shell.activity-hidden .workspace', 'grid-column: 1');
 assertDeclaration('.activity-shell', 'min-width: 0');
 assertDeclaration('.topbar > div:first-child', 'min-width: 0');
 assertDeclaration('.topbar h2', 'text-overflow: ellipsis');
 assertDeclaration('.activity-rail', 'width: 46px');
+assertDeclaration('.activity-restore-button', 'position: absolute');
+assertDeclaration('.activity-restore-button', 'height: 30px');
 assertDeclaration('.topbar-command-button', 'height: 26px');
 assertDeclaration('.view-menu', 'position: absolute');
 assertDeclaration('.view-menu', 'overflow-y: auto');
@@ -142,6 +146,10 @@ assert.ok(pageSource.includes('sidePanePosition: SourceSidePanePosition'), 'Layo
 assert.ok(pageSource.includes('const sourceLayoutPresets'), 'Source shell should define reusable layout presets');
 assert.ok(pageSource.includes('const managedDockPanelIDs'), 'Source shell should define managed dock panels');
 assert.ok(pageSource.includes('const hideableDockPanelIDs'), 'Source shell should only expose hide controls for renderable hideable panels');
+assert.ok(
+  pageSource.includes("const hideableDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser']"),
+  'Source shell should let the Activity pane collapse like other dock panels'
+);
 assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-editor-canvas'"), 'Source shell should define the compact layout migration version');
 assert.ok(pageSource.includes('const sourceTerminalApps'), 'Source shell should define reusable terminal app choices');
 assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
@@ -516,11 +524,24 @@ assert.ok(pageSource.includes("id: 'context-bottom'"), 'Command palette should d
 assert.ok(pageSource.includes("id: 'layout-focus-editor'"), 'Command palette should expose focused editor layout');
 assert.ok(pageSource.includes('function focusSourceEditorLayout'), 'Source page should provide a focused editor layout action');
 assert.ok(pageSource.includes('Editor canvas focused'), 'Focused editor layout should report status after applying');
+assert.ok(
+  pageSource.includes("const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser']"),
+  'Focused editor layout should hide Activity as well as context docks'
+);
 assert.ok(pageSource.includes("id: 'layout-reset-dock'"), 'Command palette should reset the dock layout');
 assert.ok(pageSource.includes('layout-save-${preset.id}'), 'Command palette should save custom layout presets');
 assert.ok(pageSource.includes('layout-reset-${preset.id}'), 'Command palette should reset saved layout presets');
 assert.ok(pageSource.includes('dock-move-${panelID}-${groupID}'), 'Command palette should expose valid panel move targets');
 assert.ok(pageSource.includes('dock-toggle-${panelID}'), 'Command palette should expose panel visibility toggles');
+assert.ok(pageSource.includes("class:activity-hidden={!shouldRenderDockPanel('activity')}"), 'Shell should collapse the Activity grid column');
+assert.ok(pageSource.includes('class="activity-restore-button"'), 'Hidden Activity pane should expose a restore affordance');
+assert.ok(pageSource.includes("onclick={() => showDockPanel('activity')}"), 'Activity restore affordance should reopen the pane');
+assert.ok(pageSource.includes("if (panelID === 'activity')"), 'Activity restore should use Activity-specific dock placement');
+assert.ok(
+  pageSource.includes("moveSourceDockPanel(sourceDockLayout, 'activity', sidePanePosition)"),
+  'Activity restore should preserve the current side pane position'
+);
+assert.ok(pageSource.includes("fileActionStatus = 'Activity panel shown'"), 'Activity restore should report status');
 assert.ok(pageSource.includes('dock-panel-manager'), 'View menu should expose a compact dock panel manager');
 assert.ok(pageSource.includes('aria-label="Dock panels"'), 'Dock panel manager should be accessible');
 assert.ok(pageSource.includes("id: 'dock-show-terminal'"), 'Command palette should expose the future terminal dock panel');
