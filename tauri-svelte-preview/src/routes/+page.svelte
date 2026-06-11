@@ -718,6 +718,9 @@
   let selectedProjectRootValidationSummary = $derived(
     projectRootValidationSummary(selectedProjectRootValidation)
   );
+  let selectedProjectGitRootSuggestion = $derived(
+    projectRootGitRootSuggestion(selectedProject, selectedProjectRootValidation)
+  );
   let selectedProjectIsCustom = $derived(
     customProjectRoots.some((project) => project.id === selectedProject.id)
   );
@@ -1268,6 +1271,13 @@
       detail: selectedProjectRootValidationSummary,
       disabled: projectRootValidating,
       perform: () => validateProjectRootForProject(selectedProject, true)
+    },
+    {
+      id: 'project-use-git-root',
+      label: 'Use detected Git root',
+      detail: selectedProjectGitRootSuggestion || selectedProjectRootValidationSummary,
+      disabled: !selectedProjectGitRootSuggestion || projectRootValidating || scanning,
+      perform: useValidatedGitRootForSelectedProject
     },
     {
       id: 'project-open-folder',
@@ -9366,6 +9376,21 @@
     return validation.isGitRepository ? 'Git root ready' : 'Not a Git root';
   }
 
+  function projectRootGitRootSuggestion(
+    project: ProjectRoot,
+    validation: ProjectRootValidationResult | null
+  ) {
+    const gitRoot = validation?.gitRoot?.trim();
+    if (!validation || !validation.exists || !validation.isDirectory || validation.isGitRepository || !gitRoot) {
+      return '';
+    }
+
+    const normalizedGitRoot = normalizeProjectPath(gitRoot);
+    return normalizedGitRoot && normalizedGitRoot !== normalizeProjectPath(project.path)
+      ? normalizedGitRoot
+      : '';
+  }
+
   async function validateProjectRootForProject(project: ProjectRoot, report = false): Promise<ProjectRootValidationResult | null | false> {
     projectRootValidating = true;
 
@@ -9469,6 +9494,49 @@
     }
 
     return createProjectRoot(project.name, gitRoot);
+  }
+
+  async function useValidatedGitRootForSelectedProject() {
+    let validation = selectedProjectRootValidation;
+    if (!projectRootGitRootSuggestion(selectedProject, validation)) {
+      const nextValidation = await validateProjectRootForProject(selectedProject, true);
+      if (!nextValidation) return false;
+      validation = nextValidation;
+    }
+
+    const gitRoot = projectRootGitRootSuggestion(selectedProject, validation);
+    if (!gitRoot) {
+      fileActionStatus = `${selectedProject.name} is already using the repository root.`;
+      return false;
+    }
+
+    const nextProject = createProjectRoot(selectedProject.name, gitRoot);
+    const duplicateProject = projectOptions.find(
+      (project) => normalizeProjectPath(project.path) === nextProject.path
+    );
+
+    if (duplicateProject) {
+      activateDuplicateProjectRoot(
+        duplicateProject,
+        projectOptions,
+        `Using existing Git root ${duplicateProject.path}.`
+      );
+      return true;
+    }
+
+    const nextCustomProjectRoots = selectedProjectIsCustom
+      ? customProjectRoots.map((project) => (project.id === selectedProject.id ? nextProject : project))
+      : [...customProjectRoots, nextProject];
+    const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
+    customProjectRoots = nextCustomProjectRoots;
+    persistCustomProjectRoots(nextCustomProjectRoots);
+    fileActionStatus = `Switched ${selectedProject.name} to Git root ${nextProject.path}.`;
+    void activateProject(nextProject, {
+      forceScan: true,
+      scanLimit: expandedSourceScanLimit,
+      projects: nextProjectOptions
+    });
+    return true;
   }
 
   function activateDuplicateProjectRoot(project: ProjectRoot, projects: ProjectRoot[], message: string) {
@@ -10170,6 +10238,23 @@
                 onclick={copyTauriRunCommand}
               >
                 Tauri
+              </button>
+            </div>
+          {/if}
+          {#if selectedProjectGitRootSuggestion}
+            <div class="scan-root-correction" title={`Detected Git root: ${selectedProjectGitRootSuggestion}`}>
+              <span>
+                <strong>Nested root</strong>
+                Use {formatSourceContextRootLabel(selectedProjectGitRootSuggestion)}
+              </span>
+              <button
+                type="button"
+                aria-label="Use detected Git root"
+                title={selectedProjectGitRootSuggestion}
+                disabled={projectRootValidating || scanning}
+                onclick={useValidatedGitRootForSelectedProject}
+              >
+                Use root
               </button>
             </div>
           {/if}
@@ -15822,6 +15907,56 @@
     color: #bce8e2;
     font-size: 10px;
     font-weight: 820;
+  }
+
+  .scan-root-correction {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    margin: -1px 0 8px;
+    border: 1px solid rgba(216, 170, 85, 0.22);
+    border-radius: 6px;
+    padding: 5px 7px;
+    background: rgba(216, 170, 85, 0.07);
+    color: #d8cba8;
+    font-size: 10px;
+    font-weight: 720;
+    line-height: 1.25;
+  }
+
+  .scan-root-correction span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-root-correction strong {
+    margin-right: 5px;
+    color: #f0c978;
+    font-weight: 840;
+  }
+
+  .scan-root-correction button {
+    height: 20px;
+    border: 1px solid rgba(216, 170, 85, 0.28);
+    border-radius: 5px;
+    padding: 0 7px;
+    background: rgba(216, 170, 85, 0.12);
+    color: #f1d99b;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .scan-root-correction button:hover:not(:disabled) {
+    border-color: rgba(216, 170, 85, 0.44);
+    background: rgba(216, 170, 85, 0.18);
+    color: #ffe5a8;
+  }
+
+  .scan-root-correction button:disabled {
+    opacity: 0.48;
   }
 
   .scan-health-note span {

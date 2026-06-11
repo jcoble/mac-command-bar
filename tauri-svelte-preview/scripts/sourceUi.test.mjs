@@ -440,6 +440,11 @@ assert.ok(pageSource.includes('await validateProjectRootBeforeAdd(requestedProje
 assert.ok(pageSource.includes('function projectRootForValidatedAdd'), 'Project onboarding should normalize nested Git folders before adding them');
 assert.ok(pageSource.includes('validation?.gitRoot?.trim()'), 'Project onboarding should use native Git-root detection when available');
 assert.ok(pageSource.includes('return createProjectRoot(project.name, gitRoot);'), 'Project onboarding should persist the detected Git root instead of nested folders');
+assert.ok(pageSource.includes('selectedProjectGitRootSuggestion'), 'Existing project roots should expose a detected Git-root correction');
+assert.ok(pageSource.includes('function useValidatedGitRootForSelectedProject'), 'Project root correction should switch existing projects to the detected Git root');
+assert.ok(pageSource.includes("id: 'project-use-git-root'"), 'Command palette should expose the detected Git-root correction');
+assert.ok(pageSource.includes('class="scan-root-correction"'), 'Source tree should render a compact nested-root correction');
+assert.ok(pageSource.includes('Use root'), 'Nested-root correction should expose a concise action label');
 assert.ok(pageSource.includes('void addCustomProjectRoot(projectNameInput, projectPathInput, true)'), 'Project form submission should run async root onboarding');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Worktree panel should copy a guarded cleanup script');
 assert.ok(pageSource.includes('worktreePrimaryAction'), 'Worktree rows should derive a recommended next action');
