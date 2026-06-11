@@ -552,7 +552,16 @@ assert.deepEqual(sourceSemanticTokenLegend.tokenTypes, [
   'enum',
   'function',
   'method',
-  'variable'
+  'property',
+  'variable',
+  'parameter',
+  'enumMember',
+  'typeParameter',
+  'keyword',
+  'string',
+  'number',
+  'operator',
+  'comment'
 ]);
 
 const typescriptSemanticTokens = extractSourceSemanticTokens(
@@ -650,7 +659,7 @@ assert.deepEqual(
     ['class', 2, 21, 16],
     ['variable', 4, 37, 9],
     ['method', 5, 12, 16],
-    ['variable', 6, 27, 8],
+    ['property', 6, 27, 8],
     ['method', 7, 17, 10]
   ]
 );

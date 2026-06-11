@@ -17,6 +17,7 @@ import type {
   SourceRenameResult,
   SourceScanResult,
   SourceSearchMatch,
+  SourceSemanticToken,
   SourceSignatureHelp,
   SourceSymbol,
   SourceTextEdit
@@ -854,6 +855,21 @@ export async function findSourceLspInlayHintsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceInlayHint[]>('find_source_lsp_inlay_hints', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspSemanticTokensFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceSemanticToken[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceSemanticToken[]>('find_source_lsp_semantic_tokens', {
     preview,
     request
   });

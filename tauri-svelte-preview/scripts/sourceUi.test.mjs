@@ -858,6 +858,18 @@ assert.ok(
   editorSource.includes('onInlayHintLookup?: SourceEditorInlayHintLookup'),
   'Editor should return native inlay hints to Monaco'
 );
+assert.ok(
+  editorSource.includes('type SourceEditorSemanticTokensLookup'),
+  'Editor should define a native semantic-token callback'
+);
+assert.ok(
+  editorSource.includes('onSemanticTokensLookup?: SourceEditorSemanticTokensLookup'),
+  'Editor should return native semantic tokens to Monaco'
+);
+assert.ok(
+  editorSource.includes('await onSemanticTokensLookup?.(modelPreview)'),
+  'Editor should prefer native LSP semantic tokens for the active model before local fallback'
+);
 assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the symbol under the cursor');
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
@@ -938,6 +950,7 @@ assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source 
 assert.ok(pageSource.includes('function handleEditorCodeActionLookup'), 'Source page should receive editor code action requests');
 assert.ok(pageSource.includes('function handleEditorSignatureHelpLookup'), 'Source page should receive editor signature help requests');
 assert.ok(pageSource.includes('function handleEditorInlayHintLookup'), 'Source page should receive editor inlay hint requests');
+assert.ok(pageSource.includes('function handleEditorSemanticTokensLookup'), 'Source page should receive editor semantic token requests');
 assert.ok(pageSource.includes('function handleEditorFormatDocument'), 'Source page should receive editor formatting requests');
 assert.ok(pageSource.includes('function handleEditorRename'), 'Source page should receive editor rename requests');
 assert.ok(pageSource.includes('function stageExternalWorkspaceEditDrafts'), 'Source page should stage external workspace edits as drafts');
@@ -954,6 +967,7 @@ assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}
 assert.ok(pageSource.includes('onCodeActionLookup={handleEditorCodeActionLookup}'), 'Editor should be wired to LSP code actions');
 assert.ok(pageSource.includes('onSignatureHelpLookup={handleEditorSignatureHelpLookup}'), 'Editor should be wired to LSP signature help');
 assert.ok(pageSource.includes('onInlayHintLookup={handleEditorInlayHintLookup}'), 'Editor should be wired to LSP inlay hints');
+assert.ok(pageSource.includes('onSemanticTokensLookup={handleEditorSemanticTokensLookup}'), 'Editor should be wired to LSP semantic tokens');
 assert.ok(pageSource.includes('onFormatDocument={handleEditorFormatDocument}'), 'Editor should be wired to LSP document formatting');
 assert.ok(pageSource.includes('onRename={handleEditorRename}'), 'Editor should be wired to LSP rename');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
@@ -1044,6 +1058,14 @@ assert.ok(
 assert.ok(
   tauriSource.includes("'find_source_lsp_signature_help'"),
   'Tauri source bridge should invoke native signature help'
+);
+assert.ok(
+  tauriSource.includes('findSourceLspSemanticTokensFromTauri'),
+  'Tauri source bridge should expose native LSP semantic tokens'
+);
+assert.ok(
+  tauriSource.includes("'find_source_lsp_semantic_tokens'"),
+  'Tauri source bridge should invoke native semantic tokens'
 );
 assert.ok(
   appearanceSource.includes('encodedTokensColors'),

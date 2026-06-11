@@ -186,7 +186,16 @@ export const sourceSemanticTokenLegend = {
     'enum',
     'function',
     'method',
-    'variable'
+    'property',
+    'variable',
+    'parameter',
+    'enumMember',
+    'typeParameter',
+    'keyword',
+    'string',
+    'number',
+    'operator',
+    'comment'
   ],
   tokenModifiers: []
 } as const;
@@ -931,7 +940,9 @@ function semanticTokenTypeForSourceSymbol(kind: string): SourceSemanticTokenType
     case 'constructor':
       return 'method';
     case 'property':
+      return 'property';
     case 'constant':
+      return 'variable';
     case 'variable':
       return 'variable';
     case 'record':

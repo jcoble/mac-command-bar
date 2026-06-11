@@ -125,6 +125,15 @@ pub(crate) struct SourceLspInlayHint {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspSemanticToken {
+    token_type: String,
+    line: usize,
+    start_column: usize,
+    length: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspDiagnostic {
     severity: String,
     message: String,
@@ -270,6 +279,7 @@ struct SourceLspSession {
     next_id: i64,
     open_documents: HashMap<String, i32>,
     diagnostics_by_uri: HashMap<String, Vec<SourceLspDiagnostic>>,
+    semantic_token_types: Vec<String>,
 }
 
 impl SourceLspRegistry {
@@ -429,6 +439,40 @@ impl SourceLspRegistry {
         };
 
         Ok(lsp_inlay_hints_from_result(&result, limit))
+    }
+
+    pub(crate) fn find_semantic_tokens(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Vec<SourceLspSemanticToken>, String> {
+        let limit = request.limit.unwrap_or(5_000);
+        for attempt in 0..2 {
+            let Some(session) = self.session_for(&preview, &request)? else {
+                return Ok(Vec::new());
+            };
+            let (result, legend, session_alive) = {
+                let mut session = lock_lsp_session(&session)?;
+                let result = session.request_semantic_tokens(&preview);
+                let legend = session.semantic_token_types.clone();
+                let session_alive = session.is_alive();
+                (result, legend, session_alive)
+            };
+
+            match result {
+                Ok(Some(value)) => {
+                    return Ok(lsp_semantic_tokens_from_result(&value, &legend, limit));
+                }
+                Ok(None) => return Ok(Vec::new()),
+                Err(_) if attempt == 0 && !session_alive => {
+                    self.remove_session(&preview, &request)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(Vec::new())
     }
 
     pub(crate) fn find_symbols(
@@ -740,6 +784,7 @@ impl SourceLspSession {
         if let Some(error) = response.get("error") {
             return Err(format!("Language server initialize failed: {error}"));
         }
+        let semantic_token_types = lsp_semantic_token_types_from_initialize(&response);
         write_lsp_message(
             &mut stdin,
             &json!({
@@ -757,6 +802,7 @@ impl SourceLspSession {
             next_id: 2,
             open_documents: HashMap::new(),
             diagnostics_by_uri: HashMap::new(),
+            semantic_token_types,
         })
     }
 
@@ -868,6 +914,31 @@ impl SourceLspSession {
                             .map(lsp_code_action_diagnostic)
                             .collect::<Vec<_>>()
                     }
+                }
+            }),
+        )?;
+        let response = self.wait_for_response(id, Instant::now() + LSP_REQUEST_TIMEOUT)?;
+        if let Some(error) = response.get("error") {
+            return Err(format!("Language server request failed: {error}"));
+        }
+
+        Ok(response.get("result").cloned())
+    }
+
+    fn request_semantic_tokens(
+        &mut self,
+        preview: &SourceLspPreview,
+    ) -> Result<Option<Value>, String> {
+        let file_uri = self.ensure_document_open(preview)?;
+        let id = self.next_request_id();
+        write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/semanticTokens/full",
+                "params": {
+                    "textDocument": { "uri": file_uri }
                 }
             }),
         )?;
@@ -1258,6 +1329,24 @@ fn lsp_diagnostic_severity_code(severity: &str) -> u8 {
     }
 }
 
+fn lsp_semantic_token_types_from_initialize(response: &Value) -> Vec<String> {
+    response
+        .get("result")
+        .and_then(|result| result.get("capabilities"))
+        .and_then(|capabilities| capabilities.get("semanticTokensProvider"))
+        .and_then(|provider| provider.get("legend"))
+        .and_then(|legend| legend.get("tokenTypes"))
+        .and_then(Value::as_array)
+        .map(|token_types| {
+            token_types
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn lsp_client_capabilities() -> Value {
     json!({
         "textDocument": {
@@ -1303,6 +1392,41 @@ fn lsp_client_capabilities() -> Value {
                         "label.command"
                     ]
                 }
+            },
+            "semanticTokens": {
+                "dynamicRegistration": false,
+                "requests": {
+                    "range": false,
+                    "full": true
+                },
+                "tokenTypes": [
+                    "namespace",
+                    "type",
+                    "class",
+                    "enum",
+                    "interface",
+                    "struct",
+                    "typeParameter",
+                    "parameter",
+                    "variable",
+                    "property",
+                    "enumMember",
+                    "event",
+                    "function",
+                    "method",
+                    "macro",
+                    "keyword",
+                    "modifier",
+                    "comment",
+                    "string",
+                    "number",
+                    "regexp",
+                    "operator"
+                ],
+                "tokenModifiers": [],
+                "formats": ["relative"],
+                "overlappingTokenSupport": false,
+                "multilineTokenSupport": false
             },
             "definition": {
                 "linkSupport": true
@@ -1481,6 +1605,80 @@ fn lsp_inlay_hint_kind(kind: Option<u64>) -> &'static str {
         Some(1) => "type",
         Some(2) => "parameter",
         _ => "other",
+    }
+}
+
+fn lsp_semantic_tokens_from_result(
+    result: &Value,
+    legend: &[String],
+    limit: usize,
+) -> Vec<SourceLspSemanticToken> {
+    let Some(data) = result.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut tokens = Vec::new();
+    let mut current_line = 0_usize;
+    let mut current_start = 0_usize;
+
+    for chunk in data.chunks(5) {
+        if chunk.len() != 5 || tokens.len() >= limit {
+            break;
+        }
+
+        let delta_line = chunk[0].as_u64().unwrap_or(0) as usize;
+        let delta_start = chunk[1].as_u64().unwrap_or(0) as usize;
+        let length = chunk[2].as_u64().unwrap_or(0) as usize;
+        let token_type_index = chunk[3].as_u64().unwrap_or(u64::MAX) as usize;
+
+        current_line += delta_line;
+        current_start = if delta_line == 0 {
+            current_start + delta_start
+        } else {
+            delta_start
+        };
+
+        if length == 0 {
+            continue;
+        }
+        let Some(raw_token_type) = legend.get(token_type_index) else {
+            continue;
+        };
+        let Some(token_type) = normalized_semantic_token_type(raw_token_type) else {
+            continue;
+        };
+
+        tokens.push(SourceLspSemanticToken {
+            token_type: token_type.to_string(),
+            line: current_line + 1,
+            start_column: current_start + 1,
+            length,
+        });
+    }
+
+    tokens
+}
+
+fn normalized_semantic_token_type(raw: &str) -> Option<&'static str> {
+    match raw {
+        "namespace" => Some("namespace"),
+        "class" | "struct" => Some("class"),
+        "interface" => Some("interface"),
+        "type" => Some("type"),
+        "enum" => Some("enum"),
+        "function" => Some("function"),
+        "method" | "constructor" => Some("method"),
+        "property" => Some("property"),
+        "variable" | "local" => Some("variable"),
+        "parameter" => Some("parameter"),
+        "enumMember" => Some("enumMember"),
+        "typeParameter" => Some("typeParameter"),
+        "keyword" | "modifier" => Some("keyword"),
+        "string" => Some("string"),
+        "number" => Some("number"),
+        "operator" => Some("operator"),
+        "comment" => Some("comment"),
+        _ => None,
     }
 }
 
@@ -2345,6 +2543,25 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("semanticTokens"))
+                .and_then(|semantic_tokens| semantic_tokens.get("requests"))
+                .and_then(|requests| requests.get("full"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("semanticTokens"))
+                .and_then(|semantic_tokens| semantic_tokens.get("formats"))
+                .and_then(Value::as_array)
+                .and_then(|formats| formats.first())
+                .and_then(Value::as_str),
+            Some("relative")
+        );
     }
 
     #[test]
@@ -2621,6 +2838,137 @@ mod tests {
                     column: 23,
                     padding_left: false,
                     padding_right: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_semantic_token_legend_from_initialize() {
+        let response = json!({
+            "result": {
+                "capabilities": {
+                    "semanticTokensProvider": {
+                        "legend": {
+                            "tokenTypes": ["namespace", "class", "property", "modifier"],
+                            "tokenModifiers": ["static"]
+                        }
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            lsp_semantic_token_types_from_initialize(&response),
+            vec![
+                "namespace".to_string(),
+                "class".to_string(),
+                "property".to_string(),
+                "modifier".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_semantic_tokens_from_relative_data() {
+        let legend = vec![
+            "namespace".to_string(),
+            "class".to_string(),
+            "property".to_string(),
+            "method".to_string(),
+            "modifier".to_string(),
+            "struct".to_string(),
+            "local".to_string(),
+            "unmapped".to_string(),
+        ];
+        let result = json!({
+            "data": [
+                0, 0, 5, 0, 0,
+                0, 10, 6, 1, 0,
+                2, 4, 8, 2, 0,
+                0, 12, 6, 3, 0,
+                1, 2, 7, 4, 0,
+                1, 1, 6, 5, 0,
+                0, 8, 5, 6, 0,
+                0, 8, 4, 99, 0,
+                0, 12, 4, 7, 0
+            ]
+        });
+
+        assert_eq!(
+            lsp_semantic_tokens_from_result(&result, &legend, 10),
+            vec![
+                SourceLspSemanticToken {
+                    token_type: "namespace".to_string(),
+                    line: 1,
+                    start_column: 1,
+                    length: 5,
+                },
+                SourceLspSemanticToken {
+                    token_type: "class".to_string(),
+                    line: 1,
+                    start_column: 11,
+                    length: 6,
+                },
+                SourceLspSemanticToken {
+                    token_type: "property".to_string(),
+                    line: 3,
+                    start_column: 5,
+                    length: 8,
+                },
+                SourceLspSemanticToken {
+                    token_type: "method".to_string(),
+                    line: 3,
+                    start_column: 17,
+                    length: 6,
+                },
+                SourceLspSemanticToken {
+                    token_type: "keyword".to_string(),
+                    line: 4,
+                    start_column: 3,
+                    length: 7,
+                },
+                SourceLspSemanticToken {
+                    token_type: "class".to_string(),
+                    line: 5,
+                    start_column: 2,
+                    length: 6,
+                },
+                SourceLspSemanticToken {
+                    token_type: "variable".to_string(),
+                    line: 5,
+                    start_column: 10,
+                    length: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn limits_semantic_tokens_after_normalization() {
+        let legend = vec!["class".to_string()];
+        let result = json!({
+            "data": [
+                0, 0, 5, 0, 0,
+                1, 2, 6, 0, 0,
+                1, 2, 7, 0, 0
+            ]
+        });
+
+        assert_eq!(
+            lsp_semantic_tokens_from_result(&result, &legend, 2),
+            vec![
+                SourceLspSemanticToken {
+                    token_type: "class".to_string(),
+                    line: 1,
+                    start_column: 1,
+                    length: 5,
+                },
+                SourceLspSemanticToken {
+                    token_type: "class".to_string(),
+                    line: 2,
+                    start_column: 3,
+                    length: 6,
                 },
             ]
         );

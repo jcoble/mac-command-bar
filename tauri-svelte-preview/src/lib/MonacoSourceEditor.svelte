@@ -96,6 +96,14 @@
 		request: SourceEditorInlayHintLookupRequest
 	) => SourceInlayHint[] | Promise<SourceInlayHint[] | null> | null | undefined;
 
+	type SourceEditorSemanticTokensLookup = (
+		preview: SourcePreview
+	) =>
+		| SourceSemanticToken[]
+		| Promise<SourceSemanticToken[] | null>
+		| null
+		| undefined;
+
 	type SourceEditorFormatDocument = () =>
 		| SourceTextEdit[]
 		| Promise<SourceTextEdit[]>
@@ -140,6 +148,7 @@
 		onRename?: SourceEditorRename;
 		onSaveRequest?: () => void;
 		onInlayHintLookup?: SourceEditorInlayHintLookup;
+		onSemanticTokensLookup?: SourceEditorSemanticTokensLookup;
 		onSignatureHelpLookup?: SourceEditorSignatureHelpLookup;
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
@@ -173,6 +182,7 @@
 		onRename,
 		onSaveRequest,
 		onInlayHintLookup,
+		onSemanticTokensLookup,
 		onSignatureHelpLookup,
 		onSymbolsRequest,
 		onSymbolsChange,
@@ -270,11 +280,15 @@
 					tokenTypes: [...sourceSemanticTokenLegend.tokenTypes],
 					tokenModifiers: [...sourceSemanticTokenLegend.tokenModifiers],
 				}),
-				provideDocumentSemanticTokens: (model) => ({
-					data: encodeSemanticTokens(
-						extractSourceSemanticTokens(previewForModel(model), model.getValue())
-					),
-				}),
+				provideDocumentSemanticTokens: async (model) => {
+					const modelPreview = previewForModel(model);
+					const nativeTokens = (await onSemanticTokensLookup?.(modelPreview)) ?? [];
+					const tokens =
+						nativeTokens.length > 0
+							? nativeTokens
+							: extractSourceSemanticTokens(modelPreview, model.getValue());
+					return { data: encodeSemanticTokens(tokens) };
+				},
 				releaseDocumentSemanticTokens: () => {},
 			}
 		);

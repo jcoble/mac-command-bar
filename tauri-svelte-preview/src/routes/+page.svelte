@@ -142,6 +142,7 @@
     type SourceLspStatus,
     type SourceRenameFileEdit,
     type SourceRenameResult,
+    type SourceSemanticToken,
     type SourceSignatureHelp,
     type SourceSymbol,
     type SourceTextEdit,
@@ -164,6 +165,7 @@
     findSourceLspInlayHintsFromTauri,
     findSourceLspImplementationsFromTauri,
     findSourceLspReferencesFromTauri,
+    findSourceLspSemanticTokensFromTauri,
     findSourceLspSignatureHelpFromTauri,
     findSourceLspSymbolsFromTauri,
     findSourceLspTypeDefinitionsFromTauri,
@@ -5678,6 +5680,28 @@
     }
   }
 
+  async function handleEditorSemanticTokensLookup(
+    editorPreview: SourcePreview
+  ): Promise<SourceSemanticToken[]> {
+    if (!sourceSupportsLanguageIntelligence(editorPreview.language)) return [];
+
+    try {
+      return (
+        (await findSourceLspSemanticTokensFromTauri(
+          editorPreview,
+          {
+            root: selectedProject.path,
+            line: 1,
+            column: 1,
+            limit: 5000
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async function handleEditorCodeActionLookup(
     request: SourceCodeActionLookupRequest
   ): Promise<SourceCodeAction[]> {
@@ -9931,6 +9955,7 @@
                 onReferenceLookup={handleEditorReferenceLookup}
                 onRename={handleEditorRename}
                 onSaveRequest={saveSelectedSourceFile}
+                onSemanticTokensLookup={handleEditorSemanticTokensLookup}
                 onSignatureHelpLookup={handleEditorSignatureHelpLookup}
                 onSymbolsRequest={() => showEditorInsightPanel('symbols')}
                 onSymbolsChange={handleEditorSymbolsChange}
