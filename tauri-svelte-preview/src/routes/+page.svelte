@@ -1772,6 +1772,13 @@
       };
     }),
     ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
+      id: `worktree-open-source-${worktree.path}`,
+      label: `Open worktree in source browser: ${worktree.branch}`,
+      detail: worktree.path,
+      disabled: !worktree.path.trim(),
+      perform: () => openWorktreeInSourceBrowser(worktree)
+    })),
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-cleanup-plan-${worktree.path}`,
       label: `Copy worktree cleanup plan: ${worktree.branch}`,
       detail: projectWorktreeSafety(worktree).recommendation,
@@ -4043,6 +4050,22 @@
 
   function projectWorktreeActivityLabel(worktree: ProjectWorktree) {
     return projectWorktreeSafety(worktree).activityLabel;
+  }
+
+  function sourceProjectNameForWorktree(worktree: ProjectWorktree) {
+    const baseName = worktree.repo.trim() || selectedProject.name;
+    const branchName = worktree.taskID?.trim() || worktree.branch.trim();
+    return branchName ? `${baseName} ${branchName}` : baseName;
+  }
+
+  function openWorktreeInSourceBrowser(worktree: ProjectWorktree) {
+    if (!worktree.path.trim()) return false;
+
+    sourceActivityMode = 'files';
+    sourceActivityFilter = '';
+    persistSourceActivityMode(sourceActivityMode);
+    fileActionStatus = `Opening ${worktree.branch} source tree`;
+    return addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
   }
 
   function copyWorktreeCleanupPlan(worktree: ProjectWorktree) {
@@ -9263,6 +9286,14 @@
                     </button>
                     <button
                       type="button"
+                      aria-label="Open worktree in source browser"
+                      title="Open worktree in source browser"
+                      onclick={() => openWorktreeInSourceBrowser(worktree)}
+                    >
+                      <FolderOpen size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
                       aria-label="Copy worktree path"
                       title="Copy worktree path"
                       onclick={() => copyActivityCommand(worktree.path, 'Worktree path copied')}
@@ -10122,6 +10153,14 @@
                     onclick={() => openPathEmbeddedTerminal(worktree.path)}
                   >
                     <PanelBottom size={12} strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Open worktree in source browser"
+                    title="Open worktree in source browser"
+                    onclick={() => openWorktreeInSourceBrowser(worktree)}
+                  >
+                    <FolderOpen size={12} strokeWidth={2} />
                   </button>
                 </div>
               </div>

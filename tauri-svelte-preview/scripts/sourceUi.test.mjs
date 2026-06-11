@@ -303,6 +303,8 @@ assert.ok(pageSource.includes('function copyWorktreeCleanupPlan'), 'Worktree row
 assert.ok(pageSource.includes('function copyWorktreeAuditCommand'), 'Worktree commands should copy audit commands');
 assert.ok(pageSource.includes('function copyWorktreeCleanupCommand'), 'Worktree commands should copy remove commands');
 assert.ok(pageSource.includes('function copyWorktreeBackupCommand'), 'Worktree rows should copy backup commands');
+assert.ok(pageSource.includes('function sourceProjectNameForWorktree'), 'Worktree source jumps should derive readable project names');
+assert.ok(pageSource.includes('function openWorktreeInSourceBrowser'), 'Worktree rows should open worktrees as source browser roots');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Worktree panel should copy a guarded cleanup script');
 assert.ok(pageSource.includes('worktreePrimaryAction'), 'Worktree rows should derive a recommended next action');
 assert.ok(pageSource.includes('function copyWorktreePrimaryAction'), 'Worktree rows should copy the recommended next action command');
@@ -356,6 +358,8 @@ assert.ok(pageSource.includes('aria-label="Agents"'), 'Activity rail should expo
 assert.ok(pageSource.includes('aria-label="Worktrees"'), 'Activity rail should expose worktrees');
 assert.ok(pageSource.includes('aria-label="Git and tasks"'), 'Activity rail should expose Git and tasks');
 assert.ok(pageSource.includes('aria-label="Copy worktree cleanup plan"'), 'Worktree rows should expose copyable cleanup plans');
+assert.ok(pageSource.includes('aria-label="Open worktree in source browser"'), 'Worktree rows should expose source-browser jumps');
+assert.ok(pageSource.includes('title="Open worktree in source browser"'), 'Worktree source-browser jumps should explain themselves');
 assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree rows should expose a recommended cleanup action');
 assert.ok(pageSource.includes('class="side-pane-resizer"'), 'Source shell should render a side pane resizer');
 assert.ok(pageSource.includes('aria-label="Resize side pane"'), 'Side pane resizer should be labeled');
@@ -427,6 +431,8 @@ assert.ok(pageSource.includes("id: 'activity-clipboard'"), 'Command palette shou
 assert.ok(pageSource.includes("id: 'activity-conversations'"), 'Command palette should switch to conversations');
 assert.ok(pageSource.includes("id: 'activity-refresh'"), 'Command palette should refresh the current activity lane');
 assert.ok(pageSource.includes('worktree-cleanup-plan-${worktree.path}'), 'Command palette should copy worktree cleanup plans');
+assert.ok(pageSource.includes('worktree-open-source-${worktree.path}'), 'Command palette should expose worktree source jumps');
+assert.ok(pageSource.includes('perform: () => openWorktreeInSourceBrowser(worktree)'), 'Command palette worktree source jumps should activate the worktree root');
 assert.ok(pageSource.includes('prioritizedProjectWorktrees.slice(0, 8)'), 'Command palette should expose the highest-priority worktrees first');
 assert.ok(pageSource.includes('worktree-audit-command-${worktree.path}'), 'Command palette should copy worktree audit commands');
 assert.ok(pageSource.includes('worktree-remove-command-${worktree.path}'), 'Command palette should copy worktree remove commands');
