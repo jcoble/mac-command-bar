@@ -174,6 +174,7 @@ assert.ok(pageSource.includes('function terminalDockSummary'), 'Terminal dock sh
 assert.ok(pageSource.includes('function ensureEmbeddedTerminalRenderer'), 'Terminal dock should lazily load xterm');
 assert.ok(pageSource.includes('function startEmbeddedTerminalSession'), 'Terminal dock should start native PTY sessions');
 assert.ok(pageSource.includes("startupCommand = ''"), 'Terminal dock should optionally start a PTY with an initial command');
+assert.ok(pageSource.includes('function openPathEmbeddedTerminal'), 'Terminal dock should start embedded shells for arbitrary project paths');
 assert.ok(pageSource.includes('function resumeAgentSessionEmbeddedTerminal'), 'Terminal dock should resume agents inside the embedded PTY');
 assert.ok(pageSource.includes('function loadEmbeddedTerminalSessions'), 'Terminal dock should refresh native PTY sessions');
 assert.ok(pageSource.includes('function attachEmbeddedTerminalSession'), 'Terminal dock should attach to existing native PTY sessions');
@@ -339,6 +340,10 @@ assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 
 assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
 assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Terminal launchpad should run agent resumes inside the embedded PTY');
 assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
+assert.ok(pageSource.includes('onclick={() => openPathEmbeddedTerminal(worktree.path)}'), 'Terminal worktree shortcuts should open embedded worktree shells');
+assert.ok(pageSource.includes('onclick={() => openPathEmbeddedTerminal(context.cwd)}'), 'Terminal runtime shortcuts should open embedded shells at active context cwd');
+assert.ok(pageSource.includes('disabled={!selectedProject.path || embeddedTerminalStarting}'), 'Terminal dock should allow a new embedded session while another session is active');
+assert.ok(!pageSource.includes('Stop or attach a matching terminal before resume'), 'Agent resume should start a matching embedded session instead of blocking on another cwd');
 assert.ok(pageSource.includes('aria-label="Browser dock"'), 'Workspace should render a browser dock');
 assert.ok(pageSource.includes('class="browser-frame"'), 'Browser dock should render an iframe surface');
 assert.ok(pageSource.includes('bind:value={browserInputUrl}'), 'Browser dock should expose an editable URL field');

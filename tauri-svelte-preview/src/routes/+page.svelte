@@ -1295,7 +1295,7 @@
       id: 'terminal-start-embedded',
       label: 'Start embedded terminal',
       detail: selectedProject.path,
-      disabled: !selectedProject.path || embeddedTerminalStarting || Boolean(embeddedTerminalSession),
+      disabled: !selectedProject.path || embeddedTerminalStarting,
       perform: () => startEmbeddedTerminalSession(selectedProject.path)
     },
     {
@@ -3778,7 +3778,7 @@
 
   async function startEmbeddedTerminalSession(cwd = selectedProject.path, startupCommand = '') {
     const root = cwd.trim();
-    if (!root || embeddedTerminalStarting || embeddedTerminalSession) return;
+    if (!root || embeddedTerminalStarting) return;
     const command = startupCommand.trim();
 
     embeddedTerminalStarting = true;
@@ -3823,6 +3823,25 @@
     } finally {
       embeddedTerminalStarting = false;
     }
+  }
+
+  async function openPathEmbeddedTerminal(path: string) {
+    const root = path.trim();
+    if (!root) return;
+
+    showDockPanel('terminal');
+    await tick();
+
+    if (
+      embeddedTerminalSession &&
+      normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(root)
+    ) {
+      embeddedTerminalStatus = 'Embedded terminal already in this path';
+      embeddedTerminal?.focus();
+      return;
+    }
+
+    await startEmbeddedTerminalSession(root);
   }
 
   async function attachEmbeddedTerminalSession(session: TerminalSessionInfo) {
@@ -4824,17 +4843,13 @@
 
     try {
       if (embeddedTerminalSession) {
-        if (normalizeProjectPath(embeddedTerminalSession.cwd) !== normalizeProjectPath(path)) {
-          fileActionStatus = 'Embedded terminal is active in another project';
-          embeddedTerminalStatus = 'Stop or attach a matching terminal before resume';
+        if (normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(path)) {
+          await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
+          embeddedTerminalStatus = 'Running embedded resume command';
+          fileActionStatus = 'Sent resume command to embedded terminal';
+          embeddedTerminal?.focus();
           return;
         }
-
-        await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
-        embeddedTerminalStatus = 'Running embedded resume command';
-        fileActionStatus = 'Sent resume command to embedded terminal';
-        embeddedTerminal?.focus();
-        return;
       }
 
       await startEmbeddedTerminalSession(path, command);
@@ -9683,7 +9698,7 @@
                 type="button"
                 aria-label="Start embedded terminal"
                 title={selectedProject.path}
-                disabled={!selectedProject.path || embeddedTerminalStarting || Boolean(embeddedTerminalSession)}
+                disabled={!selectedProject.path || embeddedTerminalStarting}
                 onclick={() => startEmbeddedTerminalSession(selectedProject.path)}
               >
                 <Terminal size={13} strokeWidth={2} />
@@ -9790,9 +9805,9 @@
                     </div>
                     <button
                       type="button"
-                      aria-label="Open active context in terminal"
-                      title="Open context in terminal"
-                      onclick={() => openActivityTerminalPath(context.cwd)}
+                      aria-label="Open active context in embedded terminal"
+                      title="Open context in embedded terminal"
+                      onclick={() => openPathEmbeddedTerminal(context.cwd)}
                     >
                       <Terminal size={12} strokeWidth={2} />
                     </button>
@@ -9848,8 +9863,8 @@
                     <button
                       type="button"
                       aria-label="Open worktree from terminal dock"
-                      title="Open worktree in terminal"
-                      onclick={() => openActivityTerminalPath(worktree.path)}
+                      title="Open worktree in embedded terminal"
+                      onclick={() => openPathEmbeddedTerminal(worktree.path)}
                     >
                       <Terminal size={12} strokeWidth={2} />
                     </button>
