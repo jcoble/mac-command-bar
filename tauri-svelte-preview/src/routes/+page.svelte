@@ -863,7 +863,7 @@
       label: 'Scan current project',
       detail: selectedProject.name,
       disabled: scanning,
-      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true })
+      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-project-expanded',
@@ -6197,7 +6197,7 @@
           type="button"
           aria-label={scanning ? 'Stop source scan' : 'Scan source files'}
           title={scanning ? 'Stop source scan' : 'Scan source files'}
-          onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true })}
+          onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
         >
           {#if scanning}
             <X size={15} strokeWidth={2} />

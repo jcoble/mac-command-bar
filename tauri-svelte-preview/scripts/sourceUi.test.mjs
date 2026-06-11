@@ -430,8 +430,8 @@ assert.ok(pageSource.includes('aria-label="Reveal repository path"'), 'Repositor
 assert.ok(pageSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
 assert.ok(pageSource.includes('function cancelSourceScan()'), 'Source scans should expose a cancel action');
 assert.ok(
-  pageSource.includes('onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true })}'),
-  'Scan button should become a cancel button while a scan is running'
+  pageSource.includes('onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}'),
+  'Scan button should become a cancel button and otherwise run an expanded source scan'
 );
 assert.ok(pageSource.includes("aria-label={scanning ? 'Stop source scan' : 'Scan source files'}"), 'Scan button should announce stop state');
 assert.ok(pageSource.includes("<span>{scanning ? 'Stop' : 'Scan'}</span>"), 'Scan button label should switch to Stop while scanning');
