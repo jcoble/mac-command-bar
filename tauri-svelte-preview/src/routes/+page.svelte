@@ -427,6 +427,7 @@
   let gitRepositorySummaryError = $state('');
   let gitRepositorySummarySource = $state('browser preview');
   let gitCommitHistory = $state<GitCommitHistoryEntry[]>([]);
+  let selectedGitCommitSha = $state('');
   let gitCommitHistoryLoading = $state(false);
   let gitCommitHistoryError = $state('');
   let gitCommitHistorySource = $state('browser preview');
@@ -669,6 +670,9 @@
       gitCommitHistoryError,
       gitCommitHistorySource
     )
+  );
+  let selectedGitCommit = $derived(
+    gitCommitHistory.find((entry) => entry.sha === selectedGitCommitSha) ?? gitCommitHistory[0] ?? null
   );
   let selectedSourceGitSummary = $derived(
     formatSelectedSourceGitSummary(
@@ -1427,6 +1431,13 @@
       perform: () => loadGitCommitHistory(selectedProject)
     },
     {
+      id: 'git-copy-selected-commit-detail',
+      label: 'Copy selected commit detail',
+      detail: selectedGitCommit ? gitCommitSummaryText(selectedGitCommit) : gitCommitHistorySummary,
+      disabled: !selectedGitCommit,
+      perform: copySelectedGitCommitDetail
+    },
+    {
       id: 'git-copy-workspace-brief',
       label: 'Copy Git workspace brief',
       detail: `${selectedProject.name} · ${repoDashboardSummary} · ${projectWorktreeCleanupBrief.headline}`,
@@ -2021,24 +2032,30 @@
       if (selectedProjectID !== projectID) return;
 
       if (nativeHistory) {
-        gitCommitHistory = nativeHistory;
-        gitCommitHistorySource = 'native git log';
+        setGitCommitHistory(nativeHistory, 'native git log');
         return;
       }
 
-      gitCommitHistory = demoGitCommitHistoryForProject(project);
-      gitCommitHistorySource = 'browser preview';
+      setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
     } catch (historyError) {
       if (selectedProjectID !== projectID) return;
 
-      gitCommitHistory = demoGitCommitHistoryForProject(project);
-      gitCommitHistorySource = 'browser preview';
+      setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
       gitCommitHistoryError =
         historyError instanceof Error ? historyError.message : 'Could not read Git history';
     } finally {
       if (selectedProjectID === projectID) {
         gitCommitHistoryLoading = false;
       }
+    }
+  }
+
+  function setGitCommitHistory(entries: GitCommitHistoryEntry[], source: string) {
+    gitCommitHistory = entries;
+    gitCommitHistorySource = source;
+
+    if (!entries.some((entry) => entry.sha === selectedGitCommitSha)) {
+      selectedGitCommitSha = entries[0]?.sha ?? '';
     }
   }
 
@@ -2565,6 +2582,38 @@
     return '';
   }
 
+  function selectGitCommit(entry: GitCommitHistoryEntry) {
+    selectedGitCommitSha = entry.sha;
+  }
+
+  function handleGitCommitRowKeydown(event: KeyboardEvent, entry: GitCommitHistoryEntry) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+
+    event.preventDefault();
+    selectGitCommit(entry);
+  }
+
+  function gitCommitDetailText(entry: GitCommitHistoryEntry | null = selectedGitCommit) {
+    if (!entry) return 'No commit selected';
+
+    const refs = gitCommitRefChips(entry).join(', ') || 'none';
+    const parents = entry.parentShas.length > 0 ? entry.parentShas.join(', ') : 'none';
+    const taskSource = gitCommitTaskSourceLabel(entry);
+    const task = entry.taskID ? `${entry.taskID}${taskSource ? ` from ${taskSource}` : ''}` : 'none';
+    const taskUrl = entry.taskID ? gitTaskUrl(entry.taskID) : null;
+
+    return [
+      `Commit: ${entry.sha}`,
+      `Subject: ${entry.subject}`,
+      `Refs: ${refs}`,
+      `Parents: ${parents}`,
+      `Task: ${task}`,
+      taskUrl ? `Task link: ${taskUrl}` : '',
+      `Author: ${entry.author}`,
+      `Committed: ${formatGitCommitTime(entry.committedAt)}`
+    ].filter(Boolean).join('\n');
+  }
+
   function gitTaskUrl(taskID: string | null) {
     return taskReferenceUrl(taskID, commandCenterTaskUrls);
   }
@@ -2579,6 +2628,12 @@
 
   async function copyGitCommitSummary(entry: GitCommitHistoryEntry) {
     await copyActivityCommand(gitCommitSummaryText(entry), 'Commit summary copied');
+  }
+
+  async function copySelectedGitCommitDetail() {
+    if (!selectedGitCommit) return;
+
+    await copyActivityCommand(gitCommitDetailText(selectedGitCommit), 'Commit detail copied');
   }
 
   async function copyGitTaskReference(taskID: string | null) {
@@ -9421,6 +9476,53 @@
                       {/each}
                     </div>
                   {/if}
+                  {#if selectedGitCommit}
+                    <div
+                      class="git-commit-detail"
+                      aria-label="Selected commit detail"
+                      title={gitCommitDetailText(selectedGitCommit)}
+                    >
+                      <div class="git-commit-detail-main">
+                        <strong>{selectedGitCommit.shortSha}</strong>
+                        <span>{selectedGitCommit.subject}</span>
+                        <small>
+                          {gitCommitParentSummary(selectedGitCommit) || 'linear'}
+                          · {formatGitCommitTime(selectedGitCommit.committedAt)}
+                          {#if selectedGitCommit.taskID}
+                            · {selectedGitCommit.taskID}
+                          {/if}
+                        </small>
+                      </div>
+                      <div class="git-commit-detail-actions" aria-label="Selected commit actions">
+                        <button
+                          type="button"
+                          aria-label="Copy selected commit detail"
+                          title="Copy selected commit detail"
+                          onclick={copySelectedGitCommitDetail}
+                        >
+                          <Copy size={11} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Copy selected commit SHA"
+                          title="Copy selected commit SHA"
+                          onclick={() => copyGitCommitSha(selectedGitCommit)}
+                        >
+                          <History size={11} strokeWidth={2} />
+                        </button>
+                        {#if selectedGitCommit.taskID}
+                          <button
+                            type="button"
+                            aria-label="Copy selected commit task reference"
+                            title="Copy selected commit task reference"
+                            onclick={() => copyGitTaskReference(selectedGitCommit.taskID)}
+                          >
+                            <ExternalLink size={11} strokeWidth={2} />
+                          </button>
+                        {/if}
+                      </div>
+                    </div>
+                  {/if}
                   <div class="git-history-list">
                     {#if gitCommitHistoryLoading}
                       <div class="intelligence-empty">Loading history</div>
@@ -9430,7 +9532,15 @@
                       <div class="intelligence-empty">No commits</div>
                     {:else}
                       {#each gitCommitHistory as entry, index (entry.sha)}
-                        <div class={`git-history-row ${gitCommitGraphClass(entry, index)}`} title={gitCommitTitle(entry)}>
+                        <div
+                          class={`git-history-row ${gitCommitGraphClass(entry, index)}`}
+                          class:selected={selectedGitCommitSha === entry.sha}
+                          role="button"
+                          tabindex="0"
+                          title={gitCommitTitle(entry)}
+                          onclick={() => selectGitCommit(entry)}
+                          onkeydown={(event) => handleGitCommitRowKeydown(event, entry)}
+                        >
                           <span
                             class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`}
                             aria-label={gitCommitTopology(entry, index)}
@@ -14246,6 +14356,57 @@
     text-transform: uppercase;
   }
 
+  .git-commit-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding: 6px 7px;
+    border: 1px solid rgba(111, 223, 207, 0.18);
+    border-radius: 7px;
+    background: rgba(111, 223, 207, 0.055);
+  }
+
+  .git-commit-detail-main {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .git-commit-detail-main strong,
+  .git-commit-detail-main span,
+  .git-commit-detail-main small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-commit-detail-main strong {
+    color: #79eadb;
+    font-size: 9px;
+    font-weight: 860;
+  }
+
+  .git-commit-detail-main span {
+    color: #f1f5f4;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .git-commit-detail-main small {
+    color: #8d9995;
+    font-size: 8.5px;
+    font-weight: 760;
+  }
+
+  .git-commit-detail-actions {
+    display: inline-flex;
+    gap: 3px;
+    min-width: 0;
+  }
+
   .git-history-list {
     display: grid;
     gap: 5px;
@@ -14272,6 +14433,17 @@
     border: 1px solid rgba(255, 255, 255, 0.055);
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+  }
+
+  .git-history-row.selected {
+    border-color: rgba(111, 223, 207, 0.42);
+    background: rgba(111, 223, 207, 0.095);
+  }
+
+  .git-history-row:focus-visible {
+    outline: 1px solid rgba(111, 223, 207, 0.42);
+    outline-offset: 2px;
   }
 
   .git-history-row.head {
@@ -14407,7 +14579,13 @@
     max-width: 112px;
   }
 
-  .git-history-actions button {
+  .git-commit-detail-actions {
+    justify-content: flex-end;
+    max-width: 112px;
+  }
+
+  .git-history-actions button,
+  .git-commit-detail-actions button {
     display: grid;
     place-items: center;
     width: 21px;
@@ -14421,7 +14599,9 @@
   }
 
   .git-history-actions button:hover,
-  .git-history-actions button:focus-visible {
+  .git-history-actions button:focus-visible,
+  .git-commit-detail-actions button:hover,
+  .git-commit-detail-actions button:focus-visible {
     color: #eaf5f2;
     border-color: rgba(92, 226, 207, 0.34);
     outline: 0;

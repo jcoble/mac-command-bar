@@ -913,6 +913,11 @@ assert.ok(
 );
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
+assert.ok(pageSource.includes('let selectedGitCommitSha'), 'Git panel should track a selected commit');
+assert.ok(pageSource.includes('selectedGitCommit'), 'Git panel should derive the selected commit from history');
+assert.ok(pageSource.includes('function selectGitCommit'), 'Git history should allow selecting a commit row');
+assert.ok(pageSource.includes('function gitCommitDetailText'), 'Git history should build a detailed selected-commit handoff');
+assert.ok(pageSource.includes('function copySelectedGitCommitDetail'), 'Git history should expose selected commit detail copying');
 assert.ok(pageSource.includes('function runGitPathAction'), 'Source page should expose reusable stage/unstage handling');
 assert.ok(pageSource.includes('type GitStatusGroupID'), 'Git panel should define staged/unstaged/untracked groups');
 assert.ok(pageSource.includes('function buildGitStatusFileGroups'), 'Git panel should group changed files by index state');
@@ -952,9 +957,15 @@ assert.ok(pageSource.includes("id: 'git-refresh-history'"), 'Command palette sho
 assert.ok(pageSource.includes('id: `git-copy-task-${taskID}`'), 'Command palette should copy task links from Git metadata');
 assert.ok(pageSource.includes('id: `git-copy-commit-${entry.sha}`'), 'Command palette should copy recent commit summaries');
 assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should render commit history rows');
+assert.ok(pageSource.includes('class="git-commit-detail"'), 'Git tab should render selected commit details');
+assert.ok(pageSource.includes("id: 'git-copy-selected-commit-detail'"), 'Command palette should copy selected commit details');
 assert.ok(
   pageSource.includes('git-history-row ${gitCommitGraphClass(entry, index)}'),
   'Git tab should render individual commit history rows with graph styling'
+);
+assert.ok(
+  pageSource.includes('class:selected={selectedGitCommitSha === entry.sha}'),
+  'Git history rows should show the selected commit'
 );
 assert.ok(pageSource.includes('class="git-task-link"'), 'Git history should render task links when task metadata is present');
 assert.ok(pageSource.includes('class="activity-commit-meta"'), 'Activity Git commit rows should group task links with quick actions');
