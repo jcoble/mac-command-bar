@@ -8,6 +8,11 @@ const attachConfig = JSON.parse(await readFile(new URL('../src-tauri/tauri.dev.a
 assert.equal(defaultConfig.build.beforeDevCommand, 'pnpm dev');
 assert.equal(defaultConfig.build.devUrl, 'http://localhost:5177');
 assert.equal(packageJson.scripts['tauri:dev'], 'tauri dev');
+assert.equal(
+  packageJson.scripts['test:tauri-app'],
+  'pnpm build && pnpm test:native-lsp && cargo build --manifest-path src-tauri/Cargo.toml',
+  'expected a repeatable real Tauri app validation script'
+);
 
 const attachScript = packageJson.scripts['tauri:dev:attach'];
 assert.ok(attachScript, 'expected a Tauri attach-mode dev script');

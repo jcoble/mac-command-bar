@@ -5732,23 +5732,6 @@
     return value === 'codex' || value === 'claude' || value === 'cmux' || value === 'manual';
   }
 
-  function isSourceActivityMode(value: unknown): value is SourceActivityMode {
-    return (
-      value === 'files' ||
-      value === 'clipboard' ||
-      value === 'conversations' ||
-      value === 'runs' ||
-      value === 'sessions' ||
-      value === 'agents' ||
-      value === 'worktrees' ||
-      value === 'git'
-    );
-  }
-
-  function isSourceTerminalApp(value: unknown): value is SourceTerminalApp {
-    return typeof value === 'string' && sourceTerminalApps.includes(value as SourceTerminalApp);
-  }
-
   function parseStoredProjectSourceRecord(value: unknown): SourceRecentRecord | null {
     if (typeof value !== 'object' || value === null) return null;
 
