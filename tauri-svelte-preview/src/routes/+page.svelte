@@ -577,6 +577,7 @@
   let sourceSearchInput = $state<HTMLInputElement | null>(null);
   let sourceActivityMode = $state<SourceActivityMode>('files');
   let sourceActivityFilter = $state('');
+  let sourceActivityFiltersByMode = $state<Record<SourceActivityMode, string>>(createSourceActivityFilterState());
   let pasteCleanupInput = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
@@ -3827,7 +3828,7 @@
 
   function focusOrchestrationRun(run: OrchestrationRun) {
     selectSourceActivityMode('runs');
-    sourceActivityFilter = run.taskID ?? run.title ?? run.id;
+    setSourceActivityFilter(run.taskID ?? run.title ?? run.id);
   }
 
   async function openOrchestrationArtifact(artifact: OrchestrationArtifact) {
@@ -4333,7 +4334,7 @@
     contextPanelCollapsed = viewState.contextPanelCollapsed;
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
-    sourceActivityFilter = viewState.sourceActivityFilter;
+    setSourceActivityFilter(viewState.sourceActivityFilter);
     hiddenContextCardIDs = new Set(viewState.hiddenContextCardIDs);
     activeContextCardID = viewState.activeContextCardID;
     sourceIntelligencePanel = viewState.sourceIntelligencePanel;
@@ -4865,8 +4866,9 @@
   function openWorktreeInSourceBrowser(worktree: ProjectWorktree) {
     if (!worktree.path.trim()) return false;
 
+    rememberSourceActivityFilter();
     sourceActivityMode = 'files';
-    sourceActivityFilter = '';
+    setSourceActivityFilter('');
     persistSourceActivityMode(sourceActivityMode);
     fileActionStatus = `Opening ${worktree.branch} source tree`;
     void addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
@@ -7302,12 +7304,41 @@
     await activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit });
   }
 
+  function createSourceActivityFilterState(
+    overrides: Partial<Record<SourceActivityMode, string>> = {}
+  ): Record<SourceActivityMode, string> {
+    return {
+      files: overrides.files ?? '',
+      clipboard: overrides.clipboard ?? '',
+      conversations: overrides.conversations ?? '',
+      runs: overrides.runs ?? '',
+      sessions: overrides.sessions ?? '',
+      agents: overrides.agents ?? '',
+      worktrees: overrides.worktrees ?? '',
+      git: overrides.git ?? ''
+    };
+  }
+
+  function rememberSourceActivityFilter(mode: SourceActivityMode = sourceActivityMode, filter = sourceActivityFilter) {
+    sourceActivityFiltersByMode = {
+      ...sourceActivityFiltersByMode,
+      [mode]: filter
+    };
+  }
+
+  function setSourceActivityFilter(filter: string) {
+    sourceActivityFilter = filter;
+    rememberSourceActivityFilter(sourceActivityMode, filter);
+  }
+
   function selectSourceActivityMode(mode: SourceActivityMode) {
     markSourceLayoutCustom();
     if (!sourceDockPanelVisible('activity')) {
       showDockPanel('activity');
     }
+    rememberSourceActivityFilter();
     sourceActivityMode = mode;
+    sourceActivityFilter = sourceActivityFiltersByMode[mode] ?? '';
     persistSourceActivityMode(mode);
     window.setTimeout(measureFileTreeViewport, 0);
   }
@@ -7316,9 +7347,12 @@
     const preset = sourceLayoutPresets.find((candidate) => candidate.id === presetID);
     if (!preset) return;
     const override = sourceLayoutPresetOverrides[preset.id];
+    const nextActivityMode = override?.activityMode ?? preset.activityMode;
 
     sourceLayoutPreset = preset.id;
-    sourceActivityMode = override?.activityMode ?? preset.activityMode;
+    rememberSourceActivityFilter();
+    sourceActivityMode = nextActivityMode;
+    sourceActivityFilter = sourceActivityFiltersByMode[nextActivityMode] ?? '';
     sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
     sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(override?.editorInsightWidth ?? preset.editorInsightWidth);
@@ -7799,7 +7833,9 @@
 
   function focusSourceEditorLayout() {
     markSourceLayoutCustom();
+    rememberSourceActivityFilter();
     sourceActivityMode = 'files';
+    sourceActivityFilter = sourceActivityFiltersByMode.files ?? '';
     contextPanelCollapsed = true;
     editorInsightCollapsed = true;
     persistSourceActivityMode(sourceActivityMode);

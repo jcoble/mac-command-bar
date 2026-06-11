@@ -158,6 +158,9 @@ assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-editor-canva
 assert.ok(pageSource.includes('const sourceTerminalApps'), 'Source shell should define reusable terminal app choices');
 assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
 assert.ok(pageSource.includes('let sourceActivityFilter'), 'Source shell should track the side pane activity filter');
+assert.ok(pageSource.includes('sourceActivityFiltersByMode'), 'Source shell should remember filters per activity pane');
+assert.ok(pageSource.includes('function rememberSourceActivityFilter'), 'Source shell should save the active filter before pane switches');
+assert.ok(pageSource.includes('function setSourceActivityFilter'), 'Source shell should update the active pane filter through a helper');
 assert.ok(pageSource.includes('let pasteCleanupInput'), 'Clipboard cleanup should track the source text');
 assert.ok(pageSource.includes('let pasteCleanupMode'), 'Clipboard cleanup should track the cleanup mode');
 assert.ok(pageSource.includes('pasteCleanupOutput'), 'Clipboard cleanup should derive cleaned output');
@@ -240,7 +243,10 @@ assert.ok(pageSource.includes('persistContextPanelPlacement(contextPanelPlacemen
 assert.ok(pageSource.includes('persistContextPanelCollapsed(contextPanelCollapsed)'), 'Workspace restore should persist restored context visibility');
 assert.ok(pageSource.includes('persistEditorInsightCollapsed(editorInsightCollapsed)'), 'Workspace restore should persist restored insight visibility');
 assert.ok(pageSource.includes('persistSidePanePosition(sidePanePosition)'), 'Workspace restore should persist restored explorer side placement');
-assert.ok(pageSource.includes('sourceActivityFilter = viewState.sourceActivityFilter'), 'Workspace restore should rehydrate the side activity filter');
+assert.ok(
+  pageSource.includes('setSourceActivityFilter(viewState.sourceActivityFilter)'),
+  'Workspace restore should rehydrate the side activity filter'
+);
 assert.ok(pageSource.includes('function workspaceSnapshotViewStateLabel'), 'Workspace restore plans should summarize saved pane view state');
 assert.ok(pageSource.includes('no activity filter'), 'Workspace restore plans should show saved activity filter state');
 assert.ok(pageSource.includes('describeWorkspaceSnapshotRestoreReadiness'), 'Workspace restore should use shared readiness rules');
@@ -326,6 +332,10 @@ assert.ok(pageSource.includes('function openActivityTerminalPath'), 'Activity ro
 assert.ok(pageSource.includes('function openAgentSessionTerminal'), 'Agent rows should resume sessions in a terminal');
 assert.ok(pageSource.includes('function activityTextMatchesFilter'), 'Activity rows should share filter matching logic');
 assert.ok(pageSource.includes('function sourceActivityFilterPlaceholder'), 'Activity filter placeholder should match the active panel');
+assert.ok(
+  pageSource.includes('sourceActivityFilter = sourceActivityFiltersByMode[mode] ??'),
+  'Activity pane switches should restore the saved filter for the target pane'
+);
 assert.ok(pageSource.includes('function selectSourceActivityMode'), 'Source shell should expose activity mode selection');
 assert.ok(pageSource.includes('function beginSidePaneResize'), 'Source shell should expose side pane drag resizing');
 assert.ok(pageSource.includes('function beginContextPaneResize'), 'Workspace should expose context pane drag resizing');
