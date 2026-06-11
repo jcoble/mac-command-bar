@@ -594,6 +594,7 @@
   let embeddedTerminalSessionsLoading = $state(false);
   let embeddedTerminalSessionsError = $state('');
   let embeddedTerminalStarting = $state(false);
+  let embeddedTerminalCommandDraft = $state('');
   let embeddedTerminalStatus = $state('Embedded terminal idle');
   let embeddedTerminalError = $state('');
   let browserUrl = $state('');
@@ -1763,6 +1764,26 @@
       detail: selectedProject.path,
       disabled: !selectedProject.path || embeddedTerminalStarting,
       perform: attachOrStartProjectEmbeddedTerminal
+    },
+    {
+      id: 'terminal-run-draft',
+      label: 'Run terminal command draft',
+      detail: embeddedTerminalCommandDraft || embeddedTerminalStatusLabel(),
+      disabled:
+        !embeddedTerminalCommandDraft.trim() ||
+        embeddedTerminalStarting ||
+        (!embeddedTerminalSession && !selectedProject.path),
+      perform: () => submitEmbeddedTerminalCommand()
+    },
+    {
+      id: 'terminal-clear-draft',
+      label: 'Clear terminal command draft',
+      detail: embeddedTerminalCommandDraft || 'No draft command',
+      disabled: !embeddedTerminalCommandDraft.trim(),
+      perform: () => {
+        embeddedTerminalCommandDraft = '';
+        embeddedTerminalStatus = 'Terminal command draft cleared';
+      }
     },
     {
       id: 'terminal-stop-embedded',
@@ -5220,6 +5241,42 @@
 
   async function attachOrStartProjectEmbeddedTerminal() {
     await openPathEmbeddedTerminal(selectedProject.path);
+  }
+
+  async function submitEmbeddedTerminalCommand(event?: SubmitEvent) {
+    event?.preventDefault();
+    const command = embeddedTerminalCommandDraft.trim();
+    if (!command || embeddedTerminalStarting) return;
+
+    showDockPanel('terminal');
+    await tick();
+
+    embeddedTerminalError = '';
+
+    try {
+      if (embeddedTerminalSession) {
+        await ensureEmbeddedTerminalRenderer();
+        await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
+        embeddedTerminalStatus = 'Sent command to embedded terminal';
+        embeddedTerminalCommandDraft = '';
+        embeddedTerminal?.focus();
+        return;
+      }
+
+      const root = selectedProject.path.trim();
+      if (!root) {
+        embeddedTerminalError = 'Choose a project or attach a terminal first';
+        embeddedTerminalStatus = 'No terminal command target';
+        return;
+      }
+
+      await startEmbeddedTerminalSession(root, command);
+      embeddedTerminalCommandDraft = '';
+    } catch (terminalError) {
+      embeddedTerminalError =
+        terminalError instanceof Error ? terminalError.message : 'Could not run terminal command';
+      embeddedTerminalStatus = 'Terminal command failed';
+    }
   }
 
   function embeddedTerminalSessionForPath(path: string) {
@@ -12952,6 +13009,27 @@
             {/if}
           </div>
 
+          <form class="embedded-terminal-command" onsubmit={submitEmbeddedTerminalCommand}>
+            <Terminal size={13} strokeWidth={2} />
+            <input
+              bind:value={embeddedTerminalCommandDraft}
+              aria-label="Embedded terminal command"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={embeddedTerminalSession ? 'Run command in active terminal' : 'Run command in project terminal'}
+            />
+            <button
+              type="submit"
+              disabled={
+                !embeddedTerminalCommandDraft.trim() ||
+                embeddedTerminalStarting ||
+                (!embeddedTerminalSession && !selectedProject.path)
+              }
+            >
+              Run
+            </button>
+          </form>
+
           <div class="terminal-launchpad-grid">
             <div class="terminal-launchpad-list" aria-label="Embedded terminal sessions">
               <div class="terminal-launchpad-title">
@@ -17238,7 +17316,7 @@
   }
 
   .embedded-terminal-host {
-    height: clamp(96px, calc(var(--bottom-dock-height) - 194px), 360px);
+    height: clamp(96px, calc(var(--bottom-dock-height) - 226px), 360px);
     min-height: 96px;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.06);
@@ -17263,6 +17341,50 @@
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .embedded-terminal-command {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 4px 0 8px;
+    border: 1px solid rgba(92, 226, 207, 0.12);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    color: #72e2cf;
+  }
+
+  .embedded-terminal-command:focus-within {
+    border-color: rgba(92, 226, 207, 0.38);
+    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.1);
+  }
+
+  .embedded-terminal-command input {
+    height: 100%;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 720;
+  }
+
+  .embedded-terminal-command button {
+    height: 22px;
+    padding: 0 9px;
+    color: #08201c;
+    border: 0;
+    border-radius: 5px;
+    background: #72e2cf;
+    font-size: 10px;
+    font-weight: 860;
+    cursor: pointer;
+  }
+
+  .embedded-terminal-command button:disabled {
+    color: #78837f;
+    background: rgba(255, 255, 255, 0.08);
+    cursor: default;
   }
 
   .terminal-launchpad-grid {

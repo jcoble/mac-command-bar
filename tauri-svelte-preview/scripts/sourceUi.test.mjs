@@ -97,8 +97,9 @@ assertDeclaration('.editor-insight-resizer', 'cursor: col-resize');
 assertDeclaration('.terminal-launchpad', 'height: min(var(--bottom-dock-height), 55dvh)');
 assertDeclaration('.terminal-launchpad', 'max-height: min(var(--bottom-dock-height), 55dvh)');
 assertDeclaration('.embedded-terminal-panel', 'display: grid');
-assertDeclaration('.embedded-terminal-host', 'height: clamp(96px, calc(var(--bottom-dock-height) - 194px), 360px)');
+assertDeclaration('.embedded-terminal-host', 'height: clamp(96px, calc(var(--bottom-dock-height) - 226px), 360px)');
 assertDeclaration('.embedded-terminal-host', 'overflow: hidden');
+assertDeclaration('.embedded-terminal-command', 'grid-template-columns: 16px minmax(0, 1fr) auto');
 assertDeclaration('.terminal-launchpad-grid', 'grid-template-columns: repeat(4, minmax(0, 1fr))');
 assertDeclaration('.terminal-launchpad-row', 'display: grid');
 assertDeclaration('.terminal-launchpad-row', 'grid-template-columns: auto minmax(0, 1fr) 24px');
@@ -183,6 +184,7 @@ assert.ok(pageSource.includes('let sourceLayoutPresetOverrides'), 'Source shell 
 assert.ok(pageSource.includes('let sourceTerminalApp'), 'Source shell should track the selected terminal app');
 assert.ok(pageSource.includes('let embeddedTerminalSession'), 'Source shell should track an embedded terminal session');
 assert.ok(pageSource.includes('let embeddedTerminalSessions'), 'Source shell should track all embedded terminal sessions');
+assert.ok(pageSource.includes('let embeddedTerminalCommandDraft'), 'Source shell should track a terminal command draft');
 assert.ok(pageSource.includes('let workspaceSnapshots'), 'Source shell should track conversation workspace snapshots');
 assert.ok(pageSource.includes('let activeWorkspaceSessionKey'), 'Source shell should track the active conversation workspace');
 assert.ok(pageSource.includes('let activeWorkspaceSnapshot'), 'Source shell should derive the active saved workspace snapshot');
@@ -220,6 +222,7 @@ assert.ok(pageSource.includes('function ensureEmbeddedTerminalRenderer'), 'Termi
 assert.ok(pageSource.includes('function startEmbeddedTerminalSession'), 'Terminal dock should start native PTY sessions');
 assert.ok(pageSource.includes("startupCommand = ''"), 'Terminal dock should optionally start a PTY with an initial command');
 assert.ok(pageSource.includes('function openPathEmbeddedTerminal'), 'Terminal dock should start embedded shells for arbitrary project paths');
+assert.ok(pageSource.includes('function submitEmbeddedTerminalCommand'), 'Terminal dock should run command drafts through embedded PTYs');
 assert.ok(pageSource.includes('function openWorkspaceSnapshotEmbeddedTerminal'), 'Saved workspace snapshots should resume inside embedded terminals');
 assert.ok(pageSource.includes('function resumeAgentSessionEmbeddedTerminal'), 'Terminal dock should resume agents inside the embedded PTY');
 assert.ok(pageSource.includes('function loadEmbeddedTerminalSessions'), 'Terminal dock should refresh native PTY sessions');
@@ -485,6 +488,8 @@ assert.ok(pageSource.includes('class="terminal-launchpad"'), 'Workspace should r
 assert.ok(pageSource.includes('aria-label="Terminal dock"'), 'Terminal launchpad should be accessible');
 assert.ok(pageSource.includes('aria-label="Terminal dock app"'), 'Terminal launchpad should expose terminal app selection');
 assert.ok(pageSource.includes('aria-label="Embedded terminal"'), 'Terminal launchpad should render an embedded terminal surface');
+assert.ok(pageSource.includes('aria-label="Embedded terminal command"'), 'Terminal launchpad should expose a compact command runner');
+assert.ok(pageSource.includes('onsubmit={submitEmbeddedTerminalCommand}'), 'Terminal command runner should submit commands without extra chrome');
 assert.ok(pageSource.includes('aria-label="Embedded terminal sessions"'), 'Terminal launchpad should list embedded PTY sessions');
 assert.ok(pageSource.includes('bind:this={embeddedTerminalElement}'), 'Embedded terminal should bind its xterm host');
 assert.ok(pageSource.includes('aria-label="Start embedded terminal"'), 'Terminal launchpad should start embedded sessions');
@@ -492,7 +497,11 @@ assert.ok(pageSource.includes('onclick={attachOrStartProjectEmbeddedTerminal}'),
 assert.ok(pageSource.includes('aria-label="Stop embedded terminal"'), 'Terminal launchpad should stop embedded sessions');
 assert.ok(pageSource.includes('aria-label="Fit embedded terminal"'), 'Terminal launchpad should resize embedded sessions');
 assert.ok(pageSource.includes("id: 'terminal-open-or-attach-project'"), 'Command palette should open or attach the current project terminal');
+assert.ok(pageSource.includes("id: 'terminal-run-draft'"), 'Command palette should run the embedded terminal command draft');
+assert.ok(pageSource.includes("id: 'terminal-clear-draft'"), 'Command palette should clear the embedded terminal command draft');
 assert.ok(pageSource.includes('perform: attachOrStartProjectEmbeddedTerminal'), 'Project terminal command should reuse the attach-or-start workflow');
+assert.ok(pageSource.includes('writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\\r`)'), 'Terminal command runner should write draft commands to the active PTY');
+assert.ok(pageSource.includes('await startEmbeddedTerminalSession(root, command)'), 'Terminal command runner should start a project PTY when none is active');
 assert.ok(pageSource.includes('function embeddedTerminalSessionForPath'), 'Embedded terminal paths should resolve existing sessions');
 assert.ok(pageSource.includes('await attachEmbeddedTerminalSession(matchingSession)'), 'Opening an embedded terminal path should attach an existing matching PTY');
 assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 'Terminal launchpad should attach embedded sessions');
