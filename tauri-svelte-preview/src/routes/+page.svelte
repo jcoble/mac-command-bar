@@ -930,6 +930,16 @@
       }
     },
     {
+      id: 'conversation-resume-latest',
+      label: 'Resume latest workspace in terminal',
+      detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
+      disabled: !workspaceSnapshots[0]?.resumeCommand,
+      perform: () => {
+        const snapshot = workspaceSnapshots[0];
+        if (snapshot) openWorkspaceSnapshotTerminal(snapshot);
+      }
+    },
+    {
       id: 'save-file',
       label: 'Save file',
       detail: 'Cmd+S',
@@ -2623,6 +2633,58 @@
     }
 
     await restoreConversationWorkspaceSnapshot(snapshot);
+  }
+
+  async function openWorkspaceSnapshotTerminal(snapshot: WorkspaceSnapshot) {
+    const command = snapshot.resumeCommand?.trim() ?? '';
+    const path = snapshot.worktreePath ?? snapshot.cwd;
+    if (!command && !path.trim()) return;
+
+    fileActionBusy = `workspace-terminal-command:${snapshot.id}`;
+    fileActionStatus = '';
+    error = '';
+
+    try {
+      if (command) {
+        const openedCommand = await openTerminalCommandFromTauri(
+          path,
+          command,
+          snapshot.sourceTerminalApp
+        );
+        if (openedCommand) {
+          fileActionStatus = 'Opened workspace resume command';
+          return;
+        }
+      }
+
+      const openedPath = path.trim()
+        ? await openTerminalPathFromTauri(path, snapshot.sourceTerminalApp)
+        : false;
+      if (command) await navigator.clipboard.writeText(command);
+      fileActionStatus = command
+        ? openedPath
+          ? 'Opened workspace terminal and copied resume command'
+          : 'Workspace resume command copied'
+        : openedPath
+          ? 'Opened workspace terminal'
+          : 'Native action unavailable';
+    } catch (terminalError) {
+      try {
+        const openedPath = path.trim()
+          ? await openTerminalPathFromTauri(path, snapshot.sourceTerminalApp)
+          : false;
+        if (command) await navigator.clipboard.writeText(command);
+        fileActionStatus = command
+          ? openedPath
+            ? 'Opened workspace terminal and copied resume command'
+            : 'Workspace resume command copied'
+          : 'Native action unavailable';
+      } catch {
+        error = terminalError instanceof Error ? terminalError.message : 'Could not open workspace terminal';
+      }
+    } finally {
+      fileActionBusy = '';
+    }
   }
 
   async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
@@ -6569,6 +6631,15 @@
                         </div>
                       </button>
                       <div class="activity-row-actions" aria-label="Workspace snapshot actions">
+                        <button
+                          type="button"
+                          aria-label="Resume workspace snapshot in terminal"
+                          title={snapshot.resumeCommand ? 'Resume workspace in terminal' : 'No resume command saved'}
+                          disabled={!snapshot.resumeCommand}
+                          onclick={() => openWorkspaceSnapshotTerminal(snapshot)}
+                        >
+                          <Terminal size={12} strokeWidth={2} />
+                        </button>
                         <button
                           type="button"
                           aria-label="Copy workspace resume command"
