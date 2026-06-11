@@ -150,8 +150,100 @@ export function upsertWorkspaceSnapshot(
   return nextSnapshots.slice(0, Math.max(1, Math.floor(maxSnapshots)));
 }
 
+export function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const snapshot = value as Partial<WorkspaceSnapshot>;
+  if (
+    !isWorkspaceSnapshotProvider(snapshot.provider) ||
+    typeof snapshot.sessionID !== 'string' ||
+    typeof snapshot.title !== 'string' ||
+    typeof snapshot.cwd !== 'string' ||
+    !isProjectRootLike(snapshot.project)
+  ) {
+    return null;
+  }
+
+  return createWorkspaceSnapshot({
+    provider: snapshot.provider,
+    sessionID: snapshot.sessionID,
+    title: snapshot.title,
+    model: typeof snapshot.model === 'string' ? snapshot.model : null,
+    project: snapshot.project,
+    cwd: snapshot.cwd,
+    worktreePath: typeof snapshot.worktreePath === 'string' ? snapshot.worktreePath : null,
+    branch: typeof snapshot.branch === 'string' ? snapshot.branch : null,
+    selectedPath: typeof snapshot.selectedPath === 'string' ? snapshot.selectedPath : null,
+    selectedLine: typeof snapshot.selectedLine === 'number' ? snapshot.selectedLine : null,
+    openPaths: Array.isArray(snapshot.openPaths)
+      ? snapshot.openPaths.filter((path): path is string => typeof path === 'string')
+      : [],
+    sourceActivityMode: isWorkspaceSnapshotActivityMode(snapshot.sourceActivityMode)
+      ? snapshot.sourceActivityMode
+      : 'conversations',
+    sourceTerminalApp: isWorkspaceSnapshotTerminalApp(snapshot.sourceTerminalApp)
+      ? snapshot.sourceTerminalApp
+      : 'Warp',
+    embeddedTerminal: isWorkspaceSnapshotEmbeddedTerminal(snapshot.embeddedTerminal)
+      ? snapshot.embeddedTerminal
+      : null,
+    dockLayout: snapshot.dockLayout,
+    resumeCommand: typeof snapshot.resumeCommand === 'string' ? snapshot.resumeCommand : null,
+    capturedAt: typeof snapshot.capturedAt === 'number' ? snapshot.capturedAt : Date.now()
+  });
+}
+
 function snapshotID(provider: WorkspaceSnapshotProvider, sessionID: string): string {
   return `${provider}:${sessionID.trim() || 'session'}`;
+}
+
+function isWorkspaceSnapshotProvider(value: unknown): value is WorkspaceSnapshotProvider {
+  return value === 'codex' || value === 'claude' || value === 'cmux' || value === 'manual';
+}
+
+function isWorkspaceSnapshotActivityMode(value: unknown): value is WorkspaceSnapshotActivityMode {
+  return (
+    value === 'files' ||
+    value === 'clipboard' ||
+    value === 'conversations' ||
+    value === 'sessions' ||
+    value === 'agents' ||
+    value === 'worktrees' ||
+    value === 'git' ||
+    value === 'runs'
+  );
+}
+
+function isWorkspaceSnapshotTerminalApp(value: unknown): value is WorkspaceSnapshotTerminalApp {
+  return (
+    value === 'Warp' ||
+    value === 'Terminal' ||
+    value === 'iTerm' ||
+    value === 'iTerm2' ||
+    value === 'Ghostty' ||
+    value === 'WezTerm' ||
+    value === 'Alacritty'
+  );
+}
+
+function isWorkspaceSnapshotEmbeddedTerminal(value: unknown): value is WorkspaceSnapshotEmbeddedTerminal {
+  if (typeof value !== 'object' || value === null) return false;
+  const terminal = value as Partial<WorkspaceSnapshotEmbeddedTerminal>;
+  return (
+    typeof terminal.sessionID === 'string' &&
+    typeof terminal.cwd === 'string' &&
+    (terminal.shell === null || terminal.shell === undefined || typeof terminal.shell === 'string') &&
+    (terminal.startedAt === null || terminal.startedAt === undefined || typeof terminal.startedAt === 'number')
+  );
+}
+
+function isProjectRootLike(value: unknown): value is ProjectRoot {
+  if (typeof value !== 'object' || value === null) return false;
+  const project = value as Partial<ProjectRoot>;
+  return (
+    typeof project.id === 'string' &&
+    typeof project.name === 'string' &&
+    typeof project.path === 'string'
+  );
 }
 
 function normalizeProjectRoot(project: ProjectRoot): ProjectRoot {

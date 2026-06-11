@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createDefaultSourceDockLayout } from '../src/lib/sourceDockLayout.ts';
 import {
   createWorkspaceSnapshot,
+  parseStoredWorkspaceSnapshot,
   restoreWorkspaceSnapshot,
   snapshotStorageKey,
   upsertWorkspaceSnapshot
@@ -109,3 +110,25 @@ assert.equal(
   1,
   'snapshot history should be bounded'
 );
+
+const storedSnapshot = parseStoredWorkspaceSnapshot({
+  ...snapshot,
+  embeddedTerminal: {
+    sessionID: 'terminal-456',
+    cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center',
+    shell: '/bin/zsh',
+    startedAt: 2_222
+  }
+});
+
+assert.deepEqual(
+  storedSnapshot?.embeddedTerminal,
+  {
+    sessionID: 'terminal-456',
+    cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center',
+    shell: '/bin/zsh',
+    startedAt: 2_222
+  },
+  'stored snapshots should preserve embedded terminal restore metadata'
+);
+assert.equal(parseStoredWorkspaceSnapshot({ ...snapshot, provider: 'unknown' }), null);

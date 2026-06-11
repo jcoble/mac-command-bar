@@ -63,6 +63,7 @@
   } from '$lib/worktreeSafety';
   import {
     createWorkspaceSnapshot,
+    parseStoredWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
     snapshotStorageKey,
     upsertWorkspaceSnapshot,
@@ -7557,53 +7558,6 @@
     } catch {
       return [];
     }
-  }
-
-  function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot | null {
-    if (typeof value !== 'object' || value === null) return null;
-    const snapshot = value as Partial<WorkspaceSnapshot>;
-    if (
-      !isWorkspaceSnapshotProvider(snapshot.provider) ||
-      typeof snapshot.sessionID !== 'string' ||
-      typeof snapshot.title !== 'string' ||
-      typeof snapshot.cwd !== 'string' ||
-      typeof snapshot.project !== 'object' ||
-      snapshot.project === null ||
-      typeof snapshot.project.id !== 'string' ||
-      typeof snapshot.project.name !== 'string' ||
-      typeof snapshot.project.path !== 'string'
-    ) {
-      return null;
-    }
-
-    return createWorkspaceSnapshot({
-      provider: snapshot.provider,
-      sessionID: snapshot.sessionID,
-      title: snapshot.title,
-      model: typeof snapshot.model === 'string' ? snapshot.model : null,
-      project: snapshot.project,
-      cwd: snapshot.cwd,
-      worktreePath: typeof snapshot.worktreePath === 'string' ? snapshot.worktreePath : null,
-      branch: typeof snapshot.branch === 'string' ? snapshot.branch : null,
-      selectedPath: typeof snapshot.selectedPath === 'string' ? snapshot.selectedPath : null,
-      selectedLine: typeof snapshot.selectedLine === 'number' ? snapshot.selectedLine : null,
-      openPaths: Array.isArray(snapshot.openPaths)
-        ? snapshot.openPaths.filter((path): path is string => typeof path === 'string')
-        : [],
-      sourceActivityMode: isSourceActivityMode(snapshot.sourceActivityMode)
-        ? snapshot.sourceActivityMode
-        : 'conversations',
-      sourceTerminalApp: isSourceTerminalApp(snapshot.sourceTerminalApp)
-        ? snapshot.sourceTerminalApp
-        : 'Warp',
-      dockLayout: snapshot.dockLayout,
-      resumeCommand: typeof snapshot.resumeCommand === 'string' ? snapshot.resumeCommand : null,
-      capturedAt: typeof snapshot.capturedAt === 'number' ? snapshot.capturedAt : Date.now()
-    });
-  }
-
-  function isWorkspaceSnapshotProvider(value: unknown): value is WorkspaceSnapshotProvider {
-    return value === 'codex' || value === 'claude' || value === 'cmux' || value === 'manual';
   }
 
   function parseStoredProjectSourceRecord(value: unknown): SourceRecentRecord | null {
