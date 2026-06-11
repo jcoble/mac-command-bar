@@ -26,6 +26,13 @@ export type WorkspaceSnapshotTerminalApp =
   | 'WezTerm'
   | 'Alacritty';
 
+export type WorkspaceSnapshotEmbeddedTerminal = {
+  sessionID: string;
+  cwd: string;
+  shell: string | null;
+  startedAt: number | null;
+};
+
 export type WorkspaceSnapshot = {
   id: string;
   provider: WorkspaceSnapshotProvider;
@@ -41,6 +48,7 @@ export type WorkspaceSnapshot = {
   openPaths: string[];
   sourceActivityMode: WorkspaceSnapshotActivityMode;
   sourceTerminalApp: WorkspaceSnapshotTerminalApp;
+  embeddedTerminal: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout: SourceDockLayout;
   resumeCommand: string | null;
   capturedAt: number;
@@ -60,6 +68,7 @@ export type WorkspaceSnapshotInput = {
   openPaths?: string[];
   sourceActivityMode?: WorkspaceSnapshotActivityMode;
   sourceTerminalApp?: WorkspaceSnapshotTerminalApp;
+  embeddedTerminal?: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout?: SourceDockLayout;
   resumeCommand?: string | null;
   capturedAt?: number;
@@ -76,6 +85,7 @@ export type RestoredWorkspaceSnapshot = {
   worktreePath: string | null;
   branch: string | null;
   openPaths: string[];
+  embeddedTerminal: WorkspaceSnapshotEmbeddedTerminal | null;
   dockLayout: SourceDockLayout;
   resumeCommand: string | null;
 };
@@ -99,6 +109,7 @@ export function createWorkspaceSnapshot(input: WorkspaceSnapshotInput): Workspac
     openPaths: normalizeOpenPaths(input.openPaths, selectedPath),
     sourceActivityMode: input.sourceActivityMode ?? 'conversations',
     sourceTerminalApp: input.sourceTerminalApp ?? 'Warp',
+    embeddedTerminal: normalizeEmbeddedTerminal(input.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(input.dockLayout ?? createDefaultSourceDockLayout()),
     resumeCommand: normalizeOptionalString(input.resumeCommand),
     capturedAt: normalizeCapturedAt(input.capturedAt)
@@ -120,6 +131,7 @@ export function restoreWorkspaceSnapshot(snapshot: WorkspaceSnapshot): RestoredW
     worktreePath: snapshot.worktreePath,
     branch: snapshot.branch,
     openPaths: snapshot.openPaths,
+    embeddedTerminal: normalizeEmbeddedTerminal(snapshot.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(snapshot.dockLayout),
     resumeCommand: snapshot.resumeCommand
   };
@@ -180,9 +192,31 @@ function normalizeOptionalString(value: string | null | undefined): string | nul
   return normalizedValue.length === 0 ? null : normalizedValue;
 }
 
+function normalizeEmbeddedTerminal(
+  terminal: WorkspaceSnapshotEmbeddedTerminal | null | undefined
+): WorkspaceSnapshotEmbeddedTerminal | null {
+  if (!terminal) return null;
+
+  const sessionID = normalizeOptionalString(terminal.sessionID);
+  const cwd = normalizeOptionalPath(terminal.cwd);
+  if (!sessionID || !cwd) return null;
+
+  return {
+    sessionID,
+    cwd,
+    shell: normalizeOptionalString(terminal.shell),
+    startedAt: normalizeTimestamp(terminal.startedAt)
+  };
+}
+
 function normalizeLine(line: number | null | undefined): number | null {
   if (typeof line !== 'number' || !Number.isFinite(line) || line < 1) return null;
   return Math.round(line);
+}
+
+function normalizeTimestamp(timestamp: number | null | undefined): number | null {
+  if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0) return null;
+  return Math.floor(timestamp);
 }
 
 function normalizeCapturedAt(capturedAt: number | null | undefined): number {

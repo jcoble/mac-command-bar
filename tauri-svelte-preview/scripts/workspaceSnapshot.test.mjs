@@ -33,6 +33,12 @@ const snapshot = createWorkspaceSnapshot({
   sourceActivityMode: 'conversations',
   sourceTerminalApp: 'Warp',
   dockLayout,
+  embeddedTerminal: {
+    sessionID: 'terminal-123',
+    cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center',
+    shell: '/bin/zsh',
+    startedAt: 1_111
+  },
   resumeCommand: 'cd /Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center && codex resume 019c-session',
   capturedAt: 1_000
 });
@@ -44,6 +50,12 @@ assert.equal(snapshot.project.path, '/Users/blackcolours/dev/work/EdiPlatform');
 assert.equal(snapshot.cwd, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center');
 assert.equal(snapshot.worktreePath, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center');
 assert.equal(snapshot.selectedLine, 43);
+assert.deepEqual(snapshot.embeddedTerminal, {
+  sessionID: 'terminal-123',
+  cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center',
+  shell: '/bin/zsh',
+  startedAt: 1_111
+});
 assert.deepEqual(snapshot.openPaths, [
   '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/src/App.ts',
   '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/src/routes/+page.svelte'
@@ -60,6 +72,7 @@ assert.equal(restored.selectedLine, 43);
 assert.equal(restored.sourceActivityMode, 'conversations');
 assert.equal(restored.sourceTerminalApp, 'Warp');
 assert.equal(restored.cwd, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center');
+assert.deepEqual(restored.embeddedTerminal, snapshot.embeddedTerminal);
 assert.equal(restored.dockLayout.activePanelByGroup.right, 'context');
 
 const olderSnapshot = createWorkspaceSnapshot({

@@ -27,7 +27,7 @@
   } from '@lucide/svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import '@xterm/xterm/css/xterm.css';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import type { FitAddon as XTermFitAddon } from '@xterm/addon-fit';
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
@@ -58,6 +58,7 @@
     snapshotStorageKey,
     upsertWorkspaceSnapshot,
     type WorkspaceSnapshot,
+    type WorkspaceSnapshotEmbeddedTerminal,
     type WorkspaceSnapshotProvider
   } from '$lib/workspaceSnapshot';
   import {
@@ -2839,6 +2840,7 @@
       openPaths: workspaceSnapshotOpenPathsForProject(project),
       sourceActivityMode,
       sourceTerminalApp,
+      embeddedTerminal: workspaceSnapshotEmbeddedTerminal(),
       dockLayout: sourceDockLayout,
       resumeCommand: session ? agentSessionTerminalCommand(session) : null,
       capturedAt: Date.now()
@@ -2969,6 +2971,52 @@
       await selectRecord(sourceRecordFromRestoredPath(project, restored.selectedPath), restored.selectedLine);
     } else if (restored.selectedLine) {
       revealSourceLine(restored.selectedLine);
+    }
+
+    await restoreWorkspaceEmbeddedTerminal(restored.embeddedTerminal);
+  }
+
+  function workspaceSnapshotEmbeddedTerminal(): WorkspaceSnapshotEmbeddedTerminal | null {
+    if (!embeddedTerminalSession) return null;
+
+    return {
+      sessionID: embeddedTerminalSession.sessionId,
+      cwd: embeddedTerminalSession.cwd,
+      shell: embeddedTerminalSession.shell,
+      startedAt: embeddedTerminalSession.startedAt
+    };
+  }
+
+  async function restoreWorkspaceEmbeddedTerminal(
+    savedTerminal: WorkspaceSnapshotEmbeddedTerminal | null
+  ) {
+    if (!savedTerminal) return;
+
+    try {
+      await tick();
+      const sessions = await listTerminalSessionsFromTauri();
+      if (!sessions) return;
+
+      embeddedTerminalSessions = sessions;
+      const matchingSession =
+        sessions.find((session) => session.sessionId === savedTerminal.sessionID) ??
+        sessions.find(
+          (session) =>
+            normalizeProjectPath(session.cwd) === normalizeProjectPath(savedTerminal.cwd)
+        );
+
+      if (matchingSession) {
+        await attachEmbeddedTerminalSession(matchingSession);
+        return;
+      }
+
+      if (embeddedTerminalSession?.sessionId === savedTerminal.sessionID) {
+        embeddedTerminalSession = null;
+      }
+      embeddedTerminalStatus = 'Saved embedded terminal is no longer live';
+    } catch (terminalError) {
+      embeddedTerminalError =
+        terminalError instanceof Error ? terminalError.message : 'Could not restore embedded terminal';
     }
   }
 

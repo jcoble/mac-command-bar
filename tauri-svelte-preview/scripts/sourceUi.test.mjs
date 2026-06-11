@@ -171,8 +171,10 @@ assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace sh
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
 assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
 assert.ok(pageSource.includes('function captureAgentSessionWorkspaceSnapshot'), 'Workspace should capture a specific agent session context');
+assert.ok(pageSource.includes('function workspaceSnapshotEmbeddedTerminal'), 'Workspace snapshots should preserve embedded terminal context');
 assert.ok(pageSource.includes('function captureActiveWorkspaceBeforeSwitch'), 'Workspace should refresh the active snapshot before switching conversations');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
+assert.ok(pageSource.includes('function restoreWorkspaceEmbeddedTerminal'), 'Workspace restore should reconnect a live embedded terminal when possible');
 assert.ok(pageSource.includes('function restoreAgentSessionWorkspaceSnapshot'), 'Workspace should restore a specific agent session context');
 assert.ok(pageSource.includes('function openAgentSessionWorkspace'), 'Conversation rows should open their saved workspace on row click');
 assert.ok(pageSource.includes('function openWorkspaceSnapshotTerminal'), 'Workspace snapshots should launch saved resume commands in a terminal');
@@ -457,6 +459,7 @@ assert.ok(pageSource.includes('class="activity-session-row conversation-session-
 assert.ok(pageSource.includes('aria-label="Save conversation workspace snapshot"'), 'Conversation rows should capture their session workspace');
 assert.ok(pageSource.includes('aria-label="Restore conversation workspace"'), 'Conversation rows should restore their saved session workspace');
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(snapshot)'), 'Snapshot rows should restore saved workspace context');
+assert.ok(pageSource.includes('await restoreWorkspaceEmbeddedTerminal(restored.embeddedTerminal)'), 'Snapshot restore should reattach saved embedded terminal context');
 assert.ok(pageSource.includes('workspaceSnapshotForAgentSession(session)'), 'Conversation rows should read their saved workspace context');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
