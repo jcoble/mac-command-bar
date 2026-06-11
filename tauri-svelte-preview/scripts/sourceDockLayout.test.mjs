@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  activateSourceDockPanel,
   createDefaultSourceDockLayout,
   hideSourceDockPanel,
   moveSourceDockPanel,
@@ -124,6 +125,19 @@ assert.equal(
   sourceDockGroupSize(invalidResizeLayout, 'right'),
   330,
   'invalid dock group sizes should fall back to the group default'
+);
+
+const activatedInsights = activateSourceDockPanel(defaultLayout, 'insights');
+assert.equal(
+  activatedInsights.activePanelByGroup.right,
+  'insights',
+  'activating a panel should select it within its current dock group'
+);
+assert.equal(activatedInsights.preset, 'custom');
+assert.equal(
+  activateSourceDockPanel(defaultLayout, 'terminal').activePanelByGroup.bottom,
+  undefined,
+  'activating a hidden panel should leave the layout unchanged'
 );
 
 assert.deepEqual(

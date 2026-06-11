@@ -200,6 +200,24 @@ export function sourceDockGroupSize(
   return groupByID(normalizeSourceDockLayout(layout).groups, groupID).size;
 }
 
+export function activateSourceDockPanel(
+  layout: SourceDockLayout,
+  panelID: SourceDockPanelID
+): SourceDockLayout {
+  const normalized = normalizeSourceDockLayout(layout);
+  const group = normalized.groups.find((candidateGroup) => candidateGroup.panelIDs.includes(panelID));
+  if (!group) return normalized;
+
+  return normalizeSourceDockLayout({
+    ...normalized,
+    preset: 'custom',
+    activePanelByGroup: {
+      ...normalized.activePanelByGroup,
+      [group.id]: panelID
+    }
+  });
+}
+
 export function visibleSourceDockPanelIDs(layout: SourceDockLayout): SourceDockPanelID[] {
   return normalizeSourceDockLayout(layout).groups.flatMap((group) => group.panelIDs);
 }

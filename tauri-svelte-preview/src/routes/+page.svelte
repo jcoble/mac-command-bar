@@ -51,6 +51,7 @@
   import { sourcePreviewAppearance, sourcePreviewAppearanceKey } from '$lib/sourcePreviewAppearance';
   import { buildWorktreeSafetySummary } from '$lib/worktreeSafety';
   import {
+    activateSourceDockPanel,
     createDefaultSourceDockLayout,
     hideSourceDockPanel,
     moveSourceDockPanel,
@@ -356,6 +357,7 @@
     'WezTerm',
     'Alacritty'
   ];
+  const dockTabGroupIDs: SourceDockGroupID[] = ['right', 'bottom'];
   const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
   const contextCardLabels: Record<SourceContextCardID, string> = {
     orchestration: 'Runs',
@@ -4336,6 +4338,19 @@
     }
   }
 
+  function selectDockPanel(panelID: SourceDockPanelID) {
+    markSourceLayoutCustom();
+    applySourceDockLayout(activateSourceDockPanel(sourceDockLayout, panelID));
+    if (panelID === 'context') {
+      contextPanelCollapsed = false;
+      persistContextPanelCollapsed(contextPanelCollapsed);
+    }
+    if (panelID === 'insights') {
+      editorInsightCollapsed = false;
+      persistEditorInsightCollapsed(editorInsightCollapsed);
+    }
+  }
+
   function applySourceDockLayout(layout: SourceDockLayout) {
     const normalizedLayout = normalizeSourceDockLayout(layout);
     sourceDockLayout = normalizedLayout;
@@ -4413,6 +4428,52 @@
 
   function dockGroupIDForPanel(layout: SourceDockLayout, panelID: SourceDockPanelID): SourceDockGroupID | null {
     return layout.groups.find((group) => group.panelIDs.includes(panelID))?.id ?? null;
+  }
+
+  function dockGroupPanelIDs(groupID: SourceDockGroupID): SourceDockPanelID[] {
+    return normalizeSourceDockLayout(sourceDockLayout).groups.find((group) => group.id === groupID)?.panelIDs ?? [];
+  }
+
+  function dockGroupHasTabs(groupID: SourceDockGroupID) {
+    return dockGroupPanelIDs(groupID).length > 1;
+  }
+
+  function hasDockPanelTabs() {
+    return dockTabGroupIDs.some((groupID) => dockGroupHasTabs(groupID));
+  }
+
+  function activeDockPanelForGroup(groupID: SourceDockGroupID): SourceDockPanelID | null {
+    const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const group = normalizedLayout.groups.find((candidateGroup) => candidateGroup.id === groupID);
+    if (!group || group.panelIDs.length === 0) return null;
+    const activePanelID = normalizedLayout.activePanelByGroup[groupID];
+    return activePanelID && group.panelIDs.includes(activePanelID) ? activePanelID : group.panelIDs[0];
+  }
+
+  function dockPanelLabel(panelID: SourceDockPanelID) {
+    switch (panelID) {
+      case 'activity':
+        return 'Activity';
+      case 'editor':
+        return 'Editor';
+      case 'context':
+        return 'Context';
+      case 'insights':
+        return 'Insights';
+      case 'terminal':
+        return 'Terminal';
+      case 'browser':
+        return 'Browser';
+    }
+  }
+
+  function shouldRenderDockPanel(panelID: SourceDockPanelID) {
+    const groupID = dockGroupIDForPanel(sourceDockLayout, panelID);
+    if (groupID === null) return false;
+    if (panelID === 'editor') return true;
+    if (groupID === 'center') return true;
+    const groupPanelIDs = dockGroupPanelIDs(groupID);
+    return groupPanelIDs.length <= 1 || activeDockPanelForGroup(groupID) === panelID;
   }
 
   function sourceDockPanelVisible(panelID: SourceDockPanelID) {
@@ -4548,7 +4609,7 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     sourceDockLayout = contextPanelCollapsed
       ? hideSourceDockPanel(sourceDockLayout, 'context')
-      : showSourceDockPanel(sourceDockLayout, 'context');
+      : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistSourceDockLayout(sourceDockLayout);
   }
 
@@ -4558,7 +4619,7 @@
     persistEditorInsightCollapsed(editorInsightCollapsed);
     sourceDockLayout = editorInsightCollapsed
       ? hideSourceDockPanel(sourceDockLayout, 'insights')
-      : showSourceDockPanel(sourceDockLayout, 'insights');
+      : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
     persistSourceDockLayout(sourceDockLayout);
   }
 
@@ -4567,7 +4628,7 @@
     sourceIntelligencePanel = panel;
     editorInsightCollapsed = false;
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    sourceDockLayout = showSourceDockPanel(sourceDockLayout, 'insights');
+    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
     persistSourceDockLayout(sourceDockLayout);
   }
 
@@ -4617,7 +4678,7 @@
     hiddenContextCardIDs = new Set();
     persistHiddenContextCards(hiddenContextCardIDs);
     contextPanelCollapsed = false;
-    sourceDockLayout = showSourceDockPanel(sourceDockLayout, 'context');
+    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistSourceDockLayout(sourceDockLayout);
   }
@@ -4629,7 +4690,7 @@
     hiddenContextCardIDs = nextCardIDs;
     activeContextCardID = cardID;
     contextPanelCollapsed = false;
-    sourceDockLayout = showSourceDockPanel(sourceDockLayout, 'context');
+    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistHiddenContextCards(nextCardIDs);
     persistActiveContextCard(cardID);
     persistContextPanelCollapsed(contextPanelCollapsed);
@@ -6463,8 +6524,8 @@
 
   <section
     class="workspace"
-    class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}
-    class:context-bottom={contextPanelPlacement === 'bottom' && !contextPanelCollapsed}
+    class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}
+    class:context-bottom={contextPanelPlacement === 'bottom' && shouldRenderDockPanel('context')}
     aria-label="Source preview"
   >
     <header class="topbar">
@@ -6665,11 +6726,38 @@
       </div>
     </div>
 
+      <div
+        class="dock-panel-tabs"
+        class:empty={!hasDockPanelTabs()}
+        aria-label="Stacked dock panels"
+      >
+        {#each dockTabGroupIDs as groupID (groupID)}
+          {#if dockGroupHasTabs(groupID)}
+            <div class="dock-panel-tab-group" role="tablist" aria-label={`${groupID} dock panels`}>
+              {#each dockGroupPanelIDs(groupID) as panelID (panelID)}
+                <button
+                  class:active={activeDockPanelForGroup(groupID) === panelID}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeDockPanelForGroup(groupID) === panelID}
+                  aria-label={`Show ${dockPanelLabel(panelID)} panel`}
+                  onclick={() => selectDockPanel(panelID)}
+                >
+                  {dockPanelLabel(panelID)}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {/each}
+      </div>
+
     <div
       class="workspace-arrangement"
-      class:context-side={contextPanelPlacement === 'side' && !contextPanelCollapsed}
-      class:context-bottom={contextPanelPlacement === 'bottom' && !contextPanelCollapsed}
+      class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}
+      class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}
+      class:context-bottom={contextPanelPlacement === 'bottom' && shouldRenderDockPanel('context')}
     >
+      {#if shouldRenderDockPanel('context')}
       <div class="workspace-context-column">
     <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextPanelMode === 'stack'}>
       {#if hiddenContextCardIDs.size > 0}
@@ -7010,6 +7098,7 @@
         onpointerdown={beginContextPaneResize}
         onkeydown={handleContextPaneResizerKeydown}
       ></button>
+      {/if}
 
       <div class="workspace-main-column">
 
@@ -7286,7 +7375,7 @@
           </div>
         </div>
 
-        <div class="editor-body-grid" class:insights-hidden={editorInsightCollapsed}>
+        <div class="editor-body-grid" class:insights-hidden={editorInsightCollapsed || !shouldRenderDockPanel('insights')}>
           <div class="editor-canvas">
             {#key sourcePreviewAppearanceKey}
               <MonacoSourceEditor
@@ -7369,7 +7458,7 @@
             {/if}
           </div>
 
-          {#if !editorInsightCollapsed}
+          {#if !editorInsightCollapsed && shouldRenderDockPanel('insights')}
             <button
               class="editor-insight-resizer"
               type="button"
@@ -7722,7 +7811,7 @@
         </div>
       </div>
 
-      {#if sourceDockPanelVisible('terminal')}
+      {#if shouldRenderDockPanel('terminal')}
         <section class="terminal-launchpad" aria-label="Terminal dock">
           <header class="terminal-launchpad-header">
             <div>
@@ -9570,7 +9659,7 @@
 
   .workspace {
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -9795,12 +9884,74 @@
     font-weight: 760;
   }
 
+  .dock-panel-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    min-height: 22px;
+    margin: 0 0 5px;
+    overflow: hidden;
+  }
+
+  .dock-panel-tabs.empty {
+    height: 0;
+    min-height: 0;
+    margin: 0;
+  }
+
+  .dock-panel-tab-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 2px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .dock-panel-tab-group button {
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+    height: 18px;
+    padding: 0 7px;
+    color: #9facaa;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    font: inherit;
+    font-size: 9px;
+    font-weight: 820;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .dock-panel-tab-group button:hover,
+  .dock-panel-tab-group button:focus-visible {
+    color: #eef6f4;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.07);
+  }
+
+  .dock-panel-tab-group button.active {
+    color: #dffdf8;
+    background: rgba(92, 226, 207, 0.18);
+  }
+
   .workspace-arrangement {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .workspace-arrangement.context-top {
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .workspace-arrangement.context-side {
