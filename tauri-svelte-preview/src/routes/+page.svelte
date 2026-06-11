@@ -107,6 +107,7 @@
     formatSourceScanSummary,
     folderIdsForSourceRecord,
     getSourceScanCacheEntry,
+    isSuspiciousSourceScanResult,
     mergeProjectRoots,
     normalizeProjectPath,
     navigateSourceHistoryBack,
@@ -699,10 +700,13 @@
   let sourceScanNeedsAttention = $derived(
     !scanning &&
       !loading &&
-      !scanLimitReached &&
       query.trim().length === 0 &&
-      records.length > 0 &&
-      records.length <= suspiciousSourceIndexFileThreshold
+      isSuspiciousSourceScanResult(
+        records.length,
+        scanLimitReached,
+        expandedSourceScanLimit,
+        suspiciousSourceIndexFileThreshold
+      )
   );
   let sourceScanHealthNote = $derived(formatSourceScanHealthNote(records.length, sourceScanNeedsAttention));
   let selectedProjectIndexEntry = $derived(
@@ -1945,7 +1949,7 @@
     sourceScanStats = null;
     error = '';
     runtime = 'scanning source files';
-    clearSourceRecordsForIncomingProject(project);
+    clearSourceRecordsForIncomingProject(project, Boolean(options.force));
 
     try {
       const tauriScan = await listSourceFilesFromTauri(project.path, '', scanLimit, scanId);
@@ -1955,6 +1959,12 @@
       }
 
       const nextRecords = tauriScan.records;
+      const suspiciousScanResult = isSuspiciousSourceScanResult(
+        nextRecords.length,
+        tauriScan.truncated,
+        scanLimit,
+        suspiciousSourceIndexFileThreshold
+      );
       if (
         !options.skipTinyIndexRepair &&
         shouldRepairSuspiciousSourceScan(
@@ -1986,10 +1996,14 @@
       );
       clearBackgroundIndexError(project.id);
 
+      if (options.skipTinyIndexRepair && suspiciousScanResult) {
+        fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Check the project root or reset the index.`;
+      }
+
       const nextSelection = applySourceRecords(
         nextRecords,
         preferredPath,
-        'local source scan',
+        options.skipTinyIndexRepair && suspiciousScanResult ? 'tiny source scan' : 'local source scan',
         tauriScan.truncated,
         tauriScan.stats ?? null
       );
@@ -2040,7 +2054,8 @@
     fileActionStatus = 'Scan stopped';
   }
 
-  function clearSourceRecordsForIncomingProject(project: ProjectRoot) {
+  function clearSourceRecordsForIncomingProject(project: ProjectRoot, force = false) {
+    const hasCurrentSourceState = records.length > 0 || selectedRecord !== null || preview !== null;
     const hasDifferentSelectedRecord =
       selectedRecord !== null && !sourceRecordBelongsToProject(selectedRecord, project);
     const hasDifferentRecords =
@@ -2048,7 +2063,8 @@
       records.length > 0 &&
       records.some((record) => !sourceRecordBelongsToProject(record, project));
 
-    if (!hasDifferentSelectedRecord && !hasDifferentRecords) return;
+    if (!force && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
+    if (force && !hasCurrentSourceState && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
 
     records = [];
     selectedRecord = null;

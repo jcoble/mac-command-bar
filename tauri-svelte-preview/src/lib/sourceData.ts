@@ -717,7 +717,7 @@ export function formatSourceIndexSummary(
   }`;
 }
 
-export function shouldRepairSuspiciousSourceScan(
+export function isSuspiciousSourceScanResult(
   totalCount: number,
   truncated: boolean,
   requestedLimit: number,
@@ -733,6 +733,15 @@ export function shouldRepairSuspiciousSourceScan(
     safeTotalCount <= safeSuspiciousThreshold &&
     safeRequestedLimit > safeSuspiciousThreshold
   );
+}
+
+export function shouldRepairSuspiciousSourceScan(
+  totalCount: number,
+  truncated: boolean,
+  requestedLimit: number,
+  suspiciousThreshold: number
+): boolean {
+  return isSuspiciousSourceScanResult(totalCount, truncated, requestedLimit, suspiciousThreshold);
 }
 
 export function monacoLanguageForSource(language: SourceLanguage): string {

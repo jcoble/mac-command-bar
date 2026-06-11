@@ -591,10 +591,19 @@ assert.ok(pageSource.includes('formatSourceScanStats'), 'Source tree should form
 assert.ok(pageSource.includes('class="scan-stats"'), 'Source tree should render scan telemetry below the index summary');
 assert.ok(pageSource.includes('tauriScan.stats'), 'Source scans should preserve native scanner telemetry');
 assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
+assert.ok(pageSource.includes('isSuspiciousSourceScanResult'), 'Source scans should share one suspicious-result predicate for repair and health');
 assert.ok(pageSource.includes('shouldRepairSuspiciousSourceScan'), 'Source scans should auto-repair suspiciously tiny indexes');
 assert.ok(
   pageSource.includes('fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`'),
   'Suspicious scan repair should explain that the project index is being rebuilt'
+);
+assert.ok(
+  pageSource.includes('clearSourceRecordsForIncomingProject(project, Boolean(options.force))'),
+  'Forced project scans should clear same-project stale records before scanning'
+);
+assert.ok(
+  pageSource.includes('tiny source scan'),
+  'Still-tiny scans after repair should keep an explicit runtime label'
 );
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
 assert.ok(pageSource.includes('class="scan-health-note"'), 'Source tree should render compact scan health guidance');

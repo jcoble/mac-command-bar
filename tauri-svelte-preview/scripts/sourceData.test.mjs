@@ -32,6 +32,7 @@ import {
   selectPreferredSourceRecord,
   selectBackgroundIndexProjects,
   shouldRepairSuspiciousSourceScan,
+  isSuspiciousSourceScanResult,
   sourceLanguageForPath,
   sourceSemanticTokenLegend,
   sourceSupportsLanguageIntelligence,
@@ -260,6 +261,11 @@ assert.equal(shouldRepairSuspiciousSourceScan(0, false, 25_000, 2), false);
 assert.equal(shouldRepairSuspiciousSourceScan(3, false, 25_000, 2), false);
 assert.equal(shouldRepairSuspiciousSourceScan(2, true, 25_000, 2), false);
 assert.equal(shouldRepairSuspiciousSourceScan(2, false, 2, 2), false);
+assert.equal(isSuspiciousSourceScanResult(2, false, 25_000, 2), true);
+assert.equal(isSuspiciousSourceScanResult(0, false, 25_000, 2), false);
+assert.equal(isSuspiciousSourceScanResult(3, false, 25_000, 2), false);
+assert.equal(isSuspiciousSourceScanResult(2, true, 25_000, 2), false);
+assert.equal(isSuspiciousSourceScanResult(2, false, 2, 2), false);
 
 const boundedScanCache = upsertSourceScanCacheEntry(
   upsertSourceScanCacheEntry(
