@@ -651,6 +651,7 @@
   let projectNameInput = $state('');
   let projectPathInput = $state('');
   let projectFormError = $state('');
+  let projectActivationGeneration = 0;
   let scanGeneration = 0;
   let sourceIntelligenceCommandId = 0;
   let sourceLspDiagnosticsTimer: number | null = null;
@@ -668,6 +669,7 @@
     projects?: ProjectRoot[];
     forceScan?: boolean;
     scanLimit?: number;
+    waitForScan?: boolean;
   };
   type SourceCommandPaletteItem = {
     id: string;
@@ -4465,7 +4467,8 @@
     await activateProject(project, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
-      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots)
+      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots),
+      waitForScan: true
     });
   }
 
@@ -7350,10 +7353,10 @@
     selectedSourceLineRequestId += 1;
   }
 
-  async function handleProjectChange() {
+  function handleProjectChange() {
     const nextProject =
       projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
-    await activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit });
+    void activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit });
   }
 
   function createSourceActivityFilterState(
@@ -9088,6 +9091,8 @@
 
   async function activateProject(project: ProjectRoot, options: ProjectActivationOptions = {}) {
     const projects = options.projects ?? projectOptions;
+    const activationGeneration = ++projectActivationGeneration;
+    const scanLimit = options.scanLimit ?? expandedSourceScanLimit;
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     if (options.forceScan) {
@@ -9101,11 +9106,41 @@
     void loadGitRepositorySummaries(projects);
     void loadAgentSessions();
     void loadOrchestrationRuns(projects);
-    await scanProject(project, selectedSourcePaths[project.id], {
+
+    const cachedScan = options.forceScan
+      ? null
+      : getSourceScanCacheEntry(
+          sourceScanCache,
+          project,
+          scanLimit,
+          Date.now(),
+          sourceScanCacheMaxAgeMs
+        );
+    if (
+      options.forceScan ||
+      cachedScan === null ||
+      sourceScanCacheEntryNeedsRepair(cachedScan, scanLimit, suspiciousSourceIndexFileThreshold)
+    ) {
+      fileActionStatus = sourceOnboardingScanStatus(project);
+    }
+
+    const scanCompletion = scanProject(project, selectedSourcePaths[project.id], {
       force: options.forceScan,
-      limit: options.scanLimit
-    });
-    void indexProjectsInBackground(projects);
+      limit: scanLimit
+    })
+      .then(() => {
+        if (activationGeneration !== projectActivationGeneration) return;
+        void indexProjectsInBackground(projects);
+      })
+      .catch((activationError) => {
+        if (activationGeneration !== projectActivationGeneration) return;
+        fileActionStatus =
+          activationError instanceof Error ? activationError.message : `Could not activate ${project.name}`;
+      });
+
+    if (options.waitForScan) {
+      await scanCompletion;
+    }
   }
 
   function removeSelectedProject() {

@@ -841,8 +841,21 @@ assert.ok(
   'Selected project index status should describe the expanded project scan cache'
 );
 assert.ok(
-  pageSource.includes('await activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit })'),
-  'Project switching should request an expanded project scan'
+  pageSource.includes('void activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit })'),
+  'Project switching should schedule an expanded project scan without awaiting it'
+);
+assert.ok(pageSource.includes('waitForScan?: boolean'), 'Project activation should let workspace restore wait for scans explicitly');
+assert.ok(
+  pageSource.includes('waitForScan: true'),
+  'Workspace snapshot restore should wait for its project scan before reopening saved files'
+);
+assert.ok(
+  pageSource.includes('const activationGeneration = ++projectActivationGeneration'),
+  'Project activation should ignore stale scan completions after rapid project switches'
+);
+assert.ok(
+  pageSource.includes('if (activationGeneration !== projectActivationGeneration) return;'),
+  'Project activation should guard post-scan background work by activation generation'
 );
 assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, project)'), 'Index reset should discard cached scans for the selected project');
 assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
