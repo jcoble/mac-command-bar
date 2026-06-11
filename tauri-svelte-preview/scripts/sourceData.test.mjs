@@ -14,6 +14,7 @@ import {
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
   formatSourceRecordCount,
+  formatSourceScanStats,
   formatSourceScanSummary,
   gitCommitGraphKind,
   gitCommitTopologyLabel,
@@ -205,9 +206,28 @@ assert.equal(
   formatSourceScanSummary(12, 2_000, true, 'service'),
   '12 matches for "service" across first 2,000 files'
 );
+assert.equal(
+  formatSourceScanStats({
+    visitedEntries: 1_234,
+    matchedFiles: 42,
+    skippedDirectories: 8,
+    unsupportedFiles: 912,
+    unreadableEntries: 3
+  }),
+  '1,234 entries checked · 8 dirs skipped · 912 unsupported · 3 unreadable'
+);
+assert.equal(formatSourceScanStats(null), '');
 
-const scanCache = upsertSourceScanCacheEntry({}, project, records, 2_000, 10_000);
+const scanStats = {
+  visitedEntries: 12,
+  matchedFiles: 2,
+  skippedDirectories: 1,
+  unsupportedFiles: 4,
+  unreadableEntries: 0
+};
+const scanCache = upsertSourceScanCacheEntry({}, project, records, 2_000, 10_000, 8, false, scanStats);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.records.length, 2);
+assert.deepEqual(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.stats, scanStats);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 1_000, 10_500, 1_000)?.limit, 2_000);
 assert.equal(getSourceScanCacheEntry(scanCache, otherProject, 2_000, 10_500, 1_000), null);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 12_000, 1_000), null);

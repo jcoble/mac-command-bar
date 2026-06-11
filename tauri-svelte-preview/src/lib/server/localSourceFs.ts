@@ -10,6 +10,7 @@ import {
   type SourcePreview,
   type SourceRecord,
   type SourceReferenceTarget,
+  type SourceScanStats,
   type SourceScanResult,
   type SourceSearchMatch
 } from '../sourceData.ts';
@@ -39,7 +40,8 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
   const collectLimit = limit + 1;
   const query = input.query?.trim().toLowerCase() || null;
   const records: SourceRecord[] = [];
-  await collectSourceFiles(root, root, collectLimit, query, records);
+  const stats = createSourceScanStats();
+  await collectSourceFiles(root, root, collectLimit, query, records, stats);
 
   records.sort(compareSourceRecords);
   const truncated = records.length > limit;
@@ -48,7 +50,8 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
   return {
     records,
     limit,
-    truncated
+    truncated,
+    stats
   };
 }
 
@@ -167,7 +170,8 @@ async function collectSourceFiles(
   current: string,
   limit: number,
   query: string | null,
-  records: SourceRecord[]
+  records: SourceRecord[],
+  scanStats: SourceScanStats
 ) {
   if (records.length >= limit) return;
 
@@ -180,15 +184,24 @@ async function collectSourceFiles(
   for (const entry of entries) {
     if (records.length >= limit) return;
 
+    scanStats.visitedEntries += 1;
     const entryPath = path.join(current, entry.name);
     if (entry.isDirectory()) {
-      if (!shouldSkipDir(entry.name)) {
-        await collectSourceFiles(root, entryPath, limit, query, records);
+      if (shouldSkipDir(entry.name)) {
+        scanStats.skippedDirectories += 1;
+      } else {
+        await collectSourceFiles(root, entryPath, limit, query, records, scanStats);
       }
       continue;
     }
 
-    if (!entry.isFile() || !isSourceFile(entryPath)) {
+    if (!entry.isFile()) {
+      scanStats.unsupportedFiles += 1;
+      continue;
+    }
+
+    if (!isSourceFile(entryPath)) {
+      scanStats.unsupportedFiles += 1;
       continue;
     }
 
@@ -198,7 +211,10 @@ async function collectSourceFiles(
     }
 
     const fileStats = await stat(entryPath).catch(() => null);
-    if (!fileStats?.isFile()) continue;
+    if (!fileStats?.isFile()) {
+      scanStats.unreadableEntries += 1;
+      continue;
+    }
 
     records.push({
       path: entryPath,
@@ -207,7 +223,18 @@ async function collectSourceFiles(
       language: detectLanguage(entryPath),
       byteCount: fileStats.size
     });
+    scanStats.matchedFiles += 1;
   }
+}
+
+function createSourceScanStats(): SourceScanStats {
+  return {
+    visitedEntries: 0,
+    matchedFiles: 0,
+    skippedDirectories: 0,
+    unsupportedFiles: 0,
+    unreadableEntries: 0
+  };
 }
 
 function normalizeRootPath(root: string) {

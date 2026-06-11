@@ -45,12 +45,17 @@ struct SourceScanResult {
     records: Vec<SourceRecord>,
     limit: usize,
     truncated: bool,
+    stats: SourceScanStats,
 }
 
-#[derive(Clone, Copy)]
-struct SourceScanProgressSnapshot {
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceScanStats {
     visited_entries: usize,
     matched_files: usize,
+    skipped_directories: usize,
+    unsupported_files: usize,
+    unreadable_entries: usize,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -298,13 +303,13 @@ impl SourceScanRegistry {
 
 struct SourceScanCancellation {
     cancelled: Arc<AtomicBool>,
-    progress: Option<Arc<dyn Fn(SourceScanProgressSnapshot) + Send + Sync>>,
+    progress: Option<Arc<dyn Fn(SourceScanStats) + Send + Sync>>,
 }
 
 impl SourceScanCancellation {
     fn new(
         cancelled: Arc<AtomicBool>,
-        progress: Option<Arc<dyn Fn(SourceScanProgressSnapshot) + Send + Sync>>,
+        progress: Option<Arc<dyn Fn(SourceScanStats) + Send + Sync>>,
     ) -> Self {
         Self {
             cancelled,
@@ -322,9 +327,7 @@ impl SourceScanCancellation {
     }
 
     #[cfg(test)]
-    fn active_for_test(
-        progress: impl Fn(SourceScanProgressSnapshot) + Send + Sync + 'static,
-    ) -> Self {
+    fn active_for_test(progress: impl Fn(SourceScanStats) + Send + Sync + 'static) -> Self {
         Self::new(Arc::new(AtomicBool::new(false)), Some(Arc::new(progress)))
     }
 
@@ -336,7 +339,7 @@ impl SourceScanCancellation {
         }
     }
 
-    fn report_progress(&self, progress: SourceScanProgressSnapshot) {
+    fn report_progress(&self, progress: SourceScanStats) {
         if let Some(callback) = &self.progress {
             callback(progress);
         }
@@ -345,30 +348,38 @@ impl SourceScanCancellation {
 
 #[derive(Default)]
 struct SourceScanWalkProgress {
-    visited_entries: usize,
-    matched_files: usize,
+    stats: SourceScanStats,
     next_report_at: usize,
 }
 
 impl SourceScanWalkProgress {
     fn visit_entry(&mut self, cancellation: &SourceScanCancellation) {
-        self.visited_entries += 1;
-        if self.visited_entries == 1 || self.visited_entries >= self.next_report_at {
-            self.next_report_at = self.visited_entries + SOURCE_SCAN_PROGRESS_INTERVAL;
+        self.stats.visited_entries += 1;
+        if self.stats.visited_entries == 1 || self.stats.visited_entries >= self.next_report_at {
+            self.next_report_at = self.stats.visited_entries + SOURCE_SCAN_PROGRESS_INTERVAL;
             self.report(cancellation);
         }
     }
 
     fn match_file(&mut self, cancellation: &SourceScanCancellation) {
-        self.matched_files += 1;
+        self.stats.matched_files += 1;
         self.report(cancellation);
     }
 
+    fn skip_directory(&mut self) {
+        self.stats.skipped_directories += 1;
+    }
+
+    fn skip_unsupported_file(&mut self) {
+        self.stats.unsupported_files += 1;
+    }
+
+    fn skip_unreadable_entry(&mut self) {
+        self.stats.unreadable_entries += 1;
+    }
+
     fn report(&self, cancellation: &SourceScanCancellation) {
-        cancellation.report_progress(SourceScanProgressSnapshot {
-            visited_entries: self.visited_entries,
-            matched_files: self.matched_files,
-        });
+        cancellation.report_progress(self.stats);
     }
 }
 
@@ -422,7 +433,7 @@ fn source_scan_cancellation_for_command(
     let cancelled = scan_registry.register(scan_id);
     let app = app.clone();
     let scan_id = scan_id.to_string();
-    let progress = Arc::new(move |snapshot: SourceScanProgressSnapshot| {
+    let progress = Arc::new(move |snapshot: SourceScanStats| {
         let _ = app.emit(
             SOURCE_SCAN_PROGRESS_EVENT,
             SourceScanProgressEvent {
@@ -982,6 +993,7 @@ fn list_source_files_sync_with_cancellation(
         records,
         limit,
         truncated,
+        stats: progress.stats,
     })
 }
 
@@ -1016,18 +1028,26 @@ fn collect_source_files(
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
         let Ok(metadata) = entry.metadata() else {
+            progress.skip_unreadable_entry();
             continue;
         };
 
         if metadata.is_dir() {
             if should_skip_dir(&file_name) {
+                progress.skip_directory();
                 continue;
             }
             collect_source_files(root, &path, limit, query, records, cancellation, progress)?;
             continue;
         }
 
-        if !metadata.is_file() || !is_source_file(&path) {
+        if !metadata.is_file() {
+            progress.skip_unsupported_file();
+            continue;
+        }
+
+        if !is_source_file(&path) {
+            progress.skip_unsupported_file();
             continue;
         }
 
@@ -3282,6 +3302,7 @@ mod tests {
         std::fs::write(root.join("src/Workers/Worker.cs"), "public class Worker {}").unwrap();
         std::fs::write(root.join("target/debug/generated.rs"), "fn generated() {}").unwrap();
         std::fs::write(root.join("README.md"), "# docs").unwrap();
+        std::fs::write(root.join("notes.txt"), "plain notes").unwrap();
 
         let scan = list_source_files_sync(root.clone(), 20, None).unwrap();
         let relative_paths = scan
@@ -3301,6 +3322,10 @@ mod tests {
                 "README.md"
             ]
         );
+        assert_eq!(scan.stats.matched_files, 6);
+        assert!(scan.stats.visited_entries >= 8);
+        assert!(scan.stats.skipped_directories >= 1);
+        assert!(scan.stats.unsupported_files >= 1);
 
         std::fs::remove_dir_all(root).unwrap();
     }

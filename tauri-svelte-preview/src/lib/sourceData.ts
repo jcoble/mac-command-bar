@@ -239,6 +239,15 @@ export type SourceScanResult = {
   records: SourceRecord[];
   limit: number;
   truncated: boolean;
+  stats?: SourceScanStats;
+};
+
+export type SourceScanStats = {
+  visitedEntries: number;
+  matchedFiles: number;
+  skippedDirectories: number;
+  unsupportedFiles: number;
+  unreadableEntries: number;
 };
 
 export type SourceRecentRecord = SourceRecord & {
@@ -257,6 +266,7 @@ export type SourceScanCacheEntry = {
   truncated: boolean;
   records: SourceRecord[];
   scannedAt: number;
+  stats?: SourceScanStats;
 };
 
 export type SourceScanCache = Record<string, SourceScanCacheEntry>;
@@ -652,6 +662,27 @@ export function formatSourceScanSummary(
   return `${formatCount(safeFilteredCount)} ${
     safeFilteredCount === 1 ? 'match' : 'matches'
   } for "${normalizedQuery}" across ${totalScope}`;
+}
+
+export function formatSourceScanStats(stats: SourceScanStats | null | undefined): string {
+  if (!stats) return '';
+
+  const skippedDirectories = Math.max(0, Math.floor(stats.skippedDirectories));
+  const unsupportedFiles = Math.max(0, Math.floor(stats.unsupportedFiles));
+  const unreadableEntries = Math.max(0, Math.floor(stats.unreadableEntries));
+  const parts = [`${formatCount(Math.max(0, Math.floor(stats.visitedEntries)))} entries checked`];
+
+  if (skippedDirectories > 0) {
+    parts.push(`${formatCount(skippedDirectories)} dirs skipped`);
+  }
+  if (unsupportedFiles > 0) {
+    parts.push(`${formatCount(unsupportedFiles)} unsupported`);
+  }
+  if (unreadableEntries > 0) {
+    parts.push(`${formatCount(unreadableEntries)} unreadable`);
+  }
+
+  return parts.join(' · ');
 }
 
 export function selectBackgroundIndexProjects(
@@ -1267,7 +1298,8 @@ export function upsertSourceScanCacheEntry(
   limit: number,
   scannedAt = Date.now(),
   maxEntries = 8,
-  truncated = false
+  truncated = false,
+  stats?: SourceScanStats
 ): SourceScanCache {
   const cappedMaxEntries = Math.max(0, Math.floor(maxEntries));
   if (cappedMaxEntries === 0) return {};
@@ -1282,7 +1314,8 @@ export function upsertSourceScanCacheEntry(
       limit,
       truncated,
       records,
-      scannedAt
+      scannedAt,
+      stats
     }
   ]
     .sort((left, right) => left.scannedAt - right.scannedAt)

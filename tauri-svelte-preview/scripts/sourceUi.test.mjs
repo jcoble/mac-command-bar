@@ -561,6 +561,10 @@ assert.ok(
 );
 assert.ok(pageSource.includes('sourceScanNeedsAttention'), 'Source tree should detect suspiciously tiny scan indexes');
 assert.ok(pageSource.includes('function formatSourceScanHealthNote'), 'Source tree should explain suspicious scan results');
+assert.ok(pageSource.includes('sourceScanStatsLabel'), 'Source tree should derive a compact native scan telemetry label');
+assert.ok(pageSource.includes('formatSourceScanStats'), 'Source tree should format native scan telemetry');
+assert.ok(pageSource.includes('class="scan-stats"'), 'Source tree should render scan telemetry below the index summary');
+assert.ok(pageSource.includes('tauriScan.stats'), 'Source scans should preserve native scanner telemetry');
 assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
 assert.ok(pageSource.includes('shouldRepairSuspiciousSourceScan'), 'Source scans should auto-repair suspiciously tiny indexes');
 assert.ok(

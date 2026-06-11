@@ -102,6 +102,7 @@
     formatSourceIndexSummary,
     flattenSourceTree,
     formatSourceRecordCount,
+    formatSourceScanStats,
     formatSourceScanSummary,
     folderIdsForSourceRecord,
     getSourceScanCacheEntry,
@@ -139,6 +140,7 @@
     type SourceDefinitionTarget,
     type SourceReferenceTarget,
     type SourceSearchMatch,
+    type SourceScanStats,
     type SourceCompletionItem,
     type SourceDiagnostic,
     type SourceInlayHint,
@@ -569,6 +571,7 @@
   let scanning = $state(false);
   let activeSourceScanId = $state('');
   let sourceScanProgress = $state<NativeSourceScanProgress | null>(null);
+  let sourceScanStats = $state<SourceScanStats | null>(null);
   let scanLimitReached = $state(false);
   let runtime = $state('pending source scan');
   let error = $state('');
@@ -715,6 +718,9 @@
       backgroundIndexingProjectIDs.has(selectedProject.id),
       backgroundIndexErrorByProject[selectedProject.id] ?? ''
     )
+  );
+  let sourceScanStatsLabel = $derived(
+    formatSourceScanStats(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
   );
   let gitStatusByRelativePath = $derived(
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
@@ -1918,7 +1924,8 @@
         cachedScan.records,
         preferredPath,
         'cached source scan',
-        cachedScan.truncated
+        cachedScan.truncated,
+        cachedScan.stats ?? null
       );
       if (nextSelection) {
         await loadRecord(nextSelection, generation);
@@ -1933,6 +1940,7 @@
     const scanId = createSourceScanId();
     activeSourceScanId = scanId;
     sourceScanProgress = null;
+    sourceScanStats = null;
     error = '';
     runtime = 'scanning source files';
     clearSourceRecordsForIncomingProject(project);
@@ -1971,7 +1979,8 @@
         tauriScan.limit,
         Date.now(),
         maxSourceScanCacheEntries,
-        tauriScan.truncated
+        tauriScan.truncated,
+        tauriScan.stats
       );
       clearBackgroundIndexError(project.id);
 
@@ -1979,7 +1988,8 @@
         nextRecords,
         preferredPath,
         'local source scan',
-        tauriScan.truncated
+        tauriScan.truncated,
+        tauriScan.stats ?? null
       );
 
       if (nextSelection) {
@@ -1993,6 +2003,7 @@
       selectedRecord = null;
       selectedSourceLine = null;
       scanLimitReached = false;
+      sourceScanStats = null;
       preview = null;
       expandedFolderIds = new Set();
       syncSourcePreviewContent(null);
@@ -2021,6 +2032,7 @@
     loading = false;
     activeSourceScanId = '';
     sourceScanProgress = null;
+    sourceScanStats = null;
     runtime = 'source scan stopped';
     error = '';
     fileActionStatus = 'Scan stopped';
@@ -2042,6 +2054,7 @@
     sourceNavigationBackStack = [];
     sourceNavigationForwardStack = [];
     scanLimitReached = false;
+    sourceScanStats = null;
     preview = null;
     expandedFolderIds = new Set();
     syncSourcePreviewContent(null);
@@ -2127,7 +2140,8 @@
         tauriScan.limit,
         Date.now(),
         maxSourceScanCacheEntries,
-        tauriScan.truncated
+        tauriScan.truncated,
+        tauriScan.stats
       );
       clearBackgroundIndexError(project.id);
     } catch (indexError) {
@@ -4771,11 +4785,13 @@
     nextRecords: SourceRecord[],
     preferredPath: string | null | undefined,
     nextRuntime: string,
-    truncated = false
+    truncated = false,
+    stats: SourceScanStats | null = null
   ): SourceRecord | null {
     records = nextRecords;
     runtime = nextRuntime;
     scanLimitReached = truncated;
+    sourceScanStats = stats;
 
     const nextSelection = selectPreferredSourceRecord(
       nextRecords,
@@ -8190,6 +8206,9 @@
           </div>
           <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
           <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
+          {#if sourceScanStatsLabel}
+            <div class="scan-stats" title={sourceScanStatsLabel}>{sourceScanStatsLabel}</div>
+          {/if}
           {#if sourceScanHealthNote}
             <div class="scan-health-note" title={sourceScanHealthNote}>
               <span>{sourceScanHealthNote}</span>
@@ -12894,6 +12913,18 @@
     color: #8fd8cf;
     font-size: 10px;
     font-weight: 760;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-stats {
+    min-width: 0;
+    margin: -5px 0 8px;
+    overflow: hidden;
+    color: #6f7b78;
+    font-size: 9.5px;
+    font-weight: 720;
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
