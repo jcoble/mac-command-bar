@@ -6201,8 +6201,8 @@
         <button
           class="scan-button"
           type="button"
-          aria-label={scanning ? 'Stop source scan' : 'Scan source files'}
-          title={scanning ? 'Stop source scan' : 'Scan source files'}
+          aria-label={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
+          title={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
           onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
         >
           {#if scanning}
