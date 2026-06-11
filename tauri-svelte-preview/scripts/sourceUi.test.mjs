@@ -480,6 +480,18 @@ assert.ok(pageSource.includes('cancelSourceScanFromTauri'), 'Stop should call th
 assert.ok(pageSource.includes('sourceScanProgress'), 'Source preview should track native scan progress');
 assert.ok(pageSource.includes('nativeSourceScanProgressEvent'), 'Source preview should subscribe to native scan progress events');
 assert.ok(pageSource.includes('scanSummaryLabel'), 'Source tree should expose an explicit scan summary label');
+assert.ok(
+  !pageSource.includes('demoRecordsForProject'),
+  'Source preview should not show seeded demo files while waiting for a real project scan'
+);
+assert.ok(
+  pageSource.includes('let records = $state<SourceRecord[]>([])'),
+  'Source preview should start with an empty index until the real scanner responds'
+);
+assert.ok(
+  pageSource.includes("let runtime = $state('pending source scan')"),
+  'Source preview should label the startup state as a pending scan'
+);
 assert.ok(pageSource.includes('sourceScanNeedsAttention'), 'Source tree should detect suspiciously tiny scan indexes');
 assert.ok(pageSource.includes('function formatSourceScanHealthNote'), 'Source tree should explain suspicious scan results');
 assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
@@ -505,6 +517,10 @@ assert.ok(
   'Startup should request an expanded project scan'
 );
 assert.ok(
+  pageSource.includes('getSourceScanCacheEntry(\n      sourceScanCache,\n      selectedProject,\n      expandedSourceScanLimit'),
+  'Selected project index status should describe the expanded project scan cache'
+);
+assert.ok(
   pageSource.includes('await activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit })'),
   'Project switching should request an expanded project scan'
 );
@@ -512,6 +528,10 @@ assert.ok(pageSource.includes('removeSourceScanCacheEntries(sourceScanCache, pro
 assert.ok(pageSource.includes('limit = expandedSourceScanLimit'), 'Index reset should rescan at the expanded source limit by default');
 assert.ok(pageSource.includes('forceScan: true'), 'New or duplicate project activation should force a fresh scan');
 assert.ok(pageSource.includes('scanLimit: expandedSourceScanLimit'), 'New or duplicate project activation should run expanded onboarding scans');
+assert.ok(
+  pageSource.includes('selectBackgroundIndexProjects(\n      projects,\n      selectedProject.id,\n      sourceScanCache,\n      Date.now(),\n      sourceScanCacheMaxAgeMs,\n      expandedSourceScanLimit'),
+  'Background project indexing should use the same expanded project scan limit'
+);
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(project)'), 'Duplicate project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nextProject)'), 'New project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');

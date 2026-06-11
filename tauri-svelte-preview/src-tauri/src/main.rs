@@ -16,8 +16,8 @@ mod orchestration;
 mod terminal;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
-const DEFAULT_SOURCE_LIST_LIMIT: usize = 5_000;
-const MAX_SOURCE_LIST_LIMIT: usize = 10_000;
+const DEFAULT_SOURCE_LIST_LIMIT: usize = 10_000;
+const MAX_SOURCE_LIST_LIMIT: usize = 25_000;
 const DEFAULT_SOURCE_SEARCH_LIMIT: usize = 50;
 const MAX_SOURCE_SEARCH_LIMIT: usize = 200;
 const DEFAULT_SOURCE_DEFINITION_LIMIT: usize = 20;

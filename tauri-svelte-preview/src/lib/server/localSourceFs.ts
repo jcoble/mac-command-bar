@@ -14,8 +14,8 @@ import {
   type SourceSearchMatch
 } from '../sourceData.ts';
 
-const defaultSourceListLimit = 5_000;
-const maxSourceListLimit = 10_000;
+const defaultSourceListLimit = 10_000;
+const maxSourceListLimit = 25_000;
 const maxPreviewBytes = 512 * 1024;
 const maxIntelligenceReadCount = 2_000;
 

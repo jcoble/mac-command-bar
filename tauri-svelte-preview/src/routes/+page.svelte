@@ -78,7 +78,6 @@
     createProjectRoot,
     defaultProjectRoots,
     demoPreviewFor,
-    demoRecordsForProject,
     filterSourceRecords,
     findSourceDefinitionTargets,
     findSourceReferenceTargets,
@@ -135,7 +134,6 @@
     cancelSourceScanFromTauri,
     commitGitRepositoryFromTauri,
     createSourceScanId,
-    defaultSourceScanLimit,
     expandedSourceScanLimit,
     fetchGitRepositoryFromTauri,
     findSourceDefinitionsFromTauri,
@@ -251,8 +249,6 @@
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-editor-canvas';
   const initialProject = defaultProjectRoots[0];
-  const initialRecords = demoRecordsForProject(initialProject);
-  const initialPreview = initialRecords[0] ? demoPreviewFor(initialRecords[0]) : null;
 
   type SourceIntelligenceAction = 'definition' | 'hover' | 'references';
   type SourceEditorIntelligenceCommand = {
@@ -425,17 +421,13 @@
   let agentSessionError = $state('');
   let agentSessionSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
-  let records = $state<SourceRecord[]>(initialRecords);
-  let selectedRecord = $state<SourceRecord | null>(initialRecords[0] ?? null);
+  let records = $state<SourceRecord[]>([]);
+  let selectedRecord = $state<SourceRecord | null>(null);
   let selectedSourceLine = $state<number | null>(null);
   let selectedSourceLineRequestId = $state(0);
-  let preview = $state<SourcePreview | null>(initialPreview);
-  let sourceDraftContentByPath = $state<Record<string, string>>(
-    initialPreview ? { [initialPreview.path]: initialPreview.content } : {}
-  );
-  let savedSourceContentByPath = $state<Record<string, string>>(
-    initialPreview ? { [initialPreview.path]: initialPreview.content } : {}
-  );
+  let preview = $state<SourcePreview | null>(null);
+  let sourceDraftContentByPath = $state<Record<string, string>>({});
+  let savedSourceContentByPath = $state<Record<string, string>>({});
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
@@ -489,12 +481,12 @@
   let editorActionMenuOpen = $state(false);
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
-  let loading = $state(false);
+  let loading = $state(true);
   let scanning = $state(false);
   let activeSourceScanId = $state('');
   let sourceScanProgress = $state<NativeSourceScanProgress | null>(null);
   let scanLimitReached = $state(false);
-  let runtime = $state('browser preview');
+  let runtime = $state('pending source scan');
   let error = $state('');
   let fileActionStatus = $state('');
   let fileActionBusy = $state('');
@@ -602,7 +594,7 @@
     getSourceScanCacheEntry(
       sourceScanCache,
       selectedProject,
-      defaultSourceScanLimit,
+      expandedSourceScanLimit,
       Date.now(),
       sourceScanCacheMaxAgeMs
     )
@@ -1568,7 +1560,7 @@
     options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
-    const scanLimit = options.limit ?? defaultSourceScanLimit;
+    const scanLimit = options.limit ?? expandedSourceScanLimit;
     const cachedScan = options.force
       ? null
       : getSourceScanCacheEntry(
@@ -1729,7 +1721,7 @@
       sourceScanCache,
       Date.now(),
       sourceScanCacheMaxAgeMs,
-      defaultSourceScanLimit
+      expandedSourceScanLimit
     );
 
     for (const project of projectsToIndex) {
@@ -1747,7 +1739,7 @@
       const tauriScan = await listSourceFilesFromTauri(
         project.path,
         '',
-        defaultSourceScanLimit,
+        expandedSourceScanLimit,
         createSourceScanId()
       );
       if (!tauriScan) {

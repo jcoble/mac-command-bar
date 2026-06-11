@@ -41,8 +41,8 @@ import {
   writeSourceToTauri
 } from '../src/lib/tauriSource.ts';
 
-assert.equal(defaultSourceScanLimit, 5_000);
-assert.equal(expandedSourceScanLimit, 10_000);
+assert.equal(defaultSourceScanLimit, 10_000);
+assert.equal(expandedSourceScanLimit, 25_000);
 assert.equal(nativeSourceScanProgressEvent, 'source_scan_progress');
 assert.equal(terminalOutputEvent, 'terminal_output');
 assert.match(createSourceScanId(), /^source-scan-\d+-[a-z0-9]+$/);

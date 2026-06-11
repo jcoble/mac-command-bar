@@ -14,8 +14,8 @@ import type {
   SourceSymbol
 } from './sourceData';
 
-export const defaultSourceScanLimit = 5_000;
-export const expandedSourceScanLimit = 10_000;
+export const defaultSourceScanLimit = 10_000;
+export const expandedSourceScanLimit = 25_000;
 export const nativeSourceScanProgressEvent = 'source_scan_progress';
 export const terminalOutputEvent = 'terminal_output';
 
