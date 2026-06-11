@@ -240,6 +240,7 @@
     type AgentSession,
     type GitCommitHistoryEntry,
     type GitRepositorySummary,
+    type OrchestrationArtifact,
     type OrchestrationEvent,
     type OrchestrationRun,
     type ProjectGitFileStatus,
@@ -3818,6 +3819,36 @@
   function focusOrchestrationRun(run: OrchestrationRun) {
     selectSourceActivityMode('runs');
     sourceActivityFilter = run.taskID ?? run.title ?? run.id;
+  }
+
+  async function openOrchestrationArtifact(artifact: OrchestrationArtifact) {
+    if (artifact.path?.trim()) {
+      if (isProjectLocalTextArtifactPath(artifact.path)) {
+        await selectRecord(sourceRecordFromRestoredPath(selectedProject, artifact.path));
+        fileActionStatus = `Opened artifact: ${artifact.title}`;
+        return;
+      }
+
+      await openActivityPath(artifact.path);
+      return;
+    }
+
+    if (artifact.url && typeof window !== 'undefined') {
+      window.open(artifact.url, '_blank', 'noopener,noreferrer');
+      fileActionStatus = `Opened artifact: ${artifact.title}`;
+    }
+  }
+
+  function isProjectLocalTextArtifactPath(path: string) {
+    const normalizedPath = normalizeProjectPath(path);
+    const normalizedProjectPath = normalizeProjectPath(selectedProject.path);
+    if (!normalizedPath || !normalizedProjectPath) return false;
+    if (normalizedPath !== normalizedProjectPath && !normalizedPath.startsWith(`${normalizedProjectPath}/`)) {
+      return false;
+    }
+
+    const language = sourceLanguageForRestoredPath(path);
+    return language !== 'plain' || /\.(txt|log|out|err)$/i.test(path);
   }
 
   async function copyOrchestrationRunSummary(run: OrchestrationRun) {
@@ -9911,9 +9942,15 @@
                             {artifact.label}
                           </a>
                         {:else}
-                          <span class="run-chip artifact" title={artifact.path ?? artifact.title}>
+                          <button
+                            class="run-chip artifact"
+                            type="button"
+                            title={artifact.path ?? artifact.title}
+                            aria-label={`Open run artifact: ${artifact.title}`}
+                            onclick={() => openOrchestrationArtifact(artifact)}
+                          >
                             {artifact.label}
-                          </span>
+                          </button>
                         {/if}
                       {/each}
                       {#each runLinks as link (link.id)}

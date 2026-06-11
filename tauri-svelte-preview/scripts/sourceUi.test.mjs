@@ -619,6 +619,9 @@ assert.ok(pageSource.includes('orchestrationCurrentActivity(run)'), 'Orchestrati
 assert.ok(pageSource.includes('orchestrationArtifactChips(run)'), 'Orchestration run cards should expose artifact chips');
 assert.ok(pageSource.includes('orchestrationLinkChips(run)'), 'Orchestration run cards should expose link chips');
 assert.ok(pageSource.includes('function focusOrchestrationRun'), 'Command palette should focus a specific orchestration run');
+assert.ok(pageSource.includes('function openOrchestrationArtifact'), 'Runs mode should open artifact paths and links');
+assert.ok(pageSource.includes('aria-label={`Open run artifact: ${artifact.title}`}'), 'Run artifact chips should expose an open action');
+assert.ok(pageSource.includes('await selectRecord(sourceRecordFromRestoredPath(selectedProject, artifact.path))'), 'Project-local run artifacts should open in the editor');
 assert.ok(pageSource.includes('function copyOrchestrationRunSummary'), 'Runs mode should copy a full run summary');
 assert.ok(pageSource.includes('function copyOrchestrationRunHandoff'), 'Runs mode should copy a full run handoff');
 assert.ok(pageSource.includes('function copyOrchestrationCurrentActivity'), 'Runs mode should copy the current run activity');
