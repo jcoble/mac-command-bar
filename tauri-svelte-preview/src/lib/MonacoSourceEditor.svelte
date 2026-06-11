@@ -21,7 +21,12 @@
 		type SourceSymbol,
 	} from "./sourceData";
 
-	type SourceEditorIntelligenceAction = "definition" | "hover" | "implementation" | "references";
+	type SourceEditorIntelligenceAction =
+		| "definition"
+		| "hover"
+		| "implementation"
+		| "references"
+		| "type-definition";
 
 	type SourceEditorIntelligenceCommand = {
 		id: number;
@@ -47,6 +52,10 @@
 	) => SourceReferenceTarget[] | Promise<SourceReferenceTarget[]> | null | undefined;
 
 	type SourceEditorImplementationLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceDefinitionTarget[] | Promise<SourceDefinitionTarget[]> | null | undefined;
+
+	type SourceEditorTypeDefinitionLookup = (
 		request: SourceEditorLookupRequest
 	) => SourceDefinitionTarget[] | Promise<SourceDefinitionTarget[]> | null | undefined;
 
@@ -79,6 +88,7 @@
 		onSaveRequest?: () => void;
 		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
+		onTypeDefinitionLookup?: SourceEditorTypeDefinitionLookup;
 	};
 
 	let {
@@ -104,6 +114,7 @@
 		onSaveRequest,
 		onSymbolsRequest,
 		onSymbolsChange,
+		onTypeDefinitionLookup,
 	}: Props = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
@@ -116,6 +127,7 @@
 	let hoverProviderDisposable: Monaco.IDisposable | null = null;
 	let definitionProviderDisposable: Monaco.IDisposable | null = null;
 	let implementationProviderDisposable: Monaco.IDisposable | null = null;
+	let typeDefinitionProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
@@ -293,6 +305,24 @@
 		);
 	}
 
+	function registerSourceTypeDefinitionProvider(monaco: typeof Monaco) {
+		typeDefinitionProviderDisposable?.dispose();
+		typeDefinitionProviderDisposable = monaco.languages.registerTypeDefinitionProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				provideTypeDefinition: async (model, position) => {
+					const request = lookupRequestForModelPosition(model, position);
+					if (!request) return null;
+
+					const targets = await onTypeDefinitionLookup?.(request);
+					return (targets ?? []).map((target) =>
+						sourceTypeDefinitionTargetToLocation(monaco, target)
+					);
+				},
+			}
+		);
+	}
+
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
@@ -347,6 +377,13 @@
 	}
 
 	function sourceImplementationTargetToLocation(
+		monaco: typeof Monaco,
+		target: SourceDefinitionTarget
+	): Monaco.languages.Location {
+		return sourceDefinitionTargetToLocation(monaco, target);
+	}
+
+	function sourceTypeDefinitionTargetToLocation(
 		monaco: typeof Monaco,
 		target: SourceDefinitionTarget
 	): Monaco.languages.Location {
@@ -704,6 +741,10 @@
 			requestImplementationAtCursor();
 			return;
 		}
+		if (intelligenceCommand.action === "type-definition") {
+			requestTypeDefinitionAtCursor();
+			return;
+		}
 
 		requestHoverAtCursor();
 	}
@@ -729,6 +770,16 @@
 		}
 
 		void editor?.getAction("editor.action.goToImplementation")?.run();
+	}
+
+	function requestTypeDefinitionAtCursor() {
+		const typeDefinitionAction = editor?.getAction("editor.action.peekTypeDefinition");
+		if (typeDefinitionAction) {
+			void typeDefinitionAction.run();
+			return;
+		}
+
+		void editor?.getAction("editor.action.goToTypeDefinition")?.run();
 	}
 
 	function requestHoverAtCursor() {
@@ -839,6 +890,7 @@
 		registerSourceHoverProvider(monaco);
 		registerSourceDefinitionProvider(monaco);
 		registerSourceImplementationProvider(monaco);
+		registerSourceTypeDefinitionProvider(monaco);
 		registerSourceReferenceProvider(monaco);
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
@@ -909,6 +961,13 @@
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 2.5,
 				run: () => requestImplementationAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.goToTypeDefinition",
+				label: "Go to Type Definition",
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 2.6,
+				run: () => requestTypeDefinitionAtCursor(),
 			}),
 			editor.addAction({
 				id: "mcb.source.showHover",
@@ -1023,6 +1082,7 @@
 		hoverProviderDisposable?.dispose();
 		definitionProviderDisposable?.dispose();
 		implementationProviderDisposable?.dispose();
+		typeDefinitionProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();

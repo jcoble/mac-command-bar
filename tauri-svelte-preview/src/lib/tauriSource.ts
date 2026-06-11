@@ -746,6 +746,21 @@ export async function findSourceLspImplementationsFromTauri(
   });
 }
 
+export async function findSourceLspTypeDefinitionsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceDefinitionTarget[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceDefinitionTarget[]>('find_source_lsp_type_definitions', {
+    preview,
+    request
+  });
+}
+
 export async function findSourceLspHoverFromTauri(
   preview: SourcePreview,
   request: SourceLspLookupRequest

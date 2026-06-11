@@ -153,6 +153,7 @@
     findSourceLspImplementationsFromTauri,
     findSourceLspReferencesFromTauri,
     findSourceLspSymbolsFromTauri,
+    findSourceLspTypeDefinitionsFromTauri,
     findSourceReferencesFromTauri,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
@@ -265,7 +266,12 @@
   const sourceLayoutVersion = '2026-06-editor-canvas';
   const initialProject = defaultProjectRoots[0];
 
-  type SourceIntelligenceAction = 'definition' | 'hover' | 'implementation' | 'references';
+  type SourceIntelligenceAction =
+    | 'definition'
+    | 'hover'
+    | 'implementation'
+    | 'references'
+    | 'type-definition';
   type SourceEditorIntelligenceCommand = {
     id: number;
     action: SourceIntelligenceAction;
@@ -471,6 +477,10 @@
   let sourceImplementationQuery = $state('');
   let sourceImplementationLoading = $state(false);
   let sourceImplementationError = $state('');
+  let sourceTypeDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
+  let sourceTypeDefinitionQuery = $state('');
+  let sourceTypeDefinitionLoading = $state(false);
+  let sourceTypeDefinitionError = $state('');
   let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
   let selectedSourceGitDiffLoading = $state(false);
   let selectedSourceGitDiffError = $state('');
@@ -925,6 +935,14 @@
       sourceImplementationQuery
     )
   );
+  let sourceTypeDefinitionSummary = $derived(
+    formatSourceTypeDefinitionSummary(
+      sourceTypeDefinitionTargets.length,
+      sourceTypeDefinitionLoading,
+      sourceTypeDefinitionError,
+      sourceTypeDefinitionQuery
+    )
+  );
   let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
   let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
     {
@@ -1120,6 +1138,13 @@
       detail: preview?.fileName ?? 'No file',
       disabled: !preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('implementation')
+    },
+    {
+      id: 'go-type-definition',
+      label: 'Go to type definition',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('type-definition')
     },
     {
       id: 'show-hover',
@@ -4515,6 +4540,78 @@
     sourceImplementationQuery = '';
   }
 
+  async function runSourceTypeDefinitionLookup(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    sourceTypeDefinitionQuery = normalizedSymbolName;
+    sourceTypeDefinitionError = '';
+
+    if (!normalizedSymbolName) {
+      sourceTypeDefinitionTargets = [];
+      fileActionStatus = 'No symbol under cursor';
+      return [];
+    }
+
+    if (!preview || !sourceIntelligenceAvailable) {
+      sourceTypeDefinitionTargets = [];
+      sourceTypeDefinitionError = 'Language server unavailable';
+      fileActionStatus = `No type definition lookup for ${normalizedSymbolName}`;
+      return [];
+    }
+
+    sourceTypeDefinitionLoading = true;
+    fileActionStatus = `Finding type definition for ${normalizedSymbolName}`;
+    try {
+      const lspTargets =
+        (await findSourceLspTypeDefinitionsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceDefinitionResults
+          }
+        )) ?? [];
+
+      sourceTypeDefinitionTargets = lspTargets;
+      sourceTypeDefinitionError = '';
+      fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
+      return lspTargets;
+    } catch (typeDefinitionError) {
+      sourceTypeDefinitionTargets = [];
+      sourceTypeDefinitionError =
+        typeDefinitionError instanceof Error
+          ? typeDefinitionError.message
+          : 'Could not find type definition';
+      return sourceTypeDefinitionTargets;
+    } finally {
+      sourceTypeDefinitionLoading = false;
+    }
+  }
+
+  function formatSourceTypeDefinitionSummary(
+    targetCount: number,
+    loadingTypeDefinitions: boolean,
+    typeDefinitionError: string,
+    symbolName: string
+  ) {
+    if (loadingTypeDefinitions) return 'Finding type definition';
+    if (typeDefinitionError) return typeDefinitionError;
+    if (!symbolName.trim()) return '';
+    return `${targetCount} ${targetCount === 1 ? 'type definition' : 'type definitions'} for ${symbolName}`;
+  }
+
+  async function selectSourceTypeDefinitionTarget(target: SourceDefinitionTarget) {
+    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    await selectRecord(record, target.line);
+  }
+
+  function clearSourceTypeDefinitionTargets() {
+    sourceTypeDefinitionTargets = [];
+    sourceTypeDefinitionError = '';
+    sourceTypeDefinitionLoading = false;
+    sourceTypeDefinitionQuery = '';
+  }
+
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
     const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
     if (indexing) {
@@ -4556,6 +4653,7 @@
     clearSourceDefinitionTargets();
     clearSourceReferenceTargets();
     clearSourceImplementationTargets();
+    clearSourceTypeDefinitionTargets();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -5388,9 +5486,18 @@
     return runSourceImplementationLookup(request);
   }
 
+  async function handleEditorTypeDefinitionLookup(request: SourceEditorLookupRequest) {
+    return runSourceTypeDefinitionLookup(request);
+  }
+
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
     if (!preview || loading) return;
-    if ((action === 'hover' || action === 'implementation') && !sourceIntelligenceAvailable) return;
+    if (
+      (action === 'hover' || action === 'implementation' || action === 'type-definition') &&
+      !sourceIntelligenceAvailable
+    ) {
+      return;
+    }
 
     sourceIntelligenceCommand = {
       id: ++sourceIntelligenceCommandId,
@@ -6249,6 +6356,9 @@
     sourceImplementationTargets = [];
     sourceImplementationQuery = '';
     sourceImplementationError = '';
+    sourceTypeDefinitionTargets = [];
+    sourceTypeDefinitionQuery = '';
+    sourceTypeDefinitionError = '';
   }
 
   function isContextCardVisible(cardID: SourceContextCardID) {
@@ -9313,6 +9423,19 @@
                 <button
                   type="button"
                   role="menuitem"
+                  aria-label="Go to type definition"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('type-definition');
+                  }}
+                >
+                  <FileCode2 size={13} strokeWidth={2} />
+                  <span>Type definition</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
                   onclick={() => {
                     closeEditorActionMenu();
@@ -9433,13 +9556,14 @@
                 onSaveRequest={saveSelectedSourceFile}
                 onSymbolsRequest={() => showEditorInsightPanel('symbols')}
                 onSymbolsChange={handleEditorSymbolsChange}
+                onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
               />
             {/key}
 
-            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading)}
+            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
               <div class="editor-lookup-popover" aria-label="Editor lookup results">
                 <div class="editor-lookup-header">
-                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceImplementationQuery ? sourceImplementationSummary : sourceDefinitionSummary}</strong>
+                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
                   <button
                     class="editor-lookup-close"
                     type="button"
@@ -9497,6 +9621,24 @@
                           type="button"
                           title={target.detail}
                           onclick={() => selectSourceImplementationTarget(target)}
+                        >
+                          <strong>{target.kind}</strong>
+                          <span>{target.symbolName}</span>
+                          <small>{target.relativePath}:{target.line}</small>
+                        </button>
+                      {/each}
+                    {/if}
+                  {/if}
+                  {#if sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading}
+                    {#if sourceTypeDefinitionTargets.length === 0 && !sourceTypeDefinitionLoading}
+                      <div class="intelligence-empty">No type definition</div>
+                    {:else}
+                      {#each sourceTypeDefinitionTargets as target (`inline-type-definition:${target.path}:${target.line}:${target.symbolName}`)}
+                        <button
+                          class="definition-row"
+                          type="button"
+                          title={target.detail}
+                          onclick={() => selectSourceTypeDefinitionTarget(target)}
                         >
                           <strong>{target.kind}</strong>
                           <span>{target.symbolName}</span>
@@ -9613,6 +9755,28 @@
                       type="button"
                       title={target.detail}
                       onclick={() => selectSourceImplementationTarget(target)}
+                    >
+                      <strong>{target.kind}</strong>
+                      <span>{target.symbolName}</span>
+                      <small>{target.relativePath}:{target.line}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+
+            {#if sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading}
+              <div class="type-definition-results" aria-label="Type definition lookup results">
+                <div class="type-definition-summary">{sourceTypeDefinitionSummary}</div>
+                {#if sourceTypeDefinitionTargets.length === 0 && !sourceTypeDefinitionLoading}
+                  <div class="intelligence-empty">No type definition</div>
+                {:else}
+                  {#each sourceTypeDefinitionTargets as target (`${target.path}:${target.line}:${target.symbolName}:type-definition`)}
+                    <button
+                      class="definition-row"
+                      type="button"
+                      title={target.detail}
+                      onclick={() => selectSourceTypeDefinitionTarget(target)}
                     >
                       <strong>{target.kind}</strong>
                       <span>{target.symbolName}</span>
@@ -14990,6 +15154,7 @@
 
   .definition-results,
   .implementation-results,
+  .type-definition-results,
   .reference-results {
     flex: 0 0 auto;
     max-height: 164px;
@@ -15018,8 +15183,14 @@
     scrollbar-width: thin;
   }
 
+  .type-definition-results {
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
   .definition-summary,
   .implementation-summary,
+  .type-definition-summary,
   .reference-summary {
     margin-bottom: 6px;
     min-width: 0;

@@ -213,6 +213,32 @@ impl SourceLspRegistry {
         Ok(targets)
     }
 
+    pub(crate) fn find_type_definitions(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Vec<SourceLspDefinitionTarget>, String> {
+        let Some(result) = self.request(&preview, &request, "textDocument/typeDefinition")? else {
+            return Ok(Vec::new());
+        };
+
+        let symbol_name = symbol_at_position(&preview.content, request.line, request.column)
+            .unwrap_or_else(|| preview.file_name.clone());
+        let mut targets = Vec::new();
+        for location in lsp_locations_from_result(&result) {
+            targets.push(definition_target_from_location(
+                &preview,
+                &request,
+                &location,
+                &symbol_name,
+            ));
+            if targets.len() >= request.limit.unwrap_or(20) {
+                break;
+            }
+        }
+        Ok(targets)
+    }
+
     pub(crate) fn find_references(
         &self,
         preview: SourceLspPreview,
@@ -854,6 +880,9 @@ fn lsp_client_capabilities() -> Value {
             "implementation": {
                 "linkSupport": true
             },
+            "typeDefinition": {
+                "linkSupport": true
+            },
             "publishDiagnostics": {
                 "relatedInformation": true,
                 "tagSupport": {
@@ -1490,6 +1519,14 @@ mod tests {
                 .get("textDocument")
                 .and_then(|text_document| text_document.get("implementation"))
                 .and_then(|implementation| implementation.get("linkSupport"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("typeDefinition"))
+                .and_then(|type_definition| type_definition.get("linkSupport"))
                 .and_then(Value::as_bool),
             Some(true)
         );
