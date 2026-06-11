@@ -204,6 +204,7 @@
   const sourceLayoutVersionStorageKey = 'mac-command-bar.source-browser.layout-version';
   const sourceTerminalAppStorageKey = 'mac-command-bar.source-browser.terminal-app';
   const sourceDockLayoutStorageKey = 'mac-command-bar.source-browser.dock-layout';
+  const browserDockUrlStorageKey = 'mac-command-bar.source-browser.browser-url';
   const activeWorkspaceSessionStorageKey = 'mac-command-bar.source-browser.active-workspace-session';
   const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
   const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
@@ -473,6 +474,10 @@
   let embeddedTerminalStarting = $state(false);
   let embeddedTerminalStatus = $state('Embedded terminal idle');
   let embeddedTerminalError = $state('');
+  let browserUrl = $state('');
+  let browserInputUrl = $state('');
+  let browserFrameKey = $state(0);
+  let browserError = $state('');
   let contextPanelMode = $state<SourceContextPanelMode>('grid');
   let contextPanelPlacement = $state<SourceContextPanelPlacement>('top');
   let sidePanePosition = $state<SourceSidePanePosition>('left');
@@ -660,6 +665,10 @@
         context.projectID === selectedProject.id || context.projectName === selectedProject.name
     )
   );
+  let defaultBrowserUrl = $derived(
+    selectedProjectRuntimeContexts[0] ? runtimeContextUrl(selectedProjectRuntimeContexts[0]) : ''
+  );
+  let activeBrowserUrl = $derived(browserUrl || defaultBrowserUrl);
   let selectedProjectAgentSessions = $derived(
     agentSessions.filter((session) => agentSessionMatchesProject(session, selectedProject))
   );
@@ -1202,6 +1211,41 @@
       detail: terminalDockSummary(),
       disabled: !sourceDockPanelVisible('terminal'),
       perform: () => hideDockPanel('terminal')
+    },
+    {
+      id: 'dock-show-browser',
+      label: 'Show browser dock',
+      detail: activeBrowserUrl || 'No runtime URL',
+      disabled: sourceDockPanelVisible('browser'),
+      perform: () => openBrowserDock()
+    },
+    {
+      id: 'dock-hide-browser',
+      label: 'Hide browser dock',
+      detail: activeBrowserUrl || 'No runtime URL',
+      disabled: !sourceDockPanelVisible('browser'),
+      perform: () => hideDockPanel('browser')
+    },
+    {
+      id: 'browser-open-runtime',
+      label: 'Open active runtime in browser dock',
+      detail: defaultBrowserUrl || 'No active runtime',
+      disabled: !defaultBrowserUrl,
+      perform: () => openBrowserDock(defaultBrowserUrl)
+    },
+    {
+      id: 'browser-reload',
+      label: 'Reload browser dock',
+      detail: activeBrowserUrl || 'No browser URL',
+      disabled: !activeBrowserUrl,
+      perform: reloadBrowserFrame
+    },
+    {
+      id: 'browser-open-external',
+      label: 'Open browser URL externally',
+      detail: activeBrowserUrl || 'No browser URL',
+      disabled: !activeBrowserUrl,
+      perform: openBrowserUrlExternal
     },
     {
       id: 'terminal-start-embedded',
@@ -3309,6 +3353,82 @@
     return `http://localhost:${context.port}`;
   }
 
+  function normalizeBrowserDockUrl(value: string) {
+    const trimmedValue = value.trim();
+    if (!trimmedValue) return '';
+
+    const withProtocol =
+      /^https?:\/\//i.test(trimmedValue)
+        ? trimmedValue
+        : trimmedValue.startsWith(':')
+          ? `http://localhost${trimmedValue}`
+          : /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/.*)?$/i.test(trimmedValue)
+            ? `http://${trimmedValue}`
+            : trimmedValue;
+
+    try {
+      const parsedUrl = new URL(withProtocol);
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return '';
+      return parsedUrl.toString();
+    } catch {
+      return '';
+    }
+  }
+
+  function persistBrowserDockUrl(url: string) {
+    if (typeof window === 'undefined') return;
+    if (url.trim()) {
+      window.localStorage.setItem(browserDockUrlStorageKey, url);
+    } else {
+      window.localStorage.removeItem(browserDockUrlStorageKey);
+    }
+  }
+
+  function loadStoredBrowserDockUrl() {
+    if (typeof window === 'undefined') return '';
+    return normalizeBrowserDockUrl(window.localStorage.getItem(browserDockUrlStorageKey) ?? '');
+  }
+
+  function setBrowserDockUrl(value: string) {
+    const normalizedUrl = normalizeBrowserDockUrl(value);
+    if (!normalizedUrl) {
+      browserError = 'Enter an http or https URL';
+      return false;
+    }
+
+    browserUrl = normalizedUrl;
+    browserInputUrl = normalizedUrl;
+    browserError = '';
+    browserFrameKey += 1;
+    persistBrowserDockUrl(normalizedUrl);
+    return true;
+  }
+
+  function openBrowserDock(url = activeBrowserUrl) {
+    showDockPanel('browser');
+    if (url) {
+      setBrowserDockUrl(url);
+    }
+  }
+
+  function openRuntimeContextInBrowserDock(context: RuntimeContext) {
+    openBrowserDock(runtimeContextUrl(context));
+  }
+
+  function submitBrowserUrl(event: SubmitEvent) {
+    event.preventDefault();
+    setBrowserDockUrl(browserInputUrl);
+  }
+
+  function reloadBrowserFrame() {
+    browserFrameKey += 1;
+  }
+
+  function openBrowserUrlExternal() {
+    if (!activeBrowserUrl || typeof window === 'undefined') return;
+    window.open(activeBrowserUrl, '_blank', 'noopener,noreferrer');
+  }
+
   function projectWorktreeSafety(worktree: ProjectWorktree) {
     return buildWorktreeSafetySummary(worktree, {
       primaryPath: selectedProject.path,
@@ -5187,7 +5307,10 @@
       fileActionStatus = 'Terminal dock shown';
     }
     if (panelID === 'browser') {
-      fileActionStatus = 'Browser dock reserved for embedded browser integration';
+      if (!browserUrl && defaultBrowserUrl) {
+        setBrowserDockUrl(defaultBrowserUrl);
+      }
+      fileActionStatus = 'Browser dock shown';
     }
   }
 
@@ -6452,6 +6575,7 @@
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSourceTerminalApp = loadStoredSourceTerminalApp();
+    const storedBrowserDockUrl = loadStoredBrowserDockUrl();
     const storedSidePanePosition = loadStoredSidePanePosition();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
@@ -6483,6 +6607,8 @@
     pasteCleanupMode = storedPasteCleanupMode;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceTerminalApp = storedSourceTerminalApp;
+    browserUrl = storedBrowserDockUrl;
+    browserInputUrl = storedBrowserDockUrl;
     sidePanePosition = migrateSourceLayout ? compactPreset.sidePanePosition : storedSidePanePosition;
     sidePaneWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneWidth;
     editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
@@ -9051,6 +9177,13 @@
           {/if}
         </div>
       </div>
+    {:else}
+      <div class="empty-preview">
+        <FileCode2 size={34} strokeWidth={1.55} />
+        <strong>No source file loaded</strong>
+        <span>Scan a project or choose a file from the tree.</span>
+      </div>
+    {/if}
 
       {#if shouldRenderDockPanel('terminal')}
         <section class="terminal-launchpad" aria-label="Terminal dock">
@@ -9262,13 +9395,104 @@
           </div>
         </section>
       {/if}
-    {:else}
-      <div class="empty-preview">
-        <FileCode2 size={34} strokeWidth={1.55} />
-        <strong>No source file loaded</strong>
-        <span>Scan a project or choose a file from the tree.</span>
-      </div>
-    {/if}
+
+      {#if shouldRenderDockPanel('browser')}
+        <section class="browser-dock" aria-label="Browser dock">
+          <header class="browser-dock-header">
+            <div class="browser-dock-title">
+              <Network size={14} strokeWidth={2} />
+              <strong>Browser</strong>
+              <span>{activeBrowserUrl || 'No runtime URL'}</span>
+            </div>
+            <div class="browser-dock-actions">
+              <button
+                class="file-action-button icon-only"
+                type="button"
+                aria-label="Reload browser dock"
+                title="Reload browser dock"
+                disabled={!activeBrowserUrl}
+                onclick={reloadBrowserFrame}
+              >
+                <RefreshCw size={13} strokeWidth={2} />
+              </button>
+              <button
+                class="file-action-button icon-only"
+                type="button"
+                aria-label="Open browser URL externally"
+                title="Open browser URL externally"
+                disabled={!activeBrowserUrl}
+                onclick={openBrowserUrlExternal}
+              >
+                <ExternalLink size={13} strokeWidth={2} />
+              </button>
+              <button
+                class="file-action-button icon-only"
+                type="button"
+                aria-label="Hide browser dock"
+                title="Hide browser dock"
+                onclick={() => hideDockPanel('browser')}
+              >
+                <X size={13} strokeWidth={2} />
+              </button>
+            </div>
+          </header>
+
+          <form class="browser-url-form" onsubmit={submitBrowserUrl}>
+            <input
+              bind:value={browserInputUrl}
+              aria-label="Browser dock URL"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="localhost:5177"
+            />
+            <button
+              class="file-action-button"
+              type="submit"
+              disabled={!browserInputUrl.trim()}
+            >
+              <Network size={13} strokeWidth={2} />
+              <span>Open</span>
+            </button>
+          </form>
+
+          {#if selectedProjectRuntimeContexts.length > 0}
+            <div class="browser-runtime-list" aria-label="Browser runtime shortcuts">
+              {#each selectedProjectRuntimeContexts as context (`browser:${context.pid}:${context.port}:${context.cwd}`)}
+                <button
+                  type="button"
+                  class:active={activeBrowserUrl === runtimeContextUrl(context)}
+                  title={runtimeContextUrl(context)}
+                  onclick={() => openRuntimeContextInBrowserDock(context)}
+                >
+                  <span>:{context.port}</span>
+                  <strong>{context.command}</strong>
+                  <small>{context.rootLabel}</small>
+                </button>
+              {/each}
+            </div>
+          {/if}
+
+          {#if browserError}
+            <div class="browser-error">{browserError}</div>
+          {/if}
+
+          {#if activeBrowserUrl}
+            <div class="browser-frame-wrap">
+              {#key `${browserFrameKey}:${activeBrowserUrl}`}
+                <iframe
+                  class="browser-frame"
+                  title="Browser dock preview"
+                  src={activeBrowserUrl}
+                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+                  referrerpolicy="no-referrer"
+                ></iframe>
+              {/key}
+            </div>
+          {:else}
+            <div class="browser-empty">Start a runtime or enter a localhost URL.</div>
+          {/if}
+        </section>
+      {/if}
       </div>
     </div>
   </section>
@@ -12676,6 +12900,206 @@
     border-radius: 6px;
     font-size: 10px;
     font-weight: 760;
+  }
+
+  .browser-dock {
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    flex: 0 0 auto;
+    gap: 6px;
+    min-width: 0;
+    max-height: 428px;
+    margin-top: 6px;
+    overflow: hidden;
+    padding: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.105);
+    border-radius: 8px;
+    background: rgba(15, 18, 18, 0.92);
+  }
+
+  .browser-dock-header,
+  .browser-url-form {
+    display: grid;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .browser-dock-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .browser-dock-title,
+  .browser-dock-actions {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .browser-dock-title {
+    gap: 6px;
+    color: #dce4e2;
+  }
+
+  .browser-dock-title strong,
+  .browser-dock-title span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .browser-dock-title strong {
+    font-size: 11px;
+    font-weight: 860;
+  }
+
+  .browser-dock-title span {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .browser-dock-actions {
+    justify-content: end;
+    gap: 5px;
+  }
+
+  .browser-dock-actions .file-action-button {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 24px;
+    min-width: 28px;
+    padding: 0;
+    border-radius: 6px;
+  }
+
+  .browser-url-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .browser-url-form input {
+    width: 100%;
+    height: 28px;
+    min-width: 0;
+    padding: 0 9px;
+    color: #e6efec;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.045);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 720;
+  }
+
+  .browser-url-form input:focus-visible {
+    outline: 1px solid rgba(92, 226, 207, 0.52);
+    outline-offset: 1px;
+  }
+
+  .browser-url-form .file-action-button {
+    display: inline-flex;
+    width: auto;
+    height: 28px;
+    gap: 5px;
+    padding: 0 9px;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .browser-runtime-list {
+    display: flex;
+    gap: 5px;
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+  }
+
+  .browser-runtime-list button {
+    display: inline-grid;
+    grid-template-columns: auto minmax(0, auto) auto;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 6px;
+    max-width: 220px;
+    height: 26px;
+    min-width: 0;
+    padding: 0 8px;
+    color: #b7c3bf;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .browser-runtime-list button.active {
+    color: #dffdf8;
+    border-color: rgba(92, 226, 207, 0.28);
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .browser-runtime-list span,
+  .browser-runtime-list small {
+    color: #72e2cf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .browser-runtime-list strong,
+  .browser-runtime-list small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .browser-runtime-list strong {
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .browser-runtime-list small {
+    max-width: 82px;
+    color: #8d9995;
+  }
+
+  .browser-frame-wrap {
+    min-height: 280px;
+    min-width: 0;
+    height: 280px;
+    overflow: hidden;
+    border: 1px solid rgba(92, 226, 207, 0.11);
+    border-radius: 7px;
+    background: rgba(8, 11, 11, 0.72);
+  }
+
+  .browser-frame {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 280px;
+    border: 0;
+    background: #101414;
+  }
+
+  .browser-empty,
+  .browser-error {
+    display: grid;
+    place-items: center;
+    min-height: 54px;
+    color: #798481;
+    border: 1px dashed rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .browser-error {
+    min-height: 28px;
+    color: #d8aa55;
   }
 
   .editor-toolbar {

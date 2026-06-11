@@ -79,6 +79,10 @@ assertDeclaration('.embedded-terminal-host', 'overflow: hidden');
 assertDeclaration('.terminal-launchpad-grid', 'grid-template-columns: repeat(4, minmax(0, 1fr))');
 assertDeclaration('.terminal-launchpad-row', 'display: grid');
 assertDeclaration('.terminal-launchpad-row', 'grid-template-columns: auto minmax(0, 1fr) 24px');
+assertDeclaration('.browser-dock', 'max-height: 428px');
+assertDeclaration('.browser-frame-wrap', 'min-height: 280px');
+assertDeclaration('.browser-frame', 'width: 100%');
+assertDeclaration('.browser-runtime-list', 'overflow-x: auto');
 assertDeclaration('.editor-lookup-popover', 'position: absolute');
 assertDeclaration('.git-command-drawer', 'flex: 0 0 auto');
 assertDeclaration('.context-panel-grid.collapsed', 'display: none');
@@ -99,6 +103,7 @@ assert.ok(pageSource.includes('sourceLayoutPresetStorageKey'), 'Source shell sho
 assert.ok(pageSource.includes('sourceLayoutVersionStorageKey'), 'Source shell should version layout storage migrations');
 assert.ok(pageSource.includes('sourceTerminalAppStorageKey'), 'Source shell should persist the selected terminal app');
 assert.ok(pageSource.includes('sourceDockLayoutStorageKey'), 'Workspace should persist dock layout state');
+assert.ok(pageSource.includes('browserDockUrlStorageKey'), 'Workspace should persist the browser dock URL');
 assert.ok(pageSource.includes('snapshotStorageKey'), 'Workspace should persist conversation workspace snapshots');
 assert.ok(pageSource.includes('activeWorkspaceSessionStorageKey'), 'Workspace should persist the active conversation session key');
 assert.ok(pageSource.includes('contextPanelModeStorageKey'), 'Workspace should persist the context card layout mode');
@@ -157,6 +162,9 @@ assert.ok(pageSource.includes('function resetSourceDockLayout'), 'Workspace shou
 assert.ok(pageSource.includes('function toggleDockPanelVisibility'), 'Workspace should toggle dock panels from compact controls');
 assert.ok(pageSource.includes('function dockPanelMoveTargets'), 'Workspace should constrain panel moves to renderable dock targets');
 assert.ok(pageSource.includes('function sourceDockPanelVisible'), 'Workspace should detect visible dock panels');
+assert.ok(pageSource.includes('function normalizeBrowserDockUrl'), 'Browser dock should normalize localhost and http URLs');
+assert.ok(pageSource.includes('function openBrowserDock'), 'Browser dock should open a URL in the dock surface');
+assert.ok(pageSource.includes('function reloadBrowserFrame'), 'Browser dock should reload the embedded preview frame');
 assert.ok(pageSource.includes('function terminalDockSummary'), 'Terminal dock should summarize launch targets');
 assert.ok(pageSource.includes('function ensureEmbeddedTerminalRenderer'), 'Terminal dock should lazily load xterm');
 assert.ok(pageSource.includes('function startEmbeddedTerminalSession'), 'Terminal dock should start native PTY sessions');
@@ -322,6 +330,10 @@ assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 
 assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
 assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Terminal launchpad should run agent resumes inside the embedded PTY');
 assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
+assert.ok(pageSource.includes('aria-label="Browser dock"'), 'Workspace should render a browser dock');
+assert.ok(pageSource.includes('class="browser-frame"'), 'Browser dock should render an iframe surface');
+assert.ok(pageSource.includes('bind:value={browserInputUrl}'), 'Browser dock should expose an editable URL field');
+assert.ok(pageSource.includes('onclick={() => openRuntimeContextInBrowserDock(context)}'), 'Browser dock should open runtime contexts inline');
 assert.ok(pageSource.includes('listenToTerminalOutput(handleTerminalOutput)'), 'Source shell should subscribe to terminal output events');
 assert.ok(pageSource.includes('writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data)'), 'Embedded terminal should write input to the native PTY');
 assert.ok(pageSource.includes('embeddedTerminal.write(scrollback)'), 'Embedded terminal attach should replay buffered scrollback');
@@ -382,6 +394,8 @@ assert.ok(pageSource.includes('dock-panel-manager'), 'View menu should expose a 
 assert.ok(pageSource.includes('aria-label="Dock panels"'), 'Dock panel manager should be accessible');
 assert.ok(pageSource.includes("id: 'dock-show-terminal'"), 'Command palette should expose the future terminal dock panel');
 assert.ok(pageSource.includes("id: 'dock-hide-terminal'"), 'Command palette should hide the terminal dock panel');
+assert.ok(pageSource.includes("id: 'dock-show-browser'"), 'Command palette should expose the browser dock panel');
+assert.ok(pageSource.includes("id: 'browser-open-runtime'"), 'Command palette should open the active runtime in the browser dock');
 assert.ok(pageSource.includes("id: 'terminal-open-project'"), 'Command palette should open the current project shell');
 assert.ok(pageSource.includes("id: 'conversation-save-snapshot'"), 'Command palette should save the current conversation workspace');
 assert.ok(pageSource.includes("id: 'conversation-restore-latest'"), 'Command palette should restore the latest conversation workspace');
