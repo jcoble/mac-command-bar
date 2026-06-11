@@ -373,7 +373,12 @@ assert.ok(pageSource.includes("id: 'conversation-delete-latest'"), 'Command pale
 assert.ok(pageSource.includes('conversation-save-session-workspace'), 'Command palette should save a specific session workspace');
 assert.ok(pageSource.includes('conversation-restore-session-workspace'), 'Command palette should restore a specific session workspace');
 assert.ok(pageSource.includes('orchestrationLoopTallyText'), 'Runs should render shared orchestration loop tally text');
+assert.ok(pageSource.includes('orchestrationRunStage(run, runMetrics)'), 'Runs should derive a compact current stage label');
+assert.ok(pageSource.includes('orchestrationLoopStageMetrics(runMetrics)'), 'Runs should derive compact loop stage metrics');
 assert.ok(pageSource.includes('class="run-loop-row"'), 'Runs should render a compact loop tally row');
+assert.ok(pageSource.includes('class={`run-stage-badge ${runStage.tone}`}'), 'Runs should render a current stage badge');
+assert.ok(pageSource.includes('class="run-loop-stage-strip"'), 'Runs should render a dense loop stage strip');
+assert.ok(pageSource.includes('aria-label="Run loop stages"'), 'Run loop stage strip should be accessible');
 assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally should be accessible');
 assert.ok(pageSource.includes("selectContextPanelMode('grid')"), 'Context layout controls should select grid mode');
 assert.ok(pageSource.includes("selectContextPanelMode('stack')"), 'Context layout controls should select stack mode');

@@ -53,6 +53,20 @@ export type OrchestrationChip = {
   status: string;
 };
 
+export type OrchestrationRunStage = {
+  label: string;
+  tone: OrchestrationStatusTone;
+  title: string;
+};
+
+export type OrchestrationLoopStageMetric = {
+  id: 'scenario' | 'test' | 'retest' | 'fix' | 'resolved' | 'decision' | 'approval';
+  label: string;
+  value: number;
+  tone: OrchestrationStatusTone;
+  title: string;
+};
+
 type OrchestrationLoopKind = 'scenario' | 'test' | 'retest' | 'fix' | 'resolved' | 'handoff';
 
 const retryPattern = /\b(retry|retries|retried|rerun|re-run)\b/i;
@@ -181,6 +195,127 @@ export function orchestrationLoopTallyText(metrics: OrchestrationRunMetrics): st
   ].filter(Boolean);
 
   return parts.join(' · ') || 'no loop events yet';
+}
+
+export function orchestrationRunStage(
+  run: OrchestrationRun,
+  metrics = orchestrationRunMetrics(run)
+): OrchestrationRunStage {
+  if (metrics.failedCount > 0) {
+    return {
+      label: 'Blocked',
+      tone: 'bad',
+      title: formatMetricLabel(metrics.failedCount, 'failure', 'failures')
+    };
+  }
+
+  if (metrics.decisionCount > 0 || metrics.approvalCount > 0) {
+    const title = [
+      formatMetricLabel(metrics.decisionCount, 'decision', 'decisions'),
+      metrics.approvalCount ? `${metrics.approvalCount} sign-off` : ''
+    ].filter(Boolean).join(' · ');
+
+    return {
+      label: metrics.approvalCount > 0 ? 'Needs sign-off' : 'Needs decision',
+      tone: 'attention',
+      title
+    };
+  }
+
+  if (metrics.retestCount > 0) {
+    return {
+      label: 'Retesting',
+      tone: 'live',
+      title: `${metrics.retestCount} retest${metrics.retestCount === 1 ? '' : 's'}`
+    };
+  }
+
+  if (metrics.fixCount > 0) {
+    return {
+      label: 'Fixing',
+      tone: 'live',
+      title: `${metrics.fixCount} fix${metrics.fixCount === 1 ? '' : 'es'}`
+    };
+  }
+
+  if (metrics.testCount > 0) {
+    return {
+      label: 'Testing',
+      tone: 'live',
+      title: `${metrics.testCount} test${metrics.testCount === 1 ? '' : 's'}`
+    };
+  }
+
+  if (metrics.scenarioCount > 0) {
+    return {
+      label: 'Scenarios',
+      tone: 'good',
+      title: `${metrics.scenarioCount} scenario${metrics.scenarioCount === 1 ? '' : 's'}`
+    };
+  }
+
+  const statusTone = orchestrationStatusTone(run.status);
+  return {
+    label: statusTone === 'good' ? 'Complete' : statusTone === 'live' ? 'Running' : 'Queued',
+    tone: statusTone,
+    title: run.summary || run.status || 'No orchestration activity yet'
+  };
+}
+
+export function orchestrationLoopStageMetrics(
+  metrics: OrchestrationRunMetrics
+): OrchestrationLoopStageMetric[] {
+  return [
+    {
+      id: 'scenario',
+      label: 'Scen',
+      value: metrics.scenarioCount,
+      tone: metrics.scenarioCount > 0 ? 'good' : 'idle',
+      title: stageMetricTitle(metrics.scenarioCount, 'scenario', 'scenarios', 'mapped')
+    },
+    {
+      id: 'test',
+      label: 'Test',
+      value: metrics.testCount,
+      tone: metrics.testCount > 0 ? 'live' : 'idle',
+      title: stageMetricTitle(metrics.testCount, 'test', 'tests', 'run')
+    },
+    {
+      id: 'retest',
+      label: 'Retest',
+      value: metrics.retestCount,
+      tone: metrics.retestCount > 0 ? 'live' : 'idle',
+      title: stageMetricTitle(metrics.retestCount, 'retest', 'retests', 'run')
+    },
+    {
+      id: 'fix',
+      label: 'Fix',
+      value: metrics.fixCount,
+      tone: metrics.fixCount > 0 ? 'live' : 'idle',
+      title: stageMetricTitle(metrics.fixCount, 'fix', 'fixes', 'batched')
+    },
+    {
+      id: 'resolved',
+      label: 'Done',
+      value: metrics.resolvedCount,
+      tone: metrics.resolvedCount > 0 ? 'good' : 'idle',
+      title: stageMetricTitle(metrics.resolvedCount, 'resolved', 'resolved', '')
+    },
+    {
+      id: 'decision',
+      label: 'Decide',
+      value: metrics.decisionCount,
+      tone: metrics.decisionCount > 0 ? 'attention' : 'idle',
+      title: stageMetricTitle(metrics.decisionCount, 'decision', 'decisions', 'needed')
+    },
+    {
+      id: 'approval',
+      label: 'Sign',
+      value: metrics.approvalCount,
+      tone: metrics.approvalCount > 0 ? 'attention' : 'idle',
+      title: stageMetricTitle(metrics.approvalCount, 'sign-off', 'sign-offs', 'needed')
+    }
+  ];
 }
 
 export function orchestrationTimelineItems(
@@ -370,6 +505,11 @@ function searchTextForTimelineItem(item: OrchestrationTimelineItem): string {
 function formatMetricLabel(count: number, singular: string, plural: string): string {
   if (count <= 0) return '';
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function stageMetricTitle(count: number, singular: string, plural: string, suffix: string): string {
+  const label = count === 1 ? singular : plural;
+  return `${count} ${label}${suffix ? ` ${suffix}` : ''}`;
 }
 
 function orchestrationLoopKindForTimelineItem(item: OrchestrationTimelineItem): OrchestrationLoopKind | null {

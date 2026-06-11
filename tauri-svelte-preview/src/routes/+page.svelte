@@ -41,9 +41,11 @@
     orchestrationArtifactChips,
     orchestrationCurrentActivity,
     orchestrationLinkChips,
+    orchestrationLoopStageMetrics,
     orchestrationLoopTallyText,
     orchestrationRunMetrics,
     orchestrationRunSummaryText,
+    orchestrationRunStage,
     orchestrationStatusTone,
     orchestrationTimelineItems,
     type OrchestrationTimelineItem
@@ -6790,6 +6792,8 @@
             {:else}
               {#each filteredProjectOrchestrationRuns as run (run.id)}
                 {@const runMetrics = orchestrationRunMetrics(run)}
+                {@const runStage = orchestrationRunStage(run, runMetrics)}
+                {@const runLoopStages = orchestrationLoopStageMetrics(runMetrics)}
                 {@const runTimeline = orchestrationTimelineItems(run, 6)}
                 {@const runArtifacts = orchestrationArtifactChips(run)}
                 {@const runLinks = orchestrationLinkChips(run)}
@@ -6803,7 +6807,12 @@
                   title={orchestrationRunTitle(run)}
                 >
                   <div class="run-row-heading">
-                    <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
+                    <span class="run-heading-badges">
+                      <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
+                      <span class={`run-stage-badge ${runStage.tone}`} title={runStage.title}>
+                        {runStage.label}
+                      </span>
+                    </span>
                     {#if run.taskID && orchestrationRunTaskUrl(run)}
                       <a
                         class="repo-task-link"
@@ -6840,6 +6849,14 @@
                   </div>
                   <div class="run-loop-row" aria-label="Run loop tally">
                     <span>{orchestrationLoopTallyText(runMetrics)}</span>
+                  </div>
+                  <div class="run-loop-stage-strip" aria-label="Run loop stages">
+                    {#each runLoopStages as stage (stage.id)}
+                      <span class={`run-loop-stage ${stage.tone}`} title={stage.title}>
+                        <em>{stage.label}</em>
+                        <strong>{stage.value}</strong>
+                      </span>
+                    {/each}
                   </div>
                   {#if runTimeline.length > 0}
                     <div class="run-timeline" aria-label="Run timeline">
@@ -9723,6 +9740,13 @@
     justify-content: space-between;
   }
 
+  .run-heading-badges {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+
   .run-metrics-row {
     flex-wrap: wrap;
     color: #8d9995;
@@ -9738,6 +9762,73 @@
     font-weight: 780;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .run-loop-stage-strip {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .run-loop-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    height: 24px;
+    padding: 0 5px;
+    color: #8d9995;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .run-loop-stage em,
+  .run-loop-stage strong {
+    min-width: 0;
+    overflow: hidden;
+    font-style: normal;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-loop-stage em {
+    font-size: 8px;
+    font-weight: 820;
+    text-transform: uppercase;
+  }
+
+  .run-loop-stage strong {
+    color: #dfe7e5;
+    font-size: 11px;
+    font-weight: 860;
+  }
+
+  .run-loop-stage.live {
+    color: #8fd8cf;
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.07);
+  }
+
+  .run-loop-stage.good {
+    color: #a6d8ad;
+    border-color: rgba(139, 220, 155, 0.18);
+    background: rgba(139, 220, 155, 0.07);
+  }
+
+  .run-loop-stage.attention {
+    color: #e0bf7b;
+    border-color: rgba(216, 170, 85, 0.22);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .run-loop-stage.bad {
+    color: #f6aaaa;
+    border-color: rgba(243, 111, 111, 0.22);
+    background: rgba(243, 111, 111, 0.08);
   }
 
   .run-current-activity {
@@ -9911,6 +10002,7 @@
   }
 
   .run-status-badge,
+  .run-stage-badge,
   .run-step-marker {
     display: inline-grid;
     place-items: center;
@@ -9921,10 +10013,20 @@
     line-height: 1;
   }
 
-  .run-status-badge {
+  .run-status-badge,
+  .run-stage-badge {
     height: 20px;
     padding: 0 8px;
     font-size: 10px;
+  }
+
+  .run-stage-badge {
+    max-width: 110px;
+    overflow: hidden;
+    color: #d8e0dd;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: rgba(255, 255, 255, 0.12);
   }
 
   .run-step-marker {
@@ -9934,27 +10036,32 @@
   }
 
   .run-status-badge.live,
+  .run-stage-badge.live,
   .run-step-marker.live {
     background: #5ce2cf;
   }
 
   .run-status-badge.good,
+  .run-stage-badge.good,
   .run-step-marker.good {
     background: #8bdc9b;
   }
 
   .run-status-badge.bad,
+  .run-stage-badge.bad,
   .run-step-marker.bad {
     background: #f36f6f;
   }
 
   .run-status-badge.attention,
+  .run-stage-badge.attention,
   .run-step-marker.attention {
     color: #211606;
     background: #d8aa55;
   }
 
   .run-status-badge.idle,
+  .run-stage-badge.idle,
   .run-step-marker.idle {
     color: #d8e0dd;
     background: rgba(255, 255, 255, 0.12);

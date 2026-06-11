@@ -3,9 +3,11 @@ import {
   orchestrationArtifactChips,
   orchestrationCurrentActivity,
   orchestrationLinkChips,
+  orchestrationLoopStageMetrics,
   orchestrationLoopTallyText,
   orchestrationRunMetrics,
   orchestrationRunSummaryText,
+  orchestrationRunStage,
   orchestrationRunTimelineText,
   orchestrationStatusTone,
   orchestrationTimelineItems
@@ -192,6 +194,29 @@ assert.ok(metrics.runningCount >= 2);
 assert.equal(
   orchestrationLoopTallyText(metrics),
   '2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off'
+);
+assert.deepEqual(orchestrationRunStage(run, metrics), {
+  label: 'Needs sign-off',
+  tone: 'attention',
+  title: '1 decision · 1 sign-off'
+});
+assert.deepEqual(
+  orchestrationLoopStageMetrics(metrics).map((stage) => [
+    stage.id,
+    stage.label,
+    stage.value,
+    stage.tone,
+    stage.title
+  ]),
+  [
+    ['scenario', 'Scen', 2, 'good', '2 scenarios mapped'],
+    ['test', 'Test', 1, 'live', '1 test run'],
+    ['retest', 'Retest', 1, 'live', '1 retest run'],
+    ['fix', 'Fix', 1, 'live', '1 fix batched'],
+    ['resolved', 'Done', 0, 'idle', '0 resolved'],
+    ['decision', 'Decide', 1, 'attention', '1 decision needed'],
+    ['approval', 'Sign', 1, 'attention', '1 sign-off needed']
+  ]
 );
 
 const timeline = orchestrationTimelineItems(run, 3);
