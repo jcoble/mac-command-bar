@@ -338,6 +338,7 @@ assert.ok(pageSource.includes('aria-label="Start embedded terminal"'), 'Terminal
 assert.ok(pageSource.includes('aria-label="Stop embedded terminal"'), 'Terminal launchpad should stop embedded sessions');
 assert.ok(pageSource.includes('aria-label="Fit embedded terminal"'), 'Terminal launchpad should resize embedded sessions');
 assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 'Terminal launchpad should attach embedded sessions');
+assert.ok(pageSource.includes('aria-label="Close listed embedded terminal session"'), 'Terminal launchpad should close listed embedded sessions');
 assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
 assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Terminal launchpad should run agent resumes inside the embedded PTY');
 assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');

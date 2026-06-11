@@ -9838,6 +9838,14 @@
                     >
                       <Terminal size={12} strokeWidth={2} />
                     </button>
+                    <button
+                      type="button"
+                      aria-label="Close listed embedded terminal session"
+                      title="Close embedded terminal"
+                      onclick={() => closeListedEmbeddedTerminalSession(session)}
+                    >
+                      <X size={12} strokeWidth={2} />
+                    </button>
                   </div>
                 {/each}
               {/if}
