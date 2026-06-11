@@ -97,6 +97,7 @@
     findSourceDefinitionTargets,
     findSourceReferenceTargets,
     findSourceSearchMatches,
+    formatGitBranchHealthSummary,
     gitCommitGraphKind,
     gitCommitTopologyLabel,
     gitRefLabels,
@@ -925,6 +926,32 @@
         summary.projectID === selectedProject.id ||
         normalizeProjectPath(summary.path) === normalizeProjectPath(selectedProject.path)
     )
+  );
+  let selectedProjectPrimaryRepoSummary = $derived(selectedProjectRepositorySummaries[0] ?? null);
+  let selectedProjectGitBranchHealth = $derived(
+    formatGitBranchHealthSummary({
+      branch: projectGitStatus?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? null,
+      ahead: projectGitStatus?.ahead ?? selectedProjectPrimaryRepoSummary?.ahead ?? 0,
+      behind: projectGitStatus?.behind ?? selectedProjectPrimaryRepoSummary?.behind ?? 0,
+      stagedCount: projectGitStatus
+        ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'staged')
+        : selectedProjectPrimaryRepoSummary?.stagedCount ?? 0,
+      unstagedCount: projectGitStatus
+        ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'unstaged')
+        : selectedProjectPrimaryRepoSummary?.unstagedCount ?? 0,
+      untrackedCount: projectGitStatus
+        ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'untracked')
+        : selectedProjectPrimaryRepoSummary?.untrackedCount ?? 0,
+      changedCount: projectGitStatus
+        ? selectedProjectGitChangedFiles.length
+        : selectedProjectPrimaryRepoSummary?.dirtyCount ?? 0,
+      isDirty: projectGitStatus
+        ? selectedProjectGitChangedFiles.length > 0
+        : selectedProjectPrimaryRepoSummary?.isDirty ?? false,
+      error: projectGitError || selectedProjectPrimaryRepoSummary?.error || null,
+      rootLabel: selectedProjectPrimaryRepoSummary?.rootLabel ?? formatSourceContextRootLabel(selectedProject.path),
+      lastCommitSha: selectedProjectPrimaryRepoSummary?.lastCommitSha ?? null
+    })
   );
   let selectedProjectGitTaskIDs = $derived(
     uniqueTaskIDsFromGitMetadata(
@@ -2817,6 +2844,7 @@
       `Project: ${selectedProject.name}`,
       `Path: ${selectedProject.path}`,
       `Branch: ${branch}`,
+      `Health: ${selectedProjectGitBranchHealth.detail}`,
       `Status: ${changedFiles} · ${aheadBehind}`,
       `Tasks: ${tasks}`,
       '',
@@ -3000,6 +3028,10 @@
   function formatGitStatusFileGroupSummary(groups: GitStatusFileGroup[]) {
     if (groups.length === 0) return 'No changed files';
     return groups.map((group) => `${group.label} ${group.files.length}`).join(' · ');
+  }
+
+  function gitStatusGroupFileCount(groups: GitStatusFileGroup[], groupID: GitStatusGroupID) {
+    return groups.find((group) => group.id === groupID)?.files.length ?? 0;
   }
 
   function gitStatusGroupActionLabel(group: GitStatusFileGroup) {
@@ -10702,6 +10734,18 @@
                     <span>History</span>
                     <small>{gitCommitHistorySummary}</small>
                   </div>
+                  <div
+                    class="git-branch-health-strip"
+                    aria-label="Git branch health"
+                    title={selectedProjectGitBranchHealth.detail}
+                  >
+                    {#each selectedProjectGitBranchHealth.chips as chip (`${chip.label}:${chip.value}`)}
+                      <span class={`git-branch-health-chip ${chip.tone}`}>
+                        <strong>{chip.label}</strong>
+                        <span>{chip.value}</span>
+                      </span>
+                    {/each}
+                  </div>
                   {#if selectedProjectGitTaskIDs.length > 0}
                     <div class="git-task-trail" aria-label="Git task links">
                       <span>Tasks</span>
@@ -15823,6 +15867,67 @@
     flex: 0 0 auto;
     color: #aeb8b5;
     text-transform: uppercase;
+  }
+
+  .git-branch-health-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .git-branch-health-chip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 22px;
+    padding: 3px 6px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.032);
+  }
+
+  .git-branch-health-chip strong,
+  .git-branch-health-chip span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-branch-health-chip strong {
+    color: #8d9995;
+    font-size: 8px;
+    font-weight: 860;
+    text-transform: uppercase;
+  }
+
+  .git-branch-health-chip span {
+    color: #dce5e2;
+    font-size: 9px;
+    font-weight: 780;
+  }
+
+  .git-branch-health-chip.clean span {
+    color: #72e2cf;
+  }
+
+  .git-branch-health-chip.dirty span {
+    color: #d8aa55;
+  }
+
+  .git-branch-health-chip.warning span {
+    color: #9fd0f0;
+  }
+
+  .git-branch-health-chip.error span {
+    color: #ff8d8d;
+  }
+
+  .git-branch-health-chip.muted span {
+    color: #9fa9a6;
   }
 
   .git-task-source-map {

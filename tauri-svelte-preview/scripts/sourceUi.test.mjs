@@ -1201,6 +1201,8 @@ assert.ok(pageSource.includes('function copyGitWorkspaceBrief'), 'Git view shoul
 assert.ok(pageSource.includes("id: 'git-copy-workspace-brief'"), 'Command palette should copy the Git workspace brief');
 assert.ok(pageSource.includes('selectedProjectGitTaskIDs'), 'Git panel should derive a selected-project task trail');
 assert.ok(pageSource.includes('selectedProjectGitTaskSourceGroups'), 'Git panel should derive task source groups');
+assert.ok(pageSource.includes('selectedProjectGitBranchHealth'), 'Git panel should derive branch health context');
+assert.ok(pageSource.includes('formatGitBranchHealthSummary'), 'Git panel should use the shared branch health formatter');
 assert.ok(pageSource.includes('buildGitTaskSourceGroups'), 'Git panel should use the shared task source grouping model');
 assert.ok(
   pageSource.includes('uniqueTaskIDsFromGitMetadata'),
@@ -1222,6 +1224,9 @@ assert.ok(
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('class="git-task-source-map"'), 'Git panel should render a compact task source map');
 assert.ok(pageSource.includes('class="git-task-source-row"'), 'Task source map should render per-task rows');
+assert.ok(pageSource.includes('class="git-branch-health-strip"'), 'Git panel should render compact branch health chips');
+assert.ok(pageSource.includes('selectedProjectGitBranchHealth.chips'), 'Git branch health should render from shared chip data');
+assert.ok(pageSource.includes('selectedProjectGitBranchHealth.detail'), 'Git branch health should expose a copyable title/detail');
 assert.ok(pageSource.includes('group.detailSummary'), 'Task source rows should describe where each task came from');
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
 assert.ok(pageSource.includes('let selectedGitCommitSha'), 'Git panel should track a selected commit');
@@ -1295,6 +1300,9 @@ assertDeclaration('.git-history-list', 'overflow-y: auto');
 assertDeclaration('.git-task-trail', 'display: flex');
 assertDeclaration('.git-task-source-map', 'display: grid');
 assertDeclaration('.git-task-source-row', 'grid-template-columns: auto minmax(0, 1fr) auto');
+assertDeclaration('.git-branch-health-strip', 'display: grid');
+assertDeclaration('.git-branch-health-chip', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.git-branch-health-chip span', 'text-overflow: ellipsis');
 assert.match(
   pageSource,
   /\.activity-commit-row\s*\{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;/,

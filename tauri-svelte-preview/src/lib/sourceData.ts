@@ -287,6 +287,38 @@ export type GitTaskSourceGroup = {
   sources: GitTaskSourceMetadata[];
 };
 
+export type GitBranchHealthTone = 'clean' | 'dirty' | 'warning' | 'error' | 'muted';
+
+export type GitBranchHealthChip = {
+  label: string;
+  value: string;
+  tone: GitBranchHealthTone;
+};
+
+export type GitBranchHealthInput = {
+  branch?: string | null;
+  ahead?: number | null;
+  behind?: number | null;
+  stagedCount?: number | null;
+  unstagedCount?: number | null;
+  untrackedCount?: number | null;
+  dirtyCount?: number | null;
+  changedCount?: number | null;
+  isDirty?: boolean | null;
+  error?: string | null;
+  rootLabel?: string | null;
+  lastCommitSha?: string | null;
+};
+
+export type GitBranchHealthSummary = {
+  branch: string;
+  sync: string;
+  dirty: string;
+  detail: string;
+  tone: GitBranchHealthTone;
+  chips: GitBranchHealthChip[];
+};
+
 export type GitCommitGraphKind = 'head' | 'branch' | 'merge' | 'root' | 'commit';
 
 export type SourceContextGitStatus = {
@@ -409,6 +441,103 @@ export function formatSourceContextGitSummary(
       : `${status.files.length} change${status.files.length === 1 ? '' : 's'}`;
 
   return [branch, ...syncParts, changeLabel].join(' · ');
+}
+
+export function formatGitBranchHealthSummary(input: GitBranchHealthInput): GitBranchHealthSummary {
+  const branch = input.branch?.trim() || 'detached';
+  const ahead = safeGitCount(input.ahead);
+  const behind = safeGitCount(input.behind);
+  const stagedCount = nullableGitCount(input.stagedCount);
+  const unstagedCount = nullableGitCount(input.unstagedCount);
+  const untrackedCount = nullableGitCount(input.untrackedCount);
+  const hasDetailedDirtyCounts =
+    stagedCount !== null || unstagedCount !== null || untrackedCount !== null;
+  const detailedDirtyCount =
+    safeGitCount(stagedCount) + safeGitCount(unstagedCount) + safeGitCount(untrackedCount);
+  const fallbackDirtyCount = safeGitCount(input.dirtyCount ?? input.changedCount);
+  const dirtyCount = hasDetailedDirtyCounts ? detailedDirtyCount : fallbackDirtyCount;
+  const hasDirtyState = Boolean(input.isDirty) || dirtyCount > 0;
+  const error = input.error?.trim() || '';
+  const syncParts = [
+    ahead > 0 ? `ahead ${ahead}` : '',
+    behind > 0 ? `behind ${behind}` : ''
+  ].filter(Boolean);
+  const sync = syncParts.length > 0 ? syncParts.join(' / ') : 'up to date';
+  const dirty = formatGitDirtyHealthLabel({
+    error,
+    hasDetailedDirtyCounts,
+    stagedCount: stagedCount ?? 0,
+    unstagedCount: unstagedCount ?? 0,
+    untrackedCount: untrackedCount ?? 0,
+    dirtyCount,
+    hasDirtyState
+  });
+  const tone: GitBranchHealthTone = error
+    ? 'error'
+    : hasDirtyState
+      ? 'dirty'
+      : ahead > 0 || behind > 0
+        ? 'warning'
+        : 'clean';
+  const syncTone: GitBranchHealthTone = ahead > 0 || behind > 0 ? 'warning' : 'clean';
+  const dirtyTone: GitBranchHealthTone = error ? 'error' : hasDirtyState ? 'dirty' : 'clean';
+  const rootLabel = input.rootLabel?.trim() || '';
+  const lastCommitSha = input.lastCommitSha?.trim() || '';
+  const chips: GitBranchHealthChip[] = [
+    { label: 'Branch', value: branch, tone },
+    { label: 'Sync', value: sync, tone: syncTone },
+    { label: 'Worktree', value: dirty, tone: dirtyTone },
+    rootLabel ? { label: 'Root', value: rootLabel, tone: 'muted' } : null,
+    lastCommitSha ? { label: 'Head', value: lastCommitSha, tone: 'muted' } : null
+  ].filter((chip): chip is GitBranchHealthChip => Boolean(chip));
+
+  return {
+    branch,
+    sync,
+    dirty,
+    detail: [rootLabel, branch, sync, dirty, lastCommitSha].filter(Boolean).join(' · '),
+    tone,
+    chips
+  };
+}
+
+function formatGitDirtyHealthLabel(input: {
+  error: string;
+  hasDetailedDirtyCounts: boolean;
+  stagedCount: number;
+  unstagedCount: number;
+  untrackedCount: number;
+  dirtyCount: number;
+  hasDirtyState: boolean;
+}) {
+  if (input.error) return 'error';
+  if (!input.hasDirtyState) return 'clean';
+
+  if (input.hasDetailedDirtyCounts) {
+    const parts = [
+      input.stagedCount > 0 ? `staged ${input.stagedCount}` : '',
+      input.unstagedCount > 0 ? `unstaged ${input.unstagedCount}` : '',
+      input.untrackedCount > 0 ? `untracked ${input.untrackedCount}` : ''
+    ].filter(Boolean);
+
+    if (parts.length > 0) return parts.join(' / ');
+  }
+
+  if (input.dirtyCount > 0) {
+    return `${input.dirtyCount} change${input.dirtyCount === 1 ? '' : 's'}`;
+  }
+
+  return 'dirty';
+}
+
+function nullableGitCount(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  return safeGitCount(value);
+}
+
+function safeGitCount(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
 }
 
 export function formatSourceContextIdentity(

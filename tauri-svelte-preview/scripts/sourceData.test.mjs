@@ -8,6 +8,7 @@ import {
   findSourceDefinitionTargets,
   findSourceReferenceTargets,
   findSourceSearchMatches,
+  formatGitBranchHealthSummary,
   formatSourceContextGitSummary,
   formatSourceContextIdentity,
   formatSourceContextRootLabel,
@@ -804,6 +805,48 @@ assert.equal(gitCommitGraphKind('', 0), 'commit');
 assert.equal(gitCommitTopologyLabel('HEAD -> main', 0), 'HEAD');
 assert.equal(gitCommitTopologyLabel('', 0, 2), 'MERGE');
 assert.equal(gitCommitTopologyLabel('', 0, 0), 'ROOT');
+assert.deepEqual(
+  formatGitBranchHealthSummary({
+    branch: 'cdx/tsk-127-source-center',
+    ahead: 2,
+    behind: 1,
+    stagedCount: 3,
+    unstagedCount: 4,
+    untrackedCount: 1,
+    rootLabel: 'worktree:tsk-127',
+    lastCommitSha: 'abc1234'
+  }),
+  {
+    branch: 'cdx/tsk-127-source-center',
+    sync: 'ahead 2 / behind 1',
+    dirty: 'staged 3 / unstaged 4 / untracked 1',
+    detail:
+      'worktree:tsk-127 · cdx/tsk-127-source-center · ahead 2 / behind 1 · staged 3 / unstaged 4 / untracked 1 · abc1234',
+    tone: 'dirty',
+    chips: [
+      { label: 'Branch', value: 'cdx/tsk-127-source-center', tone: 'dirty' },
+      { label: 'Sync', value: 'ahead 2 / behind 1', tone: 'warning' },
+      { label: 'Worktree', value: 'staged 3 / unstaged 4 / untracked 1', tone: 'dirty' },
+      { label: 'Root', value: 'worktree:tsk-127', tone: 'muted' },
+      { label: 'Head', value: 'abc1234', tone: 'muted' }
+    ]
+  }
+);
+assert.deepEqual(
+  formatGitBranchHealthSummary({ branch: 'main', ahead: 0, behind: 0, changedCount: 0 }),
+  {
+    branch: 'main',
+    sync: 'up to date',
+    dirty: 'clean',
+    detail: 'main · up to date · clean',
+    tone: 'clean',
+    chips: [
+      { label: 'Branch', value: 'main', tone: 'clean' },
+      { label: 'Sync', value: 'up to date', tone: 'clean' },
+      { label: 'Worktree', value: 'clean', tone: 'clean' }
+    ]
+  }
+);
 assert.deepEqual(
   uniqueTaskIDsFromGitMetadata(
     [{ taskID: 'TSK-127' }, { taskID: null }],
