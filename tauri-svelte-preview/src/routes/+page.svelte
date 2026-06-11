@@ -2614,7 +2614,7 @@
     const project = workspaceSnapshotProjectForSession(session);
     const snapshot = createWorkspaceSnapshot({
       provider: workspaceSnapshotProviderForSession(session),
-      sessionID: session?.id ?? selectedProject.id,
+      sessionID: session ? workspaceSnapshotSessionIDForSession(session) : selectedProject.id,
       title: session?.title ?? `${selectedProject.name} workspace`,
       model: session?.model ?? null,
       project,
@@ -2847,8 +2847,15 @@
 
   function workspaceSnapshotProviderForSession(session: AgentSession | null): WorkspaceSnapshotProvider {
     const provider = session?.provider.trim().toLowerCase();
+    if (provider?.startsWith('cmux-')) return 'cmux';
     if (provider === 'codex' || provider === 'claude' || provider === 'cmux') return provider;
     return 'manual';
+  }
+
+  function workspaceSnapshotSessionIDForSession(session: AgentSession) {
+    const sessionID = session.id.trim() || 'session';
+    const provider = session.provider.trim().toLowerCase();
+    return provider.startsWith('cmux-') ? `${provider}:${sessionID}` : sessionID;
   }
 
   function workspaceSnapshotProjectForSession(session: AgentSession | null): ProjectRoot {
@@ -2873,7 +2880,7 @@
 
   function workspaceSnapshotIDForAgentSession(session: AgentSession) {
     const provider = workspaceSnapshotProviderForSession(session);
-    return `${provider}:${session.id.trim() || 'session'}`;
+    return `${provider}:${workspaceSnapshotSessionIDForSession(session)}`;
   }
 
   function workspaceSnapshotSelectedPathForProject(project: ProjectRoot) {

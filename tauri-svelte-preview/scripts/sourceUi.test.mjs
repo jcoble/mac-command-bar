@@ -161,6 +161,8 @@ assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'),
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
 assert.ok(pageSource.includes('function workspaceSnapshotProjectForSession'), 'Workspace should store agent worktrees as restorable project roots');
+assert.ok(pageSource.includes('function workspaceSnapshotSessionIDForSession'), 'Workspace snapshots should qualify cmux session IDs by concrete agent provider');
+assert.ok(pageSource.includes("provider.startsWith('cmux-')"), 'Workspace snapshots should group cmux-backed sessions under the cmux provider');
 assert.ok(pageSource.includes('function activateWorkspaceSnapshotProject'), 'Workspace restore should force a full project scan before reopening files');
 assert.ok(pageSource.includes('function sourceRecordFromRestoredPath'), 'Workspace restore should reopen saved paths even when they are missing from the index');
 assert.ok(pageSource.includes('function sourceLanguageForRestoredPath'), 'Workspace restore should infer language for direct saved-path previews');
