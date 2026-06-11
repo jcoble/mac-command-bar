@@ -9435,22 +9435,22 @@
     </header>
 
     <div class="context-identity-strip" aria-label="Current source context" title={sourceContextIdentity.summary}>
-      <div class="context-identity-pill">
-        <span>Project</span>
-        <strong>{sourceContextIdentity.projectName}</strong>
-      </div>
-      <div class="context-identity-pill" title={sourceContextIdentity.rootPath}>
-        <span>Root</span>
-        <strong>{sourceContextIdentity.rootLabel}</strong>
-      </div>
-      <div class="context-identity-pill" title={sourceContextIdentity.gitSummary}>
-        <span>Branch</span>
-        <strong>{sourceContextIdentity.gitSummary}</strong>
-      </div>
-      <div class="context-identity-pill">
-        <span>Runtime</span>
-        <strong>{sourceContextIdentity.runtime}</strong>
-      </div>
+      <span class="context-identity-item">
+        <span class="context-identity-key">Prj</span>
+        <strong class="context-identity-value">{sourceContextIdentity.projectName}</strong>
+      </span>
+      <span class="context-identity-item" title={sourceContextIdentity.rootPath}>
+        <span class="context-identity-key">Root</span>
+        <strong class="context-identity-value">{sourceContextIdentity.rootLabel}</strong>
+      </span>
+      <span class="context-identity-item" title={sourceContextIdentity.gitSummary}>
+        <span class="context-identity-key">Git</span>
+        <strong class="context-identity-value">{sourceContextIdentity.gitSummary}</strong>
+      </span>
+      <span class="context-identity-item">
+        <span class="context-identity-key">Run</span>
+        <strong class="context-identity-value">{sourceContextIdentity.runtime}</strong>
+      </span>
     </div>
 
       <div
@@ -13520,44 +13520,44 @@
   }
 
   .context-identity-strip {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 4px;
-    min-width: 0;
-    overflow: hidden;
-    margin: 0 0 5px;
-  }
-
-  .context-identity-pill {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 10px;
     min-width: 0;
-    height: 20px;
-    padding: 0 6px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.04);
+    min-height: 18px;
+    overflow: hidden;
+    margin: -1px 0 3px;
+    padding: 0 2px;
   }
 
-  .context-identity-pill span,
-  .context-identity-pill strong {
+  .context-identity-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 28%;
+    height: 18px;
+    color: #cbd3d1;
+  }
+
+  .context-identity-key,
+  .context-identity-value {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .context-identity-pill span {
+  .context-identity-key {
+    flex: 0 0 auto;
     color: #87918e;
-    font-size: 7px;
+    font-size: 7.5px;
     font-weight: 800;
     text-transform: uppercase;
   }
 
-  .context-identity-pill strong {
+  .context-identity-value {
     color: #f0f4f3;
     font-size: 9px;
     font-weight: 760;
@@ -16386,7 +16386,12 @@
     }
 
     .context-identity-strip {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      flex-wrap: wrap;
+      row-gap: 0;
+    }
+
+    .context-identity-item {
+      max-width: calc(50% - 5px);
     }
 
     .workspace-arrangement.context-side {
