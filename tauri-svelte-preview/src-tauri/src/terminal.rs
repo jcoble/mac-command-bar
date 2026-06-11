@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
+use tauri::{Emitter, Runtime};
 
 pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
 const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 256 * 1024;
@@ -54,8 +54,8 @@ struct TerminalSessionHandle {
     scrollback: Arc<Mutex<String>>,
 }
 
-pub fn start_terminal_session(
-    app: tauri::AppHandle,
+pub fn start_terminal_session<R: Runtime>(
+    app: tauri::AppHandle<R>,
     registry: &TerminalRegistry,
     request: TerminalStartRequest,
 ) -> Result<TerminalSessionInfo, String> {
@@ -230,8 +230,8 @@ impl TerminalRegistry {
     }
 }
 
-fn spawn_terminal_reader(
-    app: tauri::AppHandle,
+fn spawn_terminal_reader<R: Runtime>(
+    app: tauri::AppHandle<R>,
     session_id: String,
     scrollback: Arc<Mutex<String>>,
     mut reader: Box<dyn Read + Send>,
@@ -282,8 +282,8 @@ fn append_terminal_scrollback(scrollback: &mut String, data: &str) {
     scrollback.drain(..trim_index);
 }
 
-fn spawn_terminal_waiter(
-    app: tauri::AppHandle,
+fn spawn_terminal_waiter<R: Runtime>(
+    app: tauri::AppHandle<R>,
     registry: TerminalRegistry,
     session_id: String,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -369,6 +369,8 @@ fn timestamp_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn terminal_size_clamps_to_safe_bounds() {
@@ -405,5 +407,73 @@ mod tests {
         assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
         assert!(scrollback.is_char_boundary(0));
         assert!(scrollback.ends_with('x'));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn terminal_session_lifecycle_writes_resizes_reads_and_closes_native_pty() {
+        let app = tauri::test::mock_app();
+        let registry = TerminalRegistry::default();
+        let session = start_terminal_session(
+            app.handle().clone(),
+            &registry,
+            TerminalStartRequest {
+                cwd: std::env::temp_dir().display().to_string(),
+                shell: Some("/bin/sh".to_string()),
+                cols: Some(80),
+                rows: Some(20),
+            },
+        )
+        .expect("terminal session should start");
+
+        let result = (|| {
+            assert_eq!(session.cwd, std::env::temp_dir().display().to_string());
+            assert_eq!(session.shell, "/bin/sh");
+            assert_eq!(session.cols, 80);
+            assert_eq!(session.rows, 20);
+            assert!(session.pid.is_some());
+            assert!(list_terminal_sessions(&registry)
+                .expect("terminal sessions should list")
+                .iter()
+                .any(|listed| listed.session_id == session.session_id));
+
+            assert!(write_terminal_session(
+                &registry,
+                &session.session_id,
+                "printf 'mcb-terminal-ready\\n'\n"
+            )
+            .expect("terminal input should write"));
+            assert!(resize_terminal_session(&registry, &session.session_id, Some(100), Some(32))
+                .expect("terminal session should resize"));
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let scrollback =
+                    read_terminal_session_scrollback(&registry, &session.session_id)
+                        .expect("terminal scrollback should read")
+                        .unwrap_or_default();
+                if scrollback.contains("mcb-terminal-ready") {
+                    break Ok(());
+                }
+                if Instant::now() >= deadline {
+                    break Err(format!(
+                        "terminal scrollback did not receive sentinel; got {scrollback:?}"
+                    ));
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        })();
+
+        let closed = close_terminal_session(&registry, &session.session_id)
+            .expect("terminal session should close");
+        assert!(closed);
+        assert!(
+            list_terminal_sessions(&registry)
+                .expect("terminal sessions should list after close")
+                .is_empty(),
+            "closed terminal session should be removed from the registry"
+        );
+
+        result.expect("terminal session lifecycle should complete");
     }
 }
