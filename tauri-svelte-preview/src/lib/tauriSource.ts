@@ -733,6 +733,17 @@ export async function readSourceLspStatusFromTauri(
   });
 }
 
+export async function readSourceLspReadinessFromTauri(
+  root: string
+): Promise<SourceLspStatus[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceLspStatus[]>('list_source_lsp_statuses', { root });
+}
+
 export async function findSourceLspDefinitionsFromTauri(
   preview: SourcePreview,
   request: SourceLspLookupRequest

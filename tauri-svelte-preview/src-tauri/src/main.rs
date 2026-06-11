@@ -591,7 +591,16 @@ async fn read_source_lsp_status(
         lsp::read_source_lsp_status_sync(PathBuf::from(root), language)
     })
     .await
-    .map_err(|error| format!("Source LSP status task failed: {error}"))?
+        .map_err(|error| format!("Source LSP status task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_source_lsp_statuses(root: String) -> Result<Vec<lsp::SourceLspStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lsp::list_source_lsp_statuses_sync(PathBuf::from(root))
+    })
+    .await
+    .map_err(|error| format!("Source LSP readiness task failed: {error}"))
 }
 
 #[tauri::command]
@@ -3388,6 +3397,7 @@ fn main() {
             find_source_definitions,
             find_source_references,
             read_source_lsp_status,
+            list_source_lsp_statuses,
             find_source_lsp_definitions,
             find_source_lsp_completions,
             find_source_lsp_implementations,

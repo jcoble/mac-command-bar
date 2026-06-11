@@ -14,6 +14,15 @@ use serde_json::{json, Value};
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 const LSP_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_LSP_HEADER_BYTES: usize = 8 * 1024;
+const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
+    "csharp",
+    "typescript",
+    "javascript",
+    "rust",
+    "svelte",
+    "python",
+    "go",
+];
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1281,6 +1290,25 @@ pub(crate) fn read_source_lsp_status_sync(
             None
         },
     })
+}
+
+pub(crate) fn list_source_lsp_statuses_sync(root: PathBuf) -> Vec<SourceLspStatus> {
+    SOURCE_LSP_READINESS_LANGUAGES
+        .iter()
+        .map(|language| {
+            read_source_lsp_status_sync(root.clone(), (*language).to_string()).unwrap_or_else(
+                |error| SourceLspStatus {
+                    language: (*language).to_string(),
+                    language_id: (*language).to_string(),
+                    available: false,
+                    server_name: "unknown".to_string(),
+                    command: String::new(),
+                    args: Vec::new(),
+                    reason: Some(error),
+                },
+            )
+        })
+        .collect()
 }
 
 fn wait_for_lsp_response(
@@ -2672,6 +2700,27 @@ mod tests {
 
         let go = server_spec_for_language("go").expect("go spec");
         assert_eq!(go.command, "gopls");
+    }
+
+    #[test]
+    fn lsp_readiness_lists_configured_language_servers() {
+        let root = unique_lsp_temp_root("mcb-lsp-readiness");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let statuses = list_source_lsp_statuses_sync(root.clone());
+        let languages = statuses
+            .iter()
+            .map(|status| status.language.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            languages,
+            vec!["csharp", "typescript", "javascript", "rust", "svelte", "python", "go"]
+        );
+        assert!(statuses.iter().all(|status| !status.server_name.is_empty()));
+        assert!(statuses.iter().all(|status| !status.command.is_empty()));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

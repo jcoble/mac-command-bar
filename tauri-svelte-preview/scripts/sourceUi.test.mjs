@@ -1050,11 +1050,15 @@ assert.ok(pageSource.includes('findSourceLspInlayHintsFromTauri'), 'Source page 
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
 assert.ok(pageSource.includes('findSourceLspWorkspaceSymbolsFromTauri'), 'Source page should search native LSP workspace symbols');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
+assert.ok(pageSource.includes('readSourceLspReadinessFromTauri'), 'Source page should read native LSP readiness across configured servers');
 assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
 assert.ok(pageSource.includes('sourceLspStatus'), 'Source page should track LSP availability');
 assert.ok(pageSource.includes('sourceLspDiagnostics'), 'Source page should track native LSP diagnostics separately');
 assert.ok(pageSource.includes('function sourceLspInstallCommand'), 'Source page should expose LSP install command guidance');
 assert.ok(pageSource.includes('function sourceLspStatusReport'), 'Source page should build copyable LSP status reports');
+assert.ok(pageSource.includes('function sourceLspReadinessReportLines'), 'Source page should build a copyable LSP readiness report');
+assert.ok(pageSource.includes('function copySourceLspReadinessReport'), 'Source page should copy native LSP readiness reports');
+assert.ok(pageSource.includes('Copy language server readiness report'), 'Command palette should expose LSP readiness checks');
 assert.ok(pageSource.includes('function copySourceLspInstallCommand'), 'Source page should copy LSP install commands');
 assert.ok(pageSource.includes('dotnet tool install --global csharp-ls'), 'C# LSP guidance should install csharp-ls');
 assert.ok(pageSource.includes('npm install -g typescript typescript-language-server'), 'TypeScript LSP guidance should install the TS language server');

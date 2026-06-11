@@ -208,6 +208,7 @@
     openTerminalPathFromTauri,
     readProjectGitStatusFromTauri,
     readSourceLspDiagnosticsFromTauri,
+    readSourceLspReadinessFromTauri,
     readSourceLspStatusFromTauri,
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
@@ -1436,6 +1437,12 @@
       detail: sourceLspStatusLabel(),
       disabled: !preview,
       perform: copySourceLspStatusReport
+    },
+    {
+      id: 'lsp-copy-readiness',
+      label: 'Copy language server readiness report',
+      detail: selectedProject.name,
+      perform: copySourceLspReadinessReport
     },
     {
       id: 'lsp-copy-install',
@@ -4311,8 +4318,48 @@
     return sourceLspStatusReportLines().join('\n');
   }
 
+  function sourceLspReadinessReportLines(statuses: SourceLspStatus[] | null) {
+    if (!statuses) {
+      return [
+        `Project: ${selectedProject.name}`,
+        `Root: ${selectedProject.path}`,
+        'Runtime: native Tauri unavailable',
+        'Open the Tauri app to validate local language servers.'
+      ];
+    }
+
+    return [
+      `Project: ${selectedProject.name}`,
+      `Root: ${selectedProject.path}`,
+      `Language servers: ${statuses.filter((status) => status.available).length}/${statuses.length} available`,
+      '',
+      ...statuses.flatMap((status) => {
+        const runtimeCommand = sourceLspRuntimeCommand(status);
+        const installCommand = sourceLspInstallCommand(status.language);
+        const lines = [
+          `${status.languageID || status.language}: ${status.available ? 'available' : status.reason || 'unavailable'}`,
+          `  Server: ${status.serverName}`,
+          runtimeCommand ? `  Command: ${runtimeCommand}` : ''
+        ];
+        if (!status.available && installCommand) {
+          lines.push(`  Install: ${installCommand}`);
+        }
+        return lines.filter(Boolean);
+      })
+    ];
+  }
+
+  function sourceLspReadinessReport(statuses: SourceLspStatus[] | null) {
+    return sourceLspReadinessReportLines(statuses).join('\n');
+  }
+
   function copySourceLspStatusReport() {
     return copyActivityCommand(sourceLspStatusReport(), 'Language server status copied');
+  }
+
+  async function copySourceLspReadinessReport() {
+    const statuses = await readSourceLspReadinessFromTauri(selectedProject.path);
+    return copyActivityCommand(sourceLspReadinessReport(statuses), 'Language server readiness copied');
   }
 
   function copySourceLspInstallCommand() {

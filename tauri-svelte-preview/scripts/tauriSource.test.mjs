@@ -14,6 +14,7 @@ import {
   findSourceLspReferencesFromTauri,
   findSourceLspSymbolsFromTauri,
   readSourceLspDiagnosticsFromTauri,
+  readSourceLspReadinessFromTauri,
   readSourceLspStatusFromTauri,
   terminalOutputEvent,
   listenToTerminalOutput,
@@ -119,6 +120,7 @@ assert.equal(
   await readSourceLspStatusFromTauri('/tmp/repo', 'typescript'),
   null
 );
+assert.equal(await readSourceLspReadinessFromTauri('/tmp/repo'), null);
 assert.equal(
   await findSourceLspDefinitionsFromTauri(
     {
