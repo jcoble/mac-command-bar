@@ -120,6 +120,7 @@
     type SourceDefinitionTarget,
     type SourceReferenceTarget,
     type SourceSearchMatch,
+    type SourceCompletionItem,
     type SourceDiagnostic,
     type SourceLspHover,
     type SourceLspStatus,
@@ -136,6 +137,7 @@
     expandedSourceScanLimit,
     fetchGitRepositoryFromTauri,
     findSourceDefinitionsFromTauri,
+    findSourceLspCompletionsFromTauri,
     findSourceLspDefinitionsFromTauri,
     findSourceLspHoverFromTauri,
     findSourceLspReferencesFromTauri,
@@ -217,6 +219,7 @@
   const maxStoredOpenSourceTabs = 64;
   const maxSourceSearchResults = 50;
   const maxSourceDefinitionResults = 20;
+  const maxSourceCompletionResults = 50;
   const maxGitCommitHistoryEntries = 24;
   const commandCenterTaskUrls: Record<string, string> = {
     'TSK-127':
@@ -4459,6 +4462,28 @@
     }
   }
 
+  async function handleEditorCompletionLookup(
+    request: SourceEditorLookupRequest
+  ): Promise<SourceCompletionItem[]> {
+    if (!preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
+        (await findSourceLspCompletionsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceCompletionResults
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
     return runSourceReferenceLookup(request);
   }
@@ -8091,6 +8116,7 @@
                 intelligenceCommand={sourceIntelligenceCommand}
                 onContentChange={updateSelectedSourceDraft}
                 onCommandPaletteRequest={openCommandPalette}
+                onCompletionLookup={handleEditorCompletionLookup}
                 onDiagnosticsChange={handleEditorDiagnosticsChange}
                 onDefinitionLookup={handleEditorDefinitionLookup}
                 onGoToLineRequest={openCurrentFileGoToLine}

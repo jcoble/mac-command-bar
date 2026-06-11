@@ -1,6 +1,7 @@
 import type {
   ProjectRoot,
   SourceDiagnostic,
+  SourceCompletionItem,
   SourceDefinitionTarget,
   SourceLspHover,
   SourceLspLookupRequest,
@@ -681,6 +682,21 @@ export async function findSourceLspDefinitionsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceDefinitionTarget[]>('find_source_lsp_definitions', {
+    preview,
+    request
+  });
+}
+
+export async function findSourceLspCompletionsFromTauri(
+  preview: SourcePreview,
+  request: SourceLspLookupRequest
+): Promise<SourceCompletionItem[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceCompletionItem[]>('find_source_lsp_completions', {
     preview,
     request
   });

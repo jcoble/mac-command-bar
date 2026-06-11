@@ -586,6 +586,18 @@ assert.ok(
   'Editor should expose native references to Monaco peek'
 );
 assert.ok(
+  editorSource.includes('registerSourceCompletionProvider'),
+  'Editor should register native completion results with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerCompletionItemProvider'),
+  'Editor should expose native completions to Monaco suggestions'
+);
+assert.ok(
+  editorSource.includes('sourceCompletionItemToSuggestion'),
+  'Editor should map native completion items into Monaco suggestions'
+);
+assert.ok(
   editorSource.includes('sourceDefinitionTargetToLocation'),
   'Editor should map native definition targets into Monaco locations'
 );
@@ -600,6 +612,10 @@ assert.ok(
 assert.ok(
   pageSource.includes('async function handleEditorReferenceLookup'),
   'Source page should return reference lookup results to Monaco'
+);
+assert.ok(
+  pageSource.includes('async function handleEditorCompletionLookup'),
+  'Source page should return completion lookup results to Monaco'
 );
 assert.ok(
   editorSource.includes('function applyExternalDiagnostics'),
@@ -625,6 +641,10 @@ assert.ok(
 assert.ok(
   editorSource.includes('onReferenceLookup?: SourceEditorReferenceLookup'),
   'Editor should return native reference targets to Monaco'
+);
+assert.ok(
+  editorSource.includes('onCompletionLookup?: SourceEditorCompletionLookup'),
+  'Editor should return native completion items to Monaco'
 );
 assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the symbol under the cursor');
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
@@ -663,6 +683,7 @@ assert.ok(pageSource.includes('requestSourceIntelligenceAction'), 'Source page s
 assert.ok(pageSource.includes('findSourceDefinitionsFromTauri'), 'Source page should call native project definition lookup');
 assert.ok(pageSource.includes('findSourceLspDefinitionsFromTauri'), 'Source page should try LSP definition lookup before project index lookup');
 assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page should try LSP reference lookup before project index lookup');
+assert.ok(pageSource.includes('findSourceLspCompletionsFromTauri'), 'Source page should use LSP for completion lookup');
 assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page should prefer LSP document symbols when available');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
 assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
@@ -682,8 +703,10 @@ assert.ok(pageSource.includes('function runSourceDefinitionLookup'), 'Source pag
 assert.ok(pageSource.includes('function runSourceReferenceLookup'), 'Source page should expose project reference lookup');
 assert.ok(pageSource.includes('function handleEditorDefinitionLookup'), 'Source page should receive editor definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source page should receive editor reference lookup requests');
+assert.ok(pageSource.includes('function handleEditorCompletionLookup'), 'Source page should receive editor completion lookup requests');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
+assert.ok(pageSource.includes('onCompletionLookup={handleEditorCompletionLookup}'), 'Editor should be wired to LSP completion lookup');
 assert.ok(pageSource.includes('onSaveRequest={saveSelectedSourceFile}'), 'Editor Cmd+S should call the page save path');
 assert.ok(pageSource.includes('onQuickOpenRequest={openQuickOpen}'), 'Editor Cmd+P should call the page quick-open path');
 assert.ok(pageSource.includes('onCommandPaletteRequest={openCommandPalette}'), 'Editor Cmd+K should call the page command palette');

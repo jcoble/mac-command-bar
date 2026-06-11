@@ -77,6 +77,15 @@ pub(crate) struct SourceLspSymbol {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SourceLspCompletionItem {
+    label: String,
+    kind: String,
+    detail: String,
+    insert_text: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspDefinitionTarget {
     path: String,
     relative_path: String,
@@ -232,6 +241,21 @@ impl SourceLspRegistry {
         Ok(lsp_symbols_from_result(
             &result,
             request.limit.unwrap_or(100),
+        ))
+    }
+
+    pub(crate) fn find_completions(
+        &self,
+        preview: SourceLspPreview,
+        request: SourceLspLookupRequest,
+    ) -> Result<Vec<SourceLspCompletionItem>, String> {
+        let Some(result) = self.request(&preview, &request, "textDocument/completion")? else {
+            return Ok(Vec::new());
+        };
+
+        Ok(lsp_completion_items_from_result(
+            &result,
+            request.limit.unwrap_or(50),
         ))
     }
 
@@ -793,6 +817,11 @@ fn lsp_position(request: &SourceLspLookupRequest) -> Value {
 fn lsp_client_capabilities() -> Value {
     json!({
         "textDocument": {
+            "completion": {
+                "completionItem": {
+                    "snippetSupport": false
+                }
+            },
             "definition": {
                 "linkSupport": true
             },
@@ -954,6 +983,48 @@ fn lsp_symbols_from_result(result: &Value, limit: usize) -> Vec<SourceLspSymbol>
     symbols
 }
 
+fn lsp_completion_items_from_result(result: &Value, limit: usize) -> Vec<SourceLspCompletionItem> {
+    let items = result
+        .as_array()
+        .or_else(|| result.get("items").and_then(Value::as_array));
+    let Some(items) = items else {
+        return Vec::new();
+    };
+
+    items
+        .iter()
+        .filter_map(lsp_completion_item_from_value)
+        .take(limit)
+        .collect()
+}
+
+fn lsp_completion_item_from_value(value: &Value) -> Option<SourceLspCompletionItem> {
+    let label = value.get("label")?.as_str()?.trim().to_string();
+    if label.is_empty() {
+        return None;
+    }
+
+    let insert_text = value
+        .get("insertText")
+        .and_then(Value::as_str)
+        .unwrap_or(&label)
+        .trim()
+        .to_string();
+
+    Some(SourceLspCompletionItem {
+        label,
+        kind: lsp_completion_item_kind(value.get("kind").and_then(Value::as_u64)),
+        detail: value
+            .get("detail")
+            .or_else(|| value.get("documentation").and_then(|doc| doc.get("value")))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        insert_text,
+    })
+}
+
 fn collect_lsp_symbol(value: &Value, symbols: &mut Vec<SourceLspSymbol>, limit: usize) {
     if symbols.len() >= limit {
         return;
@@ -1037,6 +1108,38 @@ fn lsp_symbol_kind(kind: Option<u64>) -> String {
         Some(25) => "operator",
         Some(26) => "typeParameter",
         _ => "symbol",
+    }
+    .to_string()
+}
+
+fn lsp_completion_item_kind(kind: Option<u64>) -> String {
+    match kind {
+        Some(1) => "text",
+        Some(2) => "method",
+        Some(3) => "function",
+        Some(4) => "constructor",
+        Some(5) => "field",
+        Some(6) => "variable",
+        Some(7) => "class",
+        Some(8) => "interface",
+        Some(9) => "module",
+        Some(10) => "property",
+        Some(11) => "unit",
+        Some(12) => "value",
+        Some(13) => "enum",
+        Some(14) => "keyword",
+        Some(15) => "snippet",
+        Some(16) => "color",
+        Some(17) => "file",
+        Some(18) => "reference",
+        Some(19) => "folder",
+        Some(20) => "enumMember",
+        Some(21) => "constant",
+        Some(22) => "struct",
+        Some(23) => "event",
+        Some(24) => "operator",
+        Some(25) => "typeParameter",
+        _ => "value",
     }
     .to_string()
 }
@@ -1353,6 +1456,15 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("completion"))
+                .and_then(|completion| completion.get("completionItem"))
+                .and_then(|completion_item| completion_item.get("snippetSupport"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1543,6 +1655,59 @@ mod tests {
                     detail: String::new(),
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn extracts_completion_items_from_list_and_array_results() {
+        let list_result = json!({
+            "isIncomplete": false,
+            "items": [
+                {
+                    "label": "Format",
+                    "kind": 2,
+                    "detail": "string Format(string value)",
+                    "insertText": "Format"
+                },
+                {
+                    "label": "Widget",
+                    "kind": 7
+                }
+            ]
+        });
+        assert_eq!(
+            lsp_completion_items_from_result(&list_result, 20),
+            vec![
+                SourceLspCompletionItem {
+                    label: "Format".to_string(),
+                    kind: "method".to_string(),
+                    detail: "string Format(string value)".to_string(),
+                    insert_text: "Format".to_string(),
+                },
+                SourceLspCompletionItem {
+                    label: "Widget".to_string(),
+                    kind: "class".to_string(),
+                    detail: String::new(),
+                    insert_text: "Widget".to_string(),
+                }
+            ]
+        );
+
+        let array_result = json!([
+            {
+                "label": "Console",
+                "kind": 7,
+                "detail": "class Console"
+            }
+        ]);
+        assert_eq!(
+            lsp_completion_items_from_result(&array_result, 1),
+            vec![SourceLspCompletionItem {
+                label: "Console".to_string(),
+                kind: "class".to_string(),
+                detail: "class Console".to_string(),
+                insert_text: "Console".to_string(),
+            }]
         );
     }
 

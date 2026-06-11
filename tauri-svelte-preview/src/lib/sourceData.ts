@@ -61,6 +61,13 @@ export type SourceLspHover = {
   contents: string[];
 };
 
+export type SourceCompletionItem = {
+  label: string;
+  kind: string;
+  detail: string;
+  insertText: string;
+};
+
 export type SourceDiagnosticSeverity = 'error' | 'warning' | 'info' | 'hint';
 
 export type SourceDiagnostic = {

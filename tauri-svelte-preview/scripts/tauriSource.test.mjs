@@ -8,6 +8,7 @@ import {
   findSourceDefinitionsFromTauri,
   findSourceReferencesFromTauri,
   findSourceLspDefinitionsFromTauri,
+  findSourceLspCompletionsFromTauri,
   findSourceLspHoverFromTauri,
   findSourceLspReferencesFromTauri,
   findSourceLspSymbolsFromTauri,
@@ -128,6 +129,26 @@ assert.equal(
       line: 1,
       column: 14,
       limit: 20
+    }
+  ),
+  null
+);
+assert.equal(
+  await findSourceLspCompletionsFromTauri(
+    {
+      path: '/tmp/App.ts',
+      relativePath: 'App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 12,
+      content: 'export class App {}',
+      lineCount: 1
+    },
+    {
+      root: '/tmp/repo',
+      line: 1,
+      column: 14,
+      limit: 50
     }
   ),
   null

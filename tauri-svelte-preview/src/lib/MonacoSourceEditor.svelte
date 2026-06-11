@@ -11,6 +11,7 @@
 		extractSourceSymbols,
 		monacoLanguageForSource,
 		sourceSemanticTokenLegend,
+		type SourceCompletionItem,
 		type SourceDiagnostic,
 		type SourceDiagnosticSeverity,
 		type SourceDefinitionTarget,
@@ -45,6 +46,10 @@
 		request: SourceEditorLookupRequest
 	) => SourceReferenceTarget[] | Promise<SourceReferenceTarget[]> | null | undefined;
 
+	type SourceEditorCompletionLookup = (
+		request: SourceEditorLookupRequest
+	) => SourceCompletionItem[] | Promise<SourceCompletionItem[]> | null | undefined;
+
 	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
@@ -58,6 +63,7 @@
 		intelligenceCommand?: SourceEditorIntelligenceCommand | null;
 		onContentChange?: (content: string) => void;
 		onCommandPaletteRequest?: () => void;
+		onCompletionLookup?: SourceEditorCompletionLookup;
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
 		onDefinitionLookup?: SourceEditorDefinitionLookup;
 		onGoToLineRequest?: () => void;
@@ -81,6 +87,7 @@
 		intelligenceCommand = null,
 		onContentChange,
 		onCommandPaletteRequest,
+		onCompletionLookup,
 		onDiagnosticsChange,
 		onDefinitionLookup,
 		onGoToLineRequest,
@@ -103,6 +110,7 @@
 	let hoverProviderDisposable: Monaco.IDisposable | null = null;
 	let definitionProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
+	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let editorActionDisposables: Monaco.IDisposable[] = [];
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
@@ -259,6 +267,33 @@
 		);
 	}
 
+	function registerSourceCompletionProvider(monaco: typeof Monaco) {
+		completionProviderDisposable?.dispose();
+		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
+			["typescript", "javascript", "csharp"],
+			{
+				triggerCharacters: [".", ":", "<", '"', "'", "/"],
+				provideCompletionItems: async (model, position) => {
+					const request = completionRequestForModelPosition(model, position);
+					const completions = await onCompletionLookup?.(request);
+					const word = model.getWordUntilPosition(position);
+					const range = new monaco.Range(
+						position.lineNumber,
+						word.startColumn,
+						position.lineNumber,
+						word.endColumn
+					);
+
+					return {
+						suggestions: (completions ?? []).map((item) =>
+							sourceCompletionItemToSuggestion(monaco, item, range)
+						),
+					};
+				},
+			}
+		);
+	}
+
 	function sourceDefinitionTargetToLocation(
 		monaco: typeof Monaco,
 		target: SourceDefinitionTarget
@@ -283,6 +318,79 @@
 			uri: monaco.Uri.file(target.path),
 			range: new monaco.Range(line, column, line, column + length),
 		};
+	}
+
+	function sourceCompletionItemToSuggestion(
+		monaco: typeof Monaco,
+		item: SourceCompletionItem,
+		range: Monaco.IRange
+	): Monaco.languages.CompletionItem {
+		return {
+			label: item.label,
+			kind: sourceCompletionItemKind(monaco, item.kind),
+			detail: item.detail || undefined,
+			insertText: item.insertText || item.label,
+			range,
+		};
+	}
+
+	function sourceCompletionItemKind(
+		monaco: typeof Monaco,
+		kind: string
+	): Monaco.languages.CompletionItemKind {
+		const completionKind = monaco.languages.CompletionItemKind;
+		switch (kind) {
+			case "method":
+				return completionKind.Method;
+			case "function":
+				return completionKind.Function;
+			case "constructor":
+				return completionKind.Constructor;
+			case "field":
+				return completionKind.Field;
+			case "variable":
+				return completionKind.Variable;
+			case "class":
+				return completionKind.Class;
+			case "interface":
+				return completionKind.Interface;
+			case "module":
+				return completionKind.Module;
+			case "property":
+				return completionKind.Property;
+			case "unit":
+				return completionKind.Unit;
+			case "value":
+				return completionKind.Value;
+			case "enum":
+				return completionKind.Enum;
+			case "keyword":
+				return completionKind.Keyword;
+			case "snippet":
+				return completionKind.Snippet;
+			case "color":
+				return completionKind.Color;
+			case "file":
+				return completionKind.File;
+			case "reference":
+				return completionKind.Reference;
+			case "folder":
+				return completionKind.Folder;
+			case "enumMember":
+				return completionKind.EnumMember;
+			case "constant":
+				return completionKind.Constant;
+			case "struct":
+				return completionKind.Struct;
+			case "event":
+				return completionKind.Event;
+			case "operator":
+				return completionKind.Operator;
+			case "typeParameter":
+				return completionKind.TypeParameter;
+			default:
+				return completionKind.Text;
+		}
 	}
 
 	function previewForModel(model: Monaco.editor.ITextModel): SourcePreview {
@@ -547,6 +655,18 @@
 		};
 	}
 
+	function completionRequestForModelPosition(
+		model: Monaco.editor.ITextModel,
+		position: Monaco.IPosition
+	): SourceEditorLookupRequest {
+		const word = model.getWordUntilPosition(position);
+		return {
+			symbolName: word.word,
+			line: position.lineNumber,
+			column: position.column,
+		};
+	}
+
 	onMount(async () => {
 		if (!host) return;
 
@@ -599,6 +719,7 @@
 		registerSourceHoverProvider(monaco);
 		registerSourceDefinitionProvider(monaco);
 		registerSourceReferenceProvider(monaco);
+		registerSourceCompletionProvider(monaco);
 
 		editor = monaco.editor.create(host, {
 			automaticLayout: false,
@@ -773,6 +894,7 @@
 		hoverProviderDisposable?.dispose();
 		definitionProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
+		completionProviderDisposable?.dispose();
 		for (const disposable of editorActionDisposables) {
 			disposable.dispose();
 		}
