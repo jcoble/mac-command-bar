@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createDefaultSourceDockLayout } from '../src/lib/sourceDockLayout.ts';
 import {
   createWorkspaceSnapshot,
+  describeWorkspaceSnapshotRestoreReadiness,
   parseStoredWorkspaceSnapshot,
   restoreWorkspaceSnapshot,
   snapshotStorageKey,
@@ -161,3 +162,97 @@ assert.deepEqual(
   'stored snapshots should preserve embedded terminal restore metadata'
 );
 assert.equal(parseStoredWorkspaceSnapshot({ ...snapshot, provider: 'unknown' }), null);
+
+assert.deepEqual(
+  describeWorkspaceSnapshotRestoreReadiness(snapshot, {
+    liveTerminalSessionIDs: ['terminal-123'],
+    liveTerminalCwds: [],
+    knownWorktreePaths: []
+  }),
+  {
+    kind: 'live-terminal',
+    tone: 'ready',
+    label: 'Live terminal',
+    detail: 'Can reattach to the saved embedded terminal session.',
+    canRestoreWorkspace: true,
+    canResumeEmbedded: true
+  },
+  'restore readiness should prefer a live saved terminal session'
+);
+
+assert.deepEqual(
+  describeWorkspaceSnapshotRestoreReadiness(snapshot, {
+    liveTerminalSessionIDs: [],
+    liveTerminalCwds: [],
+    knownWorktreePaths: ['/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center']
+  }),
+  {
+    kind: 'ready',
+    tone: 'ready',
+    label: 'Worktree ready',
+    detail: 'Saved worktree is still registered and can be restored.',
+    canRestoreWorkspace: true,
+    canResumeEmbedded: true
+  },
+  'restore readiness should recognize a still-registered saved worktree'
+);
+
+assert.deepEqual(
+  describeWorkspaceSnapshotRestoreReadiness(snapshot, {
+    knownWorktreePaths: ['/Users/blackcolours/dev/work/worktrees/EdiPlatform/other-task']
+  }),
+  {
+    kind: 'missing-worktree',
+    tone: 'blocked',
+    label: 'Worktree missing',
+    detail: 'Saved worktree is not in the current worktree scan; restore files cautiously.',
+    canRestoreWorkspace: true,
+    canResumeEmbedded: false
+  },
+  'restore readiness should warn when a saved worktree is no longer registered'
+);
+
+const commandOnlySnapshot = createWorkspaceSnapshot({
+  provider: 'codex',
+  sessionID: 'command-only',
+  title: 'Command-only resume',
+  project: { id: 'mac-command-bar', name: 'MacCommandBar', path: '/repo' },
+  cwd: '/repo',
+  resumeCommand: 'codex resume command-only',
+  capturedAt: 3_000
+});
+
+assert.deepEqual(
+  describeWorkspaceSnapshotRestoreReadiness(commandOnlySnapshot),
+  {
+    kind: 'needs-terminal',
+    tone: 'warning',
+    label: 'Needs terminal',
+    detail: 'Restore can start a new embedded terminal and run the saved command.',
+    canRestoreWorkspace: true,
+    canResumeEmbedded: true
+  },
+  'restore readiness should flag command snapshots that need a fresh terminal'
+);
+
+const filesOnlySnapshot = createWorkspaceSnapshot({
+  provider: 'manual',
+  sessionID: 'files-only',
+  title: 'Files only',
+  project: { id: 'mac-command-bar', name: 'MacCommandBar', path: '/repo' },
+  cwd: '/repo',
+  capturedAt: 4_000
+});
+
+assert.deepEqual(
+  describeWorkspaceSnapshotRestoreReadiness(filesOnlySnapshot),
+  {
+    kind: 'files-only',
+    tone: 'neutral',
+    label: 'Files only',
+    detail: 'Restores panes, selected file, and open tabs; no resume command was saved.',
+    canRestoreWorkspace: true,
+    canResumeEmbedded: false
+  },
+  'restore readiness should describe snapshots without a resume command'
+);

@@ -64,6 +64,7 @@
   } from '$lib/worktreeSafety';
   import {
     createWorkspaceSnapshot,
+    describeWorkspaceSnapshotRestoreReadiness,
     parseStoredWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
     snapshotStorageKey,
@@ -3855,6 +3856,7 @@
   }
 
   function workspaceSnapshotRestorePlan(snapshot: WorkspaceSnapshot) {
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
     const selectedFile = snapshot.selectedPath
       ? `${workspaceSnapshotRelativePath(snapshot, snapshot.selectedPath)}${snapshot.selectedLine ? `:${snapshot.selectedLine}` : ''}`
       : 'none';
@@ -3885,6 +3887,7 @@
       `Open files: ${snapshot.openPaths.length}`,
       openPathLines.length > 0 ? openPathLines.join('\n') : '- none',
       openPathOverflow,
+      `Restore status: ${readiness.label} - ${readiness.detail}`,
       `Activity pane: ${sourceActivityLabel(snapshot.sourceActivityMode)}`,
       `Terminal app: ${snapshot.sourceTerminalApp}`,
       `View state: ${workspaceSnapshotViewStateLabel(snapshot.viewState)}`,
@@ -4016,6 +4019,23 @@
       hiddenCount === 0 ? 'no hidden cards' : `${hiddenCount} hidden`,
       `insights ${viewState.sourceIntelligencePanel}`
     ].join(' · ');
+  }
+
+  function workspaceSnapshotRestoreReadiness(snapshot: WorkspaceSnapshot) {
+    const snapshotProjectPath = normalizeProjectPath(snapshot.project.path);
+    const selectedProjectPath = normalizeProjectPath(selectedProject.path);
+    const snapshotWorktreePath = snapshot.worktreePath ? normalizeProjectPath(snapshot.worktreePath) : '';
+    const shouldUseCurrentWorktreeScan =
+      snapshotProjectPath === selectedProjectPath ||
+      Boolean(snapshotWorktreePath && snapshotWorktreePath === selectedProjectPath);
+
+    return describeWorkspaceSnapshotRestoreReadiness(snapshot, {
+      liveTerminalSessionIDs: embeddedTerminalSessions.map((session) => session.sessionId),
+      liveTerminalCwds: embeddedTerminalSessions.map((session) => session.cwd),
+      knownWorktreePaths: shouldUseCurrentWorktreeScan
+        ? projectWorktrees.map((worktree) => worktree.path)
+        : []
+    });
   }
 
   async function restoreWorkspaceEmbeddedTerminal(
@@ -9509,6 +9529,7 @@
               {#if filteredWorkspaceSnapshots.length > 0}
                 <div class="workspace-snapshot-list">
                   {#each filteredWorkspaceSnapshots as snapshot (snapshot.id)}
+                    {@const readiness = workspaceSnapshotRestoreReadiness(snapshot)}
                     <div
                       class="workspace-snapshot-row"
                       class:active={activeWorkspaceSessionKey === snapshot.id}
@@ -9525,6 +9546,9 @@
                           <small>
                             {snapshot.project.name} · {snapshot.model ?? snapshot.branch ?? snapshot.worktreePath ?? snapshot.cwd}
                           </small>
+                          <span class={`workspace-snapshot-readiness ${readiness.tone}`} title={readiness.detail}>
+                            {readiness.label} · {readiness.detail}
+                          </span>
                         </div>
                       </button>
                       <div class="activity-row-actions" aria-label="Workspace snapshot actions">
@@ -12847,6 +12871,34 @@
   .workspace-snapshot-row > button:hover .activity-row-main strong,
   .workspace-snapshot-row > button:focus-visible .activity-row-main strong {
     color: #9cebe0;
+  }
+
+  .workspace-snapshot-readiness {
+    display: inline-flex;
+    min-width: 0;
+    overflow: hidden;
+    color: #8c9a96;
+    font-size: 8px;
+    font-weight: 760;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .workspace-snapshot-readiness.ready {
+    color: #76e6cf;
+  }
+
+  .workspace-snapshot-readiness.warning {
+    color: #d8aa55;
+  }
+
+  .workspace-snapshot-readiness.blocked {
+    color: #ff9d8e;
+  }
+
+  .workspace-snapshot-readiness.neutral {
+    color: #8c9a96;
   }
 
   .workspace-snapshot-row > button:focus-visible {

@@ -103,6 +103,30 @@ export type RestoredWorkspaceSnapshot = {
   resumeCommand: string | null;
 };
 
+export type WorkspaceSnapshotRestoreReadinessKind =
+  | 'live-terminal'
+  | 'ready'
+  | 'needs-terminal'
+  | 'missing-worktree'
+  | 'files-only';
+
+export type WorkspaceSnapshotRestoreReadinessTone = 'ready' | 'warning' | 'blocked' | 'neutral';
+
+export type WorkspaceSnapshotRestoreReadinessContext = {
+  liveTerminalSessionIDs?: string[];
+  liveTerminalCwds?: string[];
+  knownWorktreePaths?: string[];
+};
+
+export type WorkspaceSnapshotRestoreReadiness = {
+  kind: WorkspaceSnapshotRestoreReadinessKind;
+  tone: WorkspaceSnapshotRestoreReadinessTone;
+  label: string;
+  detail: string;
+  canRestoreWorkspace: boolean;
+  canResumeEmbedded: boolean;
+};
+
 export function createWorkspaceSnapshot(input: WorkspaceSnapshotInput): WorkspaceSnapshot {
   const project = normalizeProjectRoot(input.project);
   const selectedPath = normalizeOptionalPath(input.selectedPath);
@@ -149,6 +173,78 @@ export function restoreWorkspaceSnapshot(snapshot: WorkspaceSnapshot): RestoredW
     embeddedTerminal: normalizeEmbeddedTerminal(snapshot.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(snapshot.dockLayout),
     resumeCommand: snapshot.resumeCommand
+  };
+}
+
+export function describeWorkspaceSnapshotRestoreReadiness(
+  snapshot: WorkspaceSnapshot,
+  context: WorkspaceSnapshotRestoreReadinessContext = {}
+): WorkspaceSnapshotRestoreReadiness {
+  const liveTerminalSessionIDs = new Set((context.liveTerminalSessionIDs ?? []).map((id) => id.trim()).filter(Boolean));
+  const liveTerminalCwds = new Set(normalizePathList(context.liveTerminalCwds));
+  const knownWorktreePaths = normalizePathList(context.knownWorktreePaths);
+  const normalizedWorktreePath = snapshot.worktreePath ? normalizePath(snapshot.worktreePath) : null;
+  const savedTerminal = snapshot.embeddedTerminal;
+
+  if (
+    savedTerminal &&
+    (liveTerminalSessionIDs.has(savedTerminal.sessionID) ||
+      liveTerminalCwds.has(normalizePath(savedTerminal.cwd)))
+  ) {
+    return {
+      kind: 'live-terminal',
+      tone: 'ready',
+      label: 'Live terminal',
+      detail: 'Can reattach to the saved embedded terminal session.',
+      canRestoreWorkspace: true,
+      canResumeEmbedded: true
+    };
+  }
+
+  if (
+    normalizedWorktreePath &&
+    knownWorktreePaths.length > 0 &&
+    !knownWorktreePaths.includes(normalizedWorktreePath)
+  ) {
+    return {
+      kind: 'missing-worktree',
+      tone: 'blocked',
+      label: 'Worktree missing',
+      detail: 'Saved worktree is not in the current worktree scan; restore files cautiously.',
+      canRestoreWorkspace: true,
+      canResumeEmbedded: false
+    };
+  }
+
+  if (normalizedWorktreePath && (knownWorktreePaths.length === 0 || knownWorktreePaths.includes(normalizedWorktreePath))) {
+    return {
+      kind: 'ready',
+      tone: 'ready',
+      label: 'Worktree ready',
+      detail: 'Saved worktree is still registered and can be restored.',
+      canRestoreWorkspace: true,
+      canResumeEmbedded: true
+    };
+  }
+
+  if (snapshot.resumeCommand) {
+    return {
+      kind: 'needs-terminal',
+      tone: 'warning',
+      label: 'Needs terminal',
+      detail: 'Restore can start a new embedded terminal and run the saved command.',
+      canRestoreWorkspace: true,
+      canResumeEmbedded: true
+    };
+  }
+
+  return {
+    kind: 'files-only',
+    tone: 'neutral',
+    label: 'Files only',
+    detail: 'Restores panes, selected file, and open tabs; no resume command was saved.',
+    canRestoreWorkspace: true,
+    canResumeEmbedded: false
   };
 }
 
@@ -322,6 +418,18 @@ function normalizeOpenPaths(openPaths: string[] | undefined, selectedPath: strin
     seen.add(path);
     return true;
   });
+}
+
+function normalizePathList(paths: string[] | undefined): string[] {
+  const seen = new Set<string>();
+  return (paths ?? [])
+    .map((path) => normalizeOptionalPath(path))
+    .filter((path): path is string => path !== null)
+    .filter((path) => {
+      if (seen.has(path)) return false;
+      seen.add(path);
+      return true;
+    });
 }
 
 function normalizePath(path: string): string {

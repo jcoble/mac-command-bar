@@ -65,6 +65,9 @@ assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer',
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
 assertDeclaration('.workspace-snapshot-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
+assertDeclaration('.workspace-snapshot-readiness', 'display: inline-flex');
+assertDeclaration('.workspace-snapshot-readiness.ready', 'color: #76e6cf');
+assertDeclaration('.workspace-snapshot-readiness.blocked', 'color: #ff9d8e');
 assertDeclaration('.conversation-session-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
 assertDeclaration('.conversation-session-open', 'grid-template-columns: auto minmax(0, 1fr)');
 assert.ok(pageSource.includes('min-height: 58px'), 'Worktree rows should have stable dense height');
@@ -214,6 +217,9 @@ assert.ok(pageSource.includes('function workspaceSnapshotEmbeddedTerminal'), 'Wo
 assert.ok(pageSource.includes('function workspaceSnapshotViewState'), 'Workspace snapshots should preserve compact pane view state');
 assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');
 assert.ok(pageSource.includes('function workspaceSnapshotViewStateLabel'), 'Workspace restore plans should summarize saved pane view state');
+assert.ok(pageSource.includes('describeWorkspaceSnapshotRestoreReadiness'), 'Workspace restore should use shared readiness rules');
+assert.ok(pageSource.includes('function workspaceSnapshotRestoreReadiness'), 'Workspace should classify saved snapshot restore readiness');
+assert.ok(pageSource.includes('Restore status: ${readiness.label}'), 'Workspace restore plans should include restore readiness status');
 assert.ok(pageSource.includes('function captureActiveWorkspaceBeforeSwitch'), 'Workspace should refresh the active snapshot before switching conversations');
 assert.ok(pageSource.includes('function restoreConversationWorkspaceSnapshot'), 'Workspace should restore a saved conversation context');
 assert.ok(pageSource.includes('function restoreWorkspaceEmbeddedTerminal'), 'Workspace restore should reconnect a live embedded terminal when possible');
@@ -593,6 +599,8 @@ assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels shou
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
 assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'), 'Agent rows should expose one-click embedded terminal resume');
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
+assert.ok(pageSource.includes('class={`workspace-snapshot-readiness ${readiness.tone}`}'), 'Saved workspace rows should show compact restore readiness');
+assert.ok(pageSource.includes('{readiness.label} · {readiness.detail}'), 'Saved workspace rows should explain restore readiness');
 assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
 assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in embedded terminal"'), 'Saved workspace rows should launch their resume command in the embedded terminal');
 assert.ok(pageSource.includes('aria-label="Copy workspace restore plan"'), 'Saved workspace rows should expose restore-plan copy');
