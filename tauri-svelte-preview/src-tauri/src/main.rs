@@ -185,6 +185,14 @@ struct ProjectWorktreeActionResult {
     worktrees: Vec<ProjectWorktree>,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectWorktreeArchiveResult {
+    message: String,
+    archive_path: String,
+    worktrees: Vec<ProjectWorktree>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeContextProject {
@@ -886,6 +894,18 @@ async fn remove_project_worktree(
     })
     .await
     .map_err(|error| format!("Worktree remove task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn archive_project_worktree(
+    root: String,
+    path: String,
+) -> Result<ProjectWorktreeArchiveResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        archive_project_worktree_sync(PathBuf::from(root), PathBuf::from(path))
+    })
+    .await
+    .map_err(|error| format!("Worktree archive task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2283,6 +2303,79 @@ fn remove_project_worktree_sync(
     })
 }
 
+fn archive_project_worktree_sync(
+    root: PathBuf,
+    path: PathBuf,
+) -> Result<ProjectWorktreeArchiveResult, String> {
+    validate_git_root(&root)?;
+
+    let root_metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read worktree root metadata: {error}"))?;
+    if !root_metadata.is_dir() {
+        return Err("Worktree root is not a directory".to_string());
+    }
+
+    let path_metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read worktree path metadata: {error}"))?;
+    if !path_metadata.is_dir() {
+        return Err("Worktree path is not a directory".to_string());
+    }
+
+    let canonical_root =
+        std::fs::canonicalize(&root).map_err(|error| format!("Could not resolve Git root: {error}"))?;
+    let canonical_path = std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
+    if normalized_path_string(&canonical_root) == normalized_path_string(&canonical_path) {
+        return Err("Refusing to archive the primary checkout as a removable worktree".to_string());
+    }
+
+    let worktrees = list_project_worktrees_sync(root.clone())?;
+    let worktree = worktrees
+        .iter()
+        .find(|worktree| project_worktree_path_matches(&worktree.path, &canonical_path))
+        .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
+    let archive_path = project_worktree_archive_path(worktree)?;
+    std::fs::create_dir_all(&archive_path)
+        .map_err(|error| format!("Could not create worktree archive directory: {error}"))?;
+
+    write_git_command_output(
+        &canonical_path,
+        &["status", "--short", "--branch"],
+        &archive_path.join("status.txt"),
+    )?;
+    write_git_command_output(
+        &canonical_path,
+        &["log", "--oneline", "--decorate", "--max-count=40"],
+        &archive_path.join("commits.txt"),
+    )?;
+    write_git_command_output(&canonical_path, &["diff", "--binary"], &archive_path.join("unstaged.patch"))?;
+    write_git_command_output(
+        &canonical_path,
+        &["diff", "--cached", "--binary"],
+        &archive_path.join("staged.patch"),
+    )?;
+
+    let untracked_paths = git_untracked_paths(&canonical_path)?;
+    std::fs::write(
+        archive_path.join("untracked.txt"),
+        format!("{}\n", untracked_paths.join("\n")),
+    )
+    .map_err(|error| format!("Could not write untracked file list: {error}"))?;
+    copy_untracked_worktree_files(&canonical_path, &archive_path.join("untracked"), &untracked_paths)?;
+
+    let bundle_path = archive_path.join("head.bundle");
+    run_git_text(
+        &canonical_path,
+        &["bundle", "create", bundle_path.to_str().unwrap_or_default(), "HEAD"],
+    )?;
+
+    Ok(ProjectWorktreeArchiveResult {
+        message: format!("Archived worktree {}", worktree.branch),
+        archive_path: normalized_path_string(&archive_path),
+        worktrees: list_project_worktrees_sync(root)?,
+    })
+}
+
 fn project_worktree_path_matches(record_path: &str, canonical_target: &Path) -> bool {
     let normalized_target = normalized_path_string(canonical_target);
     let normalized_record = normalized_path_string(Path::new(record_path));
@@ -2382,6 +2475,145 @@ fn project_worktree_last_activity(path: &str) -> Option<String> {
 
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+fn project_worktree_archive_path(worktree: &ProjectWorktree) -> Result<PathBuf, String> {
+    let archive_root = project_worktree_archive_root(Path::new(&worktree.path));
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Could not build archive timestamp: {error}"))?
+        .as_millis();
+    let repo = safe_archive_path_segment(&worktree.repo);
+    let branch = safe_archive_path_segment(&worktree.branch);
+    Ok(archive_root.join(repo).join(format!("{branch}-{timestamp}")))
+}
+
+fn project_worktree_archive_root(path: &Path) -> PathBuf {
+    let normalized_path = normalized_path_string(path);
+    let marker = "/worktrees/";
+    if let Some(index) = normalized_path.find(marker) {
+        return PathBuf::from(format!("{}/worktree-archives", &normalized_path[..index]));
+    }
+
+    path.parent()
+        .map(|parent| parent.join("worktree-archives"))
+        .unwrap_or_else(|| PathBuf::from("worktree-archives"))
+}
+
+fn safe_archive_path_segment(value: &str) -> String {
+    let mut segment = value
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while segment.contains("--") {
+        segment = segment.replace("--", "-");
+    }
+    let segment = segment.trim_matches('-').to_string();
+    if segment.is_empty() {
+        "worktree".to_string()
+    } else {
+        segment
+    }
+}
+
+fn write_git_command_output(root: &Path, args: &[&str], destination: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run git {}: {error}", args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git {} exited with {}", args.join(" "), output.status)
+        } else {
+            stderr
+        });
+    }
+
+    std::fs::write(destination, output.stdout)
+        .map_err(|error| format!("Could not write {}: {error}", destination.display()))
+}
+
+fn git_untracked_paths(root: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .map_err(|error| format!("Could not list untracked files: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git ls-files exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| String::from_utf8_lossy(chunk).to_string())
+        .filter(|path| is_safe_git_relative_path(path))
+        .collect())
+}
+
+fn copy_untracked_worktree_files(
+    root: &Path,
+    destination_root: &Path,
+    relative_paths: &[String],
+) -> Result<(), String> {
+    for relative_path in relative_paths {
+        if !is_safe_git_relative_path(relative_path) {
+            continue;
+        }
+
+        let source = root.join(relative_path);
+        let Ok(metadata) = std::fs::metadata(&source) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let destination = destination_root.join(relative_path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Could not create untracked archive directory: {error}"))?;
+        }
+        std::fs::copy(&source, &destination).map_err(|error| {
+            format!(
+                "Could not copy untracked file {} to {}: {error}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn is_safe_git_relative_path(path: &str) -> bool {
+    let trimmed = path.trim();
+    let relative_path = Path::new(trimmed);
+    !trimmed.is_empty()
+        && !trimmed.contains('\0')
+        && !relative_path.is_absolute()
+        && relative_path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn list_git_repository_summaries_sync(
@@ -3425,6 +3657,7 @@ fn main() {
             read_git_commit_history,
             list_project_worktrees,
             remove_project_worktree,
+            archive_project_worktree,
             list_git_repository_summaries,
             list_agent_sessions,
             list_runtime_contexts,
@@ -4553,6 +4786,57 @@ mod tests {
 
         assert!(error.contains("dirty worktree"));
         assert!(sibling.exists());
+
+        run_git_for_test(&root, &["worktree", "remove", "--force", sibling.to_str().unwrap()]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn archive_project_worktree_preserves_dirty_state_without_removing_it() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-dirty-backup",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(sibling.join("src/App.ts"), "export const value = 2;\n").unwrap();
+        std::fs::create_dir_all(sibling.join("notes")).unwrap();
+        std::fs::write(sibling.join("notes/handoff.md"), "keep this\n").unwrap();
+
+        let result = archive_project_worktree_sync(root.clone(), sibling.clone()).unwrap();
+
+        let archive_path = PathBuf::from(result.archive_path);
+        assert!(archive_path.join("status.txt").exists());
+        assert!(archive_path.join("commits.txt").exists());
+        assert!(archive_path.join("unstaged.patch").exists());
+        assert!(archive_path.join("staged.patch").exists());
+        assert!(archive_path.join("untracked.txt").exists());
+        assert!(archive_path.join("head.bundle").exists());
+        assert!(archive_path.join("untracked/notes/handoff.md").exists());
+        assert!(std::fs::read_to_string(archive_path.join("unstaged.patch"))
+            .unwrap()
+            .contains("value = 2"));
+        assert_eq!(
+            std::fs::read_to_string(archive_path.join("untracked/notes/handoff.md")).unwrap(),
+            "keep this\n"
+        );
+        assert!(sibling.exists());
+        assert!(project_worktree_is_dirty(sibling.to_str().unwrap()));
+        assert!(result.message.contains("Archived worktree"));
 
         run_git_for_test(&root, &["worktree", "remove", "--force", sibling.to_str().unwrap()]);
         std::fs::remove_dir_all(root).unwrap();

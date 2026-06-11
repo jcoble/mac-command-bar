@@ -22,6 +22,7 @@ import {
   listGitRepositorySummariesFromTauri,
   listProjectWorktreesFromTauri,
   removeProjectWorktreeFromTauri,
+  archiveProjectWorktreeFromTauri,
   listTerminalSessionsFromTauri,
   listRuntimeContextsFromTauri,
   openTerminalCommandFromTauri,
@@ -90,6 +91,7 @@ assert.equal(
 );
 assert.equal(await listProjectWorktreesFromTauri('/tmp/repo'), null);
 assert.equal(await removeProjectWorktreeFromTauri('/tmp/repo', '/tmp/repo-worktree'), null);
+assert.equal(await archiveProjectWorktreeFromTauri('/tmp/repo', '/tmp/repo-worktree'), null);
 assert.equal(await validateProjectRootFromTauri('/tmp/repo'), null);
 assert.equal(
   await listRuntimeContextsFromTauri([

@@ -193,6 +193,7 @@
     findSourceLspWorkspaceSymbolsFromTauri,
     formatSourceWithLspFromTauri,
     findSourceReferencesFromTauri,
+    archiveProjectWorktreeFromTauri,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
     listOrchestrationRunsFromTauri,
@@ -4539,7 +4540,7 @@
   async function runWorktreePrimaryAction(worktree: ProjectWorktree) {
     const safety = projectWorktreeSafety(worktree);
     const action = worktreePrimaryAction(safety);
-    if (action.kind !== 'cleanup') {
+    if (action.kind === 'audit') {
       await copyActivityCommand(action.command, action.clipboardMessage);
       return;
     }
@@ -4550,6 +4551,19 @@
     error = '';
 
     try {
+      if (action.kind === 'backup') {
+        const result = await archiveProjectWorktreeFromTauri(selectedProject.path, worktree.path);
+        if (!result) {
+          await copyTextToClipboard(action.command, 'Native archive unavailable; command copied');
+          return;
+        }
+
+        projectWorktrees = result.worktrees;
+        fileActionStatus = `${result.message}: ${result.archivePath}`;
+        void loadGitRepositorySummaries(projects);
+        return;
+      }
+
       const result = await removeProjectWorktreeFromTauri(selectedProject.path, worktree.path);
       if (!result) {
         await copyTextToClipboard(action.command, 'Native remove unavailable; command copied');

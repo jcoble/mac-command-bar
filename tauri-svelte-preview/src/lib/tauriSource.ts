@@ -104,6 +104,10 @@ export type ProjectWorktreeActionResult = {
   worktrees: ProjectWorktree[];
 };
 
+export type ProjectWorktreeArchiveResult = ProjectWorktreeActionResult & {
+  archivePath: string;
+};
+
 export type GitRepositorySummary = {
   projectID: string;
   projectName: string;
@@ -621,6 +625,18 @@ export async function removeProjectWorktreeFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectWorktreeActionResult>('remove_project_worktree', { root, path });
+}
+
+export async function archiveProjectWorktreeFromTauri(
+  root: string,
+  path: string
+): Promise<ProjectWorktreeArchiveResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProjectWorktreeArchiveResult>('archive_project_worktree', { root, path });
 }
 
 export async function listGitRepositorySummariesFromTauri(
