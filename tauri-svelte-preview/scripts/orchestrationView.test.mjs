@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   orchestrationArtifactChips,
+  orchestrationAttentionQueue,
   orchestrationCurrentActivity,
   orchestrationLinkChips,
   orchestrationLoopStageMetrics,
@@ -238,6 +239,10 @@ assert.equal(
     '- live · claude fix-agent fixer-1 · Retesting failed scenario - Retry after auth fix'
   ].join('\n')
 );
+assert.deepEqual(
+  orchestrationAttentionQueue(run).map((item) => [item.label, item.title, item.agentLabel]),
+  [['Decision', 'Needs sign-off', 'claude fix-agent fixer-1']]
+);
 assert.equal(
   orchestrationRunSummaryText(run),
   [
@@ -249,6 +254,7 @@ assert.equal(
     'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
     'Tally: 2 done · 4 running · 0 failed · 2 attention · 1 retries · 1 sign-off',
     'Loop: 2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off',
+    'Needs attention: Needs sign-off',
     'Artifacts: 1 · Links: 1 · Events: 3',
     'Timeline:',
     '- attention · claude fix-agent fixer-1 · Needs sign-off - Manual decision before deleting dirty worktree',

@@ -39,6 +39,7 @@
   } from '$lib/pasteCleanup';
   import {
     orchestrationArtifactChips,
+    orchestrationAttentionQueue,
     orchestrationCurrentActivity,
     orchestrationLinkChips,
     orchestrationLoopStageMetrics,
@@ -7407,6 +7408,7 @@
                 {@const runMetrics = orchestrationRunMetrics(run)}
                 {@const runStage = orchestrationRunStage(run, runMetrics)}
                 {@const runLoopStages = orchestrationLoopStageMetrics(runMetrics)}
+                {@const runAttentionItems = orchestrationAttentionQueue(run, 3)}
                 {@const runTimeline = orchestrationTimelineItems(run, 6)}
                 {@const runArtifacts = orchestrationArtifactChips(run)}
                 {@const runLinks = orchestrationLinkChips(run)}
@@ -7463,6 +7465,24 @@
                   <div class="run-loop-row" aria-label="Run loop tally">
                     <span>{orchestrationLoopTallyText(runMetrics)}</span>
                   </div>
+                  {#if runAttentionItems.length > 0}
+                    <div class="run-attention-queue" aria-label="Run decisions and blockers">
+                      {#each runAttentionItems as item (item.id)}
+                        <div class={`run-attention-item ${item.tone}`} title={item.summary || item.title}>
+                          <span>{item.label}</span>
+                          <div>
+                            <strong>{item.title}</strong>
+                            <small>{item.agentLabel || item.summary}</small>
+                          </div>
+                          {#if item.href}
+                            <a href={item.href} target="_blank" rel="noreferrer" aria-label={`Open ${item.title}`}>
+                              <ExternalLink size={11} strokeWidth={2} />
+                            </a>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
                   <div class="run-loop-stage-strip" aria-label="Run loop stages">
                     {#each runLoopStages as stage (stage.id)}
                       <span class={`run-loop-stage ${stage.tone}`} title={stage.title}>
@@ -10554,6 +10574,92 @@
     font-weight: 780;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .run-attention-queue {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .run-attention-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 5px 7px;
+    border: 1px solid rgba(216, 170, 85, 0.2);
+    border-radius: 7px;
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .run-attention-item.bad {
+    border-color: rgba(255, 112, 112, 0.24);
+    background: rgba(255, 112, 112, 0.08);
+  }
+
+  .run-attention-item > span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 0 6px;
+    color: #20170a;
+    border-radius: 999px;
+    background: #d8aa55;
+    font-size: 8px;
+    font-weight: 900;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .run-attention-item.bad > span {
+    color: #220a0a;
+    background: #ff8f8f;
+  }
+
+  .run-attention-item div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .run-attention-item strong,
+  .run-attention-item small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-attention-item strong {
+    color: #f3ebe0;
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .run-attention-item small {
+    color: #b9ada0;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .run-attention-item a {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    color: #d8aa55;
+    border-radius: 5px;
+    text-decoration: none;
+  }
+
+  .run-attention-item a:hover,
+  .run-attention-item a:focus-visible {
+    color: #f4d08b;
+    outline: 0;
+    background: rgba(216, 170, 85, 0.14);
   }
 
   .run-loop-stage-strip {

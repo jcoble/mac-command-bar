@@ -43,6 +43,17 @@ export type OrchestrationTimelineItem = {
   path: string | null;
 };
 
+export type OrchestrationAttentionItem = {
+  id: string;
+  tone: 'bad' | 'attention';
+  label: string;
+  title: string;
+  summary: string;
+  agentLabel: string;
+  href: string | null;
+  path: string | null;
+};
+
 export type OrchestrationChip = {
   id: string;
   kind: string;
@@ -352,8 +363,28 @@ export function orchestrationCurrentActivity(run: OrchestrationRun): string {
   return `${agentPrefix}${activeItem.title}${summarySuffix}`;
 }
 
+export function orchestrationAttentionQueue(
+  run: OrchestrationRun,
+  limit = 4
+): OrchestrationAttentionItem[] {
+  return orchestrationTimelineItems(run, Number.POSITIVE_INFINITY)
+    .filter((item) => item.tone === 'bad' || item.tone === 'attention')
+    .slice(0, Math.max(0, limit))
+    .map((item) => ({
+      id: item.id,
+      tone: item.tone as 'bad' | 'attention',
+      label: attentionLabelForTimelineItem(item),
+      title: item.title,
+      summary: item.summary,
+      agentLabel: item.agentLabel,
+      href: item.href,
+      path: item.path
+    }));
+}
+
 export function orchestrationRunSummaryText(run: OrchestrationRun): string {
   const metrics = orchestrationRunMetrics(run);
+  const attentionQueue = orchestrationAttentionQueue(run, 3);
   const tally = [
     `${metrics.completedCount} done`,
     `${metrics.runningCount} running`,
@@ -373,6 +404,7 @@ export function orchestrationRunSummaryText(run: OrchestrationRun): string {
     `Current: ${orchestrationCurrentActivity(run)}`,
     `Tally: ${tally}`,
     `Loop: ${orchestrationLoopTallyText(metrics)}`,
+    attentionQueue.length > 0 ? `Needs attention: ${attentionQueue.map((item) => item.title).join(' · ')}` : '',
     `Artifacts: ${metrics.artifactCount} · Links: ${metrics.linkCount} · Events: ${metrics.eventCount}`,
     orchestrationRunTimelineText(run) ? `Timeline:\n${orchestrationRunTimelineText(run)}` : ''
   ].filter(Boolean).join('\n');
@@ -500,6 +532,13 @@ function searchTextForTimelineItem(item: OrchestrationTimelineItem): string {
   return [item.kind, item.status, item.title, item.summary, item.agentLabel]
     .filter(Boolean)
     .join(' ');
+}
+
+function attentionLabelForTimelineItem(item: OrchestrationTimelineItem): string {
+  if (item.tone === 'bad') return 'Blocker';
+  if (decisionPattern.test(searchTextForTimelineItem(item))) return 'Decision';
+  if (approvalPattern.test(searchTextForTimelineItem(item))) return 'Sign-off';
+  return 'Attention';
 }
 
 function formatMetricLabel(count: number, singular: string, plural: string): string {

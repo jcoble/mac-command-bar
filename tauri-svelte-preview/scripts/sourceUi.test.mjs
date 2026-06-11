@@ -979,6 +979,11 @@ assertDeclaration('.git-history-actions', 'display: inline-flex');
 assertDeclaration('.git-graph-marker.head::after', 'background: #6fdfcf');
 assertDeclaration('.git-graph-marker.merge::after', 'border-radius: 3px');
 assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0, 1fr)');
+assert.ok(pageSource.includes('orchestrationAttentionQueue'), 'Runs mode should derive decision and blocker queues');
+assert.ok(pageSource.includes('class="run-attention-queue"'), 'Runs mode should render decision and blocker queues');
+assert.ok(pageSource.includes('aria-label="Run decisions and blockers"'), 'Runs mode should expose the attention queue');
+assertDeclaration('.run-attention-queue', 'display: grid');
+assertDeclaration('.run-attention-item', 'grid-template-columns: auto minmax(0, 1fr) auto');
 assertDeclaration('.run-timeline-item', 'grid-template-columns: 18px minmax(0, 1fr) auto');
 assertDeclaration('.run-artifact-row', 'display: flex');
 assert.ok(
