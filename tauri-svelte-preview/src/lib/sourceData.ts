@@ -275,6 +275,18 @@ export type GitTaskMetadata = {
   taskID?: string | null;
 };
 
+export type GitTaskSourceMetadata = GitTaskMetadata & {
+  sourceLabel: string;
+  sourceDetail?: string | null;
+};
+
+export type GitTaskSourceGroup = {
+  taskID: string;
+  sourceSummary: string;
+  detailSummary: string;
+  sources: GitTaskSourceMetadata[];
+};
+
 export type GitCommitGraphKind = 'head' | 'branch' | 'merge' | 'root' | 'commit';
 
 export type SourceContextGitStatus = {
@@ -921,6 +933,38 @@ export function uniqueTaskIDsFromGitMetadata(...groups: GitTaskMetadata[][]): st
   }
 
   return taskIDs;
+}
+
+export function buildGitTaskSourceGroups(...groups: GitTaskSourceMetadata[][]): GitTaskSourceGroup[] {
+  const groupedSources = new Map<string, GitTaskSourceMetadata[]>();
+
+  for (const group of groups) {
+    for (const item of group) {
+      const taskID = normalizeTaskID(item.taskID);
+      if (!taskID) continue;
+
+      const sourceLabel = item.sourceLabel.trim() || 'metadata';
+      const sourceDetail = item.sourceDetail?.trim() || null;
+      const source = { ...item, taskID, sourceLabel, sourceDetail };
+      const sources = groupedSources.get(taskID) ?? [];
+      sources.push(source);
+      groupedSources.set(taskID, sources);
+    }
+  }
+
+  return Array.from(groupedSources.entries()).map(([taskID, sources]) => {
+    const sourceLabels = Array.from(new Set(sources.map((source) => source.sourceLabel)));
+    return {
+      taskID,
+      sourceSummary: sourceLabels.join(', '),
+      detailSummary: sources
+        .map((source) =>
+          source.sourceDetail ? `${source.sourceLabel}: ${source.sourceDetail}` : source.sourceLabel
+        )
+        .join(' · '),
+      sources
+    };
+  });
 }
 
 export function taskReferenceUrl(

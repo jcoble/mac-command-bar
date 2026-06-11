@@ -85,6 +85,7 @@
   import {
     applySourceTextEdits,
     buildSourceTree,
+    buildGitTaskSourceGroups,
     closeOpenSourceTab,
     createProjectRoot,
     defaultProjectRoots,
@@ -921,6 +922,30 @@
       selectedProjectRepositorySummaries,
       projectWorktrees,
       gitCommitHistory
+    )
+  );
+  let selectedProjectGitTaskSourceGroups = $derived(
+    buildGitTaskSourceGroups(
+      selectedProjectRepositorySummaries.map((summary) => ({
+        taskID: summary.taskID,
+        sourceLabel: 'repo',
+        sourceDetail: `${summary.rootLabel} · ${summary.branch}`
+      })),
+      projectWorktrees.map((worktree) => ({
+        taskID: worktree.taskID,
+        sourceLabel: 'worktree',
+        sourceDetail: `${worktree.branch} · ${projectWorktreeActivityLabel(worktree)}`
+      })),
+      gitCommitHistory.map((entry) => ({
+        taskID: entry.taskID,
+        sourceLabel: 'commit',
+        sourceDetail: `${entry.shortSha} · ${entry.subject}`
+      })),
+      selectedProjectOrchestrationRuns.map((run) => ({
+        taskID: run.taskID,
+        sourceLabel: 'run',
+        sourceDetail: run.title
+      }))
     )
   );
   let runtimeContextSummary = $derived(
@@ -10718,6 +10743,30 @@
                       {/each}
                     </div>
                   {/if}
+                  {#if selectedProjectGitTaskSourceGroups.length > 0}
+                    <div class="git-task-source-map" aria-label="Git task source map">
+                      {#each selectedProjectGitTaskSourceGroups as group (group.taskID)}
+                        <div class="git-task-source-row" title={group.detailSummary}>
+                          {#if gitTaskUrl(group.taskID)}
+                            <a class="git-task-link" href={gitTaskUrl(group.taskID) ?? ''} target="_blank" rel="noreferrer">
+                              {group.taskID}
+                            </a>
+                          {:else}
+                            <span class="git-task-link">{group.taskID}</span>
+                          {/if}
+                          <small>{group.sourceSummary}</small>
+                          <button
+                            type="button"
+                            aria-label={`Copy task sources for ${group.taskID}`}
+                            title={group.detailSummary}
+                            onclick={() => copyActivityCommand(`${group.taskID} · ${group.detailSummary}`, 'Task sources copied')}
+                          >
+                            <Copy size={11} strokeWidth={2} />
+                          </button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
                   {#if selectedGitCommit}
                     <div
                       class="git-commit-detail"
@@ -15713,6 +15762,56 @@
     flex: 0 0 auto;
     color: #aeb8b5;
     text-transform: uppercase;
+  }
+
+  .git-task-source-map {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .git-task-source-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 24px;
+    padding: 3px 5px;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.028);
+  }
+
+  .git-task-source-row small {
+    min-width: 0;
+    overflow: hidden;
+    color: #9aa7a3;
+    font-size: 8.5px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-task-source-row button {
+    display: grid;
+    place-items: center;
+    width: 19px;
+    height: 19px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .git-task-source-row button:hover,
+  .git-task-source-row button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.34);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.11);
   }
 
   .git-commit-detail {

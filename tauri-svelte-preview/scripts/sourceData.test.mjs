@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   applySourceTextEdits,
+  buildGitTaskSourceGroups,
   closeOpenSourceTab,
   extractSourceSemanticTokens,
   extractSourceSymbols,
@@ -810,6 +811,33 @@ assert.deepEqual(
     [{ taskID: 'TSK-127' }]
   ),
   ['TSK-127', 'TSK-126']
+);
+assert.deepEqual(
+  buildGitTaskSourceGroups(
+    [
+      { taskID: 'tsk-127', sourceLabel: 'repo', sourceDetail: 'main checkout' },
+      { taskID: 'not-a-task', sourceLabel: 'repo', sourceDetail: 'ignored' }
+    ],
+    [{ taskID: 'TSK-127', sourceLabel: 'commit', sourceDetail: 'b022003' }],
+    [{ taskID: 'TSK-128', sourceLabel: 'worktree', sourceDetail: 'tsk-128-editor' }]
+  ),
+  [
+    {
+      taskID: 'TSK-127',
+      sourceSummary: 'repo, commit',
+      detailSummary: 'repo: main checkout · commit: b022003',
+      sources: [
+        { taskID: 'TSK-127', sourceLabel: 'repo', sourceDetail: 'main checkout' },
+        { taskID: 'TSK-127', sourceLabel: 'commit', sourceDetail: 'b022003' }
+      ]
+    },
+    {
+      taskID: 'TSK-128',
+      sourceSummary: 'worktree',
+      detailSummary: 'worktree: tsk-128-editor',
+      sources: [{ taskID: 'TSK-128', sourceLabel: 'worktree', sourceDetail: 'tsk-128-editor' }]
+    }
+  ]
 );
 assert.equal(taskReferenceUrl('TSK-127', { 'TSK-127': 'https://example.test/task' }), 'https://example.test/task');
 assert.equal(taskReferenceUrl('tsk-192', {}), 'https://www.notion.so/search?q=TSK-192');

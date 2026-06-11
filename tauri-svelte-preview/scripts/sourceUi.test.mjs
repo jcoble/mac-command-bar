@@ -1192,6 +1192,8 @@ assert.ok(pageSource.includes('function gitWorkspaceBriefText'), 'Git view shoul
 assert.ok(pageSource.includes('function copyGitWorkspaceBrief'), 'Git view should expose a copyable workspace brief action');
 assert.ok(pageSource.includes("id: 'git-copy-workspace-brief'"), 'Command palette should copy the Git workspace brief');
 assert.ok(pageSource.includes('selectedProjectGitTaskIDs'), 'Git panel should derive a selected-project task trail');
+assert.ok(pageSource.includes('selectedProjectGitTaskSourceGroups'), 'Git panel should derive task source groups');
+assert.ok(pageSource.includes('buildGitTaskSourceGroups'), 'Git panel should use the shared task source grouping model');
 assert.ok(
   pageSource.includes('uniqueTaskIDsFromGitMetadata'),
   'Git panel should dedupe task IDs from repo/worktree/history metadata'
@@ -1210,6 +1212,9 @@ assert.ok(
   'Git task links should explain whether task IDs came from refs or subjects'
 );
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
+assert.ok(pageSource.includes('class="git-task-source-map"'), 'Git panel should render a compact task source map');
+assert.ok(pageSource.includes('class="git-task-source-row"'), 'Task source map should render per-task rows');
+assert.ok(pageSource.includes('group.detailSummary'), 'Task source rows should describe where each task came from');
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
 assert.ok(pageSource.includes('let selectedGitCommitSha'), 'Git panel should track a selected commit');
 assert.ok(pageSource.includes('selectedGitCommit'), 'Git panel should derive the selected commit from history');
@@ -1280,6 +1285,8 @@ assertDeclaration('.git-status-group', 'display: grid');
 assertDeclaration('.git-status-group-heading', 'grid-template-columns: minmax(0, 1fr) auto auto');
 assertDeclaration('.git-history-list', 'overflow-y: auto');
 assertDeclaration('.git-task-trail', 'display: flex');
+assertDeclaration('.git-task-source-map', 'display: grid');
+assertDeclaration('.git-task-source-row', 'grid-template-columns: auto minmax(0, 1fr) auto');
 assert.match(
   pageSource,
   /\.activity-commit-row\s*\{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;/,
