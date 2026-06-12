@@ -4173,6 +4173,12 @@
     return orchestrationStatusTone(status);
   }
 
+  function contextOrchestrationLoopStages(runMetrics: ReturnType<typeof orchestrationRunMetrics>) {
+    const stages = orchestrationLoopStageMetrics(runMetrics);
+    const visibleStages = stages.filter((stage) => stage.value > 0 || stage.tone === 'bad' || stage.tone === 'attention');
+    return (visibleStages.length > 0 ? visibleStages : stages.slice(0, 3)).slice(0, 6);
+  }
+
   function orchestrationRunTaskUrl(run: OrchestrationRun) {
     return gitTaskUrl(run.taskID);
   }
@@ -12446,19 +12452,64 @@
           <div class="orchestration-context-list">
             {#each selectedProjectOrchestrationRuns.slice(0, 3) as run (run.id)}
               {@const runMetrics = orchestrationRunMetrics(run)}
+              {@const contextLoopStages = contextOrchestrationLoopStages(runMetrics)}
               <div
                 class="orchestration-context-row"
                 class:bad={orchestrationStatusClass(run.status) === 'bad'}
                 class:attention={orchestrationStatusClass(run.status) === 'attention' ||
                   runMetrics.attentionCount > 0 ||
                   runMetrics.approvalCount > 0}
-              >
-                <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
-                <strong>{run.title}</strong>
-                <span title={orchestrationLoopTallyText(runMetrics)}>
-                  {run.phase} · {run.progress}% · {orchestrationLoopTallyText(runMetrics)}
-                </span>
-                <small>{orchestrationCurrentActivity(run)}</small>
+                class:live={orchestrationStatusClass(run.status) === 'live'}
+                >
+                <div class="orchestration-context-main">
+                  <div class="orchestration-context-title">
+                    <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
+                    <strong>{run.title}</strong>
+                    {#if run.taskID && orchestrationRunTaskUrl(run)}
+                      <a
+                        class="git-task-link"
+                        href={orchestrationRunTaskUrl(run) ?? ''}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="Open context run task"
+                      >
+                        {run.taskID}
+                      </a>
+                    {/if}
+                  </div>
+                  <div class="orchestration-context-meta" title={orchestrationLoopTallyText(runMetrics)}>
+                    <span>{run.phase}</span>
+                    <span>{run.progress}%</span>
+                    <span>{orchestrationLoopTallyText(runMetrics)}</span>
+                  </div>
+                  <small class="orchestration-context-current">{orchestrationCurrentActivity(run)}</small>
+                  <div class="orchestration-context-loop-stages" aria-label="Context run loop stages">
+                    {#each contextLoopStages as stage (stage.id)}
+                      <span class={`context-loop-stage ${stage.tone}`} title={stage.title}>
+                        <em>{stage.label}</em>
+                        <strong>{stage.value}</strong>
+                      </span>
+                    {/each}
+                  </div>
+                </div>
+                <div class="orchestration-context-actions" aria-label="Context run actions">
+                  <button
+                    type="button"
+                    aria-label="Focus context run"
+                    title="Focus run"
+                    onclick={() => focusOrchestrationRun(run)}
+                  >
+                    <Search size={11} strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Copy context run handoff"
+                    title="Copy run handoff"
+                    onclick={() => copyOrchestrationRunHandoff(run)}
+                  >
+                    <FileCode2 size={11} strokeWidth={2} />
+                  </button>
+                </div>
               </div>
             {/each}
           </div>
@@ -18096,7 +18147,7 @@
   }
 
   .orchestration-context-row {
-    grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 0.72fr) minmax(0, 0.85fr);
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .orchestration-context-row.bad {
@@ -18105,6 +18156,150 @@
 
   .orchestration-context-row.attention {
     background: rgba(216, 170, 85, 0.09);
+  }
+
+  .orchestration-context-row.live {
+    background: rgba(92, 226, 207, 0.055);
+  }
+
+  .orchestration-context-main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .orchestration-context-title,
+  .orchestration-context-meta,
+  .orchestration-context-loop-stages,
+  .orchestration-context-actions {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .orchestration-context-title {
+    gap: 5px;
+  }
+
+  .orchestration-context-title .run-status-badge {
+    flex: 0 0 auto;
+  }
+
+  .orchestration-context-title .git-task-link {
+    flex: 0 0 auto;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 8px;
+  }
+
+  .orchestration-context-meta {
+    gap: 4px;
+    color: #8d9995;
+    font-size: 8px;
+    font-weight: 780;
+    text-transform: uppercase;
+  }
+
+  .orchestration-context-meta span + span::before {
+    content: "·";
+    margin-right: 4px;
+    color: #586560;
+  }
+
+  .orchestration-context-current {
+    color: #aab5b2;
+    font-size: 9px;
+    font-weight: 720;
+  }
+
+  .orchestration-context-loop-stages {
+    gap: 3px;
+    overflow: hidden;
+  }
+
+  .context-loop-stage {
+    display: inline-grid;
+    grid-template-columns: minmax(0, auto) auto;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    height: 18px;
+    padding: 0 5px;
+    color: #aeb9b6;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 8px;
+    font-weight: 850;
+  }
+
+  .context-loop-stage.live {
+    color: #6fdfcf;
+    border-color: rgba(92, 226, 207, 0.2);
+    background: rgba(92, 226, 207, 0.075);
+  }
+
+  .context-loop-stage.good {
+    color: #8fd8a4;
+    border-color: rgba(123, 216, 159, 0.18);
+    background: rgba(123, 216, 159, 0.065);
+  }
+
+  .context-loop-stage.attention {
+    color: #e8c47d;
+    border-color: rgba(216, 170, 85, 0.22);
+    background: rgba(216, 170, 85, 0.085);
+  }
+
+  .context-loop-stage.bad {
+    color: #ff9d9d;
+    border-color: rgba(255, 112, 112, 0.22);
+    background: rgba(255, 112, 112, 0.08);
+  }
+
+  .context-loop-stage em,
+  .context-loop-stage strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .context-loop-stage em {
+    font-style: normal;
+    opacity: 0.82;
+  }
+
+  .context-loop-stage strong {
+    color: inherit;
+    font-size: 9px;
+    font-weight: 900;
+  }
+
+  .orchestration-context-actions {
+    align-self: start;
+    gap: 3px;
+  }
+
+  .orchestration-context-actions button {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .orchestration-context-actions button:hover,
+  .orchestration-context-actions button:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.34);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
   }
 
   .worktree-context-row.blocked {
@@ -18124,6 +18319,12 @@
   }
 
   .runtime-port,
+  .orchestration-context-main,
+  .orchestration-context-title,
+  .orchestration-context-title .git-task-link,
+  .orchestration-context-meta,
+  .orchestration-context-meta span,
+  .orchestration-context-current,
   .orchestration-context-row strong,
   .orchestration-context-row span,
   .orchestration-context-row small,

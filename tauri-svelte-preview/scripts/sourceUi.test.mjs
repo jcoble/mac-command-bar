@@ -771,6 +771,9 @@ assert.ok(pageSource.includes('filteredProjectOrchestrationRuns'), 'Activity pan
 assert.ok(pageSource.includes('listOrchestrationRunsFromTauri'), 'Source page should load orchestration runs from the native event store');
 assert.ok(pageSource.includes('class="activity-run-row"'), 'Runs mode should render orchestration run cards');
 assert.ok(pageSource.includes('class="orchestration-context-panel"'), 'Workspace context should include orchestration run status');
+assert.ok(pageSource.includes('class="orchestration-context-loop-stages"'), 'Orchestration context rows should show compact loop stage counts');
+assert.ok(pageSource.includes('aria-label="Context run loop stages"'), 'Orchestration context loop stages should be accessible');
+assert.ok(pageSource.includes('aria-label="Copy context run handoff"'), 'Orchestration context should expose a compact handoff copy action');
 assert.ok(pageSource.includes('runMetrics.stepCount'), 'Orchestration run cards should expose step counts');
 assert.ok(pageSource.includes('runMetrics.agentCount'), 'Orchestration run cards should expose agent counts');
 assert.ok(pageSource.includes('runMetrics.artifactCount'), 'Orchestration run cards should expose artifact counts');
