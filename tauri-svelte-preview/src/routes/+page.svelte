@@ -335,6 +335,7 @@
     '/Users/blackcolours/dev/work/mac-command-bar';
 
   type SourceIntelligenceAction =
+    | 'completion'
     | 'definition'
     | 'format'
     | 'hover'
@@ -342,6 +343,7 @@
     | 'quick-fix'
     | 'references'
     | 'rename'
+    | 'signature-help'
     | 'type-definition';
   type SourceEditorIntelligenceCommand = {
     id: number;
@@ -1508,6 +1510,20 @@
       detail: 'Alt+Enter',
       disabled: !preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('quick-fix')
+    },
+    {
+      id: 'trigger-completions',
+      label: 'Trigger completions',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('completion')
+    },
+    {
+      id: 'show-signature-help',
+      label: 'Show signature help',
+      detail: preview?.fileName ?? 'No file',
+      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      perform: () => requestSourceIntelligenceAction('signature-help')
     },
     {
       id: 'revert-file',
@@ -7715,7 +7731,9 @@
         action === 'type-definition' ||
         action === 'format' ||
         action === 'rename' ||
-        action === 'quick-fix') &&
+        action === 'quick-fix' ||
+        action === 'completion' ||
+        action === 'signature-help') &&
       !sourceIntelligenceAvailable
     ) {
       return;

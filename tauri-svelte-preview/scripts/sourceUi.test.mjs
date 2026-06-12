@@ -1271,6 +1271,8 @@ assert.ok(editorSource.includes('editor.action.referenceSearch.trigger'), 'Edito
 assert.ok(editorSource.includes('editor.action.goToImplementation'), 'Editor should expose go-to-implementation');
 assert.ok(editorSource.includes('editor.action.goToTypeDefinition'), 'Editor should expose go-to-type-definition');
 assert.ok(editorSource.includes('editor.action.formatDocument'), 'Editor should expose format-document');
+assert.ok(editorSource.includes('editor.action.triggerSuggest'), 'Editor should expose native completion suggestions');
+assert.ok(editorSource.includes('editor.action.triggerParameterHints'), 'Editor should expose native signature help');
 assert.ok(editorSource.includes('editor.action.quickOutline'), 'Editor should expose Monaco quick outline');
 assert.ok(editorSource.includes('onSaveRequest?: () => void'), 'Editor should accept a native save shortcut callback');
 assert.ok(editorSource.includes('onQuickOpenRequest?: () => void'), 'Editor should accept a native quick-open shortcut callback');
@@ -1328,6 +1330,10 @@ assert.ok(pageSource.includes('findSourceLspSymbolsFromTauri'), 'Source page sho
 assert.ok(pageSource.includes('findSourceLspWorkspaceSymbolsFromTauri'), 'Source page should search native LSP workspace symbols');
 assert.ok(pageSource.includes('readSourceLspStatusFromTauri'), 'Source page should read LSP availability for the selected source file');
 assert.ok(pageSource.includes('readSourceLspReadinessFromTauri'), 'Source page should read native LSP readiness across configured servers');
+assert.ok(pageSource.includes("id: 'trigger-completions'"), 'Command palette should expose explicit LSP completions');
+assert.ok(pageSource.includes("requestSourceIntelligenceAction('completion')"), 'Command palette should trigger editor completions');
+assert.ok(pageSource.includes("id: 'show-signature-help'"), 'Command palette should expose explicit LSP signature help');
+assert.ok(pageSource.includes("requestSourceIntelligenceAction('signature-help')"), 'Command palette should trigger editor signature help');
 assert.ok(pageSource.includes('readSourceLspDiagnosticsFromTauri'), 'Source page should read native LSP diagnostics for the selected source file');
 assert.ok(pageSource.includes('sourceLspStatus'), 'Source page should track LSP availability');
 assert.ok(pageSource.includes('sourceLspDiagnostics'), 'Source page should track native LSP diagnostics separately');

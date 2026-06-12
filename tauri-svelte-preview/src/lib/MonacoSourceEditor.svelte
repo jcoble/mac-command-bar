@@ -29,6 +29,7 @@
 	} from "./sourceData";
 
 	type SourceEditorIntelligenceAction =
+		| "completion"
 		| "definition"
 		| "hover"
 		| "implementation"
@@ -36,6 +37,7 @@
 		| "quick-fix"
 		| "references"
 		| "rename"
+		| "signature-help"
 		| "type-definition";
 
 	type SourceEditorIntelligenceCommand = {
@@ -1113,6 +1115,14 @@
 			requestQuickFixAtCursor();
 			return;
 		}
+		if (intelligenceCommand.action === "completion") {
+			requestCompletionAtCursor();
+			return;
+		}
+		if (intelligenceCommand.action === "signature-help") {
+			requestSignatureHelpAtCursor();
+			return;
+		}
 
 		requestHoverAtCursor();
 	}
@@ -1160,6 +1170,14 @@
 
 	function requestQuickFixAtCursor() {
 		void editor?.getAction("editor.action.quickFix")?.run();
+	}
+
+	function requestCompletionAtCursor() {
+		void editor?.getAction("editor.action.triggerSuggest")?.run();
+	}
+
+	function requestSignatureHelpAtCursor() {
+		void editor?.getAction("editor.action.triggerParameterHints")?.run();
 	}
 
 	function requestHoverAtCursor() {
@@ -1421,6 +1439,20 @@
 				contextMenuGroupId: "1_modification",
 				contextMenuOrder: 0.7,
 				run: () => requestQuickFixAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.triggerCompletions",
+				label: "Trigger Completions",
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 3.1,
+				run: () => requestCompletionAtCursor(),
+			}),
+			editor.addAction({
+				id: "mcb.source.showSignatureHelp",
+				label: "Show Signature Help",
+				contextMenuGroupId: "navigation",
+				contextMenuOrder: 3.2,
+				run: () => requestSignatureHelpAtCursor(),
 			}),
 			editor.addAction({
 				id: "mcb.source.save",
