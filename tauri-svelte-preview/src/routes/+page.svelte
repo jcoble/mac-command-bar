@@ -377,6 +377,13 @@
   type SourceSidePanePosition = 'left' | 'right';
   type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
   type GitTaskLedgerTone = 'blocked' | 'ready' | 'review' | 'protected' | 'clean';
+  type WorktreeOwnerChipTone = 'live' | 'saved' | 'warning' | 'muted';
+  type WorktreeOwnerChip = {
+    id: string;
+    label: string;
+    title: string;
+    tone: WorktreeOwnerChipTone;
+  };
   type GitTaskLedgerRow = {
     taskID: string;
     sourceSummary: string;
@@ -5055,6 +5062,81 @@
 
   function latestWorktreeWorkspaceSnapshot(worktree: ProjectWorktree): WorkspaceSnapshot | null {
     return worktreeWorkspaceSnapshots(worktree, 1)[0] ?? null;
+  }
+
+  function worktreeActiveSessions(worktree: ProjectWorktree, limit = 3): AgentSession[] {
+    const worktreePath = normalizeProjectPath(worktree.path);
+    const maxSessions = Math.max(0, Math.floor(limit));
+    if (!worktreePath || maxSessions === 0) return [];
+
+    return selectedProjectAgentSessions
+      .filter((session) => {
+        const sessionPath = normalizeProjectPath(agentSessionProjectPath(session));
+        return sessionPath === worktreePath || sessionPath.startsWith(`${worktreePath}/`);
+      })
+      .slice(0, maxSessions);
+  }
+
+  function worktreeOwnerChips(
+    worktree: ProjectWorktree,
+    safety: ReturnType<typeof projectWorktreeSafety>
+  ): WorktreeOwnerChip[] {
+    const snapshots = worktreeWorkspaceSnapshots(worktree, 6);
+    const activeSessions = worktreeActiveSessions(worktree, 3);
+    const latestSnapshot = snapshots[0] ?? null;
+    const chips: WorktreeOwnerChip[] = [];
+
+    if (activeSessions.length > 0 || safety.activeSessionCount > 0) {
+      const liveCount = Math.max(activeSessions.length, safety.activeSessionCount);
+      chips.push({
+        id: 'live-sessions',
+        label: `${liveCount} live`,
+        title: activeSessions.length > 0
+          ? activeSessions.map((session) => `${session.provider}: ${session.title}`).join('\n')
+          : safety.reason,
+        tone: 'live'
+      });
+    }
+
+    if (latestSnapshot) {
+      chips.push({
+        id: 'saved-workspaces',
+        label: snapshots.length === 1 ? '1 saved' : `${snapshots.length} saved`,
+        title: `${latestSnapshot.title}\n${workspaceSnapshotEnvironmentLabel(latestSnapshot)}`,
+        tone: 'saved'
+      });
+
+      chips.push({
+        id: 'latest-provider',
+        label: latestSnapshot.provider,
+        title: `${latestSnapshot.provider} ${latestSnapshot.model ?? ''}`.trim(),
+        tone: 'muted'
+      });
+
+      if (
+        latestSnapshot.branch &&
+        worktree.branch &&
+        latestSnapshot.branch !== worktree.branch
+      ) {
+        chips.push({
+          id: 'branch-mismatch',
+          label: 'branch drift',
+          title: `Saved on ${latestSnapshot.branch}; worktree is ${worktree.branch}`,
+          tone: 'warning'
+        });
+      }
+    }
+
+    if (chips.length === 0) {
+      chips.push({
+        id: 'no-owner',
+        label: 'no snapshot',
+        title: 'No saved conversation/session is tied to this worktree yet.',
+        tone: 'muted'
+      });
+    }
+
+    return chips.slice(0, 4);
   }
 
   function worktreeWorkspaceSnapshotLabel(worktree: ProjectWorktree) {
@@ -11536,6 +11618,7 @@
                 {@const primaryAction = projectWorktreePrimaryAction(worktree)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
                 {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
+                {@const ownerChips = worktreeOwnerChips(worktree, safety)}
                 <div
                   class="activity-worktree-row"
                   class:blocked={eligibilityKind === 'blocked'}
@@ -11569,6 +11652,11 @@
 	                      {/if}
 	                      <span>{projectWorktreeActivityLabel(worktree)}</span>
 	                    </small>
+                    <div class="worktree-owner-strip" aria-label="Worktree session ownership">
+                      {#each ownerChips as chip (chip.id)}
+                        <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
+                      {/each}
+                    </div>
                     <small class="worktree-recommendation">{safety.recommendation}</small>
                     {#if latestSnapshot}
                       <button
@@ -12735,6 +12823,7 @@
               {@const primaryAction = projectWorktreePrimaryAction(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
               {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
+              {@const ownerChips = worktreeOwnerChips(worktree, safety)}
               <div
                 class="worktree-context-row"
                 class:blocked={eligibilityKind === 'blocked'}
@@ -12746,6 +12835,11 @@
                 <div class="worktree-context-main">
                   <strong>{worktree.branch}</strong>
                   <small title={worktree.path}>{worktree.path}</small>
+                  <div class="worktree-owner-strip" aria-label="Worktree session ownership">
+                    {#each ownerChips as chip (chip.id)}
+                      <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
+                    {/each}
+                  </div>
                 </div>
                 <span>{worktree.repo}</span>
                 {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
@@ -15767,6 +15861,57 @@
     white-space: nowrap;
   }
 
+  .worktree-owner-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .worktree-owner-chip {
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+    max-width: 96px;
+    height: 17px;
+    padding: 0 6px;
+    overflow: hidden;
+    color: #aeb9b6;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 8px;
+    font-weight: 850;
+    line-height: 17px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worktree-owner-chip.live {
+    color: #071b18;
+    border-color: rgba(92, 226, 207, 0.42);
+    background: #67dfd1;
+  }
+
+  .worktree-owner-chip.saved {
+    color: #8fe7dc;
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.08);
+  }
+
+  .worktree-owner-chip.warning {
+    color: #e8c47d;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .worktree-owner-chip.muted {
+    color: #8d9995;
+  }
+
   .worktree-snapshot-chip {
     display: inline-flex;
     align-items: center;
@@ -18457,6 +18602,11 @@
   .worktree-context-main {
     display: grid;
     gap: 2px;
+  }
+
+  .worktree-context-main .worktree-owner-strip {
+    flex-wrap: nowrap;
+    white-space: normal;
   }
 
   .runtime-context-row strong {

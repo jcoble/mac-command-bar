@@ -810,6 +810,9 @@ assert.ok(pageSource.includes('gitTaskUrl(worktree.taskID)'), 'Worktree rows sho
 assert.ok(pageSource.includes('aria-label="Open worktree task"'), 'Worktree task links should be accessible');
 assert.ok(pageSource.includes('aria-label="Restore latest saved workspace for worktree"'), 'Worktree rows should restore the latest linked workspace snapshot');
 assert.ok(pageSource.includes('class="worktree-snapshot-chip"'), 'Worktree rows should render a compact saved workspace chip');
+assert.ok(pageSource.includes('function worktreeOwnerChips'), 'Worktree rows should derive compact session/snapshot ownership chips');
+assert.ok(pageSource.includes('aria-label="Worktree session ownership"'), 'Worktree rows should expose saved conversation and live session ownership');
+assert.ok(pageSource.includes('class={`worktree-owner-chip ${chip.tone}`}'), 'Worktree ownership chips should be toned by live/saved/mismatch state');
 assert.ok(pageSource.includes('projectWorktreeActivityLabel(worktree)'), 'Worktree rows should show last activity');
 assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
