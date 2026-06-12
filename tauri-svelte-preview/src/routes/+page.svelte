@@ -119,6 +119,7 @@
     formatSourceIndexSummary,
     flattenSourceTree,
     formatSourceRecordCount,
+    formatSourceScanEvidence,
     formatSourceScanHealth,
     formatSourceScanRecovery,
     formatSourceScanStats,
@@ -162,6 +163,7 @@
     type SourceReferenceTarget,
     type SourceSearchMatch,
     type SourceScanStats,
+    type SourceScanEvidenceMode,
     type SourceCompletionItem,
     type SourceDiagnostic,
     type SourceInlayHint,
@@ -520,6 +522,7 @@
   let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
   let activeWorkspaceSessionKey = $state<string | null>(null);
   let sourceScanCache = $state<SourceScanCache>({});
+  let sourceScanModeByProject = $state<Record<string, SourceScanEvidenceMode>>({});
   let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
   let backgroundIndexErrorByProject = $state<Record<string, string>>({});
   let projectGitStatus = $state<ProjectGitStatus | null>(null);
@@ -810,6 +813,18 @@
       Date.now(),
       sourceScanCacheMaxAgeMs
     )
+  );
+  let selectedProjectScanMode = $derived(sourceScanModeByProject[selectedProject.id] ?? 'idle');
+  let selectedProjectScanEvidence = $derived(
+    formatSourceScanEvidence({
+      project: selectedProject,
+      mode: selectedProjectScanMode,
+      entry: selectedProjectIndexEntry,
+      requestedLimit: expandedSourceScanLimit,
+      scanning,
+      loading,
+      error
+    })
   );
   let sourceScanRecovery = $derived(
     formatSourceScanRecovery({
@@ -2470,6 +2485,7 @@
 
     if (cachedScanNeedsRepair) {
       sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+      setSourceScanMode(project.id, 'repair');
       fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
     } else if (cachedScan) {
       activeSourceScanId = '';
@@ -2478,6 +2494,7 @@
       loading = true;
       error = '';
       runtime = 'cached source scan';
+      setSourceScanMode(project.id, 'cache');
       clearBackgroundIndexError(project.id);
 
       const nextSelection = applySourceRecords(
@@ -2503,6 +2520,7 @@
     sourceScanStats = null;
     error = '';
     runtime = 'scanning source files';
+    setSourceScanMode(project.id, 'native');
     clearSourceRecordsForIncomingProject(project, Boolean(options.force));
 
     try {
@@ -2529,6 +2547,7 @@
         )
       ) {
         sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        setSourceScanMode(project.id, 'repair');
         fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
         await scanProject(project, preferredPath, {
           force: true,
@@ -2556,6 +2575,7 @@
       clearBackgroundIndexError(project.id);
 
       if (options.skipTinyIndexRepair && suspiciousScanResult) {
+        setSourceScanMode(project.id, 'tiny');
         fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Check the project root or reset the index.`;
       }
 
@@ -2584,6 +2604,7 @@
       syncSourcePreviewContent(null);
       runtime = 'source scan unavailable';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
+      setSourceScanMode(project.id, 'failed');
       loading = false;
     } finally {
       if (generation === scanGeneration) {
@@ -2610,6 +2631,7 @@
     sourceScanStats = null;
     runtime = 'source scan stopped';
     error = '';
+    setSourceScanMode(selectedProject.id, 'stopped');
     fileActionStatus = 'Scan stopped';
   }
 
@@ -2670,6 +2692,9 @@
   function resetProjectOnboardingScanState(project: ProjectRoot) {
     sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
     clearBackgroundIndexError(project.id);
+    const nextScanModes = { ...sourceScanModeByProject };
+    delete nextScanModes[project.id];
+    sourceScanModeByProject = nextScanModes;
 
     const nextSelectedSourcePaths = { ...selectedSourcePaths };
     delete nextSelectedSourcePaths[project.id];
@@ -2726,6 +2751,7 @@
         )
       ) {
         sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        setSourceScanMode(project.id, 'tiny');
         backgroundIndexErrorByProject = {
           ...backgroundIndexErrorByProject,
           [project.id]: `Only ${nextRecords.length.toLocaleString()} files indexed. Open the project to repair the index.`
@@ -2743,8 +2769,10 @@
         tauriScan.truncated,
         tauriScan.stats
       );
+      setSourceScanMode(project.id, 'background');
       clearBackgroundIndexError(project.id);
     } catch (indexError) {
+      setSourceScanMode(project.id, 'failed');
       backgroundIndexErrorByProject = {
         ...backgroundIndexErrorByProject,
         [project.id]: indexError instanceof Error ? indexError.message : 'Could not index project'
@@ -3473,6 +3501,8 @@
       `Limit reached: ${scanLimitReached ? 'yes' : 'no'}`,
       `Needs attention: ${sourceScanNeedsAttention ? 'yes' : 'no'}`,
       `Health: ${sourceScanHealthNote || 'ok'}`,
+      `Scan evidence: ${selectedProjectScanEvidence.label}`,
+      `Scan evidence detail: ${selectedProjectScanEvidence.detail}`,
       `Index cache: ${cacheState}`,
       `Index summary: ${selectedProjectIndexSummary}`,
       `Scan summary: ${scanSummaryLabel}`,
@@ -6170,6 +6200,10 @@
     const nextErrors = { ...backgroundIndexErrorByProject };
     delete nextErrors[projectID];
     backgroundIndexErrorByProject = nextErrors;
+  }
+
+  function setSourceScanMode(projectID: string, mode: SourceScanEvidenceMode) {
+    sourceScanModeByProject = { ...sourceScanModeByProject, [projectID]: mode };
   }
 
   function applySourceRecords(
@@ -10469,6 +10503,13 @@
             </button>
           </div>
           <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
+          <div
+            class="scan-evidence"
+            data-tone={selectedProjectScanEvidence.tone}
+            title={selectedProjectScanEvidence.detail}
+          >
+            {selectedProjectScanEvidence.label}
+          </div>
           {#if sourceScanStatsLabel}
             <div class="scan-stats" title={sourceScanStatsLabel}>{sourceScanStatsLabel}</div>
           {/if}
@@ -16107,7 +16148,7 @@
 
   .index-summary {
     min-width: 0;
-    margin: -4px 0 8px;
+    margin: -4px 0 4px;
     overflow: hidden;
     color: #8fd8cf;
     font-size: 10px;
@@ -16115,6 +16156,30 @@
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .scan-evidence {
+    min-width: 0;
+    margin: 0 0 7px;
+    overflow: hidden;
+    color: #6f7b78;
+    font-size: 9.5px;
+    font-weight: 720;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-evidence[data-tone='active'] {
+    color: #8fd8cf;
+  }
+
+  .scan-evidence[data-tone='warning'] {
+    color: #d8cba8;
+  }
+
+  .scan-evidence[data-tone='error'] {
+    color: #ff9a9a;
   }
 
   .scan-stats {

@@ -18,6 +18,7 @@ import {
   formatSourceContextRuntime,
   formatSourceIndexSummary,
   formatSourceDiagnosticSummary,
+  formatSourceScanEvidence,
   formatSourceScanHealth,
   formatSourceScanRecovery,
   formatSourceRecordCount,
@@ -300,6 +301,83 @@ assert.equal(
 assert.equal(formatSourceIndexSummary(null, true, ''), 'Indexing in background');
 assert.equal(formatSourceIndexSummary(null, false, 'No access'), 'Index failed: No access');
 assert.equal(formatSourceIndexSummary(null, false, ''), 'Index not ready');
+assert.deepEqual(
+  formatSourceScanEvidence({
+    project,
+    mode: 'cache',
+    entry: scanCache['/repo::2000'],
+    requestedLimit: 2_000,
+    scanning: false,
+    loading: false,
+    error: '',
+    now: 70_000
+  }),
+  {
+    label: 'Cached index · 1m ago · 2 files',
+    detail: '2 files · 1m ago · scanned /repo · 2,000 limit',
+    tone: 'ready'
+  }
+);
+assert.deepEqual(
+  formatSourceScanEvidence({
+    project,
+    mode: 'native',
+    entry: scanCache['/repo::2000'],
+    requestedLimit: 2_000,
+    scanning: false,
+    loading: false,
+    error: '',
+    now: 10_500
+  }),
+  {
+    label: 'Fresh index · just now · 2 files',
+    detail: '2 files · just now · scanned /repo · 2,000 limit',
+    tone: 'ready'
+  }
+);
+assert.deepEqual(
+  formatSourceScanEvidence({
+    project,
+    mode: 'tiny',
+    entry: scanCache['/repo::2000'],
+    requestedLimit: 25_000,
+    scanning: false,
+    loading: false,
+    error: '',
+    now: 10_500
+  }),
+  {
+    label: 'Tiny index · repo · 2 files',
+    detail: '2 files · just now · scanned /repo · 25,000 limit',
+    tone: 'warning'
+  }
+);
+assert.equal(
+  formatSourceScanEvidence({
+    project,
+    mode: 'failed',
+    entry: null,
+    requestedLimit: 25_000,
+    scanning: false,
+    loading: false,
+    error: 'No access',
+    now: 10_500
+  }).label,
+  'Scan failed · repo · 25,000 limit'
+);
+assert.equal(
+  formatSourceScanEvidence({
+    project,
+    mode: 'stopped',
+    entry: null,
+    requestedLimit: 25_000,
+    scanning: false,
+    loading: false,
+    error: '',
+    now: 10_500
+  }).tone,
+  'warning'
+);
 assert.equal(shouldRepairSuspiciousSourceScan(2, false, 25_000, 2), true);
 assert.equal(shouldRepairSuspiciousSourceScan(0, false, 25_000, 2), false);
 assert.equal(shouldRepairSuspiciousSourceScan(3, false, 25_000, 2), false);

@@ -293,6 +293,35 @@ export type SourceScanRecoveryInput = SourceScanHealthInput & {
   stats?: SourceScanStats | null;
 };
 
+export type SourceScanEvidenceMode =
+  | 'idle'
+  | 'cache'
+  | 'native'
+  | 'repair'
+  | 'tiny'
+  | 'background'
+  | 'failed'
+  | 'stopped';
+
+export type SourceScanEvidenceTone = 'active' | 'ready' | 'warning' | 'error' | 'muted';
+
+export type SourceScanEvidence = {
+  label: string;
+  detail: string;
+  tone: SourceScanEvidenceTone;
+};
+
+export type SourceScanEvidenceInput = {
+  project: ProjectRoot;
+  mode: SourceScanEvidenceMode;
+  entry: SourceScanCacheEntry | null;
+  requestedLimit: number;
+  scanning: boolean;
+  loading: boolean;
+  error: string;
+  now?: number;
+};
+
 export type SourceRecentRecord = SourceRecord & {
   projectID: string;
   projectName: string;
@@ -1076,6 +1105,109 @@ export function formatSourceIndexSummary(
   }`;
 }
 
+export function formatSourceScanEvidence(input: SourceScanEvidenceInput): SourceScanEvidence {
+  const rootLabel = formatSourceContextRootLabel(input.project.path);
+  const rootPath = normalizeProjectPath(input.project.path);
+  const requestedLimit = Math.max(0, Math.floor(input.requestedLimit));
+  const limitLabel = `${formatCount(requestedLimit)} limit`;
+  const error = input.error.trim();
+  const countLabel = input.entry
+    ? `${formatCount(input.entry.records.length)}${input.entry.truncated ? '+' : ''} ${
+        input.entry.records.length === 1 && !input.entry.truncated ? 'file' : 'files'
+      }`
+    : 'no index';
+  const ageLabel = input.entry ? formatSourceScanAge(input.entry.scannedAt, input.now ?? Date.now()) : '';
+  const cacheDetail = input.entry
+    ? `${countLabel} · ${ageLabel} · scanned ${input.entry.projectPath} · ${limitLabel}`
+    : `${rootPath} · ${limitLabel}`;
+
+  if (error || input.mode === 'failed') {
+    return {
+      label: `Scan failed · ${rootLabel} · ${limitLabel}`,
+      detail: [error || 'The source scan failed', rootPath, countLabel].join(' · '),
+      tone: 'error'
+    };
+  }
+
+  if (input.scanning) {
+    return {
+      label: `Scanning · ${rootLabel} · ${limitLabel}`,
+      detail: `Native source scan running for ${rootPath}`,
+      tone: 'active'
+    };
+  }
+
+  if (input.mode === 'repair') {
+    return {
+      label: `Rebuilding tiny index · ${rootLabel} · ${limitLabel}`,
+      detail: `The previous source index was too small. Rebuilding ${rootPath}.`,
+      tone: 'warning'
+    };
+  }
+
+  if (input.mode === 'tiny') {
+    return {
+      label: `Tiny index · ${rootLabel} · ${countLabel}`,
+      detail: cacheDetail,
+      tone: 'warning'
+    };
+  }
+
+  if (input.mode === 'stopped') {
+    return {
+      label: `Scan stopped · ${rootLabel} · ${countLabel}`,
+      detail: cacheDetail,
+      tone: input.entry ? 'muted' : 'warning'
+    };
+  }
+
+  if (input.mode === 'cache' && input.entry) {
+    return {
+      label: `Cached index · ${ageLabel} · ${countLabel}`,
+      detail: cacheDetail,
+      tone: 'ready'
+    };
+  }
+
+  if (input.mode === 'native' && input.entry) {
+    return {
+      label: `Fresh index · ${ageLabel} · ${countLabel}`,
+      detail: cacheDetail,
+      tone: 'ready'
+    };
+  }
+
+  if (input.mode === 'background' && input.entry) {
+    return {
+      label: `Background index · ${ageLabel} · ${countLabel}`,
+      detail: cacheDetail,
+      tone: 'ready'
+    };
+  }
+
+  if (input.entry) {
+    return {
+      label: `Index ready · ${ageLabel} · ${countLabel}`,
+      detail: cacheDetail,
+      tone: 'ready'
+    };
+  }
+
+  if (input.loading) {
+    return {
+      label: `Loading index · ${rootLabel} · ${limitLabel}`,
+      detail: rootPath,
+      tone: 'active'
+    };
+  }
+
+  return {
+    label: `No index · ${rootLabel} · ${limitLabel}`,
+    detail: rootPath,
+    tone: 'muted'
+  };
+}
+
 export function isSuspiciousSourceScanResult(
   totalCount: number,
   truncated: boolean,
@@ -1755,6 +1887,15 @@ function sourceScanCacheKey(project: ProjectRoot, limit: number): string {
 
 function formatCount(value: number): string {
   return Math.max(0, Math.floor(value)).toLocaleString('en-US');
+}
+
+function formatSourceScanAge(scannedAt: number, now: number): string {
+  const elapsedMs = Math.max(0, now - scannedAt);
+  if (elapsedMs < 10_000) return 'just now';
+  if (elapsedMs < 60_000) return `${Math.floor(elapsedMs / 1_000)}s ago`;
+  if (elapsedMs < 3_600_000) return `${Math.floor(elapsedMs / 60_000)}m ago`;
+  if (elapsedMs < 86_400_000) return `${Math.floor(elapsedMs / 3_600_000)}h ago`;
+  return `${Math.floor(elapsedMs / 86_400_000)}d ago`;
 }
 
 export function upsertOpenSourceTab(

@@ -1533,6 +1533,12 @@ assert.ok(pageSource.includes('formatSourceIndexSummary'), 'Source page should f
 assert.ok(pageSource.includes('class="index-summary"'), 'Source Browser should render an index status line');
 assertDeclaration('.index-summary', 'overflow: hidden');
 assertDeclaration('.index-summary', 'text-overflow: ellipsis');
+assert.ok(pageSource.includes('formatSourceScanEvidence'), 'Source page should format scan evidence from shared helpers');
+assert.ok(pageSource.includes('sourceScanModeByProject'), 'Source page should keep scan evidence scoped per project');
+assert.ok(pageSource.includes('class="scan-evidence"'), 'Source Browser should render compact scan evidence');
+assert.ok(pageSource.includes('Scan evidence detail'), 'Source diagnostics should include scan evidence detail');
+assertDeclaration('.scan-evidence', 'overflow: hidden');
+assertDeclaration('.scan-evidence', 'text-overflow: ellipsis');
 assert.ok(pageSource.includes('readProjectGitStatusFromTauri'), 'Source page should load native project Git status');
 assert.ok(pageSource.includes('readSourceGitDiffFromTauri'), 'Source page should load native selected-file Git diff');
 assert.ok(pageSource.includes('stageGitPathsFromTauri'), 'Source page should stage Git paths through Tauri');
