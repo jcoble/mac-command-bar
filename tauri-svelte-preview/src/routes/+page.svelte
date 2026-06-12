@@ -5093,6 +5093,25 @@
     await copyWorkspaceSnapshotRepairPlan(snapshot);
   }
 
+  function agentSessionMissingWorktreeSnapshot(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session);
+    if (!snapshot) return null;
+
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    return readiness.kind === 'missing-worktree' ? snapshot : null;
+  }
+
+  async function copyAgentSessionMissingWorktreeRepairPlan(
+    session: AgentSession,
+    successStatus = 'Workspace repair plan copied'
+  ) {
+    const snapshot = agentSessionMissingWorktreeSnapshot(session);
+    if (!snapshot) return false;
+
+    await copyWorkspaceSnapshotRepairPlan(snapshot, successStatus);
+    return true;
+  }
+
   async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
     const restored = restoreWorkspaceSnapshot(snapshot);
     const project = ensureWorkspaceSnapshotProject(snapshot.project);
@@ -7543,6 +7562,14 @@
   async function resumeAgentSessionEmbeddedTerminal(session: AgentSession) {
     const command = agentSessionTerminalCommand(session);
     if (!command.trim()) return;
+    if (
+      await copyAgentSessionMissingWorktreeRepairPlan(
+        session,
+        'Workspace repair plan copied before embedded resume'
+      )
+    ) {
+      return;
+    }
 
     captureActiveWorkspaceBeforeSwitch();
     captureAgentSessionWorkspaceSnapshot(session);
@@ -7580,6 +7607,14 @@
   async function openAgentSessionTerminal(session: AgentSession) {
     const command = agentSessionTerminalCommand(session);
     if (!command.trim()) return;
+    if (
+      await copyAgentSessionMissingWorktreeRepairPlan(
+        session,
+        'Workspace repair plan copied before terminal resume'
+      )
+    ) {
+      return;
+    }
 
     captureActiveWorkspaceBeforeSwitch();
     captureAgentSessionWorkspaceSnapshot(session);
@@ -11961,6 +11996,24 @@
                     </button>
                     <button
                       type="button"
+                      aria-label="Open agent workspace"
+                      title={sessionSnapshot ? 'Restore agent workspace' : 'Open and save current agent workspace'}
+                      onclick={() => openAgentSessionWorkspace(session)}
+                    >
+                      <RotateCcw size={12} strokeWidth={2} />
+                    </button>
+                    {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
+                      <button
+                        type="button"
+                        aria-label="Copy agent workspace repair plan"
+                        title={sessionReadiness.repairLabel ?? 'Copy repair plan'}
+                        onclick={() => copyAgentSessionWorkspaceRepairPlan(session)}
+                      >
+                        <FolderSearch size={12} strokeWidth={2} />
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
                       aria-label="Copy agent resume command"
                       title="Copy resume command"
                       onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
@@ -14731,11 +14784,22 @@
                     </div>
                     <button
                       type="button"
-                      aria-label="Copy terminal agent focus plan"
-                      title={agentSessionWorkspaceReadinessLabel(session)}
-                      onclick={() => copyAgentSessionResumePlan(session)}
+                      aria-label={sessionReadiness?.kind === 'missing-worktree'
+                        ? 'Copy terminal agent repair plan'
+                        : 'Copy terminal agent focus plan'}
+                      title={sessionReadiness?.kind === 'missing-worktree'
+                        ? (sessionReadiness.repairLabel ?? 'Copy repair plan')
+                        : agentSessionWorkspaceReadinessLabel(session)}
+                      onclick={() =>
+                        sessionReadiness?.kind === 'missing-worktree'
+                          ? copyAgentSessionWorkspaceRepairPlan(session)
+                          : copyAgentSessionResumePlan(session)}
                     >
-                      <FileCode2 size={12} strokeWidth={2} />
+                      {#if sessionReadiness?.kind === 'missing-worktree'}
+                        <FolderSearch size={12} strokeWidth={2} />
+                      {:else}
+                        <FileCode2 size={12} strokeWidth={2} />
+                      {/if}
                     </button>
                     <button
                       type="button"

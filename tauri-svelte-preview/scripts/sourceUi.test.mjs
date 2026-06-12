@@ -690,6 +690,8 @@ assert.ok(pageSource.includes('agent-copy-shell-command-${session.provider}-${se
 assert.ok(pageSource.includes('agent-copy-resume-command-${session.provider}-${session.id}'), 'Command palette should copy raw session resume commands');
 assert.ok(pageSource.includes('function agentSessionWorkspaceReadinessLabel'), 'Agent rows should derive saved workspace readiness labels');
 assert.ok(pageSource.includes('function agentSessionWorkspaceSummaryLines'), 'Session focus plans should include saved workspace context');
+assert.ok(pageSource.includes('function agentSessionMissingWorktreeSnapshot'), 'Agent terminal resumes should detect missing saved worktrees');
+assert.ok(pageSource.includes('copyAgentSessionMissingWorktreeRepairPlan'), 'Agent terminal resumes should copy repair plans before stale launches');
 assert.ok(pageSource.includes('Copy session focus plan'), 'Command palette should name agent handoffs as focus plans');
 assert.ok(pageSource.includes("'Session focus plan'"), 'Copied agent plans should be explicit focus handoffs');
 assert.ok(pageSource.includes("id: 'lsp-retry-status'"), 'Command palette should retry LSP status checks');
@@ -853,9 +855,12 @@ assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panel
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
 assert.ok(pageSource.includes('aria-label="Copy agent focus plan"'), 'Agent rows should expose saved-workspace focus plan copy');
+assert.ok(pageSource.includes('aria-label="Open agent workspace"'), 'Agent rows should restore or save the session workspace directly');
+assert.ok(pageSource.includes('aria-label="Copy agent workspace repair plan"'), 'Agent rows should expose missing-worktree repair plans');
 assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'), 'Agent rows should expose one-click embedded terminal resume');
 assert.ok(pageSource.includes('class="terminal-launchpad-row terminal-agent-row"'), 'Terminal agent shortcuts should support a second focus-plan action');
-assert.ok(pageSource.includes('aria-label="Copy terminal agent focus plan"'), 'Terminal agent shortcuts should expose focus plan copy');
+assert.ok(pageSource.includes('Copy terminal agent focus plan'), 'Terminal agent shortcuts should expose focus plan copy');
+assert.ok(pageSource.includes('Copy terminal agent repair plan'), 'Terminal agent shortcuts should switch to repair-plan copy for missing worktrees');
 assert.ok(pageSource.includes("sessionReadiness?.label ?? 'No saved workspace'"), 'Terminal agent shortcuts should show saved workspace readiness');
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
 assert.ok(pageSource.includes('class={`workspace-snapshot-readiness ${readiness.tone}`}'), 'Saved workspace rows should show compact restore readiness');

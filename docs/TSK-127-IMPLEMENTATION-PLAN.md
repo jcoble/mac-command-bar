@@ -343,16 +343,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 1.6, session focus handoff hardening.
+Last checkpoint: Priority 1.7, session restore/resume safety polish.
 
 - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: agent/session rows now show saved-workspace readiness outside the Conversations pane; terminal launchpad agent shortcuts show whether there is a saved workspace; copied session plans are now explicit focus handoffs with provider, model, project, terminal app, saved cwd/worktree/branch, selected file, open tab count, restore readiness, and repair detail when relevant.
+- Behavior delivered: agent/session rows now show saved-workspace readiness outside the Conversations pane; terminal launchpad agent shortcuts show whether there is a saved workspace; copied session plans are now explicit focus handoffs with provider, model, project, terminal app, saved cwd/worktree/branch, selected file, open tab count, restore readiness, and repair detail when relevant. Agents rows now expose direct restore/open and missing-worktree repair actions. Terminal resume actions now copy the workspace repair plan instead of launching an embedded/external terminal when the saved worktree is missing.
 - Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
 - Remaining risk: no Browser/Playwright proof was run for this slice, so visual density of the added agent-row status should still be checked in the real Tauri/webview app.
 
-Next implementation slice: Priority 1.7 session restore polish.
+Next implementation slice: Priority 1.8 project onboarding/scan clarity.
 
 Definition of done for the next slice:
-- Restore/focus actions should be available consistently from Conversations, Agents, Terminal, and Command Palette.
-- Missing worktrees should show the same repair affordance anywhere a session can be resumed.
-- Saved workspaces should make stale/moved roots obvious without requiring broad scans.
+- Add-project and restore flows should clearly report which root is being indexed and whether it was normalized to a Git root.
+- The source tree should explain scan limits/progress/cancel state without feeling mysterious.
+- Automatic repair for older nested project roots should produce a visible status line, not only internal state changes.
