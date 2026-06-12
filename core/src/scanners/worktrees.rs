@@ -10,6 +10,14 @@ pub struct WorktreeRecord {
     pub branch: String,
     pub is_dirty: bool,
     pub has_unmerged_commits: bool,
+    #[serde(default)]
+    pub is_prunable: bool,
+    #[serde(default)]
+    pub prunable_reason: Option<String>,
+    #[serde(default)]
+    pub is_locked: bool,
+    #[serde(default)]
+    pub locked_reason: Option<String>,
     pub last_activity: Option<String>,
     pub disk_bytes: Option<u64>,
     pub delete_eligibility: String,
@@ -49,17 +57,23 @@ pub fn scan_worktrees_with_options(
         .into_iter()
         .map(|mut record| {
             record.repo = repo.clone();
-            record.is_dirty = is_dirty(&record.path);
-            record.has_unmerged_commits = has_unmerged_commits(&record.path);
-            record.disk_bytes = options
-                .include_disk_bytes
-                .then(|| disk_bytes(&record.path))
-                .flatten();
-            record.last_activity = last_activity(&record.path);
+            if !record.is_prunable {
+                record.is_dirty = is_dirty(&record.path);
+                record.has_unmerged_commits = has_unmerged_commits(&record.path);
+                record.disk_bytes = options
+                    .include_disk_bytes
+                    .then(|| disk_bytes(&record.path))
+                    .flatten();
+                record.last_activity = last_activity(&record.path);
+            }
             record.delete_eligibility = if record.is_dirty {
                 "blocked: dirty worktree".to_string()
             } else if record.has_unmerged_commits {
                 "blocked: unmerged commits".to_string()
+            } else if record.is_locked {
+                "blocked: locked worktree".to_string()
+            } else if record.is_prunable {
+                "review: prunable missing worktree metadata".to_string()
             } else {
                 "requires-confirmation".to_string()
             };
@@ -74,6 +88,10 @@ pub fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeRecord> {
         .filter_map(|block| {
             let mut path = None;
             let mut branch = None;
+            let mut is_prunable = false;
+            let mut prunable_reason = None;
+            let mut is_locked = false;
+            let mut locked_reason = None;
 
             for line in block.lines() {
                 if let Some(value) = line.strip_prefix("worktree ") {
@@ -82,6 +100,16 @@ pub fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeRecord> {
                     branch = Some(value.trim_start_matches("refs/heads/").to_string());
                 } else if line == "detached" {
                     branch = Some("detached".to_string());
+                } else if line == "prunable" {
+                    is_prunable = true;
+                } else if let Some(value) = line.strip_prefix("prunable ") {
+                    is_prunable = true;
+                    prunable_reason = Some(value.to_string());
+                } else if line == "locked" {
+                    is_locked = true;
+                } else if let Some(value) = line.strip_prefix("locked ") {
+                    is_locked = true;
+                    locked_reason = Some(value.to_string());
                 }
             }
 
@@ -91,6 +119,10 @@ pub fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeRecord> {
                 branch: branch.unwrap_or_else(|| "unknown".to_string()),
                 is_dirty: false,
                 has_unmerged_commits: false,
+                is_prunable,
+                prunable_reason,
+                is_locked,
+                locked_reason,
                 last_activity: None,
                 disk_bytes: None,
                 delete_eligibility: "unknown".to_string(),
@@ -149,4 +181,29 @@ fn last_activity(path: &str) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_worktree_porcelain;
+
+    #[test]
+    fn parse_worktree_porcelain_reads_prunable_and_locked_metadata() {
+        let records = parse_worktree_porcelain(
+            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /missing\nHEAD def\nbranch refs/heads/cdx/tsk-127-missing\nprunable gitdir file points to non-existent location\n\nworktree /locked\nHEAD fed\nbranch refs/heads/cdx/tsk-128-locked\nlocked agent still running\n",
+        );
+
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].branch, "main");
+        assert!(records[1].is_prunable);
+        assert_eq!(
+            records[1].prunable_reason.as_deref(),
+            Some("gitdir file points to non-existent location")
+        );
+        assert!(records[2].is_locked);
+        assert_eq!(
+            records[2].locked_reason.as_deref(),
+            Some("agent still running")
+        );
+    }
 }

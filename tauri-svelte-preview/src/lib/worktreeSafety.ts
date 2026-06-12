@@ -76,6 +76,8 @@ export function buildWorktreeSafetySummary(
   const isPrimaryCheckout = Boolean(primaryPath && primaryPath === worktreePath);
   const activeSessionCount = countActiveSessionPaths(worktreePath, options.activeSessionPaths);
   const deleteEligibility = worktree.deleteEligibility.toLowerCase();
+  const isPrunable = worktreeIsPrunable(worktree);
+  const isLocked = worktreeIsLocked(worktree);
 
   let kind: WorktreeSafetyKind = 'ready';
   let badge = 'Safe';
@@ -102,6 +104,16 @@ export function buildWorktreeSafetySummary(
     badge = 'Unmerged';
     reason = 'Local commits not on a remote branch';
     recommendation = 'Inspect the commit list and merge, push, cherry-pick, or intentionally archive before cleanup.';
+  } else if (isLocked) {
+    kind = 'blocked';
+    badge = 'Locked';
+    reason = 'Locked worktree';
+    recommendation = 'Audit the lock reason and unlock intentionally before cleanup.';
+  } else if (isPrunable) {
+    kind = 'review';
+    badge = 'Missing';
+    reason = 'Missing worktree path';
+    recommendation = 'Confirm the folder is intentionally gone, then prune stale Git worktree metadata from the main checkout.';
   } else if (activity.ageBucket === 'stale') {
     kind = 'ready';
     badge = 'Stale';
@@ -114,7 +126,9 @@ export function buildWorktreeSafetySummary(
     recommendation = 'Confirm no session owns it, then remove it from the main checkout.';
   }
 
-  const auditCommand = worktreeAuditCommand(worktree);
+  const auditCommand = isPrunable
+    ? worktreePrunableAuditCommand(options.primaryPath)
+    : worktreeAuditCommand(worktree);
   const backupCommand = worktreeBackupCommand(worktree, nowMs);
   const cleanupCommand = worktreeCleanupCommand(worktree, options.primaryPath);
   const decisionChecklist = worktreeDecisionChecklist({
@@ -145,6 +159,10 @@ export function buildWorktreeSafetySummary(
       recommendation,
       isPrimaryCheckout,
       activeSessionCount,
+      isPrunable,
+      isLocked,
+      isDirty: worktree.isDirty || deleteEligibility.includes('dirty'),
+      hasUnmergedCommits: worktree.hasUnmergedCommits || deleteEligibility.includes('unmerged'),
       decisionChecklist
     }),
     decisionChecklist
@@ -269,7 +287,15 @@ export function buildWorktreeCleanupScript(
     lines.push(`echo ${shellQuote(`Audit ${branch}`)}`);
     lines.push(safety.auditCommand);
 
-    if (safety.kind === 'blocked' && safety.activeSessionCount === 0) {
+    if (worktreeIsPrunable(worktree)) {
+      lines.push('if [ "$RUN_REMOVE" = "1" ]; then');
+      lines.push(`  echo ${shellQuote(`Prune missing worktree metadata for ${branch}`)}`);
+      lines.push(`  ${safety.cleanupCommand}`);
+      lines.push('else');
+      lines.push(`  echo ${shellQuote(`Prune ${branch}: set RUN_REMOVE=1 to execute metadata cleanup`)}`);
+      lines.push(`  printf '%s\\n' ${shellQuote(safety.cleanupCommand)}`);
+      lines.push('fi');
+    } else if (safety.kind === 'blocked' && safety.activeSessionCount === 0) {
       lines.push('if [ "$RUN_BACKUP" = "1" ]; then');
       lines.push(`  echo ${shellQuote(`Backup ${branch}`)}`);
       lines.push(`  ${safety.backupCommand}`);
@@ -277,6 +303,7 @@ export function buildWorktreeCleanupScript(
       lines.push(`  echo ${shellQuote(`Backup ${branch}: set RUN_BACKUP=1 to execute`)}`);
       lines.push(`  printf '%s\\n' ${shellQuote(safety.backupCommand)}`);
       lines.push('fi');
+      lines.push(`echo ${shellQuote('Forced dirty/unmerged worktree removal is intentionally not generated. Backup, commit, stash, or archive first.')}`);
     } else if (safety.kind === 'ready') {
       lines.push('if [ "$RUN_REMOVE" = "1" ]; then');
       lines.push(`  echo ${shellQuote(`Remove ${branch}`)}`);
@@ -387,6 +414,10 @@ export function worktreeAuditCommand(worktree: ProjectWorktree): string {
 }
 
 export function worktreeBackupCommand(worktree: ProjectWorktree, now: number | Date = Date.now()): string {
+  if (worktreeIsPrunable(worktree)) {
+    return '# Missing/prunable worktree path has no files to archive. Confirm it is intentionally gone, then prune metadata from the main checkout.';
+  }
+
   const nowMs = normalizeNow(now);
   const timestamp = backupTimestamp(nowMs);
   const archiveDirectory = worktreeArchiveDirectory(worktree, nowMs);
@@ -410,6 +441,10 @@ export function worktreeCleanupCommand(
 ): string {
   if (!primaryPath || normalizePath(primaryPath) === normalizePath(worktree.path)) {
     return '# Open the main checkout first, then run git worktree remove for this sibling path.';
+  }
+
+  if (worktreeIsPrunable(worktree)) {
+    return ['git', '-C', shellQuote(primaryPath), 'worktree', 'prune'].join(' ');
   }
 
   return [
@@ -438,6 +473,10 @@ function worktreeCleanupPlan(
     recommendation: string;
     isPrimaryCheckout: boolean;
     activeSessionCount: number;
+    isPrunable: boolean;
+    isLocked: boolean;
+    isDirty: boolean;
+    hasUnmergedCommits: boolean;
     decisionChecklist: string[];
   }
 ): string {
@@ -463,9 +502,21 @@ function worktreeCleanupPlan(
     lines.push(details.auditCommand);
     lines.push('');
     lines.push('Do not remove the primary checkout from the worktree list.');
+  } else if (details.isPrunable) {
+    lines.push('Audit missing worktree metadata:');
+    lines.push(details.auditCommand);
+    lines.push('');
+    lines.push('Metadata-only cleanup after confirming the folder is intentionally gone:');
+    lines.push(details.cleanupCommand);
+    lines.push('');
+    lines.push('This prunes stale Git worktree metadata; it does not delete source files at the missing path.');
   } else {
     if (details.activeSessionCount > 0) {
       lines.push('Do not remove while active sessions point here. Resume, close, or move them first.');
+      lines.push('');
+    }
+    if (details.isLocked) {
+      lines.push('Do not remove locked worktrees from this app. Audit the lock, then unlock intentionally in Git if cleanup is still desired.');
       lines.push('');
     }
     lines.push('Audit before cleanup:');
@@ -476,6 +527,10 @@ function worktreeCleanupPlan(
     lines.push('');
     lines.push('Remove once clean and no active session owns it:');
     lines.push(details.cleanupCommand);
+    if (details.isDirty || details.hasUnmergedCommits) {
+      lines.push('');
+      lines.push('Forced removal is intentionally not generated for dirty or unmerged worktrees. Backup, commit, stash, or archive first; use a manual Git force remove only after reviewing recoverability.');
+    }
   }
 
   return lines.join('\n');
@@ -516,6 +571,22 @@ function worktreeDecisionChecklist(details: {
       'Inspect local commits that are not on a remote branch.',
       'Push, merge, cherry-pick, or archive the branch before removal.',
       'Remove only after the branch is recoverable from another ref.'
+    ];
+  }
+
+  if (details.badge === 'Locked') {
+    return [
+      'Inspect the Git worktree lock reason.',
+      'Unlock only when you know no external process owns this worktree.',
+      'Refresh worktrees before attempting cleanup.'
+    ];
+  }
+
+  if (details.badge === 'Missing') {
+    return [
+      'Confirm the path is intentionally gone and not a disconnected volume.',
+      'Run a dry-run prune from the main checkout.',
+      'Prune stale metadata only after confirmation.'
     ];
   }
 
@@ -561,12 +632,14 @@ function worktreeCleanupPriority(safety: WorktreeSafetySummary): number {
   if (safety.kind === 'blocked' && safety.activeSessionCount > 0) return 0;
   if (safety.kind === 'blocked' && safety.badge === 'Dirty') return 1;
   if (safety.kind === 'blocked' && safety.badge === 'Unmerged') return 2;
-  if (safety.kind === 'blocked') return 3;
-  if (safety.kind === 'ready' && safety.ageBucket === 'stale') return 4;
-  if (safety.kind === 'ready') return 5;
-  if (safety.kind === 'review') return 6;
-  if (safety.kind === 'protected') return 7;
-  return 8;
+  if (safety.kind === 'blocked' && safety.badge === 'Locked') return 3;
+  if (safety.kind === 'blocked') return 4;
+  if (safety.kind === 'review' && safety.badge === 'Missing') return 5;
+  if (safety.kind === 'ready' && safety.ageBucket === 'stale') return 6;
+  if (safety.kind === 'ready') return 7;
+  if (safety.kind === 'review') return 8;
+  if (safety.kind === 'protected') return 9;
+  return 10;
 }
 
 function worktreeActivitySortValue(worktree: ProjectWorktree): number {
@@ -662,6 +735,28 @@ function countActiveSessionPaths(
     const sessionPath = normalizePath(path);
     return sessionPath === worktreePath || sessionPath.startsWith(`${worktreePath}/`);
   }).length;
+}
+
+function worktreeIsPrunable(worktree: ProjectWorktree): boolean {
+  const deleteEligibility = worktree.deleteEligibility.toLowerCase();
+  return Boolean(worktree.isPrunable) || deleteEligibility.includes('prunable') || deleteEligibility.includes('missing');
+}
+
+function worktreeIsLocked(worktree: ProjectWorktree): boolean {
+  const deleteEligibility = worktree.deleteEligibility.toLowerCase();
+  return Boolean(worktree.isLocked) || deleteEligibility.includes('locked');
+}
+
+function worktreePrunableAuditCommand(primaryPath: string | null | undefined): string {
+  if (!primaryPath) {
+    return '# Open the main checkout first, then run git worktree list --porcelain and git worktree prune --dry-run.';
+  }
+
+  const gitInPrimary = ['git', '-C', shellQuote(primaryPath)].join(' ');
+  return [
+    `${gitInPrimary} worktree list --porcelain`,
+    `${gitInPrimary} worktree prune --dry-run --verbose`
+  ].join(' && ');
 }
 
 function worktreeActivity(

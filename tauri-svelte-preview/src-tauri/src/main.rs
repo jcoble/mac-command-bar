@@ -175,6 +175,10 @@ struct ProjectWorktree {
     task_id: Option<String>,
     is_dirty: bool,
     has_unmerged_commits: bool,
+    is_prunable: bool,
+    prunable_reason: Option<String>,
+    is_locked: bool,
+    locked_reason: Option<String>,
     last_activity: Option<String>,
     delete_eligibility: String,
 }
@@ -600,7 +604,7 @@ async fn read_source_lsp_status(
         lsp::read_source_lsp_status_sync(PathBuf::from(root), language)
     })
     .await
-        .map_err(|error| format!("Source LSP status task failed: {error}"))?
+    .map_err(|error| format!("Source LSP status task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1123,7 +1127,12 @@ fn git_repository_root(path: &Path) -> Option<PathBuf> {
     }
 
     let output = Command::new("git")
-        .args(["-C", path.to_str().unwrap_or_default(), "rev-parse", "--show-toplevel"])
+        .args([
+            "-C",
+            path.to_str().unwrap_or_default(),
+            "rev-parse",
+            "--show-toplevel",
+        ])
         .output()
         .ok()?;
 
@@ -2277,12 +2286,17 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
             .into_iter()
             .map(|mut record| {
                 record.repo = repo.clone();
-                record.is_dirty = project_worktree_is_dirty(&record.path);
-                record.has_unmerged_commits = project_worktree_has_unmerged_commits(&record.path);
-                record.last_activity = project_worktree_last_activity(&record.path);
+                if !record.is_prunable {
+                    record.is_dirty = project_worktree_is_dirty(&record.path);
+                    record.has_unmerged_commits =
+                        project_worktree_has_unmerged_commits(&record.path);
+                    record.last_activity = project_worktree_last_activity(&record.path);
+                }
                 record.delete_eligibility = project_worktree_delete_eligibility(
                     record.is_dirty,
                     record.has_unmerged_commits,
+                    record.is_prunable,
+                    record.is_locked,
                 );
                 record
             })
@@ -2302,31 +2316,46 @@ fn remove_project_worktree_sync(
         return Err("Worktree root is not a directory".to_string());
     }
 
-    let path_metadata = std::fs::metadata(&path)
-        .map_err(|error| format!("Could not read worktree path metadata: {error}"))?;
-    if !path_metadata.is_dir() {
-        return Err("Worktree path is not a directory".to_string());
-    }
-
-    let canonical_root =
-        std::fs::canonicalize(&root).map_err(|error| format!("Could not resolve Git root: {error}"))?;
-    let canonical_path = std::fs::canonicalize(&path)
-        .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
-    if normalized_path_string(&canonical_root) == normalized_path_string(&canonical_path) {
+    let canonical_root = std::fs::canonicalize(&root)
+        .map_err(|error| format!("Could not resolve Git root: {error}"))?;
+    let canonical_path = std::fs::canonicalize(&path).ok();
+    if canonical_path
+        .as_ref()
+        .map(|path| normalized_path_string(&canonical_root) == normalized_path_string(path))
+        .unwrap_or(false)
+    {
         return Err("Refusing to remove the primary checkout".to_string());
     }
 
     let worktrees = list_project_worktrees_sync(root.clone())?;
     let worktree = worktrees
         .iter()
-        .find(|worktree| project_worktree_path_matches(&worktree.path, &canonical_path))
+        .find(|worktree| {
+            project_worktree_path_matches(&worktree.path, &path, canonical_path.as_deref())
+        })
         .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
 
+    if worktree.is_locked {
+        return Err("Refusing to remove locked worktree".to_string());
+    }
     if worktree.is_dirty {
         return Err("Refusing to remove dirty worktree".to_string());
     }
     if worktree.has_unmerged_commits {
         return Err("Refusing to remove worktree with unmerged commits".to_string());
+    }
+    if worktree.is_prunable {
+        run_git_text(&root, &["worktree", "prune"])?;
+        return Ok(ProjectWorktreeActionResult {
+            message: format!("Pruned missing worktree metadata {}", worktree.branch),
+            worktrees: list_project_worktrees_sync(root)?,
+        });
+    }
+
+    let path_metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read worktree path metadata: {error}"))?;
+    if !path_metadata.is_dir() {
+        return Err("Worktree path is not a directory".to_string());
     }
 
     let worktree_path = worktree.path.clone();
@@ -2357,8 +2386,8 @@ fn archive_project_worktree_sync(
         return Err("Worktree path is not a directory".to_string());
     }
 
-    let canonical_root =
-        std::fs::canonicalize(&root).map_err(|error| format!("Could not resolve Git root: {error}"))?;
+    let canonical_root = std::fs::canonicalize(&root)
+        .map_err(|error| format!("Could not resolve Git root: {error}"))?;
     let canonical_path = std::fs::canonicalize(&path)
         .map_err(|error| format!("Could not resolve worktree path: {error}"))?;
     if normalized_path_string(&canonical_root) == normalized_path_string(&canonical_path) {
@@ -2368,7 +2397,9 @@ fn archive_project_worktree_sync(
     let worktrees = list_project_worktrees_sync(root.clone())?;
     let worktree = worktrees
         .iter()
-        .find(|worktree| project_worktree_path_matches(&worktree.path, &canonical_path))
+        .find(|worktree| {
+            project_worktree_path_matches(&worktree.path, &path, Some(&canonical_path))
+        })
         .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
     let archive_path = project_worktree_archive_path(worktree)?;
     std::fs::create_dir_all(&archive_path)
@@ -2384,7 +2415,11 @@ fn archive_project_worktree_sync(
         &["log", "--oneline", "--decorate", "--max-count=40"],
         &archive_path.join("commits.txt"),
     )?;
-    write_git_command_output(&canonical_path, &["diff", "--binary"], &archive_path.join("unstaged.patch"))?;
+    write_git_command_output(
+        &canonical_path,
+        &["diff", "--binary"],
+        &archive_path.join("unstaged.patch"),
+    )?;
     write_git_command_output(
         &canonical_path,
         &["diff", "--cached", "--binary"],
@@ -2397,12 +2432,21 @@ fn archive_project_worktree_sync(
         format!("{}\n", untracked_paths.join("\n")),
     )
     .map_err(|error| format!("Could not write untracked file list: {error}"))?;
-    copy_untracked_worktree_files(&canonical_path, &archive_path.join("untracked"), &untracked_paths)?;
+    copy_untracked_worktree_files(
+        &canonical_path,
+        &archive_path.join("untracked"),
+        &untracked_paths,
+    )?;
 
     let bundle_path = archive_path.join("head.bundle");
     run_git_text(
         &canonical_path,
-        &["bundle", "create", bundle_path.to_str().unwrap_or_default(), "HEAD"],
+        &[
+            "bundle",
+            "create",
+            bundle_path.to_str().unwrap_or_default(),
+            "HEAD",
+        ],
     )?;
 
     Ok(ProjectWorktreeArchiveResult {
@@ -2412,16 +2456,30 @@ fn archive_project_worktree_sync(
     })
 }
 
-fn project_worktree_path_matches(record_path: &str, canonical_target: &Path) -> bool {
-    let normalized_target = normalized_path_string(canonical_target);
+fn project_worktree_path_matches(
+    record_path: &str,
+    target_path: &Path,
+    canonical_target: Option<&Path>,
+) -> bool {
+    let normalized_target = normalized_path_string(target_path);
     let normalized_record = normalized_path_string(Path::new(record_path));
     if normalized_record == normalized_target {
         return true;
     }
 
+    let Some(canonical_target) = canonical_target else {
+        return false;
+    };
+    let normalized_canonical_target = normalized_path_string(canonical_target);
+    if normalized_record == normalized_canonical_target {
+        return true;
+    }
+
     std::fs::canonicalize(record_path)
         .ok()
-        .map(|canonical_record| normalized_path_string(&canonical_record) == normalized_target)
+        .map(|canonical_record| {
+            normalized_path_string(&canonical_record) == normalized_canonical_target
+        })
         .unwrap_or(false)
 }
 
@@ -2431,6 +2489,10 @@ fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
         .filter_map(|block| {
             let mut path = None;
             let mut branch = None;
+            let mut is_prunable = false;
+            let mut prunable_reason = None;
+            let mut is_locked = false;
+            let mut locked_reason = None;
 
             for line in block.lines() {
                 if let Some(value) = line.strip_prefix("worktree ") {
@@ -2439,6 +2501,16 @@ fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
                     branch = Some(value.trim_start_matches("refs/heads/").to_string());
                 } else if line == "detached" {
                     branch = Some("detached".to_string());
+                } else if line == "prunable" {
+                    is_prunable = true;
+                } else if let Some(value) = line.strip_prefix("prunable ") {
+                    is_prunable = true;
+                    prunable_reason = Some(value.to_string());
+                } else if line == "locked" {
+                    is_locked = true;
+                } else if let Some(value) = line.strip_prefix("locked ") {
+                    is_locked = true;
+                    locked_reason = Some(value.to_string());
                 }
             }
 
@@ -2452,6 +2524,10 @@ fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
                     task_id,
                     is_dirty: false,
                     has_unmerged_commits: false,
+                    is_prunable,
+                    prunable_reason,
+                    is_locked,
+                    locked_reason,
                     last_activity: None,
                     delete_eligibility: "unknown".to_string(),
                 }
@@ -2460,11 +2536,20 @@ fn parse_project_worktree_porcelain(output: &str) -> Vec<ProjectWorktree> {
         .collect()
 }
 
-fn project_worktree_delete_eligibility(is_dirty: bool, has_unmerged_commits: bool) -> String {
+fn project_worktree_delete_eligibility(
+    is_dirty: bool,
+    has_unmerged_commits: bool,
+    is_prunable: bool,
+    is_locked: bool,
+) -> String {
     if is_dirty {
         "blocked: dirty worktree".to_string()
     } else if has_unmerged_commits {
         "blocked: unmerged commits".to_string()
+    } else if is_locked {
+        "blocked: locked worktree".to_string()
+    } else if is_prunable {
+        "review: prunable missing worktree metadata".to_string()
     } else {
         "requires-confirmation".to_string()
     }
@@ -2483,7 +2568,16 @@ fn project_worktree_is_dirty(path: &str) -> bool {
 
 fn project_worktree_has_unmerged_commits(path: &str) -> bool {
     let output = Command::new("git")
-        .args(["-C", path, "log", "--oneline", "-1", "HEAD", "--not", "--remotes"])
+        .args([
+            "-C",
+            path,
+            "log",
+            "--oneline",
+            "-1",
+            "HEAD",
+            "--not",
+            "--remotes",
+        ])
         .output();
     output
         .ok()
@@ -2513,7 +2607,9 @@ fn project_worktree_archive_path(worktree: &ProjectWorktree) -> Result<PathBuf, 
         .as_millis();
     let repo = safe_archive_path_segment(&worktree.repo);
     let branch = safe_archive_path_segment(&worktree.branch);
-    Ok(archive_root.join(repo).join(format!("{branch}-{timestamp}")))
+    Ok(archive_root
+        .join(repo)
+        .join(format!("{branch}-{timestamp}")))
 }
 
 fn project_worktree_archive_root(path: &Path) -> PathBuf {
@@ -2618,8 +2714,9 @@ fn copy_untracked_worktree_files(
 
         let destination = destination_root.join(relative_path);
         if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("Could not create untracked archive directory: {error}"))?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("Could not create untracked archive directory: {error}")
+            })?;
         }
         std::fs::copy(&source, &destination).map_err(|error| {
             format!(
@@ -4729,7 +4826,7 @@ mod tests {
     #[test]
     fn project_worktree_parser_reads_porcelain_branches() {
         let records = parse_project_worktree_porcelain(
-            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feature\nHEAD def\nbranch refs/heads/cdx/tsk-126-feature\n\nworktree /detached\nHEAD fed\ndetached\n",
+            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feature\nHEAD def\nbranch refs/heads/cdx/tsk-126-feature\n\nworktree /detached\nHEAD fed\ndetached\n\nworktree /missing\nHEAD abc\nbranch refs/heads/cdx/tsk-127-missing\nprunable gitdir file points to non-existent location\n\nworktree /locked\nHEAD def\nbranch refs/heads/cdx/tsk-128-locked\nlocked agent still running\n",
         );
 
         assert_eq!(
@@ -4746,23 +4843,43 @@ mod tests {
             vec![
                 ("/repo", "main", None),
                 ("/worktrees/feature", "cdx/tsk-126-feature", Some("TSK-126")),
-                ("/detached", "detached", None)
+                ("/detached", "detached", None),
+                ("/missing", "cdx/tsk-127-missing", Some("TSK-127")),
+                ("/locked", "cdx/tsk-128-locked", Some("TSK-128"))
             ]
+        );
+        assert!(records[3].is_prunable);
+        assert_eq!(
+            records[3].prunable_reason.as_deref(),
+            Some("gitdir file points to non-existent location")
+        );
+        assert!(records[4].is_locked);
+        assert_eq!(
+            records[4].locked_reason.as_deref(),
+            Some("agent still running")
         );
     }
 
     #[test]
     fn project_worktree_delete_eligibility_prioritizes_dirty_then_unmerged() {
         assert_eq!(
-            project_worktree_delete_eligibility(true, true),
+            project_worktree_delete_eligibility(true, true, true, true),
             "blocked: dirty worktree"
         );
         assert_eq!(
-            project_worktree_delete_eligibility(false, true),
+            project_worktree_delete_eligibility(false, true, true, true),
             "blocked: unmerged commits"
         );
         assert_eq!(
-            project_worktree_delete_eligibility(false, false),
+            project_worktree_delete_eligibility(false, false, false, true),
+            "blocked: locked worktree"
+        );
+        assert_eq!(
+            project_worktree_delete_eligibility(false, false, true, false),
+            "review: prunable missing worktree metadata"
+        );
+        assert_eq!(
+            project_worktree_delete_eligibility(false, false, false, false),
             "requires-confirmation"
         );
     }
@@ -4784,7 +4901,10 @@ mod tests {
         run_git_for_test(&root, &["add", "src/App.ts"]);
         run_git_for_test(&root, &["commit", "-m", "initial"]);
         run_git_for_test(&root, &["branch", "-M", "main"]);
-        run_git_for_test(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        run_git_for_test(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
         run_git_for_test(&root, &["push", "-u", "origin", "main"]);
         run_git_for_test(
             &root,
@@ -4806,9 +4926,15 @@ mod tests {
                 local_commit_sibling.to_str().unwrap(),
             ],
         );
-        std::fs::write(local_commit_sibling.join("src/App.ts"), "export const value = 2;\n")
-            .unwrap();
-        run_git_for_test(&local_commit_sibling, &["commit", "-am", "local worktree commit"]);
+        std::fs::write(
+            local_commit_sibling.join("src/App.ts"),
+            "export const value = 2;\n",
+        )
+        .unwrap();
+        run_git_for_test(
+            &local_commit_sibling,
+            &["commit", "-am", "local worktree commit"],
+        );
 
         let clean_has_unmerged =
             project_worktree_has_unmerged_commits(clean_sibling.to_str().unwrap());
@@ -4817,7 +4943,12 @@ mod tests {
 
         run_git_for_test(
             &root,
-            &["worktree", "remove", "--force", clean_sibling.to_str().unwrap()],
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                clean_sibling.to_str().unwrap(),
+            ],
         );
         run_git_for_test(
             &root,
@@ -4857,7 +4988,10 @@ mod tests {
         run_git_for_test(&root, &["add", "src/App.ts"]);
         run_git_for_test(&root, &["commit", "-m", "initial"]);
         run_git_for_test(&root, &["branch", "-M", "main"]);
-        run_git_for_test(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        run_git_for_test(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
         run_git_for_test(&root, &["push", "-u", "origin", "main"]);
         run_git_for_test(
             &root,
@@ -4881,6 +5015,96 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(remote).unwrap();
+    }
+
+    #[test]
+    fn remove_project_worktree_prunes_missing_registered_sibling() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-missing",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::remove_dir_all(&sibling).unwrap();
+
+        let before = list_project_worktrees_sync(root.clone()).unwrap();
+        let missing = before
+            .iter()
+            .find(|worktree| worktree.branch == "cdx/tsk-127-missing")
+            .expect("deleted sibling should still be registered before pruning");
+        assert!(missing.is_prunable);
+        assert!(missing.delete_eligibility.contains("prunable"));
+        let missing_path = PathBuf::from(&missing.path);
+
+        let result = remove_project_worktree_sync(root.clone(), missing_path).unwrap();
+
+        assert!(result.message.contains("Pruned missing worktree metadata"));
+        assert!(!result
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.branch == "cdx/tsk-127-missing"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remove_project_worktree_refuses_locked_sibling() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-locked",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "agent running",
+                sibling.to_str().unwrap(),
+            ],
+        );
+
+        let error = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap_err();
+
+        assert!(error.contains("locked worktree"));
+        assert!(sibling.exists());
+
+        run_git_for_test(&root, &["worktree", "unlock", sibling.to_str().unwrap()]);
+        run_git_for_test(
+            &root,
+            &["worktree", "remove", "--force", sibling.to_str().unwrap()],
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4912,7 +5136,10 @@ mod tests {
         assert!(error.contains("dirty worktree"));
         assert!(sibling.exists());
 
-        run_git_for_test(&root, &["worktree", "remove", "--force", sibling.to_str().unwrap()]);
+        run_git_for_test(
+            &root,
+            &["worktree", "remove", "--force", sibling.to_str().unwrap()],
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4963,7 +5190,10 @@ mod tests {
         assert!(project_worktree_is_dirty(sibling.to_str().unwrap()));
         assert!(result.message.contains("Archived worktree"));
 
-        run_git_for_test(&root, &["worktree", "remove", "--force", sibling.to_str().unwrap()]);
+        run_git_for_test(
+            &root,
+            &["worktree", "remove", "--force", sibling.to_str().unwrap()],
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -158,6 +158,70 @@ function worktree(overrides = {}) {
 }
 
 {
+  const summary = buildWorktreeSafetySummary(
+    worktree({
+      path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/missing-task',
+      branch: 'cdx/tsk-145-missing',
+      taskID: 'TSK-145',
+      isPrunable: true,
+      prunableReason: 'gitdir file points to non-existent location',
+      lastActivity: null,
+      deleteEligibility: 'review: prunable missing worktree metadata'
+    }),
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now
+    }
+  );
+  assert.equal(summary.kind, 'review');
+  assert.equal(summary.badge, 'Missing');
+  assert.match(summary.reason, /Missing worktree path/);
+  assert.match(summary.auditCommand, /worktree list --porcelain/);
+  assert.match(summary.auditCommand, /worktree prune --dry-run --verbose/);
+  assert.doesNotMatch(summary.auditCommand, /git -C '\/Users\/blackcolours\/dev\/work\/worktrees\/EdiPlatform\/missing-task'/);
+  assert.match(summary.backupCommand, /Missing\/prunable worktree path has no files to archive/);
+  assert.equal(
+    summary.cleanupCommand,
+    "git -C '/Users/blackcolours/dev/work/EdiPlatform' worktree prune"
+  );
+  assert.deepEqual(summary.decisionChecklist, [
+    'Confirm the path is intentionally gone and not a disconnected volume.',
+    'Run a dry-run prune from the main checkout.',
+    'Prune stale metadata only after confirmation.'
+  ]);
+  assert.match(summary.cleanupPlan, /Metadata-only cleanup/);
+  assert.match(summary.cleanupPlan, /does not delete source files/);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'audit');
+  assert.equal(action.command, summary.auditCommand);
+}
+
+{
+  const summary = buildWorktreeSafetySummary(
+    worktree({
+      branch: 'cdx/tsk-146-locked',
+      isLocked: true,
+      lockedReason: 'agent still running',
+      deleteEligibility: 'blocked: locked worktree'
+    }),
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now
+    }
+  );
+  assert.equal(summary.kind, 'blocked');
+  assert.equal(summary.badge, 'Locked');
+  assert.match(summary.recommendation, /unlock intentionally/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Inspect the Git worktree lock reason.',
+    'Unlock only when you know no external process owns this worktree.',
+    'Refresh worktrees before attempting cleanup.'
+  ]);
+  assert.match(summary.cleanupPlan, /Do not remove locked worktrees/);
+}
+
+{
   const summary = buildWorktreeSafetySummary(worktree({ path: '/repo/main', branch: 'main' }), {
     primaryPath: '/repo/main/',
     now
@@ -378,6 +442,14 @@ function worktree(overrides = {}) {
         branch: 'cdx/tsk-121-dirty',
         taskID: 'TSK-121',
         isDirty: true
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-122-missing',
+        branch: 'cdx/tsk-122-missing',
+        taskID: 'TSK-122',
+        isPrunable: true,
+        lastActivity: null,
+        deleteEligibility: 'review: prunable missing worktree metadata'
       })
     ],
     {
@@ -392,7 +464,11 @@ function worktree(overrides = {}) {
   assert.match(script, /RUN_REMOVE="\$\{RUN_REMOVE:-0\}"/);
   assert.match(script, /Audit cdx\/tsk-121-dirty/);
   assert.match(script, /Backup cdx\/tsk-121-dirty/);
+  assert.match(script, /Forced dirty\/unmerged worktree removal is intentionally not generated/);
   assert.match(script, /Remove cdx\/tsk-120-clean/);
+  assert.match(script, /Prune cdx\/tsk-122-missing: set RUN_REMOVE=1 to execute metadata cleanup/);
+  assert.match(script, /worktree prune/);
   assert.doesNotMatch(script, /worktree remove '\/Users\/blackcolours\/dev\/work\/EdiPlatform'/);
+  assert.doesNotMatch(script, /worktree remove --force/);
   assert.match(script, /echo "Dry run complete/);
 }

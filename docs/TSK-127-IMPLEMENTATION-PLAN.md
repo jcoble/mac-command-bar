@@ -43,6 +43,7 @@ Completed and committed:
 - Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Git history rows now use normalized ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits while keeping raw refs in copyable detail/handoff text.
 - Git task ledger rows now show owner and cleanup summaries, stale-clean candidates, backup-needed worktrees, active sessions, saved workspace ownership, runs, and commits without adding persistent panels.
+- Worktree cleanup now understands Git `prunable` and `locked` metadata: missing paths show as metadata-prune review items, locked worktrees block removal, dirty/unmerged worktrees still route to backup/archive guidance, and native remove prunes missing metadata without adding a force-delete path.
 - Orchestration event ingest now accepts real-ish agent/orchestrator payloads: snake_case aliases, nested project/task/agent/step/artifact/link/counts objects, event aliases such as `ui_verified`, JSON arrays, JSON envelope events, and JSONL/JSON files via `--json-file`.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
@@ -51,7 +52,7 @@ Current checkpoint:
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
-- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Remaining work is manual Git/worktree flow validation and larger graph UX, not first scaffolding.
+- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
 
@@ -339,16 +340,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 0.3, native Tauri validation refresh.
+Last checkpoint: Priority 1.5, worktree cleanup dry-run hardening.
 
-- Changed files: `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: refreshed native validation evidence without changing app code.
-- Validation: `pnpm test:tauri-app` passed, including `pnpm build`, 25 native LSP tests, TypeScript LSP smoke, C# LSP smoke, and `cargo build --manifest-path src-tauri/Cargo.toml`.
-- Remaining risk: this was non-interactive native validation only; it did not launch and click through the GUI Tauri app.
+- Changed files: `core/src/scanners/worktrees.rs`, `tauri-svelte-preview/src-tauri/src/main.rs`, `tauri-svelte-preview/src/lib/tauriSource.ts`, `tauri-svelte-preview/src/lib/worktreeSafety.ts`, `tauri-svelte-preview/scripts/worktreeSafety.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: Git `prunable` and `locked` worktree metadata are now parsed and surfaced; missing/prunable paths become review items with dry-run prune guidance; locked worktrees block removal; dirty/unmerged worktrees explicitly avoid generated force-delete commands; native remove prunes missing registered worktree metadata and still refuses dirty, unmerged, locked, and primary checkouts.
+- Validation: `pnpm test:worktree-safety`; `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `pnpm test:tauri-app`; `cargo test --manifest-path core/Cargo.toml`; `cargo test --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml`; `git diff --check`.
+- Remaining risk: this is automated dry-run/native-command validation. The full GUI flow still needs hands-on Tauri verification against the user's real worktrees before destructive cleanup is trusted for daily use.
 
-Next implementation slice: Priority 1.5 manual worktree cleanup dry run.
+Next implementation slice: Priority 1.6 conversation workspace restore hardening.
 
 Definition of done for the next slice:
-- Exercise clean, stale-clean, dirty, active-session, missing-path, and saved-workspace worktree examples without destructive surprise.
-- Confirm backup/remove/audit commands are correct and copyable.
-- Record any destructive cleanup action as dry-run or confirmation-gated unless the user explicitly approves removal.
+- Saved conversation/session rows clearly show project, worktree, branch, selected file/line, open tabs, terminal target, and missing-context state.
+- Restoring a saved workspace switches the source browser, tabs, layout, and terminal/worktree context without manual project re-selection.
+- Missing worktrees or moved project roots produce a repair action instead of silently falling back to the wrong repo.

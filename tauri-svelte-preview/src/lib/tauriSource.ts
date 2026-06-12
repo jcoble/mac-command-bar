@@ -95,6 +95,10 @@ export type ProjectWorktree = {
   taskID: string | null;
   isDirty: boolean;
   hasUnmergedCommits: boolean;
+  isPrunable?: boolean;
+  prunableReason?: string | null;
+  isLocked?: boolean;
+  lockedReason?: string | null;
   lastActivity: string | null;
   deleteEligibility: string;
 };
