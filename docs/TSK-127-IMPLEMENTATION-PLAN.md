@@ -31,8 +31,8 @@ Completed and committed:
 - Source browser has directory tree, scrollbars, filtering, content search, recent files, open tabs, dirty indicators, native read/write, and root auto-correction.
 - Command palette exists and carries lower-frequency actions.
 - Git basics exist: summaries, dirty state, diffs, stage, unstage, commit, fetch, pull, push, history, task-id extraction.
-- Worktree safety exists: stale/dirty checks, backup/remove/audit command copy, open in browser/terminal/embedded terminal.
-- Orchestration event model exists: event CLI, native event store, UI run cards, timeline helpers, and command copy actions.
+- Worktree safety exists: stale/dirty checks, backup/remove/audit command copy, open in browser/terminal/embedded terminal, and compact live-session/saved-workspace ownership chips.
+- Orchestration event model exists: event CLI, native event store, UI run cards, scenario/issue/fix/retest/sign-off tallies, timeline helpers, `/run-e2e-tests` sample events, artifacts, task links, and command copy actions.
 - Embedded terminal exists as a basic PTY-backed surface.
 - Workspace restore snapshots preserve project, worktree, branch, selected file/line, open tabs, view mode, terminal choice, browser URL, and layout state.
 - Saved nested project roots now auto-repair to the real Git root before scan.
@@ -45,7 +45,8 @@ Current checkpoint:
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair and scan evidence. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
-- Priority 1 Git/worktree foundations are already implemented. Remaining work is polish, larger graph UX, and tighter task/Notion display, not first scaffolding.
+- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Remaining work is polish, larger graph UX, and tighter task/Notion display, not first scaffolding.
+- Priority 2.7 orchestration timeline detail is implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, and handoff copy are covered by tests.
 
 ## Priority 0: Make The App Usable As A Workspace
 
@@ -149,8 +150,8 @@ Target result:
 - Worktrees stop being mystery folders and become manageable work contexts.
 
 Work:
-- Existing: worktree list, branch/task/dirty/unmerged/activity fields, active-session blocking, safety status, decision queue, copy cleanup plan, backup command, remove clean worktree, open in source browser, open external/embedded terminal, task links.
-- Next: link worktrees more explicitly to saved workspace snapshots and conversation/session history, add better owner/session labels, and surface stale-clean cleanup candidates without increasing visual bulk.
+- Existing: worktree list, branch/task/dirty/unmerged/activity fields, active-session blocking, saved conversation/workspace ownership chips, safety status, decision queue, copy cleanup plan, backup command, remove clean worktree, open in source browser, open external/embedded terminal, task links.
+- Next: surface stale-clean cleanup candidates and owner/session labels in the Git/task ledger without increasing visual bulk.
 
 Acceptance:
 - User can decide what can be deleted, what needs review, and what is actively being used.
@@ -191,8 +192,8 @@ Target result:
 - Long agent loops show live state instead of opaque terminal output.
 
 Work:
-- Existing: orchestration event CLI, native event store, run cards, timeline helpers, artifacts, task links, and copyable event commands.
-- Next: expand the event model for scenario, agent, issue, fix, UI test, retry, approval, and blocker events; show live tallies for found/fixed/retested/needs-signoff; make current agent activity readable without opening transcripts.
+- Existing: orchestration event CLI, native event store, run cards, timeline helpers, artifacts, task links, copyable event commands, scenario/agent/issue/fix/UI-test/retry/approval/blocker fields, live tallies for found/fixed/retested/sign-off, decision queues, and current activity summaries.
+- Next: ingest richer real orchestrator output from live agent loops and attach artifacts/transcripts as they are produced.
 
 Acceptance:
 - User can answer "what is this agent doing now?" without reading the whole transcript.
@@ -331,11 +332,10 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Next implementation slice: Priority 2.7, orchestration timeline detail.
+Next implementation slice: Priority 3.9, LSP/editor hardening.
 
 Definition of done for the next slice:
-- Event schema can represent scenario, agent, issue, fix, UI-test, retry, approval, blocker, and artifact events.
-- View model groups those events into current activity, tally counts, timeline rows, and sign-off queue.
-- UI exposes those details in the Runs pane without making the editor layout wider or noisier.
-- `scripts/mcb-orch` can emit at least one realistic `/run-e2e-tests` style scenario loop sample.
-- Tests cover event ingestion, view grouping, and compact UI hooks.
+- LSP status/recovery is visible from the editor without opening bulky side cards.
+- Definition, references, symbols, and diagnostics can be reviewed from compact in-editor flyouts or tight dock panels.
+- C# and TypeScript LSP smoke coverage stays green.
+- Tests cover UI hooks and native LSP behavior.
