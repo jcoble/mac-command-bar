@@ -19,6 +19,13 @@ export type WorktreeSafetySummary = {
 };
 
 export type WorktreePrimaryActionKind = 'audit' | 'backup' | 'cleanup';
+export type WorktreeDecisionLaneTone = 'blocked' | 'backup' | 'cleanup' | 'review' | 'protected';
+
+export type WorktreeDecisionLane = {
+  label: string;
+  detail: string;
+  tone: WorktreeDecisionLaneTone;
+};
 
 export type WorktreePrimaryAction = {
   kind: WorktreePrimaryActionKind;
@@ -391,6 +398,70 @@ export function worktreePrimaryAction(summary: WorktreeSafetySummary): WorktreeP
     title: `Copy the audit command before changing this worktree${activeReason}.`,
     command: summary.auditCommand,
     clipboardMessage: 'Recommended worktree audit command copied'
+  };
+}
+
+export function worktreeDecisionLane(summary: WorktreeSafetySummary): WorktreeDecisionLane {
+  if (summary.kind === 'protected') {
+    return {
+      label: 'Keep',
+      detail: 'Primary checkout; keep it as the repo anchor.',
+      tone: 'protected'
+    };
+  }
+
+  if (summary.activeSessionCount > 0) {
+    return {
+      label: 'Active',
+      detail: 'Active sessions point at this worktree; resume or close them before cleanup.',
+      tone: 'blocked'
+    };
+  }
+
+  if (summary.badge === 'Dirty') {
+    return {
+      label: 'Backup',
+      detail: 'Uncommitted changes need archive, commit, or stash before cleanup.',
+      tone: 'backup'
+    };
+  }
+
+  if (summary.badge === 'Unmerged') {
+    return {
+      label: 'Save commits',
+      detail: 'Local commits need push, merge, cherry-pick, or archive before cleanup.',
+      tone: 'backup'
+    };
+  }
+
+  if (summary.badge === 'Locked') {
+    return {
+      label: 'Locked',
+      detail: 'Audit and intentionally unlock this worktree outside the app before cleanup.',
+      tone: 'blocked'
+    };
+  }
+
+  if (summary.badge === 'Missing') {
+    return {
+      label: 'Prune',
+      detail: 'Missing path; confirm it is gone, then prune metadata from the main checkout.',
+      tone: 'review'
+    };
+  }
+
+  if (summary.kind === 'ready') {
+    return {
+      label: summary.ageBucket === 'stale' ? 'Stale clean' : 'Clean',
+      detail: 'Clean worktree; remove after confirming ownership and task status.',
+      tone: 'cleanup'
+    };
+  }
+
+  return {
+    label: 'Review',
+    detail: 'Confirm ownership, task status, and active sessions before cleanup.',
+    tone: 'review'
   };
 }
 

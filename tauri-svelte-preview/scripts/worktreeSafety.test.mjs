@@ -5,6 +5,7 @@ import {
   buildWorktreeDecisionQueue,
   buildWorktreeSafetySummary,
   prioritizeWorktreesForCleanup,
+  worktreeDecisionLane,
   worktreePrimaryAction,
   worktreeAuditCommand,
   worktreeBackupCommand,
@@ -40,6 +41,11 @@ function worktree(overrides = {}) {
   ]);
   assert.match(summary.cleanupPlan, /Decision checklist:/);
   assert.match(summary.cleanupPlan, /Do not remove the primary checkout/);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Keep');
+  assert.equal(lane.tone, 'protected');
+  assert.match(lane.detail, /repo anchor/);
 }
 
 {
@@ -73,6 +79,11 @@ function worktree(overrides = {}) {
   assert.equal(action.label, 'Backup');
   assert.equal(action.command, summary.backupCommand);
   assert.match(action.title, /Archive/);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Backup');
+  assert.equal(lane.tone, 'backup');
+  assert.match(lane.detail, /Uncommitted changes/);
 }
 
 {
@@ -97,6 +108,11 @@ function worktree(overrides = {}) {
   assert.equal(action.kind, 'audit');
   assert.equal(action.command, summary.auditCommand);
   assert.match(action.title, /active/);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Active');
+  assert.equal(lane.tone, 'blocked');
+  assert.match(lane.detail, /Active sessions/);
 }
 
 {
@@ -117,6 +133,11 @@ function worktree(overrides = {}) {
   const action = worktreePrimaryAction(summary);
   assert.equal(action.kind, 'backup');
   assert.equal(action.command, summary.backupCommand);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Save commits');
+  assert.equal(lane.tone, 'backup');
+  assert.match(lane.detail, /Local commits/);
 }
 
 {
@@ -141,6 +162,11 @@ function worktree(overrides = {}) {
   assert.equal(action.kind, 'cleanup');
   assert.equal(action.label, 'Remove');
   assert.equal(action.command, summary.cleanupCommand);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Stale clean');
+  assert.equal(lane.tone, 'cleanup');
+  assert.match(lane.detail, /Clean worktree/);
 }
 
 {
@@ -155,6 +181,11 @@ function worktree(overrides = {}) {
   const action = worktreePrimaryAction(summary);
   assert.equal(action.kind, 'audit');
   assert.equal(action.command, summary.auditCommand);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Review');
+  assert.equal(lane.tone, 'review');
+  assert.match(lane.detail, /Confirm ownership/);
 }
 
 {
@@ -195,6 +226,11 @@ function worktree(overrides = {}) {
   const action = worktreePrimaryAction(summary);
   assert.equal(action.kind, 'audit');
   assert.equal(action.command, summary.auditCommand);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Prune');
+  assert.equal(lane.tone, 'review');
+  assert.match(lane.detail, /Missing path/);
 }
 
 {
@@ -219,6 +255,11 @@ function worktree(overrides = {}) {
     'Refresh worktrees before attempting cleanup.'
   ]);
   assert.match(summary.cleanupPlan, /Do not remove locked worktrees/);
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Locked');
+  assert.equal(lane.tone, 'blocked');
+  assert.match(lane.detail, /unlock/);
 }
 
 {

@@ -68,6 +68,7 @@
     buildWorktreeDecisionQueue,
     buildWorktreeSafetySummary,
     prioritizeWorktreesForCleanup,
+    worktreeDecisionLane,
     worktreePrimaryAction
   } from '$lib/worktreeSafety';
   import {
@@ -12814,6 +12815,7 @@
             {:else}
               {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
                 {@const safety = projectWorktreeSafety(worktree)}
+                {@const decisionLane = worktreeDecisionLane(safety)}
                 {@const primaryAction = projectWorktreePrimaryAction(worktree)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
                 {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
@@ -12841,16 +12843,19 @@
                         </a>
                       {/if}
                     </strong>
-	                    <small class="worktree-safety-line">
-	                      <span>{safety.reason}</span>
-	                      {#if safety.activeSessionCount > 0}
-	                        <span>
-	                          {safety.activeSessionCount}
-	                          {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
-	                        </span>
-	                      {/if}
-	                      <span>{projectWorktreeActivityLabel(worktree)}</span>
-	                    </small>
+                    <small class="worktree-safety-line">
+                      <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
+                        {decisionLane.label}
+                      </span>
+                      <span>{safety.reason}</span>
+                      {#if safety.activeSessionCount > 0}
+                        <span>
+                          {safety.activeSessionCount}
+                          {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
+                        </span>
+                      {/if}
+                      <span>{projectWorktreeActivityLabel(worktree)}</span>
+                    </small>
                     <div class="worktree-owner-strip" aria-label="Worktree session ownership">
                       {#each ownerChips as chip (chip.id)}
                         <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
@@ -13983,8 +13988,12 @@
                 </div>
                 <div class="worktree-decision-items">
                   {#each group.entries.slice(0, 3) as entry (entry.worktree.path)}
+                    {@const decisionLane = worktreeDecisionLane(entry.safety)}
                     <div class="worktree-decision-item" title={entry.safety.cleanupPlan}>
                       <span class={`worktree-status-badge ${entry.safety.kind}`}>{entry.safety.badge}</span>
+                      <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
+                        {decisionLane.label}
+                      </span>
                       <div>
                         <strong>{entry.worktree.branch}</strong>
                         <small>
@@ -14037,6 +14046,7 @@
           <div class="worktree-context-list">
             {#each prioritizedProjectWorktrees as worktree (worktree.path)}
               {@const safety = projectWorktreeSafety(worktree)}
+              {@const decisionLane = worktreeDecisionLane(safety)}
               {@const primaryAction = projectWorktreePrimaryAction(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
               {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
@@ -14049,6 +14059,9 @@
                 title={safety.cleanupPlan}
               >
                 <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
+                <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
+                  {decisionLane.label}
+                </span>
                 <div class="worktree-context-main">
                   <strong>{worktree.branch}</strong>
                   <small title={worktree.path}>{worktree.path}</small>
@@ -14072,14 +14085,14 @@
                 {:else}
                   <span class="worktree-task-empty">no task</span>
                 {/if}
-	                <em>
-	                  {safety.reason}
-	                  {#if safety.activeSessionCount > 0}
-	                    · {safety.activeSessionCount}
-	                    {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
-	                  {/if}
-	                  · {projectWorktreeActivityLabel(worktree)}
-	                </em>
+                <em>
+                  {safety.reason}
+                  {#if safety.activeSessionCount > 0}
+                    · {safety.activeSessionCount}
+                    {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
+                  {/if}
+                  · {projectWorktreeActivityLabel(worktree)}
+                </em>
                 <small class="worktree-recommendation">{safety.recommendation}</small>
                 <small class="worktree-next-check">
                   <strong>Next</strong>
@@ -19891,7 +19904,7 @@
 
   .worktree-decision-item {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) 20px 20px 20px;
+    grid-template-columns: auto auto minmax(0, 1fr) 20px 20px 20px;
     align-items: center;
     gap: 4px;
     min-width: 0;
@@ -19981,7 +19994,7 @@
 
   .worktree-context-row {
     grid-template-columns:
-      auto minmax(0, 0.9fr) minmax(0, 0.44fr) auto minmax(0, 0.9fr) minmax(0, 1fr)
+      auto auto minmax(0, 0.9fr) minmax(0, 0.44fr) auto minmax(0, 0.9fr) minmax(0, 1fr)
       minmax(0, 1fr) auto;
   }
 
@@ -20173,6 +20186,7 @@
   .orchestration-context-row small,
   .agent-provider-badge,
   .worktree-status-badge,
+  .worktree-decision-lane,
   .repo-branch-badge,
   .runtime-context-row strong,
   .runtime-context-row span,
@@ -20265,6 +20279,53 @@
   .worktree-status-badge.blocked {
     color: #211606;
     background: #d8aa55;
+  }
+
+  .worktree-decision-lane {
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+    min-height: 18px;
+    max-width: 92px;
+    padding: 0 6px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.045);
+    font-size: 8px;
+    font-weight: 900;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .worktree-decision-lane.blocked {
+    color: #ffd8a8;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.1);
+  }
+
+  .worktree-decision-lane.backup {
+    color: #f0c979;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .worktree-decision-lane.cleanup {
+    color: #7ce5d5;
+    border-color: rgba(92, 226, 207, 0.25);
+    background: rgba(92, 226, 207, 0.08);
+  }
+
+  .worktree-decision-lane.review {
+    color: #cbd3d1;
+    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .worktree-decision-lane.protected {
+    color: #9fa9a6;
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.035);
   }
 
   .worktree-next-check {

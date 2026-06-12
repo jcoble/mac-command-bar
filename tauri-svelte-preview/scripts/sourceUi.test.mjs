@@ -107,8 +107,11 @@ assertDeclaration('.worktree-context-actions', 'display: inline-flex');
 assertDeclaration('.worktree-decision-queue', 'display: grid');
 assertDeclaration('.worktree-decision-queue', 'overflow-y: auto');
 assertDeclaration('.worktree-decision-items', 'overflow: hidden');
-assertDeclaration('.worktree-decision-item', 'grid-template-columns: auto minmax(0, 1fr) 20px 20px 20px');
+assertDeclaration('.worktree-decision-item', 'grid-template-columns: auto auto minmax(0, 1fr) 20px 20px 20px');
 assertDeclaration('.worktree-decision-item button', 'width: 20px');
+assertDeclaration('.worktree-decision-lane', 'display: inline-grid');
+assertDeclaration('.worktree-decision-lane', 'text-transform: uppercase');
+assertDeclaration('.worktree-decision-lane.cleanup', 'color: #7ce5d5');
 assertDeclaration('.worktree-status-badge.blocked', 'background: #d8aa55');
 assertDeclaration('.run-loop-row', 'text-overflow: ellipsis');
 assertDeclaration('.paste-cleanup-panel', 'overflow: hidden');
@@ -212,6 +215,15 @@ assert.ok(pageSource.includes('visiblePasteCleanupHistory'), 'Clipboard cleanup 
 assert.ok(pageSource.includes('buildWorktreeSafetySummary'), 'Worktree UI should use the shared safety model');
 assert.ok(pageSource.includes('buildWorktreeCleanupBrief'), 'Worktree UI should use the shared cleanup brief model');
 assert.ok(pageSource.includes('prioritizeWorktreesForCleanup'), 'Worktree UI should use shared cleanup priority ordering');
+assert.ok(pageSource.includes('worktreeDecisionLane'), 'Worktree UI should render compact cleanup decision lanes');
+assert.ok(
+  pageSource.includes('worktree-decision-lane ${decisionLane.tone}'),
+  'Worktree decision lanes should map tone classes onto lane labels'
+);
+assert.ok(
+  pageSource.includes('auto auto minmax(0, 0.9fr)'),
+  'Worktree context rows should reserve a compact decision lane column'
+);
 assert.ok(pageSource.includes('let projectWorktreeSafetyStats'), 'Worktree context should summarize safety counts');
 assert.ok(pageSource.includes('let prioritizedProjectWorktrees'), 'Worktree context should derive prioritized worktrees');
 assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
