@@ -8716,6 +8716,19 @@
     return dockGroupIDForPanel(sourceDockLayout, panelID) !== null;
   }
 
+  function hiddenDockPanelIDs() {
+    return normalizeSourceDockLayout(sourceDockLayout).hiddenPanelIDs.filter((panelID) =>
+      hideableDockPanelIDs.includes(panelID)
+    );
+  }
+
+  function restoreHiddenDockPanel(panelID: SourceDockPanelID) {
+    if (!hideableDockPanelIDs.includes(panelID)) return;
+
+    showDockPanel(panelID);
+    fileActionStatus = `${dockPanelLabel(panelID)} panel restored`;
+  }
+
   function dockGroupForContextPanelPlacement(placement: SourceContextPanelPlacement): SourceDockGroupID {
     if (placement === 'side') return 'right';
     if (placement === 'bottom') return 'bottom';
@@ -12019,6 +12032,23 @@
           {/if}
         {/each}
       </div>
+
+      {#if hiddenDockPanelIDs().length > 0}
+        <div class="hidden-dock-panel-strip" aria-label="Hidden dock panels">
+          <span>Hidden</span>
+          {#each hiddenDockPanelIDs() as panelID (panelID)}
+            <button
+              class="hidden-dock-panel-chip"
+              type="button"
+              aria-label={`Restore ${dockPanelLabel(panelID)} panel`}
+              title={`Restore ${dockPanelLabel(panelID)} panel`}
+              onclick={() => restoreHiddenDockPanel(panelID)}
+            >
+              {dockPanelLabel(panelID)}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       {#if draggingDockPanelID}
         <div
@@ -16825,6 +16855,53 @@
     height: 0;
     min-height: 0;
     margin: 0;
+  }
+
+  .hidden-dock-panel-strip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    min-height: 20px;
+    margin: -1px 0 4px;
+    overflow: hidden;
+  }
+
+  .hidden-dock-panel-strip > span {
+    flex: 0 0 auto;
+    color: #74817e;
+    font-size: 8px;
+    font-weight: 850;
+    text-transform: uppercase;
+  }
+
+  .hidden-dock-panel-chip {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 92px;
+    height: 18px;
+    padding: 0 7px;
+    overflow: hidden;
+    color: #9facaa;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.032);
+    font: inherit;
+    font-size: 8.5px;
+    font-weight: 820;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .hidden-dock-panel-chip:hover,
+  .hidden-dock-panel-chip:focus-visible {
+    color: #dffdf8;
+    border-color: rgba(92, 226, 207, 0.32);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
   }
 
   .dock-drop-zones {
