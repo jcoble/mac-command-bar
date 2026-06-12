@@ -22,6 +22,13 @@ The app is intentionally split into:
 
 Destructive actions are confirm-first. Dirty or unmerged worktree deletion is blocked before confirmation.
 
+## Roadmap
+
+The active implementation plan is tracked in
+[`docs/TSK-127-IMPLEMENTATION-PLAN.md`](docs/TSK-127-IMPLEMENTATION-PLAN.md).
+Use it as the execution order for the command-center/IDE work before starting
+new feature slices.
+
 ## Build
 
 ```bash
