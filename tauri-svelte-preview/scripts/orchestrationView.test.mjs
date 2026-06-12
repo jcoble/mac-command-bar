@@ -6,6 +6,7 @@ import {
   orchestrationCurrentActivity,
   orchestrationDecisionQueueForRuns,
   orchestrationLinkChips,
+  orchestrationLiveDigestItems,
   orchestrationLoopStageMetrics,
   orchestrationLoopTallyText,
   orchestrationRunHandoffText,
@@ -430,6 +431,19 @@ assert.deepEqual(
   [['Decision', 'Needs sign-off', 'claude fix-agent fixer-1']]
 );
 assert.deepEqual(
+  orchestrationLiveDigestItems(run, 4).map((item) => [
+    item.label,
+    item.title,
+    item.tone,
+    item.path
+  ]),
+  [
+    ['Decision', 'Needs sign-off', 'attention', null],
+    ['Retest', 'Retesting failed scenario', 'live', null],
+    ['Handoff', 'Scenario handoff', 'idle', '/repo/.codex-artifacts/handoff.md']
+  ]
+);
+assert.deepEqual(
   orchestrationDecisionQueueForRuns([
     {
       ...run,
@@ -522,3 +536,16 @@ assert.deepEqual(orchestrationArtifactChips(run).map((chip) => [chip.kind, chip.
 assert.deepEqual(orchestrationLinkChips(run).map((chip) => [chip.label, chip.href]), [
   ['TSK-127', 'https://example.test/task']
 ]);
+
+assert.deepEqual(
+  orchestrationLiveDigestItems(autoResolveRun, 3).map((item) => [
+    item.label,
+    item.title,
+    item.tone
+  ]),
+  [
+    ['UI proof', 'UI verified: Google auth callback', 'good'],
+    ['Resolved', 'Fix resolved: AUTH-7', 'good'],
+    ['Fix', 'Fix batch delegated', 'live']
+  ]
+);

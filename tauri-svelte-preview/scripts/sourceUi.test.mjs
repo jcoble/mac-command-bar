@@ -893,6 +893,7 @@ assert.ok(pageSource.includes('runMetrics.artifactCount'), 'Orchestration run ca
 assert.ok(pageSource.includes('orchestrationRunMetrics(run)'), 'Orchestration run cards should derive status metrics');
 assert.ok(pageSource.includes('orchestrationRunSummaryText'), 'Orchestration run cards should use shared copy summary formatting');
 assert.ok(pageSource.includes('orchestrationRunHandoffText'), 'Orchestration run cards should use shared copy handoff formatting');
+assert.ok(pageSource.includes('orchestrationLiveDigestItems(run, 5)'), 'Orchestration run cards should derive live ingest digest chips');
 assert.ok(pageSource.includes('orchestrationTimelineItems(run, 6)'), 'Orchestration run cards should render timeline items');
 assert.ok(pageSource.includes('orchestrationCurrentActivity(run)'), 'Orchestration run cards should expose current activity');
 assert.ok(pageSource.includes('orchestrationArtifactChips(run)'), 'Orchestration run cards should expose artifact chips');
@@ -909,6 +910,8 @@ assert.ok(pageSource.includes('id: `run-focus-${run.id}`'), 'Command palette sho
 assert.ok(pageSource.includes('id: `run-copy-summary-${run.id}`'), 'Command palette should expose run summary copy commands');
 assert.ok(pageSource.includes('id: `run-copy-handoff-${run.id}`'), 'Command palette should expose run handoff copy commands');
 assert.ok(pageSource.includes('class="run-current-activity"'), 'Runs mode should render current activity');
+assert.ok(pageSource.includes('class="run-live-digest"'), 'Runs mode should render compact live ingest digest chips');
+assert.ok(pageSource.includes('aria-label="Live run ingest signals"'), 'Runs mode should label live ingest digest chips');
 assert.ok(pageSource.includes('class="run-timeline"'), 'Runs mode should render a timeline');
 assert.ok(pageSource.includes('class="run-artifact-row"'), 'Runs mode should render artifact/link chips');
 assert.ok(pageSource.includes('aria-label="Copy run summary"'), 'Run rows should expose summary copy actions');
@@ -1999,6 +2002,9 @@ assertDeclaration('.run-ingest-strip', 'grid-template-columns: minmax(0, 1fr) re
 assertDeclaration('.run-ingest-strip input', 'text-overflow: ellipsis');
 assertDeclaration('.run-ingest-strip small', 'grid-column: 1 / -1');
 assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.run-live-digest', 'display: flex');
+assertDeclaration('.run-live-digest-chip', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.orchestration-context-digest', 'display: flex');
 assertDeclaration('.run-agent-strip', 'display: grid');
 assertDeclaration('.run-agent-pill', 'grid-template-columns: minmax(0, auto) minmax(0, 1fr)');
 assert.ok(pageSource.includes('orchestrationAttentionQueue'), 'Runs mode should derive decision and blocker queues');

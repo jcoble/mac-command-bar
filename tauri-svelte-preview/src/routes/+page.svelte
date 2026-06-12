@@ -50,6 +50,7 @@
     orchestrationCurrentActivity,
     orchestrationDecisionQueueForRuns,
     orchestrationLinkChips,
+    orchestrationLiveDigestItems,
     orchestrationLoopStageMetrics,
     orchestrationLoopTallyText,
     orchestrationRunHandoffText,
@@ -12256,6 +12257,7 @@
                 {@const runAgentItems = orchestrationAgentActivityItems(run, 4)}
                 {@const runAttentionItems = orchestrationAttentionQueue(run, 3)}
                 {@const runTimeline = orchestrationTimelineItems(run, 6)}
+                {@const runLiveDigest = orchestrationLiveDigestItems(run, 5)}
                 {@const runArtifacts = orchestrationArtifactChips(run)}
                 {@const runLinks = orchestrationLinkChips(run)}
                 <div
@@ -12293,6 +12295,19 @@
                     <span>Now</span>
                     <strong>{orchestrationCurrentActivity(run)}</strong>
                   </div>
+                  {#if runLiveDigest.length > 0}
+                    <div class="run-live-digest" aria-label="Live run ingest signals">
+                      {#each runLiveDigest as item (item.id)}
+                        <span
+                          class={`run-live-digest-chip ${item.tone}`}
+                          title={item.detail ? `${item.title}\n${item.detail}` : item.title}
+                        >
+                          <em>{item.label}</em>
+                          <strong>{item.title}</strong>
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
                   {#if runAgentItems.length > 0}
                     <div class="run-agent-strip" aria-label="Run agent activity">
                       {#each runAgentItems as agent (agent.id)}
@@ -13763,6 +13778,7 @@
             {#each selectedProjectOrchestrationRuns.slice(0, 3) as run (run.id)}
               {@const runMetrics = orchestrationRunMetrics(run)}
               {@const contextLoopStages = contextOrchestrationLoopStages(runMetrics)}
+              {@const contextLiveDigest = orchestrationLiveDigestItems(run, 3)}
               <div
                 class="orchestration-context-row"
                 class:bad={orchestrationStatusClass(run.status) === 'bad'}
@@ -13793,6 +13809,19 @@
                     <span>{orchestrationLoopTallyText(runMetrics)}</span>
                   </div>
                   <small class="orchestration-context-current">{orchestrationCurrentActivity(run)}</small>
+                  {#if contextLiveDigest.length > 0}
+                    <div class="orchestration-context-digest" aria-label="Context live run ingest signals">
+                      {#each contextLiveDigest as item (item.id)}
+                        <span
+                          class={`run-live-digest-chip ${item.tone}`}
+                          title={item.detail ? `${item.title}\n${item.detail}` : item.title}
+                        >
+                          <em>{item.label}</em>
+                          <strong>{item.title}</strong>
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
                   <div class="orchestration-context-loop-stages" aria-label="Context run loop stages">
                     {#each contextLoopStages as stage (stage.id)}
                       <span class={`context-loop-stage ${stage.tone}`} title={stage.title}>
@@ -17181,6 +17210,109 @@
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .run-live-digest {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .orchestration-context-digest {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .run-live-digest-chip {
+    display: inline-grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+    max-width: 184px;
+    min-width: 0;
+    min-height: 20px;
+    padding: 0 6px;
+    color: #cbd3d1;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .orchestration-context-digest .run-live-digest-chip {
+    max-width: 132px;
+    min-height: 18px;
+    padding: 0 5px;
+  }
+
+  .run-live-digest-chip em,
+  .run-live-digest-chip strong {
+    min-width: 0;
+    overflow: hidden;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-live-digest-chip em {
+    color: #8fbdb6;
+    font-size: 8px;
+    font-style: normal;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .run-live-digest-chip strong {
+    color: #dce5e2;
+    font-size: 9px;
+    font-weight: 820;
+  }
+
+  .run-live-digest-chip.live {
+    color: #76dfd1;
+    border-color: rgba(92, 226, 207, 0.22);
+    background: rgba(92, 226, 207, 0.08);
+  }
+
+  .run-live-digest-chip.good {
+    color: #9bdfae;
+    border-color: rgba(139, 220, 155, 0.2);
+    background: rgba(139, 220, 155, 0.07);
+  }
+
+  .run-live-digest-chip.attention {
+    color: #e8c47d;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.085);
+  }
+
+  .run-live-digest-chip.bad {
+    color: #ffaaa5;
+    border-color: rgba(255, 112, 112, 0.24);
+    background: rgba(255, 112, 112, 0.08);
+  }
+
+  .run-live-digest-chip.idle {
+    color: #a8b2af;
+    border-color: rgba(255, 255, 255, 0.075);
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .run-live-digest-chip.live em,
+  .run-live-digest-chip.live strong,
+  .run-live-digest-chip.good em,
+  .run-live-digest-chip.good strong,
+  .run-live-digest-chip.attention em,
+  .run-live-digest-chip.attention strong,
+  .run-live-digest-chip.bad em,
+  .run-live-digest-chip.bad strong,
+  .run-live-digest-chip.idle em,
+  .run-live-digest-chip.idle strong {
+    color: inherit;
   }
 
   .run-agent-strip {

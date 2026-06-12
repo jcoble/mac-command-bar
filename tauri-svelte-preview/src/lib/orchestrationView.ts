@@ -73,6 +73,16 @@ export type OrchestrationDecisionQueueItem = OrchestrationAttentionItem & {
   projectName: string;
 };
 
+export type OrchestrationLiveDigestItem = {
+  id: string;
+  tone: OrchestrationStatusTone;
+  label: string;
+  title: string;
+  detail: string;
+  href: string | null;
+  path: string | null;
+};
+
 export type OrchestrationAgentActivityItem = {
   id: string;
   tone: OrchestrationStatusTone;
@@ -509,6 +519,51 @@ export function orchestrationDecisionQueueForRuns(
     .slice(0, Math.max(0, limit));
 }
 
+export function orchestrationLiveDigestItems(
+  run: OrchestrationRun,
+  limit = 5
+): OrchestrationLiveDigestItem[] {
+  const items: OrchestrationLiveDigestItem[] = [];
+  const seen = new Set<string>();
+
+  const pushItem = (item: OrchestrationLiveDigestItem) => {
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    items.push(item);
+  };
+
+  for (const item of orchestrationAttentionQueue(run, Number.POSITIVE_INFINITY)) {
+    pushItem({
+      id: `attention:${item.id}`,
+      tone: item.tone,
+      label: item.label,
+      title: item.title,
+      detail: item.summary || item.agentLabel || item.title,
+      href: item.href,
+      path: item.path
+    });
+  }
+
+  for (const item of orchestrationTimelineItems(run, Number.POSITIVE_INFINITY)) {
+    if (item.tone === 'bad' || item.tone === 'attention') continue;
+
+    const label = orchestrationLiveDigestLabel(item);
+    if (!label) continue;
+
+    pushItem({
+      id: `timeline:${item.id}`,
+      tone: item.tone,
+      label,
+      title: item.title,
+      detail: orchestrationTimelineDetail(item),
+      href: item.href,
+      path: item.path
+    });
+  }
+
+  return items.slice(0, Math.max(0, limit));
+}
+
 export function orchestrationAgentActivityItems(
   run: OrchestrationRun,
   limit = 4
@@ -900,6 +955,29 @@ function attentionLabelForTimelineItem(item: OrchestrationTimelineItem): string 
   if (decisionPattern.test(searchTextForTimelineItem(item))) return 'Decision';
   if (approvalPattern.test(searchTextForTimelineItem(item))) return 'Sign-off';
   return 'Attention';
+}
+
+function orchestrationLiveDigestLabel(item: OrchestrationTimelineItem): string | null {
+  if (item.source === 'artifact') {
+    return handoffPattern.test(searchTextForTimelineItem(item)) ? 'Handoff' : 'Artifact';
+  }
+
+  const loopKind = orchestrationLoopKindForTimelineItem(item);
+  if (loopKind === 'verified') return 'UI proof';
+  if (loopKind === 'resolved') return 'Resolved';
+  if (loopKind === 'retest') return 'Retest';
+  if (loopKind === 'test') return 'Test';
+  if (loopKind === 'handoff') return 'Handoff';
+  if (loopKind === 'delegation') {
+    return fixPattern.test(searchTextForTimelineItem(item)) ? 'Fix' : 'Delegated';
+  }
+
+  if (item.source === 'event' && loopKind === 'fix') return 'Fix';
+  if ((item.path || item.href) && /\b(artifact|screenshot|trace|log|proof|report)\b/i.test(searchTextForTimelineItem(item))) {
+    return 'Artifact';
+  }
+
+  return null;
 }
 
 function formatMetricLabel(count: number, singular: string, plural: string): string {
