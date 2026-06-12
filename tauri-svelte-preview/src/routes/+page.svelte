@@ -1425,6 +1425,19 @@
       }
     },
     {
+      id: 'conversation-copy-active-repair-plan',
+      label: 'Copy active workspace repair plan',
+      detail: activeWorkspaceSnapshot
+        ? workspaceSnapshotRestoreReadiness(activeWorkspaceSnapshot).label
+        : 'No active workspace',
+      disabled:
+        !activeWorkspaceSnapshot ||
+        workspaceSnapshotRestoreReadiness(activeWorkspaceSnapshot).kind !== 'missing-worktree',
+      perform: () => {
+        if (activeWorkspaceSnapshot) copyWorkspaceSnapshotRepairPlan(activeWorkspaceSnapshot);
+      }
+    },
+    {
       id: 'conversation-copy-latest-restore-plan',
       label: 'Copy latest workspace restore plan',
       detail: workspaceSnapshots[0]?.title ?? 'No saved workspace',
@@ -1432,6 +1445,20 @@
       perform: () => {
         const snapshot = workspaceSnapshots[0];
         if (snapshot) copyWorkspaceSnapshotRestorePlan(snapshot);
+      }
+    },
+    {
+      id: 'conversation-copy-latest-repair-plan',
+      label: 'Copy latest workspace repair plan',
+      detail: workspaceSnapshots[0]
+        ? workspaceSnapshotRestoreReadiness(workspaceSnapshots[0]).label
+        : 'No saved workspace',
+      disabled:
+        !workspaceSnapshots[0] ||
+        workspaceSnapshotRestoreReadiness(workspaceSnapshots[0]).kind !== 'missing-worktree',
+      perform: () => {
+        const snapshot = workspaceSnapshots[0];
+        if (snapshot) copyWorkspaceSnapshotRepairPlan(snapshot);
       }
     },
     ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
@@ -1458,6 +1485,13 @@
       label: `Copy restore plan: ${snapshot.title}`,
       detail: workspaceSnapshotScopeLabel(snapshot),
       perform: () => copyWorkspaceSnapshotRestorePlan(snapshot)
+    })),
+    ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
+      id: `conversation-copy-repair-plan-${snapshot.id}`,
+      label: `Copy repair plan: ${snapshot.title}`,
+      detail: workspaceSnapshotRestoreReadiness(snapshot).detail,
+      disabled: workspaceSnapshotRestoreReadiness(snapshot).kind !== 'missing-worktree',
+      perform: () => copyWorkspaceSnapshotRepairPlan(snapshot)
     })),
     {
       id: 'save-file',
@@ -2352,6 +2386,17 @@
       disabled: !workspaceSnapshotForAgentSession(session),
       perform: () => copyAgentSessionWorkspaceRestorePlan(session)
     })),
+    ...selectedProjectAgentSessions.slice(0, 8).map((session) => {
+      const snapshot = workspaceSnapshotForAgentSession(session);
+      const readiness = snapshot ? workspaceSnapshotRestoreReadiness(snapshot) : null;
+      return {
+        id: `conversation-copy-session-repair-plan-${session.provider}-${session.id}`,
+        label: `Copy workspace repair plan: ${session.title}`,
+        detail: readiness?.detail ?? 'No saved workspace',
+        disabled: readiness?.kind !== 'missing-worktree',
+        perform: () => copyAgentSessionWorkspaceRepairPlan(session)
+      };
+    }),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-copy-plan-${session.provider}-${session.id}`,
       label: `Copy session resume plan: ${session.title}`,
@@ -4673,10 +4718,48 @@
     persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
   }
 
+  async function openWorkspaceSnapshotPath(snapshot: WorkspaceSnapshot) {
+    const path = snapshot.worktreePath ?? snapshot.cwd;
+    if (!path.trim()) return;
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    if (readiness.kind === 'missing-worktree') {
+      await copyWorkspaceSnapshotRepairPlan(
+        snapshot,
+        'Workspace repair plan copied before opening path'
+      );
+      return;
+    }
+
+    await openActivityPath(path);
+  }
+
+  async function openWorkspaceSnapshotPathTerminal(snapshot: WorkspaceSnapshot) {
+    const path = snapshot.worktreePath ?? snapshot.cwd;
+    if (!path.trim()) return;
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    if (readiness.kind === 'missing-worktree') {
+      await copyWorkspaceSnapshotRepairPlan(
+        snapshot,
+        'Workspace repair plan copied before opening terminal'
+      );
+      return;
+    }
+
+    await openActivityTerminalPath(path);
+  }
+
   async function openWorkspaceSnapshotTerminal(snapshot: WorkspaceSnapshot) {
     const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    if (readiness.kind === 'missing-worktree') {
+      await copyWorkspaceSnapshotRepairPlan(
+        snapshot,
+        'Workspace repair plan copied before terminal resume'
+      );
+      return;
+    }
 
     await restoreConversationWorkspaceSnapshot(snapshot);
 
@@ -4731,6 +4814,14 @@
     const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    if (readiness.kind === 'missing-worktree') {
+      await copyWorkspaceSnapshotRepairPlan(
+        snapshot,
+        'Workspace repair plan copied before embedded terminal resume'
+      );
+      return;
+    }
 
     await restoreConversationWorkspaceSnapshot(snapshot);
     showDockPanel('terminal');
@@ -4783,8 +4874,50 @@
     fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
   }
 
+  function workspaceSnapshotRepairPlan(snapshot: WorkspaceSnapshot) {
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    const projectPath = snapshot.project.path;
+    const worktreePath = snapshot.worktreePath ?? snapshot.cwd;
+    const auditCommands = [
+      `git -C ${shellQuoteForCommand(projectPath)} worktree list --porcelain`,
+      `git -C ${shellQuoteForCommand(projectPath)} worktree prune --dry-run --verbose`
+    ];
+    const recreateCommand =
+      snapshot.branch && snapshot.worktreePath
+        ? `# git -C ${shellQuoteForCommand(projectPath)} worktree add ${shellQuoteForCommand(snapshot.worktreePath)} ${shellQuoteForCommand(snapshot.branch)}`
+        : '';
+
+    return [
+      'Workspace context repair plan',
+      `Title: ${snapshot.title}`,
+      `Provider: ${snapshot.provider}`,
+      `Session: ${snapshot.sessionID}`,
+      `Project: ${snapshot.project.name}`,
+      `Root: ${projectPath}`,
+      `CWD: ${snapshot.cwd}`,
+      `Saved worktree: ${worktreePath}`,
+      `Branch: ${snapshot.branch ?? 'unknown'}`,
+      `Status: ${readiness.label} - ${readiness.detail}`,
+      `Repair: ${readiness.repairDetail ?? 'No repair is required before restore.'}`,
+      '',
+      'Audit before changing anything:',
+      ...auditCommands,
+      '',
+      recreateCommand ? 'Optional recreate command after audit:' : '',
+      recreateCommand,
+      '',
+      'After repair:',
+      '- Re-scan worktrees in MacCommandBar.',
+      '- Restore this workspace snapshot again.'
+    ].filter(Boolean).join('\n');
+  }
+
   function workspaceSnapshotRestorePlan(snapshot: WorkspaceSnapshot) {
     const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    const repairPlan =
+      readiness.kind === 'missing-worktree'
+        ? ['Repair plan:', workspaceSnapshotRepairPlan(snapshot)]
+        : [];
     const selectedFile = snapshot.selectedPath
       ? `${workspaceSnapshotRelativePath(snapshot, snapshot.selectedPath)}${snapshot.selectedLine ? `:${snapshot.selectedLine}` : ''}`
       : 'none';
@@ -4822,6 +4955,7 @@
       `View state: ${workspaceSnapshotViewStateLabel(snapshot.viewState)}`,
       `Embedded terminal: ${embeddedTerminal}`,
       `Resume command: ${snapshot.resumeCommand ?? 'none'}`,
+      ...repairPlan,
       `Captured: ${formatWorkspaceSnapshotTime(snapshot.capturedAt)}`
     ].filter(Boolean).join('\n');
   }
@@ -4891,6 +5025,13 @@
     await copyActivityCommand(workspaceSnapshotRestorePlan(snapshot), 'Workspace restore plan copied');
   }
 
+  async function copyWorkspaceSnapshotRepairPlan(
+    snapshot: WorkspaceSnapshot,
+    successStatus = 'Workspace repair plan copied'
+  ) {
+    await copyActivityCommand(workspaceSnapshotRepairPlan(snapshot), successStatus);
+  }
+
   async function copyAgentSessionWorkspaceRestorePlan(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
@@ -4899,6 +5040,16 @@
     }
 
     await copyWorkspaceSnapshotRestorePlan(snapshot);
+  }
+
+  async function copyAgentSessionWorkspaceRepairPlan(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session);
+    if (!snapshot) {
+      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      return;
+    }
+
+    await copyWorkspaceSnapshotRepairPlan(snapshot);
   }
 
   async function restoreConversationWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
@@ -11488,7 +11639,9 @@
                           type="button"
                           aria-label="Resume workspace snapshot in embedded terminal"
                           title={
-                            snapshot.resumeCommand
+                            readiness.kind === 'missing-worktree'
+                              ? 'Copy missing worktree repair plan'
+                              : snapshot.resumeCommand
                               ? 'Resume workspace in embedded terminal'
                               : 'Open workspace shell in embedded terminal'
                           }
@@ -11504,6 +11657,16 @@
                         >
                           <FileCode2 size={12} strokeWidth={2} />
                         </button>
+                        {#if readiness.kind === 'missing-worktree'}
+                          <button
+                            type="button"
+                            aria-label="Copy workspace repair plan"
+                            title={readiness.repairLabel ?? 'Copy repair plan'}
+                            onclick={() => copyWorkspaceSnapshotRepairPlan(snapshot)}
+                          >
+                            <FolderSearch size={12} strokeWidth={2} />
+                          </button>
+                        {/if}
                         <button
                           type="button"
                           aria-label="Copy workspace resume command"
@@ -11517,7 +11680,7 @@
                           type="button"
                           aria-label="Open workspace path"
                           title="Open workspace path"
-                          onclick={() => openActivityPath(snapshot.worktreePath ?? snapshot.cwd)}
+                          onclick={() => openWorkspaceSnapshotPath(snapshot)}
                         >
                           <ExternalLink size={12} strokeWidth={2} />
                         </button>
@@ -11525,7 +11688,7 @@
                           type="button"
                           aria-label="Open workspace in terminal"
                           title="Open workspace in terminal"
-                          onclick={() => openActivityTerminalPath(snapshot.worktreePath ?? snapshot.cwd)}
+                          onclick={() => openWorkspaceSnapshotPathTerminal(snapshot)}
                         >
                           <Terminal size={12} strokeWidth={2} />
                         </button>
@@ -11605,6 +11768,16 @@
                     >
                       <FileCode2 size={12} strokeWidth={2} />
                     </button>
+                    {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
+                      <button
+                        type="button"
+                        aria-label="Copy conversation workspace repair plan"
+                        title={sessionReadiness.repairLabel ?? 'Copy repair plan'}
+                        onclick={() => copyAgentSessionWorkspaceRepairPlan(session)}
+                      >
+                        <FolderSearch size={12} strokeWidth={2} />
+                      </button>
+                    {/if}
                     <button
                       type="button"
                       aria-label="Copy agent resume command"

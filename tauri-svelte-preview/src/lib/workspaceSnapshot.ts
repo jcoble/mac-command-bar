@@ -134,6 +134,8 @@ export type WorkspaceSnapshotRestoreReadiness = {
   tone: WorkspaceSnapshotRestoreReadinessTone;
   label: string;
   detail: string;
+  repairLabel?: string;
+  repairDetail?: string;
   canRestoreWorkspace: boolean;
   canResumeEmbedded: boolean;
 };
@@ -230,6 +232,8 @@ export function describeWorkspaceSnapshotRestoreReadiness(
       tone: 'blocked',
       label: 'Worktree missing',
       detail: 'Saved worktree is not in the current worktree scan; restore files cautiously.',
+      repairLabel: 'Copy repair plan',
+      repairDetail: 'Audit Git worktree metadata, prune stale registrations, or recreate the saved worktree before resuming terminal commands.',
       canRestoreWorkspace: true,
       canResumeEmbedded: false
     };
