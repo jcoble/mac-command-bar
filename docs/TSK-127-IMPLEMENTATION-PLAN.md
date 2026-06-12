@@ -48,13 +48,13 @@ Completed and committed:
 - Conversation workspace restore now treats missing saved worktrees as repairable context drift: rows and command-palette actions copy an audit/recreate plan, and terminal resume copies that plan instead of opening a dead path.
 - Conversation workspace restore now reopens saved files immediately while project indexing runs in the background; background scans preserve the restored file selection if the refreshed index cannot see that path yet.
 - Orchestration event ingest now accepts real-ish agent/orchestrator payloads: snake_case aliases, nested project/task/agent/step/artifact/link/counts objects, event aliases such as `ui_verified`, JSON arrays, JSON envelope events, and JSONL/JSON files via `--json-file`.
-- Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
+- Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including Tauri source bridge wrappers, dev/attach config guards, C# and TypeScript language-server smoke tests, and the Tauri Rust build.
 
 Current checkpoint:
 
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
-- Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
+- Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: source bridge wrappers, dev/attach config, web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
@@ -344,16 +344,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 1.8, project onboarding/scan clarity.
+Last checkpoint: Priority 0.3, native Tauri validation gate.
 
-- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: project controls now show a compact setup notice under the project path with validation state, detected Git root, active scan evidence, scan progress, and the current scan cap. The full hover text includes the selected project path, root validation message, detected Git root, scan mode, and limit. The source UI contract test now guards the notice and its compact no-wrap behavior.
-- Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
-- Remaining risk: no Browser/Playwright proof was run for this slice, so the compact notice should still be checked in the real Tauri/webview app while adding a large project.
+- Changed files: `tauri-svelte-preview/package.json`, `tauri-svelte-preview/scripts/tauriDevConfig.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: the real Tauri validation script now runs source bridge wrapper checks and dev/attach config checks before the web build, native C#/TypeScript LSP smoke tests, and Tauri Rust build. The config guard test asserts that wider gate so the native validation path does not drift back to build-only coverage.
+- Validation: `pnpm test:tauri-app`; `git diff --check`.
+- Remaining risk: this is still automated native-path validation, not hands-on GUI validation inside the running Tauri window.
 
-Next implementation slice: Priority 0.3/3.9 real Tauri validation for source browser, scan flow, and LSP actions.
+Next implementation slice: Priority 3.9 LSP in-editor result UX.
 
 Definition of done for the next slice:
-- Run the real Tauri app path instead of only browser preview.
-- Verify project switch/add scan visibility, C#/TypeScript LSP status, source read/write, and command-palette actions in the native shell where practical.
-- Add or adjust targeted smoke tests for any native-only behavior gap found.
+- Move definition/reference/symbol results closer to the editor surface with compact popovers or docked result lists.
+- Keep the right insight panel optional instead of required for ordinary code navigation.
+- Preserve keyboard actions and command-palette fallbacks.
