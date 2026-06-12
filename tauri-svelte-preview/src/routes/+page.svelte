@@ -99,6 +99,7 @@
     applySourceTextEdits,
     buildSourceTree,
     buildGitTaskSourceGroups,
+    buildProjectActivationScanPlan,
     closeAllCleanOpenSourceTabs,
     closeOpenSourceTab,
     closeOtherCleanOpenSourceTabs,
@@ -10155,12 +10156,15 @@
           Date.now(),
           sourceScanCacheMaxAgeMs
         );
-    if (
-      options.forceScan ||
-      cachedScan === null ||
-      sourceScanCacheEntryNeedsRepair(cachedScan, scanLimit, suspiciousSourceIndexFileThreshold)
-    ) {
-      fileActionStatus = sourceOnboardingScanStatus(project);
+    const activationScanPlan = buildProjectActivationScanPlan({
+      project,
+      entry: cachedScan,
+      forceScan: Boolean(options.forceScan),
+      limit: scanLimit,
+      suspiciousThreshold: suspiciousSourceIndexFileThreshold
+    });
+    if (activationScanPlan.shouldScan) {
+      fileActionStatus = activationScanPlan.status;
     }
 
     const scanCompletion = scanProject(project, selectedSourcePaths[project.id], {

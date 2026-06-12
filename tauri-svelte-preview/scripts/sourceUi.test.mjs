@@ -1015,6 +1015,9 @@ assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nex
 assert.ok(pageSource.includes('fileActionStatus = `Checking ${project.name} project setup`'), 'Project repair should explain validation before rescanning');
 assert.ok(pageSource.includes('await activateProject(project, {\n      forceScan: true,\n      scanLimit: expandedSourceScanLimit,\n      projects: projectOptions'), 'Project repair should force a fresh expanded activation scan');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
+assert.ok(pageSource.includes('buildProjectActivationScanPlan'), 'Project activation should share explicit scan-plan logic');
+assert.ok(pageSource.includes('const activationScanPlan = buildProjectActivationScanPlan'), 'Project activation should classify cache, auto-scan, force, and repair cases');
+assert.ok(pageSource.includes('fileActionStatus = activationScanPlan.status'), 'Project activation should announce the exact auto-scan reason');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');
 assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor should load HCL highlighting');

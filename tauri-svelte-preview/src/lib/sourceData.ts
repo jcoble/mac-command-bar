@@ -343,6 +343,25 @@ export type SourceScanCacheEntry = {
 
 export type SourceScanCache = Record<string, SourceScanCacheEntry>;
 
+export type ProjectActivationScanReason = 'cache' | 'force' | 'missing-or-stale' | 'repair';
+
+export type ProjectActivationScanPlan = {
+  shouldScan: boolean;
+  reason: ProjectActivationScanReason;
+  status: string;
+  detail: string;
+  cacheRecords: number;
+};
+
+export type ProjectActivationScanPlanInput = {
+  project: ProjectRoot;
+  entry: SourceScanCacheEntry | null;
+  forceScan: boolean;
+  limit: number;
+  suspiciousThreshold: number;
+  now?: number;
+};
+
 export type GitTaskMetadata = {
   taskID?: string | null;
 };
@@ -1246,6 +1265,57 @@ export function sourceScanCacheEntryNeedsRepair(
     Math.max(entry.limit, requestedLimit),
     suspiciousThreshold
   );
+}
+
+export function buildProjectActivationScanPlan(
+  input: ProjectActivationScanPlanInput
+): ProjectActivationScanPlan {
+  const limit = Math.max(0, Math.floor(input.limit));
+  const limitLabel = `${formatCount(limit)} source files`;
+  const detailPrefix = `${normalizeProjectPath(input.project.path)} · ${formatCount(limit)} limit`;
+  const cacheRecords = input.entry?.records.length ?? 0;
+
+  if (input.forceScan) {
+    return {
+      shouldScan: true,
+      reason: 'force',
+      status: `Rebuilding ${input.project.name} index up to ${limitLabel}`,
+      detail: `${detailPrefix} · forced rebuild`,
+      cacheRecords
+    };
+  }
+
+  if (!input.entry) {
+    return {
+      shouldScan: true,
+      reason: 'missing-or-stale',
+      status: `Auto-scanning ${input.project.name} up to ${limitLabel}`,
+      detail: `${detailPrefix} · cache missing or stale`,
+      cacheRecords: 0
+    };
+  }
+
+  if (sourceScanCacheEntryNeedsRepair(input.entry, limit, input.suspiciousThreshold)) {
+    return {
+      shouldScan: true,
+      reason: 'repair',
+      status: `Repairing tiny ${input.project.name} index: ${formatCount(cacheRecords)} ${
+        cacheRecords === 1 ? 'file' : 'files'
+      } from a ${formatCount(Math.max(input.entry.limit, limit))}-file scan`,
+      detail: `${detailPrefix} · previous index looked incomplete`,
+      cacheRecords
+    };
+  }
+
+  return {
+    shouldScan: false,
+    reason: 'cache',
+    status: `Using cached index for ${input.project.name}: ${formatCount(cacheRecords)} ${
+      cacheRecords === 1 ? 'file' : 'files'
+    }`,
+    detail: `${detailPrefix} · ${formatSourceScanAge(input.entry.scannedAt, input.now ?? Date.now())}`,
+    cacheRecords
+  };
 }
 
 export function monacoLanguageForSource(language: SourceLanguage): string {

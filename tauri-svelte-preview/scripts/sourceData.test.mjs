@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   applySourceTextEdits,
+  buildProjectActivationScanPlan,
   buildGitTaskSourceGroups,
   closeAllCleanOpenSourceTabs,
   closeOpenSourceTab,
@@ -251,6 +252,75 @@ assert.equal(getSourceScanCacheEntry(scanCache, otherProject, 2_000, 10_500, 1_0
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 12_000, 1_000), null);
 assert.equal(sourceScanCacheEntryNeedsRepair(scanCache['/repo::2000'], 2_000, 0), false);
 assert.equal(sourceScanCacheEntryNeedsRepair(scanCache['/repo::2000'], 2_000, 2), true);
+
+assert.deepEqual(
+  buildProjectActivationScanPlan({
+    project,
+    entry: scanCache['/repo::2000'],
+    forceScan: false,
+    limit: 2_000,
+    suspiciousThreshold: 0,
+    now: 70_500
+  }),
+  {
+    shouldScan: false,
+    reason: 'cache',
+    status: 'Using cached index for Project One: 2 files',
+    detail: '/repo · 2,000 limit · 1m ago',
+    cacheRecords: 2
+  }
+);
+assert.deepEqual(
+  buildProjectActivationScanPlan({
+    project,
+    entry: null,
+    forceScan: false,
+    limit: 25_000,
+    suspiciousThreshold: 24,
+    now: 10_500
+  }),
+  {
+    shouldScan: true,
+    reason: 'missing-or-stale',
+    status: 'Auto-scanning Project One up to 25,000 source files',
+    detail: '/repo · 25,000 limit · cache missing or stale',
+    cacheRecords: 0
+  }
+);
+assert.deepEqual(
+  buildProjectActivationScanPlan({
+    project,
+    entry: scanCache['/repo::2000'],
+    forceScan: true,
+    limit: 25_000,
+    suspiciousThreshold: 24,
+    now: 10_500
+  }),
+  {
+    shouldScan: true,
+    reason: 'force',
+    status: 'Rebuilding Project One index up to 25,000 source files',
+    detail: '/repo · 25,000 limit · forced rebuild',
+    cacheRecords: 2
+  }
+);
+assert.deepEqual(
+  buildProjectActivationScanPlan({
+    project,
+    entry: scanCache['/repo::2000'],
+    forceScan: false,
+    limit: 25_000,
+    suspiciousThreshold: 24,
+    now: 10_500
+  }),
+  {
+    shouldScan: true,
+    reason: 'repair',
+    status: 'Repairing tiny Project One index: 2 files from a 25,000-file scan',
+    detail: '/repo · 25,000 limit · previous index looked incomplete',
+    cacheRecords: 2
+  }
+);
 
 assert.deepEqual(
   selectBackgroundIndexProjects([project, otherProject], 'project-1', scanCache, 10_500, 1_000, 2_000).map(
