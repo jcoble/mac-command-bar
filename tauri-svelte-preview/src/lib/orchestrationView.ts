@@ -45,6 +45,12 @@ export type OrchestrationTimelineItem = {
   timestamp: string | null;
   href: string | null;
   path: string | null;
+  scenario: string | null;
+  issueID: string | null;
+  retryAttempt: number | null;
+  approvalSubject: string | null;
+  blockerReason: string | null;
+  decisionPrompt: string | null;
   loopCounts: OrchestrationLoopCountMap;
 };
 
@@ -608,6 +614,18 @@ export function orchestrationRunTimelineText(run: OrchestrationRun, limit = 6): 
     .join('\n');
 }
 
+export function orchestrationTimelineDetail(item: OrchestrationTimelineItem): string {
+  return [
+    item.issueID ? `issue ${item.issueID}` : '',
+    item.scenario ? `scenario ${item.scenario}` : '',
+    item.retryAttempt ? `retry ${item.retryAttempt}` : '',
+    item.approvalSubject ? `sign-off ${item.approvalSubject}` : '',
+    item.blockerReason ? `blocker ${item.blockerReason}` : '',
+    item.decisionPrompt ? `decision ${item.decisionPrompt}` : '',
+    item.summary
+  ].filter(Boolean).join(' · ') || item.kind || item.status;
+}
+
 export function orchestrationArtifactChips(run: OrchestrationRun, limit = 4): OrchestrationChip[] {
   return run.artifacts.slice(0, Math.max(0, limit)).map((artifact) => ({
     id: artifact.id,
@@ -649,6 +667,12 @@ function orchestrationEventTimelineItem(
     timestamp: event.timestamp,
     href: event.artifactUrl ?? event.linkUrl,
     path: event.artifactPath,
+    scenario: event.scenario ?? null,
+    issueID: event.issueID ?? null,
+    retryAttempt: normalizeNullableCount(event.retryAttempt),
+    approvalSubject: event.approvalSubject ?? null,
+    blockerReason: event.blockerReason ?? null,
+    decisionPrompt: event.decisionPrompt ?? null,
     loopCounts: orchestrationEventLoopCounts(event)
   };
 }
@@ -670,6 +694,12 @@ function orchestrationStepTimelineItem(
     timestamp: step.finishedAt ?? step.startedAt,
     href: null,
     path: null,
+    scenario: null,
+    issueID: null,
+    retryAttempt: null,
+    approvalSubject: null,
+    blockerReason: null,
+    decisionPrompt: null,
     loopCounts: {}
   };
 }
@@ -691,6 +721,12 @@ function orchestrationArtifactTimelineItem(
     timestamp: null,
     href: artifact.url,
     path: artifact.path,
+    scenario: null,
+    issueID: null,
+    retryAttempt: null,
+    approvalSubject: null,
+    blockerReason: null,
+    decisionPrompt: null,
     loopCounts: {}
   };
 }
@@ -793,7 +829,18 @@ function orchestrationTonePriority(tone: OrchestrationStatusTone): number {
 }
 
 function searchTextForTimelineItem(item: OrchestrationTimelineItem): string {
-  return [item.kind, item.status, item.title, item.summary, item.agentLabel]
+  return [
+    item.kind,
+    item.status,
+    item.title,
+    item.summary,
+    item.agentLabel,
+    item.scenario,
+    item.issueID,
+    item.approvalSubject,
+    item.blockerReason,
+    item.decisionPrompt
+  ]
     .filter(Boolean)
     .join(' ');
 }
@@ -841,6 +888,11 @@ function orchestrationEventLoopCounts(event: OrchestrationEvent): OrchestrationL
 function normalizeCount(value: number | null | undefined): number {
   if (!Number.isFinite(value ?? Number.NaN)) return 0;
   return Math.max(0, Math.floor(Number(value)));
+}
+
+function normalizeNullableCount(value: number | null | undefined): number | null {
+  const count = normalizeCount(value);
+  return count > 0 ? count : null;
 }
 
 function attentionLabelForTimelineItem(item: OrchestrationTimelineItem): string {

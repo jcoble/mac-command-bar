@@ -10,7 +10,8 @@ export const orchestrationEventStoreEnv = 'MAC_COMMAND_BAR_ORCHESTRATION_EVENTS'
 const explicitKeyMap = new Map([
   ['run-id', 'runId'],
   ['project-id', 'projectID'],
-  ['task-id', 'taskID']
+  ['task-id', 'taskID'],
+  ['issue-id', 'issueID']
 ]);
 
 export function defaultOrchestrationEventStorePath(homeDirectory = os.homedir()) {
@@ -61,6 +62,14 @@ export function normalizeOrchestrationEvent(input) {
     linkKind: optionalString(expandedInput.linkKind),
     linkLabel: optionalString(expandedInput.linkLabel),
     linkUrl: optionalString(expandedInput.linkUrl),
+    scenario: optionalString(expandedInput.scenario),
+    issueID: optionalString(expandedInput.issueID) ?? optionalString(expandedInput.issueId),
+    retryAttempt: optionalCount(expandedInput.retryAttempt, 'retryAttempt'),
+    approvalSubject:
+      optionalString(expandedInput.approvalSubject) ??
+      approvalSubjectFromExpandedEvent(expandedInput),
+    blockerReason: optionalString(expandedInput.blockerReason),
+    decisionPrompt: optionalString(expandedInput.decisionPrompt),
     scenarioCount: optionalCount(expandedInput.scenarioCount, 'scenarioCount'),
     issueCount: optionalCount(expandedInput.issueCount, 'issueCount'),
     testCount: optionalCount(expandedInput.testCount, 'testCount'),
@@ -82,7 +91,7 @@ export function applyOrchestrationEventPreset(input) {
   }
 
   const scenario = optionalString(input.scenario);
-  const issueId = optionalString(input.issueId);
+  const issueId = optionalString(input.issueID) ?? optionalString(input.issueId);
   const agentSubject = optionalString(input.agentRole) ?? optionalString(input.agentId) ?? optionalString(input.agentProvider);
   const subject = issueId ?? scenario ?? optionalString(input.title);
   const counts = orchestrationPresetCountMessage(input);
@@ -180,6 +189,13 @@ export function applyOrchestrationEventPreset(input) {
       title: formatPresetTitle('Retest started', subject),
       message: scenario
     },
+    'retry-started': {
+      kind: 'retry.started',
+      status: 'running',
+      stepKind: 'retest',
+      title: formatPresetTitle('Retry started', subject),
+      message: scenario
+    },
     'retest-passed': {
       kind: 'retest.passed',
       status: 'succeeded',
@@ -214,6 +230,25 @@ export function applyOrchestrationEventPreset(input) {
       stepKind: 'approval',
       title: 'Approval required'
     },
+    'approval-granted': {
+      kind: 'approval.granted',
+      status: 'succeeded',
+      stepKind: 'approval',
+      title: 'Approval granted'
+    },
+    'blocker-reported': {
+      kind: 'blocker.reported',
+      status: 'blocked',
+      stepKind: 'blocker',
+      title: 'Blocker reported'
+    },
+    'artifact-added': {
+      kind: 'artifact.available',
+      status: 'succeeded',
+      stepKind: 'artifact',
+      artifactKind: optionalString(input.artifactKind) ?? 'artifact',
+      title: formatPresetTitle('Artifact available', optionalString(input.artifactKind))
+    },
     handoff: {
       kind: 'handoff.available',
       status: 'succeeded',
@@ -245,6 +280,144 @@ export async function appendOrchestrationEvent(input, options = {}) {
   await fs.mkdir(path.dirname(storePath), { recursive: true });
   await fs.appendFile(storePath, `${JSON.stringify(event)}\n`, 'utf8');
   return { event, storePath };
+}
+
+export function orchestrationSampleEvents(sampleName, input = {}) {
+  const sample = optionalString(sampleName)?.toLowerCase();
+  if (sample !== 'run-e2e-loop') {
+    throw new Error(`Unknown orchestration sample: ${sampleName}`);
+  }
+
+  const base = {
+    runId: input.runId,
+    projectID: input.projectID,
+    projectName: input.projectName,
+    projectPath: input.projectPath,
+    rootLabel: input.rootLabel,
+    taskID: input.taskID
+  };
+  const scenario = optionalString(input.scenario) ?? 'Trading partner Google auth callback';
+  const issueID = optionalString(input.issueID) ?? optionalString(input.issueId) ?? 'AUTH-7';
+  const baseTimestamp = optionalString(input.timestamp);
+  const handoffPath =
+    optionalString(input.artifactPath) ??
+    (optionalString(input.projectPath)
+      ? path.join(String(input.projectPath), '.codex-artifacts', 'run-e2e-tests-handoff.md')
+      : null);
+
+  return [
+    {
+      preset: 'run-started',
+      title: 'E2E auto-resolve loop started',
+      message: 'Scenario-driven browser loop started'
+    },
+    {
+      preset: 'scenario-started',
+      scenario,
+      scenarioCount: 1,
+      agentProvider: 'codex',
+      agentRole: 'orchestrator',
+      agentId: 'orchestrator'
+    },
+    {
+      preset: 'test-failed',
+      scenario,
+      issueID,
+      message: 'Browser scenario found a Google auth callback regression',
+      issueCount: 1,
+      failedCount: 1,
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      agentId: 'ui-tester'
+    },
+    {
+      preset: 'issue-found',
+      scenario,
+      issueID,
+      message: 'Redirect mismatch after external provider callback',
+      issueCount: 1,
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      agentId: 'ui-tester'
+    },
+    {
+      preset: 'batch-delegated',
+      scenario,
+      issueID,
+      message: 'Fix batch delegated to implementation agent',
+      fixCount: 1,
+      delegatedCount: 1,
+      agentProvider: 'codex',
+      agentRole: 'fix-agent',
+      agentId: 'fixer-1'
+    },
+    {
+      preset: 'fix-resolved',
+      scenario,
+      issueID,
+      message: 'Auth callback route fixed and ready for retest',
+      resolvedCount: 1,
+      agentProvider: 'codex',
+      agentRole: 'fix-agent',
+      agentId: 'fixer-1'
+    },
+    {
+      preset: 'retry-started',
+      scenario,
+      issueID,
+      retryAttempt: 1,
+      retestCount: 1,
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      agentId: 'ui-tester'
+    },
+    {
+      preset: 'ui-verified',
+      scenario,
+      issueID,
+      retryAttempt: 1,
+      resolvedCount: 1,
+      verifiedCount: 1,
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      agentId: 'ui-tester'
+    },
+    {
+      preset: 'approval-required',
+      message: 'Review batched fixes',
+      approvalSubject: 'Review batched fixes',
+      blockerReason: 'Manual sign-off required before merge',
+      decisionPrompt: 'Approve merge after UI retest?',
+      approvalCount: 1,
+      decisionCount: 1,
+      agentProvider: 'codex',
+      agentRole: 'orchestrator',
+      agentId: 'orchestrator'
+    },
+    {
+      preset: 'handoff',
+      artifactPath: handoffPath,
+      artifactKind: 'handoff',
+      message: 'Scenario loop handoff ready',
+      agentProvider: 'codex',
+      agentRole: 'orchestrator',
+      agentId: 'orchestrator'
+    }
+  ].map((event, index) =>
+    normalizeOrchestrationEvent({
+      ...base,
+      timestamp: orchestrationSampleTimestamp(baseTimestamp, index),
+      ...event
+    })
+  );
+}
+
+export async function appendOrchestrationSample(sampleName, input, options = {}) {
+  const events = orchestrationSampleEvents(sampleName, input);
+  const storePath = options.storePath ?? orchestrationEventStorePath(options.env);
+  await fs.mkdir(path.dirname(storePath), { recursive: true });
+  await fs.appendFile(storePath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+  return { events, storePath };
 }
 
 export function parseOrchestrationEventArgs(args) {
@@ -311,6 +484,21 @@ function optionalCount(value, fieldName) {
   return count;
 }
 
+function approvalSubjectFromExpandedEvent(event) {
+  const kind = optionalString(event.kind);
+  if (!kind?.startsWith('approval.')) return null;
+  return optionalString(event.message) ?? optionalString(event.title);
+}
+
+function orchestrationSampleTimestamp(timestamp, index) {
+  const base = timestamp ? new Date(timestamp) : new Date();
+  if (Number.isNaN(base.getTime())) {
+    return timestamp ? `${timestamp}-${String(index + 1).padStart(3, '0')}` : new Date().toISOString();
+  }
+
+  return new Date(base.getTime() + index * 60_000).toISOString();
+}
+
 function formatPresetTitle(prefix, subject) {
   return subject ? `${prefix}: ${subject}` : prefix;
 }
@@ -346,6 +534,7 @@ function printHelp() {
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset batch-delegated --resolved-count 3 --agent-role fix-agent
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset ui-verified --scenario "Trading partner setup"
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset approval-required --message "Needs deletion sign-off"
+  node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --sample run-e2e-loop --task-id TSK-127
   node scripts/orchestrationEvent.mjs --json '{"runId":"run-tsk-127","kind":"run.created"}'
 
 Writes one JSONL event to:
@@ -360,7 +549,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
       printHelp();
       process.exit(0);
     }
-    const result = await appendOrchestrationEvent(event);
+    const result = event.sample
+      ? await appendOrchestrationSample(event.sample, event)
+      : await appendOrchestrationEvent(event);
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

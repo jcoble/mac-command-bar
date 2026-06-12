@@ -14,6 +14,7 @@ import {
   orchestrationRunStage,
   orchestrationRunTimelineText,
   orchestrationStatusTone,
+  orchestrationTimelineDetail,
   orchestrationTimelineItems
 } from '../src/lib/orchestrationView.ts';
 
@@ -114,7 +115,13 @@ const run = {
       artifactUrl: null,
       linkKind: null,
       linkLabel: null,
-      linkUrl: null
+      linkUrl: null,
+      scenario: 'Customer trading-partner pass',
+      issueID: null,
+      retryAttempt: null,
+      approvalSubject: null,
+      blockerReason: null,
+      decisionPrompt: null
     },
     {
       schemaVersion: 1,
@@ -141,7 +148,13 @@ const run = {
       artifactUrl: null,
       linkKind: null,
       linkLabel: null,
-      linkUrl: null
+      linkUrl: null,
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      retryAttempt: null,
+      approvalSubject: 'Delete dirty worktree?',
+      blockerReason: 'Manual sign-off required before cleanup',
+      decisionPrompt: 'Delete the dirty worktree?'
     },
     {
       schemaVersion: 1,
@@ -168,7 +181,13 @@ const run = {
       artifactUrl: null,
       linkKind: null,
       linkLabel: null,
-      linkUrl: null
+      linkUrl: null,
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      retryAttempt: 1,
+      approvalSubject: null,
+      blockerReason: null,
+      decisionPrompt: null
     }
   ]
 };
@@ -386,6 +405,14 @@ assert.deepEqual(
 );
 assert.equal(timeline[0].tone, 'attention');
 assert.equal(timeline[0].agentLabel, 'claude fix-agent fixer-1');
+assert.equal(timeline[0].issueID, 'AUTH-7');
+assert.equal(timeline[0].scenario, 'Google auth callback');
+assert.match(orchestrationTimelineDetail(timeline[0]), /issue AUTH-7/);
+assert.match(orchestrationTimelineDetail(timeline[0]), /scenario Google auth callback/);
+assert.match(orchestrationTimelineDetail(timeline[0]), /sign-off Delete dirty worktree\?/);
+assert.match(orchestrationTimelineDetail(timeline[0]), /blocker Manual sign-off required before cleanup/);
+assert.match(orchestrationTimelineDetail(timeline[0]), /decision Delete the dirty worktree\?/);
+assert.match(orchestrationTimelineDetail(timeline[1]), /retry 1/);
 
 assert.equal(
   orchestrationCurrentActivity(run),

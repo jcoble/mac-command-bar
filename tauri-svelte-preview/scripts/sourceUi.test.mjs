@@ -345,6 +345,8 @@ assert.ok(pageSource.includes("id: 'orchestration-copy-issue-command'"), 'Comman
 assert.ok(pageSource.includes("id: 'orchestration-copy-batch-command'"), 'Command palette should copy fix-batch event commands');
 assert.ok(pageSource.includes("id: 'orchestration-copy-ui-verified-command'"), 'Command palette should copy UI-verified event commands');
 assert.ok(pageSource.includes("id: 'orchestration-copy-approval-command'"), 'Command palette should copy approval-required event commands');
+assert.ok(pageSource.includes("id: 'orchestration-copy-e2e-loop-sample-command'"), 'Command palette should copy a realistic E2E loop sample command');
+assert.ok(pageSource.includes('orchestrationTimelineDetail(item)'), 'Runs mode should render compact structured timeline details');
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');

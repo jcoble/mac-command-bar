@@ -39,6 +39,13 @@ pub(crate) struct OrchestrationEvent {
     link_kind: Option<String>,
     link_label: Option<String>,
     link_url: Option<String>,
+    scenario: Option<String>,
+    #[serde(rename = "issueID", alias = "issueId")]
+    issue_id: Option<String>,
+    retry_attempt: Option<u32>,
+    approval_subject: Option<String>,
+    blocker_reason: Option<String>,
+    decision_prompt: Option<String>,
     scenario_count: Option<u32>,
     issue_count: Option<u32>,
     test_count: Option<u32>,
@@ -638,6 +645,12 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     link_kind: None,
                     link_label: None,
                     link_url: None,
+                    scenario: None,
+                    issue_id: None,
+                    retry_attempt: None,
+                    approval_subject: None,
+                    blocker_reason: None,
+                    decision_prompt: None,
                     scenario_count: None,
                     issue_count: None,
                     test_count: None,
@@ -676,6 +689,12 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     link_kind: None,
                     link_label: None,
                     link_url: None,
+                    scenario: None,
+                    issue_id: None,
+                    retry_attempt: None,
+                    approval_subject: None,
+                    blocker_reason: None,
+                    decision_prompt: None,
                     scenario_count: None,
                     issue_count: None,
                     test_count: None,
@@ -714,6 +733,12 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     link_kind: None,
                     link_label: None,
                     link_url: None,
+                    scenario: None,
+                    issue_id: None,
+                    retry_attempt: None,
+                    approval_subject: None,
+                    blocker_reason: None,
+                    decision_prompt: None,
                     scenario_count: None,
                     issue_count: None,
                     test_count: None,
@@ -755,6 +780,12 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     link_kind: Some("task".to_string()),
                     link_label: Some(task_id.clone()),
                     link_url: Some("https://app.notion.com/p/TSK-127-Create-a-native-MAC-OS-app-for-doing-diff-things-in-menu-bar-379394b0689d8053af76fd44c7ffdba4".to_string()),
+                    scenario: None,
+                    issue_id: None,
+                    retry_attempt: None,
+                    approval_subject: None,
+                    blocker_reason: None,
+                    decision_prompt: None,
                     scenario_count: None,
                     issue_count: None,
                     test_count: None,
@@ -946,7 +977,7 @@ mod tests {
     fn orchestration_events_reduce_to_run_timeline() {
         let input = [
             r#"{"schemaVersion":1,"id":"evt-1","runId":"run-tsk-127","timestamp":"2026-06-10T10:00:00Z","kind":"run.created","status":"running","title":"TSK-127 run","message":"Started","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":null,"agentProvider":null,"agentRole":null,"stepId":null,"stepKind":null,"artifactId":null,"artifactKind":null,"artifactPath":null,"artifactUrl":null,"linkKind":null,"linkLabel":null,"linkUrl":null}"#,
-            r#"{"schemaVersion":1,"id":"evt-2","runId":"run-tsk-127","timestamp":"2026-06-10T10:01:00Z","kind":"test.failed","status":"failed","title":"Playwright checkout","message":"Button mismatch","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":"agent-a","agentProvider":"codex","agentRole":"tester","stepId":"e2e","stepKind":"test","artifactId":"trace-1","artifactKind":"trace","artifactPath":"/tmp/trace.zip","artifactUrl":null,"linkKind":null,"linkLabel":null,"linkUrl":null,"issueCount":2,"failedCount":1}"#,
+            r#"{"schemaVersion":1,"id":"evt-2","runId":"run-tsk-127","timestamp":"2026-06-10T10:01:00Z","kind":"test.failed","status":"failed","title":"Playwright checkout","message":"Button mismatch","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":"agent-a","agentProvider":"codex","agentRole":"tester","stepId":"e2e","stepKind":"test","artifactId":"trace-1","artifactKind":"trace","artifactPath":"/tmp/trace.zip","artifactUrl":null,"linkKind":null,"linkLabel":null,"linkUrl":null,"scenario":"Google auth callback","issueID":"AUTH-7","retryAttempt":1,"approvalSubject":"Review auth redirect fix","blockerReason":"Needs user sign-off","decisionPrompt":"Merge this fix batch?","issueCount":2,"failedCount":1}"#,
             r#"{"schemaVersion":1,"id":"evt-3","runId":"run-tsk-127","timestamp":"2026-06-10T10:02:00Z","kind":"link.task","status":"succeeded","title":"TSK-127","message":"Task link","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout","taskID":"TSK-127","agentId":null,"agentProvider":null,"agentRole":null,"stepId":null,"stepKind":null,"artifactId":null,"artifactKind":null,"artifactPath":null,"artifactUrl":null,"linkKind":"task","linkLabel":"TSK-127","linkUrl":"https://example.test/task"}"#,
         ]
         .join("\n");
@@ -954,6 +985,21 @@ mod tests {
         let events = parse_orchestration_events_jsonl(&input).unwrap();
         assert_eq!(events[1].issue_count, Some(2));
         assert_eq!(events[1].failed_count, Some(1));
+        assert_eq!(events[1].scenario.as_deref(), Some("Google auth callback"));
+        assert_eq!(events[1].issue_id.as_deref(), Some("AUTH-7"));
+        assert_eq!(events[1].retry_attempt, Some(1));
+        assert_eq!(
+            events[1].approval_subject.as_deref(),
+            Some("Review auth redirect fix")
+        );
+        assert_eq!(
+            events[1].blocker_reason.as_deref(),
+            Some("Needs user sign-off")
+        );
+        assert_eq!(
+            events[1].decision_prompt.as_deref(),
+            Some("Merge this fix batch?")
+        );
         let runs = reduce_orchestration_events(events);
 
         assert_eq!(runs.len(), 1);

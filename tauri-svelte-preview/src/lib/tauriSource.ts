@@ -201,6 +201,12 @@ export type OrchestrationEvent = {
   linkKind: string | null;
   linkLabel: string | null;
   linkUrl: string | null;
+  scenario?: string | null;
+  issueID?: string | null;
+  retryAttempt?: number | null;
+  approvalSubject?: string | null;
+  blockerReason?: string | null;
+  decisionPrompt?: string | null;
   scenarioCount?: number | null;
   issueCount?: number | null;
   testCount?: number | null;

@@ -54,6 +54,7 @@
     orchestrationRunSummaryText,
     orchestrationRunStage,
     orchestrationStatusTone,
+    orchestrationTimelineDetail,
     orchestrationTimelineItems,
     type OrchestrationTimelineItem
   } from '$lib/orchestrationView';
@@ -2031,6 +2032,12 @@
           '--message': 'Needs sign-off before continuing',
           '--approval-count': 1
         })
+    },
+    {
+      id: 'orchestration-copy-e2e-loop-sample-command',
+      label: 'Copy E2E loop sample command',
+      detail: orchestrationEventCommandDetail(),
+      perform: () => copyOrchestrationSampleCommand('run-e2e-loop', 'E2E loop sample')
     },
     ...selectedProjectOrchestrationDecisionQueue.slice(0, 8).map((item) => ({
       id: `run-decision-${item.id}`,
@@ -4177,6 +4184,23 @@
     extraArgs: Record<string, string | number | null | undefined> = {}
   ) {
     await copyActivityCommand(mcbOrchestrationEventCommand(preset, extraArgs), `${label} event command copied`);
+  }
+
+  async function copyOrchestrationSampleCommand(sample: string, label: string) {
+    const taskID = selectedProjectOrchestrationTaskID();
+    const args: Record<string, string | number | null | undefined> = {
+      '--sample': sample,
+      '--run-id': selectedProjectOrchestrationRunID(),
+      '--project-id': selectedProject.id,
+      '--project-name': selectedProject.name,
+      '--project-path': selectedProject.path,
+      '--root-label': selectedProjectPrimaryRepoSummary?.rootLabel ?? formatSourceContextRootLabel(selectedProject.path),
+      '--task-id': taskID
+    };
+    await copyActivityCommand(
+      `cd ${shellQuoteForCommand(macCommandBarRepoPath)} && scripts/mcb-orch ${orchestrationEventCommandArgs(args)}`,
+      `${label} command copied`
+    );
   }
 
   async function copyOrchestrationTaskReference(run: OrchestrationRun) {
@@ -10916,7 +10940,7 @@
                           </span>
                           <div>
                             <strong>{item.title}</strong>
-                            <small>{item.kind} · {item.summary}</small>
+                            <small>{item.kind} · {orchestrationTimelineDetail(item)}</small>
                           </div>
                           <em>{orchestrationTimelineTimeLabel(item)}</em>
                         </div>
