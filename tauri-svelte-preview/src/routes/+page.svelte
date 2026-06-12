@@ -713,12 +713,14 @@
     force?: boolean;
     limit?: number;
     skipTinyIndexRepair?: boolean;
+    preserveSelectedRecord?: boolean;
   };
   type ProjectActivationOptions = {
     projects?: ProjectRoot[];
     forceScan?: boolean;
     scanLimit?: number;
     waitForScan?: boolean;
+    preserveSelectedRecordOnScan?: boolean;
   };
   type SourceCommandPaletteItem = {
     id: string;
@@ -2632,7 +2634,8 @@
         preferredPath,
         'cached source scan',
         cachedScan.truncated,
-        cachedScan.stats ?? null
+        cachedScan.stats ?? null,
+        { preserveSelectedRecord: options.preserveSelectedRecord }
       );
       if (nextSelection) {
         await loadRecord(nextSelection, generation);
@@ -2682,7 +2685,8 @@
         await scanProject(project, preferredPath, {
           force: true,
           limit: Math.max(scanLimit, expandedSourceScanLimit),
-          skipTinyIndexRepair: true
+          skipTinyIndexRepair: true,
+          preserveSelectedRecord: options.preserveSelectedRecord
         });
         return;
       }
@@ -2714,7 +2718,8 @@
         preferredPath,
         options.skipTinyIndexRepair && suspiciousScanResult ? 'tiny source scan' : 'local source scan',
         tauriScan.truncated,
-        tauriScan.stats ?? null
+        tauriScan.stats ?? null,
+        { preserveSelectedRecord: options.preserveSelectedRecord }
       );
 
       if (nextSelection) {
@@ -5075,7 +5080,7 @@
     persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
     fileActionStatus = `Workspace restored: ${snapshot.title}`;
 
-    await activateWorkspaceSnapshotProject(project);
+    await activateWorkspaceSnapshotProject(project, restored.selectedPath);
 
     restoreWorkspaceOpenTabs(project, restored.openPaths, restored.selectedPath);
     if (restored.selectedPath) {
@@ -5197,12 +5202,15 @@
     }
   }
 
-  async function activateWorkspaceSnapshotProject(project: ProjectRoot) {
+  async function activateWorkspaceSnapshotProject(
+    project: ProjectRoot,
+    restoredSelectedPath: string | null
+  ) {
     await activateProject(project, {
-      forceScan: true,
       scanLimit: expandedSourceScanLimit,
       projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots),
-      waitForScan: true
+      waitForScan: false,
+      preserveSelectedRecordOnScan: Boolean(restoredSelectedPath)
     });
   }
 
@@ -6765,7 +6773,8 @@
     preferredPath: string | null | undefined,
     nextRuntime: string,
     truncated = false,
-    stats: SourceScanStats | null = null
+    stats: SourceScanStats | null = null,
+    options: { preserveSelectedRecord?: boolean } = {}
   ): SourceRecord | null {
     records = nextRecords;
     runtime = nextRuntime;
@@ -6777,6 +6786,16 @@
       preferredPath,
       selectedRecord?.path
     );
+    const shouldPreserveSelectedRecord =
+      Boolean(options.preserveSelectedRecord) &&
+      Boolean(preferredPath) &&
+      selectedRecord?.path === preferredPath &&
+      nextSelection?.path !== preferredPath;
+
+    if (shouldPreserveSelectedRecord) {
+      return null;
+    }
+
     selectedRecord = nextSelection;
     selectedSourceLine = null;
     preview = nextSelection ? previewFromContent(nextSelection, '') : null;
@@ -10443,7 +10462,8 @@
 
     const scanCompletion = scanProject(project, selectedSourcePaths[project.id], {
       force: options.forceScan,
-      limit: scanLimit
+      limit: scanLimit,
+      preserveSelectedRecord: options.preserveSelectedRecordOnScan
     })
       .then(() => {
         if (activationGeneration !== projectActivationGeneration) return;

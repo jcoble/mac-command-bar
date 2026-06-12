@@ -1011,10 +1011,26 @@ assert.ok(
   pageSource.includes('void activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit })'),
   'Project switching should schedule an expanded project scan without awaiting it'
 );
-assert.ok(pageSource.includes('waitForScan?: boolean'), 'Project activation should let workspace restore wait for scans explicitly');
+assert.ok(pageSource.includes('waitForScan?: boolean'), 'Project activation should let callers choose whether to wait for scans');
 assert.ok(
-  pageSource.includes('waitForScan: true'),
-  'Workspace snapshot restore should wait for its project scan before reopening saved files'
+  pageSource.includes('preserveSelectedRecordOnScan?: boolean'),
+  'Project activation should let workspace restore preserve restored source selection during background scans'
+);
+assert.ok(
+  pageSource.includes('waitForScan: false'),
+  'Workspace snapshot restore should not block on a full project scan before reopening saved files'
+);
+assert.ok(
+  pageSource.includes('preserveSelectedRecordOnScan: Boolean(restoredSelectedPath)'),
+  'Workspace snapshot restore should keep the restored file selected while background scans complete'
+);
+assert.ok(
+  pageSource.includes('preserveSelectedRecord: options.preserveSelectedRecordOnScan'),
+  'Project activation should pass restored-selection preservation to source scans'
+);
+assert.ok(
+  pageSource.includes('shouldPreserveSelectedRecord'),
+  'Source scans should preserve restored selections when the refreshed index cannot see that path'
 );
 assert.ok(
   pageSource.includes('const activationGeneration = ++projectActivationGeneration'),

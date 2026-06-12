@@ -45,6 +45,7 @@ Completed and committed:
 - Git task ledger rows now show owner and cleanup summaries, stale-clean candidates, backup-needed worktrees, active sessions, saved workspace ownership, runs, and commits without adding persistent panels.
 - Worktree cleanup now understands Git `prunable` and `locked` metadata: missing paths show as metadata-prune review items, locked worktrees block removal, dirty/unmerged worktrees still route to backup/archive guidance, and native remove prunes missing metadata without adding a force-delete path.
 - Conversation workspace restore now treats missing saved worktrees as repairable context drift: rows and command-palette actions copy an audit/recreate plan, and terminal resume copies that plan instead of opening a dead path.
+- Conversation workspace restore now reopens saved files immediately while project indexing runs in the background; background scans preserve the restored file selection if the refreshed index cannot see that path yet.
 - Orchestration event ingest now accepts real-ish agent/orchestrator payloads: snake_case aliases, nested project/task/agent/step/artifact/link/counts objects, event aliases such as `ui_verified`, JSON arrays, JSON envelope events, and JSONL/JSON files via `--json-file`.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
@@ -53,7 +54,7 @@ Current checkpoint:
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
-- Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans and terminal safety. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
+- Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
 
@@ -187,6 +188,7 @@ Work:
 Acceptance:
 - Moving between conversations does not require manually choosing repo, worktree, files, or session.
 - Missing worktree/project is reported clearly with a repair path.
+- Restore should reopen saved files immediately and let indexing refresh in the background without stealing the restored file selection.
 
 Validation:
 - `pnpm test:workspace-snapshot`
