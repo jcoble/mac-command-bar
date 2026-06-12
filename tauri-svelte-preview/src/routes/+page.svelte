@@ -2843,6 +2843,36 @@
     return `Scanning ${project.name} up to ${expandedSourceScanLimit.toLocaleString()} source files`;
   }
 
+  function projectSetupNoticeText() {
+    const scanCap = `${expandedSourceScanLimit.toLocaleString()} file scan cap`;
+    if (projectRootValidating) return `Checking project root · ${scanCap}`;
+
+    if (selectedProjectGitRootSuggestion) {
+      return `Inside Git repo · detected root ${formatSourceContextRootLabel(selectedProjectGitRootSuggestion)} · ${scanCap}`;
+    }
+
+    const rootLabel = selectedProjectRootValidation
+      ? projectRootValidationSummary(selectedProjectRootValidation)
+      : 'Root not checked';
+    const scanLabel = scanning && sourceScanProgress
+      ? `Scanning ${sourceScanProgress.matchedFiles.toLocaleString()} files / ${sourceScanProgress.visitedEntries.toLocaleString()} entries`
+      : selectedProjectScanEvidence.label;
+
+    return [rootLabel, scanLabel, scanCap].filter(Boolean).join(' · ');
+  }
+
+  function projectSetupNoticeTitle() {
+    const validation = selectedProjectRootValidation;
+    return [
+      `Project: ${selectedProject.name}`,
+      `Path: ${selectedProject.path}`,
+      validation ? `Validation: ${validation.message}` : 'Validation: not checked',
+      selectedProjectGitRootSuggestion ? `Detected Git root: ${selectedProjectGitRootSuggestion}` : '',
+      `Scan mode: ${selectedProjectScanEvidence.label}`,
+      `Scan limit: ${expandedSourceScanLimit.toLocaleString()} files`
+    ].filter(Boolean).join('\n');
+  }
+
   async function indexProjectsInBackground(projects: ProjectRoot[]) {
     const projectsToIndex = selectBackgroundIndexProjects(
       projects,
@@ -11045,6 +11075,9 @@
           </button>
         {/if}
       </div>
+      <div class="project-setup-row" title={projectSetupNoticeTitle()} aria-live={scanning ? 'polite' : 'off'}>
+        <span>{projectSetupNoticeText()}</span>
+      </div>
 
       {#if scanning && sourceScanProgress}
         <div class="scan-progress" aria-live="polite" data-progress-event={sourceScanProgressEventName}>
@@ -16737,6 +16770,24 @@
   }
 
   .project-path-row span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-setup-row {
+    display: block;
+    min-height: 18px;
+    margin: -1px 0 4px;
+    color: #96a4a0;
+    font-size: 10px;
+    font-weight: 760;
+    line-height: 1.25;
+  }
+
+  .project-setup-row span {
+    display: block;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

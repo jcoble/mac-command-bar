@@ -88,6 +88,8 @@ assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer',
 assertDeclaration('.bottom-dock-resizer', 'cursor: row-resize');
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
+assertDeclaration('.project-setup-row', 'min-height: 18px');
+assertDeclaration('.project-setup-row span', 'text-overflow: ellipsis');
 assertDeclaration('.workspace-snapshot-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
 assertDeclaration('.workspace-snapshot-readiness', 'display: inline-flex');
 assertDeclaration('.workspace-snapshot-readiness.ready', 'color: #76e6cf');
@@ -430,6 +432,10 @@ assert.ok(pageSource.includes('function shouldMigrateSourceLayout'), 'Source she
 assert.ok(pageSource.includes('function persistSourceLayoutVersion'), 'Source shell should persist layout migration state');
 assert.ok(pageSource.includes('function resetProjectScanCache'), 'Source shell should reset stale project indexes');
 assert.ok(pageSource.includes('function sourceOnboardingScanStatus'), 'Project onboarding should explain expanded source scans');
+assert.ok(pageSource.includes('function projectSetupNoticeText'), 'Project onboarding should expose a compact root/scan notice');
+assert.ok(pageSource.includes('function projectSetupNoticeTitle'), 'Project onboarding should expose full root/scan detail as hover text');
+assert.ok(pageSource.includes('class="project-setup-row"'), 'Project controls should render the compact setup notice');
+assert.ok(pageSource.includes('Inside Git repo · detected root'), 'Project setup notice should explain nested Git root detection');
 assert.ok(pageSource.includes('function clearSourceRecordsForIncomingProject'), 'Source shell should clear stale records when switching roots');
 assert.ok(pageSource.includes('function sourceRecordBelongsToProject'), 'Source shell should guard scan records by project path');
 assert.ok(pageSource.includes('function activateDuplicateProjectRoot'), 'Duplicate project adds should activate the existing root');

@@ -39,6 +39,7 @@ Completed and committed:
 - Hidden dock panels now expose compact restore chips, so closed panes are recoverable without opening the command palette first.
 - Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
 - Project activation scans now share an explicit cache/missing/force/tiny-index plan, so auto-scans explain why they are running.
+- Project controls now show a compact setup notice with validation state, detected Git root, scan evidence, and scan cap so add/switch/restore does not feel mysterious.
 - Editor LSP recovery actions are visible in the editor toolbar: retry status, copy selected-file status, and copy install command when fallback is active.
 - Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Git history rows now use normalized ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits while keeping raw refs in copyable detail/handoff text.
@@ -343,16 +344,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 1.7, session restore/resume safety polish.
+Last checkpoint: Priority 1.8, project onboarding/scan clarity.
 
 - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: agent/session rows now show saved-workspace readiness outside the Conversations pane; terminal launchpad agent shortcuts show whether there is a saved workspace; copied session plans are now explicit focus handoffs with provider, model, project, terminal app, saved cwd/worktree/branch, selected file, open tab count, restore readiness, and repair detail when relevant. Agents rows now expose direct restore/open and missing-worktree repair actions. Terminal resume actions now copy the workspace repair plan instead of launching an embedded/external terminal when the saved worktree is missing.
+- Behavior delivered: project controls now show a compact setup notice under the project path with validation state, detected Git root, active scan evidence, scan progress, and the current scan cap. The full hover text includes the selected project path, root validation message, detected Git root, scan mode, and limit. The source UI contract test now guards the notice and its compact no-wrap behavior.
 - Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
-- Remaining risk: no Browser/Playwright proof was run for this slice, so visual density of the added agent-row status should still be checked in the real Tauri/webview app.
+- Remaining risk: no Browser/Playwright proof was run for this slice, so the compact notice should still be checked in the real Tauri/webview app while adding a large project.
 
-Next implementation slice: Priority 1.8 project onboarding/scan clarity.
+Next implementation slice: Priority 0.3/3.9 real Tauri validation for source browser, scan flow, and LSP actions.
 
 Definition of done for the next slice:
-- Add-project and restore flows should clearly report which root is being indexed and whether it was normalized to a Git root.
-- The source tree should explain scan limits/progress/cancel state without feeling mysterious.
-- Automatic repair for older nested project roots should produce a visible status line, not only internal state changes.
+- Run the real Tauri app path instead of only browser preview.
+- Verify project switch/add scan visibility, C#/TypeScript LSP status, source read/write, and command-palette actions in the native shell where practical.
+- Add or adjust targeted smoke tests for any native-only behavior gap found.
