@@ -36,6 +36,16 @@ Completed and committed:
 - Embedded terminal exists as a basic PTY-backed surface.
 - Workspace restore snapshots preserve project, worktree, branch, selected file/line, open tabs, view mode, terminal choice, browser URL, and layout state.
 - Saved nested project roots now auto-repair to the real Git root before scan.
+- Hidden dock panels now expose compact restore chips, so closed panes are recoverable without opening the command palette first.
+- Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
+- Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
+
+Current checkpoint:
+
+- Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
+- Priority 0.2 project scan stability is implemented for nested-root repair and scan evidence. Remaining work is manual validation on more real project roots and any follow-up from user testing.
+- Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
+- Priority 1 Git/worktree foundations are already implemented. Remaining work is polish, larger graph UX, and tighter task/Notion display, not first scaffolding.
 
 ## Priority 0: Make The App Usable As A Workspace
 
@@ -120,12 +130,8 @@ Target result:
 - The app shows what changed, where it belongs, and what Notion/task branch it maps to.
 
 Work:
-- Add a Git history pane with branch graph, commits, ahead/behind, tags, and current HEAD.
-- Show staged and unstaged files separately.
-- Show diff details with file selection.
-- Extract task ids from branches and commits.
-- Display task links when known.
-- Add commit-message entry with validation and safe commit flow.
+- Existing: Git history pane, graph markers, commit selection, branch health chips, staged/unstaged/untracked groups, selected-file diff, task extraction, Notion task links/fallback search, commit-message entry, fetch/pull/push/stage/unstage/commit.
+- Next: improve graph density for larger histories, add clearer current HEAD/upstream markers, add richer selected-commit/task detail, and keep actions tucked behind compact menus/palette entries where possible.
 
 Acceptance:
 - User can tell which repo/worktree is dirty, for how long, and which task it belongs to.
@@ -143,11 +149,8 @@ Target result:
 - Worktrees stop being mystery folders and become manageable work contexts.
 
 Work:
-- Show all known worktrees per repo with branch, task id, dirty state, last activity, owner/session hints, and safety status.
-- Classify worktrees: active, stale clean, stale dirty, unmerged, missing path, blocked.
-- Provide actions: open in source browser, open terminal, launch/resume agent, copy cleanup command, backup dirty work, remove clean worktree, prune.
-- For dirty worktrees, provide backup patch/stash/branch guidance before cleanup.
-- Link worktrees to saved workspace snapshots and conversation/session history.
+- Existing: worktree list, branch/task/dirty/unmerged/activity fields, active-session blocking, safety status, decision queue, copy cleanup plan, backup command, remove clean worktree, open in source browser, open external/embedded terminal, task links.
+- Next: link worktrees more explicitly to saved workspace snapshots and conversation/session history, add better owner/session labels, and surface stale-clean cleanup candidates without increasing visual bulk.
 
 Acceptance:
 - User can decide what can be deleted, what needs review, and what is actively being used.
@@ -188,11 +191,8 @@ Target result:
 - Long agent loops show live state instead of opaque terminal output.
 
 Work:
-- Expand the event model for run, scenario, agent, task, issue, fix, test, retry, artifact, approval, and blocker events.
-- Show a timeline with current step, completed steps, retries, delegated agents, artifacts, and pass/fail counts.
-- Add tally cards for auto-resolved issues, UI-tested fixes, retests, failures, and user-approval items.
-- Support links to source files, diffs, artifacts, logs, browser screenshots, and Notion tasks.
-- Provide CLI/event ingestion that skills such as `/run-e2e-tests` can call.
+- Existing: orchestration event CLI, native event store, run cards, timeline helpers, artifacts, task links, and copyable event commands.
+- Next: expand the event model for scenario, agent, issue, fix, UI test, retry, approval, and blocker events; show live tallies for found/fixed/retested/needs-signoff; make current agent activity readable without opening transcripts.
 
 Acceptance:
 - User can answer "what is this agent doing now?" without reading the whole transcript.
@@ -331,11 +331,11 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Next implementation slice: Priority 0.1, real docking and pane layout.
+Next implementation slice: Priority 2.7, orchestration timeline detail.
 
 Definition of done for the next slice:
-- A persisted dock model exists.
-- Main UI uses dock zones instead of fixed dashboard placement.
-- At least files, context cards, Git, and orchestration panes can be closed/restored.
-- Editor gets most available space in wide and half-width layouts.
-- Tests and screenshots validate no obvious overlap.
+- Event schema can represent scenario, agent, issue, fix, UI-test, retry, approval, blocker, and artifact events.
+- View model groups those events into current activity, tally counts, timeline rows, and sign-off queue.
+- UI exposes those details in the Runs pane without making the editor layout wider or noisier.
+- `scripts/mcb-orch` can emit at least one realistic `/run-e2e-tests` style scenario loop sample.
+- Tests cover event ingestion, view grouping, and compact UI hooks.
