@@ -9655,6 +9655,68 @@
     return createProjectRoot(project.name, gitRoot);
   }
 
+  async function repairSavedNestedProjectRoot(
+    project: ProjectRoot,
+    validation: ProjectRootValidationResult | null | false,
+    projects: ProjectRoot[],
+    scanLimit: number
+  ) {
+    if (!validation) return false;
+
+    const gitRoot = projectRootGitRootSuggestion(project, validation);
+    if (!gitRoot) return false;
+
+    const normalizedProjectPath = normalizeProjectPath(project.path);
+    const savedCustomProject = customProjectRoots.find(
+      (candidate) =>
+        candidate.id === project.id ||
+        normalizeProjectPath(candidate.path) === normalizedProjectPath
+    );
+    if (!savedCustomProject) return false;
+
+    const normalizedGitRoot = normalizeProjectPath(gitRoot);
+    const duplicateProject = projects.find(
+      (candidate) =>
+        candidate.id !== project.id &&
+        normalizeProjectPath(candidate.path) === normalizedGitRoot
+    );
+    const repairedProject = duplicateProject ?? createProjectRoot(project.name, normalizedGitRoot);
+    const nextCustomProjectRoots = mergeProjectRoots(
+      [],
+      [
+        ...customProjectRoots.filter((candidate) => {
+          const candidatePath = normalizeProjectPath(candidate.path);
+          return (
+            candidate.id !== savedCustomProject.id &&
+            candidatePath !== normalizedProjectPath &&
+            candidatePath !== normalizedGitRoot
+          );
+        }),
+        ...(duplicateProject ? [] : [repairedProject])
+      ]
+    );
+    const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
+    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    if (nextSelectedSourcePaths[project.id] && !nextSelectedSourcePaths[repairedProject.id]) {
+      nextSelectedSourcePaths[repairedProject.id] = nextSelectedSourcePaths[project.id];
+    }
+    delete nextSelectedSourcePaths[project.id];
+
+    customProjectRoots = nextCustomProjectRoots;
+    selectedSourcePaths = nextSelectedSourcePaths;
+    persistCustomProjectRoots(nextCustomProjectRoots);
+    persistSelectedSourcePaths(nextSelectedSourcePaths);
+    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+    fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
+
+    await activateProject(repairedProject, {
+      forceScan: true,
+      scanLimit,
+      projects: nextProjectOptions
+    });
+    return true;
+  }
+
   async function useValidatedGitRootForSelectedProject() {
     let validation = selectedProjectRootValidation;
     if (!projectRootGitRootSuggestion(selectedProject, validation)) {
@@ -9718,7 +9780,17 @@
     if (options.forceScan) {
       resetProjectOnboardingScanState(project);
     }
-    void validateProjectRootForProject(project);
+
+    const validation = await validateProjectRootForProject(project);
+    if (activationGeneration !== projectActivationGeneration) return;
+    const repairedNestedRoot = await repairSavedNestedProjectRoot(
+      project,
+      validation,
+      projects,
+      scanLimit
+    );
+    if (repairedNestedRoot || activationGeneration !== projectActivationGeneration) return;
+
     void loadProjectGitStatus(project);
     void loadGitCommitHistory(project);
     void loadRuntimeContexts(projects);
