@@ -395,9 +395,15 @@
     worktreeCount: number;
     blockedWorktreeCount: number;
     readyWorktreeCount: number;
+    cleanupCandidateCount: number;
+    staleCleanWorktreeCount: number;
+    backupRequiredWorktreeCount: number;
     activeSessionCount: number;
+    savedWorkspaceCount: number;
     commitCount: number;
     runCount: number;
+    ownerSummary: string;
+    cleanupSummary: string;
     nextAction: string;
     tone: GitTaskLedgerTone;
     primaryWorktree: ProjectWorktree | null;
@@ -3816,10 +3822,35 @@
         const blockedWorktreeCount = worktreeSafetySummaries.filter((summary) => summary.kind === 'blocked').length;
         const readyWorktreeCount = worktreeSafetySummaries.filter((summary) => summary.kind === 'ready').length;
         const protectedWorktreeCount = worktreeSafetySummaries.filter((summary) => summary.kind === 'protected').length;
+        const cleanupCandidateCount = readyWorktreeCount;
+        const staleCleanWorktreeCount = worktreeSafetySummaries.filter(
+          (summary) => summary.kind === 'ready' && summary.ageBucket === 'stale'
+        ).length;
+        const backupRequiredWorktreeCount = worktreeSafetySummaries.filter(
+          (summary) => summary.kind === 'blocked' && summary.activeSessionCount === 0
+        ).length;
         const activeSessionCount = worktreeSafetySummaries.reduce(
           (total, summary) => total + summary.activeSessionCount,
           0
         );
+        const savedWorkspaceCount = worktrees.reduce(
+          (total, worktree) => total + worktreeWorkspaceSnapshots(worktree, 10).length,
+          0
+        );
+        const ownerSummary = gitTaskLedgerOwnerSummary({
+          activeSessionCount,
+          savedWorkspaceCount,
+          worktreeCount: worktrees.length
+        });
+        const cleanupSummary = gitTaskLedgerCleanupSummary({
+          activeSessionCount,
+          backupRequiredWorktreeCount,
+          blockedWorktreeCount,
+          cleanupCandidateCount,
+          protectedWorktreeCount,
+          staleCleanWorktreeCount,
+          worktreeCount: worktrees.length
+        });
         const nextAction = gitTaskLedgerNextAction({
           activeSessionCount,
           blockedWorktreeCount,
@@ -3846,9 +3877,15 @@
           worktreeCount: worktrees.length,
           blockedWorktreeCount,
           readyWorktreeCount,
+          cleanupCandidateCount,
+          staleCleanWorktreeCount,
+          backupRequiredWorktreeCount,
           activeSessionCount,
+          savedWorkspaceCount,
           commitCount: commits.length,
           runCount: runs.length,
+          ownerSummary,
+          cleanupSummary,
           nextAction,
           tone,
           primaryWorktree: worktrees[0] ?? null,
@@ -3856,6 +3893,48 @@
         };
       })
       .sort((left, right) => gitTaskLedgerPriority(left) - gitTaskLedgerPriority(right));
+  }
+
+  function gitTaskLedgerOwnerSummary(input: {
+    activeSessionCount: number;
+    savedWorkspaceCount: number;
+    worktreeCount: number;
+  }) {
+    if (input.activeSessionCount > 0) {
+      return `${input.activeSessionCount} active ${input.activeSessionCount === 1 ? 'session' : 'sessions'}`;
+    }
+
+    if (input.savedWorkspaceCount > 0) {
+      return `${input.savedWorkspaceCount} saved ${input.savedWorkspaceCount === 1 ? 'workspace' : 'workspaces'}`;
+    }
+
+    if (input.worktreeCount > 0) return 'no saved workspace';
+    return 'no worktree';
+  }
+
+  function gitTaskLedgerCleanupSummary(input: {
+    activeSessionCount: number;
+    backupRequiredWorktreeCount: number;
+    blockedWorktreeCount: number;
+    cleanupCandidateCount: number;
+    protectedWorktreeCount: number;
+    staleCleanWorktreeCount: number;
+    worktreeCount: number;
+  }) {
+    if (input.activeSessionCount > 0) return 'session-owned';
+    if (input.backupRequiredWorktreeCount > 0) {
+      return `${input.backupRequiredWorktreeCount} need backup`;
+    }
+    if (input.staleCleanWorktreeCount > 0) {
+      return `${input.staleCleanWorktreeCount} stale-clean`;
+    }
+    if (input.cleanupCandidateCount > 0) {
+      return `${input.cleanupCandidateCount} clean ${input.cleanupCandidateCount === 1 ? 'candidate' : 'candidates'}`;
+    }
+    if (input.blockedWorktreeCount > 0) return 'blocked cleanup';
+    if (input.protectedWorktreeCount > 0) return 'primary checkout';
+    if (input.worktreeCount > 0) return 'review ownership';
+    return 'no cleanup target';
   }
 
   function gitTaskLedgerNextAction(input: {
@@ -3895,9 +3974,14 @@
       `Task: ${row.taskID}`,
       taskUrl ? `Task link: ${taskUrl}` : '',
       `Next: ${row.nextAction}`,
+      `Owner: ${row.ownerSummary}`,
+      `Cleanup: ${row.cleanupSummary}`,
       `Sources: ${row.sourceSummary}`,
       `Details: ${row.detailSummary}`,
       `Worktrees: ${row.worktreeCount} (${row.blockedWorktreeCount} blocked, ${row.readyWorktreeCount} ready, ${row.activeSessionCount} active sessions)`,
+      `Cleanup candidates: ${row.cleanupCandidateCount} (${row.staleCleanWorktreeCount} stale-clean)`,
+      `Backup required: ${row.backupRequiredWorktreeCount}`,
+      `Saved workspaces: ${row.savedWorkspaceCount}`,
       `Runs: ${row.runCount}`,
       `Commits: ${row.commitCount}`,
       row.primaryWorktree ? `Primary worktree: ${row.primaryWorktree.branch} · ${row.primaryWorktree.path}` : '',
@@ -11868,7 +11952,7 @@
                       {/if}
                       <span>{row.nextAction}</span>
                     </strong>
-                    <small>{row.sourceSummary} · {row.detailSummary}</small>
+                    <small>{row.sourceSummary} · {row.ownerSummary} · {row.cleanupSummary}</small>
                   </div>
                   <div class="activity-task-ledger-chips" aria-label={`${row.taskID} task metadata`}>
                     {#if row.worktreeCount > 0}
@@ -11880,8 +11964,17 @@
                     {#if row.readyWorktreeCount > 0}
                       <span class="task-ledger-chip ready">ready {row.readyWorktreeCount}</span>
                     {/if}
+                    {#if row.staleCleanWorktreeCount > 0}
+                      <span class="task-ledger-chip stale">stale {row.staleCleanWorktreeCount}</span>
+                    {/if}
+                    {#if row.backupRequiredWorktreeCount > 0}
+                      <span class="task-ledger-chip backup">backup {row.backupRequiredWorktreeCount}</span>
+                    {/if}
                     {#if row.activeSessionCount > 0}
                       <span class="task-ledger-chip active">active {row.activeSessionCount}</span>
+                    {/if}
+                    {#if row.savedWorkspaceCount > 0}
+                      <span class="task-ledger-chip saved">saved {row.savedWorkspaceCount}</span>
                     {/if}
                     {#if row.runCount > 0}
                       <span class="task-ledger-chip">runs {row.runCount}</span>
@@ -16101,6 +16194,24 @@
     color: #7ff0df;
     border-color: rgba(92, 226, 207, 0.26);
     background: rgba(92, 226, 207, 0.08);
+  }
+
+  .task-ledger-chip.stale {
+    color: #7ff0df;
+    border-color: rgba(92, 226, 207, 0.22);
+    background: rgba(92, 226, 207, 0.065);
+  }
+
+  .task-ledger-chip.saved {
+    color: #8fe7dc;
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.055);
+  }
+
+  .task-ledger-chip.backup {
+    color: #e6c170;
+    border-color: rgba(216, 170, 85, 0.22);
+    background: rgba(216, 170, 85, 0.075);
   }
 
   .activity-commit-meta {

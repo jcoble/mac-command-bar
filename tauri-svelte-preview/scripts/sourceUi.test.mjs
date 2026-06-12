@@ -1623,8 +1623,16 @@ assert.ok(
   pageSource.includes('function buildGitTaskLedgerRows'),
   'Git task ledger should compose task, worktree, run, and commit metadata'
 );
+assert.ok(pageSource.includes('function gitTaskLedgerOwnerSummary'), 'Git task ledger should summarize session/workspace ownership');
+assert.ok(pageSource.includes('function gitTaskLedgerCleanupSummary'), 'Git task ledger should summarize cleanup status');
 assert.ok(pageSource.includes('function gitTaskLedgerText'), 'Git task ledger should build a copyable handoff');
 assert.ok(pageSource.includes('function copyGitTaskLedger'), 'Git task ledger should expose quick copy');
+assert.ok(pageSource.includes('cleanupCandidateCount'), 'Git task ledger rows should count cleanup candidates');
+assert.ok(pageSource.includes('staleCleanWorktreeCount'), 'Git task ledger rows should count stale clean worktrees');
+assert.ok(pageSource.includes('backupRequiredWorktreeCount'), 'Git task ledger rows should count backup-required worktrees');
+assert.ok(pageSource.includes('savedWorkspaceCount'), 'Git task ledger rows should count saved workspace ownership');
+assert.ok(pageSource.includes('row.ownerSummary'), 'Git task ledger UI should render owner summaries');
+assert.ok(pageSource.includes('row.cleanupSummary'), 'Git task ledger UI should render cleanup summaries');
 assert.ok(pageSource.includes('function gitTaskSourceGroupText'), 'Git task source rows should build a copyable handoff');
 assert.ok(pageSource.includes('function copyGitTaskSourceGroup'), 'Git task source rows should expose quick copy');
 assert.ok(pageSource.includes('formatGitTaskSourceGroupHandoff'), 'Git task source rows should use shared handoff formatting');
@@ -1778,6 +1786,9 @@ assertDeclaration('.git-task-source-row', 'grid-template-columns: auto minmax(0,
 assertDeclaration('.activity-task-ledger-row', 'grid-template-columns: minmax(0, 1fr) auto auto');
 assertDeclaration('.activity-task-ledger-chips', 'display: inline-flex');
 assertDeclaration('.task-ledger-chip', 'text-overflow: ellipsis');
+assertDeclaration('.task-ledger-chip.stale', 'color: #7ff0df');
+assertDeclaration('.task-ledger-chip.saved', 'color: #8fe7dc');
+assertDeclaration('.task-ledger-chip.backup', 'color: #e6c170');
 assertDeclaration('.git-branch-health-strip', 'display: grid');
 assertDeclaration('.git-branch-health-chip', 'grid-template-columns: auto minmax(0, 1fr)');
 assertDeclaration('.git-branch-health-chip span', 'text-overflow: ellipsis');
