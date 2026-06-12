@@ -11,6 +11,7 @@
     "check": "svelte-kit sync && tsc --noEmit",
     "orch:event": "node scripts/orchestrationEvent.mjs",
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
+    "test:agent-session-focus": "node --experimental-strip-types scripts/agentSessionFocus.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
     "test:orchestration-view": "node --experimental-strip-types scripts/orchestrationView.test.mjs",
     "test:worktree-safety": "node --experimental-strip-types scripts/worktreeSafety.test.mjs",

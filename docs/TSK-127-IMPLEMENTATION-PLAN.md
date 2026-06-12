@@ -36,6 +36,7 @@ Completed and committed:
 - Embedded terminal exists as a basic PTY-backed surface.
 - Workspace restore snapshots preserve project, worktree, branch, selected file/line, open tabs, view mode, terminal choice, browser URL, and layout state.
 - Embedded terminal sessions now resolve matching workspace snapshots, show saved-workspace readiness inline, expose copyable focus plans, and can restore/attach through compact command-palette actions.
+- Agent/session rows now show compact recommended focus lanes for reattach, repair, restore, resume, files-only, and save-workspace states across the activity list, context card, and terminal dock.
 - Saved nested project roots now auto-repair to the real Git root before scan.
 - Hidden dock panels now expose compact restore chips, so closed panes are recoverable without opening the command palette first.
 - Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
@@ -66,6 +67,7 @@ Current checkpoint:
 - Priority 1.5 worktree cleanup confidence polish is implemented enough for iteration: shared decision-lane labels distinguish keep-main, active-session blocked, backup dirty work, save unmerged commits, stale clean cleanup, missing metadata prune, locked, and generic review states across the Worktrees activity list, decision queue, and safety context list.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, JSON/JSONL file ingestion, selected import paths, import command copy, and native heartbeat recording are covered by tests.
 - Priority 2.8 orchestration live digest polish is implemented enough for iteration: run cards and compact context rows now surface the highest-signal live ingest items as tiny chips for sign-off decisions, retest loops, handoffs/artifacts, UI proof, resolved fixes, and delegated fix batches without adding a watcher or persistent chrome.
+- Priority 2.9 agent/session focus action polish is implemented enough for iteration: a shared focus-lane helper now labels the safest next action for each session, and conversation rows, agent rows, the compact agent context card, and the terminal dock show those lanes without adding more persistent toolbar chrome.
 - Priority 3.9 LSP recovery and command depth are implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, local drawer actions cover problems/symbols/definitions/references, completions/signature help are tucked into palette/menu surfaces, copyable intelligence briefs exist, and C#/TypeScript native LSP smoke tests pass.
 - Priority 4.11 terminal session restore polish is implemented enough for iteration: embedded PTYs can copy focus plans, restore matching workspace snapshots, attach directly when no snapshot exists, and route missing-worktree restores to the same repair-plan guard as conversation snapshots.
 - Priority 4.13 clipboard paste cleanup utility polish is implemented enough for iteration: cleaned output and reply drafts are saved to capped local history on copy, recent items render as compact restore/copy chips, history can be cleared, and Cmd+K exposes restore/copy/clear actions.
@@ -234,9 +236,9 @@ Target result:
 - Clicking a session gets the user back to the right terminal/app/context.
 
 Work:
-- Improve Codex, Claude, and CMUX session identity.
-- Add focus/resume commands for Warp, Ghostty, Terminal, and embedded terminal where possible.
-- Show session age, cwd, branch, worktree, status, active command, and last activity.
+- Existing: Codex, Claude, and CMUX session rows, workspace snapshots, repair-plan guards for missing worktrees, external terminal resume, embedded terminal resume/attach, copyable focus plans, shell resume command copy, and compact recommended focus lanes for reattach/repair/restore/resume/files-only/save states.
+- Next: improve native session identity and app-focus commands for Warp, Ghostty, Terminal, and CMUX where those apps expose stable targets.
+- Continue showing session age, cwd, branch, worktree, status, active command, and last activity.
 - Avoid paid Warp agent features; use Warp only as a terminal target.
 
 Acceptance:
@@ -356,17 +358,17 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 2.8, orchestration live digest polish.
+Last checkpoint: Priority 2.9, agent/session focus action polish.
 
-- Changed files: `tauri-svelte-preview/src/lib/orchestrationView.ts`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/orchestrationView.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: orchestration runs now derive compact live digest items from attention queues and timeline events, then render them on run cards and compact context rows so sign-off needs, retests, handoffs, UI proof, resolved fixes, and delegated fix batches stay visible without widening the pane.
-- Validation: `pnpm test:orchestration-view`; `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
+- Changed files: `tauri-svelte-preview/src/lib/agentSessionFocus.ts`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/agentSessionFocus.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/package.json`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: agent and conversation rows now derive a shared recommended focus lane, showing whether the next safe action is reattach, repair, restore, resume, files-only restore, or save workspace; the compact agent context card can run the recommended action through the existing guarded resume/repair/restore paths.
+- Validation: `pnpm test:agent-session-focus`; `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
 - Remaining risk: manual visual validation in the real Tauri app was not run for this slice.
 
-Next implementation slice: Priority 8.1 agent/session focus action polish.
+Next implementation slice: Priority 0.2 project scan/add-project hardening and hands-on validation.
 
 Definition of done for the next slice:
-- Tighten session identity and focus/resume commands for Codex, Claude, CMUX, Warp, Ghostty, Terminal, and embedded terminal surfaces where the current app can detect enough context.
-- Add compact copyable focus plans and command-palette actions for session resume/focus without exposing noisy transcript snippets as titles.
-- Keep paid Warp agent features out of scope; Warp remains a terminal target only.
-- Validate with focused session/terminal tests where available, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, and `git diff --check`.
+- Reproduce and fix the "only two files indexed" failure path for newly added projects or nested roots.
+- Make add/switch/project activation scan once automatically when the cache is missing or stale, with clear scan evidence and root labels.
+- Keep scan limits responsive, but make the default large enough for real project browsing.
+- Validate with source data/local source tests, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, and a real Tauri/manual scan pass if safe.

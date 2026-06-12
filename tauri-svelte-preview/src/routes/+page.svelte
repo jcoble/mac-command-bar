@@ -43,6 +43,7 @@
     type PasteCleanupHistoryItem,
     type PasteCleanupMode
   } from '$lib/pasteCleanup';
+  import { agentSessionFocusLane, type AgentSessionFocusLane } from '$lib/agentSessionFocus';
   import {
     orchestrationAgentActivityItems,
     orchestrationArtifactChips,
@@ -6470,6 +6471,22 @@
     return copyActivityCommand(agentSessionResumeShellCommand(session), 'Shell resume command copied');
   }
 
+  function runAgentSessionFocusLane(session: AgentSession, lane: AgentSessionFocusLane) {
+    switch (lane.action) {
+      case 'repair':
+        return copyAgentSessionWorkspaceRepairPlan(session);
+      case 'restore':
+      case 'files-only':
+        return openAgentSessionWorkspace(session);
+      case 'reattach':
+      case 'resume':
+        return resumeAgentSessionEmbeddedTerminal(session);
+      case 'save-workspace':
+        captureAgentSessionWorkspaceSnapshot(session);
+        return;
+    }
+  }
+
   function terminalDockSummary() {
     const parts = [
       embeddedTerminalSession ? 'embedded live' : sourceTerminalApp,
@@ -12593,6 +12610,7 @@
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                 {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
+                {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
                 <div
                   class="activity-session-row conversation-session-row"
                   class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}
@@ -12616,6 +12634,14 @@
                           {sessionReadiness.label} · {sessionReadiness.detail}
                         </span>
                       {/if}
+                      <span
+                        class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
+                        aria-label="Recommended session focus action"
+                        title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
+                      >
+                        <em>{sessionFocusLane.label}</em>
+                        <strong>{sessionFocusLane.detail}</strong>
+                      </span>
                     </div>
                   </button>
                   <div class="activity-row-actions" aria-label="Conversation actions">
@@ -12746,6 +12772,7 @@
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'agent'))}
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                 {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
+                {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
                 <div class="activity-session-row" title={agentSessionResumePlan(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -12764,6 +12791,14 @@
                         No saved workspace
                       </span>
                     {/if}
+                    <span
+                      class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
+                      aria-label="Recommended session focus action"
+                      title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
+                    >
+                      <em>{sessionFocusLane.label}</em>
+                      <strong>{sessionFocusLane.detail}</strong>
+                    </span>
                   </div>
                   <div class="activity-row-actions" aria-label="Agent actions">
                     <button
@@ -13942,12 +13977,25 @@
         {#if selectedProjectAgentSessions.length > 0}
           <div class="agent-session-list">
             {#each selectedProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'context'))}
+              {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
+              {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
+              {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
               <div class="agent-session-row" title={agentSessionResumePlan(session)}>
                 <span class="agent-provider-badge">{session.provider}</span>
                 <strong>{session.title}</strong>
                 <span>{agentSessionProjectLabel(session)}</span>
                 {#if session.model}<span>{agentSessionModelLabel(session)}</span>{/if}
                 <small>{agentSessionActivityLabel(session)}</small>
+                <button
+                  type="button"
+                  class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
+                  aria-label="Recommended session focus action"
+                  title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
+                  onclick={() => runAgentSessionFocusLane(session, sessionFocusLane)}
+                >
+                  <em>{sessionFocusLane.label}</em>
+                  <strong>{sessionFocusLane.detail}</strong>
+                </button>
               </div>
             {/each}
           </div>
@@ -15805,11 +15853,20 @@
                 {#each selectedProjectAgentSessions.slice(0, 3) as session, index (agentSessionRowKey(session, index, 'terminal'))}
                   {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                   {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
+                  {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
                   <div class="terminal-launchpad-row terminal-agent-row" title={agentSessionResumePlan(session)}>
                     <span class="agent-provider-badge">{session.provider}</span>
                     <div>
                       <strong>{session.title}</strong>
                       <small>{agentSessionProjectLabel(session)} · {sessionReadiness?.label ?? 'No saved workspace'}</small>
+                      <span
+                        class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
+                        aria-label="Recommended session focus action"
+                        title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
+                      >
+                        <em>{sessionFocusLane.label}</em>
+                        <strong>{sessionFocusLane.detail}</strong>
+                      </span>
                     </div>
                     <button
                       type="button"
@@ -20121,7 +20178,9 @@
   }
 
   .agent-session-row {
-    grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 0.72fr) minmax(0, 1fr);
+    grid-template-columns:
+      auto minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.78fr) minmax(0, 0.64fr)
+      minmax(0, 0.95fr);
   }
 
   .worktree-context-row {
@@ -20628,6 +20687,82 @@
     font-size: 10px;
     font-style: normal;
     font-weight: 720;
+  }
+
+  .agent-session-focus-lane {
+    display: inline-grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 18px;
+    padding: 0 5px;
+    overflow: hidden;
+    color: #9fb4af;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  button.agent-session-focus-lane {
+    width: 100%;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  button.agent-session-focus-lane:hover,
+  button.agent-session-focus-lane:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.34);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .agent-session-focus-lane em,
+  .agent-session-focus-lane strong {
+    min-width: 0;
+    overflow: hidden;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-session-focus-lane em {
+    color: inherit;
+    font-size: 8px;
+    font-style: normal;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .agent-session-focus-lane strong {
+    color: inherit;
+    font-size: 8px;
+    font-weight: 820;
+  }
+
+  .agent-session-focus-lane.ready {
+    color: #76e6cf;
+    border-color: rgba(92, 226, 207, 0.2);
+    background: rgba(92, 226, 207, 0.075);
+  }
+
+  .agent-session-focus-lane.warning {
+    color: #e1bd76;
+    border-color: rgba(216, 170, 85, 0.22);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .agent-session-focus-lane.blocked {
+    color: #ffaaa5;
+    border-color: rgba(255, 112, 112, 0.24);
+    background: rgba(255, 112, 112, 0.08);
+  }
+
+  .agent-session-focus-lane.neutral {
+    color: #9fb4af;
   }
 
   .tab-strip {

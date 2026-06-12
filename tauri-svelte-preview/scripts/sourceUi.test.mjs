@@ -742,6 +742,9 @@ assert.ok(pageSource.includes('agent-resume-${session.provider}-${session.id}'),
 assert.ok(pageSource.includes('agent-copy-plan-${session.provider}-${session.id}'), 'Command palette should copy session resume plans');
 assert.ok(pageSource.includes('agent-copy-shell-command-${session.provider}-${session.id}'), 'Command palette should copy shell-ready session commands');
 assert.ok(pageSource.includes('agent-copy-resume-command-${session.provider}-${session.id}'), 'Command palette should copy raw session resume commands');
+assert.ok(pageSource.includes('agentSessionFocusLane(session, sessionReadiness)'), 'Agent rows should derive a recommended session focus lane');
+assert.ok(pageSource.includes('class={`agent-session-focus-lane ${sessionFocusLane.tone}`}'), 'Agent rows should render compact focus-lane chips');
+assert.ok(pageSource.includes('aria-label="Recommended session focus action"'), 'Agent focus lanes should be accessible');
 assert.ok(pageSource.includes('function agentSessionWorkspaceReadinessLabel'), 'Agent rows should derive saved workspace readiness labels');
 assert.ok(pageSource.includes('function agentSessionWorkspaceSummaryLines'), 'Session focus plans should include saved workspace context');
 assert.ok(pageSource.includes('function agentSessionMissingWorktreeSnapshot'), 'Agent terminal resumes should detect missing saved worktrees');
@@ -2128,3 +2131,4 @@ assert.ok(pageSource.includes('class="agent-provider-badge"'), 'Agent session ro
 assert.ok(pageSource.includes('Agent Sessions'), 'Agent session panel should have a clear heading');
 assertDeclaration('.agent-session-list', 'overflow-y: auto');
 assertDeclaration('.agent-session-list', 'scrollbar-width: thin');
+assertDeclaration('.agent-session-focus-lane', 'grid-template-columns: auto minmax(0, 1fr)');
