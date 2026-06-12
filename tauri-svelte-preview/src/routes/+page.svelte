@@ -1309,6 +1309,13 @@
       perform: useValidatedGitRootForSelectedProject
     },
     {
+      id: 'project-repair-onboarding',
+      label: 'Repair project setup',
+      detail: `${selectedProject.name} · validate, clear index, rescan`,
+      disabled: projectRootValidating || scanning,
+      perform: repairSelectedProjectOnboarding
+    },
+    {
       id: 'project-open-folder',
       label: 'Open project folder',
       detail: selectedProject.path,
@@ -9968,6 +9975,25 @@
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
       projects: nextProjectOptions
+    });
+    return true;
+  }
+
+  async function repairSelectedProjectOnboarding() {
+    const project = selectedProject;
+    fileActionStatus = `Checking ${project.name} project setup`;
+
+    const validation = await validateProjectRootForProject(project, true);
+    if (selectedProject.id !== project.id || validation === false) return false;
+
+    if (projectRootGitRootSuggestion(project, validation)) {
+      return useValidatedGitRootForSelectedProject();
+    }
+
+    await activateProject(project, {
+      forceScan: true,
+      scanLimit: expandedSourceScanLimit,
+      projects: projectOptions
     });
     return true;
   }

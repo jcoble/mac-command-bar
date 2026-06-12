@@ -626,6 +626,8 @@ assert.ok(pageSource.includes("id: 'source-copy-scan-diagnostic'"), 'Command pal
 assert.ok(pageSource.includes("id: 'scan-stop'"), 'Command palette should expose scan cancellation');
 assert.ok(pageSource.includes("id: 'project-add-folder'"), 'Command palette should expose project folder selection');
 assert.ok(pageSource.includes("id: 'project-validate-root'"), 'Command palette should validate the selected project root');
+assert.ok(pageSource.includes("id: 'project-repair-onboarding'"), 'Command palette should repair project onboarding state');
+assert.ok(pageSource.includes('function repairSelectedProjectOnboarding'), 'Source page should expose a one-step project onboarding repair action');
 assert.ok(pageSource.includes("id: 'project-open-folder'"), 'Command palette should open the current project folder');
 assert.ok(pageSource.includes("id: 'project-reveal-folder'"), 'Command palette should reveal the current project folder');
 assert.ok(pageSource.includes("id: 'project-open-terminal'"), 'Command palette should open the current project in the selected terminal');
@@ -1002,6 +1004,8 @@ assert.ok(
 );
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(project)'), 'Duplicate project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nextProject)'), 'New project selection should announce the expanded onboarding scan');
+assert.ok(pageSource.includes('fileActionStatus = `Checking ${project.name} project setup`'), 'Project repair should explain validation before rescanning');
+assert.ok(pageSource.includes('await activateProject(project, {\n      forceScan: true,\n      scanLimit: expandedSourceScanLimit,\n      projects: projectOptions'), 'Project repair should force a fresh expanded activation scan');
 assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activation should accept scan and project-list options');
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');
