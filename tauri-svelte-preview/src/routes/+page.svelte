@@ -1698,6 +1698,12 @@
       perform: toggleSourceChromeCompact
     },
     {
+      id: 'layout-copy-diagnostic',
+      label: 'Copy layout diagnostic',
+      detail: `${sourceLayoutPreset} layout · ${sourceActivityLabel(sourceActivityMode)}`,
+      perform: copySourceLayoutDiagnostic
+    },
+    {
       id: 'layout-reset-dock',
       label: 'Reset dock layout',
       detail: 'Code layout',
@@ -3499,6 +3505,75 @@
     ].join('\n');
   }
 
+  function sourceLayoutDiagnosticText() {
+    const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const currentFile = selectedRecord
+      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+      : 'none';
+    const activePreset = sourceLayoutPresets.find((preset) => preset.id === sourceLayoutPreset);
+    const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
+      const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
+      return `${dirtyPrefix}${tab.relativePath}`;
+    });
+    const groupLines = normalizedLayout.groups.map((group) => {
+      const activePanelID = normalizedLayout.activePanelByGroup[group.id];
+      const panels = group.panelIDs.map((panelID) => {
+        const activePrefix = activePanelID === panelID ? '* ' : '';
+        const renderState = shouldRenderDockPanel(panelID) ? 'rendered' : 'tabbed';
+        return `${activePrefix}${dockPanelLabel(panelID)} (${renderState})`;
+      });
+
+      return `- ${dockGroupLabel(group.id)} (${group.id}, ${Math.round(group.size)}): ${
+        panels.length > 0 ? panels.join(', ') : 'empty'
+      }`;
+    });
+    const activePanelLines = Object.entries(normalizedLayout.activePanelByGroup).map(([groupID, panelID]) => {
+      const typedGroupID = groupID as SourceDockGroupID;
+      return `- ${dockGroupLabel(typedGroupID, panelID)}: ${panelID ? dockPanelLabel(panelID) : 'none'}`;
+    });
+    const hiddenDockPanels = hiddenDockPanelIDs().map(dockPanelLabel);
+    const hiddenContextCards = [...hiddenContextCardIDs].map((cardID) => contextCardLabels[cardID]);
+    const visiblePanelPlacements = managedDockPanelIDs.map(
+      (panelID) => `${dockPanelLabel(panelID)}=${dockPanelPlacementSummary(panelID)}`
+    );
+    const overrideIDs = Object.keys(sourceLayoutPresetOverrides);
+
+    return [
+      'Source layout diagnostic',
+      `Project: ${selectedProject.name}`,
+      `Root: ${selectedProject.path}`,
+      `Current file: ${currentFile}`,
+      `Preset: ${sourceLayoutPreset}${activePreset ? ` (${activePreset.label})` : ''}`,
+      `Chrome: ${sourceChromeCompact ? 'compact' : 'comfortable'}`,
+      `Activity: ${sourceActivityLabel(sourceActivityMode)} (${sourceActivityMode})`,
+      `Activity filter: ${sourceActivityFilter.trim() || 'none'}`,
+      `Side pane: ${sidePanePosition}, ${sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
+      `Context: ${contextPanelPlacement}, ${contextPanelMode}, ${contextPanelCollapsed ? 'hidden' : 'visible'}`,
+      `Context size: ${contextPaneWidth}px wide / ${contextPaneHeight}px tall`,
+      `Active context card: ${contextCardLabels[activeContextCardID]}`,
+      `Insights: ${editorInsightCollapsed ? 'hidden' : 'visible'}, ${sourceIntelligencePanel}, ${editorInsightWidth}px`,
+      `Bottom dock: ${bottomDockPanelVisible() ? 'visible' : 'hidden'}, ${bottomDockHeight()}px`,
+      `Terminal app: ${sourceTerminalApp}`,
+      `Embedded terminal: ${embeddedTerminalSession?.sessionId ?? 'none'}`,
+      `Browser URL: ${activeBrowserUrl || 'none'}`,
+      `Focus restore snapshot: ${sourceFocusRestoreLayout ? sourceFocusRestoreLayout.preset : 'none'}`,
+      `Saved preset overrides: ${overrideIDs.length > 0 ? overrideIDs.join(', ') : 'none'}`,
+      '',
+      'Dock layout:',
+      groupLines.join('\n'),
+      '',
+      'Active dock panels:',
+      activePanelLines.length > 0 ? activePanelLines.join('\n') : '- none',
+      '',
+      `Visible panel placements: ${visiblePanelPlacements.join(', ')}`,
+      `Hidden dock panels: ${hiddenDockPanels.length > 0 ? hiddenDockPanels.join(', ') : 'none'}`,
+      `Hidden context cards: ${hiddenContextCards.length > 0 ? hiddenContextCards.join(', ') : 'none'}`,
+      '',
+      `Open tabs: ${projectOpenSourceTabs.length}`,
+      openTabs.length > 0 ? openTabs.join('\n') : '- none'
+    ].join('\n');
+  }
+
   function sourceScanDiagnosticBrief() {
     const indexEntry = selectedProjectIndexEntry;
     const stats = sourceScanStats ?? indexEntry?.stats ?? null;
@@ -3848,6 +3923,10 @@
 
   async function copySourceContextBrief() {
     await copyActivityCommand(sourceContextBriefText(), 'Source context brief copied');
+  }
+
+  async function copySourceLayoutDiagnostic() {
+    await copyActivityCommand(sourceLayoutDiagnosticText(), 'Layout diagnostic copied');
   }
 
   async function copySourceScanDiagnosticBrief() {
