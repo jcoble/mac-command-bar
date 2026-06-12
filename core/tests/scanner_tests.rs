@@ -115,7 +115,7 @@ fn parses_cmux_hook_sessions_without_body_content() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].provider, "cmux-codex");
     assert_eq!(records[0].id, "019e");
-    assert_eq!(records[0].title, "cmux codex · running");
+    assert_eq!(records[0].title, "Codex · main · context 42%");
     assert!(!records[0].title.contains("transcript"));
     assert_eq!(
         records[0].project_path.as_deref(),
@@ -131,6 +131,29 @@ fn parses_cmux_hook_sessions_without_body_content() {
         vec![
             "codex resume 019e",
             "cd '/Users/blackcolours/dev/work/mac-command-bar' && codex resume 019e"
+        ]
+    );
+}
+
+#[test]
+fn parses_cmux_numeric_activity_and_status_titles() {
+    let records = parse_cmux_hook_sessions_json(
+        "claude",
+        "{\"version\":1,\"sessions\":{\"abc\":{\"sessionId\":\"abc\",\"cwd\":\"/Users/blackcolours/dev/work/EDIEngine\",\"updatedAt\":1780880368.0588,\"agentLifecycle\":\"needsInput\",\"lastSubtitle\":\"Waiting\",\"launchCommand\":{\"capturedAt\":1780880300.0}}}}\n",
+    );
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider, "cmux-claude");
+    assert_eq!(records[0].title, "Claude · Waiting");
+    assert_eq!(
+        records[0].last_activity.as_deref(),
+        Some("2026-06-08T00:59:28.058Z")
+    );
+    assert_eq!(
+        records[0].resume_commands,
+        vec![
+            "claude --resume abc".to_string(),
+            "cd '/Users/blackcolours/dev/work/EDIEngine' && claude --resume abc".to_string()
         ]
     );
 }

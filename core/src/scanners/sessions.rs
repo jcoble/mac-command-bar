@@ -224,25 +224,21 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 })
                 .filter(|value| !value.trim().is_empty())
                 .map(ToOwned::to_owned);
-            let last_activity = value
-                .get("updatedAt")
-                .and_then(Value::as_str)
-                .or_else(|| value.get("startedAt").and_then(Value::as_str))
+            let last_activity = timestampish_string(value.get("updatedAt"))
+                .or_else(|| timestampish_string(value.get("startedAt")))
                 .or_else(|| {
-                    value
-                        .get("launchCommand")
-                        .and_then(|launch| launch.get("capturedAt"))
-                        .and_then(Value::as_str)
-                })
-                .map(ToOwned::to_owned);
+                    timestampish_string(
+                        value
+                            .get("launchCommand")
+                            .and_then(|launch| launch.get("capturedAt")),
+                    )
+                });
             let status = value
                 .get("runtimeStatus")
                 .and_then(Value::as_str)
                 .or_else(|| value.get("agentLifecycle").and_then(Value::as_str))
                 .filter(|value| !value.trim().is_empty());
-            let title = status
-                .map(|status| format!("cmux {agent} · {status}"))
-                .unwrap_or_else(|| format!("cmux {agent} session"));
+            let title = cmux_session_title(&agent, value, status, cwd.as_deref());
 
             Some(AgentSessionRecord {
                 provider: format!("cmux-{agent}"),
@@ -378,12 +374,149 @@ fn model_from_value(value: &Value) -> Option<String> {
         .or_else(|| optional_string(value.get("model_id")))
 }
 
+fn cmux_session_title(
+    agent: &str,
+    value: &Value,
+    status: Option<&str>,
+    cwd: Option<&str>,
+) -> String {
+    let agent_label = agent_display_label(agent);
+    let detail = optional_string(value.get("title"))
+        .or_else(|| optional_string(value.get("name")))
+        .or_else(|| optional_string(value.get("threadName")))
+        .or_else(|| optional_string(value.get("conversationTitle")))
+        .or_else(|| optional_string(value.get("taskTitle")))
+        .or_else(|| optional_string(value.get("lastSubtitle")))
+        .or_else(|| {
+            status
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| cwd.and_then(path_display_name));
+
+    match detail {
+        Some(detail) => format!("{agent_label} · {}", compact_text(&detail, 72)),
+        None => format!("{agent_label} session"),
+    }
+}
+
+fn agent_display_label(agent: &str) -> String {
+    match agent {
+        "codex" => "Codex".to_string(),
+        "claude" => "Claude".to_string(),
+        "gemini" => "Gemini".to_string(),
+        "opencode" => "OpenCode".to_string(),
+        "cursor" | "cursor-agent" => "Cursor".to_string(),
+        "antigravity" | "agy" => "Antigravity".to_string(),
+        "rovo" | "acli" => "Rovo".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => "Agent".to_string(),
+            }
+        }
+    }
+}
+
+fn compact_text(value: &str, max_chars: usize) -> String {
+    let trimmed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if trimmed.chars().count() <= max_chars {
+        return trimmed;
+    }
+
+    let mut compacted = trimmed
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    compacted.push('…');
+    compacted
+}
+
+fn path_display_name(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn optional_string(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn timestampish_string(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    match value {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else if let Ok(number) = trimmed.parse::<f64>() {
+                unix_timestamp_number_to_iso(number).or_else(|| Some(trimmed.to_string()))
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(number) => number.as_f64().and_then(unix_timestamp_number_to_iso),
+        _ => None,
+    }
+}
+
+fn unix_timestamp_number_to_iso(value: f64) -> Option<String> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+
+    let seconds_value = if value >= 1_000_000_000_000.0 {
+        value / 1000.0
+    } else {
+        value
+    };
+    let mut seconds = seconds_value.floor() as i64;
+    let mut millis = ((seconds_value - seconds as f64) * 1000.0).floor() as u32;
+    if millis >= 1000 {
+        seconds += 1;
+        millis = 0;
+    }
+    Some(unix_seconds_to_iso8601(seconds, millis))
+}
+
+fn unix_seconds_to_iso8601(seconds: i64, millis: u32) -> String {
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3600;
+    let minute = (seconds_of_day % 3600) / 60;
+    let second = seconds_of_day % 60;
+
+    if millis > 0 {
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+    } else {
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+    }
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+
+    (year, month as u32, day as u32)
 }
 
 fn title_from_claude_message(value: &Value) -> Option<String> {

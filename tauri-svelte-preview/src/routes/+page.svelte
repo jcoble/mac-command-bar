@@ -4202,7 +4202,21 @@
   }
 
   function agentSessionActivityLabel(session: AgentSession) {
-    return session.lastActivity ?? 'unknown activity';
+    return formatActivityTimestamp(session.lastActivity);
+  }
+
+  function formatActivityTimestamp(value: string | null | undefined) {
+    if (!value) return 'unknown activity';
+
+    const numericValue = Number(value);
+    const epochMs = Number.isFinite(numericValue)
+      ? numericValue > 1_000_000_000_000
+        ? numericValue
+        : numericValue * 1000
+      : new Date(value).getTime();
+    if (Number.isNaN(epochMs)) return value;
+
+    return formatRelativeAge(epochMs);
   }
 
   function agentSessionProjectPath(session: AgentSession) {
