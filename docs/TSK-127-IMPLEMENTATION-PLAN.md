@@ -43,6 +43,7 @@ Completed and committed:
 - Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Git history rows now use normalized ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits while keeping raw refs in copyable detail/handoff text.
 - Git task ledger rows now show owner and cleanup summaries, stale-clean candidates, backup-needed worktrees, active sessions, saved workspace ownership, runs, and commits without adding persistent panels.
+- Orchestration event ingest now accepts real-ish agent/orchestrator payloads: snake_case aliases, nested project/task/agent/step/artifact/link/counts objects, event aliases such as `ui_verified`, JSON arrays, JSON envelope events, and JSONL/JSON files via `--json-file`.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
 Current checkpoint:
@@ -51,7 +52,7 @@ Current checkpoint:
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
 - Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Remaining work is manual Git/worktree flow validation and larger graph UX, not first scaffolding.
-- Priority 2.7 orchestration timeline detail is implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, and handoff copy are covered by tests.
+- Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
 
 ## Priority 0: Make The App Usable As A Workspace
@@ -338,16 +339,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 1.5, stale-clean worktree/task-ledger polish.
+Last checkpoint: Priority 2.7, orchestration live event ingest polish.
 
-- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`.
-- Behavior delivered: task ledger rows now expose owner summaries, cleanup summaries, stale-clean candidate counts, backup-needed counts, active session counts, saved workspace counts, and copyable handoff details.
-- Validation: `pnpm test:source-ui`, `pnpm test:worktree-safety`, `pnpm check`, `pnpm build`, `git diff --check`.
-- Remaining risk: no manual worktree cleanup dry run in this slice; destructive actions remain guarded by existing primary-action safety.
+- Changed files: `tauri-svelte-preview/scripts/orchestrationEvent.mjs`, `tauri-svelte-preview/scripts/orchestrationEvent.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/src/routes/+page.svelte`.
+- Behavior delivered: `scripts/mcb-orch` can normalize inline or file-imported event payloads from real agents/orchestrators, including nested project/task/agent/step/artifact/link/counts data and common event aliases; command palette can copy a JSON/JSONL import command.
+- Validation: `pnpm test:orchestration-event`, `pnpm test:orchestration-view`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, temp `pnpm orch:event -- --json-file ...` smoke, `git diff --check`.
+- Remaining risk: live `/run-e2e-tests` integration still needs a real producer to write payloads into this file format; this slice proves the ingest boundary, not the orchestrator hook.
 
-Next implementation slice: Priority 2.7, orchestration live event ingest polish.
+Next implementation slice: Priority 0.3 native Tauri validation refresh, then Priority 1.5 manual worktree cleanup dry run if native validation stays green.
 
 Definition of done for the next slice:
-- Orchestration event import can ingest richer real loop output without hand-editing sample data.
-- Runs show current step, active agent, issue/fix/retest tallies, sign-off blockers, and artifacts from imported events.
-- Tests cover event normalization, timeline grouping, and command-palette/copy hooks.
+- Run the real Tauri app path and verify event store refresh, source read/write, LSP actions, Git/worktree commands, and embedded terminal basics.
+- Capture exact failures or limitations as plan items instead of burying them in ad hoc notes.
+- Do not start browser/Playwright automation unless needed for a visual regression, and shut it down immediately after use.

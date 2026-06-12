@@ -4,12 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   appendOrchestrationEvent,
+  appendOrchestrationEventPayload,
   appendOrchestrationSample,
   defaultOrchestrationEventStorePath,
   normalizeOrchestrationEvent,
+  orchestrationEventInputsFromPayload,
   orchestrationSampleEvents,
   orchestrationEventStorePath,
-  parseOrchestrationEventArgs
+  parseOrchestrationEventArgs,
+  readOrchestrationEventPayloadFile
 } from './orchestrationEvent.mjs';
 
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mcb-orch-event-test-'));
@@ -61,6 +64,9 @@ try {
   assert.equal(parsed.approvalSubject, 'Delete dirty worktree?');
   assert.equal(parsed.blockerReason, 'Needs manual review');
   assert.equal(parsed.decisionPrompt, 'Proceed with cleanup?');
+
+  const jsonFileParsed = parseOrchestrationEventArgs(['--json-file', '/tmp/orch-events.jsonl']);
+  assert.equal(jsonFileParsed.jsonFile, '/tmp/orch-events.jsonl');
 
   const presetParsed = parseOrchestrationEventArgs([
     '--preset',
@@ -198,6 +204,144 @@ try {
   assert.equal(approvalEvent.message, 'Delete dirty worktree?');
   assert.equal(approvalEvent.approvalSubject, 'Delete dirty worktree?');
 
+  const importedIssueEvent = normalizeOrchestrationEvent({
+    event: 'issue_found',
+    run_id: 'run-tsk-127',
+    project: {
+      id: 'mac-command-bar',
+      name: 'MacCommandBar',
+      path: '/repo'
+    },
+    root: {
+      label: 'task worktree'
+    },
+    task: {
+      id: 'TSK-127'
+    },
+    agent: {
+      id: 'ui-tester-1',
+      provider: 'claude',
+      role: 'ui-tester'
+    },
+    step: {
+      id: 'scenario-auth',
+      kind: 'test'
+    },
+    scenario: {
+      name: 'Google auth callback'
+    },
+    issue: {
+      id: 'AUTH-7'
+    },
+    counts: {
+      issues: 2,
+      failed: 1
+    },
+    artifact: {
+      id: 'screenshot-auth',
+      type: 'screenshot',
+      path: '/repo/.codex-artifacts/auth.png'
+    },
+    link: {
+      type: 'trace',
+      label: 'Trace',
+      url: 'http://localhost:9323/trace'
+    }
+  });
+  assert.equal(importedIssueEvent.kind, 'issue.found');
+  assert.equal(importedIssueEvent.status, 'needs-fix');
+  assert.equal(importedIssueEvent.runId, 'run-tsk-127');
+  assert.equal(importedIssueEvent.projectID, 'mac-command-bar');
+  assert.equal(importedIssueEvent.projectName, 'MacCommandBar');
+  assert.equal(importedIssueEvent.projectPath, '/repo');
+  assert.equal(importedIssueEvent.rootLabel, 'task worktree');
+  assert.equal(importedIssueEvent.taskID, 'TSK-127');
+  assert.equal(importedIssueEvent.agentId, 'ui-tester-1');
+  assert.equal(importedIssueEvent.agentProvider, 'claude');
+  assert.equal(importedIssueEvent.agentRole, 'ui-tester');
+  assert.equal(importedIssueEvent.stepId, 'scenario-auth');
+  assert.equal(importedIssueEvent.stepKind, 'test');
+  assert.equal(importedIssueEvent.scenario, 'Google auth callback');
+  assert.equal(importedIssueEvent.issueID, 'AUTH-7');
+  assert.equal(importedIssueEvent.issueCount, 2);
+  assert.equal(importedIssueEvent.failedCount, 1);
+  assert.equal(importedIssueEvent.artifactId, 'screenshot-auth');
+  assert.equal(importedIssueEvent.artifactKind, 'screenshot');
+  assert.equal(importedIssueEvent.artifactPath, '/repo/.codex-artifacts/auth.png');
+  assert.equal(importedIssueEvent.linkKind, 'trace');
+  assert.equal(importedIssueEvent.linkLabel, 'Trace');
+  assert.equal(importedIssueEvent.linkUrl, 'http://localhost:9323/trace');
+
+  const importedDecisionEvent = normalizeOrchestrationEvent({
+    type: 'approval_required',
+    runID: 'run-tsk-127',
+    task_id: 'TSK-127',
+    signoff: {
+      subject: 'Review dirty worktree backup'
+    },
+    blocker: {
+      reason: 'Uncommitted work needs backup before cleanup'
+    },
+    decision: {
+      prompt: 'Back up and remove this worktree?'
+    },
+    counts: {
+      approvals: 1,
+      decisions: 1
+    }
+  });
+  assert.equal(importedDecisionEvent.kind, 'approval.required');
+  assert.equal(importedDecisionEvent.status, 'waiting-for-approval');
+  assert.equal(importedDecisionEvent.runId, 'run-tsk-127');
+  assert.equal(importedDecisionEvent.taskID, 'TSK-127');
+  assert.equal(importedDecisionEvent.approvalSubject, 'Review dirty worktree backup');
+  assert.equal(importedDecisionEvent.blockerReason, 'Uncommitted work needs backup before cleanup');
+  assert.equal(importedDecisionEvent.decisionPrompt, 'Back up and remove this worktree?');
+  assert.equal(importedDecisionEvent.approvalCount, 1);
+  assert.equal(importedDecisionEvent.decisionCount, 1);
+
+  const payloadEvents = orchestrationEventInputsFromPayload({
+    run_id: 'run-tsk-127',
+    project: {
+      id: 'mac-command-bar',
+      name: 'MacCommandBar',
+      path: '/repo'
+    },
+    task: {
+      id: 'TSK-127'
+    },
+    events: [
+      {
+        event: 'scenario_started',
+        scenario: 'Trading partner auth callback',
+        counts: {
+          scenarios: 1
+        }
+      },
+      {
+        event: 'ui_verified',
+        scenario: 'Trading partner auth callback',
+        counts: {
+          resolved: 1,
+          verified: 1
+        },
+        artifact: {
+          kind: 'trace',
+          url: 'http://localhost:9323/trace'
+        }
+      }
+    ]
+  });
+  assert.equal(payloadEvents.length, 2);
+  assert.equal(payloadEvents[0].runId, 'run-tsk-127');
+  assert.equal(payloadEvents[0].taskID, 'TSK-127');
+  assert.equal(payloadEvents[0].kind, 'scenario.started');
+  assert.equal(payloadEvents[0].scenarioCount, 1);
+  assert.equal(payloadEvents[1].kind, 'ui.verified');
+  assert.equal(payloadEvents[1].verifiedCount, 1);
+  assert.equal(payloadEvents[1].artifactKind, 'trace');
+  assert.equal(payloadEvents[1].artifactUrl, 'http://localhost:9323/trace');
+
   const sampleEvents = orchestrationSampleEvents('run-e2e-loop', {
     runId: 'run-tsk-127',
     projectID: 'mac-command-bar',
@@ -254,6 +398,69 @@ try {
   assert.equal(sampleLines.length, sampleResult.events.length);
   assert.equal(JSON.parse(sampleLines[0]).kind, 'run.started');
   assert.equal(JSON.parse(sampleLines.at(-1)).kind, 'handoff.available');
+
+  const payloadStorePath = path.join(tempRoot, 'payload-events.jsonl');
+  const payloadResult = await appendOrchestrationEventPayload(
+    {
+      run_id: 'run-tsk-127',
+      project: {
+        id: 'mac-command-bar',
+        name: 'MacCommandBar'
+      },
+      events: [
+        {
+          event: 'agent_started',
+          agent: {
+            provider: 'codex',
+            role: 'fix-agent'
+          }
+        },
+        {
+          event: 'handoff',
+          artifact: {
+            kind: 'handoff',
+            path: '/repo/.codex-artifacts/handoff.md'
+          }
+        }
+      ]
+    },
+    { storePath: payloadStorePath }
+  );
+  const payloadLines = (await fs.readFile(payloadStorePath, 'utf8')).trim().split('\n');
+  assert.equal(payloadResult.events.length, 2);
+  assert.equal(payloadLines.length, 2);
+  assert.equal(JSON.parse(payloadLines[0]).kind, 'agent.started');
+  assert.equal(JSON.parse(payloadLines[1]).kind, 'handoff.available');
+
+  const payloadFilePath = path.join(tempRoot, 'import-events.jsonl');
+  await fs.writeFile(
+    payloadFilePath,
+    [
+      JSON.stringify({
+        event: 'test_failed',
+        run_id: 'run-tsk-127',
+        issue_id: 'AUTH-7',
+        counts: {
+          tests: 1,
+          failed: 1
+        }
+      }),
+      JSON.stringify({
+        event: 'batch_delegated',
+        run_id: 'run-tsk-127',
+        counts: {
+          fixes: 1,
+          delegated: 1
+        }
+      })
+    ].join('\n')
+  );
+  const importedPayloadEvents = await readOrchestrationEventPayloadFile(payloadFilePath);
+  assert.equal(importedPayloadEvents.length, 2);
+  assert.equal(importedPayloadEvents[0].kind, 'test.failed');
+  assert.equal(importedPayloadEvents[0].testCount, 1);
+  assert.equal(importedPayloadEvents[1].kind, 'batch.delegated');
+  assert.equal(importedPayloadEvents[1].delegatedCount, 1);
 } finally {
   await fs.rm(tempRoot, { recursive: true, force: true });
 }

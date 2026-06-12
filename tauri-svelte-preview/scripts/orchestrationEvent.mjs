@@ -29,8 +29,85 @@ export function orchestrationEventStorePath(env = process.env) {
   return configuredPath || defaultOrchestrationEventStorePath();
 }
 
+export function normalizeOrchestrationEventInput(input) {
+  const project = objectValue(input.project);
+  const run = objectValue(input.run);
+  const task = objectValue(input.task);
+  const root = objectValue(input.root) ?? objectValue(input.checkout) ?? objectValue(input.workspace);
+  const agent = objectValue(input.agent);
+  const step = objectValue(input.step);
+  const scenario = objectValue(input.scenario);
+  const issue = objectValue(input.issue);
+  const artifact = objectValue(input.artifact) ?? firstObjectValue(input.artifacts);
+  const link = objectValue(input.link) ?? firstObjectValue(input.links);
+  const counts = objectValue(input.counts) ?? objectValue(input.metrics) ?? objectValue(input.tally);
+  const approval = objectValue(input.approval) ?? objectValue(input.signoff) ?? objectValue(input.signOff);
+  const blocker = objectValue(input.blocker);
+  const decision = objectValue(input.decision);
+  const eventAlias = firstOptionalString(input.event, input.type, input.eventType, input.event_type);
+
+  return {
+    ...input,
+    preset: firstOptionalString(input.preset, presetFromEventAlias(eventAlias)),
+    runId: firstOptionalString(input.runId, input.runID, input.run_id, run?.id, run?.runId, run?.run_id),
+    projectID: firstOptionalString(input.projectID, input.projectId, input.project_id, project?.id, project?.projectID),
+    projectName: firstOptionalString(input.projectName, input.project_name, project?.name),
+    projectPath: firstOptionalString(input.projectPath, input.project_path, project?.path, project?.root),
+    rootLabel: firstOptionalString(input.rootLabel, input.root_label, root?.label, root?.name),
+    taskID: firstOptionalString(input.taskID, input.taskId, input.task_id, task?.id, task?.key),
+    agentId: firstOptionalString(input.agentId, input.agentID, input.agent_id, agent?.id, agent?.name),
+    agentProvider: firstOptionalString(input.agentProvider, input.agent_provider, agent?.provider),
+    agentRole: firstOptionalString(input.agentRole, input.agent_role, agent?.role, agent?.type),
+    stepId: firstOptionalString(input.stepId, input.stepID, input.step_id, step?.id),
+    stepKind: firstOptionalString(input.stepKind, input.step_kind, step?.kind, step?.type),
+    artifactId: firstOptionalString(input.artifactId, input.artifactID, input.artifact_id, artifact?.id),
+    artifactKind: firstOptionalString(input.artifactKind, input.artifact_kind, artifact?.kind, artifact?.type),
+    artifactPath: firstOptionalString(input.artifactPath, input.artifact_path, artifact?.path),
+    artifactUrl: firstOptionalString(input.artifactUrl, input.artifactURL, input.artifact_url, artifact?.url, artifact?.href),
+    linkKind: firstOptionalString(input.linkKind, input.link_kind, link?.kind, link?.type),
+    linkLabel: firstOptionalString(input.linkLabel, input.link_label, link?.label, link?.title),
+    linkUrl: firstOptionalString(input.linkUrl, input.linkURL, input.link_url, link?.url, link?.href),
+    scenario: firstOptionalString(
+      input.scenario,
+      input.scenarioName,
+      input.scenario_name,
+      scenario?.name,
+      scenario?.title,
+      scenario?.id
+    ),
+    issueID: firstOptionalString(input.issueID, input.issueId, input.issue_id, issue?.id, issue?.key),
+    retryAttempt: firstDefined(input.retryAttempt, input.retry_attempt, input.attempt, input.retry),
+    approvalSubject: firstOptionalString(
+      input.approvalSubject,
+      input.approval_subject,
+      approval?.subject,
+      approval?.title,
+      decision?.subject
+    ),
+    blockerReason: firstOptionalString(input.blockerReason, input.blocker_reason, blocker?.reason, blocker?.message),
+    decisionPrompt: firstOptionalString(
+      input.decisionPrompt,
+      input.decision_prompt,
+      decision?.prompt,
+      decision?.question,
+      decision?.message
+    ),
+    scenarioCount: firstDefined(input.scenarioCount, input.scenario_count, counts?.scenarioCount, counts?.scenario, counts?.scenarios),
+    issueCount: firstDefined(input.issueCount, input.issue_count, counts?.issueCount, counts?.issue, counts?.issues),
+    testCount: firstDefined(input.testCount, input.test_count, counts?.testCount, counts?.test, counts?.tests),
+    retestCount: firstDefined(input.retestCount, input.retest_count, counts?.retestCount, counts?.retest, counts?.retests),
+    fixCount: firstDefined(input.fixCount, input.fix_count, counts?.fixCount, counts?.fix, counts?.fixes),
+    resolvedCount: firstDefined(input.resolvedCount, input.resolved_count, counts?.resolvedCount, counts?.resolved),
+    verifiedCount: firstDefined(input.verifiedCount, input.verified_count, counts?.verifiedCount, counts?.verified),
+    delegatedCount: firstDefined(input.delegatedCount, input.delegated_count, counts?.delegatedCount, counts?.delegated),
+    decisionCount: firstDefined(input.decisionCount, input.decision_count, counts?.decisionCount, counts?.decision, counts?.decisions),
+    approvalCount: firstDefined(input.approvalCount, input.approval_count, counts?.approvalCount, counts?.approval, counts?.approvals),
+    failedCount: firstDefined(input.failedCount, input.failed_count, counts?.failedCount, counts?.failed, counts?.failures)
+  };
+}
+
 export function normalizeOrchestrationEvent(input) {
-  const expandedInput = applyOrchestrationEventPreset(input);
+  const expandedInput = applyOrchestrationEventPreset(normalizeOrchestrationEventInput(input));
   const runId = String(expandedInput.runId ?? '').trim();
   if (!runId) {
     throw new Error('runId is required');
@@ -282,6 +359,51 @@ export async function appendOrchestrationEvent(input, options = {}) {
   return { event, storePath };
 }
 
+export function orchestrationEventInputsFromPayload(payload) {
+  const payloads = Array.isArray(payload) ? payload : [payload];
+  return payloads.flatMap((entry) => {
+    if (!isObjectLike(entry)) {
+      throw new Error('Orchestration event payload must be a JSON object or array of objects');
+    }
+
+    const children = Array.isArray(entry.events)
+      ? entry.events
+      : Array.isArray(entry.items)
+        ? entry.items
+        : null;
+
+    if (!children) {
+      return [normalizeOrchestrationEvent(entry)];
+    }
+
+    const base = { ...entry };
+    delete base.events;
+    delete base.items;
+    return children.map((child) => normalizeOrchestrationEvent({ ...base, ...child }));
+  });
+}
+
+export async function readOrchestrationEventPayloadFile(filePath) {
+  const contents = await fs.readFile(filePath, 'utf8');
+  const trimmed = contents.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const payload = parseOrchestrationPayloadFileContents(trimmed);
+  return orchestrationEventInputsFromPayload(payload);
+}
+
+export async function appendOrchestrationEventPayload(payload, options = {}) {
+  const events = orchestrationEventInputsFromPayload(payload);
+  const storePath = options.storePath ?? orchestrationEventStorePath(options.env);
+  await fs.mkdir(path.dirname(storePath), { recursive: true });
+  if (events.length > 0) {
+    await fs.appendFile(storePath, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+  }
+  return { events, storePath };
+}
+
 export function orchestrationSampleEvents(sampleName, input = {}) {
   const sample = optionalString(sampleName)?.toLowerCase();
   if (sample !== 'run-e2e-loop') {
@@ -436,7 +558,12 @@ export function parseOrchestrationEventArgs(args) {
       if (!value) {
         throw new Error('--json requires a JSON object value');
       }
-      Object.assign(event, JSON.parse(value));
+      const payload = JSON.parse(value);
+      if (Array.isArray(payload)) {
+        event.events = payload;
+      } else {
+        Object.assign(event, payload);
+      }
       index += 1;
       continue;
     }
@@ -461,6 +588,113 @@ function argumentKeyToEventKey(key) {
     return explicitKeyMap.get(key);
   }
   return key.replace(/-([a-z])/g, (_, character) => character.toUpperCase());
+}
+
+function parseOrchestrationPayloadFileContents(contents) {
+  try {
+    return JSON.parse(contents);
+  } catch {
+    return contents
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, index) => {
+        try {
+          return JSON.parse(line);
+        } catch (error) {
+          throw new Error(`Could not parse orchestration payload line ${index + 1}: ${error.message}`);
+        }
+      });
+  }
+}
+
+function presetFromEventAlias(value) {
+  const normalized = optionalString(value)
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!normalized) {
+    return null;
+  }
+
+  const aliases = new Map([
+    ['run-start', 'run-started'],
+    ['run-started', 'run-started'],
+    ['run-complete', 'run-completed'],
+    ['run-completed', 'run-completed'],
+    ['scenario-start', 'scenario-started'],
+    ['scenario-started', 'scenario-started'],
+    ['scenario-pass', 'scenario-passed'],
+    ['scenario-passed', 'scenario-passed'],
+    ['test-start', 'test-started'],
+    ['test-started', 'test-started'],
+    ['test-fail', 'test-failed'],
+    ['test-failed', 'test-failed'],
+    ['issue-found', 'issue-found'],
+    ['issue', 'issue-found'],
+    ['agent-start', 'agent-started'],
+    ['agent-started', 'agent-started'],
+    ['agent-complete', 'agent-completed'],
+    ['agent-completed', 'agent-completed'],
+    ['agent-blocked', 'agent-blocked'],
+    ['agent-delegated', 'agent-delegated'],
+    ['batch-delegated', 'batch-delegated'],
+    ['fix-batch', 'batch-delegated'],
+    ['fix-start', 'fix-started'],
+    ['fix-started', 'fix-started'],
+    ['fix-resolved', 'fix-resolved'],
+    ['fix-resolve', 'fix-resolved'],
+    ['retest-start', 'retest-started'],
+    ['retest-started', 'retest-started'],
+    ['retry-start', 'retry-started'],
+    ['retry-started', 'retry-started'],
+    ['retest-pass', 'retest-passed'],
+    ['retest-passed', 'retest-passed'],
+    ['retest-fail', 'retest-failed'],
+    ['retest-failed', 'retest-failed'],
+    ['ui-verified', 'ui-verified'],
+    ['ui-failed', 'ui-failed'],
+    ['approval-required', 'approval-required'],
+    ['approval-granted', 'approval-granted'],
+    ['blocker-reported', 'blocker-reported'],
+    ['artifact-added', 'artifact-added'],
+    ['artifact-available', 'artifact-added'],
+    ['handoff', 'handoff'],
+    ['handoff-available', 'handoff']
+  ]);
+
+  return aliases.get(normalized) ?? null;
+}
+
+function isObjectLike(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function objectValue(value) {
+  return isObjectLike(value) ? value : null;
+}
+
+function firstObjectValue(value) {
+  return Array.isArray(value) ? value.find(isObjectLike) ?? null : null;
+}
+
+function firstOptionalString(...values) {
+  for (const value of values) {
+    const text = optionalAliasString(value);
+    if (text) return text;
+  }
+  return null;
+}
+
+function optionalAliasString(value) {
+  if (typeof value === 'object' && value !== null) {
+    return null;
+  }
+  return optionalString(value);
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
 }
 
 function optionalString(value) {
@@ -536,8 +770,9 @@ function printHelp() {
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --preset approval-required --message "Needs deletion sign-off"
   node scripts/orchestrationEvent.mjs --run-id run-tsk-127 --sample run-e2e-loop --task-id TSK-127
   node scripts/orchestrationEvent.mjs --json '{"runId":"run-tsk-127","kind":"run.created"}'
+  node scripts/orchestrationEvent.mjs --json-file /tmp/orchestration-events.jsonl
 
-Writes one JSONL event to:
+Writes JSONL event records to:
   $${orchestrationEventStoreEnv}, or
   ${defaultOrchestrationEventStorePath()}`);
 }
@@ -551,7 +786,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     }
     const result = event.sample
       ? await appendOrchestrationSample(event.sample, event)
-      : await appendOrchestrationEvent(event);
+      : event.jsonFile
+        ? await appendOrchestrationEventPayload(await readOrchestrationEventPayloadFile(event.jsonFile))
+        : event.events
+          ? await appendOrchestrationEventPayload(event)
+          : await appendOrchestrationEvent(event);
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

@@ -2093,6 +2093,12 @@
       detail: orchestrationEventCommandDetail(),
       perform: () => copyOrchestrationSampleCommand('run-e2e-loop', 'E2E loop sample')
     },
+    {
+      id: 'orchestration-copy-json-file-import-command',
+      label: 'Copy orchestration JSON import command',
+      detail: 'Import agent/orchestrator event payloads',
+      perform: () => copyOrchestrationJsonFileImportCommand()
+    },
     ...selectedProjectOrchestrationDecisionQueue.slice(0, 8).map((item) => ({
       id: `run-decision-${item.id}`,
       label: `Focus decision: ${item.title}`,
@@ -4446,6 +4452,13 @@
     await copyActivityCommand(
       `cd ${shellQuoteForCommand(macCommandBarRepoPath)} && scripts/mcb-orch ${orchestrationEventCommandArgs(args)}`,
       `${label} command copied`
+    );
+  }
+
+  async function copyOrchestrationJsonFileImportCommand() {
+    await copyActivityCommand(
+      `cd ${shellQuoteForCommand(macCommandBarRepoPath)} && scripts/mcb-orch --json-file ${shellQuoteForCommand('/tmp/mcb-orchestration-events.jsonl')}`,
+      'Orchestration JSON import command copied'
     );
   }
 
