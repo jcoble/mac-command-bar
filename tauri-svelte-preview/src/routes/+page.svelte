@@ -232,6 +232,7 @@
     readSourceGitDiffFromTauri,
     readSourceFromTauri,
     readTerminalSessionScrollbackFromTauri,
+    recordOrchestrationEventToTauri,
     removeProjectWorktreeFromTauri,
     revealPathFromTauri,
     revealSourceFileFromTauri,
@@ -330,6 +331,7 @@
   const bottomDockMinHeight = 180;
   const bottomDockMaxHeight = 620;
   const orchestrationRefreshIntervalMs = 5_000;
+  const defaultOrchestrationEventFilePath = '/tmp/mcb-orchestration-events.jsonl';
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-compact-chrome';
@@ -571,6 +573,10 @@
   let orchestrationRunsLoading = $state(false);
   let orchestrationRunError = $state('');
   let orchestrationRunSource = $state('browser preview');
+  let orchestrationEventFilePath = $state(defaultOrchestrationEventFilePath);
+  let orchestrationEventRecording = $state(false);
+  let orchestrationEventFileChoosing = $state(false);
+  let orchestrationEventImportStatus = $state('');
   let orchestrationRunsRefreshInFlight = false;
   let agentSessions = $state<AgentSession[]>([]);
   let agentSessionsLoading = $state(false);
@@ -2220,9 +2226,23 @@
       perform: () => copyOrchestrationSampleCommand('run-e2e-loop', 'E2E loop sample')
     },
     {
+      id: 'orchestration-record-heartbeat',
+      label: 'Record orchestration heartbeat',
+      detail: orchestrationEventCommandDetail(),
+      disabled: orchestrationEventRecording,
+      perform: () => recordNativeOrchestrationEvent('run-updated', 'Run heartbeat')
+    },
+    {
+      id: 'orchestration-choose-event-file',
+      label: 'Choose orchestration event file',
+      detail: orchestrationJsonFileImportPath(),
+      disabled: orchestrationEventFileChoosing,
+      perform: chooseOrchestrationEventFile
+    },
+    {
       id: 'orchestration-copy-json-file-import-command',
       label: 'Copy orchestration JSON import command',
-      detail: 'Import agent/orchestrator event payloads',
+      detail: orchestrationJsonFileImportPath(),
       perform: () => copyOrchestrationJsonFileImportCommand()
     },
     ...selectedProjectOrchestrationDecisionQueue.slice(0, 8).map((item) => ({
@@ -4675,11 +4695,180 @@
     );
   }
 
+  function orchestrationJsonFileImportPath() {
+    return orchestrationEventFilePath.trim() || defaultOrchestrationEventFilePath;
+  }
+
+  function mcbOrchestrationJsonFileImportCommand(path = orchestrationJsonFileImportPath()) {
+    return `cd ${shellQuoteForCommand(macCommandBarRepoPath)} && scripts/mcb-orch --json-file ${shellQuoteForCommand(path)}`;
+  }
+
   async function copyOrchestrationJsonFileImportCommand() {
     await copyActivityCommand(
-      `cd ${shellQuoteForCommand(macCommandBarRepoPath)} && scripts/mcb-orch --json-file ${shellQuoteForCommand('/tmp/mcb-orchestration-events.jsonl')}`,
+      mcbOrchestrationJsonFileImportCommand(),
       'Orchestration JSON import command copied'
     );
+  }
+
+  async function chooseOrchestrationEventFile() {
+    orchestrationEventFileChoosing = true;
+    orchestrationEventImportStatus = '';
+
+    try {
+      const selectedPath = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: 'Orchestration events', extensions: ['jsonl', 'json'] }]
+      });
+      const nextPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
+      if (typeof nextPath !== 'string' || nextPath.trim().length === 0) return;
+
+      orchestrationEventFilePath = nextPath;
+      orchestrationEventImportStatus = 'Event file selected';
+      fileActionStatus = 'Orchestration event file selected';
+    } catch (chooseError) {
+      orchestrationEventImportStatus =
+        chooseError instanceof Error ? chooseError.message : 'Could not choose event file';
+    } finally {
+      orchestrationEventFileChoosing = false;
+    }
+  }
+
+  function orchestrationStatusForEventKind(kind: string) {
+    const normalizedKind = kind.toLowerCase();
+    if (normalizedKind.includes('approval') || normalizedKind.includes('decision')) return 'waiting-for-approval';
+    if (normalizedKind.includes('blocker') || normalizedKind.includes('blocked')) return 'blocked';
+    if (normalizedKind.includes('failed') || normalizedKind.includes('failure')) return 'failed';
+    if (
+      normalizedKind.includes('verified') ||
+      normalizedKind.includes('resolved') ||
+      normalizedKind.includes('complete') ||
+      normalizedKind.includes('succeeded')
+    ) {
+      return 'succeeded';
+    }
+    return 'running';
+  }
+
+  function orchestrationEventID(kind: string, timestamp: string) {
+    const randomID =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    return `${selectedProjectOrchestrationRunID()}-${kind}-${timestamp}-${randomID}`;
+  }
+
+  function nativeOrchestrationEvent(
+    kind: string,
+    title: string,
+    patch: Partial<OrchestrationEvent> = {}
+  ): OrchestrationEvent {
+    const timestamp = new Date().toISOString();
+    const event: OrchestrationEvent = {
+      schemaVersion: 1,
+      id: orchestrationEventID(kind, timestamp),
+      runId: selectedProjectOrchestrationRunID(),
+      timestamp,
+      kind,
+      status: orchestrationStatusForEventKind(kind),
+      title,
+      message: null,
+      projectID: selectedProject.id,
+      projectName: selectedProject.name,
+      projectPath: selectedProject.path,
+      rootLabel: selectedProjectPrimaryRepoSummary?.rootLabel ?? formatSourceContextRootLabel(selectedProject.path),
+      taskID: selectedProjectOrchestrationTaskID(),
+      agentId: null,
+      agentProvider: null,
+      agentRole: null,
+      stepId: null,
+      stepKind: null,
+      artifactId: null,
+      artifactKind: null,
+      artifactPath: null,
+      artifactUrl: null,
+      linkKind: null,
+      linkLabel: null,
+      linkUrl: null,
+      scenario: null,
+      issueID: null,
+      retryAttempt: null,
+      approvalSubject: null,
+      blockerReason: null,
+      decisionPrompt: null,
+      scenarioCount: null,
+      issueCount: null,
+      testCount: null,
+      retestCount: null,
+      fixCount: null,
+      resolvedCount: null,
+      verifiedCount: null,
+      delegatedCount: null,
+      decisionCount: null,
+      approvalCount: null,
+      failedCount: null
+    };
+
+    return { ...event, ...patch } as OrchestrationEvent;
+  }
+
+  function orchestrationEventCommandPatchArgs(patch: Partial<OrchestrationEvent>) {
+    return {
+      '--message': patch.message,
+      '--scenario': patch.scenario,
+      '--issue-id': patch.issueID,
+      '--agent-role': patch.agentRole,
+      '--approval-subject': patch.approvalSubject,
+      '--blocker-reason': patch.blockerReason,
+      '--decision-prompt': patch.decisionPrompt,
+      '--scenario-count': patch.scenarioCount,
+      '--issue-count': patch.issueCount,
+      '--test-count': patch.testCount,
+      '--retest-count': patch.retestCount,
+      '--fix-count': patch.fixCount,
+      '--resolved-count': patch.resolvedCount,
+      '--verified-count': patch.verifiedCount,
+      '--delegated-count': patch.delegatedCount,
+      '--decision-count': patch.decisionCount,
+      '--approval-count': patch.approvalCount,
+      '--failed-count': patch.failedCount
+    };
+  }
+
+  async function recordNativeOrchestrationEvent(
+    kind: string,
+    label: string,
+    patch: Partial<OrchestrationEvent> = {}
+  ) {
+    orchestrationEventRecording = true;
+    orchestrationEventImportStatus = '';
+    orchestrationRunError = '';
+
+    try {
+      const event = nativeOrchestrationEvent(kind, label, patch);
+      const run = await recordOrchestrationEventToTauri(event);
+
+      if (!run) {
+        await copyActivityCommand(
+          mcbOrchestrationEventCommand(kind, orchestrationEventCommandPatchArgs(patch)),
+          'Native event unavailable; command copied'
+        );
+        orchestrationEventImportStatus = 'Native event store unavailable; command copied';
+        return;
+      }
+
+      orchestrationRuns = [run, ...orchestrationRuns.filter((entry) => entry.id !== run.id)];
+      orchestrationRunSource = 'native event store';
+      orchestrationEventImportStatus = `${label} recorded`;
+      fileActionStatus = `${label} recorded`;
+      focusOrchestrationRun(run);
+      void loadOrchestrationRuns(projectOptions, { background: true });
+    } catch (recordError) {
+      orchestrationRunError = recordError instanceof Error ? recordError.message : 'Could not record orchestration event';
+      orchestrationEventImportStatus = orchestrationRunError;
+    } finally {
+      orchestrationEventRecording = false;
+    }
   }
 
   async function copyOrchestrationTaskReference(run: OrchestrationRun) {
@@ -11817,6 +12006,48 @@
           </label>
 
           {#if sourceActivityMode === 'runs'}
+          <div class="run-ingest-strip" aria-label="Orchestration ingest">
+            <input
+              bind:value={orchestrationEventFilePath}
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Orchestration event file path"
+              title="JSON or JSONL orchestration event file"
+            />
+            <button
+              type="button"
+              aria-label="Choose orchestration event file"
+              title="Choose orchestration event file"
+              disabled={orchestrationEventFileChoosing}
+              onclick={chooseOrchestrationEventFile}
+            >
+              <FolderOpen size={12} strokeWidth={2} />
+            </button>
+            <button
+              type="button"
+              aria-label="Copy orchestration JSON import command"
+              title="Copy orchestration JSON import command"
+              onclick={copyOrchestrationJsonFileImportCommand}
+            >
+              <Copy size={12} strokeWidth={2} />
+            </button>
+            <button
+              type="button"
+              aria-label="Record orchestration heartbeat"
+              title="Record orchestration heartbeat"
+              disabled={orchestrationEventRecording}
+              onclick={() =>
+                recordNativeOrchestrationEvent('run-updated', 'Run heartbeat', {
+                  message: `Heartbeat from ${selectedProject.name}`
+                })}
+            >
+              <Activity size={12} strokeWidth={2} />
+            </button>
+            {#if orchestrationEventImportStatus}
+              <small>{orchestrationEventImportStatus}</small>
+            {/if}
+          </div>
           <div class="activity-panel-list" aria-label="Orchestration run list">
             {#if filteredProjectOrchestrationRuns.length === 0}
               <div class="activity-empty">No orchestration runs</div>
@@ -16078,6 +16309,74 @@
 
   .paste-cleanup-footer {
     justify-content: space-between;
+  }
+
+  .run-ingest-strip {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, 26px);
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    padding: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.12);
+  }
+
+  .run-ingest-strip input {
+    min-width: 0;
+    height: 26px;
+    padding: 0 8px;
+    overflow: hidden;
+    color: #cfd8d5;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 7px;
+    outline: 0;
+    background: rgba(0, 0, 0, 0.16);
+    font: 10px/1.2 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    text-overflow: ellipsis;
+  }
+
+  .run-ingest-strip input:focus {
+    border-color: rgba(92, 226, 207, 0.36);
+    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.08);
+  }
+
+  .run-ingest-strip button {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    color: #95a29f;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .run-ingest-strip button:hover,
+  .run-ingest-strip button:focus-visible {
+    color: #e9f5f2;
+    border-color: rgba(92, 226, 207, 0.36);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .run-ingest-strip button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .run-ingest-strip small {
+    min-width: 0;
+    overflow: hidden;
+    grid-column: 1 / -1;
+    color: #8fd8cf;
+    font-size: 9px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .activity-panel-list {

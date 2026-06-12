@@ -51,6 +51,7 @@ Completed and committed:
 - Conversation workspace restore now treats missing saved worktrees as repairable context drift: rows and command-palette actions copy an audit/recreate plan, and terminal resume copies that plan instead of opening a dead path.
 - Conversation workspace restore now reopens saved files immediately while project indexing runs in the background; background scans preserve the restored file selection if the refreshed index cannot see that path yet.
 - Orchestration event ingest now accepts real-ish agent/orchestrator payloads: snake_case aliases, nested project/task/agent/step/artifact/link/counts objects, event aliases such as `ui_verified`, JSON arrays, JSON envelope events, and JSONL/JSON files via `--json-file`.
+- The Runs pane now has a compact orchestration ingest strip for choosing an event JSON/JSONL file, copying the exact import command, and recording a native heartbeat event without starting a watcher by default.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including Tauri source bridge wrappers, dev/attach config guards, C# and TypeScript language-server smoke tests, and the Tauri Rust build.
 
 Current checkpoint:
@@ -59,7 +60,7 @@ Current checkpoint:
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: source bridge wrappers, dev/attach config, web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
-- Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
+- Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, JSON/JSONL file ingestion, selected import paths, import command copy, and native heartbeat recording are covered by tests.
 - Priority 3.9 LSP recovery and command depth are implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, local drawer actions cover problems/symbols/definitions/references, completions/signature help are tucked into palette/menu surfaces, copyable intelligence briefs exist, and C#/TypeScript native LSP smoke tests pass.
 - Priority 4.11 terminal session restore polish is implemented enough for iteration: embedded PTYs can copy focus plans, restore matching workspace snapshots, attach directly when no snapshot exists, and route missing-worktree restores to the same repair-plan guard as conversation snapshots.
 
@@ -208,7 +209,7 @@ Target result:
 - Long agent loops show live state instead of opaque terminal output.
 
 Work:
-- Existing: orchestration event CLI, native event store, run cards, timeline helpers, artifacts, task links, copyable event commands, scenario/agent/issue/fix/UI-test/retry/approval/blocker fields, live tallies for found/fixed/retested/sign-off, decision queues, and current activity summaries.
+- Existing: orchestration event CLI, native event store, run cards, timeline helpers, artifacts, task links, copyable event commands, compact event-file import controls, native heartbeat recording, scenario/agent/issue/fix/UI-test/retry/approval/blocker fields, live tallies for found/fixed/retested/sign-off, decision queues, and current activity summaries.
 - Next: ingest richer real orchestrator output from live agent loops and attach artifacts/transcripts as they are produced.
 
 Acceptance:
@@ -348,17 +349,17 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 4.11, terminal session restore polish.
+Last checkpoint: Priority 2.7, orchestration live ingest polish.
 
 - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: embedded terminal sessions now resolve matching saved workspace snapshots by session id or cwd, show saved-workspace readiness inline in the terminal dock, expose copyable focus plans from the command palette, restore matching workspace snapshots before attach, attach directly when no snapshot exists, and copy the workspace repair plan instead of restoring into a missing worktree.
+- Behavior delivered: Runs mode now has a compact event-file ingest strip with editable JSON/JSONL path, native file chooser, exact import-command copy, native heartbeat recording through the Tauri event store, immediate run-list refresh/focus, and a CLI-command fallback when native recording is unavailable.
 - Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
-- Remaining risk: no real Tauri PTY/manual terminal restore was run for this slice; browser preview cannot prove native PTY lifecycle.
+- Remaining risk: no long-running watcher was added by design, and this slice did not run a live external orchestrator loop; real agent loops should still write/import JSONL events through `scripts/mcb-orch`.
 
-Next implementation slice: Priority 2.7 orchestration live ingest polish.
+Next implementation slice: Priority 4.13 clipboard paste cleanup utility polish.
 
 Definition of done for the next slice:
-- Add a compact import/watch surface for real orchestrator event files without requiring manual CLI use.
-- Keep orchestration runs grouped by project/worktree/task and linked to saved sessions/workspaces.
-- Surface current step, blockers, sign-off requests, artifacts, and retest counts in dense rows.
-- Preserve the existing JSON/JSONL CLI path and avoid starting a long-running watcher by default.
+- Keep clipboard/paste cleanup useful without adding persistent chrome.
+- Add compact paste cleanup history/reuse affordances for cleaned input and drafted replies.
+- Keep read/copy/clear/mode actions available through the command palette.
+- Validate with `pnpm test:paste-cleanup`, `pnpm test:source-ui`, `pnpm check`, and `pnpm build`.
