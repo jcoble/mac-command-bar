@@ -7,7 +7,8 @@ import {
   restoreWorkspaceSnapshot,
   selectStartupWorkspaceSnapshot,
   snapshotStorageKey,
-  upsertWorkspaceSnapshot
+  upsertWorkspaceSnapshot,
+  workspaceSnapshotsForWorktreePath
 } from '../src/lib/workspaceSnapshot.ts';
 
 const dockLayout = createDefaultSourceDockLayout();
@@ -128,6 +129,22 @@ const selectedProjectSnapshot = createWorkspaceSnapshot({
   capturedAt: 1_500
 });
 
+const nestedWorktreeSnapshot = createWorkspaceSnapshot({
+  provider: 'claude',
+  sessionID: 'nested-worktree',
+  title: 'Nested web task',
+  project: {
+    id: 'ediplatform',
+    name: 'EdiPlatform',
+    path: '/Users/blackcolours/dev/work/EdiPlatform'
+  },
+  cwd: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/ediplatform-web',
+  worktreePath: null,
+  branch: 'cdx/tsk-127-command-center',
+  selectedPath: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/ediplatform-web/src/routes/+page.svelte',
+  capturedAt: 2_500
+});
+
 const updatedSnapshot = createWorkspaceSnapshot({
   ...snapshot,
   title: 'Review checkout flow resumed',
@@ -152,6 +169,31 @@ assert.equal(
   upsertWorkspaceSnapshot([updatedSnapshot, olderSnapshot], olderSnapshot, 1).length,
   1,
   'snapshot history should be bounded'
+);
+
+assert.deepEqual(
+  workspaceSnapshotsForWorktreePath(
+    [olderSnapshot, snapshot, selectedProjectSnapshot, nestedWorktreeSnapshot],
+    '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center/',
+    8
+  ).map((item) => [item.id, item.title, item.capturedAt]),
+  [
+    ['claude:nested-worktree', 'Nested web task', 2_500],
+    ['codex:019c-session', 'Review checkout flow', 1_000]
+  ],
+  'worktree snapshot lookup should match saved worktree roots and nested cwd sessions newest first'
+);
+
+assert.deepEqual(
+  workspaceSnapshotsForWorktreePath([snapshot, nestedWorktreeSnapshot], '', 8),
+  [],
+  'worktree snapshot lookup should ignore empty worktree paths'
+);
+
+assert.equal(
+  workspaceSnapshotsForWorktreePath([snapshot, nestedWorktreeSnapshot], snapshot.worktreePath ?? '', 1).length,
+  1,
+  'worktree snapshot lookup should honor the requested display limit'
 );
 
 assert.equal(

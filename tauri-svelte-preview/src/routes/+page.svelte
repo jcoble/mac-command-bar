@@ -75,6 +75,7 @@
     selectStartupWorkspaceSnapshot,
     snapshotStorageKey,
     upsertWorkspaceSnapshot,
+    workspaceSnapshotsForWorktreePath,
     type WorkspaceSnapshot,
     type WorkspaceSnapshotEmbeddedTerminal,
     type WorkspaceSnapshotProvider,
@@ -1013,7 +1014,14 @@
         safety.badge,
         safety.reason,
         safety.recommendation,
-        safety.activityLabel
+        safety.activityLabel,
+        ...worktreeWorkspaceSnapshots(worktree).flatMap((snapshot) => [
+          snapshot.title,
+          snapshot.provider,
+          snapshot.sessionID,
+          snapshot.model,
+          snapshot.resumeCommand
+        ])
       );
     })
   );
@@ -2246,6 +2254,18 @@
       disabled: projectWorktreeSafety(worktree).kind === 'protected',
       perform: () => copyWorktreeBackupCommand(worktree)
     })),
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => {
+      const snapshot = latestWorktreeWorkspaceSnapshot(worktree);
+      return {
+        id: `worktree-restore-snapshot-${worktree.path}`,
+        label: `Restore saved workspace: ${worktree.branch}`,
+        detail: snapshot ? worktreeWorkspaceSnapshotLabel(worktree) : 'No saved workspace for this worktree',
+        disabled: !snapshot,
+        perform: () => {
+          if (snapshot) return restoreConversationWorkspaceSnapshot(snapshot);
+        }
+      };
+    }),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-resume-${session.provider}-${session.id}`,
       label: `Resume ${session.provider}: ${session.title}`,
@@ -4919,6 +4939,30 @@
   function workspaceSnapshotForAgentSession(session: AgentSession): WorkspaceSnapshot | null {
     const snapshotID = workspaceSnapshotIDForAgentSession(session);
     return workspaceSnapshots.find((snapshot) => snapshot.id === snapshotID) ?? null;
+  }
+
+  function worktreeWorkspaceSnapshots(worktree: ProjectWorktree, limit = 3): WorkspaceSnapshot[] {
+    return workspaceSnapshotsForWorktreePath(workspaceSnapshots, worktree.path, limit);
+  }
+
+  function latestWorktreeWorkspaceSnapshot(worktree: ProjectWorktree): WorkspaceSnapshot | null {
+    return worktreeWorkspaceSnapshots(worktree, 1)[0] ?? null;
+  }
+
+  function worktreeWorkspaceSnapshotLabel(worktree: ProjectWorktree) {
+    const snapshots = worktreeWorkspaceSnapshots(worktree);
+    const latestSnapshot = snapshots[0] ?? null;
+    if (!latestSnapshot) return 'No saved workspace';
+
+    const countLabel = snapshots.length === 1 ? '1 saved' : `${snapshots.length} saved`;
+    return `${countLabel} · ${latestSnapshot.provider} · ${latestSnapshot.title}`;
+  }
+
+  function worktreeWorkspaceSnapshotTitle(worktree: ProjectWorktree) {
+    const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree);
+    if (!latestSnapshot) return 'No saved workspace';
+
+    return `Restore ${latestSnapshot.title} · ${workspaceSnapshotEnvironmentLabel(latestSnapshot)}`;
   }
 
   function workspaceSnapshotIDForAgentSession(session: AgentSession) {
@@ -11341,6 +11385,7 @@
                 {@const safety = projectWorktreeSafety(worktree)}
                 {@const primaryAction = projectWorktreePrimaryAction(worktree)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
+                {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
                 <div
                   class="activity-worktree-row"
                   class:blocked={eligibilityKind === 'blocked'}
@@ -11375,6 +11420,18 @@
 	                      <span>{projectWorktreeActivityLabel(worktree)}</span>
 	                    </small>
                     <small class="worktree-recommendation">{safety.recommendation}</small>
+                    {#if latestSnapshot}
+                      <button
+                        class="worktree-snapshot-chip"
+                        type="button"
+                        aria-label="Restore latest saved workspace for worktree"
+                        title={worktreeWorkspaceSnapshotTitle(worktree)}
+                        onclick={() => restoreConversationWorkspaceSnapshot(latestSnapshot)}
+                      >
+                        <History size={11} strokeWidth={2} />
+                        <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
+                      </button>
+                    {/if}
                   </div>
                   <div class="activity-row-actions" aria-label="Worktree actions">
                     <button
@@ -12482,6 +12539,7 @@
               {@const safety = projectWorktreeSafety(worktree)}
               {@const primaryAction = projectWorktreePrimaryAction(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
+              {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
               <div
                 class="worktree-context-row"
                 class:blocked={eligibilityKind === 'blocked'}
@@ -12522,6 +12580,18 @@
                   {safety.decisionChecklist[0] ?? 'Audit before cleanup.'}
                 </small>
                 <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
+                  {#if latestSnapshot}
+                    <button
+                      class="worktree-snapshot-chip"
+                      type="button"
+                      aria-label="Restore latest saved workspace for worktree"
+                      title={worktreeWorkspaceSnapshotTitle(worktree)}
+                      onclick={() => restoreConversationWorkspaceSnapshot(latestSnapshot)}
+                    >
+                      <History size={11} strokeWidth={2} />
+                      <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
+                    </button>
+                  {/if}
                   <button
                     type="button"
                     aria-label="Copy worktree cleanup plan"
@@ -15502,6 +15572,40 @@
     white-space: nowrap;
   }
 
+  .worktree-snapshot-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 4px;
+    justify-self: start;
+    max-width: 126px;
+    height: 18px;
+    min-width: 0;
+    padding: 0 6px;
+    color: #8fe7dc;
+    border: 1px solid rgba(92, 226, 207, 0.18);
+    border-radius: 999px;
+    background: rgba(92, 226, 207, 0.08);
+    font-size: 8px;
+    font-weight: 820;
+    cursor: pointer;
+  }
+
+  .worktree-snapshot-chip span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worktree-snapshot-chip:hover,
+  .worktree-snapshot-chip:focus-visible {
+    color: #eafaf7;
+    border-color: rgba(92, 226, 207, 0.34);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.14);
+  }
+
   .worktree-recommendation {
     color: #78837f;
   }
@@ -18052,6 +18156,13 @@
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.035);
     cursor: pointer;
+  }
+
+  .worktree-context-actions .worktree-snapshot-chip {
+    display: inline-flex;
+    width: auto;
+    max-width: 126px;
+    padding: 0 6px;
   }
 
   .worktree-context-actions button:hover,

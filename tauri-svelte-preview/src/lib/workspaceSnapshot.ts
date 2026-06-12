@@ -304,6 +304,21 @@ export function upsertWorkspaceSnapshot(
   return nextSnapshots.slice(0, Math.max(1, Math.floor(maxSnapshots)));
 }
 
+export function workspaceSnapshotsForWorktreePath(
+  snapshots: WorkspaceSnapshot[],
+  worktreePath: string | null | undefined,
+  limit = 6
+): WorkspaceSnapshot[] {
+  const normalizedWorktreePath = normalizeOptionalPath(worktreePath);
+  const maxSnapshots = Math.max(0, Math.floor(limit));
+  if (!normalizedWorktreePath || maxSnapshots === 0) return [];
+
+  return snapshots
+    .filter((snapshot) => snapshotMatchesWorktreePath(snapshot, normalizedWorktreePath))
+    .sort((left, right) => right.capturedAt - left.capturedAt)
+    .slice(0, maxSnapshots);
+}
+
 export function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot | null {
   if (typeof value !== 'object' || value === null) return null;
   const snapshot = value as Partial<WorkspaceSnapshot>;
@@ -350,6 +365,22 @@ export function parseStoredWorkspaceSnapshot(value: unknown): WorkspaceSnapshot 
 
 function snapshotID(provider: WorkspaceSnapshotProvider, sessionID: string): string {
   return `${provider}:${sessionID.trim() || 'session'}`;
+}
+
+function snapshotMatchesWorktreePath(snapshot: WorkspaceSnapshot, normalizedWorktreePath: string): boolean {
+  return [
+    snapshot.worktreePath,
+    snapshot.cwd,
+    snapshot.selectedPath,
+    ...snapshot.openPaths
+  ].some((path) => pathIsInsideWorktree(path, normalizedWorktreePath));
+}
+
+function pathIsInsideWorktree(path: string | null | undefined, normalizedWorktreePath: string): boolean {
+  const normalizedPath = normalizeOptionalPath(path);
+  if (!normalizedPath) return false;
+
+  return normalizedPath === normalizedWorktreePath || normalizedPath.startsWith(`${normalizedWorktreePath}/`);
 }
 
 function isWorkspaceSnapshotProvider(value: unknown): value is WorkspaceSnapshotProvider {

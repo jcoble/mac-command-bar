@@ -98,6 +98,8 @@ assert.ok(pageSource.includes('min-height: 58px'), 'Worktree rows should have st
 assertDeclaration('.activity-filter-box', 'grid-template-columns: 18px minmax(0, 1fr)');
 assertDeclaration('.worktree-row-main', 'gap: 2px');
 assertDeclaration('.worktree-safety-line', 'display: flex');
+assertDeclaration('.worktree-snapshot-chip', 'display: inline-flex');
+assertDeclaration('.worktree-snapshot-chip', 'max-width: 126px');
 assertDeclaration('.worktree-context-main', 'display: grid');
 assertDeclaration('.worktree-context-actions', 'display: inline-flex');
 assertDeclaration('.worktree-decision-queue', 'display: grid');
@@ -350,6 +352,9 @@ assert.ok(pageSource.includes('orchestrationTimelineDetail(item)'), 'Runs mode s
 assert.ok(pageSource.includes('captureAgentSessionWorkspaceSnapshot(session);'), 'Agent terminal resume should refresh that session workspace snapshot');
 assert.ok(pageSource.includes('function deleteWorkspaceSnapshot'), 'Workspace snapshots should be removable from local history');
 assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Workspace should find saved context for a session row');
+assert.ok(pageSource.includes('function worktreeWorkspaceSnapshots'), 'Workspace should find saved conversation snapshots for a worktree row');
+assert.ok(pageSource.includes('workspaceSnapshotsForWorktreePath'), 'Worktree rows should use the shared snapshot-to-worktree matcher');
+assert.ok(pageSource.includes('function worktreeWorkspaceSnapshotLabel'), 'Worktree rows should summarize linked snapshots compactly');
 assert.ok(pageSource.includes('function workspaceSnapshotProjectForSession'), 'Workspace should store agent worktrees as restorable project roots');
 assert.ok(pageSource.includes('function workspaceSnapshotSessionIDForSession'), 'Workspace snapshots should qualify cmux session IDs by concrete agent provider');
 assert.ok(pageSource.includes("provider.startsWith('cmux-')"), 'Workspace snapshots should group cmux-backed sessions under the cmux provider');
@@ -641,6 +646,7 @@ assert.ok(pageSource.includes('prioritizedProjectWorktrees.slice(0, 8)'), 'Comma
 assert.ok(pageSource.includes('worktree-audit-command-${worktree.path}'), 'Command palette should copy worktree audit commands');
 assert.ok(pageSource.includes('worktree-remove-command-${worktree.path}'), 'Command palette should copy worktree remove commands');
 assert.ok(pageSource.includes('worktree-backup-command-${worktree.path}'), 'Command palette should copy worktree backup commands');
+assert.ok(pageSource.includes('worktree-restore-snapshot-${worktree.path}'), 'Command palette should restore a worktree-linked saved workspace');
 assert.ok(pageSource.includes("id: 'worktree-cleanup-brief'"), 'Command palette should copy the aggregate worktree cleanup brief');
 assert.ok(pageSource.includes("id: 'worktree-cleanup-script'"), 'Command palette should copy the guarded worktree cleanup script');
 assert.ok(pageSource.includes('agent-resume-${session.provider}-${session.id}'), 'Command palette should expose agent resume targets');
@@ -790,6 +796,8 @@ assert.ok(pageSource.includes('filteredProjectWorktrees'), 'Activity panels shou
 assert.ok(pageSource.includes('worktree.taskID'), 'Worktree rows should expose parsed task IDs');
 assert.ok(pageSource.includes('gitTaskUrl(worktree.taskID)'), 'Worktree rows should link parsed task IDs to Notion');
 assert.ok(pageSource.includes('aria-label="Open worktree task"'), 'Worktree task links should be accessible');
+assert.ok(pageSource.includes('aria-label="Restore latest saved workspace for worktree"'), 'Worktree rows should restore the latest linked workspace snapshot');
+assert.ok(pageSource.includes('class="worktree-snapshot-chip"'), 'Worktree rows should render a compact saved workspace chip');
 assert.ok(pageSource.includes('projectWorktreeActivityLabel(worktree)'), 'Worktree rows should show last activity');
 assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
 assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
