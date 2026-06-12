@@ -40,6 +40,7 @@ Completed and committed:
 - Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
 - Project activation scans now share an explicit cache/missing/force/tiny-index plan, so auto-scans explain why they are running.
 - Editor LSP recovery actions are visible in the editor toolbar: retry status, copy selected-file status, and copy install command when fallback is active.
+- Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
 Current checkpoint:
@@ -47,7 +48,7 @@ Current checkpoint:
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
-- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Remaining work is polish, larger graph UX, and tighter task/Notion display, not first scaffolding.
+- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable and task ledger rows can open task links directly. Remaining work is larger graph UX and stale-clean worktree/task ledger polish, not first scaffolding.
 - Priority 2.7 orchestration timeline detail is implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, and handoff copy are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
 
@@ -134,8 +135,8 @@ Target result:
 - The app shows what changed, where it belongs, and what Notion/task branch it maps to.
 
 Work:
-- Existing: Git history pane, graph markers, commit selection, branch health chips, staged/unstaged/untracked groups, selected-file diff, task extraction, Notion task links/fallback search, commit-message entry, fetch/pull/push/stage/unstage/commit.
-- Next: improve graph density for larger histories, add clearer current HEAD/upstream markers, add richer selected-commit/task detail, and keep actions tucked behind compact menus/palette entries where possible.
+- Existing: Git history pane, graph markers, commit selection, branch health chips, staged/unstaged/untracked groups, selected-file diff, task extraction, Notion task links/fallback search, commit-message entry, fetch/pull/push/stage/unstage/commit, copyable task-source handoffs, command-palette task-source actions, and compact task-open ledger actions.
+- Next: improve graph density for larger histories, add clearer current HEAD/upstream markers, and keep actions tucked behind compact menus/palette entries where possible.
 
 Acceptance:
 - User can tell which repo/worktree is dirty, for how long, and which task it belongs to.
@@ -335,10 +336,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Next implementation slice: Priority 1.4, Git graph and task-link polish.
+Last checkpoint: Priority 1.4, Git task-source handoff polish.
+
+- Changed files: `tauri-svelte-preview/src/lib/sourceData.ts`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceData.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`.
+- Behavior delivered: task source rows copy full handoff text with task link/source details; command palette can copy task source groups; task ledger rows expose a compact open-task action.
+- Validation: `pnpm test:source-data`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`.
+- Remaining risk: no real Notion/browser click validation in this slice; covered by URL construction tests and browser automation was not started.
+
+Next implementation slice: Priority 1.4, Git graph density and HEAD/upstream clarity.
 
 Definition of done for the next slice:
-- Selected Git/task rows expose compact task links and copyable task context without adding persistent chrome.
 - Git history rows make current HEAD/upstream/task ownership clearer.
-- Worktree/task context can be copied as a handoff brief for agent or cleanup decisions.
-- Tests cover task-link rendering, command-palette hooks, and shared Git/task formatting helpers.
+- Larger histories stay scannable without widening the panel.
+- Tests cover graph classification, ref-chip labeling, and compact history rendering hooks.
