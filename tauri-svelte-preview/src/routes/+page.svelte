@@ -1668,6 +1668,50 @@
       perform: () => requestSourceIntelligenceAction('hover')
     },
     {
+      id: 'editor-local-problems',
+      label: 'Show local problems drawer',
+      detail: sourceDiagnosticSummary,
+      perform: () => openEditorNavPanel('problems')
+    },
+    {
+      id: 'editor-local-symbols',
+      label: 'Show local symbols drawer',
+      detail: `${sourceSymbols.length} symbols`,
+      perform: () => openEditorNavPanel('symbols')
+    },
+    {
+      id: 'editor-local-definitions',
+      label: 'Show local definitions drawer',
+      detail: sourceLookupSummary,
+      perform: () => openEditorNavPanel('definitions')
+    },
+    {
+      id: 'editor-local-references',
+      label: 'Show local references drawer',
+      detail: sourceReferenceSummary || 'No references yet',
+      perform: () => openEditorNavPanel('references')
+    },
+    {
+      id: 'clear-source-lookups',
+      label: 'Clear source lookup results',
+      detail: sourceLookupSummary,
+      disabled:
+        sourceDefinitionNavCount === 0 &&
+        sourceReferenceTargets.length === 0 &&
+        !sourceDefinitionQuery &&
+        !sourceReferenceQuery &&
+        !sourceImplementationQuery &&
+        !sourceTypeDefinitionQuery,
+      perform: clearSourceLookupResults
+    },
+    {
+      id: 'source-copy-intelligence-brief',
+      label: 'Copy source intelligence brief',
+      detail: preview?.fileName ?? selectedProject.name,
+      disabled: !preview,
+      perform: copySourceIntelligenceBrief
+    },
+    {
       id: 'lsp-retry-status',
       label: 'Retry language server status',
       detail: sourceLspStatusLabel(),
@@ -3633,6 +3677,52 @@
     ].join('\n');
   }
 
+  function sourceIntelligenceBriefText() {
+    const currentFile = selectedRecord
+      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+      : 'none';
+    const definitionLines = sourceDefinitionTargets.slice(0, 8).map((target) => {
+      return `- ${target.symbolName} (${target.kind}) ${target.relativePath}:${target.line}`;
+    });
+    const implementationLines = sourceImplementationTargets.slice(0, 6).map((target) => {
+      return `- implementation ${target.symbolName} ${target.relativePath}:${target.line}`;
+    });
+    const typeDefinitionLines = sourceTypeDefinitionTargets.slice(0, 6).map((target) => {
+      return `- type ${target.symbolName} ${target.relativePath}:${target.line}`;
+    });
+    const referenceLines = sourceReferenceTargets.slice(0, 8).map((target) => {
+      return `- ${target.fileName}:${target.line}:${target.column} ${target.excerpt}`;
+    });
+    const problemLines = sourceDiagnostics.slice(0, 8).map((diagnostic) => {
+      return `- ${diagnostic.severity} ${diagnostic.line}:${diagnostic.column} ${diagnostic.message}`;
+    });
+    const symbolLines = sourceSymbols.slice(0, 8).map((symbol) => {
+      return `- ${symbol.kind} ${symbol.name} line ${symbol.line}`;
+    });
+
+    return [
+      'Source intelligence brief',
+      `Project: ${selectedProject.name}`,
+      `Root: ${selectedProject.path}`,
+      `Current file: ${currentFile}`,
+      `Language: ${preview?.language ?? 'none'}`,
+      `LSP: ${sourceLspStatusLabel()}`,
+      `Drawer: ${editorNavPanel ?? 'closed'}`,
+      `Problems: ${sourceDiagnosticSummary}`,
+      problemLines.length > 0 ? problemLines.join('\n') : '- none',
+      `Symbols: ${sourceSymbols.length}`,
+      symbolLines.length > 0 ? symbolLines.join('\n') : '- none',
+      `Definitions: ${sourceDefinitionSummary || 'none'}`,
+      definitionLines.length > 0 ? definitionLines.join('\n') : '- none',
+      `Implementations: ${sourceImplementationSummary || 'none'}`,
+      implementationLines.length > 0 ? implementationLines.join('\n') : '- none',
+      `Type definitions: ${sourceTypeDefinitionSummary || 'none'}`,
+      typeDefinitionLines.length > 0 ? typeDefinitionLines.join('\n') : '- none',
+      `References: ${sourceReferenceSummary || 'none'}`,
+      referenceLines.length > 0 ? referenceLines.join('\n') : '- none'
+    ].join('\n');
+  }
+
   function sourceLayoutDiagnosticText() {
     const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
     const currentFile = selectedRecord
@@ -4146,6 +4236,10 @@
 
   async function copySourceContextBrief() {
     await copyActivityCommand(sourceContextBriefText(), 'Source context brief copied');
+  }
+
+  async function copySourceIntelligenceBrief() {
+    await copyActivityCommand(sourceIntelligenceBriefText(), 'Source intelligence brief copied');
   }
 
   async function copySourceLayoutDiagnostic() {
@@ -13833,6 +13927,32 @@
                 >
                   <SplitSquareHorizontal size={13} strokeWidth={2} />
                   <span>Hover</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Trigger completions"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('completion');
+                  }}
+                >
+                  <Braces size={13} strokeWidth={2} />
+                  <span>Completions</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-label="Show signature help"
+                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  onclick={() => {
+                    closeEditorActionMenu();
+                    requestSourceIntelligenceAction('signature-help');
+                  }}
+                >
+                  <Activity size={13} strokeWidth={2} />
+                  <span>Signature help</span>
                 </button>
                 <button
                   type="button"

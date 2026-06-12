@@ -42,6 +42,7 @@ Completed and committed:
 - Project controls now show a compact setup notice with validation state, detected Git root, scan evidence, and scan cap so add/switch/restore does not feel mysterious.
 - Editor LSP recovery actions are visible in the editor toolbar: retry status, copy selected-file status, and copy install command when fallback is active.
 - Editor navigation now has a compact local drawer for problems, symbols, definitions, and references so common code-browsing results do not require keeping the full insight pane open.
+- Editor LSP command depth now stays behind the command palette and action menu: local problems/symbols/definition/reference drawers, clear lookup results, completions, signature help, and copyable source intelligence briefs are available without adding persistent chrome.
 - Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Git history rows now use normalized ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits while keeping raw refs in copyable detail/handoff text.
 - Git task ledger rows now show owner and cleanup summaries, stale-clean candidates, backup-needed worktrees, active sessions, saved workspace ownership, runs, and commits without adding persistent panels.
@@ -58,7 +59,7 @@ Current checkpoint:
 - Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: source bridge wrappers, dev/attach config, web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
-- Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
+- Priority 3.9 LSP recovery and command depth are implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, local drawer actions cover problems/symbols/definitions/references, completions/signature help are tucked into palette/menu surfaces, copyable intelligence briefs exist, and C#/TypeScript native LSP smoke tests pass.
 
 ## Priority 0: Make The App Usable As A Workspace
 
@@ -345,16 +346,17 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 3.9, LSP in-editor result UX.
+Last checkpoint: Priority 3.9, LSP command depth.
 
 - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: the editor now has a compact local navigation strip and capped drawer for Problems, Symbols, Definitions, and References. Definition, implementation, type-definition, and reference lookups open the local drawer automatically. Monaco problem/symbol shortcuts now open the local drawer first, while the full insight pane remains available from the action menu and command palette. The old collapsed lookup popover is suppressed when the local drawer is active to avoid duplicate result surfaces.
+- Behavior delivered: local drawer commands for problems, symbols, definitions, and references are exposed from the command palette; lookup results can be cleared without opening another pane; source intelligence briefs can be copied for handoff/debugging; completions and signature help are available from the editor action menu while staying off the persistent toolbar.
 - Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
 - Remaining risk: no Browser/Playwright proof was run for this slice, so visual density should still be checked at half-width and in the real Tauri window.
 
-Next implementation slice: Priority 3.9 LSP command depth.
+Next implementation slice: Priority 4.11 terminal session restore polish.
 
 Definition of done for the next slice:
-- Add compact editor/command-palette entry points for signature help, completions, document highlights, semantic tokens, inlay hints, quick fixes, format, and rename status where they are already wired.
-- Keep any new controls behind the action menu, command palette, or the local drawer; do not add persistent chrome.
-- Preserve existing Monaco keyboard paths and native LSP fallbacks.
+- Tie embedded terminal sessions more tightly to project/worktree/conversation snapshots.
+- Add compact restore/focus/copy-plan entry points for terminal sessions without adding persistent chrome.
+- Guard missing or stale workspace paths the same way conversation restore now does.
+- Keep CMUX/Warp/Ghostty handoff paths available; do not make embedded terminal the only path.
