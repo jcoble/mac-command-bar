@@ -27,6 +27,7 @@ import {
   formatSourceScanStats,
   formatSourceScanSummary,
   gitCommitGraphKind,
+  gitCommitOwnershipBadges,
   gitCommitTopologyLabel,
   gitRefLabels,
   folderIdsForSourceRecord,
@@ -1225,6 +1226,31 @@ assert.equal(gitCommitGraphKind('', 0), 'commit');
 assert.equal(gitCommitTopologyLabel('HEAD -> main', 0), 'HEAD');
 assert.equal(gitCommitTopologyLabel('', 0, 2), 'MERGE');
 assert.equal(gitCommitTopologyLabel('', 0, 0), 'ROOT');
+assert.deepEqual(
+  gitCommitOwnershipBadges({
+    refs: 'HEAD -> main, origin/main, tag: v0.2.0',
+    taskID: 'TSK-127',
+    taskSource: 'subject',
+    parentCount: 1
+  }),
+  [
+    { label: 'HEAD', title: 'HEAD -> main', tone: 'head' },
+    { label: 'UPSTREAM', title: 'origin/main', tone: 'upstream' },
+    { label: 'TAG', title: 'tag: v0.2.0', tone: 'tag' },
+    { label: 'TSK-127', title: 'Task from subject', tone: 'task' }
+  ]
+);
+assert.deepEqual(
+  gitCommitOwnershipBadges({ refs: 'origin/feature', taskID: null, parentCount: 2 }),
+  [
+    { label: 'UPSTREAM', title: 'origin/feature', tone: 'upstream' },
+    { label: 'MERGE', title: '2 parents', tone: 'merge' }
+  ]
+);
+assert.deepEqual(
+  gitCommitOwnershipBadges({ refs: '', taskID: 'not-a-task', parentCount: 0 }),
+  [{ label: 'ROOT', title: 'Root commit', tone: 'root' }]
+);
 assert.deepEqual(
   formatGitBranchHealthSummary({
     branch: 'cdx/tsk-127-source-center',

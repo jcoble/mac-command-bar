@@ -412,6 +412,21 @@ export type GitBranchHealthSummary = {
 
 export type GitCommitGraphKind = 'head' | 'branch' | 'merge' | 'root' | 'commit';
 
+export type GitCommitOwnershipBadgeTone = 'head' | 'upstream' | 'tag' | 'branch' | 'task' | 'merge' | 'root';
+
+export type GitCommitOwnershipBadge = {
+  label: string;
+  title: string;
+  tone: GitCommitOwnershipBadgeTone;
+};
+
+export type GitCommitOwnershipBadgeInput = {
+  refs: string;
+  taskID?: string | null;
+  taskSource?: string | null;
+  parentCount?: number | null;
+};
+
 export type SourceContextGitStatus = {
   branch?: string | null;
   ahead: number;
@@ -1480,6 +1495,64 @@ export function gitCommitTopologyLabel(refs: string, index: number, parentCount 
     default:
       return 'COMMIT';
   }
+}
+
+export function gitCommitOwnershipBadges(input: GitCommitOwnershipBadgeInput): GitCommitOwnershipBadge[] {
+  const labels = gitRefLabels(input.refs);
+  const badges: GitCommitOwnershipBadge[] = [];
+  const headLabels = labels.filter((label) => label === 'HEAD' || label.startsWith('HEAD ->'));
+  const upstreamLabels = labels.filter(isGitRemoteRefLabel);
+  const tagLabels = labels.filter((label) => label.startsWith('tag:'));
+  const branchLabels = labels.filter(
+    (label) =>
+      !headLabels.includes(label) &&
+      !upstreamLabels.includes(label) &&
+      !tagLabels.includes(label)
+  );
+  const normalizedTaskID = normalizeTaskID(input.taskID);
+  const parentCount = safeGitCount(input.parentCount ?? 1);
+
+  if (headLabels.length > 0) {
+    badges.push({ label: 'HEAD', title: headLabels.join(', '), tone: 'head' });
+  }
+
+  if (upstreamLabels.length > 0) {
+    badges.push({ label: 'UPSTREAM', title: upstreamLabels.join(', '), tone: 'upstream' });
+  }
+
+  if (tagLabels.length > 0) {
+    badges.push({ label: 'TAG', title: tagLabels.join(', '), tone: 'tag' });
+  } else if (branchLabels.length > 0 && headLabels.length === 0) {
+    badges.push({ label: 'BRANCH', title: branchLabels.join(', '), tone: 'branch' });
+  }
+
+  if (normalizedTaskID) {
+    badges.push({
+      label: normalizedTaskID,
+      title: gitCommitTaskSourceTitle(input.taskSource),
+      tone: 'task'
+    });
+  }
+
+  if (parentCount > 1) {
+    badges.push({ label: 'MERGE', title: `${parentCount} parents`, tone: 'merge' });
+  } else if (parentCount === 0) {
+    badges.push({ label: 'ROOT', title: 'Root commit', tone: 'root' });
+  }
+
+  return badges;
+}
+
+function isGitRemoteRefLabel(label: string): boolean {
+  if (!label || label === 'HEAD' || label.startsWith('HEAD ->') || label.startsWith('tag:')) return false;
+  if (label.startsWith('refs/')) return false;
+  return /^[A-Za-z0-9_.-]+\/.+/.test(label);
+}
+
+function gitCommitTaskSourceTitle(taskSource: string | null | undefined): string {
+  if (taskSource === 'refs') return 'Task from branch/ref';
+  if (taskSource === 'subject') return 'Task from subject';
+  return 'Task from Git metadata';
 }
 
 export function uniqueTaskIDsFromGitMetadata(...groups: GitTaskMetadata[][]): string[] {

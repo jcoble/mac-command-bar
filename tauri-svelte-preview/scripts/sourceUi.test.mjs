@@ -1658,6 +1658,19 @@ assert.ok(
   pageSource.includes('gitCommitTaskSourceLabel(entry)'),
   'Git task links should explain whether task IDs came from refs or subjects'
 );
+assert.ok(
+  pageSource.includes('function gitCommitOwnershipBadgesForEntry'),
+  'Git history should derive compact ownership badges per commit'
+);
+assert.ok(
+  pageSource.includes('gitCommitOwnershipBadges({'),
+  'Git history should use the shared ownership badge classifier'
+);
+assert.ok(pageSource.includes('class="git-history-badges"'), 'Git history rows should group ownership badges');
+assert.ok(
+  pageSource.includes('class={`git-history-badge ${badge.tone}`}'),
+  'Git history ownership badges should render tone classes'
+);
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('class="git-task-source-map"'), 'Git panel should render a compact task source map');
 assert.ok(pageSource.includes('class="git-task-source-row"'), 'Task source map should render per-task rows');
@@ -1777,6 +1790,10 @@ assertDeclaration('.activity-commit-meta', 'display: inline-flex');
 assertDeclaration('.git-history-row.head', 'background: rgba(111, 223, 207, 0.07)');
 assertDeclaration('.git-history-row.merge', 'border-color: rgba(216, 170, 85, 0.24)');
 assertDeclaration('.git-history-actions', 'display: inline-flex');
+assertDeclaration('.git-history-badges', 'display: inline-flex');
+assertDeclaration('.git-history-badge', 'text-overflow: ellipsis');
+assertDeclaration('.git-history-badge.head', 'color: #6fdfcf');
+assertDeclaration('.git-history-badge.upstream', 'color: #84c9de');
 assertDeclaration('.git-graph-marker.head::after', 'background: #6fdfcf');
 assertDeclaration('.git-graph-marker.merge::after', 'border-radius: 3px');
 assertDeclaration('.run-current-activity', 'grid-template-columns: auto minmax(0, 1fr)');

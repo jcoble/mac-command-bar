@@ -113,6 +113,7 @@
     findSourceSearchMatches,
     formatGitBranchHealthSummary,
     gitCommitGraphKind,
+    gitCommitOwnershipBadges,
     gitCommitTopologyLabel,
     gitRefLabels,
     formatGitTaskSourceGroupHandoff,
@@ -3687,6 +3688,15 @@
 
   function gitCommitTopology(entry: GitCommitHistoryEntry, index: number) {
     return gitCommitTopologyLabel(entry.refs, index, gitCommitParentCount(entry));
+  }
+
+  function gitCommitOwnershipBadgesForEntry(entry: GitCommitHistoryEntry) {
+    return gitCommitOwnershipBadges({
+      refs: entry.refs,
+      taskID: entry.taskID,
+      taskSource: entry.taskSource,
+      parentCount: gitCommitParentCount(entry)
+    });
   }
 
   function gitCommitParentSummary(entry: GitCommitHistoryEntry) {
@@ -14041,9 +14051,11 @@
                             <small>{entry.shortSha} · {entry.author} · {formatGitCommitTime(entry.committedAt)}</small>
                           </div>
                           <div class="git-history-meta">
-                            {#each gitCommitRefChips(entry) as refLabel (refLabel)}
-                              <span class="git-ref-label">{refLabel}</span>
-                            {/each}
+                            <div class="git-history-badges" aria-label="Commit ownership badges">
+                              {#each gitCommitOwnershipBadgesForEntry(entry) as badge (`${badge.tone}:${badge.label}`)}
+                                <span class={`git-history-badge ${badge.tone}`} title={badge.title}>{badge.label}</span>
+                              {/each}
+                            </div>
                             {#if entry.taskID}
                               {#if gitTaskUrl(entry.taskID)}
                                 <a
@@ -20563,6 +20575,54 @@
     justify-items: end;
     gap: 4px;
     max-width: 112px;
+  }
+
+  .git-history-badges {
+    display: inline-flex;
+    justify-content: flex-end;
+    gap: 3px;
+    max-width: 112px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .git-history-badge {
+    max-width: 68px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 1px 5px;
+    color: #aeb8b5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 8px;
+    font-weight: 850;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-history-badge.head {
+    color: #6fdfcf;
+    border-color: rgba(111, 223, 207, 0.24);
+    background: rgba(111, 223, 207, 0.075);
+  }
+
+  .git-history-badge.upstream {
+    color: #84c9de;
+    border-color: rgba(132, 201, 222, 0.22);
+    background: rgba(132, 201, 222, 0.07);
+  }
+
+  .git-history-badge.task {
+    color: #c8b6ff;
+    border-color: rgba(200, 182, 255, 0.22);
+  }
+
+  .git-history-badge.tag,
+  .git-history-badge.merge {
+    color: #d8aa55;
+    border-color: rgba(216, 170, 85, 0.22);
   }
 
   .git-history-actions {
