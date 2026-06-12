@@ -365,6 +365,7 @@
     endColumn: number;
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
+  type SourceEditorNavPanel = 'problems' | 'symbols' | 'definitions' | 'references';
   type SourceActivityMode =
     | 'files'
     | 'clipboard'
@@ -625,6 +626,7 @@
   let sourceActivityMode = $state<SourceActivityMode>('files');
   let sourceActivityFilter = $state('');
   let sourceActivityFiltersByMode = $state<Record<SourceActivityMode, string>>(createSourceActivityFilterState());
+  let editorNavPanel = $state<SourceEditorNavPanel | null>(null);
   let pasteCleanupInput = $state('');
   let pasteCleanupReplyDraft = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
@@ -1230,6 +1232,16 @@
       sourceTypeDefinitionQuery
     )
   );
+  let sourceDefinitionNavCount = $derived(
+    sourceDefinitionTargets.length + sourceImplementationTargets.length + sourceTypeDefinitionTargets.length
+  );
+  let sourceLookupLoading = $derived(
+    sourceDefinitionLoading ||
+      sourceReferenceLoading ||
+      sourceImplementationLoading ||
+      sourceTypeDefinitionLoading
+  );
+  let sourceLookupSummary = $derived(formatSourceLookupSummary());
   let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
   let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
     {
@@ -6560,6 +6572,7 @@
         : nativeTargets
           ? ''
           : 'Browser preview definitions';
+      openEditorNavPanel('definitions');
 
       if (nextTargets.length === 0) {
         fileActionStatus = `No definition for ${normalizedSymbolName}`;
@@ -6576,6 +6589,7 @@
       );
       sourceDefinitionError =
         definitionError instanceof Error ? definitionError.message : 'Could not find definition';
+      openEditorNavPanel('definitions');
 
       return sourceDefinitionTargets;
     } finally {
@@ -6653,6 +6667,7 @@
         : nativeTargets
           ? ''
           : 'Browser preview references';
+      openEditorNavPanel('references');
       fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
       return sourceReferenceTargets;
     } catch (referenceError) {
@@ -6663,6 +6678,7 @@
       );
       sourceReferenceError =
         referenceError instanceof Error ? referenceError.message : 'Could not find references';
+      openEditorNavPanel('references');
       return sourceReferenceTargets;
     } finally {
       sourceReferenceLoading = false;
@@ -6727,6 +6743,7 @@
 
       sourceImplementationTargets = lspTargets;
       sourceImplementationError = '';
+      openEditorNavPanel('definitions');
       fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
       return lspTargets;
     } catch (implementationError) {
@@ -6735,6 +6752,7 @@
         implementationError instanceof Error
           ? implementationError.message
           : 'Could not find implementations';
+      openEditorNavPanel('definitions');
       return sourceImplementationTargets;
     } finally {
       sourceImplementationLoading = false;
@@ -6799,6 +6817,7 @@
 
       sourceTypeDefinitionTargets = lspTargets;
       sourceTypeDefinitionError = '';
+      openEditorNavPanel('definitions');
       fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
       return lspTargets;
     } catch (typeDefinitionError) {
@@ -6807,6 +6826,7 @@
         typeDefinitionError instanceof Error
           ? typeDefinitionError.message
           : 'Could not find type definition';
+      openEditorNavPanel('definitions');
       return sourceTypeDefinitionTargets;
     } finally {
       sourceTypeDefinitionLoading = false;
@@ -6823,6 +6843,34 @@
     if (typeDefinitionError) return typeDefinitionError;
     if (!symbolName.trim()) return '';
     return `${targetCount} ${targetCount === 1 ? 'type definition' : 'type definitions'} for ${symbolName}`;
+  }
+
+  function formatSourceLookupSummary() {
+    if (sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading) {
+      return sourceReferenceSummary || 'References';
+    }
+    if (sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading) {
+      return sourceImplementationSummary || 'Implementations';
+    }
+    if (sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading) {
+      return sourceTypeDefinitionSummary || 'Type definitions';
+    }
+    if (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading) {
+      return sourceDefinitionSummary || 'Definitions';
+    }
+    return 'No lookups yet';
+  }
+
+  function openEditorNavPanel(panel: SourceEditorNavPanel) {
+    editorNavPanel = panel;
+  }
+
+  function toggleEditorNavPanel(panel: SourceEditorNavPanel) {
+    editorNavPanel = editorNavPanel === panel ? null : panel;
+  }
+
+  function closeEditorNavPanel() {
+    editorNavPanel = null;
   }
 
   async function selectSourceTypeDefinitionTarget(target: SourceDefinitionTarget) {
@@ -6896,6 +6944,7 @@
     clearSourceReferenceTargets();
     clearSourceImplementationTargets();
     clearSourceTypeDefinitionTargets();
+    closeEditorNavPanel();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -7954,6 +8003,7 @@
       window.clearTimeout(sourceLspDiagnosticsTimer);
       sourceLspDiagnosticsTimer = null;
     }
+    clearSourceLookupResults();
   }
 
   function handleEditorDiagnosticsChange(diagnostics: SourceDiagnostic[]) {
@@ -9601,15 +9651,22 @@
     sourceDefinitionTargets = [];
     sourceDefinitionQuery = '';
     sourceDefinitionError = '';
+    sourceDefinitionLoading = false;
     sourceReferenceTargets = [];
     sourceReferenceQuery = '';
     sourceReferenceError = '';
+    sourceReferenceLoading = false;
     sourceImplementationTargets = [];
     sourceImplementationQuery = '';
     sourceImplementationError = '';
+    sourceImplementationLoading = false;
     sourceTypeDefinitionTargets = [];
     sourceTypeDefinitionQuery = '';
     sourceTypeDefinitionError = '';
+    sourceTypeDefinitionLoading = false;
+    if (editorNavPanel === 'definitions' || editorNavPanel === 'references') {
+      closeEditorNavPanel();
+    }
   }
 
   function isContextCardVisible(cardID: SourceContextCardID) {
@@ -13926,6 +13983,185 @@
           </div>
         </div>
 
+        <div class="editor-local-nav" aria-label="Editor navigation">
+          <button
+            class:active={editorNavPanel === 'problems'}
+            type="button"
+            aria-label="Show editor problems"
+            title={sourceDiagnosticSummary}
+            onclick={() => toggleEditorNavPanel('problems')}
+          >
+            <Activity size={12} strokeWidth={2} />
+            <span>Problems</span>
+            <strong>{sourceDiagnostics.length}</strong>
+          </button>
+          <button
+            class:active={editorNavPanel === 'symbols'}
+            type="button"
+            aria-label="Show editor symbols"
+            title={`${sourceSymbols.length} symbols`}
+            onclick={() => toggleEditorNavPanel('symbols')}
+          >
+            <FileCode2 size={12} strokeWidth={2} />
+            <span>Symbols</span>
+            <strong>{sourceSymbols.length}</strong>
+          </button>
+          <button
+            class:active={editorNavPanel === 'definitions'}
+            type="button"
+            aria-label="Show definition results"
+            title={sourceLookupSummary}
+            onclick={() => toggleEditorNavPanel('definitions')}
+          >
+            <Search size={12} strokeWidth={2} />
+            <span>Defs</span>
+            <strong>{sourceLookupLoading ? '...' : sourceDefinitionNavCount}</strong>
+          </button>
+          <button
+            class:active={editorNavPanel === 'references'}
+            type="button"
+            aria-label="Show reference results"
+            title={sourceReferenceSummary || 'References'}
+            onclick={() => toggleEditorNavPanel('references')}
+          >
+            <Braces size={12} strokeWidth={2} />
+            <span>Refs</span>
+            <strong>{sourceReferenceLoading ? '...' : sourceReferenceTargets.length}</strong>
+          </button>
+        </div>
+
+        {#if editorNavPanel}
+          <div class="editor-nav-drawer" aria-label="Editor navigation drawer">
+            <div class="editor-nav-drawer-header">
+              <strong>
+                {editorNavPanel === 'problems'
+                  ? 'Problems'
+                  : editorNavPanel === 'symbols'
+                    ? 'Symbols'
+                    : editorNavPanel === 'references'
+                      ? 'References'
+                      : 'Definitions'}
+              </strong>
+              <span>
+                {editorNavPanel === 'problems'
+                  ? sourceDiagnosticSummary
+                  : editorNavPanel === 'symbols'
+                    ? `${sourceSymbols.length} symbols`
+                    : editorNavPanel === 'references'
+                      ? sourceReferenceSummary || 'No references yet'
+                      : sourceLookupSummary}
+              </span>
+              <button
+                class="editor-nav-close"
+                type="button"
+                aria-label="Close editor navigation drawer"
+                title="Close"
+                onclick={closeEditorNavPanel}
+              >
+                <X size={12} strokeWidth={2} />
+              </button>
+            </div>
+
+            <div class="editor-nav-list">
+              {#if editorNavPanel === 'problems'}
+                {#if sourceDiagnostics.length === 0}
+                  <div class="intelligence-empty compact">No problems</div>
+                {:else}
+                  {#each sourceDiagnostics as diagnostic, index (`nav:${diagnostic.line}:${diagnostic.column}:${index}`)}
+                    <button
+                      class="intelligence-row diagnostic"
+                      class:error={diagnostic.severity === 'error'}
+                      class:warning={diagnostic.severity === 'warning'}
+                      type="button"
+                      title={diagnostic.message}
+                      onclick={() => selectSourceDiagnostic(diagnostic)}
+                    >
+                      <strong>{diagnostic.severity}</strong>
+                      <span>{diagnostic.message}</span>
+                      <small>{diagnostic.line}:{diagnostic.column}</small>
+                    </button>
+                  {/each}
+                {/if}
+              {:else if editorNavPanel === 'symbols'}
+                {#if sourceSymbols.length === 0}
+                  <div class="intelligence-empty compact">No symbols</div>
+                {:else}
+                  {#each sourceSymbols as symbol (`nav:${symbol.kind}:${symbol.name}:${symbol.line}`)}
+                    <button
+                      class="intelligence-row"
+                      type="button"
+                      title={symbol.detail}
+                      onclick={() => selectSourceSymbol(symbol)}
+                    >
+                      <strong>{symbol.kind}</strong>
+                      <span>{symbol.name}</span>
+                      <small>{symbol.line}</small>
+                    </button>
+                  {/each}
+                {/if}
+              {:else if editorNavPanel === 'references'}
+                {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
+                  <div class="intelligence-empty compact">No references</div>
+                {:else}
+                  {#each sourceReferenceTargets as target (`nav:${target.path}:${target.line}:${target.column}`)}
+                    <button
+                      class="reference-row"
+                      type="button"
+                      title={target.excerpt}
+                      onclick={() => selectSourceReferenceTarget(target)}
+                    >
+                      <strong>{target.line}:{target.column}</strong>
+                      <span>{target.fileName}</span>
+                      <small>{target.excerpt}</small>
+                    </button>
+                  {/each}
+                {/if}
+              {:else}
+                {#if sourceDefinitionTargets.length === 0 && sourceImplementationTargets.length === 0 && sourceTypeDefinitionTargets.length === 0 && !sourceLookupLoading}
+                  <div class="intelligence-empty compact">No definitions</div>
+                {:else}
+                  {#each sourceDefinitionTargets as target (`nav-definition:${target.path}:${target.line}:${target.symbolName}`)}
+                    <button
+                      class="definition-row"
+                      type="button"
+                      title={target.detail}
+                      onclick={() => selectSourceDefinitionTarget(target)}
+                    >
+                      <strong>{target.kind}</strong>
+                      <span>{target.symbolName}</span>
+                      <small>{target.relativePath}:{target.line}</small>
+                    </button>
+                  {/each}
+                  {#each sourceImplementationTargets as target (`nav-implementation:${target.path}:${target.line}:${target.symbolName}`)}
+                    <button
+                      class="definition-row"
+                      type="button"
+                      title={target.detail}
+                      onclick={() => selectSourceImplementationTarget(target)}
+                    >
+                      <strong>{target.kind}</strong>
+                      <span>{target.symbolName}</span>
+                      <small>{target.relativePath}:{target.line}</small>
+                    </button>
+                  {/each}
+                  {#each sourceTypeDefinitionTargets as target (`nav-type-definition:${target.path}:${target.line}:${target.symbolName}`)}
+                    <button
+                      class="definition-row"
+                      type="button"
+                      title={target.detail}
+                      onclick={() => selectSourceTypeDefinitionTarget(target)}
+                    >
+                      <strong>{target.kind}</strong>
+                      <span>{target.symbolName}</span>
+                      <small>{target.relativePath}:{target.line}</small>
+                    </button>
+                  {/each}
+                {/if}
+              {/if}
+            </div>
+          </div>
+        {/if}
+
         <div class="editor-body-grid" class:insights-hidden={editorInsightCollapsed || !shouldRenderDockPanel('insights')}>
           <div class="editor-canvas">
             {#key sourcePreviewAppearanceKey}
@@ -13953,7 +14189,7 @@
                 onNavigateBackRequest={navigateSourceBack}
                 onNavigateForwardRequest={navigateSourceForward}
                 onNextProblemRequest={selectNextSourceDiagnostic}
-                onProblemsRequest={() => showEditorInsightPanel('problems')}
+                onProblemsRequest={() => openEditorNavPanel('problems')}
                 onPreviousProblemRequest={selectPreviousSourceDiagnostic}
                 onQuickOpenRequest={openQuickOpen}
                 onReferenceLookup={handleEditorReferenceLookup}
@@ -13961,14 +14197,14 @@
                 onSaveRequest={saveSelectedSourceFile}
                 onSemanticTokensLookup={handleEditorSemanticTokensLookup}
                 onSignatureHelpLookup={handleEditorSignatureHelpLookup}
-                onSymbolsRequest={() => showEditorInsightPanel('symbols')}
+                onSymbolsRequest={() => openEditorNavPanel('symbols')}
                 onSymbolsChange={handleEditorSymbolsChange}
                 onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
                 onWorkspaceEditAction={handleEditorWorkspaceEditAction}
               />
             {/key}
 
-            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
+            {#if editorInsightCollapsed && editorNavPanel === null && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
               <div class="editor-lookup-popover" aria-label="Editor lookup results">
                 <div class="editor-lookup-header">
                   <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
@@ -19501,7 +19737,7 @@
 
   .editor-frame {
     display: grid;
-    grid-template-rows: 28px minmax(0, 1fr);
+    grid-template-rows: 28px auto auto minmax(0, 1fr);
     flex: 1 1 auto;
     height: auto;
     min-height: 0;
@@ -20127,6 +20363,139 @@
   .editor-lsp-recovery-action:disabled {
     cursor: default;
     opacity: 0.38;
+  }
+
+  .editor-local-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    min-width: 0;
+    height: 30px;
+    padding: 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(10, 13, 14, 0.42);
+  }
+
+  .editor-local-nav button {
+    display: inline-grid;
+    grid-template-columns: 13px minmax(0, auto) auto;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 0;
+    height: 22px;
+    padding: 0 7px;
+    color: #9ca8a4;
+    border: 1px solid rgba(255, 255, 255, 0.065);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.03);
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .editor-local-nav button.active {
+    color: #dffdf8;
+    border-color: rgba(92, 226, 207, 0.32);
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .editor-local-nav button:hover,
+  .editor-local-nav button:focus-visible {
+    color: #f1f7f5;
+    border-color: rgba(92, 226, 207, 0.28);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .editor-local-nav span,
+  .editor-local-nav strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-local-nav strong {
+    color: #72e2cf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 860;
+  }
+
+  .editor-nav-drawer {
+    display: grid;
+    grid-template-rows: 28px minmax(0, 1fr);
+    max-height: 190px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border-bottom: 1px solid rgba(92, 226, 207, 0.14);
+    background: rgba(14, 18, 18, 0.94);
+  }
+
+  .editor-nav-drawer-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 22px;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 0 6px 0 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .editor-nav-drawer-header strong,
+  .editor-nav-drawer-header span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-nav-drawer-header strong {
+    color: #eef6f4;
+    font-size: 11px;
+    font-weight: 860;
+  }
+
+  .editor-nav-drawer-header span {
+    color: #8d9995;
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .editor-nav-close {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    color: #9fa9a6;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .editor-nav-close:hover,
+  .editor-nav-close:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .editor-nav-list {
+    display: grid;
+    align-content: start;
+    gap: 3px;
+    min-height: 0;
+    min-width: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 5px;
+    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
   }
 
   .editor-menu-anchor {
@@ -21218,6 +21587,11 @@
     color: #75817d;
     font-size: 12px;
     font-weight: 750;
+  }
+
+  .intelligence-empty.compact {
+    min-height: 42px;
+    font-size: 10px;
   }
 
   .definition-results,
