@@ -5421,11 +5421,32 @@
     return copyActivityCommand(action.command, action.clipboardMessage);
   }
 
+  function confirmWorktreePrimaryAction(
+    worktree: ProjectWorktree,
+    action: ReturnType<typeof worktreePrimaryAction>
+  ) {
+    if (action.kind !== 'cleanup') return true;
+    if (typeof window === 'undefined') return false;
+
+    return window.confirm(
+      [
+        `Remove clean worktree ${worktree.branch}?`,
+        worktree.path,
+        '',
+        'This runs the native guarded worktree remove action. Dirty or protected worktrees are still refused.'
+      ].join('\n')
+    );
+  }
+
   async function runWorktreePrimaryAction(worktree: ProjectWorktree) {
     const safety = projectWorktreeSafety(worktree);
     const action = worktreePrimaryAction(safety);
     if (action.kind === 'audit') {
       await copyActivityCommand(action.command, action.clipboardMessage);
+      return;
+    }
+    if (!confirmWorktreePrimaryAction(worktree, action)) {
+      fileActionStatus = 'Worktree cleanup cancelled';
       return;
     }
 

@@ -485,6 +485,8 @@ assert.ok(pageSource.includes('function copyProjectWorktreeCleanupScript'), 'Wor
 assert.ok(pageSource.includes('worktreePrimaryAction'), 'Worktree rows should derive a recommended next action');
 assert.ok(pageSource.includes('function copyWorktreePrimaryAction'), 'Worktree rows should copy the recommended next action command');
 assert.ok(pageSource.includes('function runWorktreePrimaryAction'), 'Worktree rows should execute safe recommended actions');
+assert.ok(pageSource.includes('function confirmWorktreePrimaryAction'), 'Worktree cleanup should confirm before removing a worktree');
+assert.ok(pageSource.includes('window.confirm'), 'Worktree cleanup confirmation should use a native browser confirm guard');
 assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree rows should expose a compact recommended action button');
 assert.ok(pageSource.includes('Recommended worktree action'), 'Command palette should expose recommended worktree actions');
 assert.ok(pageSource.includes('function agentSessionResumePlan'), 'Agent rows should expose a copyable resume plan');
