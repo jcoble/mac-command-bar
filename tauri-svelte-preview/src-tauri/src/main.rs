@@ -24,6 +24,7 @@ const DEFAULT_SOURCE_DEFINITION_LIMIT: usize = 20;
 const MAX_SOURCE_DEFINITION_LIMIT: usize = 100;
 const DEFAULT_SOURCE_REFERENCE_LIMIT: usize = 50;
 const MAX_SOURCE_REFERENCE_LIMIT: usize = 200;
+const MAX_SOURCE_SCAN_SKIPPED_DIRECTORY_SAMPLES: usize = 16;
 const DEFAULT_GIT_HISTORY_LIMIT: usize = 24;
 const MAX_GIT_HISTORY_LIMIT: usize = 80;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
@@ -48,7 +49,7 @@ struct SourceScanResult {
     stats: SourceScanStats,
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceScanStats {
     visited_entries: usize,
@@ -56,6 +57,15 @@ struct SourceScanStats {
     skipped_directories: usize,
     unsupported_files: usize,
     unreadable_entries: usize,
+    skipped_directory_samples: Vec<SourceSkippedDirectory>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceSkippedDirectory {
+    path: String,
+    name: String,
+    reason: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -396,8 +406,17 @@ impl SourceScanWalkProgress {
         self.report(cancellation);
     }
 
-    fn skip_directory(&mut self) {
+    fn skip_directory(&mut self, root: &Path, path: &Path, name: &str, reason: &str) {
         self.stats.skipped_directories += 1;
+        if self.stats.skipped_directory_samples.len() < MAX_SOURCE_SCAN_SKIPPED_DIRECTORY_SAMPLES {
+            self.stats
+                .skipped_directory_samples
+                .push(SourceSkippedDirectory {
+                    path: normalized_relative_source_path(root, path),
+                    name: name.to_string(),
+                    reason: reason.to_string(),
+                });
+        }
     }
 
     fn skip_unsupported_file(&mut self) {
@@ -409,7 +428,7 @@ impl SourceScanWalkProgress {
     }
 
     fn report(&self, cancellation: &SourceScanCancellation) {
-        cancellation.report_progress(self.stats);
+        cancellation.report_progress(self.stats.clone());
     }
 }
 
@@ -1194,8 +1213,8 @@ fn collect_source_files(
         };
 
         if metadata.is_dir() {
-            if should_skip_dir(&file_name) {
-                progress.skip_directory();
+            if let Some(reason) = skip_dir_reason(&file_name) {
+                progress.skip_directory(root, &path, &file_name, reason);
                 continue;
             }
             collect_source_files(root, &path, limit, query, records, cancellation, progress)?;
@@ -3673,56 +3692,28 @@ fn localized_path_compare(left: &str, right: &str) -> std::cmp::Ordering {
     left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
 }
 
-fn should_skip_dir(name: &str) -> bool {
+fn skip_dir_reason(name: &str) -> Option<&'static str> {
     let normalized = name.to_ascii_lowercase();
     if normalized.ends_with("_files") {
-        return true;
+        return Some("saved web page asset directory");
     }
 
-    matches!(
-        normalized.as_str(),
-        "__pycache__"
-            | ".cache"
-            | ".git"
-            | ".hg"
-            | ".svn"
-            | ".agents"
-            | ".build"
-            | ".claude"
-            | ".codex"
-            | ".dev"
-            | ".gradle"
-            | ".history"
-            | ".idea"
-            | ".merge-backups"
-            | ".next"
-            | ".nuxt"
-            | ".omx"
-            | ".parcel-cache"
-            | ".playwright"
-            | ".playwright-cli"
-            | ".pytest_cache"
-            | ".run"
-            | ".slots"
-            | ".svelte-kit"
-            | ".tmp"
-            | ".turbo"
-            | ".vite"
-            | ".vscode"
-            | ".zed"
-            | "bin"
-            | "build"
-            | "coverage"
-            | "deriveddata"
-            | "dist"
-            | "node_modules"
-            | "obj"
-            | "pods"
-            | "target"
-            | "testresults"
-            | "vendor"
-            | "worktrees"
-    )
+    match normalized.as_str() {
+        ".git" | ".hg" | ".svn" => Some("version-control metadata directory"),
+        ".agents" | ".claude" | ".codex" | ".dev" | ".history" | ".idea" | ".omx"
+        | ".playwright" | ".playwright-cli" | ".run" | ".slots" | ".vscode" | ".zed" => {
+            Some("agent/tool state directory")
+        }
+        "__pycache__" | ".cache" | ".build" | ".gradle" | ".next" | ".nuxt" | ".parcel-cache"
+        | ".pytest_cache" | ".svelte-kit" | ".tmp" | ".turbo" | ".vite" | "bin" | "build"
+        | "coverage" | "deriveddata" | "dist" | "obj" | "target" | "testresults" => {
+            Some("build output/cache directory")
+        }
+        ".merge-backups" => Some("merge backup directory"),
+        "node_modules" | "pods" | "vendor" => Some("dependency directory"),
+        "worktrees" => Some("session worktree directory"),
+        _ => None,
+    }
 }
 
 fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option<&str>) -> bool {
@@ -4097,6 +4088,53 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(relative_paths, vec!["src/Keep.ts"]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_reports_skipped_directory_samples() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(root.join("worktrees/session/src")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join(".git/objects/Hidden.ts"),
+            "export const hidden = true;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/index.ts"),
+            "export const dependency = true;",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("worktrees/session/src/Stale.cs"),
+            "public class Stale {}",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/Keep.ts"), "export const keep = true;").unwrap();
+
+        let scan = list_source_files_sync(root.clone(), 20, None).unwrap();
+        let skipped_names = scan
+            .stats
+            .skipped_directory_samples
+            .iter()
+            .map(|sample| sample.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(scan.records.len(), 1);
+        assert_eq!(scan.stats.skipped_directories, 3);
+        assert_eq!(
+            skipped_names,
+            std::collections::BTreeSet::from([".git", "node_modules", "worktrees"])
+        );
+        assert!(scan
+            .stats
+            .skipped_directory_samples
+            .iter()
+            .all(|sample| !sample.reason.is_empty()));
 
         std::fs::remove_dir_all(root).unwrap();
     }

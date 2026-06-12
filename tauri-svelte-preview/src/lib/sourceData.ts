@@ -248,6 +248,13 @@ export type SourceScanStats = {
   skippedDirectories: number;
   unsupportedFiles: number;
   unreadableEntries: number;
+  skippedDirectorySamples?: SourceSkippedDirectory[];
+};
+
+export type SourceSkippedDirectory = {
+  path: string;
+  name: string;
+  reason: string;
 };
 
 export type SourceScanHealthStatus =
@@ -1097,7 +1104,23 @@ function sourceScanRecoveryStatsSummary(stats: SourceScanStats | null | undefine
   ];
   const unreadableEntries = Math.max(0, Math.floor(stats.unreadableEntries));
   if (unreadableEntries > 0) parts.push(`${formatCount(unreadableEntries)} unreadable`);
+  const skippedSampleSummary = sourceScanSkippedDirectorySampleSummary(stats);
+  if (skippedSampleSummary) parts.push(`skipped samples: ${skippedSampleSummary}`);
   return parts.join(' · ');
+}
+
+function sourceScanSkippedDirectorySampleSummary(stats: SourceScanStats, limit = 3): string {
+  const sampleLimit = Math.max(0, Math.floor(limit));
+  if (sampleLimit === 0) return '';
+
+  const samples = (stats.skippedDirectorySamples ?? [])
+    .filter((sample) => sample.name.trim() && sample.reason.trim())
+    .slice(0, sampleLimit)
+    .map((sample) => `${sample.name}: ${sample.reason}`);
+
+  if (samples.length === 0) return '';
+  const remainingSampleCount = Math.max(0, (stats.skippedDirectorySamples?.length ?? 0) - samples.length);
+  return remainingSampleCount > 0 ? `${samples.join('; ')}; +${remainingSampleCount} more` : samples.join('; ');
 }
 
 export function selectBackgroundIndexProjects(
@@ -1406,9 +1429,7 @@ export function sourceLanguageForPath(path: string): SourceLanguage {
 }
 
 export function sourceSupportsLanguageIntelligence(language: SourceLanguage): boolean {
-  return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp', 'rust', 'svelte', 'python', 'go'].includes(
-    language
-  );
+  return ['typescript', 'tsx', 'javascript', 'jsx', 'csharp', 'rust', 'svelte'].includes(language);
 }
 
 export function applySourceTextEdits(content: string, edits: SourceTextEdit[]): string {

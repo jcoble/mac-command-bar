@@ -599,6 +599,7 @@ assert.ok(pageSource.includes('class="activity-rail"'), 'Source shell should ren
 assert.ok(pageSource.includes('function sourceScanDiagnosticBrief'), 'Source scan diagnostics should expose a copyable brief');
 assert.ok(pageSource.includes('function copySourceScanDiagnosticBrief'), 'Source scan diagnostics should be copyable');
 assert.ok(pageSource.includes('aria-label="Copy source scan diagnostic"'), 'Tree scan summary should expose a copy diagnostic action');
+assert.ok(pageSource.includes('Skipped directory samples:'), 'Copied scan diagnostics should include skipped directory samples');
 assert.ok(pageSource.includes('Scan diagnostic copied'), 'Source scan diagnostic copy should confirm success');
 assert.ok(
   pageSource.includes('Root validation: ${selectedProjectRootValidationSummary}'),
@@ -1639,6 +1640,17 @@ assertDeclaration('.editor-nav-drawer', 'grid-template-rows: 28px minmax(0, 1fr)
 assertDeclaration('.editor-nav-drawer', 'max-height: 190px');
 assertDeclaration('.editor-nav-list', 'overflow-y: auto');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
+assert.ok(pageSource.includes('sourceDockviewInsightsHostAction'), 'Source page should mount a Dockview host for the first visible insights pane slice');
+assert.ok(pageSource.includes('sourceDockviewPanelAction'), 'Source page should register Svelte-owned pane DOM with Dockview');
+assert.ok(pageSource.includes('panelIDs: sourceDockviewInsightsPanelIDs'), 'Insights Dockview host should only own the migrated insights panel');
+assert.ok(pageSource.includes("rootPanelID: 'insights'"), 'Insights Dockview host should avoid creating editor placeholders');
+assert.ok(pageSource.includes('sourceDockviewInsightsStorageKey'), 'Insights Dockview host should use slice-specific persisted layout storage');
+assert.ok(pageSource.includes('sourceDockviewLayoutOnlyContainsPanels'), 'Insights Dockview host should reject stale full-workspace snapshots');
+assert.ok(pageSource.includes('disposeSourceDockviewInsights();'), 'Source page should dispose the Dockview host during teardown');
+assert.ok(pageSource.includes('class="source-dockview-insights-shell"'), 'Insights panel should keep a fallback shell around the Dockview host');
+assertDeclaration('.source-dockview-insights-shell', 'display: grid');
+assertDeclaration('.source-dockview-insights-host', 'visibility: hidden');
+assertDeclaration('.source-dockview-insights-shell.dockview-ready .source-dockview-insights-host', 'visibility: visible');
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
 assert.ok(pageSource.includes('aria-label="Trigger completions"'), 'Editor controls should expose completions');
 assert.ok(pageSource.includes('aria-label="Show signature help"'), 'Editor controls should expose signature help');

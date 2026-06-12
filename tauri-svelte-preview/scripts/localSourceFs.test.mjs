@@ -66,6 +66,37 @@ try {
     ['src/Services/FormatResolver.cs', 'src/App.ts']
   );
   assert.equal(scan.truncated, false);
+  assert.deepEqual(
+    new Set(scan.stats.skippedDirectorySamples.map((sample) => sample.name)),
+    new Set(['.history', '.pytest_cache', '.vscode', 'bin', 'node_modules'])
+  );
+  assert.deepEqual(
+    scan.stats.skippedDirectorySamples.find((sample) => sample.name === 'node_modules'),
+    {
+      path: 'node_modules',
+      name: 'node_modules',
+      reason: 'dependency directory'
+    }
+  );
+  assert.ok(
+    scan.stats.skippedDirectorySamples.every(
+      (sample) => sample.path && !sample.path.startsWith(root) && sample.reason
+    ),
+    'Skipped directory samples should include relative path, name, and reason'
+  );
+
+  for (let index = 0; index < 20; index += 1) {
+    await mkdir(join(root, `sample-${String(index).padStart(2, '0')}`, 'node_modules'), {
+      recursive: true
+    });
+  }
+
+  const boundedSampleScan = await scanLocalSourceFiles({ root, limit: 20 });
+  assert.equal(boundedSampleScan.stats.skippedDirectorySamples.length, 16);
+  assert.ok(
+    boundedSampleScan.stats.skippedDirectories > boundedSampleScan.stats.skippedDirectorySamples.length,
+    'Skipped directory samples should be bounded while the count keeps increasing'
+  );
 
   await mkdir(join(root, 'Docs'), { recursive: true });
   await mkdir(join(root, 'EdiPlatform.Core', 'Services'), { recursive: true });

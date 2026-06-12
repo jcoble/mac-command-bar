@@ -49,7 +49,8 @@ fn source_list_action(request: CoreRequest) -> CoreResponse {
                     "files": result.files,
                     "count": count,
                     "limit": result.limit,
-                    "truncated": result.truncated
+                    "truncated": result.truncated,
+                    "diagnostics": result.diagnostics
                 }),
             )
         }

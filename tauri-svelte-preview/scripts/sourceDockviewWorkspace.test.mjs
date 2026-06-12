@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   createDefaultSourceDockLayout,
+  hideSourceDockPanel,
   moveSourceDockPanel,
   showSourceDockPanel
 } from '../src/lib/sourceDockLayout.ts';
@@ -82,6 +83,36 @@ assert.deepEqual(
   'A center-group context panel should map to Dockview above-editor placement'
 );
 
+assert.deepEqual(
+  createSourceDockviewPanelPlans(createDefaultSourceDockLayout(), {
+    panelIDs: ['insights'],
+    rootPanelID: 'insights'
+  }).map((plan) => [plan.id, plan.position]),
+  [['insights', undefined]],
+  'A visible migration slice should be able to host only the insights panel without creating editor placeholders'
+);
+
+assert.deepEqual(
+  createSourceDockviewPanelPlans(hideSourceDockPanel(createDefaultSourceDockLayout(), 'insights'), {
+    panelIDs: ['insights'],
+    rootPanelID: 'insights'
+  }),
+  [],
+  'A subset Dockview host should create no panels while its root panel is hidden'
+);
+
+assert.deepEqual(
+  createSourceDockviewPanelPlans(createDefaultSourceDockLayout(), {
+    panelIDs: ['context', 'insights'],
+    rootPanelID: 'context'
+  }).map((plan) => [plan.id, plan.position]),
+  [
+    ['context', undefined],
+    ['insights', { referencePanel: 'context', direction: 'within' }]
+  ],
+  'A subset Dockview host should stack sibling panels inside the chosen root panel'
+);
+
 const closedContextLayout = applySourceDockviewPanelClose(createDefaultSourceDockLayout(), 'context');
 assert.equal(
   closedContextLayout.hiddenPanelIDs.includes('context'),
@@ -136,4 +167,8 @@ assert.ok(
 assert.ok(
   workspaceSource.includes('synchronizingDockview'),
   'Dockview workspace should suppress callback churn during app-driven sync'
+);
+assert.ok(
+  workspaceSource.includes('storedLayout && restorePlans.length > 0'),
+  'Dockview workspace should not restore stored JSON when the current app layout hides the migrated root panel'
 );

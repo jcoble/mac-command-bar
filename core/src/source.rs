@@ -5,8 +5,9 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
-const DEFAULT_SOURCE_LIST_LIMIT: usize = 5_000;
-const MAX_SOURCE_LIST_LIMIT: usize = 10_000;
+const DEFAULT_SOURCE_LIST_LIMIT: usize = 10_000;
+const MAX_SOURCE_LIST_LIMIT: usize = 25_000;
+const MAX_SKIPPED_DIRECTORY_SAMPLES: usize = 16;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +37,35 @@ pub struct SourceFileList {
     pub files: Vec<SourceFileRecord>,
     pub limit: usize,
     pub truncated: bool,
+    pub diagnostics: SourceScanDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceScanDiagnostics {
+    pub effective_limit: usize,
+    pub returned_count: usize,
+    pub truncated: bool,
+    pub skipped_directory_count: usize,
+    pub unsupported_file_count: usize,
+    pub unreadable_entry_count: usize,
+    pub skipped_directories: Vec<SourceSkippedDirectory>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSkippedDirectory {
+    pub path: String,
+    pub name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Default)]
+struct SourceScanStats {
+    skipped_directory_count: usize,
+    unsupported_file_count: usize,
+    unreadable_entry_count: usize,
+    skipped_directories: Vec<SourceSkippedDirectory>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -120,6 +150,7 @@ pub fn list_source_files(root: &Path, limit: usize, query: Option<&str>) -> Resu
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty());
     let mut records = Vec::new();
+    let mut stats = SourceScanStats::default();
     let collect_limit = limit.saturating_add(1);
     collect_source_files(
         root,
@@ -127,6 +158,7 @@ pub fn list_source_files(root: &Path, limit: usize, query: Option<&str>) -> Resu
         collect_limit,
         normalized_query.as_deref(),
         &mut records,
+        &mut stats,
     )?;
     records.sort_by(|left, right| {
         left.relative_path
@@ -135,10 +167,20 @@ pub fn list_source_files(root: &Path, limit: usize, query: Option<&str>) -> Resu
     });
     let truncated = records.len() > limit;
     records.truncate(limit);
+    let returned_count = records.len();
     Ok(SourceFileList {
         files: records,
         limit,
         truncated,
+        diagnostics: SourceScanDiagnostics {
+            effective_limit: limit,
+            returned_count,
+            truncated,
+            skipped_directory_count: stats.skipped_directory_count,
+            unsupported_file_count: stats.unsupported_file_count,
+            unreadable_entry_count: stats.unreadable_entry_count,
+            skipped_directories: stats.skipped_directories,
+        },
     })
 }
 
@@ -164,6 +206,7 @@ fn collect_source_files(
     limit: usize,
     query: Option<&str>,
     records: &mut Vec<SourceFileRecord>,
+    stats: &mut SourceScanStats,
 ) -> Result<()> {
     if records.len() >= limit {
         return Ok(());
@@ -183,18 +226,23 @@ fn collect_source_files(
         let file_name = entry.file_name().to_string_lossy().to_string();
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
-            Err(_) => continue,
+            Err(_) => {
+                stats.unreadable_entry_count += 1;
+                continue;
+            }
         };
 
         if metadata.is_dir() {
-            if should_skip_dir(&file_name) {
+            if let Some(reason) = skip_dir_reason(&file_name) {
+                record_skipped_directory(root, &path, &file_name, reason, stats);
                 continue;
             }
-            collect_source_files(root, &path, limit, query, records)?;
+            collect_source_files(root, &path, limit, query, records, stats)?;
             continue;
         }
 
         if !metadata.is_file() || !is_source_file(&path) {
+            stats.unsupported_file_count += 1;
             continue;
         }
 
@@ -218,32 +266,45 @@ fn collect_source_files(
     Ok(())
 }
 
-fn should_skip_dir(name: &str) -> bool {
-    if name.ends_with("_files") {
-        return true;
+fn record_skipped_directory(
+    root: &Path,
+    path: &Path,
+    name: &str,
+    reason: &str,
+    stats: &mut SourceScanStats,
+) {
+    stats.skipped_directory_count += 1;
+    if stats.skipped_directories.len() >= MAX_SKIPPED_DIRECTORY_SAMPLES {
+        return;
     }
 
-    matches!(
-        name,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | ".agents"
-            | ".build"
-            | ".claude"
-            | ".codex"
-            | ".next"
-            | ".svelte-kit"
-            | "bin"
-            | "build"
-            | "dist"
-            | "node_modules"
-            | "obj"
-            | "packages"
-            | "target"
-            | "vendor"
-            | "worktrees"
-    )
+    stats.skipped_directories.push(SourceSkippedDirectory {
+        path: path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/"),
+        name: name.to_string(),
+        reason: reason.to_string(),
+    });
+}
+
+fn skip_dir_reason(name: &str) -> Option<&'static str> {
+    let normalized = name.to_ascii_lowercase();
+    if normalized.ends_with("_files") {
+        return Some("saved web page asset directory");
+    }
+
+    match normalized.as_str() {
+        ".git" | ".hg" | ".svn" => Some("version-control metadata directory"),
+        ".agents" | ".claude" | ".codex" => Some("agent/tool state directory"),
+        ".build" | ".next" | ".svelte-kit" | "bin" | "build" | "dist" | "obj" | "target" => {
+            Some("build output/cache directory")
+        }
+        "node_modules" | "packages" | "vendor" => Some("dependency directory"),
+        "worktrees" => Some("session worktree directory"),
+        _ => None,
+    }
 }
 
 fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option<&str>) -> bool {

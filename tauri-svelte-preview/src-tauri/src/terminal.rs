@@ -112,7 +112,12 @@ pub fn start_terminal_session<R: Runtime>(
         },
     )?;
 
-    spawn_terminal_reader(app.clone(), session_id.clone(), Arc::clone(&scrollback), reader);
+    spawn_terminal_reader(
+        app.clone(),
+        session_id.clone(),
+        Arc::clone(&scrollback),
+        reader,
+    );
     spawn_terminal_waiter(app, registry.clone(), session_id, child);
 
     Ok(info)
@@ -402,7 +407,10 @@ mod tests {
         assert!(scrollback.ends_with(" 世界"));
         assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
 
-        append_terminal_scrollback(&mut scrollback, &"x".repeat(TERMINAL_SCROLLBACK_MAX_BYTES + 1024));
+        append_terminal_scrollback(
+            &mut scrollback,
+            &"x".repeat(TERMINAL_SCROLLBACK_MAX_BYTES + 1024),
+        );
 
         assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
         assert!(scrollback.is_char_boundary(0));
@@ -443,15 +451,16 @@ mod tests {
                 "printf 'mcb-terminal-ready\\n'\n"
             )
             .expect("terminal input should write"));
-            assert!(resize_terminal_session(&registry, &session.session_id, Some(100), Some(32))
-                .expect("terminal session should resize"));
+            assert!(
+                resize_terminal_session(&registry, &session.session_id, Some(100), Some(32))
+                    .expect("terminal session should resize")
+            );
 
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let scrollback =
-                    read_terminal_session_scrollback(&registry, &session.session_id)
-                        .expect("terminal scrollback should read")
-                        .unwrap_or_default();
+                let scrollback = read_terminal_session_scrollback(&registry, &session.session_id)
+                    .expect("terminal scrollback should read")
+                    .unwrap_or_default();
                 if scrollback.contains("mcb-terminal-ready") {
                     break Ok(());
                 }

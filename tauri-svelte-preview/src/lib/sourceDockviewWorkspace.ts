@@ -51,6 +51,8 @@ export type SourceDockviewWorkspace = {
 
 export type SourceDockviewWorkspaceOptions = {
   layout: SourceDockLayout;
+  panelIDs?: SourceDockPanelID[];
+  rootPanelID?: SourceDockPanelID;
   storedLayout?: SerializedDockview | null;
   onDidLayoutChange?: (layout: SerializedDockview) => void;
   onDidPanelClose?: (panelID: SourceDockPanelID, layout: SerializedDockview) => void;
@@ -65,28 +67,50 @@ export const sourceDockviewPanelDescriptors: SourceDockviewPanelDescriptor[] =
     component: sourceDockviewComponentID
   }));
 
-export function createSourceDockviewPanelPlans(layout: SourceDockLayout): SourceDockviewPanelPlan[] {
+export type SourceDockviewPanelPlanOptions = {
+  panelIDs?: SourceDockPanelID[];
+  rootPanelID?: SourceDockPanelID;
+};
+
+export function createSourceDockviewPanelPlans(
+  layout: SourceDockLayout,
+  options: SourceDockviewPanelPlanOptions = {}
+): SourceDockviewPanelPlan[] {
   const normalizedLayout = normalizeSourceDockLayout(layout);
   const plans: SourceDockviewPanelPlan[] = [];
   const plannedPanelIDs = new Set<SourceDockPanelID>();
+  const includedPanelIDs = options.panelIDs ? new Set(options.panelIDs) : null;
+  const rootPanelID = options.rootPanelID ?? 'editor';
+  const rootPanelVisible = normalizedLayout.groups.some((group) => group.panelIDs.includes(rootPanelID));
 
-  plans.push(createSourceDockviewPanelPlan('editor', 'Editor'));
-  plannedPanelIDs.add('editor');
+  if (includedPanelIDs && !rootPanelVisible) {
+    return [];
+  }
+
+  if (includedPanelIDs && !includedPanelIDs.has(rootPanelID)) {
+    includedPanelIDs.add(rootPanelID);
+  }
+
+  plans.push(createSourceDockviewPanelPlan(rootPanelID, sourceDockviewPanelTitle(rootPanelID)));
+  plannedPanelIDs.add(rootPanelID);
 
   for (const group of normalizedLayout.groups) {
-    const visiblePanelIDs = group.panelIDs.filter((panelID) => panelID !== 'editor');
+    const visiblePanelIDs = group.panelIDs.filter(
+      (panelID) => panelID !== rootPanelID && (!includedPanelIDs || includedPanelIDs.has(panelID))
+    );
     if (visiblePanelIDs.length === 0) continue;
 
-    let previousPanelID: SourceDockPanelID | null = null;
+    let previousPanelID: SourceDockPanelID | null =
+      rootPanelID !== 'editor' && group.panelIDs.includes(rootPanelID) ? rootPanelID : null;
     for (const panelID of visiblePanelIDs) {
       if (plannedPanelIDs.has(panelID)) continue;
 
       const position = previousPanelID
         ? { referencePanel: previousPanelID, direction: 'within' as const }
-        : firstPanelPositionForGroup(group.id);
+        : firstPanelPositionForGroup(group.id, rootPanelID);
       const plan = createSourceDockviewPanelPlan(panelID, sourceDockviewPanelTitle(panelID), position);
 
-      if (!previousPanelID) {
+      if (!previousPanelID || previousPanelID === rootPanelID) {
         if (group.id === 'left' || group.id === 'right') {
           plan.initialWidth = group.size;
         }
@@ -162,15 +186,16 @@ export async function createSourceDockviewWorkspace(
 
   try {
     const storedLayout = options.storedLayout;
-    if (storedLayout) {
+    const restorePlans = createSourceDockviewPanelPlans(options.layout, options);
+    if (storedLayout && restorePlans.length > 0) {
       runDockviewSync(() => api.fromJSON(storedLayout, { reuseExistingPanels: true }));
     } else {
-      runDockviewSync(() => addSourceDockviewPanels(api, options.layout));
+      runDockviewSync(() => addSourceDockviewPanels(api, options.layout, options));
     }
   } catch {
     runDockviewSync(() => {
       api.clear();
-      addSourceDockviewPanels(api, options.layout);
+      addSourceDockviewPanels(api, options.layout, options);
     });
   }
 
@@ -212,7 +237,7 @@ export async function createSourceDockviewWorkspace(
       panelElements.delete(panelID);
     },
     syncLayout(layout) {
-      runDockviewSync(() => addSourceDockviewPanels(api, layout));
+      runDockviewSync(() => addSourceDockviewPanels(api, layout, options));
     },
     toJSON() {
       return api.toJSON();
@@ -226,12 +251,16 @@ export async function createSourceDockviewWorkspace(
   };
 }
 
-export function addSourceDockviewPanels(api: DockviewApi, layout: SourceDockLayout) {
+export function addSourceDockviewPanels(
+  api: DockviewApi,
+  layout: SourceDockLayout,
+  options: SourceDockviewPanelPlanOptions = {}
+) {
   for (const panel of api.panels) {
     api.removePanel(panel);
   }
 
-  for (const plan of createSourceDockviewPanelPlans(layout)) {
+  for (const plan of createSourceDockviewPanelPlans(layout, options)) {
     api.addPanel(plan);
   }
 }
@@ -287,7 +316,14 @@ function sourceDockviewPanelTitle(panelID: SourceDockPanelID) {
   return sourceDockPanelDescriptors.find((panel) => panel.id === panelID)?.label ?? panelID;
 }
 
-function firstPanelPositionForGroup(groupID: SourceDockGroupID): SourceDockviewPanelPlan['position'] {
+function firstPanelPositionForGroup(
+  groupID: SourceDockGroupID,
+  rootPanelID: SourceDockPanelID = 'editor'
+): SourceDockviewPanelPlan['position'] {
+  if (rootPanelID !== 'editor') {
+    return { referencePanel: rootPanelID, direction: 'within' };
+  }
+
   switch (groupID) {
     case 'left':
       return { referencePanel: 'editor', direction: 'left' };

@@ -31,6 +31,7 @@
   import 'dockview-core/dist/styles/dockview.css';
   import '@xterm/xterm/css/xterm.css';
   import { onMount, tick } from 'svelte';
+  import type { SerializedDockview } from 'dockview-core';
   import type { FitAddon as XTermFitAddon } from '@xterm/addon-fit';
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
@@ -102,7 +103,11 @@
     type SourceDockLayout,
     type SourceDockPanelID
   } from '$lib/sourceDockLayout';
-  import { sourceDockviewStorageKey } from '$lib/sourceDockviewWorkspace';
+  import {
+    createSourceDockviewWorkspace,
+    sourceDockviewStorageKey,
+    type SourceDockviewWorkspace
+  } from '$lib/sourceDockviewWorkspace';
   import {
     applySourceTextEdits,
     buildSourceTree,
@@ -346,6 +351,9 @@
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-compact-chrome';
+  const sourceDockviewInsightsEnabled = true;
+  const sourceDockviewInsightsPanelIDs: SourceDockPanelID[] = ['insights'];
+  const sourceDockviewInsightsStorageKey = `${sourceDockviewStorageKey}.insights`;
   const initialProject = defaultProjectRoots[0];
   const macCommandBarRepoPath =
     defaultProjectRoots.find((project) => project.id === 'mac-command-bar')?.path ??
@@ -675,6 +683,8 @@
   let contextPanelCollapsed = $state(true);
   let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
   let sourceFocusRestoreLayout = $state<SourceLayoutSnapshot | null>(null);
+  let sourceDockviewInsightsReady = $state(false);
+  let sourceDockviewInsightsError = $state('');
   let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
   let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
   let dockDropTargetPanelID = $state<SourceDockPanelID | null>(null);
@@ -724,6 +734,10 @@
   let scanGeneration = 0;
   let sourceIntelligenceCommandId = 0;
   let sourceLspDiagnosticsTimer: number | null = null;
+  let sourceDockviewInsightsWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewInsightsResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewInsightsHostToken = 0;
+  const sourceDockviewPanelElements = new Map<SourceDockPanelID, HTMLElement>();
   let embeddedTerminal: XTermTerminal | null = null;
   let embeddedTerminalFitAddon: XTermFitAddon | null = null;
   let embeddedTerminalInputDisposable: { dispose: () => void } | null = null;
@@ -3913,6 +3927,12 @@
           `Unreadable entries: ${stats.unreadableEntries.toLocaleString()}`
         ]
       : ['Scanner stats: none'];
+    const skippedDirectoryLines =
+      stats?.skippedDirectorySamples && stats.skippedDirectorySamples.length > 0
+        ? stats.skippedDirectorySamples.map(
+            (sample) => `- ${sample.path || sample.name}: ${sample.reason}`
+          )
+        : ['- none'];
 
     return [
       'Source scan diagnostic',
@@ -3940,6 +3960,9 @@
       error ? `Error: ${error}` : 'Error: none',
       `Current file: ${currentFile}`,
       `Saved selected path: ${selectedPath}`,
+      '',
+      'Skipped directory samples:',
+      skippedDirectoryLines.join('\n'),
       '',
       'Raw scanner stats:',
       statLines.join('\n'),
@@ -9662,6 +9685,7 @@
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutVersionStorageKey, sourceLayoutVersion);
     window.localStorage.removeItem(sourceDockviewStorageKey);
+    window.localStorage.removeItem(sourceDockviewInsightsStorageKey);
   }
 
   function loadStoredSourceTerminalApp(): SourceTerminalApp {
@@ -9975,7 +9999,17 @@
     const normalizedLayout = normalizeSourceDockLayout(layout);
     sourceDockLayout = normalizedLayout;
     syncSourceDockLayoutToWorkspace(normalizedLayout);
+    syncSourceDockviewInsightsLayout(normalizedLayout);
     persistSourceDockLayout(normalizedLayout);
+  }
+
+  function syncSourceDockviewInsightsLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewInsightsWorkspace) return;
+
+    sourceDockviewInsightsWorkspace.syncLayout(layout);
+    for (const [panelID, element] of sourceDockviewPanelElements) {
+      sourceDockviewInsightsWorkspace.setPanelElement(panelID, element);
+    }
   }
 
   function syncSourceDockLayoutToWorkspace(layout: SourceDockLayout) {
@@ -10142,6 +10176,157 @@
       sourceDockLayoutStorageKey,
       JSON.stringify(normalizeSourceDockLayout(layout))
     );
+  }
+
+  function loadStoredSourceDockviewLayout(
+    storageKey: string,
+    panelIDs?: SourceDockPanelID[]
+  ): SerializedDockview | null {
+    if (typeof window === 'undefined') return null;
+
+    try {
+      const storedLayout = window.localStorage.getItem(storageKey);
+      if (!storedLayout) return null;
+
+      const parsedLayout = JSON.parse(storedLayout) as SerializedDockview;
+      if (panelIDs && !sourceDockviewLayoutOnlyContainsPanels(parsedLayout, panelIDs)) {
+        return null;
+      }
+
+      return parsedLayout;
+    } catch {
+      return null;
+    }
+  }
+
+  function sourceDockviewLayoutOnlyContainsPanels(
+    layout: SerializedDockview,
+    panelIDs: SourceDockPanelID[]
+  ) {
+    const expectedPanelIDs = new Set<string>(panelIDs);
+    const storedPanelIDs = Object.keys(layout.panels ?? {});
+
+    return (
+      storedPanelIDs.length > 0 &&
+      storedPanelIDs.every((panelID) => expectedPanelIDs.has(panelID)) &&
+      panelIDs.every((panelID) => storedPanelIDs.includes(panelID))
+    );
+  }
+
+  function persistSourceDockviewLayout(storageKey: string, layout: SerializedDockview) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(storageKey, JSON.stringify(layout));
+  }
+
+  function sourceDockviewInsightsHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewInsightsHostToken;
+    void initializeSourceDockviewInsights(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewInsightsHostToken === token) {
+          sourceDockviewInsightsHostToken += 1;
+          disposeSourceDockviewInsights();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewPanelAction(node: HTMLElement, panelID: SourceDockPanelID) {
+    registerSourceDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceDockPanelID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  async function initializeSourceDockviewInsights(node: HTMLElement, token: number) {
+    if (!sourceDockviewInsightsEnabled) return;
+
+    sourceDockviewInsightsReady = false;
+    sourceDockviewInsightsError = '';
+
+    await tick();
+    if (token !== sourceDockviewInsightsHostToken) return;
+
+    disposeSourceDockviewInsights();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: sourceDockLayout,
+        panelIDs: sourceDockviewInsightsPanelIDs,
+        rootPanelID: 'insights',
+        storedLayout: loadStoredSourceDockviewLayout(
+          sourceDockviewInsightsStorageKey,
+          sourceDockviewInsightsPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceDockviewInsightsStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          if (panelID !== 'insights') return;
+          editorInsightCollapsed = true;
+          persistEditorInsightCollapsed(editorInsightCollapsed);
+          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
+          fileActionStatus = 'Insights panel hidden';
+        }
+      });
+
+      if (token !== sourceDockviewInsightsHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewInsightsWorkspace = workspace;
+      for (const [panelID, element] of sourceDockviewPanelElements) {
+        workspace.setPanelElement(panelID, element);
+      }
+      sourceDockviewInsightsResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewInsights(node)
+      );
+      sourceDockviewInsightsResizeObserver.observe(node);
+      sourceDockviewInsightsReady = true;
+      layoutSourceDockviewInsights(node);
+    } catch (dockviewError) {
+      sourceDockviewInsightsError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview insights unavailable';
+      sourceDockviewInsightsReady = false;
+      disposeSourceDockviewInsights();
+    }
+  }
+
+  function registerSourceDockviewPanelElement(panelID: SourceDockPanelID, element: HTMLElement) {
+    sourceDockviewPanelElements.set(panelID, element);
+    sourceDockviewInsightsWorkspace?.setPanelElement(panelID, element);
+  }
+
+  function unregisterSourceDockviewPanelElement(panelID: SourceDockPanelID, element: HTMLElement) {
+    if (sourceDockviewPanelElements.get(panelID) !== element) return;
+    sourceDockviewPanelElements.delete(panelID);
+    sourceDockviewInsightsWorkspace?.setPanelElement(panelID, null);
+  }
+
+  function layoutSourceDockviewInsights(node: HTMLElement) {
+    if (!sourceDockviewInsightsWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewInsightsWorkspace.api.layout(width, height, true);
+  }
+
+  function disposeSourceDockviewInsights() {
+    sourceDockviewInsightsResizeObserver?.disconnect();
+    sourceDockviewInsightsResizeObserver = null;
+    sourceDockviewInsightsWorkspace?.dispose();
+    sourceDockviewInsightsWorkspace = null;
+    sourceDockviewInsightsReady = false;
   }
 
   function persistDockGroupSize(groupID: SourceDockGroupID, size: number) {
@@ -11605,6 +11790,7 @@
       unlistenSourceScanProgress?.();
       unlistenTerminalOutput?.();
       disposeEmbeddedTerminal();
+      disposeSourceDockviewInsights();
     };
   });
 </script>
@@ -15114,7 +15300,24 @@
               onkeydown={handleEditorInsightResizerKeydown}
             ></button>
 
-            <aside class="source-intelligence-panel" aria-label="Language intelligence">
+            <div
+              class="source-dockview-insights-shell"
+              class:dockview-enabled={sourceDockviewInsightsEnabled}
+              class:dockview-ready={sourceDockviewInsightsReady}
+              class:dockview-error={Boolean(sourceDockviewInsightsError)}
+            >
+              {#if sourceDockviewInsightsEnabled}
+                <div
+                  class="source-dockview-insights-host"
+                  aria-hidden={!sourceDockviewInsightsReady}
+                  use:sourceDockviewInsightsHostAction
+                ></div>
+              {/if}
+              <aside
+                class="source-intelligence-panel"
+                aria-label="Language intelligence"
+                use:sourceDockviewPanelAction={'insights'}
+              >
             <div class="intelligence-tabs" role="tablist" aria-label="Source insights">
               <button
                 class:active={sourceIntelligencePanel === 'problems'}
@@ -15658,6 +15861,12 @@
               </div>
             {/if}
             </aside>
+              {#if sourceDockviewInsightsError}
+                <div class="source-dockview-insights-error" role="status">
+                  {sourceDockviewInsightsError}
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
       </div>
@@ -21877,6 +22086,76 @@
     overflow: hidden;
     border-left: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(20, 23, 24, 0.86);
+  }
+
+  .source-dockview-insights-shell {
+    position: relative;
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .source-dockview-insights-host,
+  .source-dockview-insights-shell > .source-intelligence-panel {
+    grid-area: 1 / 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .source-dockview-insights-host {
+    overflow: hidden;
+    visibility: hidden;
+  }
+
+  .source-dockview-insights-shell.dockview-ready .source-dockview-insights-host {
+    visibility: visible;
+  }
+
+  .source-dockview-insights-shell.dockview-ready > .source-intelligence-panel {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .source-dockview-insights-shell :global(.source-dockview-panel-host) {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .source-dockview-insights-shell :global(.source-dockview-attached-panel) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .source-dockview-insights-shell :global(.dockview-theme-dark) {
+    --dv-background-color: rgba(20, 23, 24, 0.86);
+    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
+    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
+    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
+    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
+    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
+    --dv-separator-border: rgba(255, 255, 255, 0.08);
+  }
+
+  .source-dockview-insights-error {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    z-index: 4;
+    max-width: calc(100% - 16px);
+    overflow: hidden;
+    color: #ffb3a6;
+    border: 1px solid rgba(255, 123, 107, 0.32);
+    border-radius: 6px;
+    background: rgba(42, 21, 19, 0.92);
+    padding: 4px 6px;
+    font-size: 10px;
+    font-weight: 760;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .editor-lookup-popover {

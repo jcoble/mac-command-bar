@@ -515,14 +515,20 @@ assert.deepEqual(
       matchedFiles: 2,
       skippedDirectories: 14,
       unsupportedFiles: 80,
-      unreadableEntries: 0
+      unreadableEntries: 0,
+      skippedDirectorySamples: [
+        { path: 'worktrees', name: 'worktrees', reason: 'session worktree directory' },
+        { path: 'node_modules', name: 'node_modules', reason: 'dependency directory' },
+        { path: '.git', name: '.git', reason: 'version-control metadata directory' },
+        { path: 'dist', name: 'dist', reason: 'build output/cache directory' }
+      ]
     }
   }),
   {
     visible: true,
     title: 'Tiny source index',
     detail:
-      'Only 2 files were indexed from a 25,000-file scan. Reset the index; if it stays tiny, choose the repo or worktree root. 320 entries checked · 80 unsupported · 14 dirs skipped',
+      'Only 2 files were indexed from a 25,000-file scan. Reset the index; if it stays tiny, choose the repo or worktree root. 320 entries checked · 80 unsupported · 14 dirs skipped · skipped samples: worktrees: session worktree directory; node_modules: dependency directory; .git: version-control metadata directory; +1 more',
     primaryAction: 'reset-index',
     secondaryAction: 'copy-diagnostic'
   }
@@ -945,8 +951,8 @@ assert.equal(sourceSupportsLanguageIntelligence('javascript'), true);
 assert.equal(sourceSupportsLanguageIntelligence('csharp'), true);
 assert.equal(sourceSupportsLanguageIntelligence('rust'), true);
 assert.equal(sourceSupportsLanguageIntelligence('svelte'), true);
-assert.equal(sourceSupportsLanguageIntelligence('python'), true);
-assert.equal(sourceSupportsLanguageIntelligence('go'), true);
+assert.equal(sourceSupportsLanguageIntelligence('python'), false);
+assert.equal(sourceSupportsLanguageIntelligence('go'), false);
 assert.equal(sourceSupportsLanguageIntelligence('markdown'), false);
 assert.equal(sourceLanguageForPath('/repo/src/App.cs'), 'csharp');
 assert.equal(sourceLanguageForPath('/repo/src/App.svelte'), 'svelte');

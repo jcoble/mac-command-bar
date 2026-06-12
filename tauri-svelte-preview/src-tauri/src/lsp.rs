@@ -14,15 +14,8 @@ use serde_json::{json, Value};
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 const LSP_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_LSP_HEADER_BYTES: usize = 8 * 1024;
-const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
-    "csharp",
-    "typescript",
-    "javascript",
-    "rust",
-    "svelte",
-    "python",
-    "go",
-];
+const SOURCE_LSP_READINESS_LANGUAGES: &[&str] =
+    &["csharp", "typescript", "javascript", "rust", "svelte"];
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2717,15 +2710,7 @@ mod tests {
 
         assert_eq!(
             languages,
-            vec![
-                "csharp",
-                "typescript",
-                "javascript",
-                "rust",
-                "svelte",
-                "python",
-                "go"
-            ]
+            vec!["csharp", "typescript", "javascript", "rust", "svelte"]
         );
         assert!(statuses.iter().all(|status| !status.server_name.is_empty()));
         assert!(statuses.iter().all(|status| !status.command.is_empty()));

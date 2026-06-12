@@ -19,6 +19,7 @@ const defaultSourceListLimit = 10_000;
 const maxSourceListLimit = 25_000;
 const maxPreviewBytes = 512 * 1024;
 const maxIntelligenceReadCount = 2_000;
+const maxSkippedDirectorySamples = 16;
 
 type LocalSourceScanInput = {
   root: string;
@@ -253,8 +254,9 @@ async function collectSourceFiles(
     scanStats.visitedEntries += 1;
     const entryPath = path.join(current, entry.name);
     if (entry.isDirectory()) {
-      if (shouldSkipDir(entry.name)) {
-        scanStats.skippedDirectories += 1;
+      const skipReason = skipDirReason(entry.name);
+      if (skipReason) {
+        recordSkippedDirectory(root, entryPath, entry.name, skipReason, scanStats);
       } else {
         await collectSourceFiles(root, entryPath, limit, query, records, scanStats);
       }
@@ -301,6 +303,25 @@ function createSourceScanStats(): SourceScanStats {
     unsupportedFiles: 0,
     unreadableEntries: 0
   };
+}
+
+function recordSkippedDirectory(
+  root: string,
+  directoryPath: string,
+  name: string,
+  reason: string,
+  scanStats: SourceScanStats
+) {
+  scanStats.skippedDirectories += 1;
+  if ((scanStats.skippedDirectorySamples?.length ?? 0) >= maxSkippedDirectorySamples) return;
+
+  const samples = scanStats.skippedDirectorySamples ?? [];
+  samples.push({
+    path: normalizeRelativePath(path.relative(root, directoryPath)),
+    name,
+    reason
+  });
+  scanStats.skippedDirectorySamples = samples;
 }
 
 function normalizeRootPath(root: string) {
@@ -441,53 +462,66 @@ function detectLanguage(filePath: string) {
   }
 }
 
-function shouldSkipDir(name: string) {
+function skipDirReason(name: string) {
   const normalizedName = name.toLowerCase();
-  if (normalizedName.endsWith('_files')) return true;
+  if (normalizedName.endsWith('_files')) return 'saved web page asset directory';
 
-  return new Set([
-    '__pycache__',
-    '.cache',
-    '.git',
-    '.hg',
-    '.svn',
-    '.agents',
-    '.build',
-    '.claude',
-    '.codex',
-    '.dev',
-    '.gradle',
-    '.history',
-    '.idea',
-    '.merge-backups',
-    '.next',
-    '.nuxt',
-    '.omx',
-    '.parcel-cache',
-    '.playwright',
-    '.playwright-cli',
-    '.pytest_cache',
-    '.run',
-    '.slots',
-    '.svelte-kit',
-    '.tmp',
-    '.turbo',
-    '.vite',
-    '.vscode',
-    '.zed',
-    'bin',
-    'build',
-    'coverage',
-    'deriveddata',
-    'dist',
-    'node_modules',
-    'obj',
-    'pods',
-    'target',
-    'testresults',
-    'vendor',
-    'worktrees'
-  ]).has(normalizedName);
+  if (['.git', '.hg', '.svn'].includes(normalizedName)) {
+    return 'version-control metadata directory';
+  }
+
+  if (
+    [
+      '.agents',
+      '.claude',
+      '.codex',
+      '.dev',
+      '.history',
+      '.idea',
+      '.omx',
+      '.playwright',
+      '.playwright-cli',
+      '.run',
+      '.slots',
+      '.vscode',
+      '.zed'
+    ].includes(normalizedName)
+  ) {
+    return 'agent/tool state directory';
+  }
+
+  if (
+    [
+      '__pycache__',
+      '.cache',
+      '.build',
+      '.gradle',
+      '.next',
+      '.nuxt',
+      '.parcel-cache',
+      '.pytest_cache',
+      '.svelte-kit',
+      '.tmp',
+      '.turbo',
+      '.vite',
+      'bin',
+      'build',
+      'coverage',
+      'deriveddata',
+      'dist',
+      'obj',
+      'target',
+      'testresults'
+    ].includes(normalizedName)
+  ) {
+    return 'build output/cache directory';
+  }
+
+  if (normalizedName === '.merge-backups') return 'merge backup directory';
+  if (['node_modules', 'pods', 'vendor'].includes(normalizedName)) return 'dependency directory';
+  if (normalizedName === 'worktrees') return 'session worktree directory';
+
+  return null;
 }
 
 function sourceFileMatchesQuery(relativePath: string, fileName: string, query: string | null) {

@@ -1,5 +1,6 @@
 use mcb_core::dispatcher::dispatch;
 use mcb_core::protocol::CoreRequest;
+use mcb_core::source::list_source_files;
 use serde_json::json;
 
 #[test]
@@ -289,6 +290,63 @@ fn source_list_skips_agent_and_worktree_dirs() {
 }
 
 #[test]
+fn source_list_reports_diagnostics_for_skipped_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    std::fs::create_dir_all(root.join("worktrees/session/src")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join(".git/objects/Hidden.ts"),
+        "export const hidden = true;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("node_modules/pkg/index.ts"),
+        "export const dependency = true;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("worktrees/session/src/Stale.cs"),
+        "public class Stale {}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/Real.ts"), "export const real = true;\n").unwrap();
+    std::fs::write(root.join("notes.txt"), "plain notes\n").unwrap();
+
+    let response = dispatch(CoreRequest {
+        id: "req-source-list-diagnostics".to_string(),
+        action: "source.list".to_string(),
+        dry_run: true,
+        payload: json!({ "rootPath": root, "limit": 20 }),
+    });
+
+    assert!(response.ok, "{response:?}");
+    assert_eq!(response.data["count"], 1);
+    assert_eq!(response.data["diagnostics"]["effectiveLimit"], 20);
+    assert_eq!(response.data["diagnostics"]["returnedCount"], 1);
+    assert_eq!(response.data["diagnostics"]["truncated"], false);
+    assert_eq!(response.data["diagnostics"]["skippedDirectoryCount"], 3);
+    assert_eq!(response.data["diagnostics"]["unsupportedFileCount"], 1);
+
+    let skipped = response.data["diagnostics"]["skippedDirectories"]
+        .as_array()
+        .unwrap();
+    let skipped_names: std::collections::BTreeSet<&str> = skipped
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert_eq!(
+        skipped_names,
+        std::collections::BTreeSet::from([".git", "node_modules", "worktrees"])
+    );
+    assert!(skipped.iter().all(|entry| entry["reason"]
+        .as_str()
+        .is_some_and(|reason| !reason.is_empty())));
+}
+
+#[test]
 fn source_list_skips_saved_web_asset_dirs() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -341,6 +399,30 @@ fn source_list_applies_query_before_limit() {
         response.data["files"][0]["relativePath"].as_str().unwrap(),
         "src/TransactionProcessorWorker.cs"
     );
+}
+
+#[test]
+fn source_list_honors_default_limit_cap_and_explicit_lower_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/A.ts"), "export const a = 1;\n").unwrap();
+    std::fs::write(root.join("src/B.ts"), "export const b = 1;\n").unwrap();
+
+    let defaulted = list_source_files(root, 0, None).unwrap();
+    assert_eq!(defaulted.limit, 10_000);
+    assert_eq!(defaulted.files.len(), 2);
+    assert!(!defaulted.truncated);
+
+    let capped = list_source_files(root, 30_000, None).unwrap();
+    assert_eq!(capped.limit, 25_000);
+    assert_eq!(capped.files.len(), 2);
+    assert!(!capped.truncated);
+
+    let explicit_lower = list_source_files(root, 1, None).unwrap();
+    assert_eq!(explicit_lower.limit, 1);
+    assert_eq!(explicit_lower.files.len(), 1);
+    assert!(explicit_lower.truncated);
 }
 
 #[test]
