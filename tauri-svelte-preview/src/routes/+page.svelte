@@ -3984,6 +3984,28 @@
     return '';
   }
 
+  function gitCommitRefSummary(entry: GitCommitHistoryEntry, maxRefs = 2) {
+    const refs = gitCommitRefChips(entry);
+    if (refs.length === 0) return 'no refs';
+
+    const visibleRefs = refs.slice(0, maxRefs).join(', ');
+    const remainingCount = refs.length - maxRefs;
+    return remainingCount > 0 ? `${visibleRefs} +${remainingCount}` : visibleRefs;
+  }
+
+  function gitCommitCompactMeta(entry: GitCommitHistoryEntry) {
+    const topology = gitCommitParentSummary(entry) || 'linear';
+    const task = entry.taskID ?? '';
+
+    return [
+      entry.shortSha,
+      topology,
+      task,
+      entry.author,
+      formatGitCommitTime(entry.committedAt)
+    ].filter(Boolean).join(' · ');
+  }
+
   function gitCommitTaskSourceLabel(entry: GitCommitHistoryEntry) {
     if (!entry.taskID) return '';
     if (entry.taskSource === 'refs') return 'branch/ref';
@@ -15320,69 +15342,87 @@
                     </div>
                   {/if}
                   {#if selectedGitCommit}
-                    <div
-                      class="git-commit-detail"
+                    <details
+                      class="git-commit-detail-drawer"
                       aria-label="Selected commit detail"
                       title={gitCommitDetailText(selectedGitCommit)}
                     >
-                      <div class="git-commit-detail-main">
-                        <strong>{selectedGitCommit.shortSha}</strong>
-                        <span>{selectedGitCommit.subject}</span>
-                        <small>
-                          {gitCommitParentSummary(selectedGitCommit) || 'linear'}
-                          · {formatGitCommitTime(selectedGitCommit.committedAt)}
+                      <summary class="git-commit-detail-summary">
+                        <span class="git-commit-detail-summary-main">
+                          <strong>{selectedGitCommit.subject}</strong>
+                          <small>{gitCommitCompactMeta(selectedGitCommit)}</small>
+                        </span>
+                        <span class="git-commit-detail-summary-ref">{gitCommitRefSummary(selectedGitCommit)}</span>
+                      </summary>
+                      <div class="git-commit-detail-body">
+                        <div class="git-commit-detail-facts" aria-label="Selected commit metadata">
+                          <span>
+                            <strong>Commit</strong>
+                            <small>{selectedGitCommit.sha}</small>
+                          </span>
+                          <span>
+                            <strong>Refs</strong>
+                            <small>{gitCommitRefSummary(selectedGitCommit, 4)}</small>
+                          </span>
+                          <span>
+                            <strong>Parents</strong>
+                            <small>{gitCommitParentSummary(selectedGitCommit) || 'linear'}</small>
+                          </span>
                           {#if selectedGitCommit.taskID}
-                            · {selectedGitCommit.taskID}
+                            <span>
+                              <strong>Task</strong>
+                              <small>{selectedGitCommit.taskID}</small>
+                            </span>
                           {/if}
-                        </small>
-                      </div>
-                      <div class="git-commit-detail-actions" aria-label="Selected commit actions">
-                        <button
-                          type="button"
-                          aria-label="Copy selected commit detail"
-                          title="Copy selected commit detail"
-                          onclick={copySelectedGitCommitDetail}
-                        >
-                          <Copy size={11} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Copy selected commit handoff"
-                          title="Copy selected commit handoff"
-                          onclick={() => copyGitCommitHandoff(selectedGitCommit)}
-                        >
-                          <FileCode2 size={11} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Copy selected commit SHA"
-                          title="Copy selected commit SHA"
-                          onclick={() => copyGitCommitSha(selectedGitCommit)}
-                        >
-                          <History size={11} strokeWidth={2} />
-                        </button>
-                        {#if selectedGitCommit.taskID}
-                          {#if gitTaskUrl(selectedGitCommit.taskID)}
-                            <button
-                              type="button"
-                              aria-label="Open selected commit task reference"
-                              title="Open selected commit task reference"
-                              onclick={() => openGitTaskReference(selectedGitCommit.taskID)}
-                            >
-                              <ExternalLink size={11} strokeWidth={2} />
-                            </button>
-                          {/if}
+                        </div>
+                        <div class="git-commit-detail-actions" aria-label="Selected commit actions">
                           <button
                             type="button"
-                            aria-label="Copy selected commit task reference"
-                            title="Copy selected commit task reference"
-                            onclick={() => copyGitTaskReference(selectedGitCommit.taskID)}
+                            aria-label="Copy selected commit detail"
+                            title="Copy selected commit detail"
+                            onclick={copySelectedGitCommitDetail}
                           >
                             <Copy size={11} strokeWidth={2} />
                           </button>
-                        {/if}
+                          <button
+                            type="button"
+                            aria-label="Copy selected commit handoff"
+                            title="Copy selected commit handoff"
+                            onclick={() => copyGitCommitHandoff(selectedGitCommit)}
+                          >
+                            <FileCode2 size={11} strokeWidth={2} />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Copy selected commit SHA"
+                            title="Copy selected commit SHA"
+                            onclick={() => copyGitCommitSha(selectedGitCommit)}
+                          >
+                            <History size={11} strokeWidth={2} />
+                          </button>
+                          {#if selectedGitCommit.taskID}
+                            {#if gitTaskUrl(selectedGitCommit.taskID)}
+                              <button
+                                type="button"
+                                aria-label="Open selected commit task reference"
+                                title="Open selected commit task reference"
+                                onclick={() => openGitTaskReference(selectedGitCommit.taskID)}
+                              >
+                                <ExternalLink size={11} strokeWidth={2} />
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              aria-label="Copy selected commit task reference"
+                              title="Copy selected commit task reference"
+                              onclick={() => copyGitTaskReference(selectedGitCommit.taskID)}
+                            >
+                              <Copy size={11} strokeWidth={2} />
+                            </button>
+                          {/if}
+                        </div>
                       </div>
-                    </div>
+                    </details>
                   {/if}
                   <div class="git-history-list">
                     {#if gitCommitHistoryLoading}
@@ -15409,7 +15449,7 @@
                           ></span>
                           <div class="git-history-main">
                             <strong>{entry.subject}</strong>
-                            <small>{entry.shortSha} · {entry.author} · {formatGitCommitTime(entry.committedAt)}</small>
+                            <small>{gitCommitCompactMeta(entry)}</small>
                           </div>
                           <div class="git-history-meta">
                             <div class="git-history-badges" aria-label="Commit ownership badges">
@@ -22082,47 +22122,118 @@
     background: rgba(92, 226, 207, 0.11);
   }
 
-  .git-commit-detail {
+  .git-commit-detail-drawer {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
-    padding: 6px 7px;
+    padding: 0;
     border: 1px solid rgba(111, 223, 207, 0.18);
     border-radius: 7px;
     background: rgba(111, 223, 207, 0.055);
   }
 
-  .git-commit-detail-main {
+  .git-commit-detail-drawer[open] {
+    background: rgba(111, 223, 207, 0.07);
+  }
+
+  .git-commit-detail-drawer summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .git-commit-detail-summary {
     display: grid;
-    gap: 2px;
+    grid-template-columns: 10px minmax(0, 1fr) minmax(0, 86px);
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    min-width: 0;
+    padding: 4px 7px;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .git-commit-detail-summary::before {
+    color: #7f8f8b;
+    font-size: 11px;
+    font-weight: 900;
+    content: ">";
+    transition: transform 140ms ease;
+  }
+
+  .git-commit-detail-drawer[open] .git-commit-detail-summary::before {
+    transform: rotate(90deg);
+  }
+
+  .git-commit-detail-summary-main {
+    display: grid;
+    gap: 1px;
     min-width: 0;
   }
 
-  .git-commit-detail-main strong,
-  .git-commit-detail-main span,
-  .git-commit-detail-main small {
+  .git-commit-detail-summary-main strong,
+  .git-commit-detail-summary-main small,
+  .git-commit-detail-summary-ref,
+  .git-commit-detail-facts strong,
+  .git-commit-detail-facts small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .git-commit-detail-main strong {
-    color: #79eadb;
-    font-size: 9px;
-    font-weight: 860;
-  }
-
-  .git-commit-detail-main span {
+  .git-commit-detail-summary-main strong {
     color: #f1f5f4;
     font-size: 10px;
     font-weight: 820;
   }
 
-  .git-commit-detail-main small {
+  .git-commit-detail-summary-main small,
+  .git-commit-detail-summary-ref {
     color: #8d9995;
+    font-size: 8.5px;
+    font-weight: 760;
+  }
+
+  .git-commit-detail-summary-ref {
+    justify-self: end;
+    max-width: 86px;
+  }
+
+  .git-commit-detail-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 7px;
+    min-width: 0;
+    padding: 0 7px 7px 23px;
+  }
+
+  .git-commit-detail-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .git-commit-detail-facts span {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+    padding: 3px 5px;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.12);
+  }
+
+  .git-commit-detail-facts strong {
+    color: #9aa7a3;
+    font-size: 7.5px;
+    font-weight: 860;
+    text-transform: uppercase;
+  }
+
+  .git-commit-detail-facts small {
+    color: #dce5e2;
     font-size: 8.5px;
     font-weight: 760;
   }
@@ -22149,12 +22260,12 @@
   .git-history-row {
     position: relative;
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
+    grid-template-columns: 14px minmax(0, 1fr) minmax(42px, auto);
     align-items: center;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
-    min-height: 38px;
-    padding: 6px 7px;
+    min-height: 30px;
+    padding: 4px 6px;
     color: #cfd8d5;
     border: 1px solid rgba(255, 255, 255, 0.055);
     border-radius: 7px;
@@ -22193,8 +22304,8 @@
     position: relative;
     display: grid;
     place-items: center;
-    width: 18px;
-    height: 24px;
+    width: 14px;
+    height: 22px;
   }
 
   .git-graph-marker::before {
@@ -22267,7 +22378,7 @@
 
   .git-history-main {
     display: grid;
-    gap: 3px;
+    gap: 1px;
   }
 
   .git-history-main strong,
@@ -22281,13 +22392,13 @@
 
   .git-history-main strong {
     color: #f1f5f4;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 820;
   }
 
   .git-history-main small {
     color: #8d9995;
-    font-size: 9px;
+    font-size: 8.5px;
     font-weight: 740;
   }
 
@@ -22347,15 +22458,34 @@
   }
 
   .git-history-actions {
+    position: absolute;
+    top: 50%;
+    right: 5px;
     display: inline-flex;
     justify-content: flex-end;
     gap: 3px;
     max-width: 112px;
+    padding: 2px;
+    border-radius: 7px;
+    background: color-mix(in srgb, #151a1a 86%, transparent);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%);
+    transition: opacity 120ms ease, visibility 120ms ease;
+    visibility: hidden;
   }
 
   .git-commit-detail-actions {
     justify-content: flex-end;
     max-width: 112px;
+  }
+
+  .git-history-row:hover .git-history-actions,
+  .git-history-row:focus-within .git-history-actions {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
   }
 
   .git-history-actions button,

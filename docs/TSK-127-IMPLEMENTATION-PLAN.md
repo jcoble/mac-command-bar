@@ -47,6 +47,7 @@ Completed and committed:
 - Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Git history rows now use normalized ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits while keeping raw refs in copyable detail/handoff text.
 - Git task ledger rows now show owner and cleanup summaries, stale-clean candidates, backup-needed worktrees, active sessions, saved workspace ownership, runs, and commits without adding persistent panels.
+- Git history now uses compact selected-commit drawers, dense commit metadata lines, and hover/focus row actions so larger histories fit without widening the Git pane.
 - Worktree cleanup now understands Git `prunable` and `locked` metadata: missing paths show as metadata-prune review items, locked worktrees block removal, dirty/unmerged worktrees still route to backup/archive guidance, and native remove prunes missing metadata without adding a force-delete path.
 - Conversation workspace restore now treats missing saved worktrees as repairable context drift: rows and command-palette actions copy an audit/recreate plan, and terminal resume copies that plan instead of opening a dead path.
 - Conversation workspace restore now reopens saved files immediately while project indexing runs in the background; background scans preserve the restored file selection if the refreshed index cannot see that path yet.
@@ -61,6 +62,7 @@ Current checkpoint:
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: source bridge wrappers, dev/attach config, web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
+- Priority 1.4 Git graph density and task detail polish is implemented enough for iteration: selected commit details collapse to a one-line drawer, full metadata/actions sit behind disclosure and Cmd+K, commit rows use dense metadata, and row action buttons only appear on hover/focus.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, JSON/JSONL file ingestion, selected import paths, import command copy, and native heartbeat recording are covered by tests.
 - Priority 3.9 LSP recovery and command depth are implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, local drawer actions cover problems/symbols/definitions/references, completions/signature help are tucked into palette/menu surfaces, copyable intelligence briefs exist, and C#/TypeScript native LSP smoke tests pass.
 - Priority 4.11 terminal session restore polish is implemented enough for iteration: embedded PTYs can copy focus plans, restore matching workspace snapshots, attach directly when no snapshot exists, and route missing-worktree restores to the same repair-plan guard as conversation snapshots.
@@ -149,8 +151,8 @@ Target result:
 - The app shows what changed, where it belongs, and what Notion/task branch it maps to.
 
 Work:
-- Existing: Git history pane, graph markers, commit selection, branch health chips, staged/unstaged/untracked groups, selected-file diff, task extraction, Notion task links/fallback search, commit-message entry, fetch/pull/push/stage/unstage/commit, copyable task-source handoffs, command-palette task-source actions, compact task-open ledger actions, and normalized HEAD/upstream/task ownership badges.
-- Next: improve graph density for larger histories and keep actions tucked behind compact menus/palette entries where possible.
+- Existing: Git history pane, graph markers, commit selection, compact selected-commit drawer, dense commit metadata, hover/focus row actions, branch health chips, staged/unstaged/untracked groups, selected-file diff, task extraction, Notion task links/fallback search, commit-message entry, fetch/pull/push/stage/unstage/commit, copyable task-source handoffs, command-palette task-source actions, compact task-open ledger actions, and normalized HEAD/upstream/task ownership badges.
+- Next: validate larger histories in the real app and decide whether a full branch graph lane is worth the complexity.
 
 Acceptance:
 - User can tell which repo/worktree is dirty, for how long, and which task it belongs to.
@@ -352,17 +354,17 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 4.13, clipboard paste cleanup utility polish.
+Last checkpoint: Priority 1.4, Git graph density and task detail polish.
 
-- Changed files: `tauri-svelte-preview/src/lib/pasteCleanup.ts`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/pasteCleanup.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: copied cleaned output and reply drafts now save to capped local history, recent history renders as compact restore/copy chips in Clipboard mode, history can be cleared, stored history is normalized defensively, and Cmd+K exposes restore/copy/clear history actions.
-- Validation: `pnpm test:paste-cleanup`; `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
-- Remaining risk: history is local-only and manual-browser visual validation was not run for this slice.
+- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: selected commit details now render as a collapsed disclosure drawer, full commit metadata/actions live behind disclosure and command-palette actions, history rows use dense commit metadata, and commit row action buttons appear only on hover/focus.
+- Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
+- Remaining risk: manual visual validation in the real Tauri app was not run for this slice.
 
-Next implementation slice: Priority 1.4 Git graph density and task detail polish.
+Next implementation slice: Priority 5 worktree cleanup confidence polish.
 
 Definition of done for the next slice:
-- Improve Git graph density for larger histories without widening the Git pane.
-- Keep selected commit/task details useful but tucked into compact rows, drawers, or command-palette actions.
-- Preserve existing stage/unstage/commit/fetch/pull/push behavior.
+- Tighten the worktree decision queue so clean, stale-clean, dirty, unmerged, locked, active-session, and missing/prunable cases are easy to distinguish.
+- Keep destructive remove paths gated behind explicit copyable plans or safe native remove only for clean/missing-prunable cases.
+- Preserve existing worktree terminal/source/open/task-link actions.
 - Validate with `pnpm test:source-ui`, `pnpm check`, `pnpm build`, and `git diff --check`.

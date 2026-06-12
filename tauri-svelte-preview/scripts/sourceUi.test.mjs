@@ -1846,6 +1846,8 @@ assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a G
 assert.ok(pageSource.includes('let selectedGitCommitSha'), 'Git panel should track a selected commit');
 assert.ok(pageSource.includes('selectedGitCommit'), 'Git panel should derive the selected commit from history');
 assert.ok(pageSource.includes('function selectGitCommit'), 'Git history should allow selecting a commit row');
+assert.ok(pageSource.includes('function gitCommitRefSummary'), 'Git history should summarize refs for compact detail rows');
+assert.ok(pageSource.includes('function gitCommitCompactMeta'), 'Git history should render dense commit metadata lines');
 assert.ok(pageSource.includes('function gitCommitDetailText'), 'Git history should build a detailed selected-commit handoff');
 assert.ok(pageSource.includes('function copySelectedGitCommitDetail'), 'Git history should expose selected commit detail copying');
 assert.ok(pageSource.includes('function gitCommitHandoffText'), 'Git history should build an agent-ready commit handoff');
@@ -1892,7 +1894,10 @@ assert.ok(pageSource.includes('id: `git-task-ledger-${row.taskID}`'), 'Command p
 assert.ok(pageSource.includes('id: `git-focus-task-ledger-${row.taskID}`'), 'Command palette should focus task ledger entries');
 assert.ok(pageSource.includes('id: `git-copy-commit-${entry.sha}`'), 'Command palette should copy recent commit summaries');
 assert.ok(pageSource.includes('class="git-history-list"'), 'Git tab should render commit history rows');
-assert.ok(pageSource.includes('class="git-commit-detail"'), 'Git tab should render selected commit details');
+assert.ok(pageSource.includes('class="git-commit-detail-drawer"'), 'Git tab should render selected commit details in a compact drawer');
+assert.ok(pageSource.includes('class="git-commit-detail-summary"'), 'Selected commit drawer should keep a one-line summary visible');
+assert.ok(pageSource.includes('class="git-commit-detail-body"'), 'Selected commit drawer should tuck full metadata behind disclosure');
+assert.ok(pageSource.includes('class="git-commit-detail-facts"'), 'Selected commit drawer should render compact metadata facts');
 assert.ok(pageSource.includes("id: 'git-copy-selected-commit-detail'"), 'Command palette should copy selected commit details');
 assert.ok(pageSource.includes("id: 'git-copy-selected-commit-handoff'"), 'Command palette should copy selected commit handoffs');
 assert.ok(pageSource.includes("id: 'git-open-selected-commit-task'"), 'Command palette should open the selected commit task');
@@ -1903,6 +1908,26 @@ assert.ok(
 assert.ok(
   pageSource.includes('class:selected={selectedGitCommitSha === entry.sha}'),
   'Git history rows should show the selected commit'
+);
+assert.ok(pageSource.includes('{gitCommitCompactMeta(entry)}'), 'Git history rows should use dense commit metadata');
+assertDeclaration('.git-commit-detail-drawer', 'display: grid');
+assertDeclaration('.git-commit-detail-summary', 'grid-template-columns: 10px minmax(0, 1fr) minmax(0, 86px)');
+assertDeclaration('.git-commit-detail-summary', 'min-height: 28px');
+assertDeclaration('.git-commit-detail-body', 'grid-template-columns: minmax(0, 1fr) auto');
+assertDeclaration('.git-commit-detail-facts', 'grid-template-columns: repeat(auto-fit, minmax(74px, 1fr))');
+assertDeclaration('.git-history-row', 'grid-template-columns: 14px minmax(0, 1fr) minmax(42px, auto)');
+assertDeclaration('.git-history-row', 'min-height: 30px');
+assertDeclaration('.git-history-actions', 'position: absolute');
+assertDeclaration('.git-history-actions', 'opacity: 0');
+assertDeclaration('.git-history-actions', 'visibility: hidden');
+assertDeclaration('.git-history-actions', 'pointer-events: none');
+assert.ok(
+  pageSource.includes('.git-history-row:hover .git-history-actions'),
+  'Git history row actions should appear on hover'
+);
+assert.ok(
+  pageSource.includes('.git-history-row:focus-within .git-history-actions'),
+  'Git history row actions should appear for keyboard focus'
 );
 assert.ok(pageSource.includes('class="git-task-link"'), 'Git history should render task links when task metadata is present');
 assert.ok(pageSource.includes('class="activity-commit-meta"'), 'Activity Git commit rows should group task links with quick actions');
