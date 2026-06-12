@@ -2018,12 +2018,46 @@
       disabled: embeddedTerminalSessionsLoading,
       perform: loadEmbeddedTerminalSessions
     },
+    {
+      id: 'terminal-copy-active-focus-plan',
+      label: 'Copy active terminal focus plan',
+      detail: embeddedTerminalSession
+        ? embeddedTerminalSessionWorkspaceLabel(embeddedTerminalSession)
+        : 'No active embedded terminal',
+      disabled: !embeddedTerminalSession,
+      perform: () => {
+        if (embeddedTerminalSession) copyEmbeddedTerminalSessionFocusPlan(embeddedTerminalSession);
+      }
+    },
+    {
+      id: 'terminal-restore-active-workspace',
+      label: 'Restore active terminal workspace',
+      detail: embeddedTerminalSession
+        ? embeddedTerminalSessionWorkspaceLabel(embeddedTerminalSession)
+        : 'No active embedded terminal',
+      disabled: !embeddedTerminalSession,
+      perform: () => {
+        if (embeddedTerminalSession) restoreEmbeddedTerminalSessionWorkspace(embeddedTerminalSession);
+      }
+    },
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `terminal-embedded-resume-${session.provider}-${session.id}`,
       label: `Resume in embedded terminal: ${session.title}`,
       detail: agentSessionProjectLabel(session),
       disabled: !agentSessionTerminalCommand(session).trim(),
       perform: () => resumeAgentSessionEmbeddedTerminal(session)
+    })),
+    ...embeddedTerminalSessions.slice(0, 8).map((session) => ({
+      id: `terminal-copy-focus-plan-${session.sessionId}`,
+      label: `Copy terminal focus plan: ${embeddedTerminalSessionTitle(session)}`,
+      detail: embeddedTerminalSessionWorkspaceLabel(session),
+      perform: () => copyEmbeddedTerminalSessionFocusPlan(session)
+    })),
+    ...embeddedTerminalSessions.slice(0, 8).map((session) => ({
+      id: `terminal-restore-workspace-${session.sessionId}`,
+      label: `Restore terminal workspace: ${embeddedTerminalSessionTitle(session)}`,
+      detail: embeddedTerminalSessionWorkspaceLabel(session),
+      perform: () => restoreEmbeddedTerminalSessionWorkspace(session)
     })),
     ...embeddedTerminalSessions.slice(0, 8).map((session) => ({
       id: `terminal-attach-${session.sessionId}`,
@@ -5207,6 +5241,125 @@
     successStatus = 'Workspace repair plan copied'
   ) {
     await copyActivityCommand(workspaceSnapshotRepairPlan(snapshot), successStatus);
+  }
+
+  function workspaceSnapshotsForTerminalPath(path: string, limit = 3): WorkspaceSnapshot[] {
+    const normalizedPath = normalizeProjectPath(path);
+    if (!normalizedPath) return [];
+
+    return [...workspaceSnapshots]
+      .sort((left, right) => right.capturedAt - left.capturedAt)
+      .filter((snapshot) => {
+        const snapshotPaths = [
+          snapshot.embeddedTerminal?.cwd ?? '',
+          snapshot.cwd,
+          snapshot.worktreePath ?? '',
+          snapshot.project.path
+        ].map(normalizeProjectPath).filter(Boolean);
+        return snapshotPaths.includes(normalizedPath);
+      })
+      .slice(0, limit);
+  }
+
+  function workspaceSnapshotForEmbeddedTerminalSession(session: TerminalSessionInfo) {
+    const normalizedCwd = normalizeProjectPath(session.cwd);
+    const sessionMatch = [...workspaceSnapshots]
+      .sort((left, right) => right.capturedAt - left.capturedAt)
+      .find((snapshot) => snapshot.embeddedTerminal?.sessionID === session.sessionId);
+
+    return sessionMatch ?? workspaceSnapshotsForTerminalPath(normalizedCwd, 1)[0] ?? null;
+  }
+
+  function embeddedTerminalSessionWorkspaceLabel(session: TerminalSessionInfo) {
+    const snapshot = workspaceSnapshotForEmbeddedTerminalSession(session);
+    if (!snapshot) return 'No saved workspace';
+
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    return `${readiness.label} · ${snapshot.title}`;
+  }
+
+  function embeddedTerminalSessionMetaLabel(session: TerminalSessionInfo) {
+    const parts = [
+      session.shell,
+      session.pid ? `pid ${session.pid}` : '',
+      `${session.cols}x${session.rows}`,
+      embeddedTerminalSessionWorkspaceLabel(session)
+    ].filter(Boolean);
+
+    return parts.join(' · ');
+  }
+
+  function embeddedTerminalSessionFocusPlan(session: TerminalSessionInfo) {
+    const snapshot = workspaceSnapshotForEmbeddedTerminalSession(session);
+    const readiness = snapshot ? workspaceSnapshotRestoreReadiness(snapshot) : null;
+    const restoreLines = snapshot
+      ? [
+          '',
+          'Matched workspace snapshot:',
+          `Title: ${snapshot.title}`,
+          `Provider: ${snapshot.provider}`,
+          `Session: ${snapshot.sessionID}`,
+          `Project: ${snapshot.project.name}`,
+          `Root: ${snapshot.project.path}`,
+          `CWD: ${snapshot.cwd}`,
+          `Worktree: ${snapshot.worktreePath ?? 'none'}`,
+          `Branch: ${snapshot.branch ?? 'unknown'}`,
+          `Restore status: ${readiness?.label ?? 'unknown'} - ${readiness?.detail ?? 'unknown'}`,
+          `Resume command: ${snapshot.resumeCommand ?? 'none'}`,
+          `Captured: ${formatWorkspaceSnapshotTime(snapshot.capturedAt)}`
+        ]
+      : [
+          '',
+          'Matched workspace snapshot: none',
+          'Action: attach the PTY directly, then save a workspace snapshot if this terminal should be restorable later.'
+        ];
+    const repairLines =
+      snapshot && readiness?.kind === 'missing-worktree'
+        ? ['', 'Repair plan:', workspaceSnapshotRepairPlan(snapshot)]
+        : [];
+
+    return [
+      'Embedded terminal focus plan',
+      `Session: ${session.sessionId}`,
+      `CWD: ${session.cwd}`,
+      `Shell: ${session.shell}`,
+      `PID: ${session.pid ?? 'unknown'}`,
+      `Size: ${session.cols}x${session.rows}`,
+      `Started: ${formatWorkspaceSnapshotTime(session.startedAt)}`,
+      `Active: ${embeddedTerminalSession?.sessionId === session.sessionId ? 'yes' : 'no'}`,
+      ...restoreLines,
+      ...repairLines
+    ].filter(Boolean).join('\n');
+  }
+
+  async function copyEmbeddedTerminalSessionFocusPlan(session: TerminalSessionInfo) {
+    await copyActivityCommand(embeddedTerminalSessionFocusPlan(session), 'Terminal focus plan copied');
+  }
+
+  async function restoreEmbeddedTerminalSessionWorkspace(session: TerminalSessionInfo) {
+    const snapshot = workspaceSnapshotForEmbeddedTerminalSession(session);
+    if (!snapshot) {
+      showDockPanel('terminal');
+      await tick();
+      await attachEmbeddedTerminalSession(session);
+      fileActionStatus = 'Attached embedded terminal; no saved workspace found';
+      return;
+    }
+
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    if (readiness.kind === 'missing-worktree') {
+      await copyWorkspaceSnapshotRepairPlan(
+        snapshot,
+        'Workspace repair plan copied before terminal workspace restore'
+      );
+      return;
+    }
+
+    await restoreConversationWorkspaceSnapshot(snapshot);
+    showDockPanel('terminal');
+    await tick();
+    await attachEmbeddedTerminalSession(session);
+    fileActionStatus = `Restored terminal workspace: ${snapshot.title}`;
   }
 
   async function copyAgentSessionWorkspaceRestorePlan(session: AgentSession) {
@@ -15094,12 +15247,12 @@
                   <div
                     class:active={embeddedTerminalSession?.sessionId === session.sessionId}
                     class="terminal-launchpad-row"
-                    title={session.cwd}
+                    title={embeddedTerminalSessionFocusPlan(session)}
                   >
                     <span class="runtime-port">PTY</span>
                     <div>
                       <strong>{embeddedTerminalSessionTitle(session)}</strong>
-                      <small>{session.shell}{session.pid ? ` · pid ${session.pid}` : ''}</small>
+                      <small>{embeddedTerminalSessionMetaLabel(session)}</small>
                     </div>
                     <button
                       type="button"

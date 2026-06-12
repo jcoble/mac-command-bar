@@ -619,6 +619,11 @@ assert.ok(pageSource.includes('writeTerminalSessionFromTauri(embeddedTerminalSes
 assert.ok(pageSource.includes('await startEmbeddedTerminalSession(root, command)'), 'Terminal command runner should start a project PTY when none is active');
 assert.ok(pageSource.includes('function embeddedTerminalSessionForPath'), 'Embedded terminal paths should resolve existing sessions');
 assert.ok(pageSource.includes('await attachEmbeddedTerminalSession(matchingSession)'), 'Opening an embedded terminal path should attach an existing matching PTY');
+assert.ok(pageSource.includes('function workspaceSnapshotForEmbeddedTerminalSession'), 'Embedded terminal sessions should resolve matching workspace snapshots');
+assert.ok(pageSource.includes('function embeddedTerminalSessionFocusPlan'), 'Embedded terminal sessions should expose copyable focus plans');
+assert.ok(pageSource.includes('function restoreEmbeddedTerminalSessionWorkspace'), 'Embedded terminal sessions should restore their matching workspace snapshot');
+assert.ok(pageSource.includes('embeddedTerminalSessionMetaLabel(session)'), 'Embedded terminal rows should show saved workspace state inline');
+assert.ok(pageSource.includes('title={embeddedTerminalSessionFocusPlan(session)}'), 'Embedded terminal rows should expose the full focus plan as hover context');
 assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 'Terminal launchpad should attach embedded sessions');
 assert.ok(pageSource.includes('aria-label="Close listed embedded terminal session"'), 'Terminal launchpad should close listed embedded sessions');
 assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
@@ -641,7 +646,11 @@ assert.ok(pageSource.includes('resizeTerminalSessionFromTauri('), 'Embedded term
 assert.ok(pageSource.includes('embeddedTerminalSession.sessionId'), 'Embedded terminal should address the active native PTY session');
 assert.ok(pageSource.includes('closeTerminalSessionFromTauri(session.sessionId)'), 'Embedded terminal should close the native PTY');
 assert.ok(pageSource.includes("id: 'terminal-refresh-embedded'"), 'Command palette should refresh embedded terminal sessions');
+assert.ok(pageSource.includes("id: 'terminal-copy-active-focus-plan'"), 'Command palette should copy the active terminal focus plan');
+assert.ok(pageSource.includes("id: 'terminal-restore-active-workspace'"), 'Command palette should restore the active terminal workspace');
 assert.ok(pageSource.includes('id: `terminal-embedded-resume-${session.provider}-${session.id}`'), 'Command palette should expose embedded agent resumes');
+assert.ok(pageSource.includes('id: `terminal-copy-focus-plan-${session.sessionId}`'), 'Command palette should copy listed terminal focus plans');
+assert.ok(pageSource.includes('id: `terminal-restore-workspace-${session.sessionId}`'), 'Command palette should restore listed terminal workspaces');
 assert.ok(pageSource.includes('id: `terminal-attach-${session.sessionId}`'), 'Command palette should attach embedded terminal sessions');
 assert.ok(pageSource.includes('id: `terminal-close-${session.sessionId}`'), 'Command palette should close embedded terminal sessions');
 assert.ok(pageSource.includes('class="command-palette-layer"'), 'Source shell should render a command palette overlay');

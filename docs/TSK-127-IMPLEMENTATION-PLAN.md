@@ -35,6 +35,7 @@ Completed and committed:
 - Orchestration event model exists: event CLI, native event store, UI run cards, scenario/issue/fix/retest/sign-off tallies, timeline helpers, `/run-e2e-tests` sample events, artifacts, task links, and command copy actions.
 - Embedded terminal exists as a basic PTY-backed surface.
 - Workspace restore snapshots preserve project, worktree, branch, selected file/line, open tabs, view mode, terminal choice, browser URL, and layout state.
+- Embedded terminal sessions now resolve matching workspace snapshots, show saved-workspace readiness inline, expose copyable focus plans, and can restore/attach through compact command-palette actions.
 - Saved nested project roots now auto-repair to the real Git root before scan.
 - Hidden dock panels now expose compact restore chips, so closed panes are recoverable without opening the command palette first.
 - Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
@@ -60,6 +61,7 @@ Current checkpoint:
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
 - Priority 3.9 LSP recovery and command depth are implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, local drawer actions cover problems/symbols/definitions/references, completions/signature help are tucked into palette/menu surfaces, copyable intelligence briefs exist, and C#/TypeScript native LSP smoke tests pass.
+- Priority 4.11 terminal session restore polish is implemented enough for iteration: embedded PTYs can copy focus plans, restore matching workspace snapshots, attach directly when no snapshot exists, and route missing-worktree restores to the same repair-plan guard as conversation snapshots.
 
 ## Priority 0: Make The App Usable As A Workspace
 
@@ -346,17 +348,17 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 3.9, LSP command depth.
+Last checkpoint: Priority 4.11, terminal session restore polish.
 
 - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: local drawer commands for problems, symbols, definitions, and references are exposed from the command palette; lookup results can be cleared without opening another pane; source intelligence briefs can be copied for handoff/debugging; completions and signature help are available from the editor action menu while staying off the persistent toolbar.
+- Behavior delivered: embedded terminal sessions now resolve matching saved workspace snapshots by session id or cwd, show saved-workspace readiness inline in the terminal dock, expose copyable focus plans from the command palette, restore matching workspace snapshots before attach, attach directly when no snapshot exists, and copy the workspace repair plan instead of restoring into a missing worktree.
 - Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
-- Remaining risk: no Browser/Playwright proof was run for this slice, so visual density should still be checked at half-width and in the real Tauri window.
+- Remaining risk: no real Tauri PTY/manual terminal restore was run for this slice; browser preview cannot prove native PTY lifecycle.
 
-Next implementation slice: Priority 4.11 terminal session restore polish.
+Next implementation slice: Priority 2.7 orchestration live ingest polish.
 
 Definition of done for the next slice:
-- Tie embedded terminal sessions more tightly to project/worktree/conversation snapshots.
-- Add compact restore/focus/copy-plan entry points for terminal sessions without adding persistent chrome.
-- Guard missing or stale workspace paths the same way conversation restore now does.
-- Keep CMUX/Warp/Ghostty handoff paths available; do not make embedded terminal the only path.
+- Add a compact import/watch surface for real orchestrator event files without requiring manual CLI use.
+- Keep orchestration runs grouped by project/worktree/task and linked to saved sessions/workspaces.
+- Surface current step, blockers, sign-off requests, artifacts, and retest counts in dense rows.
+- Preserve the existing JSON/JSONL CLI path and avoid starting a long-running watcher by default.
