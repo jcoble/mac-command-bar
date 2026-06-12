@@ -38,6 +38,7 @@ Completed and committed:
 - Saved nested project roots now auto-repair to the real Git root before scan.
 - Hidden dock panels now expose compact restore chips, so closed panes are recoverable without opening the command palette first.
 - Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
+- Editor LSP recovery actions are visible in the editor toolbar: retry status, copy selected-file status, and copy install command when fallback is active.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
 Current checkpoint:
@@ -47,6 +48,7 @@ Current checkpoint:
 - Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
 - Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Remaining work is polish, larger graph UX, and tighter task/Notion display, not first scaffolding.
 - Priority 2.7 orchestration timeline detail is implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, and handoff copy are covered by tests.
+- Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
 
 ## Priority 0: Make The App Usable As A Workspace
 
@@ -332,10 +334,10 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Next implementation slice: Priority 3.9, LSP/editor hardening.
+Next implementation slice: Priority 0.2, project add/scan stabilization.
 
 Definition of done for the next slice:
-- LSP status/recovery is visible from the editor without opening bulky side cards.
-- Definition, references, symbols, and diagnostics can be reviewed from compact in-editor flyouts or tight dock panels.
-- C# and TypeScript LSP smoke coverage stays green.
-- Tests cover UI hooks and native LSP behavior.
+- Adding or switching to a project automatically repairs nested roots to the Git root before indexing.
+- Missing/stale/tiny caches trigger one bounded auto-scan without requiring repeated Scan clicks.
+- Scan status explains root, limit, cache age, result count, and suspicious tiny results.
+- Tests cover project onboarding repair, auto-scan decision logic, and source UI hooks.
