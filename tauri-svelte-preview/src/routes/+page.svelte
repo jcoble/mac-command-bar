@@ -115,6 +115,7 @@
     gitCommitGraphKind,
     gitCommitTopologyLabel,
     gitRefLabels,
+    formatGitTaskSourceGroupHandoff,
     formatSourceContextGitSummary,
     formatSourceContextIdentity,
     formatSourceContextRootLabel,
@@ -170,6 +171,7 @@
     type SourceCompletionItem,
     type SourceDiagnostic,
     type SourceInlayHint,
+    type GitTaskSourceGroup,
     type SourceLspHover,
     type SourceLspStatus,
     type SourceNavigationLocation,
@@ -2215,6 +2217,12 @@
       disabled: !gitTaskUrl(taskID),
       perform: () => openGitTaskReference(taskID)
     })),
+    ...selectedProjectGitTaskSourceGroups.slice(0, 8).map((group) => ({
+      id: `git-copy-task-sources-${group.taskID}`,
+      label: `Copy task sources: ${group.taskID}`,
+      detail: group.sourceSummary,
+      perform: () => copyGitTaskSourceGroup(group)
+    })),
     ...selectedProjectGitTaskLedger.slice(0, 8).map((row) => ({
       id: `git-task-ledger-${row.taskID}`,
       label: `Copy task ledger: ${row.taskID}`,
@@ -3772,6 +3780,10 @@
     return gitTaskUrl(taskID) ?? taskID;
   }
 
+  function gitTaskSourceGroupText(group: GitTaskSourceGroup) {
+    return formatGitTaskSourceGroupHandoff(group, gitTaskUrl(group.taskID));
+  }
+
   function normalizeGitTaskID(taskID: string | null | undefined) {
     const normalized = String(taskID ?? '').trim().toUpperCase();
     return /^TSK-\d+$/.test(normalized) ? normalized : null;
@@ -3905,6 +3917,10 @@
     if (!taskID) return;
 
     await copyActivityCommand(gitTaskReferenceText(taskID), gitTaskUrl(taskID) ? 'Task link copied' : 'Task ID copied');
+  }
+
+  async function copyGitTaskSourceGroup(group: GitTaskSourceGroup) {
+    await copyActivityCommand(gitTaskSourceGroupText(group), 'Task sources copied');
   }
 
   function openGitTaskReference(taskID: string | null) {
@@ -11867,6 +11883,15 @@
                   <div class="activity-row-actions" aria-label="Task ledger actions">
                     <button
                       type="button"
+                      aria-label={`Open task reference for ${row.taskID}`}
+                      title="Open task reference"
+                      disabled={!gitTaskUrl(row.taskID)}
+                      onclick={() => openGitTaskReference(row.taskID)}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
                       aria-label={`Copy task ledger for ${row.taskID}`}
                       title="Copy task ledger"
                       onclick={() => copyGitTaskLedger(row)}
@@ -13915,7 +13940,7 @@
                             type="button"
                             aria-label={`Copy task sources for ${group.taskID}`}
                             title={group.detailSummary}
-                            onclick={() => copyActivityCommand(`${group.taskID} · ${group.detailSummary}`, 'Task sources copied')}
+                            onclick={() => copyGitTaskSourceGroup(group)}
                           >
                             <Copy size={11} strokeWidth={2} />
                           </button>

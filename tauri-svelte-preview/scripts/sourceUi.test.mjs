@@ -1625,6 +1625,22 @@ assert.ok(
 );
 assert.ok(pageSource.includes('function gitTaskLedgerText'), 'Git task ledger should build a copyable handoff');
 assert.ok(pageSource.includes('function copyGitTaskLedger'), 'Git task ledger should expose quick copy');
+assert.ok(pageSource.includes('function gitTaskSourceGroupText'), 'Git task source rows should build a copyable handoff');
+assert.ok(pageSource.includes('function copyGitTaskSourceGroup'), 'Git task source rows should expose quick copy');
+assert.ok(pageSource.includes('formatGitTaskSourceGroupHandoff'), 'Git task source rows should use shared handoff formatting');
+assert.ok(pageSource.includes('git-copy-task-sources-${group.taskID}'), 'Command palette should copy task source groups');
+assert.ok(
+  pageSource.includes('aria-label={`Open task reference for ${row.taskID}`}'),
+  'Task ledger rows should expose a compact open-task action'
+);
+assert.ok(
+  pageSource.includes('onclick={() => openGitTaskReference(row.taskID)}'),
+  'Task ledger open action should use the shared task link handler'
+);
+assert.ok(
+  pageSource.includes('onclick={() => copyGitTaskSourceGroup(group)}'),
+  'Task source map copy action should copy the full source handoff'
+);
 assert.ok(
   pageSource.includes('uniqueTaskIDsFromGitMetadata'),
   'Git panel should dedupe task IDs from repo/worktree/history metadata'

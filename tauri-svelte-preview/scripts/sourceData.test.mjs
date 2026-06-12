@@ -13,6 +13,7 @@ import {
   findSourceReferenceTargets,
   findSourceSearchMatches,
   formatGitBranchHealthSummary,
+  formatGitTaskSourceGroupHandoff,
   formatSourceContextGitSummary,
   formatSourceContextIdentity,
   formatSourceContextRootLabel,
@@ -1300,6 +1301,23 @@ assert.deepEqual(
       sources: [{ taskID: 'TSK-128', sourceLabel: 'worktree', sourceDetail: 'tsk-128-editor' }]
     }
   ]
+);
+assert.equal(
+  formatGitTaskSourceGroupHandoff(
+    buildGitTaskSourceGroups(
+      [{ taskID: 'tsk-127', sourceLabel: 'repo', sourceDetail: 'main checkout' }],
+      [{ taskID: 'TSK-127', sourceLabel: 'commit', sourceDetail: 'b022003' }]
+    )[0],
+    'https://example.test/task'
+  ),
+  [
+    'Task: TSK-127',
+    'Task link: https://example.test/task',
+    'Sources: repo, commit',
+    'Details:',
+    '- repo: main checkout',
+    '- commit: b022003'
+  ].join('\n')
 );
 assert.equal(taskReferenceUrl('TSK-127', { 'TSK-127': 'https://example.test/task' }), 'https://example.test/task');
 assert.equal(taskReferenceUrl('tsk-192', {}), 'https://www.notion.so/search?q=TSK-192');

@@ -1531,6 +1531,21 @@ export function buildGitTaskSourceGroups(...groups: GitTaskSourceMetadata[][]): 
   });
 }
 
+export function formatGitTaskSourceGroupHandoff(
+  group: GitTaskSourceGroup,
+  taskUrl: string | null = null
+): string {
+  return [
+    `Task: ${group.taskID}`,
+    taskUrl ? `Task link: ${taskUrl}` : '',
+    `Sources: ${group.sourceSummary}`,
+    'Details:',
+    ...group.sources.map((source) =>
+      `- ${source.sourceLabel}${source.sourceDetail ? `: ${source.sourceDetail}` : ''}`
+    )
+  ].filter(Boolean).join('\n');
+}
+
 export function taskReferenceUrl(
   taskID: string | null | undefined,
   knownTaskUrls: Record<string, string>
