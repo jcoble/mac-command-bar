@@ -3901,6 +3901,50 @@ mod tests {
     }
 
     #[test]
+    fn source_scan_allows_worktree_ancestor_paths() {
+        let root = unique_temp_root();
+        let worktree_root = root
+            .join("worktrees")
+            .join("EdiPlatform")
+            .join("tsk-127-source-scan");
+        std::fs::create_dir_all(worktree_root.join("EdiPlatform.Core/Services")).unwrap();
+        std::fs::create_dir_all(worktree_root.join("EdiPlatform.Api/Controllers")).unwrap();
+        std::fs::write(
+            worktree_root.join(".git"),
+            "gitdir: /tmp/repo/.git/worktrees/tsk-127\n",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree_root.join("EdiPlatform.Core/Services/FormatDetector.cs"),
+            "public sealed class FormatDetector {}",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree_root.join("EdiPlatform.Api/Controllers/DashboardController.cs"),
+            "public sealed class DashboardController {}",
+        )
+        .unwrap();
+
+        let scan = list_source_files_sync(worktree_root, 20, None).unwrap();
+        let relative_paths = scan
+            .records
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            relative_paths,
+            vec![
+                "EdiPlatform.Core/Services/FormatDetector.cs",
+                "EdiPlatform.Api/Controllers/DashboardController.cs"
+            ]
+        );
+        assert!(!scan.truncated);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn project_root_validation_finds_parent_git_root() {
         let root = unique_temp_root();
         let nested = root.join("src").join("Services");

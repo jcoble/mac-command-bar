@@ -60,7 +60,7 @@ Completed and committed:
 Current checkpoint:
 
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
-- Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
+- Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, explicit activation scan reasons, forced refresh on missing/stale/tiny activation plans, and worktree-ancestor scan coverage. Remaining work is hands-on validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: source bridge wrappers, dev/attach config, web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows, with compact lane labels for keep/active/backup/save-commits/stale-clean/prune/locked/review. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 1.4 Git graph density and task detail polish is implemented enough for iteration: selected commit details collapse to a one-line drawer, full metadata/actions sit behind disclosure and Cmd+K, commit rows use dense metadata, and row action buttons only appear on hover/focus.
@@ -358,17 +358,18 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 2.9, agent/session focus action polish.
+Last checkpoint: Priority 0.2, project scan/add-project hardening.
 
-- Changed files: `tauri-svelte-preview/src/lib/agentSessionFocus.ts`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/agentSessionFocus.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/package.json`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: agent and conversation rows now derive a shared recommended focus lane, showing whether the next safe action is reattach, repair, restore, resume, files-only restore, or save workspace; the compact agent context card can run the recommended action through the existing guarded resume/repair/restore paths.
-- Validation: `pnpm test:agent-session-focus`; `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
-- Remaining risk: manual visual validation in the real Tauri app was not run for this slice.
+- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/scripts/localSourceFs.test.mjs`, `tauri-svelte-preview/src-tauri/src/main.rs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: project activation now turns missing, stale, forced, or suspiciously tiny activation scan plans into a real refresh so stale two-file indexes cannot remain visible during add/switch/repair; browser bridge and Tauri scanner tests now cover roots that live under a `/worktrees/...` ancestor while still allowing repo-local child `worktrees` folders to be skipped.
+- Validation: direct local scan of `/Users/blackcolours/dev/work/EdiPlatform` returned 4,591 files; `pnpm test:local-source-fs`; `pnpm test:source-ui`; `cargo test source_scan --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml`; `pnpm test:source-data`; `pnpm check`; `pnpm build`.
+- Remaining risk: hands-on validation in the real Tauri GUI still needs to confirm add-project, switching, LSP, Git, and native file commands together.
 
-Next implementation slice: Priority 0.2 project scan/add-project hardening and hands-on validation.
+Next implementation slice: Priority 0.3 native Tauri GUI validation.
 
 Definition of done for the next slice:
-- Reproduce and fix the "only two files indexed" failure path for newly added projects or nested roots.
-- Make add/switch/project activation scan once automatically when the cache is missing or stale, with clear scan evidence and root labels.
-- Keep scan limits responsive, but make the default large enough for real project browsing.
-- Validate with source data/local source tests, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, and a real Tauri/manual scan pass if safe.
+- Run the real Tauri app without triggering the dev relaunch/focus loop.
+- Verify add-project/switch-project scanning against MacCommandBar and EdiPlatform roots.
+- Verify native source read/write, Cmd+S, LSP status, hover/definition/references, Git status/diff/actions, and embedded terminal startup.
+- Record any native-only failures as targeted follow-up items instead of mixing them into broad layout polish.
+- Validate with `pnpm test:tauri-app` or the closest focused subset, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, and a short hands-on Tauri smoke pass.

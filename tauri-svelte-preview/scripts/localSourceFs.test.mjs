@@ -104,6 +104,30 @@ try {
     ['FormatResolver.cs']
   );
 
+  const worktreeRoot = join(root, 'worktrees', 'EdiPlatform', 'tsk-127-source-scan');
+  await mkdir(join(worktreeRoot, 'EdiPlatform.Core', 'Services'), { recursive: true });
+  await mkdir(join(worktreeRoot, 'EdiPlatform.Api', 'Controllers'), { recursive: true });
+  await writeFile(join(worktreeRoot, '.git'), 'gitdir: /tmp/repo/.git/worktrees/tsk-127\n', 'utf8');
+  await writeFile(
+    join(worktreeRoot, 'EdiPlatform.Core', 'Services', 'FormatDetector.cs'),
+    'namespace Demo;\npublic sealed class FormatDetector {}',
+    'utf8'
+  );
+  await writeFile(
+    join(worktreeRoot, 'EdiPlatform.Api', 'Controllers', 'DashboardController.cs'),
+    'namespace Demo;\npublic sealed class DashboardController {}',
+    'utf8'
+  );
+
+  const worktreeScan = await scanLocalSourceFiles({ root: worktreeRoot, limit: 20 });
+  assert.deepEqual(
+    worktreeScan.records.map((record) => record.relativePath),
+    [
+      'EdiPlatform.Core/Services/FormatDetector.cs',
+      'EdiPlatform.Api/Controllers/DashboardController.cs'
+    ]
+  );
+
   const preview = await readLocalSourceFile(join(root, 'src', 'Services', 'FormatResolver.cs'));
   assert.equal(preview.language, 'csharp');
   assert.equal(preview.lineCount, 2);

@@ -1164,6 +1164,14 @@ assert.ok(pageSource.includes('type ProjectActivationOptions'), 'Project activat
 assert.ok(pageSource.includes('buildProjectActivationScanPlan'), 'Project activation should share explicit scan-plan logic');
 assert.ok(pageSource.includes('const activationScanPlan = buildProjectActivationScanPlan'), 'Project activation should classify cache, auto-scan, force, and repair cases');
 assert.ok(pageSource.includes('fileActionStatus = activationScanPlan.status'), 'Project activation should announce the exact auto-scan reason');
+assert.ok(
+  pageSource.includes('const activationScanForcesRefresh = activationScanPlan.shouldScan'),
+  'Project activation should turn missing, stale, or suspicious indexes into a real scan refresh'
+);
+assert.ok(
+  pageSource.includes('force: activationScanForcesRefresh'),
+  'Project activation should not let stale records survive an auto-scan or repair activation'
+);
 assertDeclaration('.scan-more-button', 'white-space: nowrap');
 assert.ok(editorSource.includes('basic-languages/dart/dart.contribution'), 'Editor should load Dart highlighting');
 assert.ok(editorSource.includes('basic-languages/hcl/hcl.contribution'), 'Editor should load HCL highlighting');

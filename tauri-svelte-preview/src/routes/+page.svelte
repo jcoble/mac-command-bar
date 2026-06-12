@@ -11233,9 +11233,10 @@
     if (activationScanPlan.shouldScan) {
       fileActionStatus = activationScanPlan.status;
     }
+    const activationScanForcesRefresh = activationScanPlan.shouldScan;
 
     const scanCompletion = scanProject(project, selectedSourcePaths[project.id], {
-      force: options.forceScan,
+      force: activationScanForcesRefresh,
       limit: scanLimit,
       preserveSelectedRecord: options.preserveSelectedRecordOnScan
     })
