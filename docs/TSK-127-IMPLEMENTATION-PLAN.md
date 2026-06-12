@@ -42,6 +42,7 @@ Completed and committed:
 - Editor LSP recovery actions are visible in the editor toolbar: retry status, copy selected-file status, and copy install command when fallback is active.
 - Git task source rows now copy a full task handoff with task link, source summary, and source details; the same action is available from the command palette, and task ledger rows expose compact open-task actions.
 - Git history rows now use normalized ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits while keeping raw refs in copyable detail/handoff text.
+- Git task ledger rows now show owner and cleanup summaries, stale-clean candidates, backup-needed worktrees, active sessions, saved workspace ownership, runs, and commits without adding persistent panels.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
 Current checkpoint:
@@ -49,7 +50,7 @@ Current checkpoint:
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
-- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, and history rows show compact ownership badges. Remaining work is stale-clean worktree/task ledger polish, not first scaffolding.
+- Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Remaining work is manual Git/worktree flow validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline detail is implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, and handoff copy are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
 
@@ -155,8 +156,8 @@ Target result:
 - Worktrees stop being mystery folders and become manageable work contexts.
 
 Work:
-- Existing: worktree list, branch/task/dirty/unmerged/activity fields, active-session blocking, saved conversation/workspace ownership chips, safety status, decision queue, copy cleanup plan, backup command, remove clean worktree, open in source browser, open external/embedded terminal, task links.
-- Next: surface stale-clean cleanup candidates and owner/session labels in the Git/task ledger without increasing visual bulk.
+- Existing: worktree list, branch/task/dirty/unmerged/activity fields, active-session blocking, saved conversation/workspace ownership chips, safety status, decision queue, copy cleanup plan, backup command, remove clean worktree, open in source browser, open external/embedded terminal, task links, and compact task-ledger owner/cleanup chips.
+- Next: validate the full worktree cleanup flow manually with clean, dirty, active-session, and missing-path examples.
 
 Acceptance:
 - User can decide what can be deleted, what needs review, and what is actively being used.
@@ -337,16 +338,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 1.4, Git graph density and HEAD/upstream clarity.
+Last checkpoint: Priority 1.5, stale-clean worktree/task-ledger polish.
 
-- Changed files: `tauri-svelte-preview/src/lib/sourceData.ts`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceData.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`.
-- Behavior delivered: Git history rows show compact ownership badges for HEAD, upstream refs, tags, task IDs, merges, and root commits; raw refs remain available in commit detail and handoff text.
-- Validation: `pnpm test:source-data`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`.
-- Remaining risk: no browser visual screenshot in this slice; CSS and render hooks are covered by source UI tests and browser automation was not started.
+- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`.
+- Behavior delivered: task ledger rows now expose owner summaries, cleanup summaries, stale-clean candidate counts, backup-needed counts, active session counts, saved workspace counts, and copyable handoff details.
+- Validation: `pnpm test:source-ui`, `pnpm test:worktree-safety`, `pnpm check`, `pnpm build`, `git diff --check`.
+- Remaining risk: no manual worktree cleanup dry run in this slice; destructive actions remain guarded by existing primary-action safety.
 
-Next implementation slice: Priority 1.5, stale-clean worktree/task-ledger polish.
+Next implementation slice: Priority 2.7, orchestration live event ingest polish.
 
 Definition of done for the next slice:
-- Git/task ledger rows highlight stale-clean cleanup candidates and active owner/session context.
-- Cleanup and backup actions remain explicit and non-destructive unless already safe.
-- Tests cover ledger row metadata, owner/session labels, and compact rendering hooks.
+- Orchestration event import can ingest richer real loop output without hand-editing sample data.
+- Runs show current step, active agent, issue/fix/retest tallies, sign-off blockers, and artifacts from imported events.
+- Tests cover event normalization, timeline grouping, and command-palette/copy hooks.
