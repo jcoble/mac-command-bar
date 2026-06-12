@@ -13097,6 +13097,39 @@
               </span>
             {/if}
           </div>
+          {#if sourceIntelligenceAvailable}
+            <div class="editor-lsp-recovery-strip" aria-label="Language server recovery actions">
+              <button
+                class="editor-lsp-recovery-action"
+                type="button"
+                aria-label="Retry language server status"
+                title="Retry language server status"
+                disabled={sourceLspStatusLoading}
+                onclick={() => loadSourceLspStatus(preview, selectedProject)}
+              >
+                <RefreshCw size={13} strokeWidth={2} />
+              </button>
+              <button
+                class="editor-lsp-recovery-action"
+                type="button"
+                aria-label="Copy language server status"
+                title="Copy language server status"
+                onclick={copySourceLspStatusReport}
+              >
+                <Copy size={13} strokeWidth={2} />
+              </button>
+              <button
+                class="editor-lsp-recovery-action"
+                type="button"
+                aria-label="Copy language server install command"
+                title="Copy language server install command"
+                disabled={sourceLspStatus?.available || !sourceLspInstallCommand()}
+                onclick={copySourceLspInstallCommand}
+              >
+                <Terminal size={13} strokeWidth={2} />
+              </button>
+            </div>
+          {/if}
           <div class="editor-menu-anchor">
             <button
               class="editor-icon-button"
@@ -19454,7 +19487,7 @@
   .editor-toolbar {
     display: grid;
     position: relative;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 4px;
     height: 24px;
@@ -19509,6 +19542,42 @@
 
   .editor-file-state .editor-lsp-state.unavailable {
     color: #d8aa55;
+  }
+
+  .editor-lsp-recovery-strip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    height: 20px;
+    padding: 0 2px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .editor-lsp-recovery-action {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 18px;
+    padding: 0;
+    color: #9fa9a6;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .editor-lsp-recovery-action:hover:not(:disabled),
+  .editor-lsp-recovery-action:focus-visible {
+    color: #e8f6f3;
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .editor-lsp-recovery-action:disabled {
+    cursor: default;
+    opacity: 0.38;
   }
 
   .editor-menu-anchor {

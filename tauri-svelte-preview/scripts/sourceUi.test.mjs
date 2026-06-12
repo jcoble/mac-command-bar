@@ -1439,7 +1439,15 @@ assert.ok(pageSource.includes('onPreviousProblemRequest={selectPreviousSourceDia
 assert.ok(pageSource.includes("onProblemsRequest={() => showEditorInsightPanel('problems')}"), 'Editor Cmd+Shift+M should show problems');
 assert.ok(pageSource.includes('title={sourceLspStatusTitle()}'), 'LSP badge should explain server or fallback status');
 assert.ok(pageSource.includes('class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}'), 'LSP badge should style fallback status distinctly');
+assert.ok(pageSource.includes('class="editor-lsp-recovery-strip"'), 'Editor should render compact LSP recovery controls near the editor');
+assert.ok(pageSource.includes('aria-label="Language server recovery actions"'), 'LSP recovery controls should be accessible');
+assert.ok(pageSource.includes('title="Retry language server status"'), 'LSP recovery controls should retry status checks');
+assert.ok(pageSource.includes('onclick={() => loadSourceLspStatus(preview, selectedProject)}'), 'LSP retry control should reload the selected file status');
+assert.ok(pageSource.includes('onclick={copySourceLspStatusReport}'), 'LSP recovery controls should copy the selected file status report');
+assert.ok(pageSource.includes('onclick={copySourceLspInstallCommand}'), 'LSP recovery controls should copy install commands when fallback is active');
 assertDeclaration('.editor-file-state .editor-lsp-state.unavailable', 'color: #d8aa55');
+assertDeclaration('.editor-lsp-recovery-strip', 'display: inline-flex');
+assertDeclaration('.editor-lsp-recovery-action', 'width: 22px');
 assert.ok(pageSource.includes("onSymbolsRequest={() => showEditorInsightPanel('symbols')}"), 'Editor Cmd+Shift+O should show symbols');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
