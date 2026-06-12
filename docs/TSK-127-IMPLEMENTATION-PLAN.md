@@ -50,7 +50,7 @@ Current checkpoint:
 
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
-- Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
+- Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
 - Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Remaining work is manual Git/worktree flow validation and larger graph UX, not first scaffolding.
 - Priority 2.7 orchestration timeline/detail and event ingest are implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, handoff copy, import normalization, and JSON/JSONL file ingestion are covered by tests.
 - Priority 3.9 LSP recovery is implemented enough for iteration: status/fallback state is visible on the editor file badge, recovery actions are available from the toolbar and command palette, and C#/TypeScript native LSP smoke tests pass.
@@ -339,16 +339,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 2.7, orchestration live event ingest polish.
+Last checkpoint: Priority 0.3, native Tauri validation refresh.
 
-- Changed files: `tauri-svelte-preview/scripts/orchestrationEvent.mjs`, `tauri-svelte-preview/scripts/orchestrationEvent.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/src/routes/+page.svelte`.
-- Behavior delivered: `scripts/mcb-orch` can normalize inline or file-imported event payloads from real agents/orchestrators, including nested project/task/agent/step/artifact/link/counts data and common event aliases; command palette can copy a JSON/JSONL import command.
-- Validation: `pnpm test:orchestration-event`, `pnpm test:orchestration-view`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, temp `pnpm orch:event -- --json-file ...` smoke, `git diff --check`.
-- Remaining risk: live `/run-e2e-tests` integration still needs a real producer to write payloads into this file format; this slice proves the ingest boundary, not the orchestrator hook.
+- Changed files: `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: refreshed native validation evidence without changing app code.
+- Validation: `pnpm test:tauri-app` passed, including `pnpm build`, 25 native LSP tests, TypeScript LSP smoke, C# LSP smoke, and `cargo build --manifest-path src-tauri/Cargo.toml`.
+- Remaining risk: this was non-interactive native validation only; it did not launch and click through the GUI Tauri app.
 
-Next implementation slice: Priority 0.3 native Tauri validation refresh, then Priority 1.5 manual worktree cleanup dry run if native validation stays green.
+Next implementation slice: Priority 1.5 manual worktree cleanup dry run.
 
 Definition of done for the next slice:
-- Run the real Tauri app path and verify event store refresh, source read/write, LSP actions, Git/worktree commands, and embedded terminal basics.
-- Capture exact failures or limitations as plan items instead of burying them in ad hoc notes.
-- Do not start browser/Playwright automation unless needed for a visual regression, and shut it down immediately after use.
+- Exercise clean, stale-clean, dirty, active-session, missing-path, and saved-workspace worktree examples without destructive surprise.
+- Confirm backup/remove/audit commands are correct and copyable.
+- Record any destructive cleanup action as dry-run or confirmation-gated unless the user explicitly approves removal.
