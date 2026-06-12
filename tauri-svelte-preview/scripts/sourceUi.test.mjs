@@ -290,6 +290,9 @@ assert.ok(pageSource.includes('no activity filter'), 'Workspace restore plans sh
 assert.ok(pageSource.includes('describeWorkspaceSnapshotRestoreReadiness'), 'Workspace restore should use shared readiness rules');
 assert.ok(pageSource.includes('function workspaceSnapshotRestoreReadiness'), 'Workspace should classify saved snapshot restore readiness');
 assert.ok(pageSource.includes('Restore status: ${readiness.label}'), 'Workspace restore plans should include restore readiness status');
+assert.ok(pageSource.includes('function workspaceSnapshotEnvironmentLabel'), 'Workspace rows should summarize the saved repo, worktree, branch, and capture age');
+assert.ok(pageSource.includes('function workspaceSnapshotFileStateLabel'), 'Workspace rows should summarize selected file and open file count');
+assert.ok(pageSource.includes('function agentSessionWorkspaceStateLabel'), 'Conversation rows should summarize saved workspace state when a snapshot exists');
 assert.ok(pageSource.includes('selectStartupWorkspaceSnapshot'), 'Workspace startup should choose a restorable saved conversation snapshot');
 assert.ok(pageSource.includes('const startupWorkspaceSnapshot = selectStartupWorkspaceSnapshot'), 'Workspace startup should compute the initial snapshot before scanning');
 assert.ok(pageSource.includes('customProjectRoots = startupCustomProjectRoots'), 'Workspace startup should retain snapshot-only worktree project roots');
@@ -779,6 +782,9 @@ assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'),
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
 assert.ok(pageSource.includes('class={`workspace-snapshot-readiness ${readiness.tone}`}'), 'Saved workspace rows should show compact restore readiness');
 assert.ok(pageSource.includes('{readiness.label} · {readiness.detail}'), 'Saved workspace rows should explain restore readiness');
+assert.ok(pageSource.includes('title={workspaceSnapshotRestorePlan(snapshot)}'), 'Saved workspace rows should expose the full restore plan as hover context');
+assert.ok(pageSource.includes('{workspaceSnapshotEnvironmentLabel(snapshot)}'), 'Saved workspace rows should show the target environment');
+assert.ok(pageSource.includes('{workspaceSnapshotFileStateLabel(snapshot)}'), 'Saved workspace rows should show selected/open file state');
 assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), 'Conversations activity should expose snapshot capture');
 assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in embedded terminal"'), 'Saved workspace rows should launch their resume command in the embedded terminal');
 assert.ok(pageSource.includes('aria-label="Copy workspace restore plan"'), 'Saved workspace rows should expose restore-plan copy');
@@ -792,6 +798,8 @@ assert.ok(pageSource.includes('id: `conversation-copy-session-restore-plan-${ses
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(snapshot)'), 'Snapshot rows should restore saved workspace context');
 assert.ok(pageSource.includes('await restoreWorkspaceEmbeddedTerminal(restored.embeddedTerminal)'), 'Snapshot restore should reattach saved embedded terminal context');
 assert.ok(pageSource.includes('workspaceSnapshotForAgentSession(session)'), 'Conversation rows should read their saved workspace context');
+assert.ok(pageSource.includes('agentSessionWorkspaceStateLabel(session, sessionSnapshot)'), 'Conversation rows should show saved workspace state inline');
+assert.ok(pageSource.includes('sessionReadiness'), 'Conversation rows should show snapshot readiness when available');
 assert.ok(pageSource.includes('aria-label="Open worktree path"'), 'Worktree rows should expose native open');
 assert.ok(pageSource.includes('aria-label="Open worktree in terminal"'), 'Worktree rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open worktree in embedded terminal"'), 'Worktree rows should expose embedded terminal open');

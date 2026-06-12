@@ -4537,6 +4537,31 @@
     return formatSourceContextRootLabel(snapshot.project.path);
   }
 
+  function workspaceSnapshotEnvironmentLabel(snapshot: WorkspaceSnapshot) {
+    return [
+      workspaceSnapshotScopeLabel(snapshot),
+      snapshot.branch ?? '',
+      snapshot.worktreePath ? fileNameFromRestoredPath(snapshot.worktreePath) : '',
+      `saved ${formatRelativeAge(snapshot.capturedAt)}`
+    ].filter(Boolean).join(' · ');
+  }
+
+  function workspaceSnapshotFileStateLabel(snapshot: WorkspaceSnapshot) {
+    const selectedFile = snapshot.selectedPath
+      ? workspaceSnapshotRelativePath(snapshot, snapshot.selectedPath)
+      : 'no selected file';
+    const openCount = snapshot.openPaths.length;
+    return `${selectedFile}${snapshot.selectedLine ? `:${snapshot.selectedLine}` : ''} · ${openCount} open`;
+  }
+
+  function agentSessionWorkspaceStateLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    if (!snapshot) {
+      return `${agentSessionProjectLabel(session)} · unsaved workspace`;
+    }
+
+    return workspaceSnapshotEnvironmentLabel(snapshot);
+  }
+
   function formatWorkspaceSnapshotTime(capturedAt: number) {
     const date = new Date(capturedAt);
     if (Number.isNaN(date.getTime())) return 'unknown';
@@ -10888,7 +10913,7 @@
                     <div
                       class="workspace-snapshot-row"
                       class:active={activeWorkspaceSessionKey === snapshot.id}
-                      title={snapshot.cwd}
+                      title={workspaceSnapshotRestorePlan(snapshot)}
                     >
                       <button
                         type="button"
@@ -10898,9 +10923,8 @@
                         <span class="agent-provider-badge">{snapshot.provider}</span>
                         <div class="activity-row-main">
                           <strong>{snapshot.title}</strong>
-                          <small>
-                            {snapshot.project.name} · {snapshot.model ?? snapshot.branch ?? snapshot.worktreePath ?? snapshot.cwd}
-                          </small>
+                          <small>{workspaceSnapshotEnvironmentLabel(snapshot)}</small>
+                          <small class="workspace-snapshot-file-state">{workspaceSnapshotFileStateLabel(snapshot)}</small>
                           <span class={`workspace-snapshot-readiness ${readiness.tone}`} title={readiness.detail}>
                             {readiness.label} · {readiness.detail}
                           </span>
@@ -10975,6 +10999,7 @@
             {#if filteredProjectAgentSessions.length > 0}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
+                {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
                 <div
                   class="activity-session-row conversation-session-row"
                   class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}
@@ -10989,11 +11014,15 @@
                     <span class="agent-provider-badge">{session.provider}</span>
                     <div class="activity-row-main">
                       <strong>{session.title}</strong>
+                      <small>{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
                       <small>
-                        {agentSessionProjectLabel(session)}
-                        {#if session.model} · {agentSessionModelLabel(session)}{/if}
-                        · {agentSessionActivityLabel(session)}
+                        {#if session.model}{agentSessionModelLabel(session)} · {/if}{agentSessionActivityLabel(session)}
                       </small>
+                      {#if sessionReadiness}
+                        <span class={`workspace-snapshot-readiness ${sessionReadiness.tone}`} title={sessionReadiness.detail}>
+                          {sessionReadiness.label} · {sessionReadiness.detail}
+                        </span>
+                      {/if}
                     </div>
                   </button>
                   <div class="activity-row-actions" aria-label="Conversation actions">
@@ -14606,6 +14635,11 @@
     line-height: 1.15;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .workspace-snapshot-file-state {
+    color: #6f7b78;
+    font-size: 8px;
   }
 
   .workspace-snapshot-readiness.ready {
