@@ -988,6 +988,10 @@ assert.ok(
   'Background project indexing should use the same suspicious-index threshold'
 );
 assert.ok(
+  pageSource.includes('const suspiciousSourceIndexFileThreshold = 24'),
+  'Project onboarding should repair tiny broad scans instead of trusting a two-file index'
+);
+assert.ok(
   pageSource.includes('Open the project to repair the index.'),
   'Background tiny-index results should surface a repair warning instead of caching as ready'
 );

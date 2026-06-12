@@ -378,16 +378,16 @@ assert.equal(
   }).tone,
   'warning'
 );
-assert.equal(shouldRepairSuspiciousSourceScan(2, false, 25_000, 2), true);
-assert.equal(shouldRepairSuspiciousSourceScan(0, false, 25_000, 2), false);
-assert.equal(shouldRepairSuspiciousSourceScan(3, false, 25_000, 2), false);
-assert.equal(shouldRepairSuspiciousSourceScan(2, true, 25_000, 2), false);
-assert.equal(shouldRepairSuspiciousSourceScan(2, false, 2, 2), false);
-assert.equal(isSuspiciousSourceScanResult(2, false, 25_000, 2), true);
-assert.equal(isSuspiciousSourceScanResult(0, false, 25_000, 2), false);
-assert.equal(isSuspiciousSourceScanResult(3, false, 25_000, 2), false);
-assert.equal(isSuspiciousSourceScanResult(2, true, 25_000, 2), false);
-assert.equal(isSuspiciousSourceScanResult(2, false, 2, 2), false);
+assert.equal(shouldRepairSuspiciousSourceScan(24, false, 25_000, 24), true);
+assert.equal(shouldRepairSuspiciousSourceScan(0, false, 25_000, 24), false);
+assert.equal(shouldRepairSuspiciousSourceScan(25, false, 25_000, 24), false);
+assert.equal(shouldRepairSuspiciousSourceScan(24, true, 25_000, 24), false);
+assert.equal(shouldRepairSuspiciousSourceScan(24, false, 24, 24), false);
+assert.equal(isSuspiciousSourceScanResult(24, false, 25_000, 24), true);
+assert.equal(isSuspiciousSourceScanResult(0, false, 25_000, 24), false);
+assert.equal(isSuspiciousSourceScanResult(25, false, 25_000, 24), false);
+assert.equal(isSuspiciousSourceScanResult(24, true, 25_000, 24), false);
+assert.equal(isSuspiciousSourceScanResult(24, false, 24, 24), false);
 assert.deepEqual(
   formatSourceScanHealth({
     totalCount: 220,

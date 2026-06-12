@@ -306,7 +306,7 @@
   };
   const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
-  const suspiciousSourceIndexFileThreshold = 2;
+  const suspiciousSourceIndexFileThreshold = 24;
   const sourceTreeRowHeight = 30;
   const sourceTreeOverscanRows = 8;
   const sourceTreeFallbackViewportHeight = 420;
