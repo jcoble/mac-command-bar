@@ -36,8 +36,11 @@
   import {
     cleanupPasteReplyDraft,
     cleanupPasteText,
+    createPasteCleanupHistoryItem,
     formatPasteCleanupStats,
     pasteCleanupModes,
+    summarizePasteCleanupHistoryText,
+    type PasteCleanupHistoryItem,
     type PasteCleanupMode
   } from '$lib/pasteCleanup';
   import {
@@ -282,6 +285,7 @@
   const browserDockUrlStorageKey = 'mac-command-bar.source-browser.browser-url';
   const activeWorkspaceSessionStorageKey = 'mac-command-bar.source-browser.active-workspace-session';
   const pasteCleanupModeStorageKey = 'mac-command-bar.source-browser.paste-cleanup-mode';
+  const pasteCleanupHistoryStorageKey = 'mac-command-bar.source-browser.paste-cleanup-history';
   const contextPanelModeStorageKey = 'mac-command-bar.source-browser.context-panel-mode';
   const contextPanelPlacementStorageKey = 'mac-command-bar.source-browser.context-panel-placement';
   const sidePanePositionStorageKey = 'mac-command-bar.source-browser.side-pane-position';
@@ -303,6 +307,8 @@
   const maxSourceDefinitionResults = 20;
   const maxSourceCompletionResults = 50;
   const maxGitCommitHistoryEntries = 24;
+  const maxPasteCleanupHistoryItems = 12;
+  const maxVisiblePasteCleanupHistoryItems = 4;
   const commandCenterTaskUrls: Record<string, string> = {
     'TSK-127':
       'https://app.notion.com/p/TSK-127-Create-a-native-MAC-OS-app-for-doing-diff-things-in-menu-bar-379394b0689d8053af76fd44c7ffdba4',
@@ -636,6 +642,7 @@
   let pasteCleanupInput = $state('');
   let pasteCleanupReplyDraft = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
+  let pasteCleanupHistory = $state<PasteCleanupHistoryItem[]>([]);
   let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceLayoutPresetOverrides = $state<SourceLayoutPresetOverrides>({});
   let sourceChromeCompact = $state(true);
@@ -934,6 +941,9 @@
   let pasteCleanupReplyOutput = $derived(cleanupPasteReplyDraft(pasteCleanupReplyDraft));
   let pasteCleanupReplyStats = $derived(
     formatPasteCleanupStats(pasteCleanupReplyDraft, pasteCleanupReplyOutput)
+  );
+  let visiblePasteCleanupHistory = $derived(
+    pasteCleanupHistory.slice(0, maxVisiblePasteCleanupHistoryItems)
   );
   let selectedProjectRuntimeContexts = $derived(
     runtimeContexts.filter(
@@ -2137,6 +2147,26 @@
       disabled: pasteCleanupReplyDraft.length === 0,
       perform: clearPasteCleanupReplyDraft
     },
+    {
+      id: 'paste-clear-history',
+      label: 'Clear paste cleanup history',
+      detail: `${pasteCleanupHistory.length} saved`,
+      disabled: pasteCleanupHistory.length === 0,
+      perform: clearPasteCleanupHistory
+    },
+    ...pasteCleanupHistory.slice(0, 8).map((item) => ({
+      id: `paste-restore-history-${item.id}`,
+      label: `Restore ${pasteCleanupHistoryKindLabel(item.kind)} history`,
+      detail: item.summary,
+      perform: () => restorePasteCleanupHistoryItem(item)
+    })),
+    ...pasteCleanupHistory.slice(0, 8).map((item) => ({
+      id: `paste-copy-history-${item.id}`,
+      label: `Copy ${pasteCleanupHistoryKindLabel(item.kind)} history`,
+      detail: item.summary,
+      disabled: fileActionBusy === 'activity-copy',
+      perform: () => copyPasteCleanupHistoryItem(item)
+    })),
     ...pasteCleanupModes.map((mode) => ({
       id: `paste-mode-${mode}`,
       label: `Use ${mode} paste cleanup`,
@@ -7967,6 +7997,21 @@
     }
   }
 
+  function rememberPasteCleanupHistory(kind: PasteCleanupHistoryItem['kind'], text: string) {
+    const normalizedText = text.trim();
+    if (!normalizedText) return;
+
+    const item = createPasteCleanupHistoryItem(kind, normalizedText, pasteCleanupMode);
+    const nextHistory = [
+      item,
+      ...pasteCleanupHistory.filter(
+        (entry) => entry.kind !== item.kind || entry.text !== item.text || entry.mode !== item.mode
+      )
+    ].slice(0, maxPasteCleanupHistoryItems);
+    pasteCleanupHistory = nextHistory;
+    persistPasteCleanupHistory(nextHistory);
+  }
+
   async function copyPasteCleanupOutput() {
     if (!pasteCleanupOutput.trim()) return;
 
@@ -7974,6 +8019,7 @@
 
     try {
       await copyTextToClipboard(pasteCleanupOutput, 'Cleaned text copied');
+      rememberPasteCleanupHistory('cleaned', pasteCleanupOutput);
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy cleaned text';
     } finally {
@@ -7988,11 +8034,44 @@
 
     try {
       await copyTextToClipboard(pasteCleanupReplyOutput, 'Reply draft copied');
+      rememberPasteCleanupHistory('reply', pasteCleanupReplyOutput);
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy reply draft';
     } finally {
       fileActionBusy = '';
     }
+  }
+
+  async function copyPasteCleanupHistoryItem(item: PasteCleanupHistoryItem) {
+    await copyActivityCommand(item.text, `${pasteCleanupHistoryKindLabel(item.kind)} copied`);
+  }
+
+  function restorePasteCleanupHistoryItem(item: PasteCleanupHistoryItem) {
+    selectSourceActivityMode('clipboard');
+    if (item.kind === 'reply') {
+      pasteCleanupReplyDraft = item.text;
+    } else {
+      pasteCleanupInput = item.text;
+      setPasteCleanupMode(item.mode);
+    }
+
+    fileActionStatus = `${pasteCleanupHistoryKindLabel(item.kind)} restored`;
+    error = '';
+  }
+
+  function clearPasteCleanupHistory() {
+    pasteCleanupHistory = [];
+    persistPasteCleanupHistory([]);
+    fileActionStatus = 'Paste cleanup history cleared';
+    error = '';
+  }
+
+  function pasteCleanupHistoryKindLabel(kind: PasteCleanupHistoryItem['kind']) {
+    return kind === 'reply' ? 'reply draft' : 'cleaned text';
+  }
+
+  function pasteCleanupHistoryItemTitle(item: PasteCleanupHistoryItem) {
+    return `${pasteCleanupHistoryKindLabel(item.kind)} · ${item.mode} · ${item.charCount.toLocaleString()} chars`;
   }
 
   function selectPasteCleanupMode(event: Event) {
@@ -9109,7 +9188,7 @@
       case 'files':
         return filteredRecords.length;
       case 'clipboard':
-        return pasteCleanupOutput.length;
+        return pasteCleanupHistory.length;
       case 'conversations':
       case 'agents':
         return filteredProjectAgentSessions.length;
@@ -9274,6 +9353,60 @@
   function persistPasteCleanupMode(mode: PasteCleanupMode) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(pasteCleanupModeStorageKey, mode);
+  }
+
+  function loadStoredPasteCleanupHistory(): PasteCleanupHistoryItem[] {
+    if (typeof window === 'undefined') return [];
+
+    try {
+      const storedHistory = JSON.parse(window.localStorage.getItem(pasteCleanupHistoryStorageKey) ?? '[]');
+      if (!Array.isArray(storedHistory)) return [];
+
+      return storedHistory
+        .map(normalizeStoredPasteCleanupHistoryItem)
+        .filter((item): item is PasteCleanupHistoryItem => Boolean(item))
+        .slice(0, maxPasteCleanupHistoryItems);
+    } catch {
+      return [];
+    }
+  }
+
+  function normalizeStoredPasteCleanupHistoryItem(value: unknown): PasteCleanupHistoryItem | null {
+    if (!value || typeof value !== 'object') return null;
+
+    const item = value as Partial<PasteCleanupHistoryItem>;
+    if (item.kind !== 'cleaned' && item.kind !== 'reply') return null;
+    if (!isPasteCleanupMode(item.mode)) return null;
+    if (typeof item.text !== 'string' || item.text.trim().length === 0) return null;
+
+    const text = item.text.trim();
+    const createdAt = typeof item.createdAt === 'number' && Number.isFinite(item.createdAt)
+      ? item.createdAt
+      : Date.now();
+
+    return {
+      id: typeof item.id === 'string' && item.id.trim().length > 0
+        ? item.id
+        : `${item.kind}-${createdAt}`,
+      kind: item.kind,
+      mode: item.mode,
+      text,
+      summary: typeof item.summary === 'string' && item.summary.trim().length > 0
+        ? item.summary
+        : summarizePasteCleanupHistoryText(text),
+      charCount: typeof item.charCount === 'number' && Number.isFinite(item.charCount)
+        ? item.charCount
+        : text.length,
+      createdAt
+    };
+  }
+
+  function persistPasteCleanupHistory(history: PasteCleanupHistoryItem[]) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      pasteCleanupHistoryStorageKey,
+      JSON.stringify(history.slice(0, maxPasteCleanupHistoryItems))
+    );
   }
 
   function markSourceLayoutCustom() {
@@ -11282,6 +11415,7 @@
     const storedActiveWorkspaceSessionKey = loadStoredActiveWorkspaceSessionKey();
     const storedSourceActivityMode = loadStoredSourceActivityMode();
     const storedPasteCleanupMode = loadStoredPasteCleanupMode();
+    const storedPasteCleanupHistory = loadStoredPasteCleanupHistory();
     const storedSourceLayoutPreset = loadStoredSourceLayoutPreset();
     const storedSourceLayoutPresetOverrides = loadStoredSourceLayoutPresetOverrides();
     const storedSourceFocusRestoreLayout = loadStoredSourceFocusRestoreLayout();
@@ -11343,6 +11477,7 @@
     selectedProjectID = startupProject.id;
     sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
+    pasteCleanupHistory = storedPasteCleanupHistory;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceLayoutPresetOverrides = storedSourceLayoutPresetOverrides;
     sourceFocusRestoreLayout = migrateSourceLayout ? null : storedSourceFocusRestoreLayout;
@@ -11902,37 +12037,76 @@
 
         {#if sourceActivityMode === 'clipboard'}
           <div class="paste-cleanup-panel">
-            <div class="paste-cleanup-toolbar">
-              <label>
-                <span>Mode</span>
-                <select bind:value={pasteCleanupMode} onchange={selectPasteCleanupMode} aria-label="Paste cleanup mode">
-                  {#each pasteCleanupModes as mode (mode)}
-                    <option value={mode}>{mode}</option>
+            <div class="paste-cleanup-top">
+              <div class="paste-cleanup-toolbar">
+                <label>
+                  <span>Mode</span>
+                  <select bind:value={pasteCleanupMode} onchange={selectPasteCleanupMode} aria-label="Paste cleanup mode">
+                    {#each pasteCleanupModes as mode (mode)}
+                      <option value={mode}>{mode}</option>
+                    {/each}
+                  </select>
+                </label>
+                <button
+                  class="file-action-button"
+                  type="button"
+                  aria-label="Read clipboard"
+                  title="Read clipboard"
+                  disabled={fileActionBusy === 'paste-read'}
+                  onclick={readPasteCleanupClipboard}
+                >
+                  <Copy size={13} strokeWidth={1.9} />
+                  <span>{fileActionBusy === 'paste-read' ? 'Reading' : 'Paste'}</span>
+                </button>
+                <button
+                  class="file-action-button"
+                  type="button"
+                  aria-label="Clear paste cleanup text"
+                  title="Clear paste cleanup text"
+                  disabled={pasteCleanupInput.length === 0}
+                  onclick={clearPasteCleanupInput}
+                >
+                  <X size={13} strokeWidth={1.9} />
+                  <span>Clear</span>
+                </button>
+              </div>
+              {#if visiblePasteCleanupHistory.length > 0}
+                <div class="paste-cleanup-history" aria-label="Paste cleanup history">
+                  {#each visiblePasteCleanupHistory as item (item.id)}
+                    <div class="paste-history-chip" class:reply={item.kind === 'reply'}>
+                      <button
+                        class="paste-history-restore"
+                        type="button"
+                        aria-label={`Restore paste cleanup ${pasteCleanupHistoryKindLabel(item.kind)}`}
+                        title={pasteCleanupHistoryItemTitle(item)}
+                        onclick={() => restorePasteCleanupHistoryItem(item)}
+                      >
+                        <History size={11} strokeWidth={2} />
+                        <span>{pasteCleanupHistoryKindLabel(item.kind)}</span>
+                        <strong>{item.summary}</strong>
+                      </button>
+                      <button
+                        class="paste-history-copy"
+                        type="button"
+                        aria-label={`Copy paste cleanup ${pasteCleanupHistoryKindLabel(item.kind)}`}
+                        title="Copy history item"
+                        onclick={() => copyPasteCleanupHistoryItem(item)}
+                      >
+                        <Copy size={11} strokeWidth={2} />
+                      </button>
+                    </div>
                   {/each}
-                </select>
-              </label>
-              <button
-                class="file-action-button"
-                type="button"
-                aria-label="Read clipboard"
-                title="Read clipboard"
-                disabled={fileActionBusy === 'paste-read'}
-                onclick={readPasteCleanupClipboard}
-              >
-                <Copy size={13} strokeWidth={1.9} />
-                <span>{fileActionBusy === 'paste-read' ? 'Reading' : 'Paste'}</span>
-              </button>
-              <button
-                class="file-action-button"
-                type="button"
-                aria-label="Clear paste cleanup text"
-                title="Clear paste cleanup text"
-                disabled={pasteCleanupInput.length === 0}
-                onclick={clearPasteCleanupInput}
-              >
-                <X size={13} strokeWidth={1.9} />
-                <span>Clear</span>
-              </button>
+                  <button
+                    class="paste-history-clear"
+                    type="button"
+                    aria-label="Clear paste cleanup history"
+                    title="Clear paste cleanup history"
+                    onclick={clearPasteCleanupHistory}
+                  >
+                    <X size={11} strokeWidth={2} />
+                  </button>
+                </div>
+              {/if}
             </div>
             <div class="paste-cleanup-grid">
               <label>
@@ -16230,6 +16404,12 @@
     overflow: hidden;
   }
 
+  .paste-cleanup-top {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+  }
+
   .paste-cleanup-toolbar,
   .paste-cleanup-footer {
     display: flex;
@@ -16262,6 +16442,98 @@
     outline: 0;
     background: transparent;
     font: inherit;
+  }
+
+  .paste-cleanup-history {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .paste-history-chip {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 24px;
+    flex: 1 1 132px;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid rgba(92, 226, 207, 0.12);
+    border-radius: 7px;
+    background: rgba(92, 226, 207, 0.045);
+  }
+
+  .paste-history-chip.reply {
+    border-color: rgba(216, 170, 85, 0.13);
+    background: rgba(216, 170, 85, 0.045);
+  }
+
+  .paste-history-restore {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd8d5;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .paste-history-restore span {
+    color: #8fd8cf;
+    font-size: 8px;
+    font-weight: 900;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .paste-history-chip.reply .paste-history-restore span {
+    color: #d8c385;
+  }
+
+  .paste-history-restore strong {
+    min-width: 0;
+    overflow: hidden;
+    color: #dfe8e5;
+    font-size: 10px;
+    font-weight: 780;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .paste-history-copy,
+  .paste-history-clear {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    color: #96a39f;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .paste-history-clear {
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .paste-history-restore:hover,
+  .paste-history-restore:focus-visible,
+  .paste-history-copy:hover,
+  .paste-history-copy:focus-visible,
+  .paste-history-clear:hover,
+  .paste-history-clear:focus-visible {
+    color: #e8f6f2;
+    outline: 0;
+    background: rgba(92, 226, 207, 0.11);
   }
 
   .paste-cleanup-grid {

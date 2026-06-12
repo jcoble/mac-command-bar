@@ -1,4 +1,14 @@
 export type PasteCleanupMode = 'plain' | 'compact' | 'prompt' | 'reply';
+export type PasteCleanupHistoryKind = 'cleaned' | 'reply';
+export type PasteCleanupHistoryItem = {
+  id: string;
+  kind: PasteCleanupHistoryKind;
+  mode: PasteCleanupMode;
+  text: string;
+  summary: string;
+  charCount: number;
+  createdAt: number;
+};
 
 export const pasteCleanupModes: PasteCleanupMode[] = ['plain', 'compact', 'prompt', 'reply'];
 
@@ -27,6 +37,33 @@ export function formatPasteCleanupStats(input: string, output: string): string {
 
 export function cleanupPasteReplyDraft(input: string): string {
   return normalizePastedText(input).trim();
+}
+
+export function summarizePasteCleanupHistoryText(input: string, maxLength = 72): string {
+  const summary = normalizePastedText(input).replace(/\s+/g, ' ').trim();
+  if (summary.length <= maxLength) return summary;
+
+  const cutLength = Math.max(1, maxLength - 3);
+  return `${summary.slice(0, cutLength).trimEnd()}...`;
+}
+
+export function createPasteCleanupHistoryItem(
+  kind: PasteCleanupHistoryKind,
+  text: string,
+  mode: PasteCleanupMode,
+  createdAt = Date.now()
+): PasteCleanupHistoryItem {
+  const normalizedText = normalizePastedText(text).trim();
+  const randomID = Math.random().toString(36).slice(2);
+  return {
+    id: `${kind}-${createdAt}-${randomID}`,
+    kind,
+    mode,
+    text: normalizedText,
+    summary: summarizePasteCleanupHistoryText(normalizedText),
+    charCount: normalizedText.length,
+    createdAt
+  };
 }
 
 function normalizePastedText(input: string): string {
