@@ -38,13 +38,14 @@ Completed and committed:
 - Saved nested project roots now auto-repair to the real Git root before scan.
 - Hidden dock panels now expose compact restore chips, so closed panes are recoverable without opening the command palette first.
 - Source scans now show compact evidence for cache/fresh/background/tiny/failed/stopped state, root label, count, age, and scan limit.
+- Project activation scans now share an explicit cache/missing/force/tiny-index plan, so auto-scans explain why they are running.
 - Editor LSP recovery actions are visible in the editor toolbar: retry status, copy selected-file status, and copy install command when fallback is active.
 - Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including C# and TypeScript language-server smoke tests.
 
 Current checkpoint:
 
 - Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
-- Priority 0.2 project scan stability is implemented for nested-root repair and scan evidence. Remaining work is manual validation on more real project roots and any follow-up from user testing.
+- Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, and explicit activation scan reasons. Remaining work is manual validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has automated coverage through the Tauri/LSP smoke path. Remaining work is hands-on app validation for the full UI flow.
 - Priority 1 Git/worktree foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Remaining work is polish, larger graph UX, and tighter task/Notion display, not first scaffolding.
 - Priority 2.7 orchestration timeline detail is implemented enough for iteration: event schema, sample event generation, run cards, compact context rows, current activity, loop tallies, attention/sign-off queues, and handoff copy are covered by tests.
@@ -334,10 +335,10 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Next implementation slice: Priority 0.2, project add/scan stabilization.
+Next implementation slice: Priority 1.4, Git graph and task-link polish.
 
 Definition of done for the next slice:
-- Adding or switching to a project automatically repairs nested roots to the Git root before indexing.
-- Missing/stale/tiny caches trigger one bounded auto-scan without requiring repeated Scan clicks.
-- Scan status explains root, limit, cache age, result count, and suspicious tiny results.
-- Tests cover project onboarding repair, auto-scan decision logic, and source UI hooks.
+- Selected Git/task rows expose compact task links and copyable task context without adding persistent chrome.
+- Git history rows make current HEAD/upstream/task ownership clearer.
+- Worktree/task context can be copied as a handoff brief for agent or cleanup decisions.
+- Tests cover task-link rendering, command-palette hooks, and shared Git/task formatting helpers.
