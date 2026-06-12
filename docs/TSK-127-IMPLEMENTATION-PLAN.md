@@ -55,13 +55,13 @@ Completed and committed:
 - Orchestration event ingest now accepts real-ish agent/orchestrator payloads: snake_case aliases, nested project/task/agent/step/artifact/link/counts objects, event aliases such as `ui_verified`, JSON arrays, JSON envelope events, and JSONL/JSON files via `--json-file`.
 - The Runs pane now has a compact orchestration ingest strip for choosing an event JSON/JSONL file, copying the exact import command, and recording a native heartbeat event without starting a watcher by default.
 - Paste cleanup now keeps compact local history for copied cleaned text and reply drafts, exposes restore/copy chips in the Clipboard pane, and keeps history actions available through the command palette.
-- Native Tauri/LSP validation currently passes through `pnpm test:tauri-app`, including Tauri source bridge wrappers, dev/attach config guards, C# and TypeScript language-server smoke tests, and the Tauri Rust build.
+- Native Tauri/LSP validation passes through `pnpm test:tauri-app`, including Tauri source bridge wrappers, dev/attach config guards, C# and TypeScript language-server smoke tests, and the Tauri Rust build. Attach-mode hands-on validation also launched the real Tauri shell without the relaunch loop and scanned real EdiPlatform/MacCommandBar roots through native commands.
 
 Current checkpoint:
 
-- Priority 0.1 docking is implemented enough for daily iteration: persisted dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips.
+- Priority 0.1 docking is implemented enough for daily iteration: persisted custom dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips. `dockview-core` is installed but not adopted; the next layout slice must either harden the custom model or migrate deliberately.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, explicit activation scan reasons, forced refresh on missing/stale/tiny activation plans, and worktree-ancestor scan coverage. Remaining work is hands-on validation on more real project roots and any follow-up from user testing.
-- Priority 0.3 native validation has current automated coverage through `pnpm test:tauri-app`: source bridge wrappers, dev/attach config, web build, 25 native LSP tests, TypeScript and C# language-server smoke, and Tauri Rust build. Remaining work is hands-on app validation for the full GUI flow.
+- Priority 0.3 native validation has current automated and hands-on attach-mode coverage: `pnpm test:tauri-app` passes, source bridge wrappers/dev-attach config/web build/25 native LSP tests/TypeScript and C# smoke/Tauri Rust build pass, and the real Tauri shell scanned EdiPlatform and MacCommandBar roots without relaunching. Remaining work is deeper GUI interaction validation for editing/Git/terminal actions.
 - Priority 1 Git/worktree/conversation foundations are already implemented. Worktree rows now expose linked saved conversations/snapshots and live session ownership. Git task source handoffs are copyable, task ledger rows can open task links directly, history rows show compact ownership badges, and the task ledger summarizes cleanup/ownership state. Worktree cleanup now has covered states for clean, stale-clean, dirty, unmerged, locked, active-session, missing/prunable, and primary checkout flows, with compact lane labels for keep/active/backup/save-commits/stale-clean/prune/locked/review. Conversation workspace restore now has covered missing-worktree repair plans, terminal/path safety, and non-blocking restore with background index preservation. Remaining work is hands-on GUI validation and larger graph UX, not first scaffolding.
 - Priority 1.4 Git graph density and task detail polish is implemented enough for iteration: selected commit details collapse to a one-line drawer, full metadata/actions sit behind disclosure and Cmd+K, commit rows use dense metadata, and row action buttons only appear on hover/focus.
 - Priority 1.5 worktree cleanup confidence polish is implemented enough for iteration: shared decision-lane labels distinguish keep-main, active-session blocked, backup dirty work, save unmerged commits, stale clean cleanup, missing metadata prune, locked, and generic review states across the Worktrees activity list, decision queue, and safety context list.
@@ -358,18 +358,18 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 0.2, project scan/add-project hardening.
+Last checkpoint: Priority 0.3, native Tauri GUI validation.
 
-- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/scripts/localSourceFs.test.mjs`, `tauri-svelte-preview/src-tauri/src/main.rs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: project activation now turns missing, stale, forced, or suspiciously tiny activation scan plans into a real refresh so stale two-file indexes cannot remain visible during add/switch/repair; browser bridge and Tauri scanner tests now cover roots that live under a `/worktrees/...` ancestor while still allowing repo-local child `worktrees` folders to be skipped.
-- Validation: direct local scan of `/Users/blackcolours/dev/work/EdiPlatform` returned 4,591 files; `pnpm test:local-source-fs`; `pnpm test:source-ui`; `cargo test source_scan --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml`; `pnpm test:source-data`; `pnpm check`; `pnpm build`.
-- Remaining risk: hands-on validation in the real Tauri GUI still needs to confirm add-project, switching, LSP, Git, and native file commands together.
+- Changed files: `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: native validation is now checkpointed as a real attach-mode pass, not only browser preview or unit tests. The safe run path is Vite on `127.0.0.1:5177` plus `pnpm tauri:dev:attach`, which avoids the port collision/relaunch loop by using the attach config with no `beforeDevCommand`.
+- Validation: `pnpm test:tauri-app`; attach-mode Tauri launch; native log showed `mcb tauri source.list root=/Users/blackcolours/dev/work/EdiPlatform count=4591 truncated=false`, C# preview load, and `mcb tauri source.list root=/Users/blackcolours/dev/work/mac-command-bar count=98 truncated=false`; Vite/Tauri processes were shut down afterward and port 5177 had no listener.
+- Remaining risk: deeper hands-on GUI interactions still need validation for edit/save, Git actions, LSP interactions by click/shortcut, and embedded terminal startup.
 
-Next implementation slice: Priority 0.3 native Tauri GUI validation.
+Next implementation slice: Priority 0.1 docking/layout usability polish follow-up.
 
 Definition of done for the next slice:
-- Run the real Tauri app without triggering the dev relaunch/focus loop.
-- Verify add-project/switch-project scanning against MacCommandBar and EdiPlatform roots.
-- Verify native source read/write, Cmd+S, LSP status, hover/definition/references, Git status/diff/actions, and embedded terminal startup.
-- Record any native-only failures as targeted follow-up items instead of mixing them into broad layout polish.
-- Validate with `pnpm test:tauri-app` or the closest focused subset, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, and a short hands-on Tauri smoke pass.
+- Decide explicitly whether to keep hardening the custom dock model or migrate to `dockview-core`; do not half-mix both.
+- Tighten half-width and laptop layout so the editor can occupy most of the window from top to bottom.
+- Move remaining low-frequency editor controls into Cmd+K/view/action menus.
+- Make files/conversations/sessions/agents/worktrees/Git panes behave like stackable IDE lanes with minimal always-visible chrome.
+- Validate with `pnpm test:source-dock-layout`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, and a short visual pass after shutting down browser/native automation.
