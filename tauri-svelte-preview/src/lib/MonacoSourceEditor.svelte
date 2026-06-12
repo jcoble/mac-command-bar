@@ -239,6 +239,13 @@
 	let externalWorkspaceEditCommandId = "";
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
+	const sourceLspMonacoLanguageIDs = [
+		"typescript",
+		"javascript",
+		"csharp",
+		"rust",
+		"html",
+	];
 
 	function installWorker() {
 		const target = self as unknown as {
@@ -291,7 +298,7 @@
 	function registerSourceSemanticTokens(monaco: typeof Monaco) {
 		semanticTokensDisposable?.dispose();
 		semanticTokensDisposable = monaco.languages.registerDocumentSemanticTokensProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				getLegend: () => ({
 					tokenTypes: [...sourceSemanticTokenLegend.tokenTypes],
@@ -314,7 +321,7 @@
 	function registerSourceHoverProvider(monaco: typeof Monaco) {
 		hoverProviderDisposable?.dispose();
 		hoverProviderDisposable = monaco.languages.registerHoverProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideHover: async (model, position) => {
 					const word = model.getWordAtPosition(position);
@@ -359,7 +366,7 @@
 	function registerSourceDefinitionProvider(monaco: typeof Monaco) {
 		definitionProviderDisposable?.dispose();
 		definitionProviderDisposable = monaco.languages.registerDefinitionProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideDefinition: async (model, position) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -375,7 +382,7 @@
 	function registerSourceReferenceProvider(monaco: typeof Monaco) {
 		referenceProviderDisposable?.dispose();
 		referenceProviderDisposable = monaco.languages.registerReferenceProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideReferences: async (model, position) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -391,7 +398,7 @@
 	function registerSourceDocumentHighlightProvider(monaco: typeof Monaco) {
 		documentHighlightProviderDisposable?.dispose();
 		documentHighlightProviderDisposable = monaco.languages.registerDocumentHighlightProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideDocumentHighlights: async (model, position) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -409,7 +416,7 @@
 	function registerSourceImplementationProvider(monaco: typeof Monaco) {
 		implementationProviderDisposable?.dispose();
 		implementationProviderDisposable = monaco.languages.registerImplementationProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideImplementation: async (model, position) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -427,7 +434,7 @@
 	function registerSourceTypeDefinitionProvider(monaco: typeof Monaco) {
 		typeDefinitionProviderDisposable?.dispose();
 		typeDefinitionProviderDisposable = monaco.languages.registerTypeDefinitionProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideTypeDefinition: async (model, position) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -445,7 +452,7 @@
 	function registerSourceFormattingProvider(monaco: typeof Monaco) {
 		formattingProviderDisposable?.dispose();
 		formattingProviderDisposable = monaco.languages.registerDocumentFormattingEditProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideDocumentFormattingEdits: async () => {
 					const edits = await onFormatDocument?.();
@@ -458,7 +465,7 @@
 	function registerSourceRenameProvider(monaco: typeof Monaco) {
 		renameProviderDisposable?.dispose();
 		renameProviderDisposable = monaco.languages.registerRenameProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideRenameEdits: async (model, position, newName) => {
 					const normalizedName = newName.trim();
@@ -487,7 +494,7 @@
 	function registerSourceCodeActionProvider(monaco: typeof Monaco) {
 		codeActionProviderDisposable?.dispose();
 		codeActionProviderDisposable = monaco.languages.registerCodeActionProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideCodeActions: async (_model, range, context) => {
 					const actions = await onCodeActionLookup?.({
@@ -521,7 +528,7 @@
 	function registerSourceSignatureHelpProvider(monaco: typeof Monaco) {
 		signatureHelpProviderDisposable?.dispose();
 		signatureHelpProviderDisposable = monaco.languages.registerSignatureHelpProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				signatureHelpTriggerCharacters: ["(", ",", "<"],
 				signatureHelpRetriggerCharacters: [","],
@@ -542,7 +549,7 @@
 	function registerSourceInlayHintsProvider(monaco: typeof Monaco) {
 		inlayHintsProviderDisposable?.dispose();
 		inlayHintsProviderDisposable = monaco.languages.registerInlayHintsProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				displayName: "MacCommandBar LSP",
 				provideInlayHints: async (_model, range) => {
@@ -565,7 +572,7 @@
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				triggerCharacters: [".", ":", "<", '"', "'", "/"],
 				provideCompletionItems: async (model, position) => {
@@ -592,7 +599,7 @@
 	function registerSourceDocumentSymbolProvider(monaco: typeof Monaco) {
 		documentSymbolProviderDisposable?.dispose();
 		documentSymbolProviderDisposable = monaco.languages.registerDocumentSymbolProvider(
-			["typescript", "javascript", "csharp"],
+			sourceLspMonacoLanguageIDs,
 			{
 				provideDocumentSymbols: (model) =>
 					extractSourceSymbols(previewForModel(model), model.getValue()).map((symbol) =>

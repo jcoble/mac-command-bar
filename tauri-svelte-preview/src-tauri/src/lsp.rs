@@ -2453,6 +2453,8 @@ fn language_for_path(path: &Path) -> Option<String> {
         "tsx" => Some("typescript".to_string()),
         "js" => Some("javascript".to_string()),
         "jsx" => Some("javascript".to_string()),
+        "rs" => Some("rust".to_string()),
+        "svelte" => Some("svelte".to_string()),
         _ => None,
     }
 }
@@ -2715,12 +2717,40 @@ mod tests {
 
         assert_eq!(
             languages,
-            vec!["csharp", "typescript", "javascript", "rust", "svelte", "python", "go"]
+            vec![
+                "csharp",
+                "typescript",
+                "javascript",
+                "rust",
+                "svelte",
+                "python",
+                "go"
+            ]
         );
         assert!(statuses.iter().all(|status| !status.server_name.is_empty()));
         assert!(statuses.iter().all(|status| !status.command.is_empty()));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn infers_languages_for_native_lsp_result_paths() {
+        assert_eq!(
+            language_for_path(Path::new("App.js")).as_deref(),
+            Some("javascript")
+        );
+        assert_eq!(
+            language_for_path(Path::new("App.jsx")).as_deref(),
+            Some("javascript")
+        );
+        assert_eq!(
+            language_for_path(Path::new("src/lib.rs")).as_deref(),
+            Some("rust")
+        );
+        assert_eq!(
+            language_for_path(Path::new("src/App.svelte")).as_deref(),
+            Some("svelte")
+        );
     }
 
     #[test]
@@ -3623,6 +3653,247 @@ mod tests {
     }
 
     #[test]
+    fn javascript_language_server_smoke_reads_intelligence_actions() {
+        if resolve_server_for_language("javascript").is_none() {
+            eprintln!("skipping JavaScript LSP smoke: typescript-language-server not found");
+            return;
+        }
+
+        let root = unique_lsp_temp_root("mcb-js-lsp-smoke");
+        std::fs::write(
+            root.join("jsconfig.json"),
+            r#"{"compilerOptions":{"target":"ES2022","module":"ESNext","checkJs":true}}"#,
+        )
+        .unwrap();
+        let content = [
+            "export function greet(name) {",
+            "  return `Hello ${name}`;",
+            "}",
+            "",
+            "const value = greet(\"Mac\");",
+        ]
+        .join("\n");
+        let file_path = root.join("App.js");
+        std::fs::write(&file_path, &content).unwrap();
+
+        let preview = SourceLspPreview {
+            path: file_path.display().to_string(),
+            relative_path: "App.js".to_string(),
+            file_name: "App.js".to_string(),
+            language: "javascript".to_string(),
+            byte_count: content.len() as u64,
+            content,
+            line_count: 5,
+        };
+        let request = SourceLspLookupRequest {
+            root: root.display().to_string(),
+            line: 5,
+            column: 16,
+            limit: Some(20),
+        };
+        let registry = SourceLspRegistry::default();
+
+        let symbols = registry
+            .find_symbols(preview.clone(), request.clone())
+            .expect("JavaScript document symbols");
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "greet" && symbol.kind == "function"),
+            "expected JavaScript document symbols to include greet; got {symbols:?}"
+        );
+
+        let hover = registry
+            .find_hover(preview.clone(), request.clone())
+            .expect("JavaScript hover")
+            .expect("JavaScript hover contents");
+        assert!(
+            hover.contents.join("\n").contains("greet"),
+            "expected JavaScript hover to describe greet; got {hover:?}"
+        );
+
+        let definitions = registry
+            .find_definitions(preview.clone(), request.clone())
+            .expect("JavaScript definitions");
+        assert!(
+            definitions
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 1),
+            "expected JavaScript definition to resolve to App.js line 1; got {definitions:?}"
+        );
+
+        let references = registry
+            .find_references(preview, request)
+            .expect("JavaScript references");
+        assert!(
+            references
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 1),
+            "expected JavaScript references to include greet declaration; got {references:?}"
+        );
+        assert!(
+            references
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 5),
+            "expected JavaScript references to include greet call site; got {references:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rust_language_server_smoke_reads_intelligence_actions() {
+        if resolve_server_for_language("rust").is_none() {
+            eprintln!("skipping Rust LSP smoke: rust-analyzer not found");
+            return;
+        }
+        if let Err(reason) = rust_analyzer_ready_for_smoke() {
+            eprintln!("skipping Rust LSP smoke: {reason}");
+            return;
+        }
+
+        let root = unique_lsp_temp_root("mcb-rust-lsp-smoke");
+        let source_dir = root.join("src");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            [
+                "[package]",
+                r#"name = "mcb_lsp_smoke""#,
+                r#"version = "0.1.0""#,
+                r#"edition = "2021""#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let content = [
+            "pub struct Widget {",
+            "    pub name: String,",
+            "}",
+            "",
+            "impl Widget {",
+            "    pub fn label(&self) -> String {",
+            "        self.name.clone()",
+            "    }",
+            "}",
+            "",
+            "pub fn run() -> String {",
+            "    let widget = Widget { name: \"mac\".to_string() };",
+            "    widget.label()",
+            "}",
+        ]
+        .join("\n");
+        let file_path = source_dir.join("lib.rs");
+        std::fs::write(&file_path, &content).unwrap();
+
+        let preview = SourceLspPreview {
+            path: file_path.display().to_string(),
+            relative_path: "src/lib.rs".to_string(),
+            file_name: "lib.rs".to_string(),
+            language: "rust".to_string(),
+            byte_count: content.len() as u64,
+            content,
+            line_count: 14,
+        };
+        let request = SourceLspLookupRequest {
+            root: root.display().to_string(),
+            line: 12,
+            column: 20,
+            limit: Some(20),
+        };
+        let registry = SourceLspRegistry::default();
+
+        let symbols = registry
+            .find_symbols(preview.clone(), request.clone())
+            .expect("Rust document symbols");
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "Widget" && symbol.kind == "struct"),
+            "expected Rust document symbols to include Widget; got {symbols:?}"
+        );
+
+        let hover = registry
+            .find_hover(preview.clone(), request.clone())
+            .expect("Rust hover")
+            .expect("Rust hover contents");
+        assert!(
+            hover.contents.join("\n").contains("Widget"),
+            "expected Rust hover to describe Widget; got {hover:?}"
+        );
+
+        let definitions = registry
+            .find_definitions(preview.clone(), request.clone())
+            .expect("Rust definitions");
+        assert!(
+            definitions
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 1),
+            "expected Rust definition to resolve to lib.rs line 1; got {definitions:?}"
+        );
+
+        let references = registry
+            .find_references(preview, request)
+            .expect("Rust references");
+        assert!(
+            references
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 12),
+            "expected Rust references to include Widget use site; got {references:?}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn svelte_language_server_smoke_reads_document_symbols_when_available() {
+        if resolve_server_for_language("svelte").is_none() {
+            eprintln!("skipping Svelte LSP smoke: svelte-language-server not found");
+            return;
+        }
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("tauri preview root")
+            .to_path_buf();
+        let file_path = root.join("src/lib/MonacoSourceEditor.svelte");
+        let content = match std::fs::read_to_string(&file_path) {
+            Ok(content) => content,
+            Err(error) => {
+                eprintln!("skipping Svelte LSP smoke: could not read fixture component: {error}");
+                return;
+            }
+        };
+        let line_count = content.lines().count().max(1);
+        let preview = SourceLspPreview {
+            path: file_path.display().to_string(),
+            relative_path: "src/lib/MonacoSourceEditor.svelte".to_string(),
+            file_name: "MonacoSourceEditor.svelte".to_string(),
+            language: "svelte".to_string(),
+            byte_count: content.len() as u64,
+            content,
+            line_count,
+        };
+        let request = SourceLspLookupRequest {
+            root: root.display().to_string(),
+            line: 1,
+            column: 1,
+            limit: Some(40),
+        };
+        let registry = SourceLspRegistry::default();
+
+        match registry.find_symbols(preview, request) {
+            Ok(symbols) => assert!(
+                symbols.iter().any(|symbol| symbol.name == "installWorker"),
+                "expected Svelte document symbols to include installWorker; got {symbols:?}"
+            ),
+            Err(error) => {
+                eprintln!("skipping Svelte LSP smoke: {error}");
+            }
+        }
+    }
+
+    #[test]
     fn csharp_language_server_smoke_reads_intelligence_actions() {
         if env::var_os("MCB_RUN_CSHARP_LSP_SMOKE").is_none() {
             eprintln!("skipping C# LSP smoke: set MCB_RUN_CSHARP_LSP_SMOKE=1 to enable");
@@ -3782,5 +4053,21 @@ mod tests {
         root.push(format!("{prefix}-{nonce}"));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn rust_analyzer_ready_for_smoke() -> Result<(), String> {
+        let server = resolve_server_for_language("rust")
+            .ok_or_else(|| "rust-analyzer not found".to_string())?;
+        let output = Command::new(&server.command)
+            .arg("--version")
+            .output()
+            .map_err(|error| format!("rust-analyzer --version failed to start: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if stderr.is_empty() { stdout } else { stderr })
     }
 }

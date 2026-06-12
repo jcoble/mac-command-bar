@@ -28,6 +28,7 @@
     X
   } from '@lucide/svelte';
   import { open } from '@tauri-apps/plugin-dialog';
+  import 'dockview-core/dist/styles/dockview.css';
   import '@xterm/xterm/css/xterm.css';
   import { onMount, tick } from 'svelte';
   import type { FitAddon as XTermFitAddon } from '@xterm/addon-fit';
@@ -101,6 +102,7 @@
     type SourceDockLayout,
     type SourceDockPanelID
   } from '$lib/sourceDockLayout';
+  import { sourceDockviewStorageKey } from '$lib/sourceDockviewWorkspace';
   import {
     applySourceTextEdits,
     buildSourceTree,
@@ -739,6 +741,7 @@
     scanLimit?: number;
     waitForScan?: boolean;
     preserveSelectedRecordOnScan?: boolean;
+    clearFileFilter?: boolean;
   };
   type SourceCommandPaletteItem = {
     id: string;
@@ -9008,7 +9011,11 @@
   function handleProjectChange() {
     const nextProject =
       projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
-    void activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit });
+    void activateProject(nextProject, {
+      projects: projectOptions,
+      scanLimit: expandedSourceScanLimit,
+      clearFileFilter: true
+    });
   }
 
   function createSourceActivityFilterState(
@@ -9654,6 +9661,7 @@
   function persistSourceLayoutVersion() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutVersionStorageKey, sourceLayoutVersion);
+    window.localStorage.removeItem(sourceDockviewStorageKey);
   }
 
   function loadStoredSourceTerminalApp(): SourceTerminalApp {
@@ -11001,8 +11009,9 @@
     if (validation === false) return false;
 
     const nextProject = projectRootForValidatedAdd(requestedProject, validation);
+    const normalizedNextProjectPath = normalizeProjectPath(nextProject.path);
     const duplicateProject = projectOptions.find(
-      (project) => normalizeProjectPath(project.path) === nextProject.path
+      (project) => normalizeProjectPath(project.path) === normalizedNextProjectPath
     );
 
     if (duplicateProject) {
@@ -11034,7 +11043,8 @@
     void activateProject(nextProject, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
-      projects: nextProjectOptions
+      projects: nextProjectOptions,
+      clearFileFilter: true
     });
     return true;
   }
@@ -11108,7 +11118,8 @@
     await activateProject(repairedProject, {
       forceScan: true,
       scanLimit,
-      projects: nextProjectOptions
+      projects: nextProjectOptions,
+      clearFileFilter: true
     });
     return true;
   }
@@ -11151,7 +11162,8 @@
     void activateProject(nextProject, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
-      projects: nextProjectOptions
+      projects: nextProjectOptions,
+      clearFileFilter: true
     });
     return true;
   }
@@ -11182,7 +11194,8 @@
     void activateProject(project, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
-      projects
+      projects,
+      clearFileFilter: true
     });
   }
 
@@ -11192,6 +11205,9 @@
     const scanLimit = options.scanLimit ?? expandedSourceScanLimit;
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
+    if (options.clearFileFilter) {
+      query = '';
+    }
     if (options.forceScan) {
       resetProjectOnboardingScanState(project);
     }
@@ -11286,6 +11302,7 @@
       const fallbackProject = defaultProjectRoots[0];
       selectedProjectID = fallbackProject.id;
       persistSelectedProjectID(fallbackProject.id);
+      query = '';
       void loadProjectGitStatus(fallbackProject);
       void loadGitCommitHistory(fallbackProject);
       void scanProject(fallbackProject, nextSelectedSourcePaths[fallbackProject.id]);

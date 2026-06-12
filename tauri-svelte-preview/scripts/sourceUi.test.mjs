@@ -27,6 +27,13 @@ function assertDeclaration(selector, declaration) {
   assert.match(blockFor(selector), new RegExp(`(^|\\n)\\s*${declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`), `${selector} should include ${declaration}`);
 }
 
+function constStringArray(source, constName) {
+  const escapedName = constName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`const\\s+${escapedName}\\s*=\\s*\\[(?<body>[\\s\\S]*?)\\]\\s*(?:as const)?;`).exec(source);
+  assert.ok(match?.groups?.body, `Missing ${constName} string array`);
+  return [...match.groups.body.matchAll(/["']([^"']+)["']/g)].map((item) => item[1]);
+}
+
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
 assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
 assertDeclaration('.shell.side-right', 'grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width)');
@@ -544,6 +551,10 @@ assert.ok(pageSource.includes('await validateProjectRootBeforeAdd(requestedProje
 assert.ok(pageSource.includes('function projectRootForValidatedAdd'), 'Project onboarding should normalize nested Git folders before adding them');
 assert.ok(pageSource.includes('validation?.gitRoot?.trim()'), 'Project onboarding should use native Git-root detection when available');
 assert.ok(pageSource.includes('return createProjectRoot(project.name, gitRoot);'), 'Project onboarding should persist the detected Git root instead of nested folders');
+assert.ok(pageSource.includes('clearFileFilter?: boolean'), 'Project activation should have an explicit file-filter reset option');
+assert.ok(pageSource.includes('clearFileFilter: true'), 'Project/root switches should clear stale source file filters');
+assert.ok(pageSource.includes("query = '';"), 'Project activation should clear the source file filter when requested');
+assert.ok(pageSource.includes('const normalizedNextProjectPath = normalizeProjectPath(nextProject.path)'), 'Project onboarding should compare normalized root paths when de-duping projects');
 assert.ok(pageSource.includes('async function repairSavedNestedProjectRoot'), 'Project activation should repair older saved nested project roots');
 assert.ok(pageSource.includes('Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.'), 'Saved nested project repair should report the corrected root');
 assert.ok(pageSource.includes('persistCustomProjectRoots(nextCustomProjectRoots)'), 'Saved nested project repair should persist corrected custom roots');
@@ -1104,8 +1115,8 @@ assert.ok(
   'Selected project index status should describe the expanded project scan cache'
 );
 assert.ok(
-  pageSource.includes('void activateProject(nextProject, { projects: projectOptions, scanLimit: expandedSourceScanLimit })'),
-  'Project switching should schedule an expanded project scan without awaiting it'
+  /void activateProject\(nextProject,\s*\{[\s\S]*?projects: projectOptions,[\s\S]*?scanLimit: expandedSourceScanLimit,[\s\S]*?clearFileFilter: true[\s\S]*?\}\);/.test(pageSource),
+  'Project switching should schedule an expanded project scan, clear stale file filters, and not await it'
 );
 assert.ok(pageSource.includes('waitForScan?: boolean'), 'Project activation should let callers choose whether to wait for scans');
 assert.ok(
@@ -1747,6 +1758,34 @@ assert.ok(
   editorSource.includes('registerDocumentSemanticTokensProvider'),
   'Editor should register a semantic-token provider'
 );
+const sourceLspMonacoLanguageIDs = constStringArray(editorSource, 'sourceLspMonacoLanguageIDs');
+assert.deepEqual(
+  sourceLspMonacoLanguageIDs,
+  ['typescript', 'javascript', 'csharp', 'rust', 'html'],
+  'Editor native LSP providers should cover the current source intelligence priority matrix; Svelte uses Monaco html'
+);
+for (const providerName of [
+  'registerDocumentSemanticTokensProvider',
+  'registerHoverProvider',
+  'registerDefinitionProvider',
+  'registerReferenceProvider',
+  'registerDocumentHighlightProvider',
+  'registerImplementationProvider',
+  'registerTypeDefinitionProvider',
+  'registerDocumentFormattingEditProvider',
+  'registerRenameProvider',
+  'registerCodeActionProvider',
+  'registerSignatureHelpProvider',
+  'registerInlayHintsProvider',
+  'registerCompletionItemProvider',
+  'registerDocumentSymbolProvider'
+]) {
+  assert.match(
+    editorSource,
+    new RegExp(`${providerName}\\(\\s*sourceLspMonacoLanguageIDs\\b`),
+    `Editor ${providerName} should use the shared native LSP Monaco language matrix`
+  );
+}
 assert.ok(
   /["']semanticHighlighting\.enabled["']:\s*true/.test(editorSource),
   'Editor should enable semantic highlighting explicitly'
