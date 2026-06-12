@@ -343,16 +343,16 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 1.5, worktree cleanup dry-run hardening.
+Last checkpoint: Priority 1.6, session focus handoff hardening.
 
-- Changed files: `core/src/scanners/worktrees.rs`, `tauri-svelte-preview/src-tauri/src/main.rs`, `tauri-svelte-preview/src/lib/tauriSource.ts`, `tauri-svelte-preview/src/lib/worktreeSafety.ts`, `tauri-svelte-preview/scripts/worktreeSafety.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
-- Behavior delivered: Git `prunable` and `locked` worktree metadata are now parsed and surfaced; missing/prunable paths become review items with dry-run prune guidance; locked worktrees block removal; dirty/unmerged worktrees explicitly avoid generated force-delete commands; native remove prunes missing registered worktree metadata and still refuses dirty, unmerged, locked, and primary checkouts.
-- Validation: `pnpm test:worktree-safety`; `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `pnpm test:tauri-app`; `cargo test --manifest-path core/Cargo.toml`; `cargo test --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml`; `git diff --check`.
-- Remaining risk: this is automated dry-run/native-command validation. The full GUI flow still needs hands-on Tauri verification against the user's real worktrees before destructive cleanup is trusted for daily use.
+- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: agent/session rows now show saved-workspace readiness outside the Conversations pane; terminal launchpad agent shortcuts show whether there is a saved workspace; copied session plans are now explicit focus handoffs with provider, model, project, terminal app, saved cwd/worktree/branch, selected file, open tab count, restore readiness, and repair detail when relevant.
+- Validation: `pnpm test:source-ui`; `pnpm check`; `pnpm build`; `git diff --check`.
+- Remaining risk: no Browser/Playwright proof was run for this slice, so visual density of the added agent-row status should still be checked in the real Tauri/webview app.
 
-Next implementation slice: Priority 1.6 conversation workspace restore hardening.
+Next implementation slice: Priority 1.7 session restore polish.
 
 Definition of done for the next slice:
-- Saved conversation/session rows clearly show project, worktree, branch, selected file/line, open tabs, terminal target, and missing-context state.
-- Restoring a saved workspace switches the source browser, tabs, layout, and terminal/worktree context without manual project re-selection.
-- Missing worktrees or moved project roots produce a repair action instead of silently falling back to the wrong repo.
+- Restore/focus actions should be available consistently from Conversations, Agents, Terminal, and Command Palette.
+- Missing worktrees should show the same repair affordance anywhere a session can be resumed.
+- Saved workspaces should make stale/moved roots obvious without requiring broad scans.

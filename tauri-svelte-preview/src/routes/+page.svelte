@@ -2401,7 +2401,7 @@
     }),
     ...selectedProjectAgentSessions.slice(0, 8).map((session) => ({
       id: `agent-copy-plan-${session.provider}-${session.id}`,
-      label: `Copy session resume plan: ${session.title}`,
+      label: `Copy session focus plan: ${session.title}`,
       detail: agentSessionProjectLabel(session),
       disabled: !agentSessionTerminalCommand(session).trim(),
       perform: () => copyAgentSessionResumePlan(session)
@@ -5014,6 +5014,42 @@
     return workspaceSnapshotEnvironmentLabel(snapshot);
   }
 
+  function agentSessionWorkspaceReadinessLabel(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session);
+    if (!snapshot) return 'No saved workspace';
+
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    return `${readiness.label} · ${readiness.detail}`;
+  }
+
+  function agentSessionWorkspaceSummaryLines(session: AgentSession) {
+    const snapshot = workspaceSnapshotForAgentSession(session);
+    if (!snapshot) {
+      return [
+        'Saved workspace: none',
+        'Restore state: save a workspace snapshot before switching away if you want full context restore.'
+      ];
+    }
+
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+    const selectedFile = snapshot.selectedPath
+      ? `${workspaceSnapshotRelativePath(snapshot, snapshot.selectedPath)}${snapshot.selectedLine ? `:${snapshot.selectedLine}` : ''}`
+      : 'none';
+    const openFileCount = snapshot.openPaths.length;
+
+    return [
+      `Saved workspace: ${readiness.label} - ${readiness.detail}`,
+      `Snapshot root: ${snapshot.project.path}`,
+      `Snapshot cwd: ${snapshot.cwd}`,
+      `Snapshot worktree: ${snapshot.worktreePath ?? 'none'}`,
+      `Snapshot branch: ${snapshot.branch ?? 'unknown'}`,
+      `Selected file: ${selectedFile}`,
+      `Open files: ${openFileCount}`,
+      `Captured: ${formatWorkspaceSnapshotTime(snapshot.capturedAt)}`,
+      readiness.repairDetail ? `Repair: ${readiness.repairDetail}` : ''
+    ].filter(Boolean);
+  }
+
   function formatWorkspaceSnapshotTime(capturedAt: number) {
     const date = new Date(capturedAt);
     if (Number.isNaN(date.getTime())) return 'unknown';
@@ -5470,14 +5506,20 @@
   function agentSessionResumePlan(session: AgentSession) {
     const commands = agentSessionResumeCommandList(session);
     const alternateCommands = commands.slice(1);
+    const workspaceLines = agentSessionWorkspaceSummaryLines(session);
 
     return [
+      'Session focus plan',
       `Session: ${session.title}`,
       `Provider: ${session.provider}`,
       `ID: ${session.id}`,
       `Model: ${agentSessionModelLabel(session)}`,
       `Project: ${agentSessionProjectPath(session)}`,
       `Activity: ${agentSessionActivityLabel(session)}`,
+      `Terminal app: ${sourceTerminalApp}`,
+      '',
+      'Workspace:',
+      ...workspaceLines,
       '',
       'Shell resume:',
       agentSessionResumeShellCommand(session),
@@ -5870,7 +5912,7 @@
   }
 
   function copyAgentSessionResumePlan(session: AgentSession) {
-    return copyActivityCommand(agentSessionResumePlan(session), 'Session resume plan copied');
+    return copyActivityCommand(agentSessionResumePlan(session), 'Session focus plan copied');
   }
 
   function copyAgentSessionResumeShellCommand(session: AgentSession) {
@@ -11887,6 +11929,8 @@
               <div class="activity-empty">No agents</div>
             {:else}
               {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'agent'))}
+                {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
+                {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
                 <div class="activity-session-row" title={agentSessionResumePlan(session)}>
                   <span class="agent-provider-badge">{session.provider}</span>
                   <div class="activity-row-main">
@@ -11895,8 +11939,26 @@
                       {#if session.model}{agentSessionModelLabel(session)} · {/if}
                       {agentSessionResumeCommand(session)}
                     </small>
+                    <small>{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
+                    {#if sessionReadiness}
+                      <span class={`workspace-snapshot-readiness ${sessionReadiness.tone}`} title={sessionReadiness.detail}>
+                        {sessionReadiness.label}
+                      </span>
+                    {:else}
+                      <span class="workspace-snapshot-readiness neutral" title="Save a workspace snapshot to restore this session context later.">
+                        No saved workspace
+                      </span>
+                    {/if}
                   </div>
                   <div class="activity-row-actions" aria-label="Agent actions">
+                    <button
+                      type="button"
+                      aria-label="Copy agent focus plan"
+                      title={agentSessionWorkspaceReadinessLabel(session)}
+                      onclick={() => copyAgentSessionResumePlan(session)}
+                    >
+                      <FileCode2 size={12} strokeWidth={2} />
+                    </button>
                     <button
                       type="button"
                       aria-label="Copy agent resume command"
@@ -11914,14 +11976,14 @@
                       >
                         <FolderSearch size={12} strokeWidth={2} />
                       </button>
-	                      <button
-	                        type="button"
-	                        aria-label="Resume agent in terminal"
-	                        title="Resume in terminal"
-	                        onclick={() => openAgentSessionTerminal(session)}
-	                      >
-	                        <Terminal size={12} strokeWidth={2} />
-	                      </button>
+                      <button
+                        type="button"
+                        aria-label="Resume agent in terminal"
+                        title="Resume in terminal"
+                        onclick={() => openAgentSessionTerminal(session)}
+                      >
+                        <Terminal size={12} strokeWidth={2} />
+                      </button>
                     {/if}
                   </div>
                 </div>
@@ -14659,12 +14721,22 @@
                 <div class="terminal-launchpad-empty">No resumable agents</div>
               {:else}
                 {#each selectedProjectAgentSessions.slice(0, 3) as session, index (agentSessionRowKey(session, index, 'terminal'))}
-                  <div class="terminal-launchpad-row" title={agentSessionResumePlan(session)}>
+                  {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
+                  {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
+                  <div class="terminal-launchpad-row terminal-agent-row" title={agentSessionResumePlan(session)}>
                     <span class="agent-provider-badge">{session.provider}</span>
                     <div>
                       <strong>{session.title}</strong>
-                      <small>{agentSessionProjectLabel(session)}</small>
+                      <small>{agentSessionProjectLabel(session)} · {sessionReadiness?.label ?? 'No saved workspace'}</small>
                     </div>
+                    <button
+                      type="button"
+                      aria-label="Copy terminal agent focus plan"
+                      title={agentSessionWorkspaceReadinessLabel(session)}
+                      onclick={() => copyAgentSessionResumePlan(session)}
+                    >
+                      <FileCode2 size={12} strokeWidth={2} />
+                    </button>
                     <button
                       type="button"
                       aria-label="Resume agent from terminal dock"
@@ -19588,6 +19660,10 @@
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.035);
+  }
+
+  .terminal-agent-row {
+    grid-template-columns: auto minmax(0, 1fr) 24px 24px;
   }
 
   .terminal-launchpad-row.active {
