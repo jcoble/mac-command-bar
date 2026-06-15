@@ -88,6 +88,35 @@ function worktree(overrides = {}) {
 }
 
 {
+  const summary = buildWorktreeSafetySummary(
+    worktree({
+      isDirty: false,
+      deleteEligibility: 'blocked: untracked files'
+    }),
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now
+    }
+  );
+  assert.equal(summary.kind, 'blocked');
+  assert.equal(summary.badge, 'Untracked');
+  assert.match(summary.reason, /Untracked files/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Inspect untracked files before cleanup.',
+    'Archive, commit, or intentionally discard them before removal.',
+    'Remove only after those files are recoverable or confirmed unnecessary.'
+  ]);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'backup');
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Backup files');
+  assert.equal(lane.tone, 'backup');
+  assert.match(lane.detail, /Untracked files/);
+}
+
+{
   const summary = buildWorktreeSafetySummary(worktree(), {
     primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
     activeSessionPaths: [
@@ -192,6 +221,49 @@ function worktree(overrides = {}) {
 {
   const summary = buildWorktreeSafetySummary(
     worktree({
+      path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-147-saved-workspace',
+      branch: 'cdx/tsk-147-saved-workspace',
+      taskID: null,
+      lastActivity: '2026-05-20T12:00:00.000Z',
+      deleteEligibility: 'requires-confirmation'
+    }),
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      savedWorkspacePaths: [
+        '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-147-saved-workspace',
+        '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-147-saved-workspace/src/routes'
+      ],
+      now,
+      staleAfterDays: 14
+    }
+  );
+  assert.equal(summary.kind, 'review');
+  assert.equal(summary.badge, 'Workspace');
+  assert.equal(summary.savedWorkspaceCount, 2);
+  assert.equal(summary.ageBucket, 'stale');
+  assert.match(summary.reason, /Saved workspace/);
+  assert.match(summary.recommendation, /saved workspace/);
+  assert.match(summary.cleanupPlan, /Saved workspaces: 2/);
+  assert.match(summary.cleanupPlan, /Do not remove while saved workspace snapshots still point here/);
+  assert.match(summary.cleanupPlan, /Task: TSK-147/);
+  assert.deepEqual(summary.decisionChecklist, [
+    'Review saved workspace snapshots that point at this path.',
+    'Restore, move, or delete stale workspace snapshots before removal.',
+    'Refresh worktrees after clearing saved workspace ownership.'
+  ]);
+
+  const action = worktreePrimaryAction(summary);
+  assert.equal(action.kind, 'audit');
+
+  const lane = worktreeDecisionLane(summary);
+  assert.equal(lane.label, 'Workspace');
+  assert.equal(lane.tone, 'review');
+  assert.match(lane.detail, /Saved workspace/);
+}
+
+{
+  const summary = buildWorktreeSafetySummary(
+    worktree({
       path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/missing-task',
       branch: 'cdx/tsk-145-missing',
       taskID: 'TSK-145',
@@ -277,7 +349,9 @@ function worktree(overrides = {}) {
 {
   const command = worktreeAuditCommand(worktree({ path: "/tmp/audit ' quote" }));
   assert.match(command, /git -C '\/tmp\/audit '\\'' quote' status --short --branch/);
+  assert.match(command, /branch -vv/);
   assert.match(command, /log --oneline --decorate --max-count=8/);
+  assert.match(command, /log --branches --not --remotes --oneline --decorate --max-count=20/);
 }
 
 {
@@ -349,6 +423,33 @@ function worktree(overrides = {}) {
   assert.match(brief.report, /cdx\/tsk-121-dirty/);
   assert.match(brief.report, /Review:/);
   assert.match(brief.report, /cdx\/tsk-122-review/);
+}
+
+{
+  const brief = buildWorktreeCleanupBrief(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-160-branch-only',
+        branch: 'cdx/tsk-160-branch-only',
+        taskID: null,
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-161-path-only',
+        branch: 'feature/no-task-name',
+        taskID: null,
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.deepEqual(brief.taskIDs, ['TSK-160', 'TSK-161']);
+  assert.match(brief.report, /Tasks: TSK-160, TSK-161/);
 }
 
 {
@@ -463,6 +564,40 @@ function worktree(overrides = {}) {
   assert.match(queue[1].summary, /1 stale/);
   assert.equal(queue[2].entries[0].primaryAction.kind, 'audit');
   assert.equal(queue[3].label, 'Protected');
+}
+
+{
+  const groups = buildWorktreeTaskGroups(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-162-branch-derived',
+        branch: 'cdx/tsk-162-branch-derived',
+        taskID: null,
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-162-dirty',
+        branch: 'cdx/no-task-here',
+        taskID: 'tsk-162',
+        isDirty: true
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.deepEqual(
+    groups.map((group) => group.label),
+    ['TSK-162']
+  );
+  assert.equal(groups[0].worktreeCount, 2);
+  assert.deepEqual(
+    groups[0].entries.map((entry) => entry.worktree.branch),
+    ['cdx/no-task-here', 'cdx/tsk-162-branch-derived']
+  );
 }
 
 {

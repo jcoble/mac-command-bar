@@ -38,7 +38,7 @@ export function buildGitTaskLink(
   input: string | null | undefined,
   options: GitTaskLinkOptions = {}
 ): GitTaskLink | null {
-  const taskID = normalizeGitTaskID(input);
+  const taskID = normalizeGitTaskID(input) ?? extractGitTaskIDs(input)[0] ?? null;
   if (!taskID) return null;
 
   const href = buildGitTaskHref(taskID, options.baseURL);

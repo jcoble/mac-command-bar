@@ -30,12 +30,25 @@ assert.deepEqual(extractGitTaskIDs('feature/tsk-127-layout fix: tsk-128.followup
   'TSK-127',
   'TSK-128'
 ]);
+assert.deepEqual(extractGitTaskIDs('refs/heads/cdx/TSK-131-command-center'), ['TSK-131']);
+assert.deepEqual(extractGitTaskIDs('origin/cdx/tsk-132-git-cleanup HEAD -> cdx/TSK-133-audit'), [
+  'TSK-132',
+  'TSK-133'
+]);
 
 assert.deepEqual(buildGitTaskLink('tsk-127'), {
   id: 'TSK-127',
   label: 'TSK-127'
 });
 assert.deepEqual(buildGitTaskLink('not-a-task'), null);
+assert.deepEqual(buildGitTaskLink('cdx/tsk-127-layout'), {
+  id: 'TSK-127',
+  label: 'TSK-127'
+});
+assert.deepEqual(buildGitTaskLink('refs/heads/cdx/TSK-130-layout'), {
+  id: 'TSK-130',
+  label: 'TSK-130'
+});
 assert.deepEqual(buildGitTaskLink('tsk-127', { baseURL: 'https://tasks.example.test/items' }), {
   id: 'TSK-127',
   label: 'TSK-127',

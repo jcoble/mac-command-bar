@@ -17,7 +17,22 @@ fn parses_git_worktree_porcelain() {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].path, "/repo");
     assert_eq!(records[0].branch, "main");
+    assert_eq!(records[0].task_id, None);
     assert_eq!(records[1].branch, "feature");
+    assert_eq!(records[1].task_id, None);
+}
+
+#[test]
+fn parses_worktree_task_ids_from_branch_or_path_text() {
+    let records = parse_worktree_porcelain(
+        "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feature\nHEAD def\nbranch refs/heads/cdx/tsk-127-feature\n\nworktree /worktrees/TSK-128-path-only\nHEAD fed\nbranch refs/heads/no-task\n\nworktree /worktrees/upper\nHEAD cab\nbranch refs/heads/cdx/TSK-129-upper\n",
+    );
+
+    assert_eq!(records.len(), 4);
+    assert_eq!(records[0].task_id, None);
+    assert_eq!(records[1].task_id.as_deref(), Some("TSK-127"));
+    assert_eq!(records[2].task_id.as_deref(), Some("TSK-128"));
+    assert_eq!(records[3].task_id.as_deref(), Some("TSK-129"));
 }
 
 #[test]

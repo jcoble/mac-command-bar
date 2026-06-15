@@ -8,6 +8,7 @@ pub struct WorktreeRecord {
     pub repo: String,
     pub path: String,
     pub branch: String,
+    pub task_id: Option<String>,
     pub is_dirty: bool,
     pub has_unmerged_commits: bool,
     #[serde(default)]
@@ -57,8 +58,10 @@ pub fn scan_worktrees_with_options(
         .into_iter()
         .map(|mut record| {
             record.repo = repo.clone();
+            let mut dirty_state = DirtyState::Clean;
             if !record.is_prunable {
-                record.is_dirty = is_dirty(&record.path);
+                dirty_state = worktree_dirty_state(&record.path);
+                record.is_dirty = dirty_state.is_dirty();
                 record.has_unmerged_commits = has_unmerged_commits(&record.path);
                 record.disk_bytes = options
                     .include_disk_bytes
@@ -66,17 +69,12 @@ pub fn scan_worktrees_with_options(
                     .flatten();
                 record.last_activity = last_activity(&record.path);
             }
-            record.delete_eligibility = if record.is_dirty {
-                "blocked: dirty worktree".to_string()
-            } else if record.has_unmerged_commits {
-                "blocked: unmerged commits".to_string()
-            } else if record.is_locked {
-                "blocked: locked worktree".to_string()
-            } else if record.is_prunable {
-                "review: prunable missing worktree metadata".to_string()
-            } else {
-                "requires-confirmation".to_string()
-            };
+            record.delete_eligibility = delete_eligibility(
+                dirty_state,
+                record.has_unmerged_commits,
+                record.is_locked,
+                record.is_prunable,
+            );
             record
         })
         .collect()
@@ -113,33 +111,69 @@ pub fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeRecord> {
                 }
             }
 
-            path.map(|path| WorktreeRecord {
-                repo: String::new(),
-                path,
-                branch: branch.unwrap_or_else(|| "unknown".to_string()),
-                is_dirty: false,
-                has_unmerged_commits: false,
-                is_prunable,
-                prunable_reason,
-                is_locked,
-                locked_reason,
-                last_activity: None,
-                disk_bytes: None,
-                delete_eligibility: "unknown".to_string(),
+            path.map(|path| {
+                let branch = branch.unwrap_or_else(|| "unknown".to_string());
+                let task_id = task_id_from_text(&branch).or_else(|| task_id_from_text(&path));
+
+                WorktreeRecord {
+                    repo: String::new(),
+                    path,
+                    branch,
+                    task_id,
+                    is_dirty: false,
+                    has_unmerged_commits: false,
+                    is_prunable,
+                    prunable_reason,
+                    is_locked,
+                    locked_reason,
+                    last_activity: None,
+                    disk_bytes: None,
+                    delete_eligibility: "unknown".to_string(),
+                }
             })
         })
         .collect()
 }
 
-fn is_dirty(path: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirtyState {
+    Clean,
+    UntrackedOnly,
+    Dirty,
+}
+
+impl DirtyState {
+    fn is_dirty(self) -> bool {
+        !matches!(self, DirtyState::Clean)
+    }
+}
+
+fn worktree_dirty_state(path: &str) -> DirtyState {
     let output = Command::new("git")
         .args(["-C", path, "status", "--short"])
         .output();
     output
         .ok()
         .filter(|output| output.status.success())
-        .map(|output| !output.stdout.is_empty())
-        .unwrap_or(false)
+        .map(|output| dirty_state_from_status(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or(DirtyState::Clean)
+}
+
+fn dirty_state_from_status(status: &str) -> DirtyState {
+    let mut saw_status = false;
+
+    for line in status.lines().filter(|line| !line.trim().is_empty()) {
+        saw_status = true;
+        if !line.starts_with("?? ") {
+            return DirtyState::Dirty;
+        }
+    }
+
+    if saw_status {
+        DirtyState::UntrackedOnly
+    } else {
+        DirtyState::Clean
+    }
 }
 
 fn has_unmerged_commits(path: &str) -> bool {
@@ -183,9 +217,52 @@ fn last_activity(path: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+fn delete_eligibility(
+    dirty_state: DirtyState,
+    has_unmerged_commits: bool,
+    is_locked: bool,
+    is_prunable: bool,
+) -> String {
+    match dirty_state {
+        DirtyState::Dirty => "blocked: dirty worktree".to_string(),
+        DirtyState::UntrackedOnly => "blocked: untracked files".to_string(),
+        DirtyState::Clean if has_unmerged_commits => "blocked: unmerged commits".to_string(),
+        DirtyState::Clean if is_locked => "blocked: locked worktree".to_string(),
+        DirtyState::Clean if is_prunable => {
+            "review: prunable missing worktree metadata".to_string()
+        }
+        DirtyState::Clean => "requires-confirmation".to_string(),
+    }
+}
+
+fn task_id_from_text(text: &str) -> Option<String> {
+    let lower_text = text.to_ascii_lowercase();
+    for (index, _) in lower_text.match_indices("tsk") {
+        if index > 0 {
+            let previous = lower_text.as_bytes()[index - 1] as char;
+            if previous.is_ascii_alphanumeric() {
+                continue;
+            }
+        }
+
+        let suffix = lower_text[index + 3..].trim_start_matches(['-', '_', '/', '#', '[', ' ']);
+        let digits: String = suffix
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return Some(format!("TSK-{digits}"));
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_worktree_porcelain;
+    use super::{
+        delete_eligibility, dirty_state_from_status, parse_worktree_porcelain, DirtyState,
+    };
 
     #[test]
     fn parse_worktree_porcelain_reads_prunable_and_locked_metadata() {
@@ -195,15 +272,47 @@ mod tests {
 
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].branch, "main");
+        assert_eq!(records[0].task_id, None);
         assert!(records[1].is_prunable);
+        assert_eq!(records[1].task_id.as_deref(), Some("TSK-127"));
         assert_eq!(
             records[1].prunable_reason.as_deref(),
             Some("gitdir file points to non-existent location")
         );
         assert!(records[2].is_locked);
+        assert_eq!(records[2].task_id.as_deref(), Some("TSK-128"));
         assert_eq!(
             records[2].locked_reason.as_deref(),
             Some("agent still running")
+        );
+    }
+
+    #[test]
+    fn dirty_state_distinguishes_untracked_only_worktrees() {
+        assert_eq!(dirty_state_from_status(""), DirtyState::Clean);
+        assert_eq!(
+            dirty_state_from_status("?? scratch.txt\n?? notes.md\n"),
+            DirtyState::UntrackedOnly
+        );
+        assert_eq!(
+            dirty_state_from_status(" M src/main.rs\n?? scratch.txt\n"),
+            DirtyState::Dirty
+        );
+    }
+
+    #[test]
+    fn delete_eligibility_names_untracked_only_before_cleanup() {
+        assert_eq!(
+            delete_eligibility(DirtyState::UntrackedOnly, false, false, false),
+            "blocked: untracked files"
+        );
+        assert_eq!(
+            delete_eligibility(DirtyState::Dirty, true, true, true),
+            "blocked: dirty worktree"
+        );
+        assert_eq!(
+            delete_eligibility(DirtyState::Clean, true, true, true),
+            "blocked: unmerged commits"
         );
     }
 }

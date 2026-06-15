@@ -1,4 +1,5 @@
 import type { ProjectWorktree } from './tauriSource';
+import { extractGitTaskIDs } from './gitTaskLinks.ts';
 
 export type WorktreeSafetyKind = 'protected' | 'blocked' | 'ready' | 'review';
 export type WorktreeAgeBucket = 'active' | 'stale' | 'unknown';
@@ -7,6 +8,7 @@ export type WorktreeSafetySummary = {
   kind: WorktreeSafetyKind;
   ageBucket: WorktreeAgeBucket;
   activeSessionCount: number;
+  savedWorkspaceCount: number;
   badge: string;
   reason: string;
   recommendation: string;
@@ -73,6 +75,7 @@ export type WorktreeTaskGroup = {
   protectedCount: number;
   staleCount: number;
   activeSessionCount: number;
+  savedWorkspaceCount: number;
   needsBackupCount: number;
   requiresManualSignoff: boolean;
   primaryAction: WorktreePrimaryAction;
@@ -82,6 +85,7 @@ export type WorktreeTaskGroup = {
 export type WorktreeSafetyOptions = {
   primaryPath?: string | null;
   activeSessionPaths?: Array<string | null | undefined>;
+  savedWorkspacePaths?: Array<string | null | undefined>;
   now?: number | Date;
   staleAfterDays?: number;
 };
@@ -98,10 +102,14 @@ export function buildWorktreeSafetySummary(
   const primaryPath = options.primaryPath ? normalizePath(options.primaryPath) : '';
   const worktreePath = normalizePath(worktree.path);
   const isPrimaryCheckout = Boolean(primaryPath && primaryPath === worktreePath);
-  const activeSessionCount = countActiveSessionPaths(worktreePath, options.activeSessionPaths);
+  const activeSessionCount = countOwnedPaths(worktreePath, options.activeSessionPaths);
+  const savedWorkspaceCount = countOwnedPaths(worktreePath, options.savedWorkspacePaths);
   const deleteEligibility = worktree.deleteEligibility.toLowerCase();
   const isPrunable = worktreeIsPrunable(worktree);
   const isLocked = worktreeIsLocked(worktree);
+  const isUntrackedOnly = worktreeHasUntrackedFiles(worktree) && !worktree.isDirty;
+  const isDirty = worktreeIsDirty(worktree);
+  const hasUnmergedCommits = worktreeHasUnmergedCommits(worktree);
 
   let kind: WorktreeSafetyKind = 'ready';
   let badge = 'Safe';
@@ -118,12 +126,17 @@ export function buildWorktreeSafetySummary(
     badge = 'Active';
     reason = `Active ${activeSessionCount === 1 ? 'session' : 'sessions'} owns this worktree`;
     recommendation = 'Resume, close, or move active agent sessions before cleanup.';
-  } else if (worktree.isDirty || deleteEligibility.includes('dirty')) {
+  } else if (isUntrackedOnly) {
+    kind = 'blocked';
+    badge = 'Untracked';
+    reason = 'Untracked files';
+    recommendation = 'Archive, commit, or intentionally discard untracked files before cleanup.';
+  } else if (isDirty) {
     kind = 'blocked';
     badge = 'Dirty';
     reason = 'Uncommitted changes';
     recommendation = 'Open it, review git status, then archive, commit, or stash before cleanup.';
-  } else if (worktree.hasUnmergedCommits || deleteEligibility.includes('unmerged')) {
+  } else if (hasUnmergedCommits) {
     kind = 'blocked';
     badge = 'Unmerged';
     reason = 'Local commits not on a remote branch';
@@ -138,6 +151,11 @@ export function buildWorktreeSafetySummary(
     badge = 'Missing';
     reason = 'Missing worktree path';
     recommendation = 'Confirm the folder is intentionally gone, then prune stale Git worktree metadata from the main checkout.';
+  } else if (savedWorkspaceCount > 0) {
+    kind = 'review';
+    badge = 'Workspace';
+    reason = `Saved workspace ${savedWorkspaceCount === 1 ? 'snapshot' : 'snapshots'} point here`;
+    recommendation = 'Restore, move, or delete saved workspace snapshots before removing this worktree.';
   } else if (activity.ageBucket === 'stale') {
     kind = 'ready';
     badge = 'Stale';
@@ -158,16 +176,18 @@ export function buildWorktreeSafetySummary(
   const decisionChecklist = worktreeDecisionChecklist({
     kind,
     badge,
-    reason,
-    ageBucket: activity.ageBucket,
-    isPrimaryCheckout,
-    activeSessionCount
-  });
+      reason,
+      ageBucket: activity.ageBucket,
+      isPrimaryCheckout,
+      activeSessionCount,
+      savedWorkspaceCount
+    });
 
   return {
     kind,
     ageBucket: activity.ageBucket,
     activeSessionCount,
+    savedWorkspaceCount,
     badge,
     reason,
     recommendation,
@@ -183,10 +203,11 @@ export function buildWorktreeSafetySummary(
       recommendation,
       isPrimaryCheckout,
       activeSessionCount,
+      savedWorkspaceCount,
       isPrunable,
       isLocked,
-      isDirty: worktree.isDirty || deleteEligibility.includes('dirty'),
-      hasUnmergedCommits: worktree.hasUnmergedCommits || deleteEligibility.includes('unmerged'),
+      isDirty,
+      hasUnmergedCommits,
       decisionChecklist
     }),
     decisionChecklist
@@ -206,7 +227,7 @@ export function buildWorktreeCleanupBrief(
   const review = entries.filter((entry) => entry.safety.kind === 'review');
   const protectedEntries = entries.filter((entry) => entry.safety.kind === 'protected');
   const stale = entries.filter((entry) => entry.safety.ageBucket === 'stale');
-  const taskIDs = uniqueTaskIDs(entries.map((entry) => entry.worktree.taskID));
+  const taskIDs = uniqueTaskIDs(entries.map((entry) => worktreeTaskID(entry.worktree)));
   const headline = formatBriefHeadline({
     blocked: blocked.length,
     ready: ready.length,
@@ -292,7 +313,7 @@ export function buildWorktreeTaskGroups(
   const groups = new Map<string, WorktreeDecisionQueueEntry[]>();
 
   for (const worktree of prioritizeWorktreesForCleanup(worktrees, options)) {
-    const taskID = normalizeTaskID(worktree.taskID);
+    const taskID = worktreeTaskID(worktree);
     const key = taskID ?? '__no_task__';
     const safety = buildWorktreeSafetySummary(worktree, options);
     const entries = groups.get(key) ?? [];
@@ -349,7 +370,7 @@ export function buildWorktreeCleanupScript(
       lines.push(`  echo ${shellQuote(`Prune ${branch}: set RUN_REMOVE=1 to execute metadata cleanup`)}`);
       lines.push(`  printf '%s\\n' ${shellQuote(safety.cleanupCommand)}`);
       lines.push('fi');
-    } else if (safety.kind === 'blocked' && safety.activeSessionCount === 0) {
+    } else if (safety.kind === 'blocked' && safety.activeSessionCount === 0 && safety.badge !== 'Locked') {
       lines.push('if [ "$RUN_BACKUP" = "1" ]; then');
       lines.push(`  echo ${shellQuote(`Backup ${branch}`)}`);
       lines.push(`  ${safety.backupCommand}`);
@@ -428,7 +449,7 @@ export function worktreePrimaryAction(summary: WorktreeSafetySummary): WorktreeP
     };
   }
 
-  if (summary.kind === 'blocked' && summary.activeSessionCount === 0) {
+  if (summary.kind === 'blocked' && summary.activeSessionCount === 0 && summary.badge !== 'Locked') {
     return {
       kind: 'backup',
       label: 'Backup',
@@ -473,6 +494,14 @@ export function worktreeDecisionLane(summary: WorktreeSafetySummary): WorktreeDe
     };
   }
 
+  if (summary.badge === 'Untracked') {
+    return {
+      label: 'Backup files',
+      detail: 'Untracked files need archive, commit, or intentional discard before cleanup.',
+      tone: 'backup'
+    };
+  }
+
   if (summary.badge === 'Unmerged') {
     return {
       label: 'Save commits',
@@ -493,6 +522,14 @@ export function worktreeDecisionLane(summary: WorktreeSafetySummary): WorktreeDe
     return {
       label: 'Prune',
       detail: 'Missing path; confirm it is gone, then prune metadata from the main checkout.',
+      tone: 'review'
+    };
+  }
+
+  if (summary.badge === 'Workspace') {
+    return {
+      label: 'Workspace',
+      detail: 'Saved workspace snapshots point at this worktree; clear ownership before cleanup.',
       tone: 'review'
     };
   }
@@ -524,10 +561,27 @@ export function worktreeAuditCommand(worktree: ProjectWorktree): string {
     'git',
     '-C',
     shellQuote(worktree.path),
+    'branch',
+    '-vv',
+    '&&',
+    'git',
+    '-C',
+    shellQuote(worktree.path),
     'log',
     '--oneline',
     '--decorate',
-    '--max-count=8'
+    '--max-count=8',
+    '&&',
+    'git',
+    '-C',
+    shellQuote(worktree.path),
+    'log',
+    '--branches',
+    '--not',
+    '--remotes',
+    '--oneline',
+    '--decorate',
+    '--max-count=20'
   ].join(' ');
 }
 
@@ -591,6 +645,7 @@ function worktreeCleanupPlan(
     recommendation: string;
     isPrimaryCheckout: boolean;
     activeSessionCount: number;
+    savedWorkspaceCount: number;
     isPrunable: boolean;
     isLocked: boolean;
     isDirty: boolean;
@@ -602,9 +657,10 @@ function worktreeCleanupPlan(
     `Worktree: ${worktree.branch}`,
     `Path: ${worktree.path}`,
     `Repo: ${worktree.repo}`,
-    worktree.taskID ? `Task: ${worktree.taskID}` : '',
+    worktreeTaskID(worktree) ? `Task: ${worktreeTaskID(worktree)}` : '',
     `State: ${details.reason}`,
     details.activeSessionCount > 0 ? `Active sessions: ${details.activeSessionCount}` : '',
+    details.savedWorkspaceCount > 0 ? `Saved workspaces: ${details.savedWorkspaceCount}` : '',
     `Recommended: ${details.recommendation}`,
     ''
   ].filter(Boolean);
@@ -637,6 +693,10 @@ function worktreeCleanupPlan(
       lines.push('Do not remove locked worktrees from this app. Audit the lock, then unlock intentionally in Git if cleanup is still desired.');
       lines.push('');
     }
+    if (details.savedWorkspaceCount > 0) {
+      lines.push('Do not remove while saved workspace snapshots still point here. Restore, move, or delete those snapshots first.');
+      lines.push('');
+    }
     lines.push('Audit before cleanup:');
     lines.push(details.auditCommand);
     lines.push('');
@@ -661,6 +721,7 @@ function worktreeDecisionChecklist(details: {
   ageBucket: WorktreeAgeBucket;
   isPrimaryCheckout: boolean;
   activeSessionCount: number;
+  savedWorkspaceCount: number;
 }): string[] {
   if (details.isPrimaryCheckout) {
     return [
@@ -681,6 +742,14 @@ function worktreeDecisionChecklist(details: {
       'Inspect git status and uncommitted files.',
       'Archive, commit, or stash the changes before removal.',
       'Remove only after the worktree is clean or intentionally backed up.'
+    ];
+  }
+
+  if (details.badge === 'Untracked') {
+    return [
+      'Inspect untracked files before cleanup.',
+      'Archive, commit, or intentionally discard them before removal.',
+      'Remove only after those files are recoverable or confirmed unnecessary.'
     ];
   }
 
@@ -705,6 +774,14 @@ function worktreeDecisionChecklist(details: {
       'Confirm the path is intentionally gone and not a disconnected volume.',
       'Run a dry-run prune from the main checkout.',
       'Prune stale metadata only after confirmation.'
+    ];
+  }
+
+  if (details.badge === 'Workspace') {
+    return [
+      'Review saved workspace snapshots that point at this path.',
+      'Restore, move, or delete stale workspace snapshots before removal.',
+      'Refresh worktrees after clearing saved workspace ownership.'
     ];
   }
 
@@ -749,15 +826,17 @@ function formatBriefHeadline(counts: {
 function worktreeCleanupPriority(safety: WorktreeSafetySummary): number {
   if (safety.kind === 'blocked' && safety.activeSessionCount > 0) return 0;
   if (safety.kind === 'blocked' && safety.badge === 'Dirty') return 1;
-  if (safety.kind === 'blocked' && safety.badge === 'Unmerged') return 2;
-  if (safety.kind === 'blocked' && safety.badge === 'Locked') return 3;
-  if (safety.kind === 'blocked') return 4;
-  if (safety.kind === 'review' && safety.badge === 'Missing') return 5;
-  if (safety.kind === 'ready' && safety.ageBucket === 'stale') return 6;
-  if (safety.kind === 'ready') return 7;
-  if (safety.kind === 'review') return 8;
-  if (safety.kind === 'protected') return 9;
-  return 10;
+  if (safety.kind === 'blocked' && safety.badge === 'Untracked') return 2;
+  if (safety.kind === 'blocked' && safety.badge === 'Unmerged') return 3;
+  if (safety.kind === 'blocked' && safety.badge === 'Locked') return 4;
+  if (safety.kind === 'blocked') return 5;
+  if (safety.kind === 'review' && safety.badge === 'Missing') return 6;
+  if (safety.kind === 'review' && safety.badge === 'Workspace') return 7;
+  if (safety.kind === 'ready' && safety.ageBucket === 'stale') return 8;
+  if (safety.kind === 'ready') return 9;
+  if (safety.kind === 'review') return 10;
+  if (safety.kind === 'protected') return 11;
+  return 12;
 }
 
 function worktreeActivitySortValue(worktree: ProjectWorktree): number {
@@ -795,7 +874,8 @@ function formatCleanupBriefReport(details: {
 function formatDecisionQueueGroupSummary(entries: WorktreeDecisionQueueEntry[]): string {
   const staleCount = entries.filter((entry) => entry.safety.ageBucket === 'stale').length;
   const activeCount = entries.reduce((total, entry) => total + entry.safety.activeSessionCount, 0);
-  const taskIDs = uniqueTaskIDs(entries.map((entry) => entry.worktree.taskID));
+  const savedWorkspaceCount = entries.reduce((total, entry) => total + entry.safety.savedWorkspaceCount, 0);
+  const taskIDs = uniqueTaskIDs(entries.map((entry) => worktreeTaskID(entry.worktree)));
   const parts = [`${entries.length} ${entries.length === 1 ? 'worktree' : 'worktrees'}`];
 
   if (staleCount > 0) {
@@ -803,6 +883,9 @@ function formatDecisionQueueGroupSummary(entries: WorktreeDecisionQueueEntry[]):
   }
   if (activeCount > 0) {
     parts.push(`${activeCount} active ${activeCount === 1 ? 'session' : 'sessions'}`);
+  }
+  if (savedWorkspaceCount > 0) {
+    parts.push(`${savedWorkspaceCount} saved ${savedWorkspaceCount === 1 ? 'workspace' : 'workspaces'}`);
   }
   if (taskIDs.length > 0) {
     parts.push(`${taskIDs.length} ${taskIDs.length === 1 ? 'task' : 'tasks'}`);
@@ -818,6 +901,7 @@ function formatWorktreeTaskGroup(taskID: string | null, entries: WorktreeDecisio
   const cleanupCandidateCount = entries.filter((entry) => entry.safety.kind === 'ready').length;
   const staleCount = entries.filter((entry) => entry.safety.ageBucket === 'stale').length;
   const activeSessionCount = entries.reduce((total, entry) => total + entry.safety.activeSessionCount, 0);
+  const savedWorkspaceCount = entries.reduce((total, entry) => total + entry.safety.savedWorkspaceCount, 0);
   const needsBackupCount = entries.filter((entry) => entry.primaryAction.kind === 'backup').length;
   const primaryEntry = entries[0];
   const label = taskID ?? 'No task ID';
@@ -829,6 +913,7 @@ function formatWorktreeTaskGroup(taskID: string | null, entries: WorktreeDecisio
     cleanupCandidateCount,
     staleCount,
     activeSessionCount,
+    savedWorkspaceCount,
     needsBackupCount
   });
 
@@ -843,6 +928,7 @@ function formatWorktreeTaskGroup(taskID: string | null, entries: WorktreeDecisio
     protectedCount,
     staleCount,
     activeSessionCount,
+    savedWorkspaceCount,
     needsBackupCount,
     requiresManualSignoff: blockedCount > 0 || reviewCount > 0 || protectedCount > 0,
     primaryAction: primaryEntry.primaryAction,
@@ -858,6 +944,7 @@ function formatTaskGroupSummary(details: {
   cleanupCandidateCount: number;
   staleCount: number;
   activeSessionCount: number;
+  savedWorkspaceCount: number;
   needsBackupCount: number;
 }): string {
   const parts = [`${details.worktreeCount} ${details.worktreeCount === 1 ? 'worktree' : 'worktrees'}`];
@@ -870,6 +957,9 @@ function formatTaskGroupSummary(details: {
   if (details.staleCount > 0) parts.push(`${details.staleCount} stale`);
   if (details.activeSessionCount > 0) {
     parts.push(`${details.activeSessionCount} active ${details.activeSessionCount === 1 ? 'session' : 'sessions'}`);
+  }
+  if (details.savedWorkspaceCount > 0) {
+    parts.push(`${details.savedWorkspaceCount} saved ${details.savedWorkspaceCount === 1 ? 'workspace' : 'workspaces'}`);
   }
 
   return parts.join(' · ');
@@ -891,7 +981,8 @@ function appendBriefSection(
 
   lines.push(title);
   for (const { worktree, safety } of entries) {
-    const task = worktree.taskID ? ` · ${worktree.taskID}` : '';
+    const taskID = worktreeTaskID(worktree);
+    const task = taskID ? ` · ${taskID}` : '';
     lines.push(`- ${worktree.branch}${task}: ${safety.reason} · ${safety.recommendation}`);
     lines.push(`  ${worktree.path}`);
   }
@@ -919,13 +1010,21 @@ function normalizeTaskID(value: string | null | undefined): string | null {
   return /^tsk-\d+$/i.test(taskID) ? taskID.toUpperCase() : taskID;
 }
 
-function countActiveSessionPaths(
-  worktreePath: string,
-  activeSessionPaths: Array<string | null | undefined> | undefined
-): number {
-  if (!activeSessionPaths || activeSessionPaths.length === 0) return 0;
+function worktreeTaskID(worktree: ProjectWorktree): string | null {
+  return (
+    normalizeTaskID(worktree.taskID) ??
+    extractGitTaskIDs([worktree.branch, worktree.path].filter(Boolean).join(' '))[0] ??
+    null
+  );
+}
 
-  return activeSessionPaths.filter((path) => {
+function countOwnedPaths(
+  worktreePath: string,
+  ownedPaths: Array<string | null | undefined> | undefined
+): number {
+  if (!ownedPaths || ownedPaths.length === 0) return 0;
+
+  return ownedPaths.filter((path) => {
     if (!path) return false;
     const sessionPath = normalizePath(path);
     return sessionPath === worktreePath || sessionPath.startsWith(`${worktreePath}/`);
@@ -933,13 +1032,28 @@ function countActiveSessionPaths(
 }
 
 function worktreeIsPrunable(worktree: ProjectWorktree): boolean {
-  const deleteEligibility = worktree.deleteEligibility.toLowerCase();
-  return Boolean(worktree.isPrunable) || deleteEligibility.includes('prunable') || deleteEligibility.includes('missing');
+  return Boolean(worktree.isPrunable) || worktreeEligibilityHasToken(worktree, 'prunable') || worktreeEligibilityHasToken(worktree, 'missing');
 }
 
 function worktreeIsLocked(worktree: ProjectWorktree): boolean {
-  const deleteEligibility = worktree.deleteEligibility.toLowerCase();
-  return Boolean(worktree.isLocked) || deleteEligibility.includes('locked');
+  return Boolean(worktree.isLocked) || worktreeEligibilityHasToken(worktree, 'locked');
+}
+
+function worktreeIsDirty(worktree: ProjectWorktree): boolean {
+  return Boolean(worktree.isDirty) || worktreeEligibilityHasToken(worktree, 'dirty') || worktreeHasUntrackedFiles(worktree);
+}
+
+function worktreeHasUntrackedFiles(worktree: ProjectWorktree): boolean {
+  return worktreeEligibilityHasToken(worktree, 'untracked');
+}
+
+function worktreeHasUnmergedCommits(worktree: ProjectWorktree): boolean {
+  return Boolean(worktree.hasUnmergedCommits) || worktreeEligibilityHasToken(worktree, 'unmerged');
+}
+
+function worktreeEligibilityHasToken(worktree: ProjectWorktree, token: string): boolean {
+  const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escapedToken}($|[^a-z0-9])`, 'i').test(worktree.deleteEligibility);
 }
 
 function worktreePrunableAuditCommand(primaryPath: string | null | undefined): string {

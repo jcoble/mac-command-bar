@@ -59,6 +59,11 @@ Completed and committed:
 
 Current checkpoint:
 
+- Git/worktree command-center checkpoint:
+  - Changed files: `core/src/scanners/worktrees.rs`, `core/tests/scanner_tests.rs`, `tauri-svelte-preview/src/lib/worktreeSafety.ts`, `tauri-svelte-preview/scripts/worktreeSafety.test.mjs`, `tauri-svelte-preview/src/lib/gitTaskLinks.ts`, `tauri-svelte-preview/scripts/gitTaskLinks.test.mjs`.
+  - Behavior delivered: Rust worktree records now derive task IDs from branch/path text, classify untracked-only trees separately from dirty tracked work, and avoid substring false positives such as `blocked` vs `locked`. The UI safety model now treats untracked files, saved workspace ownership, branch/path-derived task IDs, and unpushed branch audit evidence as first-class cleanup signals.
+  - Validation: `node scripts/worktreeSafety.test.mjs`, `node scripts/gitTaskLinks.test.mjs`, `cargo test --manifest-path core/Cargo.toml`, targeted `git diff --check`.
+  - Remaining UI work: wire saved workspace paths from live snapshots into the safety summary and decide how prominently saved-workspace ownership should appear in the compact Worktrees pane after the Dockview migration.
 - Terminal/browser integration hardening checkpoint:
   - Changed files: `tauri-svelte-preview/src-tauri/src/terminal.rs`, `tauri-svelte-preview/src/lib/workspaceSnapshot.ts`, `tauri-svelte-preview/scripts/workspaceSnapshot.test.mjs`.
   - Behavior delivered: embedded PTY commands now canonicalize terminal cwd paths and tolerate copied/padded session IDs for scrollback, write, resize, and close calls; missing/blank session IDs remain no-op guarded. Workspace snapshots now drop browser URLs with embedded credentials and reject embedded-terminal restore metadata unless the session ID is simple and the cwd is absolute.
