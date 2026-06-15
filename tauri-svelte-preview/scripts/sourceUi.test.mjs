@@ -1311,8 +1311,8 @@ assert.ok(pageSource.includes('function worktreeOwnerChips'), 'Worktree rows sho
 assert.ok(pageSource.includes('aria-label="Worktree session ownership"'), 'Worktree rows should expose saved conversation and live session ownership');
 assert.ok(pageSource.includes('class={`worktree-owner-chip ${chip.tone}`}'), 'Worktree ownership chips should be toned by live/saved/mismatch state');
 assert.ok(pageSource.includes('projectWorktreeActivityLabel(worktree)'), 'Worktree rows should show last activity');
-assert.ok(pageSource.includes('filteredGitRepositorySummaries'), 'Activity panels should filter repository rows');
-assert.ok(pageSource.includes('filteredGitCommitHistory'), 'Activity panels should filter commit rows');
+assert.ok(pageSource.includes('filteredGitRepositoryRows'), 'Activity panels should filter graph repository rows');
+assert.ok(pageSource.includes('filteredGitCommitRows'), 'Activity panels should filter graph commit rows');
 assert.ok(pageSource.includes('aria-label="Copy agent resume command"'), 'Agent rows should expose resume command copy');
 assert.ok(pageSource.includes('aria-label="Copy agent focus plan"'), 'Agent rows should expose saved-workspace focus plan copy');
 assert.ok(pageSource.includes('aria-label="Open agent workspace"'), 'Agent rows should restore or save the session workspace directly');
@@ -2241,6 +2241,15 @@ assert.ok(pageSource.includes('selectedProjectGitTaskLedger'), 'Git panel should
 assert.ok(pageSource.includes('selectedProjectGitBranchHealth'), 'Git panel should derive branch health context');
 assert.ok(pageSource.includes('formatGitBranchHealthSummary'), 'Git panel should use the shared branch health formatter');
 assert.ok(pageSource.includes('buildGitTaskSourceGroups'), 'Git panel should use the shared task source grouping model');
+assert.ok(pageSource.includes("from '$lib/gitGraphViewModel'"), 'Git panel should import the shared graph view model helper');
+assert.ok(pageSource.includes('buildGitGraphViewModel({'), 'Git panel should construct graph view models from helper data');
+assert.ok(pageSource.includes('let selectedProjectGitGraph = $derived'), 'Git panel should derive selected-project Git graph rows');
+assert.ok(pageSource.includes('repositories: selectedProjectRepositorySummaries'), 'Selected Git graph should use selected repository summaries');
+assert.ok(pageSource.includes('commits: gitCommitHistory'), 'Selected Git graph should use native Git commit history');
+assert.ok(pageSource.includes('let repositoryDashboardGitGraph = $derived'), 'Repo dashboard should render normalized graph repository rows');
+assert.ok(pageSource.includes('selectedProjectGitGraph.taskIDs'), 'Git panel should read deduped task IDs from the graph helper');
+assert.ok(pageSource.includes('selectedProjectGitGraph.taskSearchTargets'), 'Git panel should expose graph task search targets');
+assert.ok(pageSource.includes('formatGitTaskSearchTargetSummary'), 'Git panel should summarize task search targets compactly');
 assert.ok(
   pageSource.includes('function buildGitTaskLedgerRows'),
   'Git task ledger should compose task, worktree, run, and commit metadata'
@@ -2272,38 +2281,26 @@ assert.ok(
   'Task source map copy action should copy the full source handoff'
 );
 assert.ok(
-  pageSource.includes('uniqueTaskIDsFromGitMetadata'),
-  'Git panel should dedupe task IDs from repo/worktree/history metadata'
+  pageSource.includes('row.taskReferences.map((task) => ({') &&
+    pageSource.includes("sourceLabel: 'repo'") &&
+    pageSource.includes("sourceLabel: 'commit'"),
+  'Git task source groups should use graph task references from repositories and commits'
 );
-assert.ok(
-  pageSource.includes('gitCommitRefChips(entry)'),
-  'Git history should split decorated refs into compact chips'
-);
-assert.ok(
-  pageSource.includes('gitCommitGraphClass(entry, index)'),
-  'Git history should classify commits for graph styling'
-);
-assert.ok(pageSource.includes('function gitCommitTopology'), 'Git history should label commit topology for graph markers');
-assert.ok(
-  pageSource.includes('gitCommitTaskSourceLabel(entry)'),
-  'Git task links should explain whether task IDs came from refs or subjects'
-);
-assert.ok(
-  pageSource.includes('function gitCommitOwnershipBadgesForEntry'),
-  'Git history should derive compact ownership badges per commit'
-);
-assert.ok(
-  pageSource.includes('gitCommitOwnershipBadges({'),
-  'Git history should use the shared ownership badge classifier'
-);
+assert.ok(pageSource.includes('function gitCommitGraphRowForEntry'), 'Legacy commit copy helpers should resolve graph rows by SHA');
 assert.ok(pageSource.includes('class="git-history-badges"'), 'Git history rows should group ownership badges');
 assert.ok(
   pageSource.includes('class={`git-history-badge ${badge.tone}`}'),
   'Git history ownership badges should render tone classes'
 );
+assert.ok(pageSource.includes('row.ownershipBadges'), 'Git history should render ownership badges from graph commit rows');
+assert.ok(pageSource.includes('row.graphKind'), 'Git history should render graph marker classes from graph commit rows');
+assert.ok(pageSource.includes('row.topologyLabel'), 'Git history should label graph markers from graph commit rows');
+assert.ok(pageSource.includes('gitGraphCommitTaskSourceLabel(row)'), 'Git task links should explain graph-derived task sources');
 assert.ok(pageSource.includes('class="git-task-trail"'), 'Git panel should render task trail links');
 assert.ok(pageSource.includes('class="git-task-source-map"'), 'Git panel should render a compact task source map');
 assert.ok(pageSource.includes('class="git-task-source-row"'), 'Task source map should render per-task rows');
+assert.ok(pageSource.includes('class="git-graph-summary-strip"'), 'Git panel should render a compact graph summary');
+assert.ok(pageSource.includes('class="git-task-search-targets"'), 'Git panel should render graph task search targets');
 assert.ok(
   pageSource.includes('activity-task-ledger-row ${row.tone}'),
   'Activity Git view should render task ledger rows'
@@ -2316,9 +2313,10 @@ assert.ok(pageSource.includes('group.detailSummary'), 'Task source rows should d
 assert.ok(pageSource.includes('gitCommitMessage'), 'Source page should track a Git commit message draft');
 assert.ok(pageSource.includes('let selectedGitCommitSha'), 'Git panel should track a selected commit');
 assert.ok(pageSource.includes('selectedGitCommit'), 'Git panel should derive the selected commit from history');
+assert.ok(pageSource.includes('selectedGitCommitRow'), 'Git panel should derive the selected graph commit row');
 assert.ok(pageSource.includes('function selectGitCommit'), 'Git history should allow selecting a commit row');
-assert.ok(pageSource.includes('function gitCommitRefSummary'), 'Git history should summarize refs for compact detail rows');
-assert.ok(pageSource.includes('function gitCommitCompactMeta'), 'Git history should render dense commit metadata lines');
+assert.ok(pageSource.includes('selectedGitCommitRow.refs.label'), 'Git history should summarize refs from the selected graph row');
+assert.ok(pageSource.includes('selectedGitCommitRow.metaLabel'), 'Git history should render dense metadata from the selected graph row');
 assert.ok(pageSource.includes('function gitCommitDetailText'), 'Git history should build a detailed selected-commit handoff');
 assert.ok(pageSource.includes('function copySelectedGitCommitDetail'), 'Git history should expose selected commit detail copying');
 assert.ok(pageSource.includes('function gitCommitHandoffText'), 'Git history should build an agent-ready commit handoff');
@@ -2373,14 +2371,14 @@ assert.ok(pageSource.includes("id: 'git-copy-selected-commit-detail'"), 'Command
 assert.ok(pageSource.includes("id: 'git-copy-selected-commit-handoff'"), 'Command palette should copy selected commit handoffs');
 assert.ok(pageSource.includes("id: 'git-open-selected-commit-task'"), 'Command palette should open the selected commit task');
 assert.ok(
-  pageSource.includes('git-history-row ${gitCommitGraphClass(entry, index)}'),
+  pageSource.includes('git-history-row ${row.graphKind}'),
   'Git tab should render individual commit history rows with graph styling'
 );
 assert.ok(
-  pageSource.includes('class:selected={selectedGitCommitSha === entry.sha}'),
+  pageSource.includes('class:selected={selectedGitCommitSha === row.sha}'),
   'Git history rows should show the selected commit'
 );
-assert.ok(pageSource.includes('{gitCommitCompactMeta(entry)}'), 'Git history rows should use dense commit metadata');
+assert.ok(pageSource.includes('{row.metaLabel}'), 'Git history rows should use graph dense commit metadata');
 assertDeclaration('.git-commit-detail-drawer', 'display: grid');
 assertDeclaration('.git-commit-detail-summary', 'grid-template-columns: 10px minmax(0, 1fr) minmax(0, 86px)');
 assertDeclaration('.git-commit-detail-summary', 'min-height: 28px');
@@ -2392,6 +2390,12 @@ assertDeclaration('.git-history-actions', 'position: absolute');
 assertDeclaration('.git-history-actions', 'opacity: 0');
 assertDeclaration('.git-history-actions', 'visibility: hidden');
 assertDeclaration('.git-history-actions', 'pointer-events: none');
+assert.ok(
+  pageSource.includes('.git-graph-summary-strip,') &&
+    pageSource.includes('.git-task-search-targets {') &&
+    pageSource.includes('flex-wrap: wrap;'),
+  'Graph summary and search-target rows should stay compact inside the existing Git surface'
+);
 assert.ok(
   pageSource.includes('.git-history-row:hover .git-history-actions'),
   'Git history row actions should appear on hover'
@@ -2414,8 +2418,8 @@ assert.ok(pageSource.includes('aria-label="Copy commit handoff"'), 'Git rows sho
 assert.ok(pageSource.includes('aria-label="Copy task reference"'), 'Git rows should expose copy task reference actions');
 assert.ok(pageSource.includes('function openGitTaskReference'), 'Git tasks should open Notion task links from command actions');
 assert.ok(
-  pageSource.includes('openGitTaskReference(selectedGitCommit.taskID)'),
-  'Selected commit detail should open the linked task directly'
+  pageSource.includes('openGitTaskReference(selectedGitCommitRow.taskID)'),
+  'Selected commit detail should open the graph-derived linked task directly'
 );
 assert.ok(pageSource.includes('function focusGitTaskLedger'), 'Git tasks should focus task ledger rows from command actions');
 assert.ok(pageSource.includes('data-task-ledger-id={row.taskID}'), 'Task ledger rows should expose focus targets');

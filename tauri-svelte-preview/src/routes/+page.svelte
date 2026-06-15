@@ -47,6 +47,12 @@
   } from '$lib/pasteCleanup';
   import { agentSessionFocusLane, type AgentSessionFocusLane } from '$lib/agentSessionFocus';
   import {
+    buildGitGraphViewModel,
+    type GitGraphCommitRow,
+    type GitGraphRepositoryRow,
+    type GitGraphViewModel
+  } from '$lib/gitGraphViewModel';
+  import {
     orchestrationAgentActivityItems,
     orchestrationArtifactChips,
     orchestrationAttentionQueue,
@@ -140,10 +146,6 @@
     findSourceReferenceTargets,
     findSourceSearchMatches,
     formatGitBranchHealthSummary,
-    gitCommitGraphKind,
-    gitCommitOwnershipBadges,
-    gitCommitTopologyLabel,
-    gitRefLabels,
     formatGitTaskSourceGroupHandoff,
     formatSourceContextGitSummary,
     formatSourceContextIdentity,
@@ -180,7 +182,6 @@
     sourceSupportsLanguageIntelligence,
     taskReferenceUrl,
     textMatchesSearchTokens,
-    uniqueTaskIDsFromGitMetadata,
     upsertSourceScanCacheEntry,
     upsertOpenSourceTab,
     upsertRecentSourceRecord,
@@ -1162,40 +1163,63 @@
       );
     })
   );
-  let filteredGitRepositorySummaries = $derived(
-    gitRepositorySummaries.filter((summary) =>
-      activityTextMatchesFilter(
-        sourceActivityFilter,
-        summary.projectName,
-        summary.repo,
-        summary.path,
-        summary.rootLabel,
-        summary.branch,
-        summary.taskID,
-        summary.lastCommitSha,
-        summary.lastCommitSubject,
-        summary.error
-      )
-    )
-  );
-  let filteredGitCommitHistory = $derived(
-    gitCommitHistory.filter((entry) =>
-      activityTextMatchesFilter(
-        sourceActivityFilter,
-        entry.sha,
-        entry.shortSha,
-        entry.subject,
-        entry.author,
-        entry.refs,
-        entry.taskID
-      )
-    )
-  );
   let selectedProjectRepositorySummaries = $derived(
     gitRepositorySummaries.filter(
       (summary) =>
         summary.projectID === selectedProject.id ||
         normalizeProjectPath(summary.path) === normalizeProjectPath(selectedProject.path)
+    )
+  );
+  let repositoryDashboardGitGraph = $derived(
+    buildGitGraphViewModel({
+      repositories: gitRepositorySummaries,
+      commits: []
+    })
+  );
+  let selectedProjectGitGraph = $derived(
+    buildGitGraphViewModel({
+      repositories: selectedProjectRepositorySummaries,
+      commits: gitCommitHistory
+    })
+  );
+  let selectedGitCommitRow = $derived(
+    selectedProjectGitGraph.commits.find((entry) => entry.sha === selectedGitCommitSha) ??
+      selectedProjectGitGraph.commits[0] ??
+      null
+  );
+  let filteredGitRepositoryRows = $derived(
+    repositoryDashboardGitGraph.repositories.filter((row) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        row.searchText,
+        row.projectName,
+        row.repo,
+        row.path,
+        row.rootLabel,
+        row.branchLabel,
+        row.dirty.label,
+        row.dirty.detailLabel,
+        row.sync.label,
+        row.sync.detailLabel,
+        row.error,
+        ...row.taskSearchTargets.map((target) => target.query)
+      )
+    )
+  );
+  let filteredGitCommitRows = $derived(
+    selectedProjectGitGraph.commits.filter((row) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        row.searchText,
+        row.sha,
+        row.shortSha,
+        row.subject,
+        row.author,
+        row.refs.label,
+        row.metaLabel,
+        row.detailLabel,
+        ...row.taskSearchTargets.map((target) => target.query)
+      )
     )
   );
   let selectedProjectPrimaryRepoSummary = $derived(selectedProjectRepositorySummaries[0] ?? null);
@@ -1224,30 +1248,48 @@
       lastCommitSha: selectedProjectPrimaryRepoSummary?.lastCommitSha ?? null
     })
   );
-  let selectedProjectGitTaskIDs = $derived(
-    uniqueTaskIDsFromGitMetadata(
-      selectedProjectRepositorySummaries,
-      projectWorktrees,
-      gitCommitHistory
+  let selectedProjectGitGraphSummary = $derived(
+    formatGitGraphSummary(
+      selectedProjectGitGraph,
+      gitRepositorySummariesLoading,
+      gitRepositorySummaryError,
+      gitRepositorySummarySource,
+      gitCommitHistoryLoading,
+      gitCommitHistoryError,
+      gitCommitHistorySource
     )
+  );
+  let selectedProjectGitTaskIDs = $derived(
+    uniqueGitTaskIDs([
+      ...selectedProjectGitGraph.taskIDs,
+      ...prioritizedProjectWorktrees.map((worktree) => worktree.taskID),
+      ...selectedProjectOrchestrationRuns.map((run) => run.taskID)
+    ])
+  );
+  let selectedProjectGitTaskSearchSummary = $derived(
+    formatGitTaskSearchTargetSummary(selectedProjectGitGraph.taskSearchTargets)
   );
   let selectedProjectGitTaskSourceGroups = $derived(
     buildGitTaskSourceGroups(
-      selectedProjectRepositorySummaries.map((summary) => ({
-        taskID: summary.taskID,
-        sourceLabel: 'repo',
-        sourceDetail: `${summary.rootLabel} · ${summary.branch}`
-      })),
+      selectedProjectGitGraph.repositories.flatMap((row) =>
+        row.taskReferences.map((task) => ({
+          taskID: task.id,
+          sourceLabel: 'repo',
+          sourceDetail: `${row.rootLabel} · ${row.branchLabel} · ${row.dirty.label} · ${row.sync.label}`
+        }))
+      ),
       prioritizedProjectWorktrees.map((worktree) => ({
         taskID: worktree.taskID,
         sourceLabel: 'worktree',
         sourceDetail: `${worktree.branch} · ${projectWorktreeActivityLabel(worktree)}`
       })),
-      gitCommitHistory.map((entry) => ({
-        taskID: entry.taskID,
-        sourceLabel: 'commit',
-        sourceDetail: `${entry.shortSha} · ${entry.subject}`
-      })),
+      selectedProjectGitGraph.commits.flatMap((row) =>
+        row.taskReferences.map((task) => ({
+          taskID: task.id,
+          sourceLabel: 'commit',
+          sourceDetail: `${row.shortSha} · ${row.subject}`
+        }))
+      ),
       selectedProjectOrchestrationRuns.map((run) => ({
         taskID: run.taskID,
         sourceLabel: 'run',
@@ -2492,16 +2534,18 @@
     {
       id: 'git-open-selected-commit-task',
       label: 'Open selected commit task',
-      detail: selectedGitCommit?.taskID ? (gitTaskUrl(selectedGitCommit.taskID) ?? selectedGitCommit.taskID) : 'No selected task',
-      disabled: !selectedGitCommit?.taskID || !gitTaskUrl(selectedGitCommit.taskID),
+      detail: selectedGitCommitRow?.taskID
+        ? (gitTaskUrl(selectedGitCommitRow.taskID) ?? selectedGitCommitRow.taskID)
+        : 'No selected task',
+      disabled: !selectedGitCommitRow?.taskID || !gitTaskUrl(selectedGitCommitRow.taskID),
       perform: () => {
-        if (selectedGitCommit?.taskID) openGitTaskReference(selectedGitCommit.taskID);
+        if (selectedGitCommitRow?.taskID) openGitTaskReference(selectedGitCommitRow.taskID);
       }
     },
     {
       id: 'git-copy-workspace-brief',
       label: 'Copy Git workspace brief',
-      detail: `${selectedProject.name} · ${repoDashboardSummary} · ${projectWorktreeCleanupBrief.headline}`,
+      detail: `${selectedProject.name} · ${selectedProjectGitGraphSummary} · ${projectWorktreeCleanupBrief.headline}`,
       disabled: !selectedProject.path,
       perform: copyGitWorkspaceBrief
     },
@@ -2517,6 +2561,12 @@
       detail: gitTaskUrl(taskID) ?? 'Task ID only',
       disabled: !gitTaskUrl(taskID),
       perform: () => openGitTaskReference(taskID)
+    })),
+    ...selectedProjectGitGraph.taskSearchTargets.slice(0, 8).map((target) => ({
+      id: `git-copy-task-search-${target.id}`,
+      label: `Copy task search: ${target.label}`,
+      detail: target.query,
+      perform: () => copyActivityCommand(target.query, 'Task search copied')
     })),
     ...selectedProjectGitTaskSourceGroups.slice(0, 8).map((group) => ({
       id: `git-copy-task-sources-${group.taskID}`,
@@ -3819,6 +3869,35 @@
     return `${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} · ${historySource}`;
   }
 
+  function formatGitGraphSummary(
+    model: GitGraphViewModel,
+    loadingSummaries: boolean,
+    summaryError: string,
+    summarySource: string,
+    loadingHistory: boolean,
+    historyError: string,
+    historySource: string
+  ) {
+    const { summary } = model;
+    const repoLabel = `${summary.dirtyRepositoryCount} dirty / ${summary.repositoryCount} repos`;
+    const commitLabel = `${summary.commitCount} ${summary.commitCount === 1 ? 'commit' : 'commits'}`;
+    const taskLabel = `${summary.taskCount} ${summary.taskCount === 1 ? 'task' : 'tasks'}`;
+    const sourceLabel = [summarySource, historySource].filter(Boolean).join(' + ');
+    const statusLabel = [
+      loadingSummaries ? 'scanning repos' : '',
+      loadingHistory ? 'loading history' : '',
+      summaryError,
+      historyError
+    ].filter(Boolean).join(' · ');
+
+    return [repoLabel, commitLabel, taskLabel, sourceLabel, statusLabel].filter(Boolean).join(' · ');
+  }
+
+  function formatGitTaskSearchTargetSummary(targets: GitGraphViewModel['taskSearchTargets']) {
+    if (targets.length === 0) return 'No task search targets';
+    return targets.map((target) => `${target.label}: ${target.query}`).join(' · ');
+  }
+
   function formatGitCommitTime(committedAt: string) {
     const date = new Date(committedAt);
     if (Number.isNaN(date.getTime())) return committedAt;
@@ -3831,19 +3910,10 @@
     }).format(date);
   }
 
-  function gitCommitTitle(entry: GitCommitHistoryEntry) {
-    const parentSummary = gitCommitParentSummary(entry);
-    const taskSource = gitCommitTaskSourceLabel(entry);
-    return [
-      entry.sha,
-      entry.refs,
-      parentSummary,
-      entry.taskID && taskSource ? `${entry.taskID} from ${taskSource}` : '',
-      entry.subject
-    ].filter(Boolean).join('\n');
-  }
-
   function gitCommitSummaryText(entry: GitCommitHistoryEntry) {
+    const row = gitCommitGraphRowForEntry(entry);
+    if (row) return gitGraphCommitSummaryText(row);
+
     const refs = gitCommitRefChips(entry).join(', ');
     const taskSource = gitCommitTaskSourceLabel(entry);
     const task = entry.taskID ? `Task ${entry.taskID}${taskSource ? ` from ${taskSource}` : ''}` : '';
@@ -3861,7 +3931,7 @@
   }
 
   function gitWorkspaceBriefText() {
-    const branch = projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
+    const branch = projectGitStatus?.branch ?? selectedProjectGitGraph.repositories[0]?.branchLabel ?? 'unknown';
     const aheadBehind =
       projectGitStatus
         ? `ahead ${projectGitStatus.ahead} / behind ${projectGitStatus.behind}`
@@ -3871,22 +3941,22 @@
         ? `${selectedProjectGitChangedFiles.length} changed file${selectedProjectGitChangedFiles.length === 1 ? '' : 's'}`
         : 'changed files unknown';
     const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
-    const repoLines = selectedProjectRepositorySummaries.slice(0, 6).map((summary) => {
-      const dirty = summary.isDirty ? `${summary.dirtyCount} dirty` : 'clean';
-      const task = summary.taskID ? ` · ${summary.taskID}` : '';
-      const remote = `${summary.ahead} ahead / ${summary.behind} behind`;
-      return `- ${summary.repo} (${summary.rootLabel}): ${summary.branch}${task} · ${dirty} · ${remote} · ${summary.path}`;
+    const repoLines = selectedProjectGitGraph.repositories.slice(0, 6).map((row) => {
+      const task = row.taskID ? ` · ${row.taskID}` : '';
+      return `- ${row.repo} (${row.rootLabel}): ${row.branchLabel}${task} · ${row.dirty.label} · ${row.sync.label} · ${row.path}`;
     });
-    const commitLines = gitCommitHistory.slice(0, 6).map((entry) => `- ${gitCommitSummaryText(entry)}`);
+    const commitLines = selectedProjectGitGraph.commits.slice(0, 6).map((row) => `- ${gitGraphCommitSummaryText(row)}`);
 
     return [
       'Git workspace brief',
       `Project: ${selectedProject.name}`,
       `Path: ${selectedProject.path}`,
       `Branch: ${branch}`,
+      `Graph: ${selectedProjectGitGraphSummary}`,
       `Health: ${selectedProjectGitBranchHealth.detail}`,
       `Status: ${changedFiles} · ${aheadBehind}`,
       `Tasks: ${tasks}`,
+      `Task search targets: ${selectedProjectGitTaskSearchSummary}`,
       '',
       'Repositories:',
       repoLines.length > 0 ? repoLines.join('\n') : '- none loaded',
@@ -4147,66 +4217,52 @@
     return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'unknown';
   }
 
+  function gitCommitGraphRowForEntry(entry: GitCommitHistoryEntry) {
+    return (
+      selectedProjectGitGraph.commits.find((row) => row.sha === entry.sha) ??
+      buildGitGraphViewModel({ commits: [entry] }).commits[0] ??
+      null
+    );
+  }
+
+  function gitCommitEntryForRow(row: GitGraphCommitRow) {
+    return gitCommitHistory.find((entry) => entry.sha === row.sha) ?? null;
+  }
+
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
-    return gitRefLabels(entry.refs);
-  }
-
-  function gitCommitParentCount(entry: GitCommitHistoryEntry) {
-    if (Number.isFinite(entry.parentCount)) return entry.parentCount;
-    return entry.parentShas?.length ?? 1;
-  }
-
-  function gitCommitGraphClass(entry: GitCommitHistoryEntry, index: number) {
-    return gitCommitGraphKind(entry.refs, index, gitCommitParentCount(entry));
-  }
-
-  function gitCommitTopology(entry: GitCommitHistoryEntry, index: number) {
-    return gitCommitTopologyLabel(entry.refs, index, gitCommitParentCount(entry));
-  }
-
-  function gitCommitOwnershipBadgesForEntry(entry: GitCommitHistoryEntry) {
-    return gitCommitOwnershipBadges({
-      refs: entry.refs,
-      taskID: entry.taskID,
-      taskSource: entry.taskSource,
-      parentCount: gitCommitParentCount(entry)
-    });
+    return gitCommitGraphRowForEntry(entry)?.refs.labels ?? [];
   }
 
   function gitCommitParentSummary(entry: GitCommitHistoryEntry) {
-    const parentCount = gitCommitParentCount(entry);
-    if (parentCount > 1) return `${parentCount} parents`;
-    if (parentCount === 0) return 'root commit';
-    return '';
-  }
-
-  function gitCommitRefSummary(entry: GitCommitHistoryEntry, maxRefs = 2) {
-    const refs = gitCommitRefChips(entry);
-    if (refs.length === 0) return 'no refs';
-
-    const visibleRefs = refs.slice(0, maxRefs).join(', ');
-    const remainingCount = refs.length - maxRefs;
-    return remainingCount > 0 ? `${visibleRefs} +${remainingCount}` : visibleRefs;
-  }
-
-  function gitCommitCompactMeta(entry: GitCommitHistoryEntry) {
-    const topology = gitCommitParentSummary(entry) || 'linear';
-    const task = entry.taskID ?? '';
-
-    return [
-      entry.shortSha,
-      topology,
-      task,
-      entry.author,
-      formatGitCommitTime(entry.committedAt)
-    ].filter(Boolean).join(' · ');
+    return gitCommitGraphRowForEntry(entry)?.parentHint.label ?? '';
   }
 
   function gitCommitTaskSourceLabel(entry: GitCommitHistoryEntry) {
-    if (!entry.taskID) return '';
-    if (entry.taskSource === 'refs') return 'branch/ref';
-    if (entry.taskSource === 'subject') return 'subject';
-    return '';
+    const row = gitCommitGraphRowForEntry(entry);
+    return row ? gitGraphCommitTaskSourceLabel(row) : '';
+  }
+
+  function gitGraphCommitTaskSourceLabel(row: GitGraphCommitRow) {
+    if (!row.taskID) return '';
+    if (row.taskSource === 'refs') return 'branch/ref';
+    if (row.taskSource === 'subject') return 'subject';
+    return 'Git metadata';
+  }
+
+  function gitGraphCommitSummaryText(row: GitGraphCommitRow) {
+    const refs = row.refs.labels.join(', ');
+    const taskSource = gitGraphCommitTaskSourceLabel(row);
+    const task = row.taskID ? `Task ${row.taskID}${taskSource ? ` from ${taskSource}` : ''}` : '';
+
+    return [
+      row.shortSha,
+      row.subject,
+      refs,
+      row.parentHint.label,
+      task,
+      row.author,
+      formatGitCommitTime(row.committedAt)
+    ].filter(Boolean).join(' · ');
   }
 
   function selectGitCommit(entry: GitCommitHistoryEntry) {
@@ -4295,6 +4351,21 @@
     return /^TSK-\d+$/.test(normalized) ? normalized : null;
   }
 
+  function uniqueGitTaskIDs(taskIDs: Array<string | null | undefined>) {
+    const seen = new Set<string>();
+    const unique: string[] = [];
+
+    for (const taskID of taskIDs) {
+      const normalizedTaskID = normalizeGitTaskID(taskID);
+      if (!normalizedTaskID || seen.has(normalizedTaskID)) continue;
+
+      seen.add(normalizedTaskID);
+      unique.push(normalizedTaskID);
+    }
+
+    return unique;
+  }
+
   function buildGitTaskLedgerRows(): GitTaskLedgerRow[] {
     return selectedProjectGitTaskSourceGroups
       .map((group) => {
@@ -4302,9 +4373,10 @@
         const worktrees = prioritizedProjectWorktrees.filter(
           (worktree) => normalizeGitTaskID(worktree.taskID) === taskID
         );
-        const commits = gitCommitHistory.filter(
-          (entry) => normalizeGitTaskID(entry.taskID) === taskID
-        );
+        const commits = selectedProjectGitGraph.commits
+          .filter((row) => row.taskReferences.some((task) => normalizeGitTaskID(task.id) === taskID))
+          .map(gitCommitEntryForRow)
+          .filter((entry): entry is GitCommitHistoryEntry => Boolean(entry));
         const runs = selectedProjectOrchestrationRuns.filter(
           (run) => normalizeGitTaskID(run.taskID) === taskID
         );
@@ -4552,37 +4624,26 @@
     await copyActivityCommand(sourceScanDiagnosticBrief(), 'Scan diagnostic copied');
   }
 
-  function repoDashboardTaskLabel(summary: GitRepositorySummary) {
-    return summary.taskID ?? 'none';
+  function repoDashboardTaskLabel(row: GitGraphRepositoryRow) {
+    return row.taskID ?? 'none';
   }
 
-  function repoDashboardTaskUrl(summary: GitRepositorySummary) {
-    return gitTaskUrl(summary.taskID);
+  function repoDashboardTaskUrl(row: GitGraphRepositoryRow) {
+    return gitTaskUrl(row.taskID);
   }
 
-  function repoDashboardDirtyLabel(summary: GitRepositorySummary) {
-    if (summary.error) return 'error';
-    if (!summary.isDirty) return 'clean';
-
-    const counts = `${summary.dirtyCount} files`;
-    if (!summary.dirtySinceEpochMs) return counts;
-
-    return `${counts} · ${formatRelativeAge(summary.dirtySinceEpochMs)}`;
+  function repoDashboardDirtyLabel(row: GitGraphRepositoryRow) {
+    return row.dirty.label;
   }
 
-  function repoDashboardRemoteLabel(summary: GitRepositorySummary) {
-    const remote = `↑${summary.ahead} ↓${summary.behind}`;
-    const commit = summary.lastCommitSha ? ` · ${summary.lastCommitSha}` : '';
+  function repoDashboardRemoteLabel(row: GitGraphRepositoryRow) {
+    const remote = row.sync.label;
+    const commit = row.lastCommitSha ? ` · ${row.lastCommitSha}` : '';
     return `${remote}${commit}`;
   }
 
-  function repoDashboardTitle(summary: GitRepositorySummary) {
-    const parts = [
-      summary.path,
-      summary.lastCommitSubject ? `Last commit: ${summary.lastCommitSubject}` : '',
-      summary.error ? `Error: ${summary.error}` : ''
-    ].filter(Boolean);
-    return parts.join('\n');
+  function repoDashboardTitle(row: GitGraphRepositoryRow) {
+    return row.detailLabel;
   }
 
   function formatRelativeAge(epochMs: number) {
@@ -9494,7 +9555,7 @@
       case 'worktrees':
         return filteredProjectWorktrees.length;
       case 'git':
-        return filteredGitRepositorySummaries.length;
+        return filteredGitRepositoryRows.length;
     }
   }
 
@@ -9545,7 +9606,7 @@
       case 'worktrees':
         return projectWorktreeSummary;
       case 'git':
-        return repoDashboardSummary;
+        return selectedProjectGitGraphSummary;
     }
   }
 
@@ -13904,39 +13965,45 @@
           </div>
         {:else if sourceActivityMode === 'git'}
           <div class="activity-panel-list" aria-label="Git and task list">
-            {#if filteredGitRepositorySummaries.length === 0}
+            <div class="git-graph-summary-strip" aria-label="Git graph view model summary" title={selectedProjectGitTaskSearchSummary}>
+              <span>{selectedProjectGitGraphSummary}</span>
+              {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
+                <small>{selectedProjectGitGraph.taskSearchTargets.length} search targets</small>
+              {/if}
+            </div>
+            {#if filteredGitRepositoryRows.length === 0}
               <div class="activity-empty">No repositories</div>
             {:else}
-              {#each filteredGitRepositorySummaries as summary (`activity:${summary.projectID}:${summary.path}`)}
+              {#each filteredGitRepositoryRows as row (`activity:${row.id}`)}
                 <div
                   class="activity-repo-row"
-                  class:dirty={summary.isDirty || summary.error}
-                  title={repoDashboardTitle(summary)}
+                  class:dirty={row.dirty.isDirty || row.error}
+                  title={repoDashboardTitle(row)}
                 >
                   <div class="activity-row-main">
-                    <strong>{summary.projectName}</strong>
-                    <small>{summary.rootLabel}</small>
+                    <strong>{row.projectName}</strong>
+                    <small>{row.rootLabel}</small>
                   </div>
-                  <span class="repo-branch-badge">{summary.branch}</span>
-                  {#if summary.taskID && repoDashboardTaskUrl(summary)}
+                  <span class="repo-branch-badge">{row.branchLabel}</span>
+                  {#if row.taskID && repoDashboardTaskUrl(row)}
                     <a
                       class="repo-task-link"
-                      href={repoDashboardTaskUrl(summary) ?? ''}
+                      href={repoDashboardTaskUrl(row) ?? ''}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {summary.taskID}
+                      {row.taskID}
                     </a>
                   {:else}
-                    <span class="repo-branch-badge">{repoDashboardTaskLabel(summary)}</span>
+                    <span class="repo-branch-badge">{repoDashboardTaskLabel(row)}</span>
                   {/if}
-                  <small>{repoDashboardDirtyLabel(summary)} · {repoDashboardRemoteLabel(summary)}</small>
+                  <small>{repoDashboardDirtyLabel(row)} · {repoDashboardRemoteLabel(row)}</small>
                   <div class="activity-row-actions" aria-label="Repository actions">
                     <button
                       type="button"
                       aria-label="Copy repository path"
                       title="Copy repository path"
-                      onclick={() => copyActivityCommand(summary.path, 'Repository path copied')}
+                      onclick={() => copyActivityCommand(row.path, 'Repository path copied')}
                     >
                       <Copy size={12} strokeWidth={2} />
                     </button>
@@ -13944,7 +14011,7 @@
                       type="button"
                       aria-label="Open repository path"
                       title="Open repository path"
-                      onclick={() => openActivityPath(summary.path)}
+                      onclick={() => openActivityPath(row.path)}
                     >
                       <ExternalLink size={12} strokeWidth={2} />
                     </button>
@@ -13952,7 +14019,7 @@
                       type="button"
                       aria-label="Open repository in terminal"
                       title="Open repository in terminal"
-                      onclick={() => openActivityTerminalPath(summary.path)}
+                      onclick={() => openActivityTerminalPath(row.path)}
                     >
                       <Terminal size={12} strokeWidth={2} />
                     </button>
@@ -13960,7 +14027,7 @@
                       type="button"
                       aria-label="Reveal repository path"
                       title="Reveal repository path"
-                      onclick={() => revealActivityPath(summary.path)}
+                      onclick={() => revealActivityPath(row.path)}
                     >
                       <FolderSearch size={12} strokeWidth={2} />
                     </button>
@@ -14071,30 +14138,31 @@
             {/if}
 
             <div class="activity-subheading">Recent commits</div>
-            {#if filteredGitCommitHistory.length === 0}
+            {#if filteredGitCommitRows.length === 0}
               <div class="activity-empty">No commits</div>
             {:else}
-              {#each filteredGitCommitHistory.slice(0, 8) as entry, index (entry.sha)}
-                <div class="activity-commit-row" title={gitCommitTitle(entry)}>
+              {#each filteredGitCommitRows.slice(0, 8) as row (row.sha)}
+                {@const entry = gitCommitEntryForRow(row)}
+                <div class="activity-commit-row" title={row.detailLabel}>
                   <span
-                    class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`}
-                    aria-label={gitCommitTopology(entry, index)}
-                    title={gitCommitTopology(entry, index)}
+                    class={`git-graph-marker ${row.graphKind}`}
+                    aria-label={row.topologyLabel}
+                    title={row.topologyLabel}
                   ></span>
                   <div class="activity-row-main">
-                    <strong>{entry.subject}</strong>
-                    <small>{entry.shortSha} · {formatGitCommitTime(entry.committedAt)}</small>
+                    <strong>{row.subject}</strong>
+                    <small>{row.shortSha} · {formatGitCommitTime(row.committedAt)}</small>
                   </div>
                   <div class="activity-commit-meta">
-                    {#if entry.taskID && gitTaskUrl(entry.taskID)}
+                    {#if row.taskID && gitTaskUrl(row.taskID)}
                       <a
                         class="git-task-link"
-                        href={gitTaskUrl(entry.taskID) ?? ''}
+                        href={gitTaskUrl(row.taskID) ?? ''}
                         target="_blank"
                         rel="noreferrer"
-                        title={`Task from ${gitCommitTaskSourceLabel(entry) || 'Git metadata'}`}
+                        title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
                       >
-                        {entry.taskID}
+                        {row.taskID}
                       </a>
                     {/if}
                     <div class="activity-row-actions" aria-label="Commit actions">
@@ -14102,7 +14170,8 @@
                         type="button"
                         aria-label="Copy commit SHA"
                         title="Copy commit SHA"
-                        onclick={() => copyGitCommitSha(entry)}
+                        disabled={!entry}
+                        onclick={() => entry && copyGitCommitSha(entry)}
                       >
                         <Copy size={12} strokeWidth={2} />
                       </button>
@@ -14110,16 +14179,17 @@
                         type="button"
                         aria-label="Copy commit summary"
                         title="Copy commit summary"
-                        onclick={() => copyGitCommitSummary(entry)}
+                        disabled={!entry}
+                        onclick={() => entry && copyGitCommitSummary(entry)}
                       >
                         <History size={12} strokeWidth={2} />
                       </button>
-                      {#if entry.taskID}
+                      {#if row.taskID}
                         <button
                           type="button"
                           aria-label="Copy task reference"
                           title="Copy task reference"
-                          onclick={() => copyGitTaskReference(entry.taskID)}
+                          onclick={() => copyGitTaskReference(row.taskID)}
                         >
                           <ExternalLink size={12} strokeWidth={2} />
                         </button>
@@ -15248,39 +15318,39 @@
             </button>
           </div>
         </div>
-        {#if gitRepositorySummaries.length > 0}
+        {#if repositoryDashboardGitGraph.repositories.length > 0}
           <div class="repo-dashboard-list">
-            {#each gitRepositorySummaries as summary (`${summary.projectID}:${summary.path}`)}
+            {#each repositoryDashboardGitGraph.repositories as row (row.id)}
               <div
                 class="repo-dashboard-row"
-                class:dirty={summary.isDirty || summary.error}
-                title={repoDashboardTitle(summary)}
+                class:dirty={row.dirty.isDirty || row.error}
+                title={repoDashboardTitle(row)}
               >
                 <div class="repo-dashboard-main">
-                  <strong>{summary.projectName}</strong>
-                  <small>{summary.rootLabel}</small>
+                  <strong>{row.projectName}</strong>
+                  <small>{row.rootLabel}</small>
                 </div>
-                <span class="repo-branch-badge">{summary.branch}</span>
+                <span class="repo-branch-badge">{row.branchLabel}</span>
                 <div class="repo-dashboard-metric">
                   <span>Task</span>
-                  {#if summary.taskID && repoDashboardTaskUrl(summary)}
+                  {#if row.taskID && repoDashboardTaskUrl(row)}
                     <a
                       class="repo-task-link"
-                      href={repoDashboardTaskUrl(summary) ?? ''}
+                      href={repoDashboardTaskUrl(row) ?? ''}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {summary.taskID}
+                      {row.taskID}
                     </a>
                   {:else}
-                    <strong>{repoDashboardTaskLabel(summary)}</strong>
+                    <strong>{repoDashboardTaskLabel(row)}</strong>
                   {/if}
                 </div>
                 <div class="repo-dashboard-metric">
                   <span>Dirty</span>
-                  <strong>{repoDashboardDirtyLabel(summary)}</strong>
+                  <strong>{repoDashboardDirtyLabel(row)}</strong>
                 </div>
-                <em>{repoDashboardRemoteLabel(summary)}</em>
+                <em>{repoDashboardRemoteLabel(row)}</em>
               </div>
             {/each}
           </div>
@@ -16385,6 +16455,12 @@
                     <span>History</span>
                     <small>{gitCommitHistorySummary}</small>
                   </div>
+                  <div class="git-graph-summary-strip" aria-label="Git graph view model summary" title={selectedProjectGitTaskSearchSummary}>
+                    <span>{selectedProjectGitGraphSummary}</span>
+                    {#if selectedProjectGitGraph.summary.mergeCommitCount > 0}
+                      <small>{selectedProjectGitGraph.summary.mergeCommitCount} merges</small>
+                    {/if}
+                  </div>
                   <div
                     class="git-branch-health-strip"
                     aria-label="Git branch health"
@@ -16435,37 +16511,45 @@
                       {/each}
                     </div>
                   {/if}
-                  {#if selectedGitCommit}
+                  {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
+                    <div class="git-task-search-targets" aria-label="Git task search targets" title={selectedProjectGitTaskSearchSummary}>
+                      <span>Search</span>
+                      {#each selectedProjectGitGraph.taskSearchTargets as target (`${target.kind}:${target.id}`)}
+                        <small>{target.label}: {target.query}</small>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if selectedGitCommit && selectedGitCommitRow}
                     <details
                       class="git-commit-detail-drawer"
                       aria-label="Selected commit detail"
-                      title={gitCommitDetailText(selectedGitCommit)}
+                      title={selectedGitCommitRow.detailLabel}
                     >
                       <summary class="git-commit-detail-summary">
                         <span class="git-commit-detail-summary-main">
-                          <strong>{selectedGitCommit.subject}</strong>
-                          <small>{gitCommitCompactMeta(selectedGitCommit)}</small>
+                          <strong>{selectedGitCommitRow.subject}</strong>
+                          <small>{selectedGitCommitRow.metaLabel}</small>
                         </span>
-                        <span class="git-commit-detail-summary-ref">{gitCommitRefSummary(selectedGitCommit)}</span>
+                        <span class="git-commit-detail-summary-ref">{selectedGitCommitRow.refs.label}</span>
                       </summary>
                       <div class="git-commit-detail-body">
                         <div class="git-commit-detail-facts" aria-label="Selected commit metadata">
                           <span>
                             <strong>Commit</strong>
-                            <small>{selectedGitCommit.sha}</small>
+                            <small>{selectedGitCommitRow.sha}</small>
                           </span>
                           <span>
                             <strong>Refs</strong>
-                            <small>{gitCommitRefSummary(selectedGitCommit, 4)}</small>
+                            <small>{selectedGitCommitRow.refs.label}</small>
                           </span>
                           <span>
                             <strong>Parents</strong>
-                            <small>{gitCommitParentSummary(selectedGitCommit) || 'linear'}</small>
+                            <small>{selectedGitCommitRow.parentHint.label}</small>
                           </span>
-                          {#if selectedGitCommit.taskID}
+                          {#if selectedGitCommitRow.taskID}
                             <span>
                               <strong>Task</strong>
-                              <small>{selectedGitCommit.taskID}</small>
+                              <small>{selectedGitCommitRow.taskID}</small>
                             </span>
                           {/if}
                         </div>
@@ -16494,13 +16578,13 @@
                           >
                             <History size={11} strokeWidth={2} />
                           </button>
-                          {#if selectedGitCommit.taskID}
-                            {#if gitTaskUrl(selectedGitCommit.taskID)}
+                          {#if selectedGitCommitRow.taskID}
+                            {#if gitTaskUrl(selectedGitCommitRow.taskID)}
                               <button
                                 type="button"
                                 aria-label="Open selected commit task reference"
                                 title="Open selected commit task reference"
-                                onclick={() => openGitTaskReference(selectedGitCommit.taskID)}
+                                onclick={() => openGitTaskReference(selectedGitCommitRow.taskID)}
                               >
                                 <ExternalLink size={11} strokeWidth={2} />
                               </button>
@@ -16509,7 +16593,7 @@
                               type="button"
                               aria-label="Copy selected commit task reference"
                               title="Copy selected commit task reference"
-                              onclick={() => copyGitTaskReference(selectedGitCommit.taskID)}
+                              onclick={() => copyGitTaskReference(selectedGitCommitRow.taskID)}
                             >
                               <Copy size={11} strokeWidth={2} />
                             </button>
@@ -16523,50 +16607,51 @@
                       <div class="intelligence-empty">Loading history</div>
                     {:else if gitCommitHistoryError}
                       <div class="intelligence-empty">{gitCommitHistoryError}</div>
-                    {:else if gitCommitHistory.length === 0}
+                    {:else if selectedProjectGitGraph.commits.length === 0}
                       <div class="intelligence-empty">No commits</div>
                     {:else}
-                      {#each gitCommitHistory as entry, index (entry.sha)}
+                      {#each selectedProjectGitGraph.commits as row (row.sha)}
+                        {@const entry = gitCommitEntryForRow(row)}
                         <div
-                          class={`git-history-row ${gitCommitGraphClass(entry, index)}`}
-                          class:selected={selectedGitCommitSha === entry.sha}
+                          class={`git-history-row ${row.graphKind}`}
+                          class:selected={selectedGitCommitSha === row.sha}
                           role="button"
                           tabindex="0"
-                          title={gitCommitTitle(entry)}
-                          onclick={() => selectGitCommit(entry)}
-                          onkeydown={(event) => handleGitCommitRowKeydown(event, entry)}
+                          title={row.detailLabel}
+                          onclick={() => entry && selectGitCommit(entry)}
+                          onkeydown={(event) => entry && handleGitCommitRowKeydown(event, entry)}
                         >
                           <span
-                            class={`git-graph-marker ${gitCommitGraphClass(entry, index)}`}
-                            aria-label={gitCommitTopology(entry, index)}
-                            title={gitCommitTopology(entry, index)}
+                            class={`git-graph-marker ${row.graphKind}`}
+                            aria-label={row.topologyLabel}
+                            title={row.topologyLabel}
                           ></span>
                           <div class="git-history-main">
-                            <strong>{entry.subject}</strong>
-                            <small>{gitCommitCompactMeta(entry)}</small>
+                            <strong>{row.subject}</strong>
+                            <small>{row.metaLabel}</small>
                           </div>
                           <div class="git-history-meta">
                             <div class="git-history-badges" aria-label="Commit ownership badges">
-                              {#each gitCommitOwnershipBadgesForEntry(entry) as badge (`${badge.tone}:${badge.label}`)}
+                              {#each row.ownershipBadges as badge (`${badge.tone}:${badge.label}`)}
                                 <span class={`git-history-badge ${badge.tone}`} title={badge.title}>{badge.label}</span>
                               {/each}
                             </div>
-                            {#if entry.taskID}
-                              {#if gitTaskUrl(entry.taskID)}
+                            {#if row.taskID}
+                              {#if gitTaskUrl(row.taskID)}
                                 <a
                                   class="git-task-link"
-                                  href={gitTaskUrl(entry.taskID) ?? ''}
+                                  href={gitTaskUrl(row.taskID) ?? ''}
                                   target="_blank"
                                   rel="noreferrer"
-                                  title={`Task from ${gitCommitTaskSourceLabel(entry) || 'Git metadata'}`}
+                                  title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
                                 >
-                                  {entry.taskID}
+                                  {row.taskID}
                                 </a>
                               {:else}
                                 <span
                                   class="git-task-link"
-                                  title={`Task from ${gitCommitTaskSourceLabel(entry) || 'Git metadata'}`}
-                                >{entry.taskID}</span>
+                                  title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
+                                >{row.taskID}</span>
                               {/if}
                             {/if}
                             <div class="git-history-actions" aria-label="Commit quick actions">
@@ -16574,7 +16659,8 @@
                                 type="button"
                                 aria-label="Copy commit SHA"
                                 title="Copy commit SHA"
-                                onclick={() => copyGitCommitSha(entry)}
+                                disabled={!entry}
+                                onclick={() => entry && copyGitCommitSha(entry)}
                               >
                                 <Copy size={11} strokeWidth={2} />
                               </button>
@@ -16582,7 +16668,8 @@
                                 type="button"
                                 aria-label="Copy commit summary"
                                 title="Copy commit summary"
-                                onclick={() => copyGitCommitSummary(entry)}
+                                disabled={!entry}
+                                onclick={() => entry && copyGitCommitSummary(entry)}
                               >
                                 <History size={11} strokeWidth={2} />
                               </button>
@@ -16590,16 +16677,17 @@
                                 type="button"
                                 aria-label="Copy commit handoff"
                                 title="Copy commit handoff"
-                                onclick={() => copyGitCommitHandoff(entry)}
+                                disabled={!entry}
+                                onclick={() => entry && copyGitCommitHandoff(entry)}
                               >
                                 <FileCode2 size={11} strokeWidth={2} />
                               </button>
-                              {#if entry.taskID}
+                              {#if row.taskID}
                                 <button
                                   type="button"
                                   aria-label="Copy task reference"
                                   title="Copy task reference"
-                                  onclick={() => copyGitTaskReference(entry.taskID)}
+                                  onclick={() => copyGitTaskReference(row.taskID)}
                                 >
                                   <ExternalLink size={11} strokeWidth={2} />
                                 </button>
@@ -23930,10 +24018,64 @@
     font-weight: 820;
   }
 
+  .git-graph-summary-strip,
+  .git-task-search-targets {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 20px;
+    overflow: hidden;
+    padding: 3px 5px;
+    color: #9aa7a3;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.028);
+    font-size: 8.5px;
+    font-weight: 780;
+  }
+
+  .git-graph-summary-strip span,
+  .git-graph-summary-strip small,
+  .git-task-search-targets small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-graph-summary-strip span {
+    flex: 1 1 auto;
+    color: #dce5e2;
+    font-weight: 830;
+  }
+
+  .git-graph-summary-strip small {
+    flex: 0 0 auto;
+    color: #8d9995;
+  }
+
+  .git-task-search-targets {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
   .git-task-trail > span:first-child {
     flex: 0 0 auto;
     color: #aeb8b5;
     text-transform: uppercase;
+  }
+
+  .git-task-search-targets > span:first-child {
+    flex: 0 0 auto;
+    color: #aeb8b5;
+    font-size: 8px;
+    font-weight: 860;
+    text-transform: uppercase;
+  }
+
+  .git-task-search-targets small {
+    max-width: 160px;
   }
 
   .git-branch-health-strip {
