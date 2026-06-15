@@ -897,6 +897,7 @@
   let recordCountLabel = $derived(
     formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
   );
+  let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId));
   let scanSummaryLabel = $derived(
     formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
   );
@@ -909,7 +910,7 @@
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
       query,
       scanning,
-      loading,
+      loading: sourceIndexLoading,
       error
     })
   );
@@ -932,7 +933,7 @@
       entry: selectedProjectIndexEntry,
       requestedLimit: expandedSourceScanLimit,
       scanning,
-      loading,
+      loading: sourceIndexLoading,
       error
     })
   );
@@ -945,7 +946,7 @@
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
       query,
       scanning,
-      loading,
+      loading: sourceIndexLoading,
       error,
       stats: sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null
     })
@@ -2972,6 +2973,7 @@
         scanning = false;
         activeSourceScanId = '';
         sourceScanProgress = null;
+        if (!selectedRecord) loading = false;
       }
     }
   }
@@ -14592,6 +14594,12 @@
               </div>
             {/each}
           </div>
+        {:else}
+          <div class="activity-empty compact">
+            {orchestrationRunsLoading
+              ? 'Loading orchestration runs'
+              : `No orchestration runs for ${selectedProject.name}`}
+          </div>
         {/if}
       </section>
       {/if}
@@ -14645,6 +14653,12 @@
                 <small title={context.cwd}>{context.cwd}</small>
               </div>
             {/each}
+          </div>
+        {:else}
+          <div class="activity-empty compact">
+            {runtimeContextsLoading
+              ? 'Scanning runtime contexts'
+              : `No runtime contexts for ${selectedProject.name}`}
           </div>
         {/if}
       </section>
@@ -14703,6 +14717,12 @@
                 </button>
               </div>
             {/each}
+          </div>
+        {:else}
+          <div class="activity-empty compact">
+            {agentSessionsLoading
+              ? 'Scanning agent sessions'
+              : `No agent sessions for ${selectedProject.name}`}
           </div>
         {/if}
       </section>
@@ -14937,6 +14957,10 @@
               </div>
             {/each}
           </div>
+        {:else}
+          <div class="activity-empty compact">
+            {projectWorktreesLoading ? 'Scanning worktrees' : `No worktrees for ${selectedProject.name}`}
+          </div>
         {/if}
       </section>
       {/if}
@@ -15005,6 +15029,10 @@
                 <em>{repoDashboardRemoteLabel(summary)}</em>
               </div>
             {/each}
+          </div>
+        {:else}
+          <div class="activity-empty compact">
+            {gitRepositorySummariesLoading ? 'Scanning repositories' : 'No repository summaries'}
           </div>
         {/if}
       </section>
@@ -17159,6 +17187,7 @@
     min-width: 0;
     overflow: hidden;
     padding: 14px 12px;
+    container-type: inline-size;
   }
 
   .brand-row {
@@ -19022,6 +19051,110 @@
     color: #8d9995;
     background: rgba(255, 255, 255, 0.08);
     cursor: default;
+  }
+
+  @container (max-width: 260px) {
+    .sidebar {
+      padding: 10px 7px;
+    }
+
+    .brand-row {
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 7px;
+      margin-bottom: 10px;
+    }
+
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+    }
+
+    .eyebrow {
+      margin-bottom: 1px;
+      font-size: 9px;
+    }
+
+    h1 {
+      font-size: 14px;
+    }
+
+    .project-controls {
+      margin-bottom: 8px;
+    }
+
+    .project-row {
+      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;
+      gap: 5px;
+      margin-bottom: 6px;
+    }
+
+    select,
+    .scan-button,
+    .icon-button,
+    .form-button {
+      height: 30px;
+      border-radius: 8px;
+    }
+
+    select {
+      padding: 0 8px;
+    }
+
+    .icon-button {
+      width: 30px;
+    }
+
+    .scan-button {
+      grid-template-columns: 1fr;
+      place-items: center;
+      gap: 0;
+      padding: 0;
+    }
+
+    .scan-button span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .project-path-row,
+    .project-setup-row {
+      font-size: 9px;
+    }
+
+    .search-box {
+      grid-template-columns: 15px minmax(0, 1fr);
+      gap: 6px;
+      height: 32px;
+      padding: 0 8px;
+      margin-bottom: 8px;
+    }
+
+    .global-search-panel {
+      gap: 5px;
+      padding-bottom: 8px;
+      margin-bottom: 8px;
+    }
+
+    .global-search-box {
+      grid-template-columns: 15px minmax(0, 1fr) 24px;
+      gap: 5px;
+      height: 30px;
+      padding: 0 3px 0 8px;
+    }
+
+    .source-search-submit {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+    }
   }
 
   .source-search-summary {

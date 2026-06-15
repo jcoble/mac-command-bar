@@ -105,6 +105,13 @@ assertDeclaration('.shell:not(.activity-hidden)', 'grid-template-columns: 56px 6
 assertDeclaration('.shell:not(.activity-hidden) .activity-shell', 'grid-template-columns: 46px');
 assertDeclaration('.shell:not(.activity-hidden) .sidebar', 'display: none');
 assertDeclaration('.activity-shell', 'min-width: 0');
+assertDeclaration('.sidebar', 'container-type: inline-size');
+assert.ok(
+  pageSource.includes('@container (max-width: 260px)') &&
+    pageSource.includes('.project-row {\n      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;') &&
+    pageSource.includes('.scan-button span {\n      position: absolute;'),
+  'The left source pane should compact controls by pane width instead of clipping fixed-width controls'
+);
 assertDeclaration('.topbar > div:first-child', 'min-width: 0');
 assertDeclaration('.topbar h2', 'text-overflow: ellipsis');
 assertDeclaration('.activity-rail', 'width: 46px');
@@ -1166,6 +1173,13 @@ assert.ok(pageSource.includes('class="orchestration-context-panel"'), 'Workspace
 assert.ok(pageSource.includes('class="orchestration-context-loop-stages"'), 'Orchestration context rows should show compact loop stage counts');
 assert.ok(pageSource.includes('aria-label="Context run loop stages"'), 'Orchestration context loop stages should be accessible');
 assert.ok(pageSource.includes('aria-label="Copy context run handoff"'), 'Orchestration context should expose a compact handoff copy action');
+assert.ok(
+  pageSource.includes('No orchestration runs for ${selectedProject.name}') &&
+    pageSource.includes('No runtime contexts for ${selectedProject.name}') &&
+    pageSource.includes('No agent sessions for ${selectedProject.name}') &&
+    pageSource.includes('No worktrees for ${selectedProject.name}'),
+  'Context cards should show explicit empty states when native scans return no project data'
+);
 assert.ok(pageSource.includes('runMetrics.stepCount'), 'Orchestration run cards should expose step counts');
 assert.ok(pageSource.includes('runMetrics.agentCount'), 'Orchestration run cards should expose agent counts');
 assert.ok(pageSource.includes('runMetrics.artifactCount'), 'Orchestration run cards should expose artifact counts');
@@ -1311,6 +1325,11 @@ assert.ok(pageSource.includes('sourceScanStatsLabel'), 'Source tree should deriv
 assert.ok(pageSource.includes('formatSourceScanStats'), 'Source tree should format native scan telemetry');
 assert.ok(pageSource.includes('class="scan-stats"'), 'Source tree should render scan telemetry below the index summary');
 assert.ok(pageSource.includes('class="scan-recovery-panel"'), 'Source tree should expose compact scan recovery guidance');
+assert.ok(
+  pageSource.includes('let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId))') &&
+    pageSource.includes('loading: sourceIndexLoading'),
+  'Source index evidence should not stay busy just because the editor preview is loading'
+);
 assert.ok(pageSource.includes('aria-label="Choose project root"'), 'Scan recovery should expose a direct project-root chooser');
 assert.ok(pageSource.includes('tauriScan.stats'), 'Source scans should preserve native scanner telemetry');
 assert.ok(pageSource.includes('skipTinyIndexRepair'), 'Source scans should avoid repair loops for genuinely tiny projects');
