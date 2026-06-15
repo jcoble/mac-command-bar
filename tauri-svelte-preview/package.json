@@ -24,6 +24,7 @@
     "test:source-data": "node --experimental-strip-types scripts/sourceData.test.mjs",
     "test:source-ui": "node scripts/sourceUi.test.mjs",
     "test:workspace-snapshot": "node --experimental-strip-types scripts/workspaceSnapshot.test.mjs",
+    "test:workspace-snapshot-plan": "node --experimental-strip-types scripts/workspaceSnapshotPlan.test.mjs",
     "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",
     "test:tauri-config": "node scripts/tauriDevConfig.test.mjs",
     "test:tauri-app": "pnpm test:tauri-source && pnpm test:tauri-config && pnpm build && pnpm test:native-lsp && cargo build --manifest-path src-tauri/Cargo.toml",
