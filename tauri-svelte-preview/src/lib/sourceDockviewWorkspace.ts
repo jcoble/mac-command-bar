@@ -19,6 +19,14 @@ import {
 export const sourceDockviewStorageKey = 'mac-command-bar.source-browser.dockview-layout';
 export const sourceDockviewComponentID = 'source-panel';
 
+export type SourceDockviewMigrationSliceID = 'insights-only' | 'context-insights' | 'bottom-runtime';
+
+export type SourceDockviewMigrationSlice = {
+  id: SourceDockviewMigrationSliceID;
+  rootPanelID: SourceDockPanelID;
+  panelIDs: SourceDockPanelID[];
+};
+
 export type SourceDockviewPanelDescriptor = {
   id: SourceDockPanelID;
   title: string;
@@ -67,10 +75,40 @@ export const sourceDockviewPanelDescriptors: SourceDockviewPanelDescriptor[] =
     component: sourceDockviewComponentID
   }));
 
+export const sourceDockviewMigrationSlices: SourceDockviewMigrationSlice[] = [
+  { id: 'insights-only', rootPanelID: 'insights', panelIDs: ['insights'] },
+  { id: 'context-insights', rootPanelID: 'context', panelIDs: ['context', 'insights'] },
+  { id: 'bottom-runtime', rootPanelID: 'terminal', panelIDs: ['terminal', 'browser'] }
+];
+
 export type SourceDockviewPanelPlanOptions = {
   panelIDs?: SourceDockPanelID[];
   rootPanelID?: SourceDockPanelID;
 };
+
+export function sourceDockviewMigrationSliceStorageKey(
+  sliceID: SourceDockviewMigrationSliceID
+): string {
+  return `${sourceDockviewStorageKey}.${sliceID}`;
+}
+
+export function sourceDockviewMigrationSlicePlanOptions(
+  sliceID: SourceDockviewMigrationSliceID
+): SourceDockviewPanelPlanOptions {
+  const slice = sourceDockviewMigrationSlice(sliceID);
+  return {
+    panelIDs: [...slice.panelIDs],
+    rootPanelID: slice.rootPanelID
+  };
+}
+
+function sourceDockviewMigrationSlice(sliceID: SourceDockviewMigrationSliceID): SourceDockviewMigrationSlice {
+  const slice = sourceDockviewMigrationSlices.find((candidate) => candidate.id === sliceID);
+  if (!slice) {
+    throw new Error(`Unknown Dockview migration slice: ${sliceID}`);
+  }
+  return slice;
+}
 
 export function createSourceDockviewPanelPlans(
   layout: SourceDockLayout,

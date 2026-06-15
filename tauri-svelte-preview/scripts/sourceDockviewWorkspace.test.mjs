@@ -10,6 +10,9 @@ import {
   applySourceDockviewActivePanel,
   applySourceDockviewPanelClose,
   createSourceDockviewPanelPlans,
+  sourceDockviewMigrationSlicePlanOptions,
+  sourceDockviewMigrationSlices,
+  sourceDockviewMigrationSliceStorageKey,
   sourceDockviewPanelDescriptors,
   sourceDockviewStorageKey
 } from '../src/lib/sourceDockviewWorkspace.ts';
@@ -111,6 +114,72 @@ assert.deepEqual(
     ['insights', { referencePanel: 'context', direction: 'within' }]
   ],
   'A subset Dockview host should stack sibling panels inside the chosen root panel'
+);
+
+assert.deepEqual(
+  sourceDockviewMigrationSlices,
+  [
+    { id: 'insights-only', rootPanelID: 'insights', panelIDs: ['insights'] },
+    { id: 'context-insights', rootPanelID: 'context', panelIDs: ['context', 'insights'] },
+    { id: 'bottom-runtime', rootPanelID: 'terminal', panelIDs: ['terminal', 'browser'] }
+  ],
+  'Dockview migration slices should expose stable roots and panel membership'
+);
+
+assert.deepEqual(
+  [
+    sourceDockviewMigrationSliceStorageKey('insights-only'),
+    sourceDockviewMigrationSliceStorageKey('context-insights'),
+    sourceDockviewMigrationSliceStorageKey('bottom-runtime')
+  ],
+  [
+    'mac-command-bar.source-browser.dockview-layout.insights-only',
+    'mac-command-bar.source-browser.dockview-layout.context-insights',
+    'mac-command-bar.source-browser.dockview-layout.bottom-runtime'
+  ],
+  'Dockview migration slices should use stable layout storage keys'
+);
+
+assert.deepEqual(
+  [
+    sourceDockviewMigrationSlicePlanOptions('insights-only'),
+    sourceDockviewMigrationSlicePlanOptions('context-insights'),
+    sourceDockviewMigrationSlicePlanOptions('bottom-runtime')
+  ],
+  [
+    { panelIDs: ['insights'], rootPanelID: 'insights' },
+    { panelIDs: ['context', 'insights'], rootPanelID: 'context' },
+    { panelIDs: ['terminal', 'browser'], rootPanelID: 'terminal' }
+  ],
+  'Dockview migration slices should expose reusable panel plan options'
+);
+
+assert.deepEqual(
+  createSourceDockviewPanelPlans(
+    createDefaultSourceDockLayout(),
+    sourceDockviewMigrationSlicePlanOptions('context-insights')
+  ).map((plan) => [plan.id, plan.position]),
+  [
+    ['context', undefined],
+    ['insights', { referencePanel: 'context', direction: 'within' }]
+  ],
+  'The context-insights migration slice should create only context and insights panel plans'
+);
+
+const runtimeBottomLayout = showSourceDockPanel(
+  showSourceDockPanel(createDefaultSourceDockLayout(), 'terminal'),
+  'browser'
+);
+assert.deepEqual(
+  createSourceDockviewPanelPlans(
+    runtimeBottomLayout,
+    sourceDockviewMigrationSlicePlanOptions('bottom-runtime')
+  ).map((plan) => [plan.id, plan.position]),
+  [
+    ['terminal', undefined],
+    ['browser', { referencePanel: 'terminal', direction: 'within' }]
+  ],
+  'The bottom-runtime migration slice should create only terminal and browser panel plans'
 );
 
 const closedContextLayout = applySourceDockviewPanelClose(createDefaultSourceDockLayout(), 'context');

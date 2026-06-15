@@ -1054,7 +1054,7 @@ fn list_source_files_sync_with_cancellation(
     let normalized_query = query
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty());
-    let collect_limit = limit.saturating_add(1);
+    let collect_limit = source_collection_limit(limit);
     let mut records = Vec::new();
     let mut progress = SourceScanWalkProgress::default();
     collect_source_files(
@@ -3376,6 +3376,9 @@ fn detect_language(path: &Path) -> String {
     if file_name == "dockerfile" || file_name.ends_with(".dockerfile") {
         return "dockerfile".to_string();
     }
+    if file_name == "makefile" {
+        return "makefile".to_string();
+    }
 
     let extension = path
         .extension()
@@ -3427,6 +3430,13 @@ fn detect_language(path: &Path) -> String {
 
 fn is_source_file(path: &Path) -> bool {
     !matches!(detect_language(path).as_str(), "plain")
+}
+
+fn source_collection_limit(limit: usize) -> usize {
+    limit
+        .max(DEFAULT_SOURCE_LIST_LIMIT)
+        .min(MAX_SOURCE_LIST_LIMIT)
+        .saturating_add(1)
 }
 
 fn compare_source_walk_entries(
@@ -3689,7 +3699,9 @@ fn source_path_segment_adjustment(segments: &[&str]) -> i32 {
 }
 
 fn localized_path_compare(left: &str, right: &str) -> std::cmp::Ordering {
-    left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase())
+    left.to_ascii_lowercase()
+        .cmp(&right.to_ascii_lowercase())
+        .then_with(|| left.cmp(right))
 }
 
 fn skip_dir_reason(name: &str) -> Option<&'static str> {
@@ -4021,6 +4033,66 @@ mod tests {
     }
 
     #[test]
+    fn source_scan_final_sort_keeps_src_before_project_named_shared_dirs_when_truncated() {
+        let temp_root = unique_temp_root();
+        let root = temp_root.join("Project");
+        std::fs::create_dir_all(root.join("Project.Shared")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Project.Shared/Alpha.cs"),
+            "namespace Project.Shared;\npublic sealed class Alpha {}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Project.Shared/Beta.cs"),
+            "namespace Project.Shared;\npublic sealed class Beta {}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/App.cs"),
+            "namespace Project;\npublic sealed class App {}",
+        )
+        .unwrap();
+
+        let scan = list_source_files_sync(root, 2, None).unwrap();
+
+        assert_eq!(
+            scan.records
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/App.cs", "Project.Shared/Alpha.cs"]
+        );
+        assert!(scan.truncated);
+
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[test]
+    fn source_scan_low_requested_limit_still_walks_beyond_returned_files() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const app = true;").unwrap();
+        std::fs::write(root.join("src/Worker.ts"), "export const worker = true;").unwrap();
+        std::fs::write(root.join("src/Widget.ts"), "export const widget = true;").unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/index.ts"),
+            "export const dependency = true;",
+        )
+        .unwrap();
+
+        let scan = list_source_files_sync(root.clone(), 2, None).unwrap();
+
+        assert_eq!(scan.records.len(), 2);
+        assert!(scan.truncated);
+        assert_eq!(scan.stats.skipped_directories, 1);
+        assert_eq!(scan.stats.skipped_directory_samples[0].name, "node_modules");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn source_scan_skips_tool_cache_and_coverage_dirs() {
         let root = unique_temp_root();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -4157,6 +4229,7 @@ mod tests {
         assert_eq!(detect_language(Path::new("scripts/build.sh")), "shell");
         assert_eq!(detect_language(Path::new("tools/import.py")), "python");
         assert_eq!(detect_language(Path::new("Dockerfile")), "dockerfile");
+        assert_eq!(detect_language(Path::new("Makefile")), "makefile");
         assert_eq!(detect_language(Path::new("EdiPlatform.Api.csproj")), "xml");
     }
 

@@ -4,6 +4,7 @@ import {
   buildWorktreeCleanupScript,
   buildWorktreeDecisionQueue,
   buildWorktreeSafetySummary,
+  buildWorktreeTaskGroups,
   prioritizeWorktreesForCleanup,
   worktreeDecisionLane,
   worktreePrimaryAction,
@@ -462,6 +463,72 @@ function worktree(overrides = {}) {
   assert.match(queue[1].summary, /1 stale/);
   assert.equal(queue[2].entries[0].primaryAction.kind, 'audit');
   assert.equal(queue[3].label, 'Protected');
+}
+
+{
+  const groups = buildWorktreeTaskGroups(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-151-clean-a',
+        branch: 'cdx/tsk-151-clean-a',
+        taskID: ' TSK-151 ',
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-151-dirty-b',
+        branch: 'cdx/tsk-151-dirty-b',
+        taskID: 'TSK-151',
+        isDirty: true
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-152-clean',
+        branch: 'cdx/tsk-152-clean',
+        taskID: 'TSK-152',
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/no-task-review',
+        branch: 'cdx/no-task-review',
+        taskID: '  ',
+        lastActivity: null
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.deepEqual(
+    groups.map((group) => group.label),
+    ['TSK-151', 'TSK-152', 'No task ID']
+  );
+
+  const mixedTask = groups[0];
+  assert.equal(mixedTask.taskID, 'TSK-151');
+  assert.equal(mixedTask.worktreeCount, 2);
+  assert.equal(mixedTask.blockedCount, 1);
+  assert.equal(mixedTask.cleanupCandidateCount, 1);
+  assert.equal(mixedTask.needsBackupCount, 1);
+  assert.equal(mixedTask.staleCount, 1);
+  assert.equal(mixedTask.requiresManualSignoff, true);
+  assert.equal(mixedTask.primaryAction.kind, 'backup');
+  assert.match(mixedTask.summary, /2 worktrees/);
+  assert.match(mixedTask.summary, /1 blocked/);
+  assert.match(mixedTask.summary, /1 need backup/);
+  assert.match(mixedTask.summary, /1 cleanup ready/);
+  assert.deepEqual(
+    mixedTask.entries.map((entry) => entry.worktree.branch),
+    ['cdx/tsk-151-dirty-b', 'cdx/tsk-151-clean-a']
+  );
+
+  assert.equal(groups[1].requiresManualSignoff, false);
+  assert.equal(groups[1].primaryAction.kind, 'cleanup');
+  assert.equal(groups[2].taskID, null);
+  assert.equal(groups[2].reviewCount, 1);
+  assert.equal(groups[2].requiresManualSignoff, true);
+  assert.equal(groups[2].primaryAction.kind, 'audit');
 }
 
 {

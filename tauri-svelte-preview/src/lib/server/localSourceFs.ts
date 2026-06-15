@@ -104,7 +104,7 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
   }
 
   const limit = clampSourceLimit(input.limit);
-  const collectLimit = limit + 1;
+  const collectLimit = sourceCollectionLimit(limit);
   const query = input.query?.trim().toLowerCase() || null;
   const records: SourceRecord[] = [];
   const stats = createSourceScanStats();
@@ -361,6 +361,10 @@ function clampSourceLimit(limit: number | null | undefined) {
   return Math.min(maxSourceListLimit, Math.max(0, Math.trunc(limit)));
 }
 
+function sourceCollectionLimit(limit: number) {
+  return Math.min(maxSourceListLimit, Math.max(defaultSourceListLimit, limit)) + 1;
+}
+
 function isSourceFile(filePath: string) {
   return detectLanguage(filePath) !== 'plain';
 }
@@ -376,21 +380,24 @@ function detectLanguage(filePath: string) {
     case 'cs':
       return 'csharp';
     case 'ts':
-    case 'tsx':
       return 'typescript';
+    case 'tsx':
+      return 'tsx';
     case 'js':
-    case 'jsx':
     case 'mjs':
     case 'cjs':
       return 'javascript';
+    case 'jsx':
+      return 'jsx';
     case 'svelte':
       return 'svelte';
     case 'json':
     case 'jsonc':
       return 'json';
     case 'md':
-    case 'mdx':
       return 'markdown';
+    case 'mdx':
+      return 'mdx';
     case 'yml':
     case 'yaml':
       return 'yaml';
@@ -399,16 +406,30 @@ function detectLanguage(filePath: string) {
     case 'xml':
     case 'xsd':
     case 'csproj':
+    case 'fsproj':
+    case 'vbproj':
     case 'props':
     case 'targets':
+    case 'xaml':
       return 'xml';
+    case 'astro':
     case 'html':
+    case 'htm':
+    case 'vue':
       return 'html';
     case 'css':
-    case 'scss':
       return 'css';
+    case 'scss':
+      return 'scss';
+    case 'less':
+      return 'less';
+    case 'ini':
+    case 'env':
+      return 'ini';
     case 'rs':
       return 'rust';
+    case 'swift':
+      return 'swift';
     case 'sh':
     case 'bash':
     case 'zsh':
@@ -664,7 +685,7 @@ function sourceLanguagePriority(language: string) {
     return 28;
   }
 
-  if (language === 'markdown') return 55;
+  if (language === 'markdown' || language === 'mdx') return 55;
   return 80;
 }
 
@@ -692,7 +713,13 @@ function sourcePathSegmentAdjustment(segments: string[]) {
 }
 
 function localizedPathCompare(left: string, right: string) {
-  return left.toLowerCase().localeCompare(right.toLowerCase());
+  const lowerLeft = left.toLowerCase();
+  const lowerRight = right.toLowerCase();
+  if (lowerLeft < lowerRight) return -1;
+  if (lowerLeft > lowerRight) return 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function errorMessage(error: unknown) {

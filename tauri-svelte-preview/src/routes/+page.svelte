@@ -332,20 +332,27 @@
   const sourceTreeOverscanRows = 8;
   const sourceTreeFallbackViewportHeight = 420;
   const sidePaneDefaultWidth = 407;
-  const sidePaneMinWidth = 320;
-  const sidePaneMaxWidth = 620;
+  const sidePaneMinWidth = 56;
+  const sidePaneMaxWidth = 1100;
+  const sidePaneCollapseThreshold = 48;
+  const sidePaneRailOnlyThreshold = 118;
   const editorInsightDefaultWidth = 260;
-  const editorInsightMinWidth = 220;
-  const editorInsightMaxWidth = 440;
+  const editorInsightMinWidth = 96;
+  const editorInsightMaxWidth = 900;
+  const editorInsightCollapseThreshold = 76;
   const contextPaneDefaultWidth = 330;
-  const contextPaneMinWidth = 260;
-  const contextPaneMaxWidth = 560;
+  const contextPaneMinWidth = 34;
+  const contextPaneMaxWidth = 1100;
+  const contextPaneCollapseThreshold = 30;
+  const contextPaneRailOnlyThreshold = 84;
   const contextPaneDefaultHeight = 260;
-  const contextPaneMinHeight = 180;
-  const contextPaneMaxHeight = 520;
+  const contextPaneMinHeight = 96;
+  const contextPaneMaxHeight = 720;
+  const contextPaneHeightCollapseThreshold = 84;
   const bottomDockDefaultHeight = 300;
-  const bottomDockMinHeight = 180;
-  const bottomDockMaxHeight = 620;
+  const bottomDockMinHeight = 96;
+  const bottomDockMaxHeight = 760;
+  const bottomDockCollapseThreshold = 84;
   const orchestrationRefreshIntervalMs = 5_000;
   const defaultOrchestrationEventFilePath = '/tmp/mcb-orchestration-events.jsonl';
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
@@ -1835,6 +1842,20 @@
       label: 'Focus editor canvas',
       detail: 'Hide context, insights, terminal, and browser',
       perform: focusSourceEditorLayout
+    },
+    {
+      id: 'layout-activity-rail',
+      label: 'Collapse explorer to icon rail',
+      detail: 'Activity pane',
+      disabled: activityPaneRailOnly(),
+      perform: collapseActivityPaneToRail
+    },
+    {
+      id: 'layout-context-rail',
+      label: 'Collapse context to icon rail',
+      detail: 'Context pane',
+      disabled: contextPaneRailOnly(),
+      perform: collapseContextPaneToRail
     },
     {
       id: 'layout-restore-before-focus',
@@ -9072,6 +9093,8 @@
     markSourceLayoutCustom();
     if (!sourceDockPanelVisible('activity')) {
       showDockPanel('activity');
+    } else if (activityPaneRailOnly()) {
+      expandActivityPaneFromRail();
     }
     rememberSourceActivityFilter();
     sourceActivityMode = mode;
@@ -9722,6 +9745,10 @@
 
   function showDockPanel(panelID: SourceDockPanelID) {
     if (panelID === 'activity') {
+      const nextSidePaneWidth = sidePaneWidth <= sidePaneRailOnlyThreshold
+        ? sidePaneDefaultWidth
+        : sidePaneWidth;
+      sidePaneWidth = clampSidePaneWidth(nextSidePaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
           moveSourceDockPanel(sourceDockLayout, 'activity', sidePanePosition),
@@ -9733,6 +9760,23 @@
       if (typeof window !== 'undefined') {
         window.setTimeout(measureFileTreeViewport, 0);
       }
+      return;
+    }
+
+    if (panelID === 'context') {
+      const nextContextPaneWidth =
+        contextPanelPlacement === 'side' && contextPaneWidth <= contextPaneRailOnlyThreshold
+          ? contextPaneDefaultWidth
+          : contextPaneWidth;
+      contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
+      applySourceDockLayout(
+        resizeSourceDockGroup(
+          showSourceDockPanel(sourceDockLayout, 'context'),
+          dockGroupForContextPanelPlacement(contextPanelPlacement),
+          contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
+        )
+      );
+      fileActionStatus = 'Context panel shown';
       return;
     }
 
@@ -9798,6 +9842,65 @@
       sourceChromeCompact &&
       editorFocusHiddenPanelIDs.every((panelID) => !sourceDockPanelVisible(panelID))
     );
+  }
+
+  function activityPaneRailOnly() {
+    return shouldRenderDockPanel('activity') && sidePaneWidth <= sidePaneRailOnlyThreshold;
+  }
+
+  function contextPaneRailOnly() {
+    return (
+      shouldRenderDockPanel('context') &&
+      contextPanelPlacement === 'side' &&
+      contextPaneWidth <= contextPaneRailOnlyThreshold
+    );
+  }
+
+  function expandActivityPaneFromRail() {
+    sidePaneWidth = clampSidePaneWidth(sidePaneDefaultWidth);
+    persistSidePaneWidth(sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+  }
+
+  function collapseActivityPaneToRail() {
+    markSourceLayoutCustom();
+    sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
+    sourceDockLayout = resizeSourceDockGroup(
+      showSourceDockPanel(sourceDockLayout, 'activity'),
+      sidePanePosition,
+      sidePaneWidth
+    );
+    persistSidePaneWidth(sidePaneWidth);
+    persistSourceDockLayout(sourceDockLayout);
+    if (typeof window !== 'undefined') {
+      window.setTimeout(measureFileTreeViewport, 0);
+    }
+    fileActionStatus = 'Activity panel collapsed to rail';
+  }
+
+  function expandContextPaneFromRail() {
+    if (contextPanelPlacement !== 'side') return;
+    contextPaneWidth = clampContextPaneWidth(contextPaneDefaultWidth);
+    persistContextPaneWidth(contextPaneWidth);
+    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+  }
+
+  function collapseContextPaneToRail() {
+    markSourceLayoutCustom();
+    contextPanelPlacement = 'side';
+    contextPanelCollapsed = false;
+    contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
+    const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
+    sourceDockLayout = resizeSourceDockGroup(
+      moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+      contextGroupID,
+      contextPaneWidth
+    );
+    persistContextPanelPlacement(contextPanelPlacement);
+    persistContextPanelCollapsed(contextPanelCollapsed);
+    persistContextPaneWidth(contextPaneWidth);
+    persistSourceDockLayout(sourceDockLayout);
+    fileActionStatus = 'Context panel collapsed to rail';
   }
 
   function toggleDockPanelVisibility(panelID: SourceDockPanelID) {
@@ -10383,6 +10486,7 @@
 
     const startX = event.clientX;
     const startWidth = sidePaneWidth;
+    let latestRawWidth = startWidth;
     event.preventDefault();
     markSourceLayoutCustom();
     window.document.body.classList.add('resizing-source-pane');
@@ -10391,12 +10495,18 @@
       const delta = sidePanePosition === 'left'
         ? moveEvent.clientX - startX
         : startX - moveEvent.clientX;
-      sidePaneWidth = clampSidePaneWidth(startWidth + delta);
+      latestRawWidth = startWidth + delta;
+      sidePaneWidth = clampSidePaneWidth(latestRawWidth);
       window.setTimeout(measureFileTreeViewport, 0);
     };
     const finishResize = () => {
-      persistSidePaneWidth(sidePaneWidth);
-      persistDockGroupSize(sidePanePosition, sidePaneWidth);
+      if (latestRawWidth <= sidePaneCollapseThreshold) {
+        hideDockPanel('activity');
+        fileActionStatus = 'Activity pane hidden';
+      } else {
+        persistSidePaneWidth(sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, sidePaneWidth);
+      }
       window.document.body.classList.remove('resizing-source-pane');
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', finishResize);
@@ -10415,6 +10525,11 @@
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
     const signedDirection = sidePanePosition === 'left' ? direction : -direction;
+    if (sidePaneWidth <= sidePaneMinWidth && signedDirection < 0) {
+      hideDockPanel('activity');
+      fileActionStatus = 'Activity pane hidden';
+      return;
+    }
     sidePaneWidth = clampSidePaneWidth(sidePaneWidth + signedDirection * 24);
     persistSidePaneWidth(sidePaneWidth);
     persistDockGroupSize(sidePanePosition, sidePaneWidth);
@@ -10480,6 +10595,10 @@
     return contextCardOrder.filter(isContextCardVisible);
   }
 
+  function contextCardsTabbed() {
+    return contextPanelMode === 'stack' || contextPanelPlacement === 'side';
+  }
+
   function activeVisibleContextCardID() {
     const visibleCardIDs = visibleContextCardIDs();
     return visibleCardIDs.includes(activeContextCardID) ? activeContextCardID : (visibleCardIDs[0] ?? null);
@@ -10487,11 +10606,14 @@
 
   function shouldRenderContextCard(cardID: SourceContextCardID) {
     if (!isContextCardVisible(cardID)) return false;
-    return contextPanelMode !== 'stack' || activeVisibleContextCardID() === cardID;
+    return !contextCardsTabbed() || activeVisibleContextCardID() === cardID;
   }
 
   function selectActiveContextCard(cardID: SourceContextCardID) {
     markSourceLayoutCustom();
+    if (contextPaneRailOnly()) {
+      expandContextPaneFromRail();
+    }
     activeContextCardID = cardID;
     persistActiveContextCard(cardID);
   }
@@ -10509,6 +10631,9 @@
     hiddenContextCardIDs = new Set();
     persistHiddenContextCards(hiddenContextCardIDs);
     contextPanelCollapsed = false;
+    if (contextPaneRailOnly()) {
+      expandContextPaneFromRail();
+    }
     sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistSourceDockLayout(sourceDockLayout);
@@ -10521,6 +10646,9 @@
     hiddenContextCardIDs = nextCardIDs;
     activeContextCardID = cardID;
     contextPanelCollapsed = false;
+    if (contextPaneRailOnly()) {
+      expandContextPaneFromRail();
+    }
     sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistHiddenContextCards(nextCardIDs);
     persistActiveContextCard(cardID);
@@ -10671,6 +10799,7 @@
 
     const startX = event.clientX;
     const startWidth = editorInsightWidth;
+    let latestRawWidth = startWidth;
     event.preventDefault();
     markSourceLayoutCustom();
     editorInsightCollapsed = false;
@@ -10678,13 +10807,19 @@
     window.document.body.classList.add('resizing-editor-insight');
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      editorInsightWidth = clampEditorInsightWidth(startWidth - (moveEvent.clientX - startX));
+      latestRawWidth = startWidth - (moveEvent.clientX - startX);
+      editorInsightWidth = clampEditorInsightWidth(latestRawWidth);
     };
     const finishResize = () => {
-      persistEditorInsightWidth(editorInsightWidth);
-      const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
-      if (insightsGroupID !== null) {
-        persistDockGroupSize(insightsGroupID, editorInsightWidth);
+      if (latestRawWidth <= editorInsightCollapseThreshold) {
+        hideDockPanel('insights');
+        fileActionStatus = 'Insights pane hidden';
+      } else {
+        persistEditorInsightWidth(editorInsightWidth);
+        const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+        if (insightsGroupID !== null) {
+          persistDockGroupSize(insightsGroupID, editorInsightWidth);
+        }
       }
       window.document.body.classList.remove('resizing-editor-insight');
       window.removeEventListener('pointermove', handlePointerMove);
@@ -10705,6 +10840,11 @@
     editorInsightCollapsed = false;
     persistEditorInsightCollapsed(editorInsightCollapsed);
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
+    if (editorInsightWidth <= editorInsightMinWidth && direction < 0) {
+      hideDockPanel('insights');
+      fileActionStatus = 'Insights pane hidden';
+      return;
+    }
     editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
     persistEditorInsightWidth(editorInsightWidth);
     const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
@@ -10756,6 +10896,7 @@
     const startY = event.clientY;
     const startWidth = contextPaneWidth;
     const startHeight = contextPaneHeight;
+    let latestRawSize = contextPanelPlacement === 'bottom' ? startHeight : startWidth;
     event.preventDefault();
     markSourceLayoutCustom();
     const resizingClass = contextPanelPlacement === 'bottom'
@@ -10765,14 +10906,22 @@
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       if (contextPanelPlacement === 'bottom') {
-        contextPaneHeight = clampContextPaneHeight(startHeight - (moveEvent.clientY - startY));
+        latestRawSize = startHeight - (moveEvent.clientY - startY);
+        contextPaneHeight = clampContextPaneHeight(latestRawSize);
         return;
       }
 
-      contextPaneWidth = clampContextPaneWidth(startWidth - (moveEvent.clientX - startX));
+      latestRawSize = startWidth - (moveEvent.clientX - startX);
+      contextPaneWidth = clampContextPaneWidth(latestRawSize);
     };
     const finishResize = () => {
-      if (contextPanelPlacement === 'bottom') {
+      const collapseThreshold = contextPanelPlacement === 'bottom'
+        ? contextPaneHeightCollapseThreshold
+        : contextPaneCollapseThreshold;
+      if (latestRawSize <= collapseThreshold) {
+        hideDockPanel('context');
+        fileActionStatus = 'Context pane hidden';
+      } else if (contextPanelPlacement === 'bottom') {
         persistContextPaneHeight(contextPaneHeight);
         persistDockGroupSize('bottom', contextPaneHeight);
       } else {
@@ -10803,6 +10952,11 @@
     if (contextPanelPlacement === 'bottom') {
       const direction = event.key === 'ArrowUp' ? 1 : event.key === 'ArrowDown' ? -1 : 0;
       if (direction === 0) return;
+      if (contextPaneHeight <= contextPaneMinHeight && direction < 0) {
+        hideDockPanel('context');
+        fileActionStatus = 'Context pane hidden';
+        return;
+      }
       contextPaneHeight = clampContextPaneHeight(contextPaneHeight + direction * 24);
       persistContextPaneHeight(contextPaneHeight);
       persistDockGroupSize('bottom', contextPaneHeight);
@@ -10810,6 +10964,11 @@
     }
 
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
+    if (contextPaneWidth <= contextPaneMinWidth && direction < 0) {
+      hideDockPanel('context');
+      fileActionStatus = 'Context pane hidden';
+      return;
+    }
     contextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
     persistContextPaneWidth(contextPaneWidth);
     persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
@@ -10833,14 +10992,27 @@
 
     const startY = event.clientY;
     const startHeight = bottomDockHeight();
+    let latestRawHeight = startHeight;
     event.preventDefault();
     markSourceLayoutCustom();
     window.document.body.classList.add('resizing-bottom-dock');
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      persistDockGroupSize('bottom', clampBottomDockHeight(startHeight - (moveEvent.clientY - startY)));
+      latestRawHeight = startHeight - (moveEvent.clientY - startY);
+      persistDockGroupSize('bottom', clampBottomDockHeight(latestRawHeight));
     };
     const finishResize = () => {
+      if (latestRawHeight <= bottomDockCollapseThreshold) {
+        let nextLayout = sourceDockLayout;
+        if (sourceDockPanelVisible('terminal')) {
+          nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
+        }
+        if (sourceDockPanelVisible('browser')) {
+          nextLayout = hideSourceDockPanel(nextLayout, 'browser');
+        }
+        applySourceDockLayout(nextLayout);
+        fileActionStatus = 'Bottom dock hidden';
+      }
       window.document.body.classList.remove('resizing-bottom-dock');
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', finishResize);
@@ -10858,6 +11030,18 @@
     event.preventDefault();
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowUp' ? 1 : -1;
+    if (bottomDockHeight() <= bottomDockMinHeight && direction < 0) {
+      let nextLayout = sourceDockLayout;
+      if (sourceDockPanelVisible('terminal')) {
+        nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
+      }
+      if (sourceDockPanelVisible('browser')) {
+        nextLayout = hideSourceDockPanel(nextLayout, 'browser');
+      }
+      applySourceDockLayout(nextLayout);
+      fileActionStatus = 'Bottom dock hidden';
+      return;
+    }
     persistDockGroupSize('bottom', clampBottomDockHeight(bottomDockHeight() + direction * 24));
   }
 
@@ -11374,8 +11558,9 @@
 
   function activateDuplicateProjectRoot(project: ProjectRoot, projects: ProjectRoot[], message: string) {
     addingProject = false;
-    projectFormError = message;
-    fileActionStatus = sourceOnboardingScanStatus(project);
+    projectFormError = '';
+    const scanStatus = sourceOnboardingScanStatus(project);
+    fileActionStatus = message ? `${message} ${scanStatus}` : scanStatus;
     void activateProject(project, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
@@ -11685,11 +11870,11 @@
       storedProjectOptions.find((project) => project.id === storedProjectID) ??
       storedProjectOptions[0] ??
       initialProject;
-    const startupWorkspaceSnapshot = selectStartupWorkspaceSnapshot(storedWorkspaceSnapshots, {
-      activeSessionKey: storedActiveWorkspaceSessionKey,
-      selectedProjectID: storedProject.id,
-      selectedProjectPath: storedProject.path
-    });
+    const startupWorkspaceSnapshot = storedActiveWorkspaceSessionKey
+      ? selectStartupWorkspaceSnapshot(storedWorkspaceSnapshots, {
+          activeSessionKey: storedActiveWorkspaceSessionKey
+        })
+      : null;
     const startupSnapshotProjectAlreadyKnown = startupWorkspaceSnapshot
       ? storedProjectOptions.some(
           (project) =>
@@ -11805,6 +11990,7 @@
   class="shell"
   class:side-right={sidePanePosition === 'right'}
   class:activity-hidden={!shouldRenderDockPanel('activity')}
+  class:activity-rail-only={activityPaneRailOnly()}
   style={`--accent: #5ce2cf; --side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
 >
   {#if shouldRenderDockPanel('activity')}
@@ -13632,6 +13818,21 @@
                     Right
                   </button>
                 </div>
+                <button
+                  class="view-menu-wide-button"
+                  class:active={activityPaneRailOnly()}
+                  type="button"
+                  role="menuitem"
+                  aria-label="Collapse explorer to icon rail"
+                  title="Shrink the source browser to the activity icon rail"
+                  disabled={activityPaneRailOnly()}
+                  onclick={() => {
+                    collapseActivityPaneToRail();
+                    closeViewMenu();
+                  }}
+                >
+                  Collapse to icon rail
+                </button>
               </section>
 
               <section class="view-menu-section" aria-label="Context card layout">
@@ -13698,6 +13899,21 @@
                     Stack
                   </button>
                 </div>
+                <button
+                  class="view-menu-wide-button"
+                  class:active={contextPaneRailOnly()}
+                  type="button"
+                  role="menuitem"
+                  aria-label="Collapse context to icon rail"
+                  title="Shrink the context cards to the icon rail"
+                  disabled={contextPaneRailOnly()}
+                  onclick={() => {
+                    collapseContextPaneToRail();
+                    closeViewMenu();
+                  }}
+                >
+                  Collapse to icon rail
+                </button>
                 <button
                   class="view-menu-wide-button"
                   type="button"
@@ -13870,17 +14086,27 @@
       </div>
 
       {#if hiddenDockPanelIDs().length > 0}
-        <div class="hidden-dock-panel-strip" aria-label="Hidden dock panels">
-          <span>Hidden</span>
+        <div class="hidden-dock-panel-rail" aria-label="Hidden dock panels">
           {#each hiddenDockPanelIDs() as panelID (panelID)}
             <button
-              class="hidden-dock-panel-chip"
+              class="hidden-dock-panel-button"
               type="button"
               aria-label={`Restore ${dockPanelLabel(panelID)} panel`}
               title={`Restore ${dockPanelLabel(panelID)} panel`}
               onclick={() => restoreHiddenDockPanel(panelID)}
             >
-              {dockPanelLabel(panelID)}
+              {#if panelID === 'activity'}
+                <FolderGit2 size={13} strokeWidth={1.9} />
+              {:else if panelID === 'context'}
+                <Network size={13} strokeWidth={1.9} />
+              {:else if panelID === 'insights'}
+                <Search size={13} strokeWidth={1.9} />
+              {:else if panelID === 'terminal'}
+                <Terminal size={13} strokeWidth={1.9} />
+              {:else}
+                <ExternalLink size={13} strokeWidth={1.9} />
+              {/if}
+              <span>{dockPanelLabel(panelID)}</span>
             </button>
           {/each}
         </div>
@@ -13917,16 +14143,17 @@
       class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}
       class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}
       class:context-bottom={contextPanelPlacement === 'bottom' && shouldRenderDockPanel('context')}
+      class:context-rail-only={contextPaneRailOnly()}
     >
       {#if shouldRenderDockPanel('context')}
       <div class="workspace-context-column">
-    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextPanelMode === 'stack'}>
+    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextCardsTabbed()}>
       {#if hiddenContextCardIDs.size > 0}
         <button class="context-restore-button" type="button" onclick={showAllContextCards}>
           Show hidden cards
         </button>
       {/if}
-      {#if contextPanelMode === 'stack' && visibleContextCards.length > 0}
+      {#if contextCardsTabbed() && visibleContextCards.length > 0}
         <div class="context-stack-tabs" aria-label="Context card tabs">
           {#each visibleContextCards as cardID (cardID)}
             <button
@@ -13936,7 +14163,18 @@
               title={contextCardLabels[cardID]}
               onclick={() => selectActiveContextCard(cardID)}
             >
-              {contextCardLabels[cardID]}
+              {#if cardID === 'orchestration'}
+                <Activity class="context-card-tab-icon" size={13} strokeWidth={1.9} />
+              {:else if cardID === 'runtime'}
+                <Terminal class="context-card-tab-icon" size={13} strokeWidth={1.9} />
+              {:else if cardID === 'agents'}
+                <Network class="context-card-tab-icon" size={13} strokeWidth={1.9} />
+              {:else if cardID === 'worktrees'}
+                <FolderGit2 class="context-card-tab-icon" size={13} strokeWidth={1.9} />
+              {:else}
+                <History class="context-card-tab-icon" size={13} strokeWidth={1.9} />
+              {/if}
+              <span>{contextCardLabels[cardID]}</span>
             </button>
           {/each}
         </div>
@@ -16417,10 +16655,10 @@
     display: grid;
     grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr);
     gap: 0;
-    width: min(1840px, calc(100vw - 16px));
-    height: min(1040px, calc(100dvh - 16px));
-    min-height: min(680px, calc(100dvh - 16px));
-    margin: 8px auto;
+    width: calc(100vw - 8px);
+    height: calc(100dvh - 8px);
+    min-height: min(520px, calc(100dvh - 8px));
+    margin: 4px auto;
     overflow: hidden;
     border: 1px solid rgba(231, 238, 235, 0.12);
     border-radius: 12px;
@@ -16440,6 +16678,14 @@
 
   .shell.side-right.activity-hidden {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell.activity-rail-only {
+    grid-template-columns: 56px 6px minmax(0, 1fr);
+  }
+
+  .shell.side-right.activity-rail-only {
+    grid-template-columns: minmax(0, 1fr) 6px 56px;
   }
 
   .shell.activity-hidden .workspace {
@@ -16480,6 +16726,23 @@
   .shell.side-right .sidebar {
     grid-column: 1;
     grid-row: 1;
+  }
+
+  .shell.activity-rail-only .activity-shell {
+    grid-template-columns: 46px;
+  }
+
+  .shell.activity-rail-only .sidebar {
+    display: none;
+  }
+
+  .shell.activity-rail-only.side-right .activity-shell {
+    grid-template-columns: 46px;
+  }
+
+  .shell.activity-rail-only.side-right .activity-rail {
+    grid-column: 1;
+    border-left: 0;
   }
 
   .activity-shell {
@@ -19152,8 +19415,9 @@
   }
 
   .workspace {
-    display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    position: relative;
+    display: flex;
+    flex-direction: column;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -19164,7 +19428,6 @@
   }
 
   .workspace.chrome-compact {
-    grid-template-rows: auto auto minmax(0, 1fr);
     padding: 6px;
   }
 
@@ -19334,7 +19597,8 @@
     background: rgba(255, 255, 255, 0.08);
   }
 
-  .view-menu-button-grid button.active {
+  .view-menu-button-grid button.active,
+  .view-menu-wide-button.active {
     color: #dffdf8;
     background: rgba(92, 226, 207, 0.18);
   }
@@ -19517,47 +19781,57 @@
     margin: 0;
   }
 
-  .hidden-dock-panel-strip {
+  .hidden-dock-panel-rail {
+    position: absolute;
+    top: 38px;
+    right: 7px;
+    z-index: 18;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
-    min-height: 20px;
-    margin: -1px 0 4px;
-    overflow: hidden;
+    max-height: calc(100% - 76px);
+    padding: 3px;
+    overflow: auto;
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    border-radius: 9px;
+    background: rgba(12, 16, 16, 0.86);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(14px);
   }
 
-  .hidden-dock-panel-strip > span {
-    flex: 0 0 auto;
-    color: #74817e;
-    font-size: 8px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .hidden-dock-panel-chip {
+  .hidden-dock-panel-button {
     display: inline-grid;
     place-items: center;
-    flex: 0 1 auto;
+    grid-template-columns: 20px;
     min-width: 0;
-    max-width: 92px;
-    height: 18px;
-    padding: 0 7px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
     overflow: hidden;
-    color: #9facaa;
+    color: #aeb8b5;
     border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.032);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.04);
     font: inherit;
-    font-size: 8.5px;
-    font-weight: 820;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     cursor: pointer;
   }
 
-  .hidden-dock-panel-chip:hover,
-  .hidden-dock-panel-chip:focus-visible {
+  .hidden-dock-panel-button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .hidden-dock-panel-button:hover,
+  .hidden-dock-panel-button:focus-visible {
     color: #dffdf8;
     border-color: rgba(92, 226, 207, 0.32);
     outline: 0;
@@ -19725,6 +19999,7 @@
 
   .workspace-arrangement {
     display: grid;
+    flex: 1 1 auto;
     grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
@@ -19742,7 +20017,7 @@
   }
 
   .workspace-arrangement.context-bottom {
-    grid-template-rows: minmax(0, 1fr) 6px minmax(180px, var(--context-pane-height));
+    grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height));
     gap: 0;
   }
 
@@ -19863,6 +20138,7 @@
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 6px;
     min-width: 0;
+    min-height: 0;
     margin: -2px 0 8px;
   }
 
@@ -19877,6 +20153,7 @@
   .context-stack-tabs {
     display: flex;
     min-width: 0;
+    max-width: 100%;
     padding: 2px;
     gap: 2px;
     overflow-x: auto;
@@ -19891,6 +20168,10 @@
   }
 
   .context-stack-tabs button {
+    position: relative;
+    display: inline-grid;
+    grid-template-columns: minmax(0, 1fr);
+    place-items: center;
     min-width: max-content;
     height: 24px;
     padding: 0 9px;
@@ -19901,6 +20182,10 @@
     border: 0;
     border-radius: 6px;
     background: transparent;
+  }
+
+  .context-card-tab-icon {
+    display: none;
   }
 
   .context-stack-tabs button:hover,
@@ -19916,8 +20201,9 @@
   }
 
   .workspace-arrangement.context-side .context-panel-grid {
-    grid-template-columns: minmax(0, 1fr);
-    align-content: start;
+    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    align-content: stretch;
     height: 100%;
     margin: 0;
     overflow-x: hidden;
@@ -19926,6 +20212,129 @@
     scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
     scrollbar-gutter: stable;
     scrollbar-width: thin;
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .workspace-context-column {
+    padding-right: 3px;
+    padding-left: 3px;
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .context-panel-grid {
+    grid-template-columns: 28px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    overflow: hidden;
+    padding-right: 0;
+    scrollbar-gutter: auto;
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .context-restore-button,
+  .workspace-arrangement.context-side.context-rail-only .context-panel-grid > section {
+    display: none;
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .context-stack-tabs {
+    grid-column: 1;
+    grid-row: 1;
+    width: 28px;
+    max-width: 28px;
+    padding: 2px;
+    background: rgba(10, 12, 12, 0.5);
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .context-stack-tabs button {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+  }
+
+  .workspace-arrangement.context-side .context-restore-button {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .workspace-arrangement.context-side .context-stack-tabs {
+    grid-column: 1;
+    grid-row: 2;
+    flex-direction: column;
+    align-items: center;
+    width: 28px;
+    max-width: 28px;
+    height: 100%;
+    max-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-radius: 6px;
+  }
+
+  .workspace-arrangement.context-side .context-stack-tabs button {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    min-width: 22px;
+    height: 22px;
+    padding: 0;
+  }
+
+  .workspace-arrangement.context-side .context-stack-tabs button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .workspace-arrangement.context-side .context-card-tab-icon {
+    display: block;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-panel,
+  .workspace-arrangement.context-side .runtime-context-panel,
+  .workspace-arrangement.context-side .agent-session-panel,
+  .workspace-arrangement.context-side .worktree-context-panel,
+  .workspace-arrangement.context-side .repo-dashboard-panel {
+    grid-column: 2;
+    grid-row: 2;
+    gap: 4px;
+    padding: 5px;
+    overflow: hidden;
+    border-radius: 5px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-header,
+  .workspace-arrangement.context-side .runtime-context-header,
+  .workspace-arrangement.context-side .agent-session-header,
+  .workspace-arrangement.context-side .worktree-context-header,
+  .workspace-arrangement.context-side .repo-dashboard-header {
+    min-height: 22px;
+    gap: 4px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-header strong,
+  .workspace-arrangement.context-side .runtime-context-header strong,
+  .workspace-arrangement.context-side .agent-session-header strong,
+  .workspace-arrangement.context-side .worktree-context-header strong,
+  .workspace-arrangement.context-side .repo-dashboard-header strong {
+    font-size: 10px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-header span,
+  .workspace-arrangement.context-side .runtime-context-header span,
+  .workspace-arrangement.context-side .agent-session-header span,
+  .workspace-arrangement.context-side .worktree-context-header span,
+  .workspace-arrangement.context-side .repo-dashboard-header span {
+    display: none;
+  }
+
+  .workspace-arrangement.context-side .context-card-actions {
+    gap: 2px;
+  }
+
+  .workspace-arrangement.context-side .context-card-actions .file-action-button {
+    width: 20px;
+    height: 20px;
   }
 
   .workspace-arrangement.context-bottom .context-panel-grid {
@@ -19948,6 +20357,67 @@
   .workspace-arrangement.context-side .orchestration-context-row {
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
+    gap: 3px;
+    padding: 3px 4px;
+    border-radius: 4px;
+  }
+
+  .workspace-arrangement.context-side .runtime-context-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .workspace-arrangement.context-side .runtime-context-row strong {
+    grid-column: 1 / -1;
+  }
+
+  .workspace-arrangement.context-side .runtime-context-row > span:not(.runtime-port),
+  .workspace-arrangement.context-side .runtime-context-row small {
+    display: none;
+  }
+
+  .workspace-arrangement.context-side .agent-session-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .workspace-arrangement.context-side .agent-session-row > span:not(.agent-provider-badge),
+  .workspace-arrangement.context-side .agent-session-row small {
+    display: none;
+  }
+
+  .workspace-arrangement.context-side .agent-session-focus-lane {
+    grid-column: 1 / -1;
+    min-height: 16px;
+    padding: 0 4px;
+  }
+
+  .workspace-arrangement.context-side .worktree-context-row {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .workspace-arrangement.context-side .worktree-context-row > span:not(.worktree-status-badge):not(.worktree-decision-lane),
+  .workspace-arrangement.context-side .worktree-context-row > em,
+  .workspace-arrangement.context-side .worktree-context-row > .git-task-link,
+  .workspace-arrangement.context-side .worktree-task-empty,
+  .workspace-arrangement.context-side .worktree-recommendation,
+  .workspace-arrangement.context-side .worktree-next-check {
+    display: none;
+  }
+
+  .workspace-arrangement.context-side .worktree-context-actions {
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+
+  .workspace-arrangement.context-side .repo-dashboard-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .workspace-arrangement.context-side .repo-dashboard-metric {
+    display: none;
   }
 
   .workspace-arrangement.context-side .orchestration-context-list,
@@ -19957,7 +20427,73 @@
   .workspace-arrangement.context-side .worktree-decision-queue,
   .workspace-arrangement.context-side .worktree-context-list,
   .workspace-arrangement.context-side .repo-dashboard-list {
-    max-height: 180px;
+    align-content: start;
+    align-items: start;
+    grid-auto-rows: max-content;
+    max-height: none;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-main {
+    gap: 3px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-title {
+    gap: 4px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-meta {
+    gap: 3px;
+    font-size: 7.5px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-current {
+    font-size: 8.5px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-loop-stages {
+    flex-wrap: wrap;
+    max-height: 38px;
+  }
+
+  .workspace-arrangement.context-side .context-loop-stage {
+    height: 16px;
+    padding: 0 4px;
+    font-size: 7.5px;
+  }
+
+  .workspace-arrangement.context-side .runtime-port,
+  .workspace-arrangement.context-side .runtime-url-link,
+  .workspace-arrangement.context-side .agent-provider-badge,
+  .workspace-arrangement.context-side .worktree-status-badge,
+  .workspace-arrangement.context-side .worktree-decision-lane,
+  .workspace-arrangement.context-side .repo-branch-badge,
+  .workspace-arrangement.context-side .repo-task-link {
+    min-height: 0;
+    height: 16px;
+    padding: 0 5px;
+    font-size: 8px;
+  }
+
+  .workspace-arrangement.context-side .runtime-url-link,
+  .workspace-arrangement.context-side .repo-task-link {
+    justify-self: start;
+  }
+
+  .workspace-arrangement.context-side .worktree-context-actions button {
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+  }
+
+  .workspace-arrangement.context-side .worktree-context-actions .worktree-snapshot-chip {
+    max-width: 108px;
+    height: 20px;
+    padding: 0 5px;
+  }
+
+  .workspace-arrangement.context-side .orchestration-context-actions,
+  .workspace-arrangement.context-side .worktree-context-actions {
+    justify-content: start;
   }
 
   .orchestration-context-panel,
@@ -19966,8 +20502,10 @@
   .worktree-context-panel,
   .repo-dashboard-panel {
     display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 6px;
     min-width: 0;
+    min-height: 0;
     padding: 7px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
@@ -21175,10 +21713,11 @@
   }
 
   .editor-frame {
-    display: grid;
-    grid-template-rows: 28px auto auto minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
     flex: 1 1 auto;
     height: auto;
+    min-width: 0;
     min-height: 0;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.11);
@@ -21714,7 +22253,7 @@
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 4px;
-    height: 24px;
+    height: 22px;
     padding: 0 4px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.025);
@@ -21807,26 +22346,26 @@
   .editor-local-nav {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
-    height: 30px;
-    padding: 4px;
+    height: 24px;
+    padding: 2px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
     background: rgba(10, 13, 14, 0.42);
   }
 
   .editor-local-nav button {
     display: inline-grid;
-    grid-template-columns: 13px minmax(0, auto) auto;
+    grid-template-columns: 13px auto;
     align-items: center;
     justify-content: center;
-    gap: 5px;
+    gap: 4px;
     min-width: 0;
-    height: 22px;
-    padding: 0 7px;
+    height: 20px;
+    padding: 0 5px;
     color: #9ca8a4;
     border: 1px solid rgba(255, 255, 255, 0.065);
-    border-radius: 6px;
+    border-radius: 5px;
     background: rgba(255, 255, 255, 0.03);
     font-size: 10px;
     font-weight: 800;
@@ -21847,12 +22386,23 @@
     background: rgba(92, 226, 207, 0.1);
   }
 
-  .editor-local-nav span,
   .editor-local-nav strong {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .editor-local-nav span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .editor-local-nav strong {
@@ -22041,6 +22591,7 @@
 
   .editor-body-grid {
     display: grid;
+    flex: 1 1 auto;
     grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width);
     min-height: 0;
   }
@@ -22104,8 +22655,11 @@
   }
 
   .source-dockview-insights-host {
+    width: 100%;
+    height: 100%;
     overflow: hidden;
     visibility: hidden;
+    contain: layout paint;
   }
 
   .source-dockview-insights-shell.dockview-ready .source-dockview-insights-host {
@@ -23508,7 +24062,63 @@
     }
   }
 
-  @media (max-width: 980px) {
+  @media (max-width: 1120px) {
+    .shell:not(.activity-hidden) {
+      grid-template-columns: 56px 6px minmax(0, 1fr);
+    }
+
+    .shell.side-right:not(.activity-hidden) {
+      grid-template-columns: minmax(0, 1fr) 6px 56px;
+    }
+
+    .shell:not(.activity-hidden) .activity-shell {
+      grid-template-columns: 46px;
+    }
+
+    .shell:not(.activity-hidden) .sidebar {
+      display: none;
+    }
+
+    .workspace-arrangement.context-side {
+      grid-template-columns: minmax(0, 1fr) 6px 34px;
+    }
+
+    .workspace-arrangement.context-side .workspace-context-column {
+      padding-right: 3px;
+      padding-left: 3px;
+    }
+
+    .workspace-arrangement.context-side .context-panel-grid {
+      grid-template-columns: 28px;
+      grid-template-rows: minmax(0, 1fr);
+      gap: 0;
+      overflow: hidden;
+      padding-right: 0;
+      scrollbar-gutter: auto;
+    }
+
+    .workspace-arrangement.context-side .context-restore-button,
+    .workspace-arrangement.context-side .context-panel-grid > section {
+      display: none;
+    }
+
+    .workspace-arrangement.context-side .context-stack-tabs {
+      grid-column: 1;
+      grid-row: 1;
+      width: 28px;
+      max-width: 28px;
+      padding: 2px;
+      background: rgba(10, 12, 12, 0.5);
+    }
+
+    .workspace-arrangement.context-side .context-stack-tabs button {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
+    }
+  }
+
+  @media (max-width: 720px) {
     :global(body) {
       min-width: 0;
       overflow: auto;

@@ -36,9 +36,23 @@ function constStringArray(source, constName) {
 
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
 assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
+assertDeclaration('.shell', 'width: calc(100vw - 8px)');
+assertDeclaration('.shell', 'height: calc(100dvh - 8px)');
+assertDeclaration('.shell', 'min-height: min(520px, calc(100dvh - 8px))');
+assertDeclaration('.shell', 'margin: 4px auto');
 assertDeclaration('.shell.side-right', 'grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width)');
 assertDeclaration('.shell.activity-hidden', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.shell.activity-hidden .workspace', 'grid-column: 1');
+assertDeclaration('.shell.activity-rail-only', 'grid-template-columns: 56px 6px minmax(0, 1fr)');
+assertDeclaration('.shell.activity-rail-only .activity-shell', 'grid-template-columns: 46px');
+assertDeclaration('.shell.activity-rail-only .sidebar', 'display: none');
+assert.ok(
+  pageSource.includes('@media (max-width: 1120px)'),
+  'Split-window desktop widths should get an automatic compact rail breakpoint'
+);
+assertDeclaration('.shell:not(.activity-hidden)', 'grid-template-columns: 56px 6px minmax(0, 1fr)');
+assertDeclaration('.shell:not(.activity-hidden) .activity-shell', 'grid-template-columns: 46px');
+assertDeclaration('.shell:not(.activity-hidden) .sidebar', 'display: none');
 assertDeclaration('.activity-shell', 'min-width: 0');
 assertDeclaration('.topbar > div:first-child', 'min-width: 0');
 assertDeclaration('.topbar h2', 'text-overflow: ellipsis');
@@ -51,14 +65,18 @@ assertDeclaration('.view-menu', 'overflow-y: auto');
 assertDeclaration('.view-menu-button-grid', 'grid-template-columns: repeat(3, minmax(0, 1fr))');
 assertDeclaration('.dock-panel-manager-row', 'grid-template-columns: minmax(0, 74px) minmax(0, 1fr)');
 assertDeclaration('.dock-panel-manager-actions', 'display: flex');
-assertDeclaration('.workspace', 'grid-template-rows: auto auto auto minmax(0, 1fr)');
-assertDeclaration('.workspace.chrome-compact', 'grid-template-rows: auto auto minmax(0, 1fr)');
+assertDeclaration('.workspace', 'position: relative');
+assertDeclaration('.workspace', 'display: flex');
+assertDeclaration('.workspace', 'flex-direction: column');
 assertDeclaration('.workspace.chrome-compact', 'padding: 6px');
 assertDeclaration('.workspace.chrome-compact .topbar', 'min-height: 26px');
 assertDeclaration('.workspace.chrome-compact .topbar h2', 'font-size: 13px');
 assertDeclaration('.workspace.chrome-compact .topbar-command-button', 'width: 26px');
 assertDeclaration('.workspace.chrome-compact .topbar-command-button span', 'display: none');
+assert.ok(pageSource.includes('@media (max-width: 720px)'), 'Mobile stacking should not trigger at normal split-window desktop widths');
+assert.ok(!pageSource.includes('@media (max-width: 980px)'), 'Desktop split-window widths should keep the IDE layout');
 assertDeclaration('.workspace-arrangement', 'grid-template-rows: minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement', 'flex: 1 1 auto');
 assertDeclaration('.workspace-arrangement.context-top', 'grid-template-rows: auto minmax(0, 1fr)');
 assertDeclaration('.context-identity-strip', 'display: flex');
 assertDeclaration('.workspace.chrome-compact .context-identity-strip', 'display: none');
@@ -75,24 +93,98 @@ assertDeclaration('.dock-panel-tab-label', 'height: 18px');
 assertDeclaration('.workspace.chrome-compact .dock-panel-tab-label', 'height: 16px');
 assertDeclaration('.dock-panel-tab-move', 'width: 18px');
 assertDeclaration('.dock-panel-tab-close', 'width: 17px');
-assertDeclaration('.hidden-dock-panel-strip', 'display: flex');
-assertDeclaration('.hidden-dock-panel-strip', 'min-height: 20px');
-assertDeclaration('.hidden-dock-panel-strip', 'overflow: hidden');
-assertDeclaration('.hidden-dock-panel-chip', 'height: 18px');
-assertDeclaration('.hidden-dock-panel-chip', 'max-width: 92px');
+assertDeclaration('.hidden-dock-panel-rail', 'position: absolute');
+assertDeclaration('.hidden-dock-panel-rail', 'display: flex');
+assertDeclaration('.hidden-dock-panel-rail', 'flex-direction: column');
+assertDeclaration('.hidden-dock-panel-button', 'width: 26px');
+assertDeclaration('.hidden-dock-panel-button', 'height: 26px');
+assertDeclaration('.hidden-dock-panel-button span', 'clip: rect(0, 0, 0, 0)');
 assertDeclaration('.dock-drop-zones', 'display: flex');
 assertDeclaration('.dock-drop-zone', 'height: 22px');
 assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width)');
-assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) 6px minmax(180px, var(--context-pane-height))');
+assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height))');
 assertDeclaration('.context-panel-grid.stacked', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.context-stack-tabs', 'display: flex');
+assertDeclaration('.context-stack-tabs', 'max-width: 100%');
 assertDeclaration('.context-stack-tabs button', 'height: 24px');
+assertDeclaration('.context-card-tab-icon', 'display: none');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'overflow-y: auto');
+assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-columns: 28px minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-rows: auto minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'grid-template-columns: 28px');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'overflow: hidden');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid > section', 'display: none');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs', 'width: 28px');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs button', 'width: 24px');
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .workspace-context-column {\n      padding-right: 3px;') &&
+    pageSource.includes('.workspace-arrangement.context-side .context-panel-grid > section {\n      display: none;'),
+  'Split-window breakpoint should force the side context pane into an icon rail'
+);
+assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'flex-direction: column');
+assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'width: 28px');
+assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs button', 'width: 22px');
+assertDeclaration('.workspace-arrangement.context-side .context-card-tab-icon', 'display: block');
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .orchestration-context-panel') &&
+    pageSource.includes('padding: 5px;') &&
+    pageSource.includes('border-radius: 5px;'),
+  'Side context cards should use compact panel padding and tighter radii'
+);
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .orchestration-context-header span') &&
+    pageSource.includes('display: none;'),
+  'Side context cards should hide subtitle metadata in narrow card headers'
+);
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .context-card-actions .file-action-button') &&
+    pageSource.includes('width: 20px;') &&
+    pageSource.includes('height: 20px;'),
+  'Side context card actions should stay icon-sized'
+);
+assertDeclaration('.workspace-arrangement.context-side .runtime-context-row', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side .runtime-context-row strong', 'grid-column: 1 / -1');
+assertDeclaration('.workspace-arrangement.context-side .agent-session-row', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side .agent-session-focus-lane', 'grid-column: 1 / -1');
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-row', 'grid-template-columns: auto auto minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions', 'grid-column: 1 / -1');
+assertDeclaration('.workspace-arrangement.context-side .repo-dashboard-row', 'grid-template-columns: minmax(0, 1fr) auto');
+assertDeclaration('.workspace-arrangement.context-side .repo-dashboard-metric', 'display: none');
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .runtime-port') &&
+    pageSource.includes('.workspace-arrangement.context-side .runtime-url-link') &&
+    pageSource.includes('height: 16px;') &&
+    pageSource.includes('font-size: 8px;'),
+  'Side context badges should compress to 16px glanceable tokens'
+);
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions button', 'width: 20px');
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions .worktree-snapshot-chip', 'max-width: 108px');
+assertDeclaration('.workspace-arrangement.context-side .agent-session-focus-lane', 'min-height: 16px');
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .runtime-context-row > span:not(.runtime-port)') &&
+    pageSource.includes('.workspace-arrangement.context-side .runtime-context-row small') &&
+    pageSource.includes('display: none;'),
+  'Side runtime context rows should hide full root/path metadata and keep only the port/url/command summary'
+);
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .worktree-recommendation') &&
+    pageSource.includes('.workspace-arrangement.context-side .worktree-next-check') &&
+    pageSource.includes('display: none;'),
+  'Side worktree rows should suppress long cleanup prose and keep the action summary'
+);
+assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .runtime-context-list') &&
+    pageSource.includes('grid-auto-rows: max-content;') &&
+    pageSource.includes('align-content: start;') &&
+    pageSource.includes('align-items: start;'),
+  'Side context lists should keep rows content-sized instead of stretching single rows to the whole pane'
+);
 assertDeclaration('.workspace-arrangement.context-bottom .context-panel-grid', 'overflow-y: auto');
 assertDeclaration('.side-pane-resizer', 'cursor: col-resize');
 assertDeclaration('.context-pane-resizer', 'cursor: col-resize');
 assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer', 'cursor: row-resize');
 assertDeclaration('.bottom-dock-resizer', 'cursor: row-resize');
+assertDeclaration('.editor-frame', 'min-width: 0');
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
 assertDeclaration('.project-setup-row', 'min-height: 18px');
@@ -132,6 +224,7 @@ assertDeclaration('.paste-history-restore strong', 'text-overflow: ellipsis');
 assertDeclaration('.paste-cleanup-grid', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.paste-cleanup-textarea', 'resize: none');
 assertDeclaration('.editor-body-grid', 'grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width)');
+assertDeclaration('.editor-body-grid', 'flex: 1 1 auto');
 assertDeclaration('.editor-body-grid.insights-hidden', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.editor-canvas', 'position: relative');
 assertDeclaration('.editor-insight-resizer', 'cursor: col-resize');
@@ -151,8 +244,9 @@ assertDeclaration('.browser-frame-wrap', 'min-height: 128px');
 assertDeclaration('.browser-frame-wrap', 'height: clamp(128px, calc(var(--bottom-dock-height) - 122px), 520px)');
 assertDeclaration('.browser-frame', 'width: 100%');
 assertDeclaration('.browser-runtime-list', 'overflow-x: auto');
-assertDeclaration('.editor-frame', 'grid-template-rows: 28px auto auto minmax(0, 1fr)');
-assertDeclaration('.editor-toolbar', 'height: 24px');
+assertDeclaration('.editor-frame', 'display: flex');
+assertDeclaration('.editor-frame', 'flex-direction: column');
+assertDeclaration('.editor-toolbar', 'height: 22px');
 assertDeclaration('.editor-file-state', 'height: 18px');
 assertDeclaration('.editor-file-state', 'border: 0');
 assertDeclaration('.editor-icon-button', 'height: 20px');
@@ -182,6 +276,49 @@ assert.ok(pageSource.includes('sourceDockLayoutStorageKey'), 'Workspace should p
 assert.ok(pageSource.includes('browserDockUrlStorageKey'), 'Workspace should persist the browser dock URL');
 assert.ok(pageSource.includes('snapshotStorageKey'), 'Workspace should persist conversation workspace snapshots');
 assert.ok(pageSource.includes('activeWorkspaceSessionStorageKey'), 'Workspace should persist the active conversation session key');
+assert.ok(
+  pageSource.includes('const startupWorkspaceSnapshot = storedActiveWorkspaceSessionKey') &&
+    pageSource.includes('activeSessionKey: storedActiveWorkspaceSessionKey'),
+  'Startup should only auto-restore an explicitly active workspace snapshot'
+);
+assert.ok(pageSource.includes('const sidePaneMinWidth = 56'), 'Activity pane should shrink to an icon rail instead of blocking split-window layouts');
+assert.ok(pageSource.includes('const sidePaneRailOnlyThreshold = 118'), 'Activity pane should have an explicit rail-only breakpoint');
+assert.ok(pageSource.includes('const contextPaneMinWidth = 34'), 'Context pane should shrink to a compact icon rail');
+assert.ok(pageSource.includes('const contextPaneRailOnlyThreshold = 84'), 'Context pane should have an explicit rail-only breakpoint');
+assert.ok(pageSource.includes('class:activity-rail-only={activityPaneRailOnly()}'), 'Source shell should expose rail-only activity mode through a class');
+assert.ok(pageSource.includes('class:context-rail-only={contextPaneRailOnly()}'), 'Workspace should expose rail-only context mode through a class');
+assert.ok(pageSource.includes('function expandActivityPaneFromRail'), 'Activity rail should have an explicit expand helper');
+assert.ok(pageSource.includes('function expandContextPaneFromRail'), 'Context rail should have an explicit expand helper');
+assert.ok(pageSource.includes('function collapseActivityPaneToRail'), 'Activity pane should expose a command-palette rail collapse helper');
+assert.ok(pageSource.includes('function collapseContextPaneToRail'), 'Context pane should expose a command-palette rail collapse helper');
+assert.ok(pageSource.includes("id: 'layout-activity-rail'"), 'Command palette should include an activity rail collapse action');
+assert.ok(pageSource.includes("id: 'layout-context-rail'"), 'Command palette should include a context rail collapse action');
+assert.ok(
+  pageSource.includes('aria-label="Collapse explorer to icon rail"') &&
+    pageSource.includes('collapseActivityPaneToRail();\n                    closeViewMenu();'),
+  'View menu should expose explorer icon-rail collapse without adding main-canvas chrome'
+);
+assert.ok(
+  pageSource.includes('aria-label="Collapse context to icon rail"') &&
+    pageSource.includes('collapseContextPaneToRail();\n                    closeViewMenu();'),
+  'View menu should expose context icon-rail collapse without adding main-canvas chrome'
+);
+assert.ok(
+  pageSource.includes('.view-menu-wide-button.active'),
+  'Wide View menu actions should be able to show active rail state'
+);
+assert.ok(
+  pageSource.includes('} else if (activityPaneRailOnly()) {\n      expandActivityPaneFromRail();'),
+  'Selecting a rail-only activity mode should expand the side pane'
+);
+assert.ok(
+  pageSource.includes('if (contextPaneRailOnly()) {\n      expandContextPaneFromRail();'),
+  'Selecting a rail-only context card should expand the context pane'
+);
+assert.ok(
+  pageSource.includes('const nextSidePaneWidth = sidePaneWidth <= sidePaneRailOnlyThreshold'),
+  'Restoring a hidden activity pane should not restore it as an unusable rail'
+);
 assert.ok(pageSource.includes('contextPanelModeStorageKey'), 'Workspace should persist the context card layout mode');
 assert.ok(pageSource.includes('contextPanelPlacementStorageKey'), 'Workspace should persist the context card placement');
 assert.ok(pageSource.includes('hiddenContextCardsStorageKey'), 'Workspace should persist hidden context cards');
@@ -235,6 +372,10 @@ assert.ok(pageSource.includes('let projectWorktreeSafetyStats'), 'Worktree conte
 assert.ok(pageSource.includes('let prioritizedProjectWorktrees'), 'Worktree context should derive prioritized worktrees');
 assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
 assert.ok(pageSource.includes('let contextPaneWidth'), 'Workspace should track the resizable side context pane width');
+assert.ok(pageSource.includes('const sidePaneCollapseThreshold'), 'Side pane resize should support drag-to-hide');
+assert.ok(pageSource.includes('const editorInsightCollapseThreshold'), 'Insight pane resize should support drag-to-hide');
+assert.ok(pageSource.includes('const contextPaneCollapseThreshold'), 'Context pane resize should support drag-to-hide');
+assert.ok(pageSource.includes('const bottomDockCollapseThreshold'), 'Bottom dock resize should support drag-to-hide');
 assert.ok(pageSource.includes('let sidePanePosition'), 'Source shell should track the side pane position');
 assert.ok(pageSource.includes('let sourceLayoutPreset'), 'Source shell should track the active layout preset');
 assert.ok(pageSource.includes('let sourceLayoutPresetOverrides'), 'Source shell should track saved layout preset overrides');
@@ -336,7 +477,11 @@ assert.ok(pageSource.includes('function workspaceSnapshotEnvironmentLabel'), 'Wo
 assert.ok(pageSource.includes('function workspaceSnapshotFileStateLabel'), 'Workspace rows should summarize selected file and open file count');
 assert.ok(pageSource.includes('function agentSessionWorkspaceStateLabel'), 'Conversation rows should summarize saved workspace state when a snapshot exists');
 assert.ok(pageSource.includes('selectStartupWorkspaceSnapshot'), 'Workspace startup should choose a restorable saved conversation snapshot');
-assert.ok(pageSource.includes('const startupWorkspaceSnapshot = selectStartupWorkspaceSnapshot'), 'Workspace startup should compute the initial snapshot before scanning');
+assert.ok(
+  pageSource.includes('const startupWorkspaceSnapshot = storedActiveWorkspaceSessionKey') &&
+    pageSource.includes('activeSessionKey: storedActiveWorkspaceSessionKey'),
+  'Workspace startup should only auto-restore an explicitly active saved conversation snapshot'
+);
 assert.ok(pageSource.includes('customProjectRoots = startupCustomProjectRoots'), 'Workspace startup should retain snapshot-only worktree project roots');
 assert.ok(pageSource.includes('restoreConversationWorkspaceSnapshot(startupWorkspaceSnapshot)'), 'Workspace startup should restore the saved conversation workspace directly');
 assert.ok(pageSource.includes('function captureActiveWorkspaceBeforeSwitch'), 'Workspace should refresh the active snapshot before switching conversations');
@@ -529,7 +674,8 @@ assert.ok(pageSource.includes('aria-label={`Move ${dockPanelLabel(panelID)} pane
 assert.ok(pageSource.includes('onchange={(event) => moveDockPanelFromTab(panelID, event)}'), 'Dock tab move controls should use the dock model');
 assert.ok(pageSource.includes('aria-label={`Hide ${dockPanelLabel(panelID)} panel from tab`}'), 'Dock tabs should expose direct close controls for hideable panels');
 assert.ok(pageSource.includes('onclick={() => hideDockPanel(panelID)}'), 'Dock tab close controls should hide panels through the dock model');
-assert.ok(pageSource.includes('class="hidden-dock-panel-strip"'), 'Workspace should render hidden dock restore chips');
+assert.ok(pageSource.includes('class="hidden-dock-panel-rail"'), 'Workspace should render an overlay restore rail for hidden dock panels');
+assert.ok(pageSource.includes('class="hidden-dock-panel-button"'), 'Workspace should render compact hidden dock restore buttons');
 assert.ok(pageSource.includes('aria-label="Hidden dock panels"'), 'Hidden dock restore strip should be accessible');
 assert.ok(pageSource.includes('onclick={() => restoreHiddenDockPanel(panelID)}'), 'Hidden dock chips should restore their panel');
 assert.ok(pageSource.includes('function projectWorktreeActivityLabel'), 'Worktree rows should format last activity labels');
@@ -846,7 +992,9 @@ assert.ok(pageSource.includes('aria-label="Run agent activity"'), 'Run agent act
 assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally should be accessible');
 assert.ok(pageSource.includes("selectContextPanelMode('grid')"), 'Context layout controls should select grid mode');
 assert.ok(pageSource.includes("selectContextPanelMode('stack')"), 'Context layout controls should select stack mode');
-assert.ok(pageSource.includes("class:stacked={contextPanelMode === 'stack'}"), 'Context card grid should support stacked layout');
+assert.ok(pageSource.includes('function contextCardsTabbed()'), 'Context cards should centralize tabbed lane behavior');
+assert.ok(pageSource.includes("return contextPanelMode === 'stack' || contextPanelPlacement === 'side'"), 'Side context cards should render as a single tabbed lane');
+assert.ok(pageSource.includes('class:stacked={contextCardsTabbed()}'), 'Context card grid should support stacked layout');
 assert.ok(pageSource.includes('class="editor-insight-resizer"'), 'Editor shell should render an inspector resizer');
 assert.ok(pageSource.includes('aria-label="Resize editor insights"'), 'Inspector resizer should be labeled');
 assert.ok(pageSource.includes("class:insights-hidden={editorInsightCollapsed || !shouldRenderDockPanel('insights')}"), 'Editor shell should remove the inspector from layout when collapsed or another dock tab is active');
@@ -1168,7 +1316,8 @@ assert.ok(
   pageSource.includes('Open the project to repair the index.'),
   'Background tiny-index results should surface a repair warning instead of caching as ready'
 );
-assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(project)'), 'Duplicate project selection should announce the expanded onboarding scan');
+assert.ok(pageSource.includes('const scanStatus = sourceOnboardingScanStatus(project)'), 'Duplicate project selection should build an expanded onboarding scan message');
+assert.ok(pageSource.includes("fileActionStatus = message ? `${message} ${scanStatus}` : scanStatus"), 'Duplicate project selection should announce that it switched to the existing project and rescanned');
 assert.ok(pageSource.includes('fileActionStatus = sourceOnboardingScanStatus(nextProject)'), 'New project selection should announce the expanded onboarding scan');
 assert.ok(pageSource.includes('fileActionStatus = `Checking ${project.name} project setup`'), 'Project repair should explain validation before rescanning');
 assert.ok(pageSource.includes('await activateProject(project, {\n      forceScan: true,\n      scanLimit: expandedSourceScanLimit,\n      projects: projectOptions'), 'Project repair should force a fresh expanded activation scan');
@@ -1635,7 +1784,10 @@ assert.ok(pageSource.includes("openEditorNavPanel('definitions')"), 'Definition 
 assert.ok(pageSource.includes("openEditorNavPanel('references')"), 'Reference lookups should open the local references drawer');
 assert.ok(pageSource.includes('editorNavPanel === null &&'), 'Collapsed lookup popover should not duplicate the local drawer');
 assertDeclaration('.editor-local-nav', 'grid-template-columns: repeat(4, minmax(0, 1fr))');
-assertDeclaration('.editor-local-nav', 'height: 30px');
+assertDeclaration('.editor-local-nav', 'height: 24px');
+assertDeclaration('.editor-local-nav button', 'grid-template-columns: 13px auto');
+assertDeclaration('.editor-local-nav button', 'height: 20px');
+assertDeclaration('.editor-local-nav span', 'clip: rect(0, 0, 0, 0)');
 assertDeclaration('.editor-nav-drawer', 'grid-template-rows: 28px minmax(0, 1fr)');
 assertDeclaration('.editor-nav-drawer', 'max-height: 190px');
 assertDeclaration('.editor-nav-list', 'overflow-y: auto');

@@ -271,3 +271,135 @@ assert.equal(
   ),
   null
 );
+
+const { clearMocks, mockIPC } = await import('@tauri-apps/api/mocks');
+const previousWindow = globalThis.window;
+const ipcCalls = [];
+
+globalThis.window = previousWindow ?? globalThis;
+mockIPC((cmd, args) => {
+  ipcCalls.push({ cmd, args: structuredClone(args ?? {}) });
+  switch (cmd) {
+    case 'read_source_lsp_status':
+      return {
+        language: args.language,
+        languageID: args.language,
+        available: false,
+        serverName: 'mock',
+        command: 'mock',
+        args: [],
+        reason: null
+      };
+    case 'list_source_lsp_statuses':
+    case 'find_source_lsp_symbols':
+      return [];
+    default:
+      throw new Error(`Unexpected Tauri command: ${cmd}`);
+  }
+});
+
+try {
+  const targetStatusLanguages = ['svelte', 'typescript', 'tsx', 'javascript', 'jsx', 'rust'];
+  for (const language of targetStatusLanguages) {
+    await readSourceLspStatusFromTauri('/tmp/repo', language);
+  }
+  assert.deepEqual(
+    ipcCalls.map(({ cmd, args }) => ({ cmd, root: args.root, language: args.language })),
+    targetStatusLanguages.map((language) => ({
+      cmd: 'read_source_lsp_status',
+      root: '/tmp/repo',
+      language
+    }))
+  );
+
+  ipcCalls.length = 0;
+  await readSourceLspReadinessFromTauri('/tmp/repo');
+  assert.deepEqual(ipcCalls, [
+    { cmd: 'list_source_lsp_statuses', args: { root: '/tmp/repo' } }
+  ]);
+
+  ipcCalls.length = 0;
+  const targetPreviews = [
+    {
+      path: '/tmp/repo/src/App.svelte',
+      relativePath: 'src/App.svelte',
+      fileName: 'App.svelte',
+      language: 'svelte',
+      byteCount: 20,
+      content: '<script>let value = 1;</script>',
+      lineCount: 1
+    },
+    {
+      path: '/tmp/repo/src/App.ts',
+      relativePath: 'src/App.ts',
+      fileName: 'App.ts',
+      language: 'typescript',
+      byteCount: 20,
+      content: 'export const value = 1;',
+      lineCount: 1
+    },
+    {
+      path: '/tmp/repo/src/App.tsx',
+      relativePath: 'src/App.tsx',
+      fileName: 'App.tsx',
+      language: 'tsx',
+      byteCount: 20,
+      content: 'export const value = <div />;',
+      lineCount: 1
+    },
+    {
+      path: '/tmp/repo/src/App.js',
+      relativePath: 'src/App.js',
+      fileName: 'App.js',
+      language: 'javascript',
+      byteCount: 20,
+      content: 'export const value = 1;',
+      lineCount: 1
+    },
+    {
+      path: '/tmp/repo/src/App.jsx',
+      relativePath: 'src/App.jsx',
+      fileName: 'App.jsx',
+      language: 'jsx',
+      byteCount: 20,
+      content: 'export const value = <div />;',
+      lineCount: 1
+    },
+    {
+      path: '/tmp/repo/src/lib.rs',
+      relativePath: 'src/lib.rs',
+      fileName: 'lib.rs',
+      language: 'rust',
+      byteCount: 20,
+      content: 'pub fn value() -> i32 { 1 }',
+      lineCount: 1
+    }
+  ];
+  const lspLookupRequest = { root: '/tmp/repo', line: 1, column: 1, limit: 25 };
+
+  for (const preview of targetPreviews) {
+    await findSourceLspSymbolsFromTauri(preview, lspLookupRequest);
+  }
+
+  assert.deepEqual(
+    ipcCalls.map(({ cmd, args }) => ({
+      cmd,
+      language: args.preview.language,
+      fileName: args.preview.fileName,
+      request: args.request
+    })),
+    targetPreviews.map((preview) => ({
+      cmd: 'find_source_lsp_symbols',
+      language: preview.language,
+      fileName: preview.fileName,
+      request: lspLookupRequest
+    }))
+  );
+} finally {
+  clearMocks();
+  if (previousWindow === undefined) {
+    delete globalThis.window;
+  } else {
+    globalThis.window = previousWindow;
+  }
+}

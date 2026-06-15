@@ -2698,6 +2698,126 @@ mod tests {
     }
 
     #[test]
+    fn maps_primary_native_lsp_languages_to_commands_and_lsp_ids() {
+        let cases: &[(&str, &str, &str, &str, &[&str])] = &[
+            (
+                "svelte",
+                "svelte-language-server",
+                "svelte",
+                "svelte-language-server",
+                &["--stdio"],
+            ),
+            (
+                "typescript",
+                "typescript-language-server",
+                "typescript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "ts",
+                "typescript-language-server",
+                "typescript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "tsx",
+                "typescript-language-server",
+                "typescript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "javascript",
+                "typescript-language-server",
+                "javascript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "js",
+                "typescript-language-server",
+                "javascript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "jsx",
+                "typescript-language-server",
+                "javascript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            ("rust", "rust-analyzer", "rust", "rust-analyzer", &[]),
+            ("rs", "rust-analyzer", "rust", "rust-analyzer", &[]),
+        ];
+
+        for (language, server_name, language_id, command, args) in cases {
+            let spec = server_spec_for_language(language).expect("target LSP spec");
+            assert_eq!(spec.server_name, *server_name);
+            assert_eq!(spec.language_id, *language_id);
+            assert_eq!(spec.command, *command);
+            assert_eq!(spec.args, *args);
+        }
+    }
+
+    #[test]
+    fn lsp_status_uses_primary_language_command_mapping() {
+        let root = unique_lsp_temp_root("mcb-lsp-status-mapping");
+        let cases: &[(&str, &str, &str, &[&str])] = &[
+            ("svelte", "svelte", "svelte-language-server", &["--stdio"]),
+            (
+                "typescript",
+                "typescript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "tsx",
+                "typescript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "javascript",
+                "javascript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "jsx",
+                "javascript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            ("rust", "rust", "rust-analyzer", &[]),
+        ];
+
+        for (language, language_id, command, args) in cases {
+            let status = read_source_lsp_status_sync(root.clone(), (*language).to_string())
+                .expect("target LSP status");
+            let reported_command = Path::new(&status.command)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(status.command.as_str());
+
+            assert_eq!(status.language, *language);
+            assert_eq!(status.language_id, *language_id);
+            assert_eq!(status.server_name, *command);
+            assert_eq!(reported_command, *command);
+            assert_eq!(
+                status.args,
+                args.iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn lsp_readiness_lists_configured_language_servers() {
         let root = unique_lsp_temp_root("mcb-lsp-readiness");
         std::fs::create_dir_all(&root).unwrap();
@@ -2727,6 +2847,14 @@ mod tests {
         assert_eq!(
             language_for_path(Path::new("App.jsx")).as_deref(),
             Some("javascript")
+        );
+        assert_eq!(
+            language_for_path(Path::new("src/App.ts")).as_deref(),
+            Some("typescript")
+        );
+        assert_eq!(
+            language_for_path(Path::new("src/App.tsx")).as_deref(),
+            Some("typescript")
         );
         assert_eq!(
             language_for_path(Path::new("src/lib.rs")).as_deref(),

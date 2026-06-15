@@ -290,6 +290,168 @@ fn source_list_skips_agent_and_worktree_dirs() {
 }
 
 #[test]
+fn source_list_matches_preview_scanner_file_surface_and_tool_skips() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("Docs")).unwrap();
+    std::fs::create_dir_all(root.join("scripts")).unwrap();
+    std::fs::create_dir_all(root.join(".history")).unwrap();
+    std::fs::create_dir_all(root.join(".pytest_cache")).unwrap();
+    std::fs::create_dir_all(root.join(".vscode")).unwrap();
+    std::fs::write(root.join("src/App.tsx"), "export const App = () => null;\n").unwrap();
+    std::fs::write(root.join("src/config.json"), "{}\n").unwrap();
+    std::fs::write(root.join("Docs/README.md"), "# docs\n").unwrap();
+    std::fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    std::fs::write(root.join("Makefile"), "test:\n\techo ok\n").unwrap();
+    std::fs::write(root.join("scripts/run.sh"), "#!/usr/bin/env bash\n").unwrap();
+    std::fs::write(root.join(".history/Old.cs"), "public class Old {}\n").unwrap();
+    std::fs::write(root.join(".pytest_cache/cache.py"), "print('cache')\n").unwrap();
+    std::fs::write(root.join(".vscode/settings.json"), "{}\n").unwrap();
+
+    let listed = list_source_files(root, 40, None).unwrap();
+    let relative_paths = listed
+        .files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect::<Vec<_>>();
+    assert!(relative_paths.contains(&"src/App.tsx"));
+    assert!(relative_paths.contains(&"src/config.json"));
+    assert!(relative_paths.contains(&"Docs/README.md"));
+    assert!(relative_paths.contains(&"Dockerfile"));
+    assert!(relative_paths.contains(&"Makefile"));
+    assert!(relative_paths.contains(&"scripts/run.sh"));
+    assert!(!relative_paths
+        .iter()
+        .any(|path| path.starts_with(".history/")));
+    assert!(!relative_paths
+        .iter()
+        .any(|path| path.starts_with(".pytest_cache/")));
+    assert!(!relative_paths
+        .iter()
+        .any(|path| path.starts_with(".vscode/")));
+
+    let languages = listed
+        .files
+        .iter()
+        .map(|file| file.language.as_str())
+        .collect::<Vec<_>>();
+    assert!(languages.contains(&"tsx"));
+    assert!(languages.contains(&"json"));
+    assert!(languages.contains(&"markdown"));
+    assert!(languages.contains(&"dockerfile"));
+    assert!(languages.contains(&"makefile"));
+    assert!(languages.contains(&"shell"));
+
+    let skipped_names = listed
+        .diagnostics
+        .skipped_directories
+        .iter()
+        .map(|directory| directory.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(skipped_names.contains(&".history"));
+    assert!(skipped_names.contains(&".pytest_cache"));
+    assert!(skipped_names.contains(&".vscode"));
+}
+
+#[test]
+fn source_list_prioritizes_app_source_before_docs_when_truncated() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("Docs")).unwrap();
+    std::fs::create_dir_all(root.join("EdiPlatform.Core/Services")).unwrap();
+    std::fs::create_dir_all(root.join("EdiPlatform.Core/Models")).unwrap();
+    std::fs::write(root.join("Docs/A.md"), "# docs\n").unwrap();
+    std::fs::write(root.join("Docs/B.md"), "# docs\n").unwrap();
+    std::fs::write(
+        root.join("EdiPlatform.Core/Services/RuntimeService.cs"),
+        "namespace Demo;\npublic sealed class RuntimeService {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("EdiPlatform.Core/Models/RuntimeModel.cs"),
+        "namespace Demo;\npublic sealed class RuntimeModel {}\n",
+    )
+    .unwrap();
+
+    let listed = list_source_files(root, 2, None).unwrap();
+
+    assert_eq!(
+        listed
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "EdiPlatform.Core/Models/RuntimeModel.cs",
+            "EdiPlatform.Core/Services/RuntimeService.cs",
+        ]
+    );
+    assert!(listed.truncated);
+}
+
+#[test]
+fn source_list_final_sort_keeps_src_before_project_named_shared_dirs_when_truncated() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Project");
+    std::fs::create_dir_all(root.join("Project.Shared")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Project.Shared/Alpha.cs"),
+        "namespace Project.Shared;\npublic sealed class Alpha {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Project.Shared/Beta.cs"),
+        "namespace Project.Shared;\npublic sealed class Beta {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/App.cs"),
+        "namespace Project;\npublic sealed class App {}\n",
+    )
+    .unwrap();
+
+    let listed = list_source_files(&root, 2, None).unwrap();
+
+    assert_eq!(
+        listed
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/App.cs", "Project.Shared/Alpha.cs"]
+    );
+    assert!(listed.truncated);
+}
+
+#[test]
+fn source_list_low_requested_limit_still_walks_beyond_returned_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    std::fs::write(root.join("src/App.ts"), "export const app = true;\n").unwrap();
+    std::fs::write(root.join("src/Worker.ts"), "export const worker = true;\n").unwrap();
+    std::fs::write(root.join("src/Widget.ts"), "export const widget = true;\n").unwrap();
+    std::fs::write(
+        root.join("node_modules/pkg/index.ts"),
+        "export const dependency = true;\n",
+    )
+    .unwrap();
+
+    let listed = list_source_files(root, 2, None).unwrap();
+
+    assert_eq!(listed.files.len(), 2);
+    assert!(listed.truncated);
+    assert_eq!(listed.diagnostics.skipped_directory_count, 1);
+    assert_eq!(
+        listed.diagnostics.skipped_directories[0].name,
+        "node_modules"
+    );
+}
+
+#[test]
 fn source_list_reports_diagnostics_for_skipped_directories() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

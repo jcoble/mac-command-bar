@@ -129,11 +129,88 @@ try {
     'Truncated scans should prioritize app source over docs'
   );
 
+  const projectNamedRoot = join(root, 'Project');
+  await mkdir(join(projectNamedRoot, 'Project.Shared'), { recursive: true });
+  await mkdir(join(projectNamedRoot, 'src'), { recursive: true });
+  await writeFile(
+    join(projectNamedRoot, 'Project.Shared', 'Alpha.cs'),
+    'namespace Project.Shared;\npublic sealed class Alpha {}\n',
+    'utf8'
+  );
+  await writeFile(
+    join(projectNamedRoot, 'Project.Shared', 'Beta.cs'),
+    'namespace Project.Shared;\npublic sealed class Beta {}\n',
+    'utf8'
+  );
+  await writeFile(
+    join(projectNamedRoot, 'src', 'App.cs'),
+    'namespace Project;\npublic sealed class App {}\n',
+    'utf8'
+  );
+
+  const projectNamedScan = await scanLocalSourceFiles({ root: projectNamedRoot, limit: 2 });
+  assert.deepEqual(
+    projectNamedScan.records.map((record) => record.relativePath),
+    ['src/App.cs', 'Project.Shared/Alpha.cs']
+  );
+  assert.equal(projectNamedScan.truncated, true);
+
+  const lowLimitRoot = join(root, 'low-limit-project');
+  await mkdir(join(lowLimitRoot, 'src'), { recursive: true });
+  await mkdir(join(lowLimitRoot, 'node_modules', 'pkg'), { recursive: true });
+  await writeFile(join(lowLimitRoot, 'src', 'App.ts'), 'export const app = true;\n', 'utf8');
+  await writeFile(join(lowLimitRoot, 'src', 'Worker.ts'), 'export const worker = true;\n', 'utf8');
+  await writeFile(join(lowLimitRoot, 'src', 'Widget.ts'), 'export const widget = true;\n', 'utf8');
+  await writeFile(
+    join(lowLimitRoot, 'node_modules', 'pkg', 'index.ts'),
+    'export const dependency = true;\n',
+    'utf8'
+  );
+
+  const lowLimitScan = await scanLocalSourceFiles({ root: lowLimitRoot, limit: 2 });
+  assert.equal(lowLimitScan.records.length, 2);
+  assert.equal(lowLimitScan.truncated, true);
+  assert.equal(lowLimitScan.stats.skippedDirectories, 1);
+  assert.equal(lowLimitScan.stats.skippedDirectorySamples[0].name, 'node_modules');
+
   const filteredScan = await scanLocalSourceFiles({ root, query: 'resolver', limit: 20 });
   assert.deepEqual(
     filteredScan.records.map((record) => record.fileName),
     ['FormatResolver.cs']
   );
+
+  await writeFile(join(root, 'src', 'Widget.tsx'), 'export const Widget = () => null;\n', 'utf8');
+  await writeFile(join(root, 'src', 'Widget.jsx'), 'export const WidgetJsx = () => null;\n', 'utf8');
+  await writeFile(join(root, 'src', 'View.swift'), 'struct View {}\n', 'utf8');
+
+  const languageScan = await scanLocalSourceFiles({ root, query: 'widget', limit: 20 });
+  const widgetLanguages = new Map(languageScan.records.map((record) => [record.fileName, record.language]));
+  assert.equal(widgetLanguages.get('Widget.jsx'), 'jsx');
+  assert.equal(widgetLanguages.get('Widget.tsx'), 'tsx');
+
+  const swiftScan = await scanLocalSourceFiles({ root, query: 'View.swift', limit: 20 });
+  assert.deepEqual(
+    swiftScan.records.map((record) => [record.fileName, record.language]),
+    [['View.swift', 'swift']]
+  );
+
+  await writeFile(join(root, 'src', 'Styles.scss'), '.app { color: red; }\n', 'utf8');
+  await writeFile(join(root, 'src', 'Article.mdx'), '# Article\n', 'utf8');
+  await writeFile(join(root, 'src', 'Page.astro'), '<h1>Page</h1>\n', 'utf8');
+  await writeFile(join(root, 'src', 'App.vue'), '<template></template>\n', 'utf8');
+  await writeFile(join(root, 'src', 'Project.fsproj'), '<Project />\n', 'utf8');
+  await writeFile(join(root, 'src', 'View.xaml'), '<Page />\n', 'utf8');
+
+  const parityLanguageScan = await scanLocalSourceFiles({ root, query: 'src/', limit: 100 });
+  const languageByFileName = new Map(
+    parityLanguageScan.records.map((record) => [record.fileName, record.language])
+  );
+  assert.equal(languageByFileName.get('Styles.scss'), 'scss');
+  assert.equal(languageByFileName.get('Article.mdx'), 'mdx');
+  assert.equal(languageByFileName.get('Page.astro'), 'html');
+  assert.equal(languageByFileName.get('App.vue'), 'html');
+  assert.equal(languageByFileName.get('Project.fsproj'), 'xml');
+  assert.equal(languageByFileName.get('View.xaml'), 'xml');
 
   const worktreeRoot = join(root, 'worktrees', 'EdiPlatform', 'tsk-127-source-scan');
   await mkdir(join(worktreeRoot, 'EdiPlatform.Core', 'Services'), { recursive: true });

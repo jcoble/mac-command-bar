@@ -62,6 +62,23 @@ export type WorktreeDecisionQueueGroup = {
   entries: WorktreeDecisionQueueEntry[];
 };
 
+export type WorktreeTaskGroup = {
+  taskID: string | null;
+  label: string;
+  summary: string;
+  worktreeCount: number;
+  cleanupCandidateCount: number;
+  blockedCount: number;
+  reviewCount: number;
+  protectedCount: number;
+  staleCount: number;
+  activeSessionCount: number;
+  needsBackupCount: number;
+  requiresManualSignoff: boolean;
+  primaryAction: WorktreePrimaryAction;
+  entries: WorktreeDecisionQueueEntry[];
+};
+
 export type WorktreeSafetyOptions = {
   primaryPath?: string | null;
   activeSessionPaths?: Array<string | null | undefined>;
@@ -266,6 +283,36 @@ export function buildWorktreeDecisionQueue(
       ...group,
       summary: formatDecisionQueueGroupSummary(group.entries)
     }));
+}
+
+export function buildWorktreeTaskGroups(
+  worktrees: ProjectWorktree[],
+  options: WorktreeSafetyOptions = {}
+): WorktreeTaskGroup[] {
+  const groups = new Map<string, WorktreeDecisionQueueEntry[]>();
+
+  for (const worktree of prioritizeWorktreesForCleanup(worktrees, options)) {
+    const taskID = normalizeTaskID(worktree.taskID);
+    const key = taskID ?? '__no_task__';
+    const safety = buildWorktreeSafetySummary(worktree, options);
+    const entries = groups.get(key) ?? [];
+
+    entries.push({
+      worktree,
+      safety,
+      primaryAction: worktreePrimaryAction(safety)
+    });
+    groups.set(key, entries);
+  }
+
+  return Array.from(groups.entries())
+    .map(([key, entries]) => formatWorktreeTaskGroup(key === '__no_task__' ? null : key, entries))
+    .sort((left, right) => {
+      const priorityDelta = worktreeTaskGroupPriority(left) - worktreeTaskGroupPriority(right);
+      if (priorityDelta) return priorityDelta;
+
+      return left.label.localeCompare(right.label);
+    });
 }
 
 export function buildWorktreeCleanupScript(
@@ -764,6 +811,77 @@ function formatDecisionQueueGroupSummary(entries: WorktreeDecisionQueueEntry[]):
   return parts.join(' · ');
 }
 
+function formatWorktreeTaskGroup(taskID: string | null, entries: WorktreeDecisionQueueEntry[]): WorktreeTaskGroup {
+  const blockedCount = entries.filter((entry) => entry.safety.kind === 'blocked').length;
+  const reviewCount = entries.filter((entry) => entry.safety.kind === 'review').length;
+  const protectedCount = entries.filter((entry) => entry.safety.kind === 'protected').length;
+  const cleanupCandidateCount = entries.filter((entry) => entry.safety.kind === 'ready').length;
+  const staleCount = entries.filter((entry) => entry.safety.ageBucket === 'stale').length;
+  const activeSessionCount = entries.reduce((total, entry) => total + entry.safety.activeSessionCount, 0);
+  const needsBackupCount = entries.filter((entry) => entry.primaryAction.kind === 'backup').length;
+  const primaryEntry = entries[0];
+  const label = taskID ?? 'No task ID';
+  const summary = formatTaskGroupSummary({
+    worktreeCount: entries.length,
+    blockedCount,
+    reviewCount,
+    protectedCount,
+    cleanupCandidateCount,
+    staleCount,
+    activeSessionCount,
+    needsBackupCount
+  });
+
+  return {
+    taskID,
+    label,
+    summary,
+    worktreeCount: entries.length,
+    cleanupCandidateCount,
+    blockedCount,
+    reviewCount,
+    protectedCount,
+    staleCount,
+    activeSessionCount,
+    needsBackupCount,
+    requiresManualSignoff: blockedCount > 0 || reviewCount > 0 || protectedCount > 0,
+    primaryAction: primaryEntry.primaryAction,
+    entries
+  };
+}
+
+function formatTaskGroupSummary(details: {
+  worktreeCount: number;
+  blockedCount: number;
+  reviewCount: number;
+  protectedCount: number;
+  cleanupCandidateCount: number;
+  staleCount: number;
+  activeSessionCount: number;
+  needsBackupCount: number;
+}): string {
+  const parts = [`${details.worktreeCount} ${details.worktreeCount === 1 ? 'worktree' : 'worktrees'}`];
+
+  if (details.blockedCount > 0) parts.push(`${details.blockedCount} blocked`);
+  if (details.needsBackupCount > 0) parts.push(`${details.needsBackupCount} need backup`);
+  if (details.cleanupCandidateCount > 0) parts.push(`${details.cleanupCandidateCount} cleanup ready`);
+  if (details.reviewCount > 0) parts.push(`${details.reviewCount} review`);
+  if (details.protectedCount > 0) parts.push(`${details.protectedCount} protected`);
+  if (details.staleCount > 0) parts.push(`${details.staleCount} stale`);
+  if (details.activeSessionCount > 0) {
+    parts.push(`${details.activeSessionCount} active ${details.activeSessionCount === 1 ? 'session' : 'sessions'}`);
+  }
+
+  return parts.join(' · ');
+}
+
+function worktreeTaskGroupPriority(group: WorktreeTaskGroup): number {
+  return group.entries.reduce(
+    (bestPriority, entry) => Math.min(bestPriority, worktreeCleanupPriority(entry.safety)),
+    Number.POSITIVE_INFINITY
+  );
+}
+
 function appendBriefSection(
   lines: string[],
   title: string,
@@ -785,7 +903,7 @@ function uniqueTaskIDs(values: Array<string | null | undefined>): string[] {
   const taskIDs: string[] = [];
 
   for (const value of values) {
-    const taskID = value?.trim();
+    const taskID = normalizeTaskID(value);
     if (!taskID || seen.has(taskID)) continue;
 
     seen.add(taskID);
@@ -793,6 +911,11 @@ function uniqueTaskIDs(values: Array<string | null | undefined>): string[] {
   }
 
   return taskIDs;
+}
+
+function normalizeTaskID(value: string | null | undefined): string | null {
+  const taskID = value?.trim();
+  return taskID || null;
 }
 
 function countActiveSessionPaths(
