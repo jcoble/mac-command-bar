@@ -12,6 +12,7 @@
     "orch:event": "node scripts/orchestrationEvent.mjs",
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
     "test:agent-session-focus": "node --experimental-strip-types scripts/agentSessionFocus.test.mjs",
+    "test:git-graph-view-model": "node --experimental-strip-types scripts/gitGraphViewModel.test.mjs",
     "test:git-task-links": "node --experimental-strip-types scripts/gitTaskLinks.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
     "test:orchestration-view": "node --experimental-strip-types scripts/orchestrationView.test.mjs",
