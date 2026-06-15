@@ -111,6 +111,11 @@
     type SourceDockviewWorkspace
   } from '$lib/sourceDockviewWorkspace';
   import {
+    clampSourcePaneSize,
+    deriveSourcePaneState,
+    type SourcePaneSizingConfig
+  } from '$lib/sourcePaneSizing';
+  import {
     applySourceTextEdits,
     buildSourceTree,
     buildGitTaskSourceGroups,
@@ -355,6 +360,32 @@
   const bottomDockMinHeight = 96;
   const bottomDockMaxHeight = 1100;
   const bottomDockCollapseThreshold = 84;
+  const activityPaneSizingConfig: SourcePaneSizingConfig = {
+    defaultSize: sidePaneDefaultWidth,
+    minSize: sidePaneMinWidth,
+    maxSize: sidePaneMaxWidth,
+    collapseThreshold: sidePaneCollapseThreshold,
+    railThreshold: sidePaneRailOnlyThreshold
+  };
+  const contextPaneWidthSizingConfig: SourcePaneSizingConfig = {
+    defaultSize: contextPaneDefaultWidth,
+    minSize: contextPaneMinWidth,
+    maxSize: contextPaneMaxWidth,
+    collapseThreshold: contextPaneCollapseThreshold,
+    railThreshold: contextPaneRailOnlyThreshold
+  };
+  const contextPaneHeightSizingConfig: SourcePaneSizingConfig = {
+    defaultSize: contextPaneDefaultHeight,
+    minSize: contextPaneMinHeight,
+    maxSize: contextPaneMaxHeight,
+    collapseThreshold: contextPaneHeightCollapseThreshold
+  };
+  const bottomDockSizingConfig: SourcePaneSizingConfig = {
+    defaultSize: bottomDockDefaultHeight,
+    minSize: bottomDockMinHeight,
+    maxSize: bottomDockMaxHeight,
+    collapseThreshold: bottomDockCollapseThreshold
+  };
   const orchestrationRefreshIntervalMs = 5_000;
   const defaultOrchestrationEventFilePath = '/tmp/mcb-orchestration-events.jsonl';
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
@@ -9870,14 +9901,21 @@
   }
 
   function activityPaneRailOnly() {
-    return shouldRenderDockPanel('activity') && sidePaneWidth <= sidePaneRailOnlyThreshold;
+    return (
+      deriveSourcePaneState(
+        { visible: shouldRenderDockPanel('activity'), size: sidePaneWidth },
+        activityPaneSizingConfig
+      ) === 'rail'
+    );
   }
 
   function contextPaneRailOnly() {
     return (
-      shouldRenderDockPanel('context') &&
       contextPanelPlacement === 'side' &&
-      contextPaneWidth <= contextPaneRailOnlyThreshold
+      deriveSourcePaneState(
+        { visible: shouldRenderDockPanel('context'), size: contextPaneWidth },
+        contextPaneWidthSizingConfig
+      ) === 'rail'
     );
   }
 
@@ -10515,8 +10553,7 @@
   }
 
   function clampSidePaneWidth(width: number) {
-    if (!Number.isFinite(width)) return sidePaneDefaultWidth;
-    return Math.min(sidePaneMaxWidth, Math.max(sidePaneMinWidth, Math.round(width)));
+    return clampSourcePaneSize(width, activityPaneSizingConfig);
   }
 
   function beginSidePaneResize(event: PointerEvent) {
@@ -10915,8 +10952,7 @@
   }
 
   function clampContextPaneWidth(width: number) {
-    if (!Number.isFinite(width)) return contextPaneDefaultWidth;
-    return Math.min(contextPaneMaxWidth, Math.max(contextPaneMinWidth, Math.round(width)));
+    return clampSourcePaneSize(width, contextPaneWidthSizingConfig);
   }
 
   function loadStoredContextPaneHeight() {
@@ -10933,8 +10969,7 @@
   }
 
   function clampContextPaneHeight(height: number) {
-    if (!Number.isFinite(height)) return contextPaneDefaultHeight;
-    return Math.min(contextPaneMaxHeight, Math.max(contextPaneMinHeight, Math.round(height)));
+    return clampSourcePaneSize(height, contextPaneHeightSizingConfig);
   }
 
   function beginContextPaneResize(event: PointerEvent) {
@@ -11043,8 +11078,7 @@
   }
 
   function clampBottomDockHeight(height: number) {
-    if (!Number.isFinite(height)) return bottomDockDefaultHeight;
-    return Math.min(bottomDockMaxHeight, Math.max(bottomDockMinHeight, Math.round(height)));
+    return clampSourcePaneSize(height, bottomDockSizingConfig);
   }
 
   function beginBottomDockResize(event: PointerEvent) {

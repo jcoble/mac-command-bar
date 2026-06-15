@@ -358,12 +358,17 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Latest checkpoint: Pure source pane sizing helper.
+Latest checkpoint: Source pane sizing helper wired into live page.
+
+- Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/package.json`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: live side, context, and bottom dock clamp functions now route through `sourcePaneSizing`; activity/context rail-only state is derived from the shared helper; package scripts expose the git task-link and source pane sizing tests.
+- Validation: `node --experimental-strip-types scripts/sourcePaneSizing.test.mjs`; `node scripts/sourceUi.test.mjs`; `pnpm test:git-task-links`; `pnpm test:source-pane-sizing`; `pnpm check`.
+
+Previous checkpoint: Pure source pane sizing helper.
 
 - Changed files: `tauri-svelte-preview/src/lib/sourcePaneSizing.ts`, `tauri-svelte-preview/scripts/sourcePaneSizing.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
 - Behavior delivered: config-driven pure helpers now clamp pane sizes, derive `expanded`/`rail`/`collapsed` state, finish pointer resize decisions, and restore prior expanded sizes for side/context/bottom panes.
 - Validation: `node --experimental-strip-types scripts/sourcePaneSizing.test.mjs`.
-- Remaining risk: helper is not wired into `+page.svelte` yet by design.
 
 Previous checkpoint: Pure Git/task-link helper surface.
 

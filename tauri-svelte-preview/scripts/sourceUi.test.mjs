@@ -35,6 +35,30 @@ function constStringArray(source, constName) {
 }
 
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
+assert.ok(
+  pageSource.includes("from '$lib/sourcePaneSizing'"),
+  'The live source browser page should use the shared pane sizing helper'
+);
+assert.ok(
+  pageSource.includes('const activityPaneSizingConfig: SourcePaneSizingConfig') &&
+    pageSource.includes('const contextPaneWidthSizingConfig: SourcePaneSizingConfig') &&
+    pageSource.includes('const contextPaneHeightSizingConfig: SourcePaneSizingConfig') &&
+    pageSource.includes('const bottomDockSizingConfig: SourcePaneSizingConfig'),
+  'Pane resize thresholds should be declared as shared sizing configs'
+);
+assert.ok(
+  pageSource.includes('return clampSourcePaneSize(width, activityPaneSizingConfig);') &&
+    pageSource.includes('return clampSourcePaneSize(width, contextPaneWidthSizingConfig);') &&
+    pageSource.includes('return clampSourcePaneSize(height, contextPaneHeightSizingConfig);') &&
+    pageSource.includes('return clampSourcePaneSize(height, bottomDockSizingConfig);'),
+  'Pane clamp functions should route through sourcePaneSizing'
+);
+assert.ok(
+  pageSource.includes('deriveSourcePaneState(') &&
+    pageSource.includes('activityPaneSizingConfig') &&
+    pageSource.includes('contextPaneWidthSizingConfig'),
+  'Rail-only state should be derived through sourcePaneSizing'
+);
 assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
 assertDeclaration('.shell', 'width: calc(100vw - 8px)');
 assertDeclaration('.shell', 'height: calc(100dvh - 8px)');
