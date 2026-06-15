@@ -24,7 +24,7 @@ const contextPaneConfig = {
   minSize: 34,
   maxSize: 1600,
   collapseThreshold: 30,
-  railThreshold: 84
+  railThreshold: 160
 };
 const contextPaneRailSizeConfig = {
   ...contextPaneConfig,
@@ -78,6 +78,16 @@ assert.deepEqual(
   finishSourcePanePointerSize(70, contextPaneRailSizeConfig),
   { state: 'rail', size: 34, persistedSize: 34 },
   'pointer finish below the context rail threshold should snap to the configured rail size'
+);
+assert.deepEqual(
+  finishSourcePanePointerSize(120, contextPaneRailSizeConfig),
+  { state: 'rail', size: 34, persistedSize: 34 },
+  'context pointer finish below the compact-card minimum should snap to the rail size'
+);
+assert.deepEqual(
+  finishSourcePanePointerSize(180, contextPaneRailSizeConfig),
+  { state: 'expanded', size: 180, persistedSize: 180 },
+  'context pointer finish above the compact-card minimum should expand without a middle band'
 );
 assert.deepEqual(
   finishSourcePanePointerSize(340.6, contextPaneConfig),

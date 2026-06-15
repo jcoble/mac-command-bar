@@ -355,7 +355,7 @@
   const contextPaneMinWidth = 34;
   const contextPaneMaxWidth = 1600;
   const contextPaneCollapseThreshold = 30;
-  const contextPaneRailOnlyThreshold = 84;
+  const contextPaneRailOnlyThreshold = 160;
   const contextPaneDefaultHeight = 260;
   const contextPaneMinHeight = 96;
   const contextPaneMaxHeight = 1100;

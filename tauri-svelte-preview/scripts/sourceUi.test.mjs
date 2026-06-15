@@ -34,6 +34,21 @@ function constStringArray(source, constName) {
   return [...match.groups.body.matchAll(/["']([^"']+)["']/g)].map((item) => item[1]);
 }
 
+function constNumber(source, constName) {
+  const escapedName = constName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`const\\s+${escapedName}\\s*=\\s*(?<value>\\d+);`).exec(source);
+  assert.ok(match?.groups?.value, `Missing ${constName} numeric constant`);
+  return Number(match.groups.value);
+}
+
+function sideContextCssMinimum() {
+  const match = /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*6px\s*minmax\((?<minimum>\d+)px,\s*var\(--context-pane-width\)\)\s*;/m.exec(
+    blockFor('.workspace-arrangement.context-side:not(.context-rail-only)')
+  );
+  assert.ok(match?.groups?.minimum, 'Side context non-rail grid should use a pixel minimum');
+  return Number(match.groups.minimum);
+}
+
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
 assert.ok(
   pageSource.includes("from '$lib/sourcePaneSizing'"),
@@ -166,6 +181,19 @@ assert.ok(
   !blockFor('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs').includes('display: none') &&
     !blockFor('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs button').includes('display: none'),
   'Side context rail should keep icon tabs visible while card bodies are hidden'
+);
+const contextPaneRailOnlyThreshold = constNumber(pageSource, 'contextPaneRailOnlyThreshold');
+const sideCompactCardMinimum = sideContextCssMinimum();
+assert.equal(
+  contextPaneRailOnlyThreshold,
+  160,
+  'Side context rail-only threshold should match the compact-card minimum'
+);
+assert.equal(sideCompactCardMinimum, 160, 'Side context non-rail CSS minimum should stay at 160px');
+assert.equal(
+  contextPaneRailOnlyThreshold,
+  sideCompactCardMinimum,
+  'Side context rail threshold and non-rail CSS minimum should stay aligned'
 );
 assert.ok(
   pageSource.includes('.workspace-arrangement.context-side:not(.context-rail-only) {\n      grid-template-columns: minmax(0, 1fr) 6px minmax(160px, var(--context-pane-width));') &&
@@ -349,7 +377,7 @@ assert.ok(pageSource.includes('const sidePaneMinWidth = 40'), 'Activity pane sho
 assert.ok(pageSource.includes('const sidePaneRailOnlyThreshold = 118'), 'Activity pane should have an explicit rail-only breakpoint');
 assert.ok(pageSource.includes('const contextPaneMinWidth = 34'), 'Context pane should shrink to a compact icon rail');
 assert.ok(pageSource.includes('const contextPaneMaxWidth = 1600'), 'Context pane should allow wide manual resizing instead of capping early');
-assert.ok(pageSource.includes('const contextPaneRailOnlyThreshold = 84'), 'Context pane should have an explicit rail-only breakpoint');
+assert.ok(pageSource.includes('const contextPaneRailOnlyThreshold = 160'), 'Context pane rail breakpoint should align with the usable side-card minimum');
 assert.ok(pageSource.includes('class:activity-rail-only={activityPaneRailOnly()}'), 'Source shell should expose rail-only activity mode through a class');
 assert.ok(pageSource.includes('class:context-rail-only={contextPaneRailOnly()}'), 'Workspace should expose rail-only context mode through a class');
 assert.ok(pageSource.includes('function expandActivityPaneFromRail'), 'Activity rail should have an explicit expand helper');

@@ -59,6 +59,11 @@ Completed and committed:
 
 Current checkpoint:
 
+- Latest layout checkpoint: side context rail sizing is aligned with the usable-card minimum.
+  - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourcePaneSizing.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`.
+  - Behavior delivered: the right-side context pane now has a clear icon-rail state below 160px and a usable expanded-card state at/above 160px, instead of a dead middle width where the layout reported expanded but CSS still forced the compact minimum.
+  - Validation: `node --experimental-strip-types scripts/sourcePaneSizing.test.mjs`, `node scripts/sourceUi.test.mjs`, `pnpm check`, `pnpm build`, `git diff --check`.
+  - Remaining risk: hands-on visual validation still needs a real app/browser pass once the active preview/browser process contention is clear.
 - Priority 0.1 docking is implemented enough for daily iteration: persisted custom dock model, panel close/restore, side/bottom groups, resizable panes, stacked context cards, hidden-panel restore chips. `dockview-core` is installed but not adopted; the next layout slice must either harden the custom model or migrate deliberately.
 - Priority 0.2 project scan stability is implemented for nested-root repair, scan evidence, explicit activation scan reasons, forced refresh on missing/stale/tiny activation plans, and worktree-ancestor scan coverage. Remaining work is hands-on validation on more real project roots and any follow-up from user testing.
 - Priority 0.3 native validation has current automated and hands-on attach-mode coverage: `pnpm test:tauri-app` passes, source bridge wrappers/dev-attach config/web build/25 native LSP tests/TypeScript and C# smoke/Tauri Rust build pass, and the real Tauri shell scanned EdiPlatform and MacCommandBar roots without relaunching. Remaining work is deeper GUI interaction validation for editing/Git/terminal actions.
