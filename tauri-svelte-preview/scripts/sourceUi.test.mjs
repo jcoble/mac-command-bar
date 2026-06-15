@@ -107,7 +107,7 @@ assertDeclaration('.shell:not(.activity-hidden) .sidebar', 'display: none');
 assertDeclaration('.activity-shell', 'min-width: 0');
 assertDeclaration('.sidebar', 'container-type: inline-size');
 assert.ok(
-  pageSource.includes('@container (max-width: 260px)') &&
+  pageSource.includes('@container (max-width: 330px)') &&
     pageSource.includes('.project-row {\n      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;') &&
     pageSource.includes('.scan-button span {\n      position: absolute;'),
   'The left source pane should compact controls by pane width instead of clipping fixed-width controls'
@@ -1934,6 +1934,11 @@ assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDoc
 assert.ok(pageSource.includes('sourceDockviewInsightsPlanOptions.panelIDs ?? []'), 'Insights Dockview host should derive migrated panel membership from the slice helper');
 assert.ok(pageSource.includes('...sourceDockviewInsightsPlanOptions'), 'Insights Dockview host should avoid creating editor placeholders through slice plan options');
 assert.ok(pageSource.includes('sourceDockviewInsightsStorageKey'), 'Insights Dockview host should use slice-specific persisted layout storage');
+assert.ok(
+  pageSource.includes('sourceDockviewStorageKey,') &&
+    pageSource.includes('window.localStorage.removeItem(sourceDockviewStorageKey);'),
+  'Source layout migration should import the legacy Dockview storage key before clearing it'
+);
 assert.ok(pageSource.includes('sourceDockviewLayoutOnlyContainsPanels'), 'Insights Dockview host should reject stale full-workspace snapshots');
 assert.ok(pageSource.includes('disposeSourceDockviewInsights();'), 'Source page should dispose the Dockview host during teardown');
 assert.ok(pageSource.includes('class="source-dockview-insights-shell"'), 'Insights panel should keep a fallback shell around the Dockview host');

@@ -107,6 +107,7 @@
     createSourceDockviewWorkspace,
     sourceDockviewMigrationSlicePlanOptions,
     sourceDockviewMigrationSliceStorageKey,
+    sourceDockviewStorageKey,
     type SourceDockviewMigrationSliceID,
     type SourceDockviewWorkspace
   } from '$lib/sourceDockviewWorkspace';
@@ -19053,7 +19054,7 @@
     cursor: default;
   }
 
-  @container (max-width: 260px) {
+  @container (max-width: 330px) {
     .sidebar {
       padding: 10px 7px;
     }
