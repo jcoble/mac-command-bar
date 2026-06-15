@@ -59,6 +59,11 @@ Completed and committed:
 
 Current checkpoint:
 
+- Latest Dockview checkpoint: migration slice planning is now validated before live pane migration.
+  - Changed files: `tauri-svelte-preview/src/lib/sourceDockviewWorkspace.ts`, `tauri-svelte-preview/scripts/sourceDockviewWorkspace.test.mjs`.
+  - Behavior delivered: Dockview migration panel options now reject unknown panel/root IDs, de-duplicate requested panel IDs, auto-include the chosen root panel, preserve hidden-root no-op behavior, and keep the existing `insights-only`, `context-insights`, and `bottom-runtime` slice outputs stable.
+  - Validation: `node --experimental-strip-types scripts/sourceDockviewWorkspace.test.mjs`, `pnpm test:source-dockview`, `pnpm check`, targeted `git diff --check`.
+  - Remaining risk: this hardens the helper path only; the live page still needs the next deliberate Dockview migration slice.
 - Latest layout checkpoint: side context rail sizing is aligned with the usable-card minimum.
   - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourcePaneSizing.test.mjs`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`.
   - Behavior delivered: the right-side context pane now has a clear icon-rail state below 160px and a usable expanded-card state at/above 160px, instead of a dead middle width where the layout reported expanded but CSS still forced the compact minimum.

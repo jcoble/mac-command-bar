@@ -10,6 +10,7 @@ import {
   applySourceDockviewActivePanel,
   applySourceDockviewPanelClose,
   createSourceDockviewPanelPlans,
+  normalizeSourceDockviewPanelPlanOptions,
   sourceDockviewMigrationSlicePlanOptions,
   sourceDockviewMigrationSlices,
   sourceDockviewMigrationSliceStorageKey,
@@ -155,6 +156,59 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
+  normalizeSourceDockviewPanelPlanOptions({
+    panelIDs: ['context', 'insights', 'context', 'insights'],
+    rootPanelID: 'context'
+  }),
+  { panelIDs: ['context', 'insights'], rootPanelID: 'context' },
+  'Dockview migration panel plan options should de-duplicate requested panel IDs'
+);
+
+assert.deepEqual(
+  normalizeSourceDockviewPanelPlanOptions({
+    panelIDs: ['insights'],
+    rootPanelID: 'context'
+  }),
+  { panelIDs: ['context', 'insights'], rootPanelID: 'context' },
+  'Dockview migration panel plan options should include the requested root panel'
+);
+
+assert.throws(
+  () =>
+    normalizeSourceDockviewPanelPlanOptions({
+      panelIDs: ['context', 'missing-panel'],
+      rootPanelID: 'context'
+    }),
+  /Unknown Dockview panel ID for panelIDs\[1\]: missing-panel/,
+  'Dockview migration panel plan options should reject unknown panel IDs'
+);
+
+assert.throws(
+  () =>
+    normalizeSourceDockviewPanelPlanOptions({
+      panelIDs: ['context'],
+      rootPanelID: 'missing-root'
+    }),
+  /Unknown Dockview panel ID for rootPanelID: missing-root/,
+  'Dockview migration panel plan options should reject unknown root panel IDs'
+);
+
+assert.throws(
+  () => sourceDockviewMigrationSlicePlanOptions('missing-slice'),
+  /Unknown Dockview migration slice: missing-slice/,
+  'Dockview migration slice helpers should reject unknown slice IDs'
+);
+
+assert.deepEqual(
+  createSourceDockviewPanelPlans(
+    createDefaultSourceDockLayout(),
+    sourceDockviewMigrationSlicePlanOptions('insights-only')
+  ).map((plan) => [plan.id, plan.position]),
+  [['insights', undefined]],
+  'The insights-only migration slice should create only the insights panel plan'
+);
+
+assert.deepEqual(
   createSourceDockviewPanelPlans(
     createDefaultSourceDockLayout(),
     sourceDockviewMigrationSlicePlanOptions('context-insights')
@@ -164,6 +218,15 @@ assert.deepEqual(
     ['insights', { referencePanel: 'context', direction: 'within' }]
   ],
   'The context-insights migration slice should create only context and insights panel plans'
+);
+
+assert.deepEqual(
+  createSourceDockviewPanelPlans(
+    hideSourceDockPanel(createDefaultSourceDockLayout(), 'insights'),
+    sourceDockviewMigrationSlicePlanOptions('insights-only')
+  ),
+  [],
+  'A migration slice should create no panels while its root panel is hidden'
 );
 
 const runtimeBottomLayout = showSourceDockPanel(

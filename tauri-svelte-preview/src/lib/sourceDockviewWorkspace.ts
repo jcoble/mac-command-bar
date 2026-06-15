@@ -86,6 +86,11 @@ export type SourceDockviewPanelPlanOptions = {
   rootPanelID?: SourceDockPanelID;
 };
 
+type SourceDockviewPanelPlanRequestOptions = {
+  panelIDs?: unknown;
+  rootPanelID?: unknown;
+};
+
 export function sourceDockviewMigrationSliceStorageKey(
   sliceID: SourceDockviewMigrationSliceID
 ): string {
@@ -96,9 +101,43 @@ export function sourceDockviewMigrationSlicePlanOptions(
   sliceID: SourceDockviewMigrationSliceID
 ): SourceDockviewPanelPlanOptions {
   const slice = sourceDockviewMigrationSlice(sliceID);
-  return {
+  return normalizeSourceDockviewPanelPlanOptions({
     panelIDs: [...slice.panelIDs],
     rootPanelID: slice.rootPanelID
+  });
+}
+
+export function normalizeSourceDockviewPanelPlanOptions(
+  options: SourceDockviewPanelPlanRequestOptions = {}
+): SourceDockviewPanelPlanOptions {
+  const hasRootPanelID = options.rootPanelID !== undefined;
+  const rootPanelID = normalizeSourceDockviewPanelID(
+    hasRootPanelID ? options.rootPanelID : 'editor',
+    'rootPanelID'
+  );
+
+  if (options.panelIDs === undefined) {
+    return hasRootPanelID ? { rootPanelID } : {};
+  }
+  if (!Array.isArray(options.panelIDs)) {
+    throw new Error('Dockview panelIDs must be an array');
+  }
+
+  const panelIDs: SourceDockPanelID[] = [];
+  for (const [index, panelID] of options.panelIDs.entries()) {
+    const normalizedPanelID = normalizeSourceDockviewPanelID(panelID, `panelIDs[${index}]`);
+    if (!panelIDs.includes(normalizedPanelID)) {
+      panelIDs.push(normalizedPanelID);
+    }
+  }
+
+  if (!panelIDs.includes(rootPanelID)) {
+    panelIDs.unshift(rootPanelID);
+  }
+
+  return {
+    panelIDs,
+    rootPanelID
   };
 }
 
@@ -115,10 +154,11 @@ export function createSourceDockviewPanelPlans(
   options: SourceDockviewPanelPlanOptions = {}
 ): SourceDockviewPanelPlan[] {
   const normalizedLayout = normalizeSourceDockLayout(layout);
+  const normalizedOptions = normalizeSourceDockviewPanelPlanOptions(options);
   const plans: SourceDockviewPanelPlan[] = [];
   const plannedPanelIDs = new Set<SourceDockPanelID>();
-  const includedPanelIDs = options.panelIDs ? new Set(options.panelIDs) : null;
-  const rootPanelID = options.rootPanelID ?? 'editor';
+  const includedPanelIDs = normalizedOptions.panelIDs ? new Set(normalizedOptions.panelIDs) : null;
+  const rootPanelID = normalizedOptions.rootPanelID ?? 'editor';
   const rootPanelVisible = normalizedLayout.groups.some((group) => group.panelIDs.includes(rootPanelID));
 
   if (includedPanelIDs && !rootPanelVisible) {
@@ -376,6 +416,11 @@ function firstPanelPositionForGroup(
 
 function isSourceDockviewPanelID(value: unknown): value is SourceDockPanelID {
   return sourceDockviewPanelDescriptors.some((panel) => panel.id === value);
+}
+
+function normalizeSourceDockviewPanelID(value: unknown, fieldName: string): SourceDockPanelID {
+  if (isSourceDockviewPanelID(value)) return value;
+  throw new Error(`Unknown Dockview panel ID for ${fieldName}: ${String(value)}`);
 }
 
 function sourceDockviewPanelID(panel: IDockviewPanel | undefined): SourceDockPanelID | null {
