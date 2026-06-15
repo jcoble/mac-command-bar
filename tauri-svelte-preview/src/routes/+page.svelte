@@ -24862,23 +24862,7 @@
     }
   }
 
-  @media (max-width: 1120px) {
-    .shell:not(.activity-hidden) {
-      grid-template-columns: 56px 6px minmax(0, 1fr);
-    }
-
-    .shell.side-right:not(.activity-hidden) {
-      grid-template-columns: minmax(0, 1fr) 6px 56px;
-    }
-
-    .shell:not(.activity-hidden) .activity-shell {
-      grid-template-columns: 46px;
-    }
-
-    .shell:not(.activity-hidden) .sidebar {
-      display: none;
-    }
-
+  @media (max-width: 1380px) {
     .workspace-arrangement.context-side:not(.context-rail-only) {
       grid-template-columns: minmax(0, 1fr) 6px 34px;
     }
@@ -24915,6 +24899,24 @@
       width: 24px;
       min-width: 24px;
       height: 24px;
+    }
+  }
+
+  @media (max-width: 1120px) {
+    .shell:not(.activity-hidden) {
+      grid-template-columns: 56px 6px minmax(0, 1fr);
+    }
+
+    .shell.side-right:not(.activity-hidden) {
+      grid-template-columns: minmax(0, 1fr) 6px 56px;
+    }
+
+    .shell:not(.activity-hidden) .activity-shell {
+      grid-template-columns: 46px;
+    }
+
+    .shell:not(.activity-hidden) .sidebar {
+      display: none;
     }
   }
 

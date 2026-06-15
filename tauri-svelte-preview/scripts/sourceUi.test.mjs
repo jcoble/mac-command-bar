@@ -98,8 +98,12 @@ assertDeclaration('.shell.activity-rail-only', 'grid-template-columns: 56px 6px 
 assertDeclaration('.shell.activity-rail-only .activity-shell', 'grid-template-columns: 46px');
 assertDeclaration('.shell.activity-rail-only .sidebar', 'display: none');
 assert.ok(
+  pageSource.includes('@media (max-width: 1380px)'),
+  'Mid-width desktop windows should collapse side context cards to the icon rail'
+);
+assert.ok(
   pageSource.includes('@media (max-width: 1120px)'),
-  'Split-window desktop widths should get an automatic compact rail breakpoint'
+  'Narrow split-window desktop widths should collapse the left source pane to its rail'
 );
 assertDeclaration('.shell:not(.activity-hidden)', 'grid-template-columns: 56px 6px minmax(0, 1fr)');
 assertDeclaration('.shell:not(.activity-hidden) .activity-shell', 'grid-template-columns: 46px');
