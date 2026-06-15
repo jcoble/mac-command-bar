@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  orchestrationAutoResolveTallyText,
   orchestrationArtifactChips,
   orchestrationAgentActivityItems,
   orchestrationAttentionQueue,
@@ -9,6 +10,7 @@ import {
   orchestrationLiveDigestItems,
   orchestrationLoopStageMetrics,
   orchestrationLoopTallyText,
+  orchestrationRunDigest,
   orchestrationRunHandoffText,
   orchestrationRunMetrics,
   orchestrationRunSummaryText,
@@ -222,6 +224,10 @@ assert.equal(
   orchestrationLoopTallyText(metrics),
   '2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off'
 );
+assert.equal(
+  orchestrationAutoResolveTallyText(metrics),
+  '0 found · 0 fixed · 1 retested · 0 UI verified · 1 needs decision'
+);
 assert.deepEqual(orchestrationRunStage(run, metrics), {
   label: 'Needs sign-off',
   tone: 'attention',
@@ -332,6 +338,10 @@ assert.deepEqual(orchestrationRunStage(autoResolveRun, autoResolveMetrics), {
   tone: 'good',
   title: '1 UI verification'
 });
+assert.equal(
+  orchestrationAutoResolveTallyText(autoResolveMetrics),
+  '1 found · 1 fixed · 0 retested · 1 UI verified · 0 needs decision'
+);
 
 const batchedAutoResolveRun = {
   ...autoResolveRun,
@@ -379,6 +389,205 @@ assert.equal(
   '4 issues · 2 fixes · 3 resolved · 2 UI verified · 2 delegations'
 );
 
+const longRunningLoopRun = {
+  ...run,
+  id: 'run-long-e2e-loop',
+  title: '/run-e2e-tests orchestration',
+  status: 'running',
+  progress: 86,
+  agents: [
+    {
+      id: 'orchestrator',
+      provider: 'codex',
+      role: 'orchestrator',
+      status: 'waiting-for-approval',
+      title: 'Controller',
+      lastActivity: '2026-06-10T12:07:00.000Z'
+    },
+    {
+      id: 'fixer-1',
+      provider: 'codex',
+      role: 'fix-agent',
+      status: 'succeeded',
+      title: 'Fix batch agent',
+      lastActivity: '2026-06-10T12:04:00.000Z'
+    },
+    {
+      id: 'tester-1',
+      provider: 'claude',
+      role: 'ui-tester',
+      status: 'succeeded',
+      title: 'UI retest agent',
+      lastActivity: '2026-06-10T12:05:00.000Z'
+    }
+  ],
+  steps: [],
+  artifacts: [],
+  events: [
+    {
+      ...run.events[0],
+      id: 'loop-scenario',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:00:00.000Z',
+      kind: 'scenario.created',
+      status: 'succeeded',
+      title: 'Scenario created: Google auth callback',
+      message: 'Scenario ready for browser execution',
+      agentId: 'orchestrator',
+      agentProvider: 'codex',
+      agentRole: 'orchestrator',
+      stepKind: 'scenario',
+      scenario: 'Google auth callback',
+      scenarioCount: 1
+    },
+    {
+      ...run.events[0],
+      id: 'loop-issues',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:01:00.000Z',
+      kind: 'issue.found',
+      status: 'needs-fix',
+      title: 'Issues found: auth callback',
+      message: '3 findings from browser run',
+      agentId: 'tester-1',
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      stepKind: 'issue',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      issueCount: 3
+    },
+    {
+      ...run.events[0],
+      id: 'loop-fix-batch',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:03:00.000Z',
+      kind: 'batch.delegated',
+      status: 'running',
+      title: 'Fix batch delegated: AUTH-7',
+      message: '2 fixes delegated to implementation agents',
+      agentId: 'fixer-1',
+      agentProvider: 'codex',
+      agentRole: 'fix-agent',
+      stepKind: 'fix',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      fixCount: 2,
+      delegatedCount: 2
+    },
+    {
+      ...run.events[0],
+      id: 'loop-retest',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:04:00.000Z',
+      kind: 'retest.started',
+      status: 'running',
+      title: 'UI retest started: AUTH-7',
+      message: 'Browser retest after delegated fixes',
+      agentId: 'tester-1',
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      stepKind: 'retest',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      retryAttempt: 2,
+      retestCount: 1
+    },
+    {
+      ...run.events[0],
+      id: 'loop-ui-proof',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:05:00.000Z',
+      kind: 'ui.verified',
+      status: 'succeeded',
+      title: 'UI verified: Google auth callback',
+      message: '2 fixes verified in browser retest',
+      agentId: 'tester-1',
+      agentProvider: 'claude',
+      agentRole: 'ui-tester',
+      stepKind: 'retest',
+      artifactKind: 'trace',
+      artifactPath: '/repo/.codex-artifacts/auth-trace.zip',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      resolvedCount: 2,
+      verifiedCount: 2
+    },
+    {
+      ...run.events[0],
+      id: 'loop-decision',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:06:00.000Z',
+      kind: 'approval.required',
+      status: 'waiting-for-approval',
+      title: 'Approval required: merge fix batch',
+      message: 'Awaiting owner sign-off',
+      agentId: 'orchestrator',
+      agentProvider: 'codex',
+      agentRole: 'orchestrator',
+      stepKind: 'approval',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      approvalSubject: 'Merge delegated fixes?',
+      blockerReason: 'Manual approval required before merge',
+      decisionPrompt: 'Approve merge and handoff?',
+      approvalCount: 1,
+      decisionCount: 1
+    },
+    {
+      ...run.events[0],
+      id: 'loop-handoff',
+      runId: 'run-long-e2e-loop',
+      timestamp: '2026-06-10T12:07:00.000Z',
+      kind: 'handoff.available',
+      status: 'succeeded',
+      title: 'Handoff available',
+      message: 'Copyable loop summary ready',
+      agentId: 'orchestrator',
+      agentProvider: 'codex',
+      agentRole: 'orchestrator',
+      stepKind: 'handoff',
+      artifactKind: 'handoff',
+      artifactPath: '/repo/.codex-artifacts/run-e2e-tests-handoff.md'
+    }
+  ]
+};
+const longRunningMetrics = orchestrationRunMetrics(longRunningLoopRun);
+assert.equal(
+  orchestrationLoopTallyText(longRunningMetrics),
+  '1 scenario · 3 issues · 1 test · 1 retest · 2 fixes · 2 resolved · 2 UI verified · 2 delegations · 1 handoff · 1 decision · 1 sign-off'
+);
+assert.equal(
+  orchestrationAutoResolveTallyText(longRunningMetrics),
+  '3 found · 2 fixed · 1 retested · 2 UI verified · 1 needs decision'
+);
+const longRunningDigest = orchestrationRunDigest(longRunningLoopRun);
+assert.deepEqual(longRunningDigest.stage, {
+  label: 'Needs sign-off',
+  tone: 'attention',
+  title: '1 decision · 1 sign-off'
+});
+assert.deepEqual(
+  [
+    longRunningDigest.activeAgent?.id,
+    longRunningDigest.activeAgent?.activity,
+    longRunningDigest.waitingDecision?.title,
+    longRunningDigest.retestStatus?.label,
+    longRunningDigest.retestStatus?.title,
+    longRunningDigest.latestArtifact?.label,
+    longRunningDigest.latestArtifact?.path
+  ],
+  [
+    'orchestrator',
+    'Handoff available',
+    'Approval required: merge fix batch',
+    'UI proof',
+    'UI verified: Google auth callback',
+    'Handoff',
+    '/repo/.codex-artifacts/run-e2e-tests-handoff.md'
+  ]
+);
+
 assert.deepEqual(
   orchestrationAgentActivityItems(run).map((agent) => [
     agent.id,
@@ -418,6 +627,42 @@ assert.match(orchestrationTimelineDetail(timeline[1]), /retry 1/);
 assert.equal(
   orchestrationCurrentActivity(run),
   'claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree'
+);
+assert.deepEqual(
+  {
+    stage: orchestrationRunDigest(run).stage,
+    activeAgent: orchestrationRunDigest(run).activeAgent && [
+      orchestrationRunDigest(run).activeAgent.id,
+      orchestrationRunDigest(run).activeAgent.label,
+      orchestrationRunDigest(run).activeAgent.status,
+      orchestrationRunDigest(run).activeAgent.activity
+    ],
+    waitingDecision: orchestrationRunDigest(run).waitingDecision && [
+      orchestrationRunDigest(run).waitingDecision.label,
+      orchestrationRunDigest(run).waitingDecision.title
+    ],
+    retestStatus: orchestrationRunDigest(run).retestStatus && [
+      orchestrationRunDigest(run).retestStatus.label,
+      orchestrationRunDigest(run).retestStatus.title
+    ],
+    latestArtifact: orchestrationRunDigest(run).latestArtifact && [
+      orchestrationRunDigest(run).latestArtifact.label,
+      orchestrationRunDigest(run).latestArtifact.path
+    ],
+    autoResolveTally: orchestrationRunDigest(run).autoResolveTally
+  },
+  {
+    stage: {
+      label: 'Needs sign-off',
+      tone: 'attention',
+      title: '1 decision · 1 sign-off'
+    },
+    activeAgent: ['fixer-1', 'claude fix-agent', 'waiting-for-approval', 'Needs sign-off'],
+    waitingDecision: ['Decision', 'Needs sign-off'],
+    retestStatus: ['Retest', 'Retesting failed scenario'],
+    latestArtifact: ['Handoff', '/repo/.codex-artifacts/handoff.md'],
+    autoResolveTally: '0 found · 0 fixed · 1 retested · 0 UI verified · 1 needs decision'
+  }
 );
 assert.equal(
   orchestrationRunTimelineText(run, 2),
@@ -479,9 +724,15 @@ assert.equal(
     'Project: MacCommandBar · main checkout',
     'Task: TSK-127',
     'Phase: ui-test-loop',
+    'Stage: Needs sign-off · 1 decision · 1 sign-off',
     'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
+    'Active agent: claude fix-agent · waiting-for-approval · Needs sign-off',
+    'Waiting decision: Needs sign-off - Manual decision before deleting dirty worktree',
+    'Retest: Retesting failed scenario · issue AUTH-7 · scenario Google auth callback · retry 1 · Retry after auth fix',
+    'Latest artifact: Scenario handoff · /repo/.codex-artifacts/handoff.md',
     'Tally: 2 done · 4 running · 0 failed · 2 attention · 1 retries · 1 sign-off',
     'Loop: 2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off',
+    'Auto-resolve: 0 found · 0 fixed · 1 retested · 0 UI verified · 1 needs decision',
     'Needs attention: Needs sign-off',
     'Artifacts: 1 · Links: 1 · Events: 3',
     'Timeline:',
@@ -504,8 +755,14 @@ assert.equal(
     'Path: /repo',
     'Task: TSK-127',
     'Phase: ui-test-loop',
+    'Stage: Needs sign-off · 1 decision · 1 sign-off',
     'Current: claude fix-agent fixer-1: Needs sign-off - Manual decision before deleting dirty worktree',
+    'Active agent: claude fix-agent · waiting-for-approval · Needs sign-off',
+    'Waiting decision: Needs sign-off - Manual decision before deleting dirty worktree',
+    'Retest status: Retesting failed scenario · issue AUTH-7 · scenario Google auth callback · retry 1 · Retry after auth fix',
+    'Latest artifact: Scenario handoff · /repo/.codex-artifacts/handoff.md',
     'Loop tally: 2 scenarios · 1 test · 1 retest · 1 fix · 1 handoff · 1 decision · 1 sign-off',
+    'Auto-resolve tally: 0 found · 0 fixed · 1 retested · 0 UI verified · 1 needs decision',
     'Counts: 2 agents · 2 steps · 3 events · 1 artifacts · 1 links',
     '',
     'Needs attention:',

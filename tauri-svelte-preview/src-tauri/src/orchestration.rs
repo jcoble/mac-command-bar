@@ -12,50 +12,86 @@ const ORCHESTRATION_EVENT_STORE_FILE: &str = "orchestration-events.jsonl";
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OrchestrationEvent {
+    #[serde(rename = "schemaVersion", alias = "schema_version", default)]
     schema_version: u16,
+    #[serde(default)]
     id: String,
+    #[serde(rename = "runId", alias = "runID", alias = "run_id", default)]
     run_id: String,
+    #[serde(default)]
     timestamp: String,
+    #[serde(default)]
     kind: String,
+    #[serde(default)]
     status: String,
     title: Option<String>,
     message: Option<String>,
-    #[serde(rename = "projectID")]
+    #[serde(rename = "projectID", alias = "projectId", alias = "project_id")]
     project_id: Option<String>,
+    #[serde(alias = "project_name")]
     project_name: Option<String>,
+    #[serde(alias = "project_path")]
     project_path: Option<String>,
+    #[serde(alias = "root_label")]
     root_label: Option<String>,
-    #[serde(rename = "taskID")]
+    #[serde(rename = "taskID", alias = "taskId", alias = "task_id")]
     task_id: Option<String>,
+    #[serde(alias = "agent_id")]
     agent_id: Option<String>,
+    #[serde(alias = "agent_provider")]
     agent_provider: Option<String>,
+    #[serde(alias = "agent_role", alias = "agent_type")]
     agent_role: Option<String>,
+    #[serde(alias = "step_id")]
     step_id: Option<String>,
+    #[serde(alias = "step_kind")]
     step_kind: Option<String>,
+    #[serde(alias = "artifact_id")]
     artifact_id: Option<String>,
+    #[serde(alias = "artifact_kind")]
     artifact_kind: Option<String>,
+    #[serde(alias = "artifact_path")]
     artifact_path: Option<String>,
+    #[serde(alias = "artifact_url", alias = "artifactURL")]
     artifact_url: Option<String>,
+    #[serde(alias = "link_kind")]
     link_kind: Option<String>,
+    #[serde(alias = "link_label")]
     link_label: Option<String>,
+    #[serde(alias = "link_url", alias = "linkURL")]
     link_url: Option<String>,
     scenario: Option<String>,
-    #[serde(rename = "issueID", alias = "issueId")]
+    #[serde(rename = "issueID", alias = "issueId", alias = "issue_id")]
     issue_id: Option<String>,
+    #[serde(alias = "retry_attempt")]
     retry_attempt: Option<u32>,
+    #[serde(alias = "approval_subject")]
     approval_subject: Option<String>,
+    #[serde(alias = "blocker_reason")]
     blocker_reason: Option<String>,
+    #[serde(alias = "decision_prompt")]
     decision_prompt: Option<String>,
+    #[serde(alias = "scenario_count")]
     scenario_count: Option<u32>,
+    #[serde(alias = "issue_count")]
     issue_count: Option<u32>,
+    #[serde(alias = "test_count")]
     test_count: Option<u32>,
+    #[serde(alias = "retest_count")]
     retest_count: Option<u32>,
+    #[serde(alias = "fix_count")]
     fix_count: Option<u32>,
+    #[serde(alias = "resolved_count", alias = "fixed_count")]
     resolved_count: Option<u32>,
+    #[serde(alias = "verified_count")]
     verified_count: Option<u32>,
+    #[serde(alias = "delegated_count", alias = "delegation_count")]
     delegated_count: Option<u32>,
+    #[serde(alias = "decision_count")]
     decision_count: Option<u32>,
+    #[serde(alias = "approval_count", alias = "signoff_count")]
     approval_count: Option<u32>,
+    #[serde(alias = "failed_count")]
     failed_count: Option<u32>,
 }
 
@@ -170,9 +206,6 @@ fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), S
     if event.schema_version == 0 {
         event.schema_version = ORCHESTRATION_SCHEMA_VERSION;
     }
-    if event.id.trim().is_empty() {
-        event.id = format!("evt-{}", unix_epoch_millis());
-    }
     if event.timestamp.trim().is_empty() {
         event.timestamp = unix_epoch_millis().to_string();
     }
@@ -181,6 +214,19 @@ fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), S
     }
     if event.status.trim().is_empty() {
         event.status = "running".to_string();
+    }
+    if event.id.trim().is_empty() {
+        event.id = format!(
+            "evt-{}",
+            stable_orchestration_id(&format!(
+                "{}:{}:{}:{}:{}",
+                event.run_id,
+                event.timestamp,
+                event.kind,
+                event.title.as_deref().unwrap_or_default(),
+                event.message.as_deref().unwrap_or_default()
+            ))
+        );
     }
 
     Ok(())
@@ -861,18 +907,60 @@ fn merge_orchestration_status(current: &str, next: &str) -> String {
 }
 
 fn orchestration_status_rank(status: &str) -> u8 {
-    match status {
-        "failed" | "cancelled" => 5,
-        "running" => 4,
-        "blocked" => 3,
-        "queued" => 2,
-        "succeeded" | "skipped" => 1,
-        _ => 0,
+    let normalized = status.trim().to_lowercase();
+    if normalized.is_empty() {
+        return 0;
     }
+    if normalized.contains("fail")
+        || normalized.contains("error")
+        || normalized.contains("cancel")
+    {
+        return 6;
+    }
+    if normalized.contains("block")
+        || normalized.contains("wait")
+        || normalized.contains("approval")
+        || normalized.contains("decision")
+        || normalized.contains("review")
+        || normalized.contains("needs")
+    {
+        return 5;
+    }
+    if normalized.contains("run")
+        || normalized.contains("active")
+        || normalized.contains("work")
+        || normalized.contains("test")
+        || normalized.contains("fix")
+        || normalized.contains("progress")
+    {
+        return 4;
+    }
+    if normalized == "queued" || normalized.contains("queue") {
+        return 2;
+    }
+    if normalized.contains("success")
+        || normalized.contains("succeed")
+        || normalized.contains("complete")
+        || normalized.contains("pass")
+        || normalized.contains("done")
+        || normalized.contains("skip")
+    {
+        return 1;
+    }
+    0
 }
 
 fn orchestration_status_is_terminal(status: &str) -> bool {
-    matches!(status, "succeeded" | "failed" | "cancelled" | "skipped")
+    let normalized = status.trim().to_lowercase();
+    normalized.contains("success")
+        || normalized.contains("succeed")
+        || normalized.contains("complete")
+        || normalized.contains("pass")
+        || normalized.contains("done")
+        || normalized.contains("skip")
+        || normalized.contains("fail")
+        || normalized.contains("error")
+        || normalized.contains("cancel")
 }
 
 fn latest_timestamp(left: Option<String>, right: Option<String>) -> Option<String> {
@@ -1018,5 +1106,50 @@ mod tests {
         assert_eq!(run.links.len(), 1);
         assert_eq!(run.links[0].url, "https://example.test/task");
         assert_eq!(run.progress, 100);
+    }
+
+    #[test]
+    fn partial_orchestration_events_keep_waiting_decisions_visible() {
+        let input = [
+            r#"{"run_id":"run-loop","timestamp":"2026-06-10T10:00:00Z","kind":"run.started","status":"running","project_id":"mac-command-bar","project_name":"MacCommandBar","project_path":"/repo","task_id":"TSK-127"}"#,
+            r#"{"run_id":"run-loop","timestamp":"2026-06-10T10:02:00Z","kind":"handoff.available","status":"succeeded","artifact_kind":"handoff","artifact_path":"/repo/.codex-artifacts/handoff.md"}"#,
+            r#"{"run_id":"run-loop","timestamp":"2026-06-10T10:03:00Z","kind":"approval.required","status":"waiting-for-approval","title":"Approval required","message":"Awaiting owner sign-off","agent_id":"controller","agent_provider":"codex","agent_role":"orchestrator","step_kind":"approval","decision_prompt":"Approve merge?","approval_count":1,"decision_count":1}"#,
+        ]
+        .join("\n");
+
+        let first_parse = parse_orchestration_events_jsonl(&input).unwrap();
+        let second_parse = parse_orchestration_events_jsonl(&input).unwrap();
+        assert_eq!(first_parse[0].schema_version, ORCHESTRATION_SCHEMA_VERSION);
+        assert_eq!(first_parse[0].id, second_parse[0].id);
+        assert_eq!(first_parse[2].run_id, "run-loop");
+        assert_eq!(
+            first_parse[2].decision_prompt.as_deref(),
+            Some("Approve merge?")
+        );
+        assert_eq!(first_parse[2].approval_count, Some(1));
+        assert_eq!(first_parse[2].decision_count, Some(1));
+
+        let runs = reduce_orchestration_events(first_parse);
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.id, "run-loop");
+        assert_eq!(run.status, "waiting-for-approval");
+        assert_eq!(run.phase, "approval");
+        assert_eq!(run.task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(run.progress, 50);
+        assert_eq!(run.agents.len(), 1);
+        assert_eq!(run.agents[0].status, "waiting-for-approval");
+        assert_eq!(run.steps.len(), 2);
+        let approval_step = run
+            .steps
+            .iter()
+            .find(|step| step.kind == "approval")
+            .expect("approval step should be retained");
+        assert_eq!(approval_step.status, "waiting-for-approval");
+        assert_eq!(run.artifacts.len(), 1);
+        assert_eq!(
+            run.artifacts[0].path.as_deref(),
+            Some("/repo/.codex-artifacts/handoff.md")
+        );
     }
 }

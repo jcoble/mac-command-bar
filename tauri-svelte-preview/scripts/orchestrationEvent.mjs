@@ -30,79 +30,335 @@ export function orchestrationEventStorePath(env = process.env) {
 }
 
 export function normalizeOrchestrationEventInput(input) {
-  const project = objectValue(input.project);
+  const project =
+    objectValue(input.project) ??
+    objectValue(input.repo) ??
+    objectValue(input.repository) ??
+    objectValue(input.workspace);
   const run = objectValue(input.run);
   const task = objectValue(input.task);
-  const root = objectValue(input.root) ?? objectValue(input.checkout) ?? objectValue(input.workspace);
-  const agent = objectValue(input.agent);
-  const step = objectValue(input.step);
-  const scenario = objectValue(input.scenario);
-  const issue = objectValue(input.issue);
-  const artifact = objectValue(input.artifact) ?? firstObjectValue(input.artifacts);
-  const link = objectValue(input.link) ?? firstObjectValue(input.links);
-  const counts = objectValue(input.counts) ?? objectValue(input.metrics) ?? objectValue(input.tally);
+  const root =
+    objectValue(input.root) ??
+    objectValue(input.checkout) ??
+    objectValue(input.worktree) ??
+    objectValue(input.workspace);
+  const agent =
+    objectValue(input.agent) ??
+    objectValue(input.activeAgent) ??
+    objectValue(input.active_agent) ??
+    objectValue(input.worker) ??
+    objectValue(input.delegate);
+  const step =
+    objectValue(input.step) ??
+    objectValue(input.stage) ??
+    objectValue(input.batch) ??
+    objectValue(input.fixBatch) ??
+    objectValue(input.fix_batch);
+  const scenario =
+    objectValue(input.scenario) ??
+    objectValue(input.testScenario) ??
+    objectValue(input.test_scenario) ??
+    objectValue(input.workflow);
+  const issue =
+    objectValue(input.issue) ??
+    objectValue(input.finding) ??
+    objectValue(input.bug) ??
+    objectValue(input.defect);
+  const artifact =
+    objectValue(input.artifact) ??
+    objectValue(input.handoff) ??
+    firstObjectValue(input.artifacts) ??
+    firstObjectValue(input.evidence) ??
+    firstObjectValue(input.files) ??
+    firstObjectValue(input.outputs);
+  const link =
+    objectValue(input.link) ??
+    firstObjectValue(input.links) ??
+    firstObjectValue(input.references);
+  const counts =
+    objectValue(input.counts) ??
+    objectValue(input.metrics) ??
+    objectValue(input.tally) ??
+    objectValue(input.tallies) ??
+    objectValue(input.loop) ??
+    objectValue(input.autoResolve) ??
+    objectValue(input.auto_resolve);
   const approval = objectValue(input.approval) ?? objectValue(input.signoff) ?? objectValue(input.signOff);
-  const blocker = objectValue(input.blocker);
-  const decision = objectValue(input.decision);
-  const eventAlias = firstOptionalString(input.event, input.type, input.eventType, input.event_type);
+  const blocker = objectValue(input.blocker) ?? objectValue(input.blocked);
+  const decision =
+    objectValue(input.decision) ??
+    objectValue(input.waitingDecision) ??
+    objectValue(input.waiting_decision) ??
+    objectValue(input.userDecision) ??
+    objectValue(input.user_decision);
+  const eventAlias = firstOptionalString(
+    input.event,
+    input.type,
+    input.eventType,
+    input.event_type,
+    input.kind,
+    input.action,
+    input.name
+  );
 
   return {
     ...input,
     preset: firstOptionalString(input.preset, presetFromEventAlias(eventAlias)),
-    runId: firstOptionalString(input.runId, input.runID, input.run_id, run?.id, run?.runId, run?.run_id),
-    projectID: firstOptionalString(input.projectID, input.projectId, input.project_id, project?.id, project?.projectID),
-    projectName: firstOptionalString(input.projectName, input.project_name, project?.name),
-    projectPath: firstOptionalString(input.projectPath, input.project_path, project?.path, project?.root),
-    rootLabel: firstOptionalString(input.rootLabel, input.root_label, root?.label, root?.name),
-    taskID: firstOptionalString(input.taskID, input.taskId, input.task_id, task?.id, task?.key),
-    agentId: firstOptionalString(input.agentId, input.agentID, input.agent_id, agent?.id, agent?.name),
-    agentProvider: firstOptionalString(input.agentProvider, input.agent_provider, agent?.provider),
-    agentRole: firstOptionalString(input.agentRole, input.agent_role, agent?.role, agent?.type),
-    stepId: firstOptionalString(input.stepId, input.stepID, input.step_id, step?.id),
-    stepKind: firstOptionalString(input.stepKind, input.step_kind, step?.kind, step?.type),
-    artifactId: firstOptionalString(input.artifactId, input.artifactID, input.artifact_id, artifact?.id),
+    runId: firstOptionalString(
+      input.runId,
+      input.runID,
+      input.run_id,
+      input.run,
+      run?.id,
+      run?.runId,
+      run?.runID,
+      run?.run_id
+    ),
+    projectID: firstOptionalString(
+      input.projectID,
+      input.projectId,
+      input.project_id,
+      project?.id,
+      project?.projectID,
+      project?.projectId,
+      project?.slug
+    ),
+    projectName: firstOptionalString(input.projectName, input.project_name, project?.name, project?.title),
+    projectPath: firstOptionalString(
+      input.projectPath,
+      input.project_path,
+      input.workspacePath,
+      input.workspace_path,
+      project?.path,
+      project?.root,
+      project?.workspacePath,
+      project?.workspace_path
+    ),
+    rootLabel: firstOptionalString(input.rootLabel, input.root_label, root?.label, root?.name, root?.slug),
+    taskID: firstOptionalString(
+      input.taskID,
+      input.taskId,
+      input.task_id,
+      input.task,
+      task?.id,
+      task?.key,
+      task?.taskID,
+      task?.taskId
+    ),
+    agentId: firstOptionalString(
+      input.agentId,
+      input.agentID,
+      input.agent_id,
+      input.activeAgentId,
+      input.active_agent_id,
+      agent?.id,
+      agent?.name,
+      agent?.label
+    ),
+    agentProvider: firstOptionalString(input.agentProvider, input.agent_provider, agent?.provider, agent?.model),
+    agentRole: firstOptionalString(
+      input.agentRole,
+      input.agent_role,
+      input.agentType,
+      input.agent_type,
+      agent?.role,
+      agent?.type,
+      agent?.agentType,
+      agent?.agent_type
+    ),
+    stepId: firstOptionalString(input.stepId, input.stepID, input.step_id, step?.id, step?.key),
+    stepKind: firstOptionalString(
+      input.stepKind,
+      input.step_kind,
+      input.stage,
+      input.phase,
+      step?.kind,
+      step?.type,
+      step?.stage,
+      step?.phase
+    ),
+    artifactId: firstOptionalString(input.artifactId, input.artifactID, input.artifact_id, artifact?.id, artifact?.key),
     artifactKind: firstOptionalString(input.artifactKind, input.artifact_kind, artifact?.kind, artifact?.type),
-    artifactPath: firstOptionalString(input.artifactPath, input.artifact_path, artifact?.path),
-    artifactUrl: firstOptionalString(input.artifactUrl, input.artifactURL, input.artifact_url, artifact?.url, artifact?.href),
+    artifactPath: firstOptionalString(input.artifactPath, input.artifact_path, artifact?.path, artifact?.file, artifact?.filePath),
+    artifactUrl: firstOptionalString(
+      input.artifactUrl,
+      input.artifactURL,
+      input.artifact_url,
+      artifact?.url,
+      artifact?.href,
+      artifact?.uri
+    ),
     linkKind: firstOptionalString(input.linkKind, input.link_kind, link?.kind, link?.type),
-    linkLabel: firstOptionalString(input.linkLabel, input.link_label, link?.label, link?.title),
-    linkUrl: firstOptionalString(input.linkUrl, input.linkURL, input.link_url, link?.url, link?.href),
+    linkLabel: firstOptionalString(input.linkLabel, input.link_label, link?.label, link?.title, link?.name),
+    linkUrl: firstOptionalString(input.linkUrl, input.linkURL, input.link_url, link?.url, link?.href, link?.uri),
     scenario: firstOptionalString(
       input.scenario,
       input.scenarioName,
       input.scenario_name,
+      input.workflow,
       scenario?.name,
       scenario?.title,
       scenario?.id
     ),
-    issueID: firstOptionalString(input.issueID, input.issueId, input.issue_id, issue?.id, issue?.key),
-    retryAttempt: firstDefined(input.retryAttempt, input.retry_attempt, input.attempt, input.retry),
+    issueID: firstOptionalString(
+      input.issueID,
+      input.issueId,
+      input.issue_id,
+      input.findingID,
+      input.findingId,
+      input.finding_id,
+      issue?.id,
+      issue?.key,
+      issue?.issueID,
+      issue?.issueId
+    ),
+    retryAttempt: firstDefined(input.retryAttempt, input.retry_attempt, input.attempt, input.retry, input.retestAttempt),
     approvalSubject: firstOptionalString(
       input.approvalSubject,
       input.approval_subject,
+      input.signoffSubject,
+      input.signOffSubject,
+      input.sign_off_subject,
       approval?.subject,
       approval?.title,
-      decision?.subject
+      approval?.message,
+      decision?.subject,
+      decision?.title
     ),
-    blockerReason: firstOptionalString(input.blockerReason, input.blocker_reason, blocker?.reason, blocker?.message),
+    blockerReason: firstOptionalString(
+      input.blockerReason,
+      input.blocker_reason,
+      optionalAliasString(input.blocker),
+      optionalAliasString(input.blocked),
+      blocker?.reason,
+      blocker?.message,
+      blocker?.title
+    ),
     decisionPrompt: firstOptionalString(
       input.decisionPrompt,
       input.decision_prompt,
+      optionalAliasString(input.decision),
+      optionalAliasString(input.waitingDecision),
+      optionalAliasString(input.waiting_decision),
       decision?.prompt,
       decision?.question,
       decision?.message
     ),
-    scenarioCount: firstDefined(input.scenarioCount, input.scenario_count, counts?.scenarioCount, counts?.scenario, counts?.scenarios),
-    issueCount: firstDefined(input.issueCount, input.issue_count, counts?.issueCount, counts?.issue, counts?.issues),
+    scenarioCount: firstDefined(
+      input.scenarioCount,
+      input.scenario_count,
+      counts?.scenarioCount,
+      counts?.scenario,
+      counts?.scenarios,
+      counts?.created,
+      counts?.createdCount
+    ),
+    issueCount: firstDefined(
+      input.issueCount,
+      input.issue_count,
+      input.foundCount,
+      input.found_count,
+      counts?.issueCount,
+      counts?.issue,
+      counts?.issues,
+      counts?.found,
+      counts?.foundCount,
+      counts?.findings,
+      counts?.discovered
+    ),
     testCount: firstDefined(input.testCount, input.test_count, counts?.testCount, counts?.test, counts?.tests),
-    retestCount: firstDefined(input.retestCount, input.retest_count, counts?.retestCount, counts?.retest, counts?.retests),
-    fixCount: firstDefined(input.fixCount, input.fix_count, counts?.fixCount, counts?.fix, counts?.fixes),
-    resolvedCount: firstDefined(input.resolvedCount, input.resolved_count, counts?.resolvedCount, counts?.resolved),
-    verifiedCount: firstDefined(input.verifiedCount, input.verified_count, counts?.verifiedCount, counts?.verified),
-    delegatedCount: firstDefined(input.delegatedCount, input.delegated_count, counts?.delegatedCount, counts?.delegated),
-    decisionCount: firstDefined(input.decisionCount, input.decision_count, counts?.decisionCount, counts?.decision, counts?.decisions),
-    approvalCount: firstDefined(input.approvalCount, input.approval_count, counts?.approvalCount, counts?.approval, counts?.approvals),
-    failedCount: firstDefined(input.failedCount, input.failed_count, counts?.failedCount, counts?.failed, counts?.failures)
+    retestCount: firstDefined(
+      input.retestCount,
+      input.retest_count,
+      input.retestedCount,
+      input.retested_count,
+      counts?.retestCount,
+      counts?.retest,
+      counts?.retests,
+      counts?.retested,
+      counts?.retestedCount
+    ),
+    fixCount: firstDefined(
+      input.fixCount,
+      input.fix_count,
+      input.fixBatchCount,
+      input.fix_batch_count,
+      counts?.fixCount,
+      counts?.fix,
+      counts?.fixes,
+      counts?.fixBatches,
+      counts?.fix_batches,
+      counts?.batches
+    ),
+    resolvedCount: firstDefined(
+      input.resolvedCount,
+      input.resolved_count,
+      input.fixedCount,
+      input.fixed_count,
+      counts?.resolvedCount,
+      counts?.resolved,
+      counts?.fixed,
+      counts?.fixedCount
+    ),
+    verifiedCount: firstDefined(
+      input.verifiedCount,
+      input.verified_count,
+      input.uiVerifiedCount,
+      input.ui_verified_count,
+      counts?.verifiedCount,
+      counts?.verified,
+      counts?.uiVerified,
+      counts?.ui_verified,
+      counts?.passed,
+      counts?.passedCount
+    ),
+    delegatedCount: firstDefined(
+      input.delegatedCount,
+      input.delegated_count,
+      input.delegationCount,
+      input.delegation_count,
+      counts?.delegatedCount,
+      counts?.delegated,
+      counts?.delegations,
+      counts?.assigned
+    ),
+    decisionCount: firstDefined(
+      input.decisionCount,
+      input.decision_count,
+      input.needsDecisionCount,
+      input.needs_decision_count,
+      counts?.decisionCount,
+      counts?.decision,
+      counts?.decisions,
+      counts?.needsDecision,
+      counts?.needs_decision,
+      counts?.['needs-decision'],
+      counts?.pendingDecision,
+      counts?.pending_decision
+    ),
+    approvalCount: firstDefined(
+      input.approvalCount,
+      input.approval_count,
+      input.signoffCount,
+      input.signOffCount,
+      input.sign_off_count,
+      counts?.approvalCount,
+      counts?.approval,
+      counts?.approvals,
+      counts?.signoff,
+      counts?.signoffs,
+      counts?.signOffs,
+      counts?.sign_offs
+    ),
+    failedCount: firstDefined(
+      input.failedCount,
+      input.failed_count,
+      counts?.failedCount,
+      counts?.failed,
+      counts?.failures,
+      counts?.blocked,
+      counts?.blockers
+    )
   };
 }
 
@@ -342,7 +598,7 @@ export function applyOrchestrationEventPreset(input) {
   return {
     ...defaults,
     ...input,
-    kind: input.kind ?? defaults.kind,
+    kind: shouldUsePresetKind(input.kind, preset) ? defaults.kind : input.kind,
     status: input.status ?? defaults.status,
     title: input.title ?? defaults.title,
     message: input.message ?? defaults.message,
@@ -620,17 +876,34 @@ function presetFromEventAlias(value) {
   const aliases = new Map([
     ['run-start', 'run-started'],
     ['run-started', 'run-started'],
+    ['run-begin', 'run-started'],
+    ['run-begun', 'run-started'],
     ['run-complete', 'run-completed'],
     ['run-completed', 'run-completed'],
+    ['run-finished', 'run-completed'],
+    ['run-done', 'run-completed'],
+    ['scenario', 'scenario-started'],
+    ['scenario-created', 'scenario-started'],
+    ['scenario-create', 'scenario-started'],
     ['scenario-start', 'scenario-started'],
     ['scenario-started', 'scenario-started'],
+    ['scenario-executed', 'scenario-passed'],
+    ['scenario-complete', 'scenario-passed'],
     ['scenario-pass', 'scenario-passed'],
     ['scenario-passed', 'scenario-passed'],
+    ['test', 'test-started'],
     ['test-start', 'test-started'],
     ['test-started', 'test-started'],
     ['test-fail', 'test-failed'],
     ['test-failed', 'test-failed'],
+    ['test-failure', 'test-failed'],
+    ['issue-created', 'issue-found'],
+    ['issue-discovered', 'issue-found'],
     ['issue-found', 'issue-found'],
+    ['finding', 'issue-found'],
+    ['finding-found', 'issue-found'],
+    ['finding-discovered', 'issue-found'],
+    ['bug-found', 'issue-found'],
     ['issue', 'issue-found'],
     ['agent-start', 'agent-started'],
     ['agent-started', 'agent-started'],
@@ -638,32 +911,86 @@ function presetFromEventAlias(value) {
     ['agent-completed', 'agent-completed'],
     ['agent-blocked', 'agent-blocked'],
     ['agent-delegated', 'agent-delegated'],
+    ['delegate-agent', 'agent-delegated'],
+    ['delegated-agent', 'agent-delegated'],
     ['batch-delegated', 'batch-delegated'],
+    ['batch-started', 'batch-delegated'],
+    ['fix-batch-started', 'batch-delegated'],
+    ['fix-batch-delegated', 'batch-delegated'],
+    ['delegated-fix-batch', 'batch-delegated'],
     ['fix-batch', 'batch-delegated'],
     ['fix-start', 'fix-started'],
     ['fix-started', 'fix-started'],
+    ['fix-began', 'fix-started'],
+    ['fix-complete', 'fix-resolved'],
+    ['fix-completed', 'fix-resolved'],
+    ['fix-fixed', 'fix-resolved'],
     ['fix-resolved', 'fix-resolved'],
     ['fix-resolve', 'fix-resolved'],
+    ['fixed', 'fix-resolved'],
+    ['ui-retest-start', 'retest-started'],
+    ['ui-retest-started', 'retest-started'],
     ['retest-start', 'retest-started'],
     ['retest-started', 'retest-started'],
     ['retry-start', 'retry-started'],
     ['retry-started', 'retry-started'],
+    ['retry', 'retry-started'],
+    ['ui-retest-pass', 'retest-passed'],
+    ['ui-retest-passed', 'retest-passed'],
     ['retest-pass', 'retest-passed'],
     ['retest-passed', 'retest-passed'],
+    ['ui-retest-fail', 'retest-failed'],
+    ['ui-retest-failed', 'retest-failed'],
     ['retest-fail', 'retest-failed'],
     ['retest-failed', 'retest-failed'],
+    ['ui-pass', 'ui-verified'],
+    ['ui-passed', 'ui-verified'],
+    ['ui-proof', 'ui-verified'],
     ['ui-verified', 'ui-verified'],
+    ['ui-verification', 'ui-verified'],
+    ['browser-verified', 'ui-verified'],
+    ['browser-proof', 'ui-verified'],
     ['ui-failed', 'ui-failed'],
+    ['browser-failed', 'ui-failed'],
+    ['approval-needed', 'approval-required'],
+    ['approval-requested', 'approval-required'],
     ['approval-required', 'approval-required'],
+    ['needs-approval', 'approval-required'],
+    ['decision-needed', 'approval-required'],
+    ['decision-required', 'approval-required'],
+    ['needs-decision', 'approval-required'],
+    ['waiting-decision', 'approval-required'],
+    ['waiting-for-decision', 'approval-required'],
+    ['signoff-required', 'approval-required'],
+    ['sign-off-required', 'approval-required'],
     ['approval-granted', 'approval-granted'],
+    ['approved', 'approval-granted'],
+    ['signoff-granted', 'approval-granted'],
+    ['sign-off-granted', 'approval-granted'],
+    ['blocked', 'blocker-reported'],
+    ['blocker', 'blocker-reported'],
     ['blocker-reported', 'blocker-reported'],
     ['artifact-added', 'artifact-added'],
     ['artifact-available', 'artifact-added'],
+    ['artifact-created', 'artifact-added'],
+    ['trace-added', 'artifact-added'],
+    ['screenshot-added', 'artifact-added'],
+    ['report-added', 'artifact-added'],
+    ['handoff-created', 'handoff'],
+    ['handoff-ready', 'handoff'],
     ['handoff', 'handoff'],
     ['handoff-available', 'handoff']
   ]);
 
   return aliases.get(normalized) ?? null;
+}
+
+function shouldUsePresetKind(kind, preset) {
+  const text = optionalString(kind);
+  if (!text) return true;
+  if (!preset) return false;
+  if (text.includes('.')) return false;
+  return presetFromEventAlias(text) === preset;
 }
 
 function isObjectLike(value) {

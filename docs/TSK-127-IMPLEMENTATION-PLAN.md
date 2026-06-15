@@ -59,6 +59,11 @@ Completed and committed:
 
 Current checkpoint:
 
+- Orchestration event-depth checkpoint:
+  - Changed files: `tauri-svelte-preview/scripts/orchestrationEvent.mjs`, `tauri-svelte-preview/scripts/orchestrationEvent.test.mjs`, `tauri-svelte-preview/src/lib/orchestrationView.ts`, `tauri-svelte-preview/scripts/orchestrationView.test.mjs`, `tauri-svelte-preview/src-tauri/src/orchestration.rs`.
+  - Behavior delivered: real-ish orchestrator/agent payloads now normalize through broader aliases for workspace/repo, active agents, findings, evidence, handoff artifacts, retry/retest events, decision waits, and auto-resolve tallies. UI helpers can now consume a single run digest for stage, active agent, waiting decision, latest artifact, retest status, loop tally, and found/fixed/retested/needs-decision counts.
+  - Validation: `node scripts/orchestrationEvent.test.mjs`, `node scripts/orchestrationView.test.mjs`, `cargo test --manifest-path src-tauri/Cargo.toml orchestration`, targeted `git diff --check`.
+  - Remaining UI work: wire the digest fields into the live Runs/Orchestration pane once Dockview is the layout shell, so the card can show current stage and decision/tally state without adding another bulky panel.
 - Git/worktree command-center checkpoint:
   - Changed files: `core/src/scanners/worktrees.rs`, `core/tests/scanner_tests.rs`, `tauri-svelte-preview/src/lib/worktreeSafety.ts`, `tauri-svelte-preview/scripts/worktreeSafety.test.mjs`, `tauri-svelte-preview/src/lib/gitTaskLinks.ts`, `tauri-svelte-preview/scripts/gitTaskLinks.test.mjs`.
   - Behavior delivered: Rust worktree records now derive task IDs from branch/path text, classify untracked-only trees separately from dirty tracked work, and avoid substring false positives such as `blocked` vs `locked`. The UI safety model now treats untracked files, saved workspace ownership, branch/path-derived task IDs, and unpushed branch audit evidence as first-class cleanup signals.

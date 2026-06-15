@@ -272,6 +272,86 @@ try {
   assert.equal(importedIssueEvent.linkLabel, 'Trace');
   assert.equal(importedIssueEvent.linkUrl, 'http://localhost:9323/trace');
 
+  const aliasHeavyLoopEvent = normalizeOrchestrationEvent({
+    kind: 'ui_retest_passed',
+    run: 'run-tsk-127',
+    workspace: {
+      id: 'mac-command-bar',
+      name: 'MacCommandBar',
+      root: '/repo'
+    },
+    task: 'TSK-127',
+    active_agent: {
+      name: 'tester-1',
+      provider: 'claude',
+      agent_type: 'ui-tester'
+    },
+    stage: 'retest',
+    workflow: 'Google auth callback',
+    finding: {
+      key: 'AUTH-7'
+    },
+    retry: '2',
+    tallies: {
+      found: 3,
+      fixed: 2,
+      retested: 1,
+      ui_verified: 2,
+      'needs-decision': 1,
+      sign_offs: 1
+    },
+    evidence: [
+      {
+        type: 'trace',
+        filePath: '/repo/.codex-artifacts/auth-trace.zip'
+      }
+    ],
+    references: [
+      {
+        type: 'trace',
+        label: 'Trace',
+        href: 'http://localhost:9323/trace'
+      }
+    ]
+  });
+  assert.equal(aliasHeavyLoopEvent.kind, 'retest.passed');
+  assert.equal(aliasHeavyLoopEvent.status, 'succeeded');
+  assert.equal(aliasHeavyLoopEvent.runId, 'run-tsk-127');
+  assert.equal(aliasHeavyLoopEvent.projectID, 'mac-command-bar');
+  assert.equal(aliasHeavyLoopEvent.projectName, 'MacCommandBar');
+  assert.equal(aliasHeavyLoopEvent.projectPath, '/repo');
+  assert.equal(aliasHeavyLoopEvent.taskID, 'TSK-127');
+  assert.equal(aliasHeavyLoopEvent.agentId, 'tester-1');
+  assert.equal(aliasHeavyLoopEvent.agentProvider, 'claude');
+  assert.equal(aliasHeavyLoopEvent.agentRole, 'ui-tester');
+  assert.equal(aliasHeavyLoopEvent.stepKind, 'retest');
+  assert.equal(aliasHeavyLoopEvent.scenario, 'Google auth callback');
+  assert.equal(aliasHeavyLoopEvent.issueID, 'AUTH-7');
+  assert.equal(aliasHeavyLoopEvent.retryAttempt, 2);
+  assert.equal(aliasHeavyLoopEvent.issueCount, 3);
+  assert.equal(aliasHeavyLoopEvent.resolvedCount, 2);
+  assert.equal(aliasHeavyLoopEvent.retestCount, 1);
+  assert.equal(aliasHeavyLoopEvent.verifiedCount, 2);
+  assert.equal(aliasHeavyLoopEvent.decisionCount, 1);
+  assert.equal(aliasHeavyLoopEvent.approvalCount, 1);
+  assert.equal(aliasHeavyLoopEvent.artifactKind, 'trace');
+  assert.equal(aliasHeavyLoopEvent.artifactPath, '/repo/.codex-artifacts/auth-trace.zip');
+  assert.equal(aliasHeavyLoopEvent.linkKind, 'trace');
+  assert.equal(aliasHeavyLoopEvent.linkUrl, 'http://localhost:9323/trace');
+
+  const aliasDecisionEvent = normalizeOrchestrationEvent({
+    event: 'needs_decision',
+    run_id: 'run-tsk-127',
+    signOffSubject: 'Merge delegated fixes?',
+    blocker: 'Manual approval required before merge',
+    waitingDecision: 'Approve merge and handoff?'
+  });
+  assert.equal(aliasDecisionEvent.kind, 'approval.required');
+  assert.equal(aliasDecisionEvent.status, 'waiting-for-approval');
+  assert.equal(aliasDecisionEvent.approvalSubject, 'Merge delegated fixes?');
+  assert.equal(aliasDecisionEvent.blockerReason, 'Manual approval required before merge');
+  assert.equal(aliasDecisionEvent.decisionPrompt, 'Approve merge and handoff?');
+
   const importedDecisionEvent = normalizeOrchestrationEvent({
     type: 'approval_required',
     runID: 'run-tsk-127',

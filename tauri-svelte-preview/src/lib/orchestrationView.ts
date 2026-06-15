@@ -110,6 +110,18 @@ export type OrchestrationRunStage = {
   title: string;
 };
 
+export type OrchestrationRunDigest = {
+  stage: OrchestrationRunStage;
+  currentActivity: string;
+  activeAgent: OrchestrationAgentActivityItem | null;
+  waitingDecision: OrchestrationAttentionItem | null;
+  latestArtifact: OrchestrationLiveDigestItem | null;
+  retestStatus: OrchestrationLiveDigestItem | null;
+  loopTally: string;
+  autoResolveTally: string;
+  metrics: OrchestrationRunMetrics;
+};
+
 export type OrchestrationLoopStageMetric = {
   id:
     | 'scenario'
@@ -145,14 +157,14 @@ const retryPattern = /\b(retry|retries|retried|rerun|re-run)\b/i;
 const approvalPattern = /\b(approval|approve|approved|signoff|sign-off|confirm|confirmation|decision|manual review)\b/i;
 const decisionPattern = /\b(decision|manual review|needs input|needs sign-off|sign-off|required approval|approval required)\b/i;
 const scenarioPattern = /\b(scenario|journey|workflow)\b/i;
-const issuePattern = /\b(issue|finding|bug|defect)\b/i;
+const issuePattern = /\b(issue|issues|finding|findings|bug|bugs|defect|defects|regression|regressions)\b/i;
 const testPattern = /\b(test|tested|testing|playwright|e2e|ui check|browser)\b/i;
 const retestPattern = /\b(retest|re-test|retested|retry|rerun|re-run)\b/i;
 const fixPattern = /\b(fix|fixed|repair|patch|resolve|resolved|auto-resolve|autoresolve)\b/i;
 const resolvedPattern = /\b(resolved|fixed|closed|passed after fix|verified fix)\b/i;
-const verifiedPattern = /\b(ui verified|browser verified|verified in ui|ui passed|validated in browser)\b/i;
-const delegationPattern = /\b(delegated|assigned|sub-agent|subagent|fix batch|batch)\b/i;
-const handoffPattern = /\b(handoff|handover|summary|report|artifact)\b/i;
+const verifiedPattern = /\b(ui verified|browser verified|verified in ui|ui passed|validated in browser|retest passed|re-tested passed)\b/i;
+const delegationPattern = /\b(delegated|delegate|assigned|sub-agent|subagent|fix batch|batch)\b/i;
+const handoffPattern = /\b(handoff|handover|handoff doc|handoff note|summary|report|artifact)\b/i;
 
 export function orchestrationStatusTone(status: string): OrchestrationStatusTone {
   const normalized = status.trim().toLowerCase();
@@ -279,6 +291,17 @@ export function orchestrationLoopTallyText(metrics: OrchestrationRunMetrics): st
   return parts.join(' · ') || 'no loop events yet';
 }
 
+export function orchestrationAutoResolveTallyText(metrics: OrchestrationRunMetrics): string {
+  const needsDecision = Math.max(metrics.decisionCount, metrics.approvalCount);
+  return [
+    `${metrics.issueCount} found`,
+    `${metrics.resolvedCount} fixed`,
+    `${metrics.retestCount} retested`,
+    `${metrics.verifiedCount} UI verified`,
+    `${needsDecision} needs decision`
+  ].join(' · ');
+}
+
 export function orchestrationRunStage(
   run: OrchestrationRun,
   metrics = orchestrationRunMetrics(run)
@@ -301,6 +324,23 @@ export function orchestrationRunStage(
       label: metrics.approvalCount > 0 ? 'Needs sign-off' : 'Needs decision',
       tone: 'attention',
       title
+    };
+  }
+
+  const statusTone = orchestrationStatusTone(run.status);
+  if (statusTone === 'good' && metrics.verifiedCount > 0) {
+    return {
+      label: 'UI verified',
+      tone: 'good',
+      title: `${metrics.verifiedCount} UI verification${metrics.verifiedCount === 1 ? '' : 's'}`
+    };
+  }
+
+  if (statusTone === 'good' && metrics.resolvedCount > 0) {
+    return {
+      label: 'Resolved',
+      tone: 'good',
+      title: `${metrics.resolvedCount} resolved`
     };
   }
 
@@ -360,7 +400,6 @@ export function orchestrationRunStage(
     };
   }
 
-  const statusTone = orchestrationStatusTone(run.status);
   return {
     label: statusTone === 'good' ? 'Complete' : statusTone === 'live' ? 'Running' : 'Queued',
     tone: statusTone,
@@ -564,6 +603,28 @@ export function orchestrationLiveDigestItems(
   return items.slice(0, Math.max(0, limit));
 }
 
+export function orchestrationRunDigest(run: OrchestrationRun): OrchestrationRunDigest {
+  const metrics = orchestrationRunMetrics(run);
+  const stage = orchestrationRunStage(run, metrics);
+  const activeAgent = orchestrationAgentActivityItems(run, 1)[0] ?? null;
+  const waitingDecision =
+    orchestrationAttentionQueue(run, Number.POSITIVE_INFINITY).find((item) =>
+      decisionPattern.test([item.label, item.title, item.summary].filter(Boolean).join(' '))
+    ) ?? null;
+
+  return {
+    stage,
+    currentActivity: orchestrationCurrentActivity(run),
+    activeAgent,
+    waitingDecision,
+    latestArtifact: orchestrationLatestArtifactDigestItem(run),
+    retestStatus: orchestrationRetestStatusDigestItem(run),
+    loopTally: orchestrationLoopTallyText(metrics),
+    autoResolveTally: orchestrationAutoResolveTallyText(metrics),
+    metrics
+  };
+}
+
 export function orchestrationAgentActivityItems(
   run: OrchestrationRun,
   limit = 4
@@ -580,6 +641,7 @@ export function orchestrationAgentActivityItems(
 
 export function orchestrationRunSummaryText(run: OrchestrationRun): string {
   const metrics = orchestrationRunMetrics(run);
+  const digest = orchestrationRunDigest(run);
   const attentionQueue = orchestrationAttentionQueue(run, 3);
   const tally = [
     `${metrics.completedCount} done`,
@@ -597,9 +659,21 @@ export function orchestrationRunSummaryText(run: OrchestrationRun): string {
     `Project: ${run.projectName} · ${run.rootLabel}`,
     taskLine,
     `Phase: ${run.phase}`,
-    `Current: ${orchestrationCurrentActivity(run)}`,
+    `Stage: ${digest.stage.label} · ${digest.stage.title}`,
+    `Current: ${digest.currentActivity}`,
+    digest.activeAgent
+      ? `Active agent: ${digest.activeAgent.label} · ${digest.activeAgent.status} · ${digest.activeAgent.activity}`
+      : '',
+    digest.waitingDecision
+      ? `Waiting decision: ${digest.waitingDecision.title}${digest.waitingDecision.summary ? ` - ${digest.waitingDecision.summary}` : ''}`
+      : '',
+    digest.retestStatus ? `Retest: ${digest.retestStatus.title} · ${digest.retestStatus.detail}` : '',
+    digest.latestArtifact
+      ? `Latest artifact: ${digest.latestArtifact.title} · ${digest.latestArtifact.path ?? digest.latestArtifact.href ?? digest.latestArtifact.detail}`
+      : '',
     `Tally: ${tally}`,
-    `Loop: ${orchestrationLoopTallyText(metrics)}`,
+    `Loop: ${digest.loopTally}`,
+    `Auto-resolve: ${digest.autoResolveTally}`,
     attentionQueue.length > 0 ? `Needs attention: ${attentionQueue.map((item) => item.title).join(' · ')}` : '',
     `Artifacts: ${metrics.artifactCount} · Links: ${metrics.linkCount} · Events: ${metrics.eventCount}`,
     orchestrationRunTimelineText(run) ? `Timeline:\n${orchestrationRunTimelineText(run)}` : ''
@@ -608,7 +682,8 @@ export function orchestrationRunSummaryText(run: OrchestrationRun): string {
 
 export function orchestrationRunHandoffText(run: OrchestrationRun): string {
   const metrics = orchestrationRunMetrics(run);
-  const stage = orchestrationRunStage(run, metrics);
+  const digest = orchestrationRunDigest(run);
+  const stage = digest.stage;
   const attentionQueue = orchestrationAttentionQueue(run, 5);
   const agentItems = orchestrationAgentActivityItems(run, 8);
   const timeline = orchestrationRunTimelineText(run, 8);
@@ -638,8 +713,20 @@ export function orchestrationRunHandoffText(run: OrchestrationRun): string {
     `Path: ${run.projectPath}`,
     `Task: ${run.taskID ?? 'none'}`,
     `Phase: ${run.phase}`,
-    `Current: ${orchestrationCurrentActivity(run)}`,
-    `Loop tally: ${orchestrationLoopTallyText(metrics)}`,
+    `Stage: ${stage.label} · ${stage.title}`,
+    `Current: ${digest.currentActivity}`,
+    digest.activeAgent
+      ? `Active agent: ${digest.activeAgent.label} · ${digest.activeAgent.status} · ${digest.activeAgent.activity}`
+      : 'Active agent: none',
+    digest.waitingDecision
+      ? `Waiting decision: ${digest.waitingDecision.title}${digest.waitingDecision.summary ? ` - ${digest.waitingDecision.summary}` : ''}`
+      : 'Waiting decision: none',
+    digest.retestStatus ? `Retest status: ${digest.retestStatus.title} · ${digest.retestStatus.detail}` : 'Retest status: none',
+    digest.latestArtifact
+      ? `Latest artifact: ${digest.latestArtifact.title} · ${digest.latestArtifact.path ?? digest.latestArtifact.href ?? digest.latestArtifact.detail}`
+      : 'Latest artifact: none',
+    `Loop tally: ${digest.loopTally}`,
+    `Auto-resolve tally: ${digest.autoResolveTally}`,
     `Counts: ${metrics.agentCount} agents · ${metrics.stepCount} steps · ${metrics.eventCount} events · ${metrics.artifactCount} artifacts · ${metrics.linkCount} links`,
     '',
     'Needs attention:',
@@ -783,6 +870,39 @@ function orchestrationArtifactTimelineItem(
     blockerReason: null,
     decisionPrompt: null,
     loopCounts: {}
+  };
+}
+
+function orchestrationLatestArtifactDigestItem(run: OrchestrationRun): OrchestrationLiveDigestItem | null {
+  const item = orchestrationTimelineItems(run, Number.POSITIVE_INFINITY).find((timelineItem) => {
+    if (timelineItem.source === 'artifact') return true;
+    if (!(timelineItem.path || timelineItem.href)) return false;
+    return /\b(artifact|screenshot|trace|log|proof|report|handoff)\b/i.test(searchTextForTimelineItem(timelineItem));
+  });
+  return item ? orchestrationDigestItemFromTimelineItem('artifact', item, orchestrationLiveDigestLabel(item) ?? 'Artifact') : null;
+}
+
+function orchestrationRetestStatusDigestItem(run: OrchestrationRun): OrchestrationLiveDigestItem | null {
+  const item = orchestrationTimelineItems(run, Number.POSITIVE_INFINITY).find((timelineItem) => {
+    const loopKind = orchestrationLoopKindForTimelineItem(timelineItem);
+    return loopKind === 'retest' || loopKind === 'verified' || /^ui\./i.test(timelineItem.kind);
+  });
+  return item ? orchestrationDigestItemFromTimelineItem('retest', item, orchestrationLiveDigestLabel(item) ?? 'Retest') : null;
+}
+
+function orchestrationDigestItemFromTimelineItem(
+  prefix: string,
+  item: OrchestrationTimelineItem,
+  label: string
+): OrchestrationLiveDigestItem {
+  return {
+    id: `${prefix}:${item.id}`,
+    tone: item.tone,
+    label,
+    title: item.title,
+    detail: orchestrationTimelineDetail(item),
+    href: item.href,
+    path: item.path
   };
 }
 
@@ -995,6 +1115,7 @@ function orchestrationLoopKindForTimelineItem(item: OrchestrationTimelineItem): 
   const allText = searchTextForTimelineItem(item);
 
   if (handoffPattern.test(kindTitleStatus)) return 'handoff';
+  if (decisionPattern.test(kindTitleStatus) || approvalPattern.test(kindTitleStatus)) return null;
   if (verifiedPattern.test(kindTitleStatus)) return 'verified';
   if (retestPattern.test(kindTitleStatus)) return 'retest';
   if (issuePattern.test(kindTitleStatus)) return 'issue';
