@@ -140,9 +140,17 @@ assertDeclaration('.dock-drop-zone', 'height: 22px');
 assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width)');
 assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height))');
 assertDeclaration('.context-panel-grid.stacked', 'grid-template-columns: minmax(0, 1fr)');
+assert.ok(
+  pageSource.includes('class:stacked={contextCardsTabbed()}') &&
+    pageSource.includes("return contextPanelMode === 'stack' || contextPanelPlacement === 'side';") &&
+    pageSource.includes('return !contextCardsTabbed() || activeVisibleContextCardID() === cardID;'),
+  'Side context placement should use the active-card stacked render path instead of a long all-card grid'
+);
 assertDeclaration('.context-stack-tabs', 'display: flex');
 assertDeclaration('.context-stack-tabs', 'max-width: 100%');
+assertDeclaration('.context-stack-tabs button', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.context-stack-tabs button', 'height: 24px');
+assertDeclaration('.context-stack-tabs button', 'padding: 0 9px');
 assertDeclaration('.context-card-tab-icon', 'display: none');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'overflow-y: auto');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-columns: 28px minmax(0, 1fr)');
@@ -150,8 +158,15 @@ assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'gr
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'grid-template-columns: 28px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'overflow: hidden');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid > section', 'display: none');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs', 'grid-column: 1');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs', 'grid-row: 1');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs', 'width: 28px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs button', 'width: 24px');
+assert.ok(
+  !blockFor('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs').includes('display: none') &&
+    !blockFor('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs button').includes('display: none'),
+  'Side context rail should keep icon tabs visible while card bodies are hidden'
+);
 assert.ok(
   pageSource.includes('.workspace-arrangement.context-side:not(.context-rail-only) {\n      grid-template-columns: minmax(0, 1fr) 6px minmax(160px, var(--context-pane-width));') &&
     !pageSource.includes('.workspace-arrangement.context-side .context-panel-grid > section {\n      display: none;'),
@@ -160,7 +175,13 @@ assert.ok(
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'flex-direction: column');
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'width: 28px');
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs button', 'width: 22px');
+assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs button span', 'clip: rect(0 0 0 0)');
 assertDeclaration('.workspace-arrangement.context-side .context-card-tab-icon', 'display: block');
+assert.ok(
+  !pageSource.includes('.workspace-arrangement.context-top .context-stack-tabs button span') &&
+    !pageSource.includes('.workspace-arrangement.context-bottom .context-stack-tabs button span'),
+  'Top and bottom context placements should keep the default text tab behavior'
+);
 assert.ok(
   pageSource.includes('.workspace-arrangement.context-side .orchestration-context-panel') &&
     pageSource.includes('padding: 5px;') &&
@@ -172,6 +193,13 @@ assert.ok(
     pageSource.includes('display: none;'),
   'Side context cards should hide subtitle metadata in narrow card headers'
 );
+assertDeclaration('.context-card-actions .file-action-button', 'width: 24px');
+assertDeclaration('.context-card-actions .file-action-button', 'height: 22px');
+assertDeclaration('.context-restore-button', 'min-width: 0');
+assertDeclaration('.context-restore-button', 'height: 24px');
+assertDeclaration('.workspace-arrangement.context-side .context-card-actions', 'gap: 2px');
+assertDeclaration('.workspace-arrangement.context-side .context-card-actions .file-action-button', 'width: 20px');
+assertDeclaration('.workspace-arrangement.context-side .context-card-actions .file-action-button', 'height: 20px');
 assert.ok(
   pageSource.includes('.workspace-arrangement.context-side .context-card-actions .file-action-button') &&
     pageSource.includes('width: 20px;') &&

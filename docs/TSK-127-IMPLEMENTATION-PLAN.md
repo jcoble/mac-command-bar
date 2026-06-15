@@ -358,7 +358,13 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Latest checkpoint: Deterministic rail snap and expanded-width restore.
+Latest checkpoint: Side context stack/rail behavior locked with assertions.
+
+- Changed files: `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: static UI coverage now guards the existing side-context behavior: side placement uses the active-card stack render path, icon tabs stay visible in rail mode, top/bottom keep text tab behavior, and side card controls stay compact.
+- Validation: `node scripts/sourceUi.test.mjs`; `pnpm check`; `git diff --check`.
+
+Previous checkpoint: Deterministic rail snap and expanded-width restore.
 
 - Changed files: `tauri-svelte-preview/src/lib/sourcePaneSizing.ts`, `tauri-svelte-preview/scripts/sourcePaneSizing.test.mjs`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
 - Behavior delivered: pane sizing configs now support explicit icon-rail sizes; pointer and keyboard shrink paths use the shared helper for collapse/rail/expanded finish decisions; activity/context panes remember the last expanded width and restore it from rail across reloads.
