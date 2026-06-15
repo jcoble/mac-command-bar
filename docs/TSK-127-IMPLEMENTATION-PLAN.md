@@ -358,7 +358,14 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Latest checkpoint: Pure Git/task-link helper surface.
+Latest checkpoint: Pure source pane sizing helper.
+
+- Changed files: `tauri-svelte-preview/src/lib/sourcePaneSizing.ts`, `tauri-svelte-preview/scripts/sourcePaneSizing.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: config-driven pure helpers now clamp pane sizes, derive `expanded`/`rail`/`collapsed` state, finish pointer resize decisions, and restore prior expanded sizes for side/context/bottom panes.
+- Validation: `node --experimental-strip-types scripts/sourcePaneSizing.test.mjs`.
+- Remaining risk: helper is not wired into `+page.svelte` yet by design.
+
+Previous checkpoint: Pure Git/task-link helper surface.
 
 - Changed files: `tauri-svelte-preview/src/lib/gitTaskLinks.ts`, `tauri-svelte-preview/scripts/gitTaskLinks.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
 - Behavior delivered: branch, commit subject, and label text can now produce canonical display task references with first-seen dedupe and explicit base-URL hrefs only when configured.

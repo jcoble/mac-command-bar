@@ -9887,9 +9887,15 @@
     persistDockGroupSize(sidePanePosition, sidePaneWidth);
   }
 
+  function snapActivityPaneToRail() {
+    sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
+    persistSidePaneWidth(sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+  }
+
   function collapseActivityPaneToRail() {
     markSourceLayoutCustom();
-    sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
+    snapActivityPaneToRail();
     sourceDockLayout = resizeSourceDockGroup(
       showSourceDockPanel(sourceDockLayout, 'activity'),
       sidePanePosition,
@@ -9910,11 +9916,19 @@
     persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
   }
 
+  function snapContextPaneToRail(updateDockGroup = true) {
+    contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
+    persistContextPaneWidth(contextPaneWidth);
+    if (updateDockGroup) {
+      persistDockGroupSize(dockGroupForContextPanelPlacement('side'), contextPaneWidth);
+    }
+  }
+
   function collapseContextPaneToRail() {
     markSourceLayoutCustom();
     contextPanelPlacement = 'side';
     contextPanelCollapsed = false;
-    contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
+    snapContextPaneToRail(false);
     const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
     sourceDockLayout = resizeSourceDockGroup(
       moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
@@ -10527,6 +10541,9 @@
       if (latestRawWidth <= sidePaneCollapseThreshold) {
         hideDockPanel('activity');
         fileActionStatus = 'Activity pane hidden';
+      } else if (latestRawWidth <= sidePaneRailOnlyThreshold) {
+        snapActivityPaneToRail();
+        fileActionStatus = 'Activity panel collapsed to rail';
       } else {
         persistSidePaneWidth(sidePaneWidth);
         persistDockGroupSize(sidePanePosition, sidePaneWidth);
@@ -10554,7 +10571,14 @@
       fileActionStatus = 'Activity pane hidden';
       return;
     }
-    sidePaneWidth = clampSidePaneWidth(sidePaneWidth + signedDirection * 24);
+    const nextSidePaneWidth = clampSidePaneWidth(sidePaneWidth + signedDirection * 24);
+    if (signedDirection < 0 && nextSidePaneWidth <= sidePaneRailOnlyThreshold) {
+      snapActivityPaneToRail();
+      fileActionStatus = 'Activity panel collapsed to rail';
+      window.setTimeout(measureFileTreeViewport, 0);
+      return;
+    }
+    sidePaneWidth = nextSidePaneWidth;
     persistSidePaneWidth(sidePaneWidth);
     persistDockGroupSize(sidePanePosition, sidePaneWidth);
     window.setTimeout(measureFileTreeViewport, 0);
@@ -10945,6 +10969,12 @@
       if (latestRawSize <= collapseThreshold) {
         hideDockPanel('context');
         fileActionStatus = 'Context pane hidden';
+      } else if (
+        contextPanelPlacement === 'side' &&
+        latestRawSize <= contextPaneRailOnlyThreshold
+      ) {
+        snapContextPaneToRail();
+        fileActionStatus = 'Context panel collapsed to rail';
       } else if (contextPanelPlacement === 'bottom') {
         persistContextPaneHeight(contextPaneHeight);
         persistDockGroupSize('bottom', contextPaneHeight);
@@ -10993,7 +11023,13 @@
       fileActionStatus = 'Context pane hidden';
       return;
     }
-    contextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
+    const nextContextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
+    if (direction < 0 && nextContextPaneWidth <= contextPaneRailOnlyThreshold) {
+      snapContextPaneToRail();
+      fileActionStatus = 'Context panel collapsed to rail';
+      return;
+    }
+    contextPaneWidth = nextContextPaneWidth;
     persistContextPaneWidth(contextPaneWidth);
     persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
   }

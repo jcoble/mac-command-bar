@@ -316,6 +316,23 @@ assert.ok(
   pageSource.includes('if (contextPaneRailOnly()) {\n      expandContextPaneFromRail();'),
   'Selecting a rail-only context card should expand the context pane'
 );
+assert.ok(pageSource.includes('function snapActivityPaneToRail'), 'Activity pane should have an explicit rail snap state');
+assert.ok(pageSource.includes('function snapContextPaneToRail'), 'Context pane should have an explicit rail snap state');
+assert.ok(
+  pageSource.includes('latestRawWidth <= sidePaneRailOnlyThreshold') &&
+    pageSource.includes('snapActivityPaneToRail();'),
+  'Pointer resizing the activity pane into rail territory should snap to the icon rail'
+);
+assert.ok(
+  pageSource.includes('latestRawSize <= contextPaneRailOnlyThreshold') &&
+    pageSource.includes('snapContextPaneToRail();'),
+  'Pointer resizing the side context pane into rail territory should snap to the icon rail'
+);
+assert.ok(
+  pageSource.includes('nextContextPaneWidth <= contextPaneRailOnlyThreshold') &&
+    pageSource.includes('Context panel collapsed to rail'),
+  'Keyboard resizing the side context pane should step into a stable rail before hiding'
+);
 assert.ok(
   pageSource.includes('const nextSidePaneWidth = sidePaneWidth <= sidePaneRailOnlyThreshold'),
   'Restoring a hidden activity pane should not restore it as an unusable rail'
