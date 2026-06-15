@@ -301,8 +301,10 @@ const scanStats = {
   unsupportedFiles: 4,
   unreadableEntries: 0
 };
-const sourceSignature = 'source-scan-cache-v3|git|/repo|main|abc123|0|0|0|0|0|0|0|clean';
-const changedSourceSignature = 'source-scan-cache-v3|git|/repo|main|def456|0|0|0|0|0|0|0|clean';
+const sourceSignature = 'source-scan-cache-v3|git|/repo|/repo|main|abc123|0|0|0|0|0|0|0|clean';
+const changedSourceSignature = 'source-scan-cache-v3|git|/repo|/repo|main|def456|0|0|0|0|0|0|0|clean';
+const dirtyChangedSourceSignature =
+  'source-scan-cache-v3|git|/repo|/repo|main|abc123|1|2|3|4|10|123456789|dirty-fingerprint';
 const scanCache = upsertSourceScanCacheEntry(
   {},
   project,
@@ -322,6 +324,11 @@ assert.equal(
 assert.equal(
   getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000, changedSourceSignature),
   null
+);
+assert.equal(
+  getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000, dirtyChangedSourceSignature)
+    ?.records.length,
+  2
 );
 assert.deepEqual(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.stats, scanStats);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 1_000, 10_500, 1_000)?.limit, 2_000);

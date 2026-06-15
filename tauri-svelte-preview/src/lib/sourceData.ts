@@ -2118,7 +2118,7 @@ export function getSourceScanCacheEntry(
         entry.projectPath === projectPath &&
         entry.limit >= requestedLimit &&
         now - entry.scannedAt <= maxAgeMs &&
-        (!expectedSourceSignature || entry.sourceSignature === expectedSourceSignature)
+        sourceScanCacheSignaturesMatch(entry.sourceSignature, expectedSourceSignature)
     )
     .sort((left, right) => left.limit - right.limit || right.scannedAt - left.scannedAt);
 
@@ -2301,6 +2301,34 @@ function normalSourceScanTimestamp(value: number): number {
 
 function normalizeSourceScanCacheSignature(value: string | null | undefined): string {
   return String(value ?? '').trim().slice(0, 512);
+}
+
+function sourceScanCacheSignaturesMatch(
+  cachedSignature: string | null | undefined,
+  expectedSignature: string
+): boolean {
+  if (!expectedSignature) return true;
+
+  const normalizedCachedSignature = normalizeSourceScanCacheSignature(cachedSignature);
+  if (!normalizedCachedSignature) return false;
+  if (normalizedCachedSignature === expectedSignature) return true;
+
+  const cachedScope = stableSourceScanCacheSignatureScope(normalizedCachedSignature);
+  const expectedScope = stableSourceScanCacheSignatureScope(expectedSignature);
+  return Boolean(cachedScope && expectedScope && cachedScope === expectedScope);
+}
+
+function stableSourceScanCacheSignatureScope(signature: string): string | null {
+  const parts = signature.split('|');
+  if (parts.length >= 6 && parts[1] === 'git') {
+    return parts.slice(0, 6).join('|');
+  }
+
+  if (parts.length >= 3 && parts[1] === 'path') {
+    return parts.slice(0, 3).join('|');
+  }
+
+  return null;
 }
 
 export function removeSourceScanCacheEntries(
