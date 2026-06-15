@@ -14,6 +14,10 @@ const sidePaneConfig = {
   collapseThreshold: 48,
   railThreshold: 118
 };
+const sidePaneRailSizeConfig = {
+  ...sidePaneConfig,
+  railSize: 40
+};
 
 const contextPaneConfig = {
   defaultSize: 330,
@@ -21,6 +25,10 @@ const contextPaneConfig = {
   maxSize: 1600,
   collapseThreshold: 30,
   railThreshold: 84
+};
+const contextPaneRailSizeConfig = {
+  ...contextPaneConfig,
+  railSize: 34
 };
 
 const bottomPaneConfig = {
@@ -59,7 +67,17 @@ assert.deepEqual(
 assert.deepEqual(
   finishSourcePanePointerSize(96.2, sidePaneConfig),
   { state: 'rail', size: 96, persistedSize: 96 },
-  'pointer finish below the rail threshold should keep a visible rail pane'
+  'pointer finish below the rail threshold should keep raw rail width when no rail size is configured'
+);
+assert.deepEqual(
+  finishSourcePanePointerSize(96.2, sidePaneRailSizeConfig),
+  { state: 'rail', size: 40, persistedSize: 40 },
+  'pointer finish below the side rail threshold should snap to the configured rail size'
+);
+assert.deepEqual(
+  finishSourcePanePointerSize(70, contextPaneRailSizeConfig),
+  { state: 'rail', size: 34, persistedSize: 34 },
+  'pointer finish below the context rail threshold should snap to the configured rail size'
 );
 assert.deepEqual(
   finishSourcePanePointerSize(340.6, contextPaneConfig),
@@ -68,9 +86,16 @@ assert.deepEqual(
 );
 
 assert.equal(
-  restoreSourcePaneExpandedSize(40, sidePaneConfig, { previousExpandedSize: 512.4 }),
+  restoreSourcePaneExpandedSize(40, sidePaneRailSizeConfig, { previousExpandedSize: 512.4 }),
   512,
   'expanding from a rail should restore the prior expanded size when available'
+);
+assert.deepEqual(
+  resolveSourcePaneSize({ visible: false, size: 40 }, sidePaneRailSizeConfig, {
+    previousExpandedSize: 512.4
+  }),
+  { state: 'collapsed', size: 0, persistedSize: 512 },
+  'collapsed resolution should prefer previous expanded size over a rail-sized persisted value'
 );
 assert.equal(
   restoreSourcePaneExpandedSize(40, sidePaneConfig),

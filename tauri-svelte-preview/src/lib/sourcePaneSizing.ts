@@ -6,6 +6,7 @@ export type SourcePaneSizingConfig = {
   maxSize: number;
   collapseThreshold: number;
   railThreshold?: number;
+  railSize?: number;
 };
 
 export type SourcePaneStateInput = {
@@ -29,6 +30,7 @@ type NormalizedSourcePaneSizingConfig = {
   maxSize: number;
   collapseThreshold: number;
   railThreshold?: number;
+  railSize?: number;
 };
 
 export function clampSourcePaneSize(size: unknown, config: SourcePaneSizingConfig): number {
@@ -86,6 +88,15 @@ export function finishSourcePanePointerSize(
   }
 
   const size = clampToConfigSize(numericRawSize, normalizedConfig);
+  const railSize = finishRailSize(size, normalizedConfig);
+
+  if (railSize !== null) {
+    return {
+      state: 'rail',
+      size: railSize,
+      persistedSize: railSize
+    };
+  }
 
   return {
     state: visibleSourcePaneState(size, normalizedConfig),
@@ -110,16 +121,29 @@ function normalizeSourcePaneSizingConfig(
   const defaultSize = clampNumber(finiteNumber(config.defaultSize, minSize), minSize, maxSize);
   const collapseThreshold = Math.round(finiteNumber(config.collapseThreshold, minSize));
   const railThreshold = finiteOptionalNumber(config.railThreshold);
+  const normalizedRailThreshold =
+    railThreshold !== undefined && railThreshold > collapseThreshold ? Math.round(railThreshold) : undefined;
+  const railSize = finiteOptionalNumber(config.railSize);
+  const normalizedRailSize =
+    normalizedRailThreshold !== undefined && railSize !== undefined
+      ? clampNumber(railSize, minSize, maxSize)
+      : undefined;
 
-  return {
+  const normalizedConfig: NormalizedSourcePaneSizingConfig = {
     defaultSize,
     minSize,
     maxSize,
-    collapseThreshold,
-    ...(railThreshold !== undefined && railThreshold > collapseThreshold
-      ? { railThreshold: Math.round(railThreshold) }
-      : {})
+    collapseThreshold
   };
+
+  if (normalizedRailThreshold !== undefined) {
+    normalizedConfig.railThreshold = normalizedRailThreshold;
+    if (normalizedRailSize !== undefined && normalizedRailSize <= normalizedRailThreshold) {
+      normalizedConfig.railSize = normalizedRailSize;
+    }
+  }
+
+  return normalizedConfig;
 }
 
 function visibleSourcePaneState(
@@ -146,6 +170,11 @@ function restoreExpandedSize(
 function expandedSize(size: unknown, config: NormalizedSourcePaneSizingConfig): number | null {
   const clampedSize = clampToConfigSize(size, config);
   return visibleSourcePaneState(clampedSize, config) === 'expanded' ? clampedSize : null;
+}
+
+function finishRailSize(size: unknown, config: NormalizedSourcePaneSizingConfig): number | null {
+  if (config.railSize === undefined) return null;
+  return visibleSourcePaneState(size, config) === 'rail' ? config.railSize : null;
 }
 
 function clampToConfigSize(size: unknown, config: NormalizedSourcePaneSizingConfig): number {

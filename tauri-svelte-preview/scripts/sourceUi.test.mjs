@@ -54,10 +54,22 @@ assert.ok(
   'Pane clamp functions should route through sourcePaneSizing'
 );
 assert.ok(
+  pageSource.includes('railSize: sidePaneMinWidth') &&
+    pageSource.includes('railSize: contextPaneMinWidth'),
+  'Side and context rail states should snap to intentional icon-rail widths'
+);
+assert.ok(
   pageSource.includes('deriveSourcePaneState(') &&
     pageSource.includes('activityPaneSizingConfig') &&
     pageSource.includes('contextPaneWidthSizingConfig'),
   'Rail-only state should be derived through sourcePaneSizing'
+);
+assert.ok(
+  pageSource.includes('finishSourcePanePointerSize(') &&
+    pageSource.includes('restoreSourcePaneExpandedSize(') &&
+    pageSource.includes('sidePaneExpandedWidthStorageKey') &&
+    pageSource.includes('contextPaneExpandedWidthStorageKey'),
+  'Resize finish and rail restore should use shared helper state and persisted expanded widths'
 );
 assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
 assertDeclaration('.shell', 'width: calc(100vw - 8px)');
@@ -343,17 +355,20 @@ assert.ok(
 assert.ok(pageSource.includes('function snapActivityPaneToRail'), 'Activity pane should have an explicit rail snap state');
 assert.ok(pageSource.includes('function snapContextPaneToRail'), 'Context pane should have an explicit rail snap state');
 assert.ok(
-  pageSource.includes('latestRawWidth <= sidePaneRailOnlyThreshold') &&
-    pageSource.includes('snapActivityPaneToRail();'),
-  'Pointer resizing the activity pane into rail territory should snap to the icon rail'
+  pageSource.includes('const finishedSize = finishSourcePanePointerSize(latestRawWidth, activityPaneSizingConfig') &&
+    pageSource.includes("finishedSize.state === 'rail'") &&
+    pageSource.includes('sidePaneWidth = finishedSize.size;'),
+  'Pointer resizing the activity pane into rail territory should snap to the helper-provided icon rail'
 );
 assert.ok(
-  pageSource.includes('latestRawSize <= contextPaneRailOnlyThreshold') &&
-    pageSource.includes('snapContextPaneToRail();'),
-  'Pointer resizing the side context pane into rail territory should snap to the icon rail'
+  pageSource.includes('latestRawSize,\n        contextPanelPlacement ===') &&
+    pageSource.includes("contextPanelPlacement === 'side' && finishedSize.state === 'rail'") &&
+    pageSource.includes('contextPaneWidth = finishedSize.size;'),
+  'Pointer resizing the side context pane into rail territory should snap to the helper-provided icon rail'
 );
 assert.ok(
-  pageSource.includes('nextContextPaneWidth <= contextPaneRailOnlyThreshold') &&
+  pageSource.includes('const rawNextContextPaneWidth = contextPaneWidth + direction * 24;') &&
+    pageSource.includes('finishSourcePanePointerSize(rawNextContextPaneWidth, contextPaneWidthSizingConfig') &&
     pageSource.includes('Context panel collapsed to rail'),
   'Keyboard resizing the side context pane should step into a stable rail before hiding'
 );

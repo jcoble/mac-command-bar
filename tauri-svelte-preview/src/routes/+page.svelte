@@ -113,6 +113,8 @@
   import {
     clampSourcePaneSize,
     deriveSourcePaneState,
+    finishSourcePanePointerSize,
+    restoreSourcePaneExpandedSize,
     type SourcePaneSizingConfig
   } from '$lib/sourcePaneSizing';
   import {
@@ -307,9 +309,11 @@
   const contextPanelPlacementStorageKey = 'mac-command-bar.source-browser.context-panel-placement';
   const sidePanePositionStorageKey = 'mac-command-bar.source-browser.side-pane-position';
   const sidePaneWidthStorageKey = 'mac-command-bar.source-browser.side-pane-width';
+  const sidePaneExpandedWidthStorageKey = 'mac-command-bar.source-browser.side-pane-expanded-width';
   const editorInsightWidthStorageKey = 'mac-command-bar.source-browser.editor-insight-width';
   const editorInsightCollapsedStorageKey = 'mac-command-bar.source-browser.editor-insight-collapsed';
   const contextPaneWidthStorageKey = 'mac-command-bar.source-browser.context-pane-width';
+  const contextPaneExpandedWidthStorageKey = 'mac-command-bar.source-browser.context-pane-expanded-width';
   const contextPaneHeightStorageKey = 'mac-command-bar.source-browser.context-pane-height';
   const contextPanelCollapsedStorageKey = 'mac-command-bar.source-browser.context-panel-collapsed';
   const hiddenContextCardsStorageKey = 'mac-command-bar.source-browser.hidden-context-cards';
@@ -365,14 +369,16 @@
     minSize: sidePaneMinWidth,
     maxSize: sidePaneMaxWidth,
     collapseThreshold: sidePaneCollapseThreshold,
-    railThreshold: sidePaneRailOnlyThreshold
+    railThreshold: sidePaneRailOnlyThreshold,
+    railSize: sidePaneMinWidth
   };
   const contextPaneWidthSizingConfig: SourcePaneSizingConfig = {
     defaultSize: contextPaneDefaultWidth,
     minSize: contextPaneMinWidth,
     maxSize: contextPaneMaxWidth,
     collapseThreshold: contextPaneCollapseThreshold,
-    railThreshold: contextPaneRailOnlyThreshold
+    railThreshold: contextPaneRailOnlyThreshold,
+    railSize: contextPaneMinWidth
   };
   const contextPaneHeightSizingConfig: SourcePaneSizingConfig = {
     defaultSize: contextPaneDefaultHeight,
@@ -720,9 +726,11 @@
   let contextPanelPlacement = $state<SourceContextPanelPlacement>('top');
   let sidePanePosition = $state<SourceSidePanePosition>('left');
   let sidePaneWidth = $state(sidePaneDefaultWidth);
+  let sidePaneExpandedWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let editorInsightCollapsed = $state(true);
   let contextPaneWidth = $state(contextPaneDefaultWidth);
+  let contextPaneExpandedWidth = $state(contextPaneDefaultWidth);
   let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
   let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
@@ -9920,7 +9928,9 @@
   }
 
   function expandActivityPaneFromRail() {
-    sidePaneWidth = clampSidePaneWidth(sidePaneDefaultWidth);
+    sidePaneWidth = restoreSourcePaneExpandedSize(sidePaneWidth, activityPaneSizingConfig, {
+      previousExpandedSize: sidePaneExpandedWidth
+    });
     persistSidePaneWidth(sidePaneWidth);
     persistDockGroupSize(sidePanePosition, sidePaneWidth);
   }
@@ -9949,7 +9959,9 @@
 
   function expandContextPaneFromRail() {
     if (contextPanelPlacement !== 'side') return;
-    contextPaneWidth = clampContextPaneWidth(contextPaneDefaultWidth);
+    contextPaneWidth = restoreSourcePaneExpandedSize(contextPaneWidth, contextPaneWidthSizingConfig, {
+      previousExpandedSize: contextPaneExpandedWidth
+    });
     persistContextPaneWidth(contextPaneWidth);
     persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
   }
@@ -10547,9 +10559,39 @@
     return clampSidePaneWidth(Number(storedWidth));
   }
 
+  function loadStoredSidePaneExpandedWidth() {
+    if (typeof window === 'undefined') return sidePaneDefaultWidth;
+
+    const storedExpandedWidth = window.localStorage.getItem(sidePaneExpandedWidthStorageKey);
+    if (storedExpandedWidth !== null) {
+      return restoreSourcePaneExpandedSize(Number(storedExpandedWidth), activityPaneSizingConfig);
+    }
+
+    return restoreSourcePaneExpandedSize(
+      Number(window.localStorage.getItem(sidePaneWidthStorageKey)),
+      activityPaneSizingConfig
+    );
+  }
+
   function persistSidePaneWidth(width: number) {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem(sidePaneWidthStorageKey, String(clampSidePaneWidth(width)));
+    const clampedWidth = clampSidePaneWidth(width);
+    window.localStorage.setItem(sidePaneWidthStorageKey, String(clampedWidth));
+    persistSidePaneExpandedWidth(clampedWidth);
+  }
+
+  function persistSidePaneExpandedWidth(width: number) {
+    const clampedWidth = clampSidePaneWidth(width);
+    if (
+      deriveSourcePaneState(
+        { visible: true, size: clampedWidth },
+        activityPaneSizingConfig
+      ) !== 'expanded'
+    ) return;
+
+    sidePaneExpandedWidth = clampedWidth;
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sidePaneExpandedWidthStorageKey, String(clampedWidth));
   }
 
   function clampSidePaneWidth(width: number) {
@@ -10575,13 +10617,23 @@
       window.setTimeout(measureFileTreeViewport, 0);
     };
     const finishResize = () => {
-      if (latestRawWidth <= sidePaneCollapseThreshold) {
+      const finishedSize = finishSourcePanePointerSize(latestRawWidth, activityPaneSizingConfig, {
+        previousExpandedSize: restoreSourcePaneExpandedSize(startWidth, activityPaneSizingConfig, {
+          previousExpandedSize: sidePaneExpandedWidth
+        })
+      });
+
+      if (finishedSize.state === 'collapsed') {
+        persistSidePaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('activity');
         fileActionStatus = 'Activity pane hidden';
-      } else if (latestRawWidth <= sidePaneRailOnlyThreshold) {
-        snapActivityPaneToRail();
+      } else if (finishedSize.state === 'rail') {
+        sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, sidePaneWidth);
         fileActionStatus = 'Activity panel collapsed to rail';
       } else {
+        sidePaneWidth = finishedSize.size;
         persistSidePaneWidth(sidePaneWidth);
         persistDockGroupSize(sidePanePosition, sidePaneWidth);
       }
@@ -10608,13 +10660,28 @@
       fileActionStatus = 'Activity pane hidden';
       return;
     }
-    const nextSidePaneWidth = clampSidePaneWidth(sidePaneWidth + signedDirection * 24);
-    if (signedDirection < 0 && nextSidePaneWidth <= sidePaneRailOnlyThreshold) {
-      snapActivityPaneToRail();
-      fileActionStatus = 'Activity panel collapsed to rail';
-      window.setTimeout(measureFileTreeViewport, 0);
-      return;
+    const rawNextSidePaneWidth = sidePaneWidth + signedDirection * 24;
+    if (signedDirection < 0) {
+      const finishedSize = finishSourcePanePointerSize(rawNextSidePaneWidth, activityPaneSizingConfig, {
+        previousExpandedSize: sidePaneExpandedWidth
+      });
+      if (finishedSize.state === 'collapsed') {
+        persistSidePaneExpandedWidth(finishedSize.persistedSize);
+        hideDockPanel('activity');
+        fileActionStatus = 'Activity pane hidden';
+        return;
+      }
+      if (finishedSize.state === 'rail') {
+        sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, sidePaneWidth);
+        fileActionStatus = 'Activity panel collapsed to rail';
+        window.setTimeout(measureFileTreeViewport, 0);
+        return;
+      }
     }
+
+    const nextSidePaneWidth = clampSidePaneWidth(rawNextSidePaneWidth);
     sidePaneWidth = nextSidePaneWidth;
     persistSidePaneWidth(sidePaneWidth);
     persistDockGroupSize(sidePanePosition, sidePaneWidth);
@@ -10946,9 +11013,39 @@
     return clampContextPaneWidth(Number(storedWidth));
   }
 
+  function loadStoredContextPaneExpandedWidth() {
+    if (typeof window === 'undefined') return contextPaneDefaultWidth;
+
+    const storedExpandedWidth = window.localStorage.getItem(contextPaneExpandedWidthStorageKey);
+    if (storedExpandedWidth !== null) {
+      return restoreSourcePaneExpandedSize(Number(storedExpandedWidth), contextPaneWidthSizingConfig);
+    }
+
+    return restoreSourcePaneExpandedSize(
+      Number(window.localStorage.getItem(contextPaneWidthStorageKey)),
+      contextPaneWidthSizingConfig
+    );
+  }
+
   function persistContextPaneWidth(width: number) {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem(contextPaneWidthStorageKey, String(clampContextPaneWidth(width)));
+    const clampedWidth = clampContextPaneWidth(width);
+    window.localStorage.setItem(contextPaneWidthStorageKey, String(clampedWidth));
+    persistContextPaneExpandedWidth(clampedWidth);
+  }
+
+  function persistContextPaneExpandedWidth(width: number) {
+    const clampedWidth = clampContextPaneWidth(width);
+    if (
+      deriveSourcePaneState(
+        { visible: true, size: clampedWidth },
+        contextPaneWidthSizingConfig
+      ) !== 'expanded'
+    ) return;
+
+    contextPaneExpandedWidth = clampedWidth;
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(contextPaneExpandedWidthStorageKey, String(clampedWidth));
   }
 
   function clampContextPaneWidth(width: number) {
@@ -10998,22 +11095,36 @@
       contextPaneWidth = clampContextPaneWidth(latestRawSize);
     };
     const finishResize = () => {
-      const collapseThreshold = contextPanelPlacement === 'bottom'
-        ? contextPaneHeightCollapseThreshold
-        : contextPaneCollapseThreshold;
-      if (latestRawSize <= collapseThreshold) {
+      const finishedSize = finishSourcePanePointerSize(
+        latestRawSize,
+        contextPanelPlacement === 'bottom' ? contextPaneHeightSizingConfig : contextPaneWidthSizingConfig,
+        {
+          previousExpandedSize:
+            contextPanelPlacement === 'bottom'
+              ? contextPaneHeight
+              : restoreSourcePaneExpandedSize(startWidth, contextPaneWidthSizingConfig, {
+                  previousExpandedSize: contextPaneExpandedWidth
+                })
+        }
+      );
+
+      if (finishedSize.state === 'collapsed') {
+        if (contextPanelPlacement === 'side') {
+          persistContextPaneExpandedWidth(finishedSize.persistedSize);
+        }
         hideDockPanel('context');
         fileActionStatus = 'Context pane hidden';
-      } else if (
-        contextPanelPlacement === 'side' &&
-        latestRawSize <= contextPaneRailOnlyThreshold
-      ) {
-        snapContextPaneToRail();
+      } else if (contextPanelPlacement === 'side' && finishedSize.state === 'rail') {
+        contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
         fileActionStatus = 'Context panel collapsed to rail';
       } else if (contextPanelPlacement === 'bottom') {
+        contextPaneHeight = finishedSize.size;
         persistContextPaneHeight(contextPaneHeight);
         persistDockGroupSize('bottom', contextPaneHeight);
       } else {
+        contextPaneWidth = finishedSize.size;
         persistContextPaneWidth(contextPaneWidth);
         persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
       }
@@ -11046,7 +11157,20 @@
         fileActionStatus = 'Context pane hidden';
         return;
       }
-      contextPaneHeight = clampContextPaneHeight(contextPaneHeight + direction * 24);
+      const rawNextContextPaneHeight = contextPaneHeight + direction * 24;
+      if (direction < 0) {
+        const finishedSize = finishSourcePanePointerSize(rawNextContextPaneHeight, contextPaneHeightSizingConfig, {
+          previousExpandedSize: contextPaneHeight
+        });
+        if (finishedSize.state === 'collapsed') {
+          hideDockPanel('context');
+          fileActionStatus = 'Context pane hidden';
+          return;
+        }
+        contextPaneHeight = finishedSize.size;
+      } else {
+        contextPaneHeight = clampContextPaneHeight(rawNextContextPaneHeight);
+      }
       persistContextPaneHeight(contextPaneHeight);
       persistDockGroupSize('bottom', contextPaneHeight);
       return;
@@ -11058,12 +11182,27 @@
       fileActionStatus = 'Context pane hidden';
       return;
     }
-    const nextContextPaneWidth = clampContextPaneWidth(contextPaneWidth + direction * 24);
-    if (direction < 0 && nextContextPaneWidth <= contextPaneRailOnlyThreshold) {
-      snapContextPaneToRail();
-      fileActionStatus = 'Context panel collapsed to rail';
-      return;
+    const rawNextContextPaneWidth = contextPaneWidth + direction * 24;
+    if (direction < 0) {
+      const finishedSize = finishSourcePanePointerSize(rawNextContextPaneWidth, contextPaneWidthSizingConfig, {
+        previousExpandedSize: contextPaneExpandedWidth
+      });
+      if (finishedSize.state === 'collapsed') {
+        persistContextPaneExpandedWidth(finishedSize.persistedSize);
+        hideDockPanel('context');
+        fileActionStatus = 'Context pane hidden';
+        return;
+      }
+      if (finishedSize.state === 'rail') {
+        contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+        fileActionStatus = 'Context panel collapsed to rail';
+        return;
+      }
     }
+
+    const nextContextPaneWidth = clampContextPaneWidth(rawNextContextPaneWidth);
     contextPaneWidth = nextContextPaneWidth;
     persistContextPaneWidth(contextPaneWidth);
     persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
@@ -11096,7 +11235,10 @@
       persistDockGroupSize('bottom', clampBottomDockHeight(latestRawHeight));
     };
     const finishResize = () => {
-      if (latestRawHeight <= bottomDockCollapseThreshold) {
+      const finishedSize = finishSourcePanePointerSize(latestRawHeight, bottomDockSizingConfig, {
+        previousExpandedSize: startHeight
+      });
+      if (finishedSize.state === 'collapsed') {
         let nextLayout = sourceDockLayout;
         if (sourceDockPanelVisible('terminal')) {
           nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
@@ -11106,6 +11248,8 @@
         }
         applySourceDockLayout(nextLayout);
         fileActionStatus = 'Bottom dock hidden';
+      } else {
+        persistDockGroupSize('bottom', finishedSize.size);
       }
       window.document.body.classList.remove('resizing-bottom-dock');
       window.removeEventListener('pointermove', handlePointerMove);
@@ -11136,7 +11280,28 @@
       fileActionStatus = 'Bottom dock hidden';
       return;
     }
-    persistDockGroupSize('bottom', clampBottomDockHeight(bottomDockHeight() + direction * 24));
+    const rawNextBottomDockHeight = bottomDockHeight() + direction * 24;
+    if (direction < 0) {
+      const finishedSize = finishSourcePanePointerSize(rawNextBottomDockHeight, bottomDockSizingConfig, {
+        previousExpandedSize: bottomDockHeight()
+      });
+      if (finishedSize.state === 'collapsed') {
+        let nextLayout = sourceDockLayout;
+        if (sourceDockPanelVisible('terminal')) {
+          nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
+        }
+        if (sourceDockPanelVisible('browser')) {
+          nextLayout = hideSourceDockPanel(nextLayout, 'browser');
+        }
+        applySourceDockLayout(nextLayout);
+        fileActionStatus = 'Bottom dock hidden';
+        return;
+      }
+      persistDockGroupSize('bottom', finishedSize.size);
+      return;
+    }
+
+    persistDockGroupSize('bottom', clampBottomDockHeight(rawNextBottomDockHeight));
   }
 
   function loadStoredCustomProjectRoots(): ProjectRoot[] {
@@ -11947,9 +12112,11 @@
     const storedBrowserDockUrl = loadStoredBrowserDockUrl();
     const storedSidePanePosition = loadStoredSidePanePosition();
     const storedSidePaneWidth = loadStoredSidePaneWidth();
+    const storedSidePaneExpandedWidth = loadStoredSidePaneExpandedWidth();
     const storedEditorInsightWidth = loadStoredEditorInsightWidth();
     const storedEditorInsightCollapsed = loadStoredEditorInsightCollapsed();
     const storedContextPaneWidth = loadStoredContextPaneWidth();
+    const storedContextPaneExpandedWidth = loadStoredContextPaneExpandedWidth();
     const storedContextPaneHeight = loadStoredContextPaneHeight();
     const storedContextPanelCollapsed = loadStoredContextPanelCollapsed();
     const storedContextPanelMode = loadStoredContextPanelMode();
@@ -12010,9 +12177,11 @@
     browserInputUrl = storedBrowserDockUrl;
     sidePanePosition = migrateSourceLayout ? compactPreset.sidePanePosition : storedSidePanePosition;
     sidePaneWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneWidth;
+    sidePaneExpandedWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneExpandedWidth;
     editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
     editorInsightCollapsed = migrateSourceLayout ? compactPreset.editorInsightCollapsed : storedEditorInsightCollapsed;
     contextPaneWidth = storedContextPaneWidth;
+    contextPaneExpandedWidth = storedContextPaneExpandedWidth;
     contextPaneHeight = storedContextPaneHeight;
     contextPanelCollapsed = migrateSourceLayout ? compactPreset.contextPanelCollapsed : storedContextPanelCollapsed;
     contextPanelMode = migrateSourceLayout ? compactPreset.contextPanelMode : storedContextPanelMode;

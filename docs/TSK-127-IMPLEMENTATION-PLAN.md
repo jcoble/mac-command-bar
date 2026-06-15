@@ -358,7 +358,13 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Latest checkpoint: Source pane sizing helper wired into live page.
+Latest checkpoint: Deterministic rail snap and expanded-width restore.
+
+- Changed files: `tauri-svelte-preview/src/lib/sourcePaneSizing.ts`, `tauri-svelte-preview/scripts/sourcePaneSizing.test.mjs`, `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: pane sizing configs now support explicit icon-rail sizes; pointer and keyboard shrink paths use the shared helper for collapse/rail/expanded finish decisions; activity/context panes remember the last expanded width and restore it from rail across reloads.
+- Validation: `node --experimental-strip-types scripts/sourcePaneSizing.test.mjs`; `node scripts/sourceUi.test.mjs`; `pnpm check`.
+
+Previous checkpoint: Source pane sizing helper wired into live page.
 
 - Changed files: `tauri-svelte-preview/src/routes/+page.svelte`, `tauri-svelte-preview/scripts/sourceUi.test.mjs`, `tauri-svelte-preview/package.json`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
 - Behavior delivered: live side, context, and bottom dock clamp functions now route through `sourcePaneSizing`; activity/context rail-only state is derived from the shared helper; package scripts expose the git task-link and source pane sizing tests.
