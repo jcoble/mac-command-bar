@@ -276,6 +276,13 @@ assert.ok(
   'Side worktree rows should suppress long cleanup prose and keep the action summary'
 );
 assert.ok(
+  pageSource.includes('.workspace-arrangement.context-side .worktree-plan-line') &&
+    pageSource.includes('grid-column: 1 / -1;') &&
+    pageSource.includes('.workspace-arrangement.context-side .worktree-plan-line > span:last-child') &&
+    pageSource.includes('display: none;'),
+  'Side worktree rows should keep the cleanup plan as a compact lane instead of wide prose'
+);
+assert.ok(
   pageSource.includes('.workspace-arrangement.context-side .runtime-context-list') &&
     pageSource.includes('grid-auto-rows: max-content;') &&
     pageSource.includes('align-content: start;') &&
@@ -299,9 +306,21 @@ assertDeclaration('.workspace-snapshot-readiness.blocked', 'color: #ff9d8e');
 assertDeclaration('.conversation-session-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
 assertDeclaration('.conversation-session-open', 'grid-template-columns: auto minmax(0, 1fr)');
 assert.ok(pageSource.includes('min-height: 58px'), 'Worktree rows should have stable dense height');
+assertDeclaration('.activity-worktree-row', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.activity-worktree-row .activity-row-actions', 'grid-column: 2');
+assertDeclaration('.activity-worktree-row .activity-row-actions', 'flex-wrap: wrap');
 assertDeclaration('.activity-filter-box', 'grid-template-columns: 18px minmax(0, 1fr)');
 assertDeclaration('.worktree-row-main', 'gap: 2px');
 assertDeclaration('.worktree-safety-line', 'display: flex');
+assertDeclaration('.worktree-plan-line', 'display: flex');
+assertDeclaration('.worktree-plan-line', 'width: 100%');
+assertDeclaration('.worktree-plan-line', 'max-width: 100%');
+assertDeclaration('.worktree-plan-line > span:last-child', 'text-overflow: ellipsis');
+assertDeclaration('.worktree-plan-lane', 'display: inline-grid');
+assertDeclaration('.worktree-plan-lane', 'text-transform: uppercase');
+assertDeclaration('.worktree-plan-lane.safe-remove', 'background: #67dfd1');
+assert.ok(pageSource.includes('.worktree-plan-lane.review-prunable'), 'Prunable cleanup lane should receive review styling');
+assert.ok(pageSource.includes('.worktree-plan-lane.blocked-locked'), 'Locked cleanup lane should receive blocked styling');
 assertDeclaration('.worktree-snapshot-chip', 'display: inline-flex');
 assertDeclaration('.worktree-snapshot-chip', 'max-width: 126px');
 assertDeclaration('.worktree-context-main', 'display: grid');
@@ -458,8 +477,20 @@ assert.ok(pageSource.includes('const contextCardLabels'), 'Workspace should defi
 assert.ok(pageSource.includes('contextPanelMode: SourceContextPanelMode'), 'Layout presets should include context card layout mode');
 assert.ok(pageSource.includes('contextPanelPlacement: SourceContextPanelPlacement'), 'Layout presets should include context card placement');
 assert.ok(pageSource.includes('sidePanePosition: SourceSidePanePosition'), 'Layout presets should include side pane position');
+assert.ok(pageSource.includes('contextPaneWidth: number'), 'Layout presets should include deterministic context pane width');
+assert.ok(pageSource.includes('contextPaneHeight: number'), 'Layout presets should include deterministic context pane height');
 assert.ok(pageSource.includes('chromeCompact: boolean'), 'Layout presets should include compact chrome density');
 assert.ok(pageSource.includes('const sourceLayoutPresets'), 'Source shell should define reusable layout presets');
+assert.ok(
+  pageSource.includes('contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? preset.contextPaneWidth)') &&
+    pageSource.includes('contextPaneHeight = clampContextPaneHeight(override?.contextPaneHeight ?? preset.contextPaneHeight)'),
+  'Applying a named layout preset should use preset context dimensions unless a saved override exists'
+);
+assert.ok(
+  pageSource.includes('numericValue(candidate.contextPaneWidth, preset.contextPaneWidth)') &&
+    pageSource.includes('numericValue(candidate.contextPaneHeight, preset.contextPaneHeight)'),
+  'Stored preset override normalization should fall back to the target preset context dimensions'
+);
 assert.ok(pageSource.includes('const managedDockPanelIDs'), 'Source shell should define managed dock panels');
 assert.ok(pageSource.includes('const hideableDockPanelIDs'), 'Source shell should only expose hide controls for renderable hideable panels');
 assert.ok(
@@ -482,6 +513,34 @@ assert.ok(pageSource.includes('pasteCleanupReplyOutput'), 'Clipboard cleanup sho
 assert.ok(pageSource.includes('visiblePasteCleanupHistory'), 'Clipboard cleanup should derive compact visible history chips');
 assert.ok(pageSource.includes('buildWorktreeSafetySummary'), 'Worktree UI should use the shared safety model');
 assert.ok(pageSource.includes('buildWorktreeCleanupBrief'), 'Worktree UI should use the shared cleanup brief model');
+assert.ok(pageSource.includes("from '$lib/worktreeCleanupPlan'"), 'Worktree UI should import the cleanup command planner');
+assert.ok(pageSource.includes('function projectWorktreeCleanupPlan'), 'Worktree UI should derive a command-grade cleanup plan per worktree');
+assert.ok(
+  pageSource.includes('formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree))'),
+  'Copy cleanup plan should use the command-grade worktree cleanup planner'
+);
+assert.ok(
+  pageSource.includes('savedWorkspacePaths: worktreeWorkspaceSnapshots(worktree, 10).map((snapshot) => snapshot.worktreePath)'),
+  'Worktree safety summary should include saved workspace snapshot ownership'
+);
+assert.ok(
+  pageSource.includes('hasUpstream: gitSummary ? true : !worktree.hasUnmergedCommits'),
+  'Worktree cleanup planner should distinguish Git summaries from no-upstream fallback commits'
+);
+assert.ok(pageSource.includes('savedWorkspaceCount: safety.savedWorkspaceCount'), 'Cleanup planner should block saved workspace ownership');
+assert.ok(pageSource.includes('isLocked: worktree.isLocked'), 'Cleanup planner should block locked worktrees');
+assert.ok(pageSource.includes('isPrunable: worktree.isPrunable'), 'Cleanup planner should review prunable worktree metadata');
+assert.ok(
+  pageSource.includes('deleteEligibility: worktree.deleteEligibility'),
+  'Cleanup planner should preserve confirmation-required eligibility from native scan'
+);
+assert.ok(pageSource.includes("plan.lane === 'blocked-locked'"), 'Cleanup plan labels should include locked worktrees');
+assert.ok(pageSource.includes("plan.lane === 'review-prunable'"), 'Cleanup plan labels should include prunable metadata');
+assert.ok(pageSource.includes("plan.lane === 'review-saved-workspace'"), 'Cleanup plan labels should include saved workspace blockers');
+assert.ok(
+  pageSource.includes('worktreeCleanupPlanNextStep(cleanupPlan)'),
+  'Worktree context rows should show the command-plan next step'
+);
 assert.ok(pageSource.includes('prioritizeWorktreesForCleanup'), 'Worktree UI should use shared cleanup priority ordering');
 assert.ok(pageSource.includes('worktreeDecisionLane'), 'Worktree UI should render compact cleanup decision lanes');
 assert.ok(
@@ -2465,7 +2524,10 @@ assert.ok(
 assert.ok(pageSource.includes('worktree-decision-more'), 'Worktree decision queue should summarize overflow entries');
 assert.ok(pageSource.includes('class="worktree-context-list"'), 'Worktree panel should render a scrollable list');
 assert.ok(pageSource.includes('worktree-status-badge ${safety.kind}'), 'Worktree rows should show safety status');
-assert.ok(pageSource.includes('safety.decisionChecklist[0]'), 'Worktree rows should show the next cleanup decision');
+assert.ok(
+  pageSource.includes('worktreeCleanupPlanNextStep(cleanupPlan)'),
+  'Worktree rows should show the command-plan next cleanup decision'
+);
 assert.ok(pageSource.includes('class="worktree-next-check"'), 'Worktree rows should render compact next-step hints');
 assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');
 assertDeclaration('.worktree-context-list', 'overflow-y: auto');

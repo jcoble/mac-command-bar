@@ -75,6 +75,7 @@
     worktreeDecisionLane,
     worktreePrimaryAction
   } from '$lib/worktreeSafety';
+  import { buildWorktreeCleanupPlan } from '$lib/worktreeCleanupPlan';
   import {
     createWorkspaceSnapshot,
     describeWorkspaceSnapshotRestoreReadiness,
@@ -491,6 +492,8 @@
     sidePanePosition: SourceSidePanePosition;
     editorInsightWidth: number;
     editorInsightCollapsed: boolean;
+    contextPaneWidth: number;
+    contextPaneHeight: number;
     contextPanelCollapsed: boolean;
     contextPanelMode: SourceContextPanelMode;
     contextPanelPlacement: SourceContextPanelPlacement;
@@ -520,6 +523,8 @@
       sidePanePosition: 'left',
       editorInsightWidth: editorInsightDefaultWidth,
       editorInsightCollapsed: false,
+      contextPaneWidth: contextPaneDefaultWidth,
+      contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: false,
       contextPanelMode: 'grid',
       contextPanelPlacement: 'top',
@@ -535,6 +540,8 @@
       sidePanePosition: 'left',
       editorInsightWidth: editorInsightMinWidth,
       editorInsightCollapsed: true,
+      contextPaneWidth: contextPaneDefaultWidth,
+      contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: true,
       contextPanelMode: 'grid',
       contextPanelPlacement: 'top',
@@ -550,6 +557,8 @@
       sidePanePosition: 'left',
       editorInsightWidth: 340,
       editorInsightCollapsed: false,
+      contextPaneWidth: 360,
+      contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
@@ -565,6 +574,8 @@
       sidePanePosition: 'left',
       editorInsightWidth: 280,
       editorInsightCollapsed: true,
+      contextPaneWidth: 360,
+      contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
@@ -580,6 +591,8 @@
       sidePanePosition: 'left',
       editorInsightWidth: 280,
       editorInsightCollapsed: true,
+      contextPaneWidth: 360,
+      contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: false,
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
@@ -6435,8 +6448,103 @@
   function projectWorktreeSafety(worktree: ProjectWorktree) {
     return buildWorktreeSafetySummary(worktree, {
       primaryPath: selectedProject.path,
-      activeSessionPaths: selectedProjectAgentSessionPaths
+      activeSessionPaths: selectedProjectAgentSessionPaths,
+      savedWorkspacePaths: worktreeWorkspaceSnapshots(worktree, 10).map((snapshot) => snapshot.worktreePath)
     });
+  }
+
+  function projectWorktreeGitSummary(worktree: ProjectWorktree): GitRepositorySummary | null {
+    const worktreePath = normalizeProjectPath(worktree.path);
+    if (!worktreePath) return null;
+
+    return gitRepositorySummaries.find((summary) => normalizeProjectPath(summary.path) === worktreePath) ?? null;
+  }
+
+  function projectWorktreeLastActivityAgeDays(worktree: ProjectWorktree) {
+    const lastActivityTime = Date.parse(worktree.lastActivity ?? '');
+    if (!Number.isFinite(lastActivityTime)) return null;
+
+    return Math.max(0, Math.floor((Date.now() - lastActivityTime) / 86_400_000));
+  }
+
+  function projectWorktreeCleanupPlan(worktree: ProjectWorktree) {
+    const safety = projectWorktreeSafety(worktree);
+    const gitSummary = projectWorktreeGitSummary(worktree);
+    const taskID = normalizeGitTaskID(worktree.taskID);
+
+    return buildWorktreeCleanupPlan(
+      {
+        repoName: worktree.repo,
+        repoRootPath: selectedProject.path,
+        path: worktree.path,
+        branch: worktree.branch,
+        isMainRoot: normalizeProjectPath(worktree.path) === normalizeProjectPath(selectedProject.path),
+        isProtected: safety.kind === 'protected',
+        dirtyCount: gitSummary?.unstagedCount ?? (worktree.isDirty ? 1 : 0),
+        stagedCount: gitSummary?.stagedCount ?? 0,
+        untrackedCount: gitSummary?.untrackedCount ?? 0,
+        aheadCount: gitSummary?.ahead ?? (worktree.hasUnmergedCommits ? 1 : 0),
+        behindCount: gitSummary?.behind ?? 0,
+        hasUpstream: gitSummary ? true : !worktree.hasUnmergedCommits,
+        lastActivityAgeDays: projectWorktreeLastActivityAgeDays(worktree),
+        activeSessionCount: safety.activeSessionCount,
+        savedWorkspaceCount: safety.savedWorkspaceCount,
+        isLocked: worktree.isLocked,
+        lockedReason: worktree.lockedReason,
+        isPrunable: worktree.isPrunable,
+        prunableReason: worktree.prunableReason,
+        deleteEligibility: worktree.deleteEligibility,
+        task: taskID
+          ? {
+              id: taskID,
+              url: gitTaskUrl(taskID),
+              title: sourceProjectNameForWorktree(worktree)
+            }
+          : null
+      },
+      {
+        staleAfterDays: 14,
+        backupDirectory: `${selectedProject.path}/.worktree-cleanup-backups`
+      }
+    );
+  }
+
+  function worktreeCleanupPlanLabel(plan: ReturnType<typeof projectWorktreeCleanupPlan>) {
+    if (plan.lane === 'safe-remove') return 'remove';
+    if (plan.lane === 'backup-first') return 'backup';
+    if (plan.lane === 'review-first') return 'review';
+    if (plan.lane === 'blocked-active-session') return 'active';
+    if (plan.lane === 'blocked-protected') return 'keep';
+    if (plan.lane === 'blocked-locked') return 'locked';
+    if (plan.lane === 'review-prunable') return 'prune';
+    if (plan.lane === 'review-saved-workspace') return 'saved';
+    if (plan.lane === 'review-confirmation') return 'review';
+    return 'keep';
+  }
+
+  function worktreeCleanupPlanNextStep(plan: ReturnType<typeof projectWorktreeCleanupPlan>) {
+    return plan.commandPlan.steps[0] ?? plan.explanation;
+  }
+
+  function formatWorktreeCleanupPlanReport(
+    worktree: ProjectWorktree,
+    plan: ReturnType<typeof projectWorktreeCleanupPlan>
+  ) {
+    const taskLine = plan.taskDisplay
+      ? `Task: ${plan.taskDisplay.href ? `${plan.taskDisplay.id} ${plan.taskDisplay.href}` : plan.taskDisplay.id}`
+      : 'Task: none';
+
+    return [
+      `Worktree: ${worktree.branch || '(detached)'}`,
+      `Repo: ${worktree.repo}`,
+      `Path: ${worktree.path}`,
+      taskLine,
+      `Lane: ${plan.lane}`,
+      `State: ${plan.explanation}`,
+      '',
+      'Command plan:',
+      ...plan.commandPlan.steps.map((step, index) => `${index + 1}. ${step}`)
+    ].join('\n');
   }
 
   function projectWorktreePrimaryAction(worktree: ProjectWorktree) {
@@ -6494,7 +6602,10 @@
   }
 
   function copyWorktreeCleanupPlan(worktree: ProjectWorktree) {
-    return copyActivityCommand(projectWorktreeSafety(worktree).cleanupPlan, 'Worktree cleanup plan copied');
+    return copyActivityCommand(
+      formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree)),
+      'Worktree cleanup plan copied'
+    );
   }
 
   function copyWorktreeAuditCommand(worktree: ProjectWorktree) {
@@ -9198,8 +9309,8 @@
     sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(override?.editorInsightWidth ?? preset.editorInsightWidth);
     editorInsightCollapsed = override?.editorInsightCollapsed ?? preset.editorInsightCollapsed;
-    contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? contextPaneWidth);
-    contextPaneHeight = clampContextPaneHeight(override?.contextPaneHeight ?? contextPaneHeight);
+    contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? preset.contextPaneWidth);
+    contextPaneHeight = clampContextPaneHeight(override?.contextPaneHeight ?? preset.contextPaneHeight);
     contextPanelCollapsed = override?.contextPanelCollapsed ?? preset.contextPanelCollapsed;
     contextPanelMode = override?.contextPanelMode ?? preset.contextPanelMode;
     contextPanelPlacement = override?.contextPanelPlacement ?? preset.contextPanelPlacement;
@@ -9682,8 +9793,8 @@
         typeof candidate.editorInsightCollapsed === 'boolean'
           ? candidate.editorInsightCollapsed
           : preset.editorInsightCollapsed,
-      contextPaneWidth: clampContextPaneWidth(numericValue(candidate.contextPaneWidth, contextPaneDefaultWidth)),
-      contextPaneHeight: clampContextPaneHeight(numericValue(candidate.contextPaneHeight, contextPaneDefaultHeight)),
+      contextPaneWidth: clampContextPaneWidth(numericValue(candidate.contextPaneWidth, preset.contextPaneWidth)),
+      contextPaneHeight: clampContextPaneHeight(numericValue(candidate.contextPaneHeight, preset.contextPaneHeight)),
       contextPanelCollapsed:
         typeof candidate.contextPanelCollapsed === 'boolean'
           ? candidate.contextPanelCollapsed
@@ -13559,6 +13670,7 @@
             {:else}
               {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
                 {@const safety = projectWorktreeSafety(worktree)}
+                {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
                 {@const decisionLane = worktreeDecisionLane(safety)}
                 {@const primaryAction = projectWorktreePrimaryAction(worktree)}
                 {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
@@ -13569,7 +13681,7 @@
                   class:blocked={eligibilityKind === 'blocked'}
                   class:protected={eligibilityKind === 'protected'}
                   class:ready={eligibilityKind === 'ready'}
-                  title={safety.cleanupPlan}
+                  title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
                 >
                   <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
                   <div class="activity-row-main worktree-row-main">
@@ -13605,6 +13717,12 @@
                         <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
                       {/each}
                     </div>
+                    <small class="worktree-plan-line" title={cleanupPlan.explanation}>
+                      <span class={`worktree-plan-lane ${cleanupPlan.lane}`}>
+                        {worktreeCleanupPlanLabel(cleanupPlan)}
+                      </span>
+                      <span>{cleanupPlan.explanation}</span>
+                    </small>
                     <small class="worktree-recommendation">{safety.recommendation}</small>
                     {#if latestSnapshot}
                       <button
@@ -14830,7 +14948,11 @@
                 <div class="worktree-decision-items">
                   {#each group.entries.slice(0, 3) as entry (entry.worktree.path)}
                     {@const decisionLane = worktreeDecisionLane(entry.safety)}
-                    <div class="worktree-decision-item" title={entry.safety.cleanupPlan}>
+                    {@const cleanupPlan = projectWorktreeCleanupPlan(entry.worktree)}
+                    <div
+                      class="worktree-decision-item"
+                      title={formatWorktreeCleanupPlanReport(entry.worktree, cleanupPlan)}
+                    >
                       <span class={`worktree-status-badge ${entry.safety.kind}`}>{entry.safety.badge}</span>
                       <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
                         {decisionLane.label}
@@ -14838,7 +14960,7 @@
                       <div>
                         <strong>{entry.worktree.branch}</strong>
                         <small>
-                          {entry.worktree.taskID ?? entry.worktree.repo} · {entry.safety.reason} · {entry.safety.activityLabel}
+                          {entry.worktree.taskID ?? entry.worktree.repo} · {worktreeCleanupPlanLabel(cleanupPlan)} · {entry.safety.activityLabel}
                         </small>
                       </div>
                       <button
@@ -14887,6 +15009,7 @@
           <div class="worktree-context-list">
             {#each prioritizedProjectWorktrees as worktree (worktree.path)}
               {@const safety = projectWorktreeSafety(worktree)}
+              {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
               {@const decisionLane = worktreeDecisionLane(safety)}
               {@const primaryAction = projectWorktreePrimaryAction(worktree)}
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
@@ -14897,7 +15020,7 @@
                 class:blocked={eligibilityKind === 'blocked'}
                 class:protected={eligibilityKind === 'protected'}
                 class:ready={eligibilityKind === 'ready'}
-                title={safety.cleanupPlan}
+                title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
               >
                 <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
                 <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
@@ -14934,10 +15057,15 @@
                   {/if}
                   · {projectWorktreeActivityLabel(worktree)}
                 </em>
-                <small class="worktree-recommendation">{safety.recommendation}</small>
+                <small class="worktree-plan-line" title={cleanupPlan.explanation}>
+                  <span class={`worktree-plan-lane ${cleanupPlan.lane}`}>
+                    {worktreeCleanupPlanLabel(cleanupPlan)}
+                  </span>
+                  <span>{cleanupPlan.explanation}</span>
+                </small>
                 <small class="worktree-next-check">
                   <strong>Next</strong>
-                  {safety.decisionChecklist[0] ?? 'Audit before cleanup.'}
+                  {worktreeCleanupPlanNextStep(cleanupPlan)}
                 </small>
                 <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
                   {#if latestSnapshot}
@@ -16705,7 +16833,11 @@
               {:else}
                 {#each prioritizedProjectWorktrees.slice(0, 3) as worktree (`terminal:${worktree.path}`)}
                   {@const safety = projectWorktreeSafety(worktree)}
-                  <div class="terminal-launchpad-row" title={safety.cleanupPlan}>
+                  {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
+                  <div
+                    class="terminal-launchpad-row"
+                    title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
+                  >
                     <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
                     <div>
                       <strong>{worktree.branch}</strong>
@@ -17793,9 +17925,12 @@
   }
 
   .activity-session-row,
-  .activity-runtime-row,
-  .activity-worktree-row {
+  .activity-runtime-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .activity-worktree-row {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .conversation-session-row {
@@ -17835,6 +17970,12 @@
     align-items: start;
     min-height: 58px;
     padding: 7px;
+  }
+
+  .activity-worktree-row .activity-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .activity-commit-row {
@@ -18632,6 +18773,71 @@
     border-color: rgba(92, 226, 207, 0.34);
     outline: 0;
     background: rgba(92, 226, 207, 0.14);
+  }
+
+  .worktree-plan-line {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    color: #8fbdb6;
+    font-size: 10px;
+    font-weight: 730;
+    line-height: 1.2;
+  }
+
+  .worktree-plan-line > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worktree-plan-lane {
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-items: center;
+    height: 17px;
+    min-width: 42px;
+    padding: 0 6px;
+    border: 1px solid rgba(255, 255, 255, 0.085);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 8px;
+    font-weight: 880;
+    letter-spacing: 0;
+    line-height: 17px;
+    text-transform: uppercase;
+  }
+
+  .worktree-plan-lane.safe-remove {
+    color: #071b18;
+    border-color: rgba(92, 226, 207, 0.42);
+    background: #67dfd1;
+  }
+
+  .worktree-plan-lane.backup-first,
+  .worktree-plan-lane.review-first,
+  .worktree-plan-lane.review-prunable,
+  .worktree-plan-lane.review-saved-workspace,
+  .worktree-plan-lane.review-confirmation {
+    color: #e8c47d;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .worktree-plan-lane.blocked-active-session,
+  .worktree-plan-lane.blocked-locked {
+    color: #ffbd9f;
+    border-color: rgba(255, 142, 96, 0.24);
+    background: rgba(255, 142, 96, 0.09);
+  }
+
+  .worktree-plan-lane.blocked-protected,
+  .worktree-plan-lane.keep {
+    color: #aeb9b6;
   }
 
   .worktree-recommendation {
@@ -20846,6 +21052,14 @@
     display: none;
   }
 
+  .workspace-arrangement.context-side .worktree-plan-line {
+    grid-column: 1 / -1;
+  }
+
+  .workspace-arrangement.context-side .worktree-plan-line > span:last-child {
+    display: none;
+  }
+
   .workspace-arrangement.context-side .worktree-context-actions {
     grid-column: 1 / -1;
     flex-wrap: wrap;
@@ -21583,6 +21797,7 @@
   .agent-provider-badge,
   .worktree-status-badge,
   .worktree-decision-lane,
+  .worktree-plan-lane,
   .repo-branch-badge,
   .runtime-context-row strong,
   .runtime-context-row span,

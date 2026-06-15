@@ -15,6 +15,7 @@
     "test:git-task-links": "node --experimental-strip-types scripts/gitTaskLinks.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
     "test:orchestration-view": "node --experimental-strip-types scripts/orchestrationView.test.mjs",
+    "test:worktree-cleanup-plan": "node --experimental-strip-types scripts/worktreeCleanupPlan.test.mjs",
     "test:worktree-safety": "node --experimental-strip-types scripts/worktreeSafety.test.mjs",
     "test:local-source-fs": "node --experimental-strip-types scripts/localSourceFs.test.mjs",
     "test:source-dock-layout": "node --experimental-strip-types scripts/sourceDockLayout.test.mjs",
