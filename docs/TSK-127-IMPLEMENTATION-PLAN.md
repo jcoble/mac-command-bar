@@ -358,18 +358,45 @@ Do not start these until the higher priorities are usable:
 
 ## Next Slice
 
-Last checkpoint: Priority 0.3, native Tauri GUI validation.
+Latest checkpoint: Pure Git/task-link helper surface.
+
+- Changed files: `tauri-svelte-preview/src/lib/gitTaskLinks.ts`, `tauri-svelte-preview/scripts/gitTaskLinks.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: branch, commit subject, and label text can now produce canonical display task references with first-seen dedupe and explicit base-URL hrefs only when configured.
+- Validation: `node --experimental-strip-types scripts/gitTaskLinks.test.mjs`.
+
+Previous checkpoint: Priority 4.12, browser URL restore safety.
+
+- Changed files: `tauri-svelte-preview/src/lib/workspaceSnapshot.ts`, `tauri-svelte-preview/scripts/workspaceSnapshot.test.mjs`, `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
+- Behavior delivered: workspace snapshot capture/parse/restore now keeps only `http`/`https` browser dock URLs, including localhost shorthand, and drops executable/local-file schemes before restore.
+- Validation: `pnpm test:workspace-snapshot`.
+
+Previous checkpoint: Priority 0.3, native Tauri GUI validation.
 
 - Changed files: `docs/TSK-127-IMPLEMENTATION-PLAN.md`.
 - Behavior delivered: native validation is now checkpointed as a real attach-mode pass, not only browser preview or unit tests. The safe run path is Vite on `127.0.0.1:5177` plus `pnpm tauri:dev:attach`, which avoids the port collision/relaunch loop by using the attach config with no `beforeDevCommand`.
 - Validation: `pnpm test:tauri-app`; attach-mode Tauri launch; native log showed `mcb tauri source.list root=/Users/blackcolours/dev/work/EdiPlatform count=4591 truncated=false`, C# preview load, and `mcb tauri source.list root=/Users/blackcolours/dev/work/mac-command-bar count=98 truncated=false`; Vite/Tauri processes were shut down afterward and port 5177 had no listener.
 - Remaining risk: deeper hands-on GUI interactions still need validation for edit/save, Git actions, LSP interactions by click/shortcut, and embedded terminal startup.
 
-Next implementation slice: Priority 0.1 docking/layout usability polish follow-up.
+## Next Dockview Slice
 
-Definition of done for the next slice:
-- Decide explicitly whether to keep hardening the custom dock model or migrate to `dockview-core`; do not half-mix both.
-- Tighten half-width and laptop layout so the editor can occupy most of the window from top to bottom.
-- Move remaining low-frequency editor controls into Cmd+K/view/action menus.
-- Make files/conversations/sessions/agents/worktrees/Git panes behave like stackable IDE lanes with minimal always-visible chrome.
-- Validate with `pnpm test:source-dock-layout`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, and a short visual pass after shutting down browser/native automation.
+Target result:
+- The right context rail/cards are usable as an IDE sidecar: freely resizable, collapsible to icons, stacked/tabbed predictably, and persisted across reload/Tauri restore.
+
+Current code context:
+- `+page.svelte` already has side/bottom context placement, `grid`/`stack` card modes, right-rail thresholds, hidden/active card persistence, and command-palette layout actions.
+- `sourceDockviewWorkspace.ts` currently exposes migration slices, but the live Dockview bridge is only the `insights-only` slice. The next slice must either keep hardening the custom right-context rail or promote the `context-insights` Dockview slice deliberately; do not half-mix the two approaches.
+
+Checklist:
+- Free resize min/max: make right-context pointer and keyboard resize clamp to real viewport-safe bounds, with a usable card width range and a distinct icon-rail width instead of accidental hide. Cover side width and bottom height separately.
+- Collapse-to-icon rail: make explicit collapse, drag-to-min, and restored layout all produce the same side rail: icon tabs visible, card bodies hidden, active card preserved, and one action expands back to the prior usable width.
+- Stack/tab behavior: make side placement behave as a single active-card stack with stable icon tabs, accessible labels, close/hide controls, and no content overlap; top/bottom placement can keep text tabs/grid behavior.
+- Persistence: persist width/height, placement, mode, hidden cards, active card, dock group size, and any Dockview slice JSON across reload, preset save/restore, and workspace snapshot restore.
+- Browser/Tauri validation: add/update source-level tests first, then run a short real browser preview pass and a Tauri attach pass for resize, collapse, tab switch, hide/restore, reload persistence, and workspace restore.
+
+Acceptance:
+- At wide, half-width laptop, and narrow desktop sizes, dragging the right context divider through icon rail, compact card width, default width, and wide sidecar states does not overlap editor, tabs, or card controls.
+- Keyboard resizing reaches the same min/max states as pointer resizing and cannot leave the context pane in an invisible-but-not-hidden state.
+- Collapsing the right context pane shows only icon tabs; selecting an icon expands or activates the correct card, and hidden cards stay recoverable.
+- Switching between orchestration, runtime, agents, worktrees, and repo cards in side stack mode preserves exactly one active card and keeps all row actions usable without widening the pane unexpectedly.
+- Reloading the browser preview and relaunching Tauri restores the same context placement, width/rail state, active card, hidden-card list, and Dockview slice layout when enabled.
+- Validation evidence recorded in this plan includes `pnpm test:source-dock-layout`, `pnpm test:source-ui`, `pnpm check`, `pnpm build`, `git diff --check`, one browser-preview visual pass, and one Tauri attach visual pass with automation/process cleanup status.

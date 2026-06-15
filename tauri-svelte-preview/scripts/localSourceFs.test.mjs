@@ -170,6 +170,11 @@ try {
   const lowLimitScan = await scanLocalSourceFiles({ root: lowLimitRoot, limit: 2 });
   assert.equal(lowLimitScan.records.length, 2);
   assert.equal(lowLimitScan.truncated, true);
+  assert.equal(lowLimitScan.stats.requestedLimit, 2);
+  assert.equal(lowLimitScan.stats.returnedFiles, 2);
+  assert.equal(lowLimitScan.stats.matchedFiles, 3);
+  assert.equal(lowLimitScan.stats.collectionLimit, 10_001);
+  assert.equal(lowLimitScan.stats.collectionLimitReached, false);
   assert.equal(lowLimitScan.stats.skippedDirectories, 1);
   assert.equal(lowLimitScan.stats.skippedDirectorySamples[0].name, 'node_modules');
 

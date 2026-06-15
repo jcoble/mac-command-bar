@@ -532,6 +532,52 @@ function worktree(overrides = {}) {
 }
 
 {
+  const groups = buildWorktreeTaskGroups(
+    [
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-153-clean',
+        branch: 'cdx/tsk-153-clean',
+        taskID: 'tsk-153',
+        lastActivity: '2026-05-20T12:00:00.000Z'
+      }),
+      worktree({
+        path: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-153-missing',
+        branch: 'cdx/tsk-153-missing',
+        taskID: 'TSK-153',
+        isPrunable: true,
+        lastActivity: null,
+        deleteEligibility: 'review: prunable missing worktree metadata'
+      })
+    ],
+    {
+      primaryPath: '/Users/blackcolours/dev/work/EdiPlatform',
+      now,
+      staleAfterDays: 14
+    }
+  );
+
+  assert.deepEqual(
+    groups.map((group) => group.label),
+    ['TSK-153']
+  );
+
+  const taskGroup = groups[0];
+  assert.equal(taskGroup.taskID, 'TSK-153');
+  assert.equal(taskGroup.worktreeCount, 2);
+  assert.equal(taskGroup.reviewCount, 1);
+  assert.equal(taskGroup.cleanupCandidateCount, 1);
+  assert.equal(taskGroup.staleCount, 1);
+  assert.equal(taskGroup.requiresManualSignoff, true);
+  assert.equal(taskGroup.primaryAction.kind, 'audit');
+  assert.match(taskGroup.summary, /1 cleanup ready/);
+  assert.match(taskGroup.summary, /1 review/);
+  assert.deepEqual(
+    taskGroup.entries.map((entry) => entry.worktree.branch),
+    ['cdx/tsk-153-missing', 'cdx/tsk-153-clean']
+  );
+}
+
+{
   const script = buildWorktreeCleanupScript(
     [
       worktree({

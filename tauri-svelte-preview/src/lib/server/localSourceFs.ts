@@ -27,6 +27,13 @@ type LocalSourceScanInput = {
   limit?: number | null;
 };
 
+type LocalSourceScanStats = SourceScanStats & {
+  requestedLimit: number;
+  returnedFiles: number;
+  collectionLimit: number;
+  collectionLimitReached: boolean;
+};
+
 export type LocalProjectRootValidationResult = {
   path: string;
   exists: boolean;
@@ -107,12 +114,15 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
   const collectLimit = sourceCollectionLimit(limit);
   const query = input.query?.trim().toLowerCase() || null;
   const records: SourceRecord[] = [];
-  const stats = createSourceScanStats();
+  const stats = createSourceScanStats(limit, collectLimit);
   await collectSourceFiles(root, root, collectLimit, query, records, stats);
 
   records.sort(compareSourceRecords);
-  const truncated = records.length > limit;
+  const collectedFileCount = records.length;
+  const truncated = collectedFileCount > limit;
   records.splice(limit);
+  stats.returnedFiles = records.length;
+  stats.collectionLimitReached = collectedFileCount >= collectLimit;
 
   return {
     records,
@@ -295,8 +305,12 @@ async function collectSourceFiles(
   }
 }
 
-function createSourceScanStats(): SourceScanStats {
+function createSourceScanStats(requestedLimit: number, collectionLimit: number): LocalSourceScanStats {
   return {
+    requestedLimit,
+    returnedFiles: 0,
+    collectionLimit,
+    collectionLimitReached: false,
     visitedEntries: 0,
     matchedFiles: 0,
     skippedDirectories: 0,

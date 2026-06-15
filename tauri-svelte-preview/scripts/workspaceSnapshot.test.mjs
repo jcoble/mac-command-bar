@@ -106,6 +106,28 @@ assert.equal(restored.cwd, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/t
 assert.deepEqual(restored.embeddedTerminal, snapshot.embeddedTerminal);
 assert.equal(restored.dockLayout.activePanelByGroup.right, 'context');
 
+const unsafeBrowserSnapshot = createWorkspaceSnapshot({
+  provider: 'manual',
+  sessionID: 'unsafe-browser-url',
+  title: 'Unsafe browser URL',
+  project: { id: 'mac-command-bar', name: 'MacCommandBar', path: '/repo' },
+  cwd: '/repo',
+  browserUrl: ' javascript:alert(1) ',
+  capturedAt: 1_250
+});
+
+assert.equal(
+  unsafeBrowserSnapshot.browserUrl,
+  null,
+  'workspace snapshots should drop executable browser dock URLs'
+);
+
+assert.equal(
+  restoreWorkspaceSnapshot({ ...unsafeBrowserSnapshot, browserUrl: 'file:///etc/passwd' }).browserUrl,
+  null,
+  'workspace restore should drop local file browser dock URLs from older snapshots'
+);
+
 const olderSnapshot = createWorkspaceSnapshot({
   provider: 'claude',
   sessionID: 'claude-session',

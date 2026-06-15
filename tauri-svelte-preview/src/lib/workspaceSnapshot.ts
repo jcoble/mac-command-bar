@@ -165,7 +165,7 @@ export function createWorkspaceSnapshot(input: WorkspaceSnapshotInput): Workspac
     openPaths: normalizeOpenPaths(input.openPaths, selectedPath),
     sourceActivityMode: input.sourceActivityMode ?? 'conversations',
     sourceTerminalApp: input.sourceTerminalApp ?? 'Warp',
-    browserUrl: normalizeOptionalString(input.browserUrl),
+    browserUrl: normalizeBrowserUrl(input.browserUrl),
     viewState: normalizeWorkspaceSnapshotViewState(input.viewState),
     embeddedTerminal: normalizeEmbeddedTerminal(input.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(input.dockLayout ?? createDefaultSourceDockLayout()),
@@ -190,7 +190,7 @@ export function restoreWorkspaceSnapshot(snapshot: WorkspaceSnapshot): RestoredW
     worktreePath: snapshot.worktreePath,
     branch: snapshot.branch,
     openPaths: snapshot.openPaths,
-    browserUrl: normalizeOptionalString(snapshot.browserUrl),
+    browserUrl: normalizeBrowserUrl(snapshot.browserUrl),
     embeddedTerminal: normalizeEmbeddedTerminal(snapshot.embeddedTerminal),
     dockLayout: normalizeSourceDockLayout(snapshot.dockLayout),
     resumeCommand: snapshot.resumeCommand
@@ -557,6 +557,28 @@ function normalizeOptionalString(value: string | null | undefined): string | nul
   if (typeof value !== 'string') return null;
   const normalizedValue = value.trim();
   return normalizedValue.length === 0 ? null : normalizedValue;
+}
+
+function normalizeBrowserUrl(value: string | null | undefined): string | null {
+  const trimmedValue = normalizeOptionalString(value);
+  if (!trimmedValue) return null;
+
+  const withProtocol =
+    /^https?:\/\//i.test(trimmedValue)
+      ? trimmedValue
+      : trimmedValue.startsWith(':')
+        ? `http://localhost${trimmedValue}`
+        : /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/.*)?$/i.test(trimmedValue)
+          ? `http://${trimmedValue}`
+          : trimmedValue;
+
+  try {
+    const parsedUrl = new URL(withProtocol);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null;
+    return parsedUrl.toString();
+  } catch {
+    return null;
+  }
 }
 
 function normalizeEmbeddedTerminal(

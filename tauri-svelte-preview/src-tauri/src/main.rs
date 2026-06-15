@@ -57,6 +57,10 @@ struct SourceScanStats {
     skipped_directories: usize,
     unsupported_files: usize,
     unreadable_entries: usize,
+    requested_limit: usize,
+    returned_files: usize,
+    collection_limit: usize,
+    collection_limit_reached: bool,
     skipped_directory_samples: Vec<SourceSkippedDirectory>,
 }
 
@@ -1068,9 +1072,15 @@ fn list_source_files_sync_with_cancellation(
     )?;
     progress.report(&cancellation);
     cancellation.ensure_active()?;
+    let collected_file_count = records.len();
     records.sort_by(compare_source_records);
-    let truncated = records.len() > limit;
+    let truncated = collected_file_count > limit;
     records.truncate(limit);
+    let mut stats = progress.stats;
+    stats.requested_limit = limit;
+    stats.returned_files = records.len();
+    stats.collection_limit = collect_limit;
+    stats.collection_limit_reached = collected_file_count >= collect_limit;
     #[cfg(debug_assertions)]
     eprintln!(
         "mcb tauri source.list root={} count={} truncated={}",
@@ -1082,7 +1092,7 @@ fn list_source_files_sync_with_cancellation(
         records,
         limit,
         truncated,
-        stats: progress.stats,
+        stats,
     })
 }
 
@@ -4086,6 +4096,11 @@ mod tests {
 
         assert_eq!(scan.records.len(), 2);
         assert!(scan.truncated);
+        assert_eq!(scan.stats.requested_limit, 2);
+        assert_eq!(scan.stats.returned_files, 2);
+        assert_eq!(scan.stats.matched_files, 3);
+        assert_eq!(scan.stats.collection_limit, 10_001);
+        assert!(!scan.stats.collection_limit_reached);
         assert_eq!(scan.stats.skipped_directories, 1);
         assert_eq!(scan.stats.skipped_directory_samples[0].name, "node_modules");
 
@@ -4315,6 +4330,9 @@ mod tests {
         assert_eq!(scan.records.len(), 1);
         assert_eq!(scan.limit, 1);
         assert!(scan.truncated);
+        assert_eq!(scan.stats.requested_limit, 1);
+        assert_eq!(scan.stats.returned_files, 1);
+        assert_eq!(scan.stats.matched_files, 2);
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -117,9 +117,9 @@ assertDeclaration('.workspace-arrangement.context-side.context-rail-only .contex
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs', 'width: 28px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-stack-tabs button', 'width: 24px');
 assert.ok(
-  pageSource.includes('.workspace-arrangement.context-side .workspace-context-column {\n      padding-right: 3px;') &&
-    pageSource.includes('.workspace-arrangement.context-side .context-panel-grid > section {\n      display: none;'),
-  'Split-window breakpoint should force the side context pane into an icon rail'
+  pageSource.includes('.workspace-arrangement.context-side:not(.context-rail-only) {\n      grid-template-columns: minmax(0, 1fr) 6px minmax(160px, var(--context-pane-width));') &&
+    !pageSource.includes('.workspace-arrangement.context-side .context-panel-grid > section {\n      display: none;'),
+  'Split-window breakpoint should preserve a usable side context pane unless the user explicitly collapses it'
 );
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'flex-direction: column');
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'width: 28px');
@@ -281,9 +281,10 @@ assert.ok(
     pageSource.includes('activeSessionKey: storedActiveWorkspaceSessionKey'),
   'Startup should only auto-restore an explicitly active workspace snapshot'
 );
-assert.ok(pageSource.includes('const sidePaneMinWidth = 56'), 'Activity pane should shrink to an icon rail instead of blocking split-window layouts');
+assert.ok(pageSource.includes('const sidePaneMinWidth = 40'), 'Activity pane should shrink close to an icon rail instead of blocking split-window layouts');
 assert.ok(pageSource.includes('const sidePaneRailOnlyThreshold = 118'), 'Activity pane should have an explicit rail-only breakpoint');
 assert.ok(pageSource.includes('const contextPaneMinWidth = 34'), 'Context pane should shrink to a compact icon rail');
+assert.ok(pageSource.includes('const contextPaneMaxWidth = 1600'), 'Context pane should allow wide manual resizing instead of capping early');
 assert.ok(pageSource.includes('const contextPaneRailOnlyThreshold = 84'), 'Context pane should have an explicit rail-only breakpoint');
 assert.ok(pageSource.includes('class:activity-rail-only={activityPaneRailOnly()}'), 'Source shell should expose rail-only activity mode through a class');
 assert.ok(pageSource.includes('class:context-rail-only={contextPaneRailOnly()}'), 'Workspace should expose rail-only context mode through a class');
@@ -746,6 +747,9 @@ assert.ok(pageSource.includes('function sourceScanDiagnosticBrief'), 'Source sca
 assert.ok(pageSource.includes('function copySourceScanDiagnosticBrief'), 'Source scan diagnostics should be copyable');
 assert.ok(pageSource.includes('aria-label="Copy source scan diagnostic"'), 'Tree scan summary should expose a copy diagnostic action');
 assert.ok(pageSource.includes('Skipped directory samples:'), 'Copied scan diagnostics should include skipped directory samples');
+assert.ok(pageSource.includes('Returned files: ${formatOptionalSourceScanStat(returnedFiles)}'), 'Copied scan diagnostics should include returned file count');
+assert.ok(pageSource.includes('Collection cap: ${formatOptionalSourceScanStat(collectionLimit)}'), 'Copied scan diagnostics should include collection cap evidence');
+assert.ok(pageSource.includes('function formatOptionalSourceScanStat'), 'Copied scan diagnostics should safely format optional native scanner fields');
 assert.ok(pageSource.includes('Scan diagnostic copied'), 'Source scan diagnostic copy should confirm success');
 assert.ok(
   pageSource.includes('Root validation: ${selectedProjectRootValidationSummary}'),
@@ -1794,8 +1798,10 @@ assertDeclaration('.editor-nav-list', 'overflow-y: auto');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
 assert.ok(pageSource.includes('sourceDockviewInsightsHostAction'), 'Source page should mount a Dockview host for the first visible insights pane slice');
 assert.ok(pageSource.includes('sourceDockviewPanelAction'), 'Source page should register Svelte-owned pane DOM with Dockview');
-assert.ok(pageSource.includes('panelIDs: sourceDockviewInsightsPanelIDs'), 'Insights Dockview host should only own the migrated insights panel');
-assert.ok(pageSource.includes("rootPanelID: 'insights'"), 'Insights Dockview host should avoid creating editor placeholders');
+assert.ok(pageSource.includes("const sourceDockviewInsightsSliceID: SourceDockviewMigrationSliceID = 'insights-only'"), 'Insights Dockview host should use the migration-slice registry');
+assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDockviewInsightsSliceID)'), 'Insights Dockview host should derive panel options from the migration slice');
+assert.ok(pageSource.includes('sourceDockviewInsightsPlanOptions.panelIDs ?? []'), 'Insights Dockview host should derive migrated panel membership from the slice helper');
+assert.ok(pageSource.includes('...sourceDockviewInsightsPlanOptions'), 'Insights Dockview host should avoid creating editor placeholders through slice plan options');
 assert.ok(pageSource.includes('sourceDockviewInsightsStorageKey'), 'Insights Dockview host should use slice-specific persisted layout storage');
 assert.ok(pageSource.includes('sourceDockviewLayoutOnlyContainsPanels'), 'Insights Dockview host should reject stale full-workspace snapshots');
 assert.ok(pageSource.includes('disposeSourceDockviewInsights();'), 'Source page should dispose the Dockview host during teardown');

@@ -915,7 +915,8 @@ function uniqueTaskIDs(values: Array<string | null | undefined>): string[] {
 
 function normalizeTaskID(value: string | null | undefined): string | null {
   const taskID = value?.trim();
-  return taskID || null;
+  if (!taskID) return null;
+  return /^tsk-\d+$/i.test(taskID) ? taskID.toUpperCase() : taskID;
 }
 
 function countActiveSessionPaths(

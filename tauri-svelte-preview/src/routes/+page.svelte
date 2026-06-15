@@ -105,7 +105,9 @@
   } from '$lib/sourceDockLayout';
   import {
     createSourceDockviewWorkspace,
-    sourceDockviewStorageKey,
+    sourceDockviewMigrationSlicePlanOptions,
+    sourceDockviewMigrationSliceStorageKey,
+    type SourceDockviewMigrationSliceID,
     type SourceDockviewWorkspace
   } from '$lib/sourceDockviewWorkspace';
   import {
@@ -332,26 +334,26 @@
   const sourceTreeOverscanRows = 8;
   const sourceTreeFallbackViewportHeight = 420;
   const sidePaneDefaultWidth = 407;
-  const sidePaneMinWidth = 56;
-  const sidePaneMaxWidth = 1100;
+  const sidePaneMinWidth = 40;
+  const sidePaneMaxWidth = 1600;
   const sidePaneCollapseThreshold = 48;
   const sidePaneRailOnlyThreshold = 118;
   const editorInsightDefaultWidth = 260;
   const editorInsightMinWidth = 96;
-  const editorInsightMaxWidth = 900;
+  const editorInsightMaxWidth = 1200;
   const editorInsightCollapseThreshold = 76;
   const contextPaneDefaultWidth = 330;
   const contextPaneMinWidth = 34;
-  const contextPaneMaxWidth = 1100;
+  const contextPaneMaxWidth = 1600;
   const contextPaneCollapseThreshold = 30;
   const contextPaneRailOnlyThreshold = 84;
   const contextPaneDefaultHeight = 260;
   const contextPaneMinHeight = 96;
-  const contextPaneMaxHeight = 720;
+  const contextPaneMaxHeight = 1100;
   const contextPaneHeightCollapseThreshold = 84;
   const bottomDockDefaultHeight = 300;
   const bottomDockMinHeight = 96;
-  const bottomDockMaxHeight = 760;
+  const bottomDockMaxHeight = 1100;
   const bottomDockCollapseThreshold = 84;
   const orchestrationRefreshIntervalMs = 5_000;
   const defaultOrchestrationEventFilePath = '/tmp/mcb-orchestration-events.jsonl';
@@ -359,8 +361,12 @@
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
   const sourceLayoutVersion = '2026-06-compact-chrome';
   const sourceDockviewInsightsEnabled = true;
-  const sourceDockviewInsightsPanelIDs: SourceDockPanelID[] = ['insights'];
-  const sourceDockviewInsightsStorageKey = `${sourceDockviewStorageKey}.insights`;
+  const sourceDockviewInsightsSliceID: SourceDockviewMigrationSliceID = 'insights-only';
+  const sourceDockviewInsightsPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewInsightsSliceID);
+  const sourceDockviewInsightsPanelIDs = sourceDockviewInsightsPlanOptions.panelIDs ?? [];
+  const sourceDockviewInsightsStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewInsightsSliceID);
   const initialProject = defaultProjectRoots[0];
   const macCommandBarRepoPath =
     defaultProjectRoots.find((project) => project.id === 'mac-command-bar')?.path ??
@@ -3920,6 +3926,14 @@
   function sourceScanDiagnosticBrief() {
     const indexEntry = selectedProjectIndexEntry;
     const stats = sourceScanStats ?? indexEntry?.stats ?? null;
+    const returnedFiles = stats?.returnedFiles ?? stats?.returnedCount;
+    const requestedLimit = stats?.requestedLimit ?? stats?.effectiveLimit;
+    const collectionLimit = stats?.collectionLimit;
+    const visitedEntries = stats?.visitedEntries ?? stats?.visitedEntryCount;
+    const matchedFiles = stats?.matchedFiles ?? stats?.matchedFileCount;
+    const skippedDirectories = stats?.skippedDirectories ?? stats?.skippedDirectoryCount;
+    const unsupportedFiles = stats?.unsupportedFiles ?? stats?.unsupportedFileCount;
+    const unreadableEntries = stats?.unreadableEntries ?? stats?.unreadableEntryCount;
     const activeScan = scanning
       ? `running (${(sourceScanProgress?.matchedFiles ?? records.length).toLocaleString()} matched / ${(
           sourceScanProgress?.visitedEntries ?? 0
@@ -3941,11 +3955,18 @@
     });
     const statLines = stats
       ? [
-          `Visited entries: ${stats.visitedEntries.toLocaleString()}`,
-          `Matched files: ${stats.matchedFiles.toLocaleString()}`,
-          `Skipped directories: ${stats.skippedDirectories.toLocaleString()}`,
-          `Unsupported files: ${stats.unsupportedFiles.toLocaleString()}`,
-          `Unreadable entries: ${stats.unreadableEntries.toLocaleString()}`
+          `Returned files: ${formatOptionalSourceScanStat(returnedFiles)}`,
+          `Requested limit: ${formatOptionalSourceScanStat(requestedLimit)}`,
+          `Collection cap: ${formatOptionalSourceScanStat(collectionLimit)}${
+            typeof stats.collectionLimitReached === 'boolean'
+              ? ` (${stats.collectionLimitReached ? 'reached' : 'not reached'})`
+              : ''
+          }`,
+          `Visited entries: ${formatOptionalSourceScanStat(visitedEntries)}`,
+          `Matched files: ${formatOptionalSourceScanStat(matchedFiles)}`,
+          `Skipped directories: ${formatOptionalSourceScanStat(skippedDirectories)}`,
+          `Unsupported files: ${formatOptionalSourceScanStat(unsupportedFiles)}`,
+          `Unreadable entries: ${formatOptionalSourceScanStat(unreadableEntries)}`
         ]
       : ['Scanner stats: none'];
     const skippedDirectoryLines =
@@ -3999,6 +4020,10 @@
       '- Confirm the project root is the repository root, not a nested folder',
       '- If indexed files stay tiny, inspect skipped directories and unreadable entries'
     ].join('\n');
+  }
+
+  function formatOptionalSourceScanStat(value: number | null | undefined) {
+    return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'unknown';
   }
 
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
@@ -10365,8 +10390,7 @@
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
         layout: sourceDockLayout,
-        panelIDs: sourceDockviewInsightsPanelIDs,
-        rootPanelID: 'insights',
+        ...sourceDockviewInsightsPlanOptions,
         storedLayout: loadStoredSourceDockviewLayout(
           sourceDockviewInsightsStorageKey,
           sourceDockviewInsightsPanelIDs
@@ -24079,42 +24103,8 @@
       display: none;
     }
 
-    .workspace-arrangement.context-side {
-      grid-template-columns: minmax(0, 1fr) 6px 34px;
-    }
-
-    .workspace-arrangement.context-side .workspace-context-column {
-      padding-right: 3px;
-      padding-left: 3px;
-    }
-
-    .workspace-arrangement.context-side .context-panel-grid {
-      grid-template-columns: 28px;
-      grid-template-rows: minmax(0, 1fr);
-      gap: 0;
-      overflow: hidden;
-      padding-right: 0;
-      scrollbar-gutter: auto;
-    }
-
-    .workspace-arrangement.context-side .context-restore-button,
-    .workspace-arrangement.context-side .context-panel-grid > section {
-      display: none;
-    }
-
-    .workspace-arrangement.context-side .context-stack-tabs {
-      grid-column: 1;
-      grid-row: 1;
-      width: 28px;
-      max-width: 28px;
-      padding: 2px;
-      background: rgba(10, 12, 12, 0.5);
-    }
-
-    .workspace-arrangement.context-side .context-stack-tabs button {
-      width: 24px;
-      min-width: 24px;
-      height: 24px;
+    .workspace-arrangement.context-side:not(.context-rail-only) {
+      grid-template-columns: minmax(0, 1fr) 6px minmax(160px, var(--context-pane-width));
     }
   }
 

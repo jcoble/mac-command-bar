@@ -237,6 +237,20 @@ assert.equal(
   }),
   '1,234 entries checked · 8 dirs skipped · 912 unsupported · 3 unreadable'
 );
+assert.equal(
+  formatSourceScanStats({
+    visitedEntries: 12,
+    matchedFiles: 3,
+    skippedDirectories: 1,
+    unsupportedFiles: 0,
+    unreadableEntries: 0,
+    requestedLimit: 2,
+    returnedFiles: 2,
+    collectionLimit: 10_001,
+    collectionLimitReached: false
+  }),
+  '2 returned / 3 matched · 12 entries checked · 1 dir skipped · collection cap 10,001'
+);
 assert.equal(formatSourceScanStats(null), '');
 
 const scanStats = {

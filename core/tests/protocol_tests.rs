@@ -444,6 +444,11 @@ fn source_list_low_requested_limit_still_walks_beyond_returned_files() {
 
     assert_eq!(listed.files.len(), 2);
     assert!(listed.truncated);
+    assert_eq!(listed.diagnostics.effective_limit, 2);
+    assert_eq!(listed.diagnostics.returned_count, 2);
+    assert_eq!(listed.diagnostics.matched_file_count, 3);
+    assert_eq!(listed.diagnostics.collection_limit, 10_001);
+    assert!(!listed.diagnostics.collection_limit_reached);
     assert_eq!(listed.diagnostics.skipped_directory_count, 1);
     assert_eq!(
         listed.diagnostics.skipped_directories[0].name,
@@ -488,6 +493,13 @@ fn source_list_reports_diagnostics_for_skipped_directories() {
     assert_eq!(response.data["count"], 1);
     assert_eq!(response.data["diagnostics"]["effectiveLimit"], 20);
     assert_eq!(response.data["diagnostics"]["returnedCount"], 1);
+    assert_eq!(response.data["diagnostics"]["visitedEntryCount"], 6);
+    assert_eq!(response.data["diagnostics"]["matchedFileCount"], 1);
+    assert_eq!(response.data["diagnostics"]["collectionLimit"], 10_001);
+    assert_eq!(
+        response.data["diagnostics"]["collectionLimitReached"],
+        false
+    );
     assert_eq!(response.data["diagnostics"]["truncated"], false);
     assert_eq!(response.data["diagnostics"]["skippedDirectoryCount"], 3);
     assert_eq!(response.data["diagnostics"]["unsupportedFileCount"], 1);

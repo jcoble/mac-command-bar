@@ -45,6 +45,10 @@ pub struct SourceFileList {
 pub struct SourceScanDiagnostics {
     pub effective_limit: usize,
     pub returned_count: usize,
+    pub visited_entry_count: usize,
+    pub matched_file_count: usize,
+    pub collection_limit: usize,
+    pub collection_limit_reached: bool,
     pub truncated: bool,
     pub skipped_directory_count: usize,
     pub unsupported_file_count: usize,
@@ -62,6 +66,8 @@ pub struct SourceSkippedDirectory {
 
 #[derive(Debug, Default)]
 struct SourceScanStats {
+    visited_entry_count: usize,
+    matched_file_count: usize,
     skipped_directory_count: usize,
     unsupported_file_count: usize,
     unreadable_entry_count: usize,
@@ -160,8 +166,9 @@ pub fn list_source_files(root: &Path, limit: usize, query: Option<&str>) -> Resu
         &mut records,
         &mut stats,
     )?;
+    let collected_file_count = records.len();
     records.sort_by(compare_source_records);
-    let truncated = records.len() > limit;
+    let truncated = collected_file_count > limit;
     records.truncate(limit);
     let returned_count = records.len();
     Ok(SourceFileList {
@@ -171,6 +178,10 @@ pub fn list_source_files(root: &Path, limit: usize, query: Option<&str>) -> Resu
         diagnostics: SourceScanDiagnostics {
             effective_limit: limit,
             returned_count,
+            visited_entry_count: stats.visited_entry_count,
+            matched_file_count: stats.matched_file_count,
+            collection_limit: collect_limit,
+            collection_limit_reached: collected_file_count >= collect_limit,
             truncated,
             skipped_directory_count: stats.skipped_directory_count,
             unsupported_file_count: stats.unsupported_file_count,
@@ -268,6 +279,7 @@ fn collect_source_files(
         }
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
+        stats.visited_entry_count += 1;
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(_) => {
@@ -294,6 +306,7 @@ fn collect_source_files(
         if !source_file_matches_query(&relative_path, &file_name, query) {
             continue;
         }
+        stats.matched_file_count += 1;
         records.push(SourceFileRecord {
             path: path.display().to_string(),
             relative_path,

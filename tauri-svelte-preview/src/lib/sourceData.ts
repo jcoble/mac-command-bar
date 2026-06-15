@@ -248,6 +248,17 @@ export type SourceScanStats = {
   skippedDirectories: number;
   unsupportedFiles: number;
   unreadableEntries: number;
+  requestedLimit?: number;
+  effectiveLimit?: number;
+  returnedFiles?: number;
+  returnedCount?: number;
+  collectionLimit?: number;
+  collectionLimitReached?: boolean;
+  visitedEntryCount?: number;
+  matchedFileCount?: number;
+  skippedDirectoryCount?: number;
+  unsupportedFileCount?: number;
+  unreadableEntryCount?: number;
   skippedDirectorySamples?: SourceSkippedDirectory[];
 };
 
@@ -926,13 +937,25 @@ export function formatSourceScanSummary(
 export function formatSourceScanStats(stats: SourceScanStats | null | undefined): string {
   if (!stats) return '';
 
-  const skippedDirectories = Math.max(0, Math.floor(stats.skippedDirectories));
-  const unsupportedFiles = Math.max(0, Math.floor(stats.unsupportedFiles));
-  const unreadableEntries = Math.max(0, Math.floor(stats.unreadableEntries));
-  const parts = [`${formatCount(Math.max(0, Math.floor(stats.visitedEntries)))} entries checked`];
+  const visitedEntries = normalSourceScanMetric(stats.visitedEntries ?? stats.visitedEntryCount);
+  const matchedFiles = normalSourceScanMetric(stats.matchedFiles ?? stats.matchedFileCount);
+  const skippedDirectories = normalSourceScanMetric(
+    stats.skippedDirectories ?? stats.skippedDirectoryCount
+  );
+  const unsupportedFiles = normalSourceScanMetric(stats.unsupportedFiles ?? stats.unsupportedFileCount);
+  const unreadableEntries = normalSourceScanMetric(stats.unreadableEntries ?? stats.unreadableEntryCount);
+  const returnedFiles = optionalSourceScanMetric(stats.returnedFiles ?? stats.returnedCount);
+  const collectionLimit = optionalSourceScanMetric(stats.collectionLimit);
+  const parts = [];
+
+  if (returnedFiles !== null) {
+    parts.push(`${formatCount(returnedFiles)} returned / ${formatCount(matchedFiles)} matched`);
+  }
+
+  parts.push(`${formatCount(visitedEntries)} entries checked`);
 
   if (skippedDirectories > 0) {
-    parts.push(`${formatCount(skippedDirectories)} dirs skipped`);
+    parts.push(`${formatCount(skippedDirectories)} ${skippedDirectories === 1 ? 'dir' : 'dirs'} skipped`);
   }
   if (unsupportedFiles > 0) {
     parts.push(`${formatCount(unsupportedFiles)} unsupported`);
@@ -940,8 +963,24 @@ export function formatSourceScanStats(stats: SourceScanStats | null | undefined)
   if (unreadableEntries > 0) {
     parts.push(`${formatCount(unreadableEntries)} unreadable`);
   }
+  if (collectionLimit !== null) {
+    parts.push(
+      stats.collectionLimitReached
+        ? `collection cap ${formatCount(collectionLimit)} reached`
+        : `collection cap ${formatCount(collectionLimit)}`
+    );
+  }
 
   return parts.join(' · ');
+}
+
+function normalSourceScanMetric(value: number | null | undefined): number {
+  return Math.max(0, Math.floor(typeof value === 'number' && Number.isFinite(value) ? value : 0));
+}
+
+function optionalSourceScanMetric(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return normalSourceScanMetric(value);
 }
 
 export function formatSourceScanHealth(input: SourceScanHealthInput): SourceScanHealth {
