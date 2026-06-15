@@ -347,20 +347,24 @@ fn skip_dir_reason(name: &str) -> Option<&'static str> {
     if normalized.ends_with("_files") {
         return Some("saved web page asset directory");
     }
+    if normalized.ends_with("-worktrees") {
+        return Some("session worktree directory");
+    }
 
     match normalized.as_str() {
         ".git" | ".hg" | ".svn" => Some("version-control metadata directory"),
         ".agents" | ".claude" | ".codex" | ".dev" | ".history" | ".idea" | ".omx"
-        | ".playwright" | ".playwright-cli" | ".run" | ".slots" | ".vscode" | ".zed" => {
-            Some("agent/tool state directory")
-        }
-        "__pycache__" | ".cache" | ".build" | ".gradle" | ".next" | ".nuxt" | ".parcel-cache"
-        | ".pytest_cache" | ".svelte-kit" | ".tmp" | ".turbo" | ".vite" | "bin" | "build"
-        | "coverage" | "deriveddata" | "dist" | "obj" | "target" | "testresults" => {
-            Some("build output/cache directory")
-        }
+        | ".playwright" | ".playwright-cli" | ".run" | ".slots" | ".vscode" | ".zed"
+        | ".mypy_cache" | ".ruff_cache" | ".tox" => Some("agent/tool state directory"),
+        "__pycache__" | ".angular" | ".cache" | ".build" | ".dart_tool" | ".expo" | ".gradle"
+        | ".next" | ".nuxt" | ".output" | ".parcel-cache" | ".pytest_cache" | ".serverless"
+        | ".svelte-kit" | ".swiftpm" | ".tmp" | ".turbo" | ".vercel" | ".vite" | "bin"
+        | "build" | "coverage" | "deriveddata" | "dist" | "logs" | "obj" | "out" | "target"
+        | "testresults" | "tmp" => Some("build output/cache directory"),
+        ".aws-sam" | ".terraform" => Some("infrastructure cache directory"),
         ".merge-backups" => Some("merge backup directory"),
-        "node_modules" | "pods" | "vendor" => Some("dependency directory"),
+        ".bun" | ".pnpm-store" | ".venv" | ".yarn" | "env" | "node_modules" | "pods" | "vendor"
+        | "venv" => Some("dependency directory"),
         "worktrees" => Some("session worktree directory"),
         _ => None,
     }

@@ -355,6 +355,105 @@ fn source_list_matches_preview_scanner_file_surface_and_tool_skips() {
 }
 
 #[test]
+fn source_list_skips_heavy_generated_directories_with_samples() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join(".yarn/cache/pkg")).unwrap();
+    std::fs::create_dir_all(root.join(".pnpm-store/v3/files")).unwrap();
+    std::fs::create_dir_all(root.join(".venv/lib")).unwrap();
+    std::fs::create_dir_all(root.join(".terraform/modules")).unwrap();
+    std::fs::create_dir_all(root.join(".dart_tool/build")).unwrap();
+    std::fs::create_dir_all(root.join("EdiPlatform-worktrees/session/src")).unwrap();
+    std::fs::write(root.join("src/App.ts"), "export const app = true;\n").unwrap();
+    std::fs::write(
+        root.join(".yarn/cache/pkg/Ignored.ts"),
+        "export const ignored = true;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".pnpm-store/v3/files/Ignored.ts"),
+        "export const ignored = true;\n",
+    )
+    .unwrap();
+    std::fs::write(root.join(".venv/lib/Ignored.py"), "print('ignored')\n").unwrap();
+    std::fs::write(
+        root.join(".terraform/modules/Ignored.tf"),
+        "resource \"x\" \"y\" {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".dart_tool/build/Ignored.dart"),
+        "void main() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("EdiPlatform-worktrees/session/src/Ignored.cs"),
+        "public sealed class Ignored {}\n",
+    )
+    .unwrap();
+
+    let listed = list_source_files(root, 40, None).unwrap();
+
+    assert_eq!(
+        listed
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/App.ts"]
+    );
+    assert_eq!(listed.diagnostics.skipped_directory_count, 6);
+    let skipped_names = listed
+        .diagnostics
+        .skipped_directories
+        .iter()
+        .map(|directory| directory.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        skipped_names,
+        std::collections::BTreeSet::from([
+            ".dart_tool",
+            ".pnpm-store",
+            ".terraform",
+            ".venv",
+            ".yarn",
+            "EdiPlatform-worktrees",
+        ])
+    );
+    assert!(listed
+        .diagnostics
+        .skipped_directories
+        .iter()
+        .all(|directory| !directory.reason.is_empty() && !directory.path.starts_with('/')));
+}
+
+#[test]
+fn source_list_caps_large_repo_collection_and_reports_cap() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+
+    for index in 0..10_005 {
+        std::fs::write(
+            root.join(format!("src/File{index:05}.ts")),
+            "export const value = 1;\n",
+        )
+        .unwrap();
+    }
+
+    let listed = list_source_files(root, 0, None).unwrap();
+
+    assert_eq!(listed.limit, 10_000);
+    assert_eq!(listed.files.len(), 10_000);
+    assert!(listed.truncated);
+    assert_eq!(listed.diagnostics.collection_limit, 10_001);
+    assert!(listed.diagnostics.collection_limit_reached);
+    assert_eq!(listed.diagnostics.matched_file_count, 10_001);
+    assert_eq!(listed.diagnostics.returned_count, 10_000);
+}
+
+#[test]
 fn source_list_prioritizes_app_source_before_docs_when_truncated() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

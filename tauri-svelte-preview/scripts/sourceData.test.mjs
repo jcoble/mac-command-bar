@@ -24,6 +24,7 @@ import {
   formatSourceScanHealth,
   formatSourceScanRecovery,
   formatSourceRecordCount,
+  formatSourceSkippedDirectorySamples,
   formatSourceScanStats,
   formatSourceScanSummary,
   gitCommitGraphKind,
@@ -183,6 +184,16 @@ assert.equal(
   ),
   'worktree:tsk-126-m3-design-polish'
 );
+assert.equal(
+  formatSourceContextRootLabel(
+    '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-126-m3-design-polish/EdiPlatform.Core'
+  ),
+  'worktree:tsk-126-m3-design-polish/EdiPlatform.Core'
+);
+assert.equal(
+  formatSourceContextRootLabel('/Users/blackcolours/dev/work/mac-command-bar/tauri-svelte-preview'),
+  'nested:mac-command-bar/tauri-svelte-preview'
+);
 assert.equal(formatSourceContextRootLabel('/tmp/scratch'), 'scratch');
 assert.equal(formatSourceContextRuntime(''), 'browser preview');
 assert.equal(formatSourceContextRuntime('  tauri source scan  '), 'tauri source scan');
@@ -235,7 +246,7 @@ assert.equal(
     unsupportedFiles: 912,
     unreadableEntries: 3
   }),
-  '1,234 entries checked · 8 dirs skipped · 912 unsupported · 3 unreadable'
+  '42 matched · 1,234 entries checked · 8 dirs skipped · 912 unsupported · 3 unreadable'
 );
 assert.equal(
   formatSourceScanStats({
@@ -250,6 +261,35 @@ assert.equal(
     collectionLimitReached: false
   }),
   '2 returned / 3 matched · 12 entries checked · 1 dir skipped · collection cap 10,001'
+);
+assert.equal(
+  formatSourceSkippedDirectorySamples(
+    [
+      { path: 'node_modules', name: 'node_modules', reason: 'dependency directory' },
+      { path: 'worktrees/session-a', name: 'worktrees', reason: 'session worktree directory' },
+      { path: '.git', name: '.git', reason: 'version-control metadata directory' },
+      { path: 'dist', name: 'dist', reason: 'build output/cache directory' }
+    ],
+    3
+  ),
+  'node_modules: dependency directory; worktrees: session worktree directory; .git: version-control metadata directory; +1 more'
+);
+assert.equal(
+  formatSourceScanStats({
+    visitedEntryCount: 88,
+    matchedFileCount: 1,
+    skippedDirectoryCount: 3,
+    unsupportedFileCount: 20,
+    unreadableEntryCount: 1,
+    collectionLimit: 10_001,
+    collectionLimitReached: true,
+    skippedDirectories: [
+      { path: 'node_modules', name: 'node_modules', reason: 'dependency directory' },
+      { path: 'worktrees', name: 'worktrees', reason: 'session worktree directory' },
+      { path: '.git', name: '.git', reason: 'version-control metadata directory' }
+    ]
+  }),
+  '1 matched · 88 entries checked · 3 dirs skipped (node_modules: dependency directory; worktrees: session worktree directory; .git: version-control metadata directory) · 20 unsupported · 1 unreadable · collection cap 10,001 reached'
 );
 assert.equal(formatSourceScanStats(null), '');
 
@@ -543,6 +583,38 @@ assert.deepEqual(
     title: 'Tiny source index',
     detail:
       'Only 2 files were indexed from a 25,000-file scan. Reset the index; if it stays tiny, choose the repo or worktree root. 320 entries checked · 80 unsupported · 14 dirs skipped · skipped samples: worktrees: session worktree directory; node_modules: dependency directory; .git: version-control metadata directory; +1 more',
+    primaryAction: 'reset-index',
+    secondaryAction: 'copy-diagnostic'
+  }
+);
+assert.deepEqual(
+  formatSourceScanRecovery({
+    totalCount: 1,
+    filteredCount: 1,
+    truncated: false,
+    requestedLimit: 25_000,
+    suspiciousThreshold: 2,
+    query: '',
+    scanning: false,
+    loading: false,
+    error: '',
+    stats: {
+      visitedEntryCount: 88,
+      matchedFileCount: 1,
+      skippedDirectoryCount: 3,
+      unsupportedFileCount: 20,
+      unreadableEntryCount: 1,
+      skippedDirectories: [
+        { path: 'node_modules', name: 'node_modules', reason: 'dependency directory' },
+        { path: 'worktrees', name: 'worktrees', reason: 'session worktree directory' }
+      ]
+    }
+  }),
+  {
+    visible: true,
+    title: 'Tiny source index',
+    detail:
+      'Only 1 file was indexed from a 25,000-file scan. Reset the index; if it stays tiny, choose the repo or worktree root. 88 entries checked · 20 unsupported · 3 dirs skipped · 1 unreadable · skipped samples: node_modules: dependency directory; worktrees: session worktree directory',
     primaryAction: 'reset-index',
     secondaryAction: 'copy-diagnostic'
   }

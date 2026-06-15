@@ -537,11 +537,18 @@ export function formatSourceContextRootLabel(path: string): string {
   const worktreesIndex = segments.findIndex((segment) => segment === 'worktrees');
 
   if (worktreesIndex >= 0 && segments[worktreesIndex + 2]) {
-    return `worktree:${segments[worktreesIndex + 2]}`;
+    const worktreeName = segments[worktreesIndex + 2];
+    const nestedPath = segments.slice(worktreesIndex + 3).join('/');
+    return nestedPath ? `worktree:${worktreeName}/${nestedPath}` : `worktree:${worktreeName}`;
   }
 
-  if (segments.at(-2) === 'work') {
-    return 'main checkout';
+  const devWorkIndex = segments.findIndex(
+    (segment, index) => segment === 'work' && segments[index - 1] === 'dev'
+  );
+  if (devWorkIndex >= 0 && segments[devWorkIndex + 1]) {
+    const repositoryName = segments[devWorkIndex + 1];
+    const nestedPath = segments.slice(devWorkIndex + 2).join('/');
+    return nestedPath ? `nested:${repositoryName}/${nestedPath}` : 'main checkout';
   }
 
   return projectRootNameFromPath(normalizedPath);
@@ -937,25 +944,33 @@ export function formatSourceScanSummary(
 export function formatSourceScanStats(stats: SourceScanStats | null | undefined): string {
   if (!stats) return '';
 
-  const visitedEntries = normalSourceScanMetric(stats.visitedEntries ?? stats.visitedEntryCount);
-  const matchedFiles = normalSourceScanMetric(stats.matchedFiles ?? stats.matchedFileCount);
-  const skippedDirectories = normalSourceScanMetric(
-    stats.skippedDirectories ?? stats.skippedDirectoryCount
+  const visitedEntries = sourceScanMetric(stats, 'visitedEntries', 'visitedEntryCount');
+  const matchedFiles = sourceScanMetric(stats, 'matchedFiles', 'matchedFileCount');
+  const skippedDirectories = sourceScanMetric(
+    stats,
+    'skippedDirectories',
+    'skippedDirectoryCount'
   );
-  const unsupportedFiles = normalSourceScanMetric(stats.unsupportedFiles ?? stats.unsupportedFileCount);
-  const unreadableEntries = normalSourceScanMetric(stats.unreadableEntries ?? stats.unreadableEntryCount);
+  const unsupportedFiles = sourceScanMetric(stats, 'unsupportedFiles', 'unsupportedFileCount');
+  const unreadableEntries = sourceScanMetric(stats, 'unreadableEntries', 'unreadableEntryCount');
   const returnedFiles = optionalSourceScanMetric(stats.returnedFiles ?? stats.returnedCount);
   const collectionLimit = optionalSourceScanMetric(stats.collectionLimit);
+  const skippedSampleSummary = sourceScanSkippedDirectorySampleSummary(stats);
   const parts = [];
 
   if (returnedFiles !== null) {
     parts.push(`${formatCount(returnedFiles)} returned / ${formatCount(matchedFiles)} matched`);
+  } else if (matchedFiles > 0) {
+    parts.push(`${formatCount(matchedFiles)} matched`);
   }
 
   parts.push(`${formatCount(visitedEntries)} entries checked`);
 
   if (skippedDirectories > 0) {
-    parts.push(`${formatCount(skippedDirectories)} ${skippedDirectories === 1 ? 'dir' : 'dirs'} skipped`);
+    const label = `${formatCount(skippedDirectories)} ${
+      skippedDirectories === 1 ? 'dir' : 'dirs'
+    } skipped`;
+    parts.push(skippedSampleSummary ? `${label} (${skippedSampleSummary})` : label);
   }
   if (unsupportedFiles > 0) {
     parts.push(`${formatCount(unsupportedFiles)} unsupported`);
@@ -972,6 +987,24 @@ export function formatSourceScanStats(stats: SourceScanStats | null | undefined)
   }
 
   return parts.join(' · ');
+}
+
+function sourceScanMetric(
+  stats: SourceScanStats,
+  primaryKey: keyof SourceScanStats,
+  fallbackKey: keyof SourceScanStats
+): number {
+  const primaryValue = stats[primaryKey];
+  if (typeof primaryValue === 'number' && Number.isFinite(primaryValue)) {
+    return normalSourceScanMetric(primaryValue);
+  }
+
+  const fallbackValue = stats[fallbackKey];
+  if (typeof fallbackValue === 'number' && Number.isFinite(fallbackValue)) {
+    return normalSourceScanMetric(fallbackValue);
+  }
+
+  return 0;
 }
 
 function normalSourceScanMetric(value: number | null | undefined): number {
@@ -1137,11 +1170,11 @@ function sourceScanRecoveryStatsSummary(stats: SourceScanStats | null | undefine
   if (!stats) return 'No native scan stats are available yet.';
 
   const parts = [
-    `${formatCount(Math.max(0, Math.floor(stats.visitedEntries)))} entries checked`,
-    `${formatCount(Math.max(0, Math.floor(stats.unsupportedFiles)))} unsupported`,
-    `${formatCount(Math.max(0, Math.floor(stats.skippedDirectories)))} dirs skipped`
+    `${formatCount(sourceScanMetric(stats, 'visitedEntries', 'visitedEntryCount'))} entries checked`,
+    `${formatCount(sourceScanMetric(stats, 'unsupportedFiles', 'unsupportedFileCount'))} unsupported`,
+    `${formatCount(sourceScanMetric(stats, 'skippedDirectories', 'skippedDirectoryCount'))} dirs skipped`
   ];
-  const unreadableEntries = Math.max(0, Math.floor(stats.unreadableEntries));
+  const unreadableEntries = sourceScanMetric(stats, 'unreadableEntries', 'unreadableEntryCount');
   if (unreadableEntries > 0) parts.push(`${formatCount(unreadableEntries)} unreadable`);
   const skippedSampleSummary = sourceScanSkippedDirectorySampleSummary(stats);
   if (skippedSampleSummary) parts.push(`skipped samples: ${skippedSampleSummary}`);
@@ -1149,17 +1182,45 @@ function sourceScanRecoveryStatsSummary(stats: SourceScanStats | null | undefine
 }
 
 function sourceScanSkippedDirectorySampleSummary(stats: SourceScanStats, limit = 3): string {
+  return formatSourceSkippedDirectorySamples(sourceScanSkippedDirectorySamples(stats), limit);
+}
+
+export function formatSourceSkippedDirectorySamples(
+  skippedDirectories: SourceSkippedDirectory[] | null | undefined,
+  limit = 3
+): string {
   const sampleLimit = Math.max(0, Math.floor(limit));
   if (sampleLimit === 0) return '';
 
-  const samples = (stats.skippedDirectorySamples ?? [])
+  const samples = (skippedDirectories ?? [])
     .filter((sample) => sample.name.trim() && sample.reason.trim())
     .slice(0, sampleLimit)
     .map((sample) => `${sample.name}: ${sample.reason}`);
 
   if (samples.length === 0) return '';
-  const remainingSampleCount = Math.max(0, (stats.skippedDirectorySamples?.length ?? 0) - samples.length);
+  const remainingSampleCount = Math.max(0, (skippedDirectories?.length ?? 0) - samples.length);
   return remainingSampleCount > 0 ? `${samples.join('; ')}; +${remainingSampleCount} more` : samples.join('; ');
+}
+
+function sourceScanSkippedDirectorySamples(stats: SourceScanStats): SourceSkippedDirectory[] {
+  if (Array.isArray(stats.skippedDirectorySamples)) {
+    return stats.skippedDirectorySamples;
+  }
+
+  const diagnosticSkippedDirectories = (stats as { skippedDirectories?: unknown }).skippedDirectories;
+  return Array.isArray(diagnosticSkippedDirectories)
+    ? diagnosticSkippedDirectories.filter(isSourceSkippedDirectory)
+    : [];
+}
+
+function isSourceSkippedDirectory(value: unknown): value is SourceSkippedDirectory {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as SourceSkippedDirectory;
+  return (
+    typeof candidate.path === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.reason === 'string'
+  );
 }
 
 export function selectBackgroundIndexProjects(
