@@ -8,6 +8,8 @@ const CLAUDE_SESSION_FILE_LIMIT: usize = 120;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
 const CODEX_SESSION_FILE_LIMIT: usize = 160;
 const CODEX_SESSION_HEAD_BYTES: usize = 64 * 1024;
+const CODEX_SESSION_TAIL_BYTES: usize = 256 * 1024;
+const AGENT_SESSION_RESULT_LIMIT: usize = 240;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +40,9 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     let mut codex_metadata = Vec::new();
     for file in codex_files.into_iter().take(CODEX_SESSION_FILE_LIMIT) {
-        if let Ok(contents) = read_head_utf8(&file, CODEX_SESSION_HEAD_BYTES) {
+        if let Ok(contents) =
+            read_head_and_tail_utf8(&file, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
+        {
             codex_metadata.extend(parse_codex_rollout_jsonl(&contents));
         }
     }
@@ -68,7 +72,7 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     records = merge_agent_session_records(records);
     records.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-    records.truncate(80);
+    records.truncate(AGENT_SESSION_RESULT_LIMIT);
     records
 }
 
@@ -125,49 +129,114 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
-        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-            continue;
-        }
+        match value.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
+                let Some(id) = payload.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
 
-        let Some(payload) = value.get("payload") else {
-            continue;
-        };
-        let Some(id) = payload.get("id").and_then(Value::as_str) else {
-            continue;
-        };
+                let cwd = payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned);
+                let last_activity = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.get("timestamp").and_then(Value::as_str))
+                    .map(ToOwned::to_owned);
 
-        let cwd = payload
-            .get("cwd")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(ToOwned::to_owned);
-        let last_activity = value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .or_else(|| payload.get("timestamp").and_then(Value::as_str))
-            .map(ToOwned::to_owned);
+                let record = AgentSessionRecord {
+                    provider: "codex".to_string(),
+                    id: id.to_string(),
+                    title: "Codex session".to_string(),
+                    model: model_from_value(payload),
+                    project_path: cwd,
+                    last_activity,
+                    resume_commands: vec![format!("codex resume {id}")],
+                };
 
-        let record = AgentSessionRecord {
-            provider: "codex".to_string(),
-            id: id.to_string(),
-            title: "Codex session".to_string(),
-            model: model_from_value(payload),
-            project_path: cwd,
-            last_activity,
-            resume_commands: vec![format!("codex resume {id}")],
-        };
+                if let Some(existing) = records.iter_mut().find(|candidate| {
+                    candidate.provider == record.provider && candidate.id == record.id
+                }) {
+                    merge_codex_record(existing, record);
+                } else {
+                    records.push(record);
+                }
+            }
+            Some("turn_context") => {
+                let Some(payload) = value.get("payload") else {
+                    continue;
+                };
 
-        if let Some(existing) = records
-            .iter_mut()
-            .find(|candidate| candidate.provider == record.provider && candidate.id == record.id)
-        {
-            merge_codex_record(existing, record);
-        } else {
-            records.push(record);
+                let cwd = payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned);
+                let last_activity = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                update_latest_codex_record(
+                    &mut records,
+                    cwd,
+                    model_from_value(payload),
+                    last_activity,
+                );
+            }
+            Some("response_item") => {
+                let Some(cwd) = codex_response_item_workdir(&value) else {
+                    continue;
+                };
+                let last_activity = value
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                update_latest_codex_record(&mut records, Some(cwd), None, last_activity);
+            }
+            _ => {}
         }
     }
 
     records
+}
+
+fn update_latest_codex_record(
+    records: &mut [AgentSessionRecord],
+    cwd: Option<String>,
+    model: Option<String>,
+    last_activity: Option<String>,
+) {
+    let Some(record) = records.last_mut() else {
+        return;
+    };
+
+    let id = record.id.clone();
+    let update = AgentSessionRecord {
+        provider: "codex".to_string(),
+        id: id.clone(),
+        title: record.title.clone(),
+        model,
+        project_path: cwd,
+        last_activity,
+        resume_commands: vec![format!("codex resume {id}")],
+    };
+    merge_codex_record(record, update);
+}
+
+fn codex_response_item_workdir(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("function_call") {
+        return None;
+    }
+
+    let arguments = payload.get("arguments").and_then(Value::as_str)?;
+    let arguments = serde_json::from_str::<Value>(arguments).ok()?;
+    optional_string(arguments.get("workdir"))
 }
 
 pub fn merge_codex_session_metadata(
@@ -622,6 +691,20 @@ pub fn read_head_utf8(path: &Path, max_bytes: usize) -> std::io::Result<String> 
     file.take(max_bytes as u64).read_to_end(&mut bytes)?;
 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn read_head_and_tail_utf8(
+    path: &Path,
+    head_bytes: usize,
+    tail_bytes: usize,
+) -> std::io::Result<String> {
+    let head = read_head_utf8(path, head_bytes)?;
+    let tail = read_tail_utf8(path, tail_bytes)?;
+    if tail.is_empty() || head.ends_with(&tail) {
+        return Ok(head);
+    }
+
+    Ok(format!("{}\n{}", head.trim_end_matches('\n'), tail))
 }
 
 fn modified_time(path: &Path) -> Option<std::time::SystemTime> {

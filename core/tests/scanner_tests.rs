@@ -97,6 +97,43 @@ fn parses_codex_rollout_metadata_without_transcript_content() {
 }
 
 #[test]
+fn codex_turn_context_updates_rollout_project_path() {
+    let records = parse_codex_rollout_jsonl(
+        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/EdiPlatform\",\"model_slug\":\"gpt-5.5-codex\"}}\n\
+         {\"timestamp\":\"2026-06-09T01:30:00Z\",\"type\":\"turn_context\",\"payload\":{\"cwd\":\"/Users/blackcolours/dev/work/mac-command-bar\",\"model\":\"gpt-5.5\"}}\n",
+    );
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].project_path.as_deref(),
+        Some("/Users/blackcolours/dev/work/mac-command-bar")
+    );
+    assert_eq!(
+        records[0].last_activity.as_deref(),
+        Some("2026-06-09T01:30:00Z")
+    );
+    assert_eq!(records[0].model.as_deref(), Some("gpt-5.5"));
+}
+
+#[test]
+fn codex_function_call_workdir_updates_rollout_project_path() {
+    let records = parse_codex_rollout_jsonl(
+        "{\"timestamp\":\"2026-06-09T01:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019e\",\"cwd\":\"/Users/blackcolours/dev/work/EdiPlatform\",\"model_slug\":\"gpt-5.5-codex\"}}\n\
+         {\"timestamp\":\"2026-06-09T01:45:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"exec_command\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\",\\\"workdir\\\":\\\"/Users/blackcolours/dev/work/mac-command-bar\\\"}\",\"call_id\":\"call_1\"}}\n",
+    );
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].project_path.as_deref(),
+        Some("/Users/blackcolours/dev/work/mac-command-bar")
+    );
+    assert_eq!(
+        records[0].last_activity.as_deref(),
+        Some("2026-06-09T01:45:00Z")
+    );
+}
+
+#[test]
 fn merges_codex_rollout_project_path_into_index_record() {
     let index = parse_codex_index_jsonl(
         "{\"id\":\"019e\",\"thread_name\":\"Build command bar\",\"updated_at\":\"2026-06-09T01:05:00Z\"}\n",
