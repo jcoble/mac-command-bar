@@ -59,6 +59,12 @@ Completed and committed:
 
 Current checkpoint:
 
+- Terminal/browser integration hardening checkpoint:
+  - Changed files: `tauri-svelte-preview/src-tauri/src/terminal.rs`, `tauri-svelte-preview/src/lib/workspaceSnapshot.ts`, `tauri-svelte-preview/scripts/workspaceSnapshot.test.mjs`.
+  - Behavior delivered: embedded PTY commands now canonicalize terminal cwd paths and tolerate copied/padded session IDs for scrollback, write, resize, and close calls; missing/blank session IDs remain no-op guarded. Workspace snapshots now drop browser URLs with embedded credentials and reject embedded-terminal restore metadata unless the session ID is simple and the cwd is absolute.
+  - Validation: `cargo test --manifest-path src-tauri/Cargo.toml terminal` passed after the terminal changes; a later shared-tree rerun was blocked by unrelated `core/src/scanners/worktrees.rs` compile errors. `pnpm test:workspace-snapshot` passed.
+  - Recommendation: continue with embedded xterm/PTY as the first-class in-app terminal path. Defer true browser embedding beyond safe URL storage until Tauri WebView/iframe constraints and app isolation behavior are resolved. Keep external Warp/Ghostty/Cmux/Terminal focus or copyable resume commands as the fallback for sessions that cannot be safely embedded or restored yet. Do not pursue libghostty integration in this slice beyond feasibility notes.
+  - Remaining UI work: wire the live Dockview page to use padded-id-safe attach/restore behavior, surface rejected snapshot metadata as a small repair/status cue if needed, and decide later whether browser dock URLs should open inside WebView, an iframe, or an external browser.
 - Latest Dockview checkpoint: migration slice planning is now validated before live pane migration.
   - Changed files: `tauri-svelte-preview/src/lib/sourceDockviewWorkspace.ts`, `tauri-svelte-preview/scripts/sourceDockviewWorkspace.test.mjs`.
   - Behavior delivered: Dockview migration panel options now reject unknown panel/root IDs, de-duplicate requested panel IDs, auto-include the chosen root panel, preserve hidden-root no-op behavior, and keep the existing `insights-only`, `context-insights`, and `bottom-runtime` slice outputs stable.

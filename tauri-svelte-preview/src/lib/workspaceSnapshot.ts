@@ -575,6 +575,7 @@ function normalizeBrowserUrl(value: string | null | undefined): string | null {
   try {
     const parsedUrl = new URL(withProtocol);
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null;
+    if (parsedUrl.username || parsedUrl.password) return null;
     return parsedUrl.toString();
   } catch {
     return null;
@@ -588,7 +589,9 @@ function normalizeEmbeddedTerminal(
 
   const sessionID = normalizeOptionalString(terminal.sessionID);
   const cwd = normalizeOptionalPath(terminal.cwd);
-  if (!sessionID || !cwd) return null;
+  if (!sessionID || !cwd || !isSafeEmbeddedTerminalSessionID(sessionID) || !isAbsolutePath(cwd)) {
+    return null;
+  }
 
   return {
     sessionID,
@@ -596,6 +599,14 @@ function normalizeEmbeddedTerminal(
     shell: normalizeOptionalString(terminal.shell),
     startedAt: normalizeTimestamp(terminal.startedAt)
   };
+}
+
+function isSafeEmbeddedTerminalSessionID(sessionID: string): boolean {
+  return /^[A-Za-z0-9:._-]+$/.test(sessionID);
+}
+
+function isAbsolutePath(path: string): boolean {
+  return path.startsWith('/');
 }
 
 function normalizeLine(line: number | null | undefined): number | null {

@@ -127,6 +127,39 @@ assert.equal(
   null,
   'workspace restore should drop local file browser dock URLs from older snapshots'
 );
+assert.equal(
+  createWorkspaceSnapshot({
+    provider: 'manual',
+    sessionID: 'credentialed-browser-url',
+    title: 'Credentialed browser URL',
+    project: { id: 'mac-command-bar', name: 'MacCommandBar', path: '/repo' },
+    cwd: '/repo',
+    browserUrl: ' https://user:secret@example.com/private ',
+    capturedAt: 1_275
+  }).browserUrl,
+  null,
+  'workspace snapshots should drop browser URLs that embed credentials'
+);
+
+const unsafeTerminalSnapshot = createWorkspaceSnapshot({
+  provider: 'manual',
+  sessionID: 'unsafe-terminal',
+  title: 'Unsafe terminal metadata',
+  project: { id: 'mac-command-bar', name: 'MacCommandBar', path: '/repo' },
+  cwd: '/repo',
+  embeddedTerminal: {
+    sessionID: 'terminal\n123',
+    cwd: 'relative/worktree',
+    shell: '/bin/zsh',
+    startedAt: 1_300
+  },
+  capturedAt: 1_300
+});
+assert.equal(
+  unsafeTerminalSnapshot.embeddedTerminal,
+  null,
+  'workspace snapshots should drop unsafe embedded terminal metadata'
+);
 
 const olderSnapshot = createWorkspaceSnapshot({
   provider: 'claude',

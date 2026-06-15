@@ -140,6 +140,9 @@ pub fn read_terminal_session_scrollback(
     registry: &TerminalRegistry,
     session_id: &str,
 ) -> Result<Option<String>, String> {
+    let Some(session_id) = normalize_terminal_session_id(session_id) else {
+        return Ok(None);
+    };
     let scrollback = {
         let sessions = registry
             .inner
@@ -161,6 +164,9 @@ pub fn write_terminal_session(
     session_id: &str,
     data: &str,
 ) -> Result<bool, String> {
+    let Some(session_id) = normalize_terminal_session_id(session_id) else {
+        return Ok(false);
+    };
     let sessions = registry
         .inner
         .lock()
@@ -185,6 +191,9 @@ pub fn resize_terminal_session(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<bool, String> {
+    let Some(session_id) = normalize_terminal_session_id(session_id) else {
+        return Ok(false);
+    };
     let sessions = registry
         .inner
         .lock()
@@ -203,6 +212,9 @@ pub fn close_terminal_session(
     registry: &TerminalRegistry,
     session_id: &str,
 ) -> Result<bool, String> {
+    let Some(session_id) = normalize_terminal_session_id(session_id) else {
+        return Ok(false);
+    };
     let Some(session) = registry.remove(session_id)? else {
         return Ok(false);
     };
@@ -341,7 +353,17 @@ fn terminal_cwd_from_request(cwd: &str) -> Result<PathBuf, String> {
     if !metadata.is_dir() {
         return Err("Terminal cwd is not a directory".to_string());
     }
-    Ok(path)
+    std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not canonicalize terminal cwd: {error}"))
+}
+
+fn normalize_terminal_session_id(session_id: &str) -> Option<&str> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        None
+    } else {
+        Some(session_id)
+    }
 }
 
 fn default_terminal_shell() -> String {
@@ -417,11 +439,56 @@ mod tests {
         assert!(scrollback.ends_with('x'));
     }
 
+    #[test]
+    fn terminal_cwd_trims_canonicalizes_and_rejects_invalid_paths() {
+        let root = unique_terminal_test_root();
+        let nested = root.join("workspace");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file_path = root.join("not-a-directory.txt");
+        std::fs::write(&file_path, "not a directory").unwrap();
+
+        let requested = format!("  {}/../workspace/  ", nested.display());
+        let resolved = terminal_cwd_from_request(&requested).unwrap();
+        assert_eq!(resolved, std::fs::canonicalize(&nested).unwrap());
+
+        let file_error = terminal_cwd_from_request(&file_path.display().to_string()).unwrap_err();
+        assert!(file_error.contains("Terminal cwd is not a directory"));
+
+        let missing_error =
+            terminal_cwd_from_request(&root.join("missing").display().to_string()).unwrap_err();
+        assert!(missing_error.contains("Could not read terminal cwd metadata"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_terminal_session_ids_are_noops() {
+        let registry = TerminalRegistry::default();
+
+        assert_eq!(
+            read_terminal_session_scrollback(&registry, "missing-terminal").unwrap(),
+            None
+        );
+        assert!(!write_terminal_session(&registry, "missing-terminal", "echo nope\n").unwrap());
+        assert!(!resize_terminal_session(&registry, "missing-terminal", Some(100), Some(32))
+            .unwrap());
+        assert!(!close_terminal_session(&registry, "missing-terminal").unwrap());
+
+        assert_eq!(read_terminal_session_scrollback(&registry, "   ").unwrap(), None);
+        assert!(!write_terminal_session(&registry, "   ", "echo nope\n").unwrap());
+        assert!(!resize_terminal_session(&registry, "   ", Some(100), Some(32)).unwrap());
+        assert!(!close_terminal_session(&registry, "   ").unwrap());
+    }
+
     #[cfg(not(windows))]
     #[test]
-    fn terminal_session_lifecycle_writes_resizes_reads_and_closes_native_pty() {
+    fn terminal_session_lifecycle_accepts_padded_ids_writes_resizes_reads_and_closes_native_pty() {
         let app = tauri::test::mock_app();
         let registry = TerminalRegistry::default();
+        let expected_cwd = std::fs::canonicalize(std::env::temp_dir())
+            .expect("temp dir should canonicalize")
+            .display()
+            .to_string();
         let session = start_terminal_session(
             app.handle().clone(),
             &registry,
@@ -433,9 +500,10 @@ mod tests {
             },
         )
         .expect("terminal session should start");
+        let copied_session_id = format!("  {}\n", session.session_id);
 
         let result = (|| {
-            assert_eq!(session.cwd, std::env::temp_dir().display().to_string());
+            assert_eq!(session.cwd, expected_cwd);
             assert_eq!(session.shell, "/bin/sh");
             assert_eq!(session.cols, 80);
             assert_eq!(session.rows, 20);
@@ -447,18 +515,18 @@ mod tests {
 
             assert!(write_terminal_session(
                 &registry,
-                &session.session_id,
+                &copied_session_id,
                 "printf 'mcb-terminal-ready\\n'\n"
             )
             .expect("terminal input should write"));
             assert!(
-                resize_terminal_session(&registry, &session.session_id, Some(100), Some(32))
+                resize_terminal_session(&registry, &copied_session_id, Some(100), Some(32))
                     .expect("terminal session should resize")
             );
 
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let scrollback = read_terminal_session_scrollback(&registry, &session.session_id)
+                let scrollback = read_terminal_session_scrollback(&registry, &copied_session_id)
                     .expect("terminal scrollback should read")
                     .unwrap_or_default();
                 if scrollback.contains("mcb-terminal-ready") {
@@ -473,7 +541,7 @@ mod tests {
             }
         })();
 
-        let closed = close_terminal_session(&registry, &session.session_id)
+        let closed = close_terminal_session(&registry, &copied_session_id)
             .expect("terminal session should close");
         assert!(closed);
         assert!(
@@ -484,5 +552,13 @@ mod tests {
         );
 
         result.expect("terminal session lifecycle should complete");
+    }
+
+    fn unique_terminal_test_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "mcb-terminal-test-{}-{}",
+            std::process::id(),
+            timestamp_millis()
+        ))
     }
 }
