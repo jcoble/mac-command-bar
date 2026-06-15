@@ -3,6 +3,7 @@ import {
   clampSourcePaneSize,
   deriveSourcePaneState,
   finishSourcePanePointerSize,
+  resolveSourcePaneWorkspacePlan,
   resolveSourcePaneSize,
   restoreSourcePaneExpandedSize
 } from '../src/lib/sourcePaneSizing.ts';
@@ -143,4 +144,171 @@ assert.deepEqual(
   finishSourcePanePointerSize(1400, bottomPaneConfig),
   { state: 'expanded', size: 1100, persistedSize: 1100 },
   'bottom panes should clamp finished heights to their maximum'
+);
+
+const comfortableWorkspacePlan = resolveSourcePaneWorkspacePlan({
+  viewportSize: 1500,
+  minEditorSize: 720,
+  gapSize: 6,
+  items: [
+    {
+      id: 'activity',
+      visible: true,
+      size: 407,
+      config: sidePaneRailSizeConfig,
+      collapsePriority: 2,
+      previousExpandedSize: 520
+    },
+    {
+      id: 'context',
+      visible: true,
+      size: 330,
+      config: contextPaneRailSizeConfig,
+      collapsePriority: 1,
+      previousExpandedSize: 360
+    }
+  ]
+});
+assert.deepEqual(
+  comfortableWorkspacePlan.items.map((item) => [item.id, item.state, item.size, item.reason]),
+  [
+    ['activity', 'expanded', 407, 'requested'],
+    ['context', 'expanded', 330, 'requested']
+  ],
+  'comfortable workspaces should keep requested expanded pane widths'
+);
+assert.equal(
+  comfortableWorkspacePlan.editorSize,
+  751,
+  'comfortable workspace plan should report remaining editor canvas width'
+);
+assert.equal(
+  comfortableWorkspacePlan.overflowSize,
+  0,
+  'comfortable workspace plans should have no unresolved editor pressure'
+);
+
+const narrowWorkspacePlan = resolveSourcePaneWorkspacePlan({
+  viewportSize: 1180,
+  minEditorSize: 720,
+  gapSize: 6,
+  items: [
+    {
+      id: 'activity',
+      visible: true,
+      size: 407,
+      config: sidePaneRailSizeConfig,
+      collapsePriority: 2,
+      previousExpandedSize: 520
+    },
+    {
+      id: 'context',
+      visible: true,
+      size: 330,
+      config: contextPaneRailSizeConfig,
+      collapsePriority: 1,
+      previousExpandedSize: 360
+    }
+  ]
+});
+assert.deepEqual(
+  narrowWorkspacePlan.items.map((item) => [
+    item.id,
+    item.state,
+    item.size,
+    item.persistedSize,
+    item.restoreSize,
+    item.reason
+  ]),
+  [
+    ['activity', 'expanded', 407, 407, 520, 'requested'],
+    ['context', 'rail', 34, 34, 360, 'viewport-rail']
+  ],
+  'narrow workspaces should rail lower-priority context panes before squeezing the editor canvas'
+);
+assert.equal(
+  narrowWorkspacePlan.editorSize,
+  727,
+  'railing a context pane should free canvas width while preserving the visible activity pane'
+);
+assert.equal(
+  narrowWorkspacePlan.overflowSize,
+  0,
+  'workspace plans should stop shrinking once the editor target is recovered'
+);
+
+const tighterWorkspacePlan = resolveSourcePaneWorkspacePlan({
+  viewportSize: 820,
+  minEditorSize: 720,
+  gapSize: 6,
+  items: [
+    {
+      id: 'activity',
+      visible: true,
+      size: 407,
+      config: sidePaneRailSizeConfig,
+      collapsePriority: 2,
+      previousExpandedSize: 520
+    },
+    {
+      id: 'context',
+      visible: true,
+      size: 330,
+      config: contextPaneRailSizeConfig,
+      collapsePriority: 1,
+      previousExpandedSize: 360
+    }
+  ]
+});
+assert.deepEqual(
+  tighterWorkspacePlan.items.map((item) => [item.id, item.state, item.size, item.reason]),
+  [
+    ['activity', 'rail', 40, 'viewport-rail'],
+    ['context', 'rail', 34, 'viewport-rail']
+  ],
+  'very tight workspaces should keep optional panes as rails before clipping content'
+);
+assert.equal(
+  tighterWorkspacePlan.editorSize,
+  734,
+  'railing activity and context should recover the target editor canvas on tighter widths'
+);
+assert.equal(tighterWorkspacePlan.overflowSize, 0);
+
+const impossiblyNarrowWorkspacePlan = resolveSourcePaneWorkspacePlan({
+  viewportSize: 640,
+  minEditorSize: 720,
+  gapSize: 6,
+  items: [
+    {
+      id: 'activity',
+      visible: true,
+      size: 407,
+      config: sidePaneRailSizeConfig,
+      collapsePriority: 2,
+      previousExpandedSize: 520
+    },
+    {
+      id: 'context',
+      visible: true,
+      size: 330,
+      config: contextPaneRailSizeConfig,
+      collapsePriority: 1,
+      previousExpandedSize: 360
+    }
+  ]
+});
+assert.deepEqual(
+  impossiblyNarrowWorkspacePlan.items.map((item) => [item.id, item.state, item.size, item.reason]),
+  [
+    ['activity', 'collapsed', 0, 'viewport-collapsed'],
+    ['context', 'collapsed', 0, 'viewport-collapsed']
+  ],
+  'impossibly narrow workspaces should collapse all optional panes instead of leaving hidden overflow'
+);
+assert.equal(impossiblyNarrowWorkspacePlan.editorSize, 640);
+assert.equal(
+  impossiblyNarrowWorkspacePlan.overflowSize,
+  80,
+  'workspace plans should expose remaining pressure when even the bare editor is below target'
 );

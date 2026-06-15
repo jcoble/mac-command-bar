@@ -24,6 +24,38 @@ export type SourcePaneSizingResult = {
   persistedSize: number;
 };
 
+export type SourcePaneWorkspaceItem<TID extends string = string> = {
+  id: TID;
+  visible: boolean;
+  size: unknown;
+  config: SourcePaneSizingConfig;
+  collapsePriority?: number;
+  previousExpandedSize?: unknown;
+};
+
+export type SourcePaneWorkspacePlanItem<TID extends string = string> = SourcePaneSizingResult & {
+  id: TID;
+  requestedSize: number;
+  restoreSize: number;
+  reason: 'requested' | 'viewport-rail' | 'viewport-collapsed';
+};
+
+export type SourcePaneWorkspacePlan<TID extends string = string> = {
+  viewportSize: number;
+  minEditorSize: number;
+  gapSize: number;
+  editorSize: number;
+  overflowSize: number;
+  items: SourcePaneWorkspacePlanItem<TID>[];
+};
+
+export type SourcePaneWorkspacePlanOptions<TID extends string = string> = {
+  viewportSize: unknown;
+  minEditorSize: unknown;
+  gapSize?: unknown;
+  items: SourcePaneWorkspaceItem<TID>[];
+};
+
 type NormalizedSourcePaneSizingConfig = {
   defaultSize: number;
   minSize: number;
@@ -113,6 +145,86 @@ export function restoreSourcePaneExpandedSize(
   return restoreExpandedSize(currentSize, normalizeSourcePaneSizingConfig(config), options);
 }
 
+export function resolveSourcePaneWorkspacePlan<TID extends string = string>(
+  options: SourcePaneWorkspacePlanOptions<TID>
+): SourcePaneWorkspacePlan<TID> {
+  type InternalSourcePaneWorkspacePlanItem = SourcePaneWorkspacePlanItem<TID> & {
+    collapsePriority: number;
+    normalizedConfig: NormalizedSourcePaneSizingConfig;
+  };
+
+  const viewportSize = Math.max(0, Math.round(finiteNumber(options.viewportSize, 0)));
+  const minEditorSize = Math.max(0, Math.round(finiteNumber(options.minEditorSize, 0)));
+  const gapSize = Math.max(0, Math.round(finiteNumber(options.gapSize, 0)));
+  const items: InternalSourcePaneWorkspacePlanItem[] = options.items.map((item, index) => {
+    const normalizedConfig = normalizeSourcePaneSizingConfig(item.config);
+    const resolved = resolveSourcePaneSize(
+      { visible: item.visible, size: item.size },
+      item.config,
+      { previousExpandedSize: item.previousExpandedSize }
+    );
+    const requestedSize = resolved.size;
+    const restoreSize = restoreExpandedSize(item.size, normalizedConfig, {
+      previousExpandedSize: item.previousExpandedSize
+    });
+
+    const reason: SourcePaneWorkspacePlanItem<TID>['reason'] = 'requested';
+
+    return {
+      id: item.id,
+      state: resolved.state,
+      size: resolved.size,
+      persistedSize: resolved.persistedSize,
+      requestedSize,
+      restoreSize,
+      reason,
+      collapsePriority: finiteNumber(item.collapsePriority, index),
+      normalizedConfig
+    };
+  });
+
+  let overflowSize = workspaceOverflowSize(items, viewportSize, minEditorSize, gapSize);
+  if (overflowSize > 0) {
+    for (const item of shrinkCandidates(items)) {
+      if (overflowSize <= 0) break;
+      const railSize = item.normalizedConfig.railSize ?? item.normalizedConfig.minSize;
+      if (item.state !== 'expanded' || railSize >= item.size) continue;
+
+      const savedSize = item.size - railSize;
+      item.state = 'rail';
+      item.size = railSize;
+      item.persistedSize = railSize;
+      item.reason = 'viewport-rail';
+      overflowSize = Math.max(0, overflowSize - savedSize);
+    }
+  }
+
+  if (overflowSize > 0) {
+    for (const item of shrinkCandidates(items)) {
+      if (overflowSize <= 0) break;
+      if (item.state === 'collapsed' || item.size <= 0) continue;
+
+      const savedSize = item.size;
+      item.state = 'collapsed';
+      item.size = 0;
+      item.persistedSize = item.restoreSize;
+      item.reason = 'viewport-collapsed';
+      overflowSize = Math.max(0, overflowSize - savedSize);
+    }
+  }
+
+  const publicItems = items.map(({ normalizedConfig, collapsePriority, ...item }) => item);
+  const usedSize = workspaceUsedSize(publicItems, gapSize);
+  return {
+    viewportSize,
+    minEditorSize,
+    gapSize,
+    editorSize: Math.max(0, viewportSize - usedSize),
+    overflowSize: Math.max(0, minEditorSize + usedSize - viewportSize),
+    items: publicItems
+  };
+}
+
 function normalizeSourcePaneSizingConfig(
   config: SourcePaneSizingConfig
 ): NormalizedSourcePaneSizingConfig {
@@ -175,6 +287,29 @@ function expandedSize(size: unknown, config: NormalizedSourcePaneSizingConfig): 
 function finishRailSize(size: unknown, config: NormalizedSourcePaneSizingConfig): number | null {
   if (config.railSize === undefined) return null;
   return visibleSourcePaneState(size, config) === 'rail' ? config.railSize : null;
+}
+
+function workspaceOverflowSize(
+  items: Array<{ size: number }>,
+  viewportSize: number,
+  minEditorSize: number,
+  gapSize: number
+): number {
+  return Math.max(0, workspaceUsedSize(items, gapSize) + minEditorSize - viewportSize);
+}
+
+function workspaceUsedSize(items: Array<{ size: number }>, gapSize: number): number {
+  const visibleItems = items.filter((item) => item.size > 0);
+  return visibleItems.reduce((total, item) => total + item.size, 0) + visibleItems.length * gapSize;
+}
+
+function shrinkCandidates<TItem extends { collapsePriority: number; id: string }>(
+  items: TItem[]
+): TItem[] {
+  return [...items].sort((a, b) => {
+    const priorityDelta = a.collapsePriority - b.collapsePriority;
+    return priorityDelta === 0 ? a.id.localeCompare(b.id) : priorityDelta;
+  });
 }
 
 function clampToConfigSize(size: unknown, config: NormalizedSourcePaneSizingConfig): number {
