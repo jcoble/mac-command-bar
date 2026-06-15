@@ -15,6 +15,10 @@ const workspaceSnapshotSource = await readFile(
   new URL('../src/lib/workspaceSnapshot.ts', import.meta.url),
   'utf8'
 );
+const workspaceSnapshotPlanSource = await readFile(
+  new URL('../src/lib/workspaceSnapshotPlan.ts', import.meta.url),
+  'utf8'
+);
 
 function blockFor(selector) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -770,9 +774,15 @@ assert.ok(pageSource.includes('function workspaceSnapshotForAgentSession'), 'Wor
 assert.ok(pageSource.includes('function worktreeWorkspaceSnapshots'), 'Workspace should find saved conversation snapshots for a worktree row');
 assert.ok(pageSource.includes('workspaceSnapshotsForWorktreePath'), 'Worktree rows should use the shared snapshot-to-worktree matcher');
 assert.ok(pageSource.includes('function worktreeWorkspaceSnapshotLabel'), 'Worktree rows should summarize linked snapshots compactly');
-assert.ok(pageSource.includes('function workspaceSnapshotProjectForSession'), 'Workspace should store agent worktrees as restorable project roots');
-assert.ok(pageSource.includes('function workspaceSnapshotSessionIDForSession'), 'Workspace snapshots should qualify cmux session IDs by concrete agent provider');
-assert.ok(pageSource.includes("provider.startsWith('cmux-')"), 'Workspace snapshots should group cmux-backed sessions under the cmux provider');
+assert.ok(pageSource.includes('createWorkspaceSessionSnapshotPlan'), 'Workspace capture should use the shared snapshot planner');
+assert.ok(pageSource.includes("from '$lib/workspaceSnapshotPlan'"), 'Workspace snapshot planning should live outside the route controller');
+assert.ok(pageSource.includes('workspaceSnapshotSessionIDForSession'), 'Workspace snapshots should qualify cmux session IDs through the planner helper');
+assert.ok(
+  pageSource.includes('projectOptions,') &&
+    pageSource.includes('openSourceTabs: projectOpenSourceTabs') &&
+    pageSource.includes('selectedSourcePaths,'),
+  'Workspace snapshot planning should receive project, tab, and selected path controller state'
+);
 assert.ok(pageSource.includes('function activateWorkspaceSnapshotProject'), 'Workspace restore should force a full project scan before reopening files');
 assert.ok(pageSource.includes('function sourceRecordFromRestoredPath'), 'Workspace restore should reopen saved paths even when they are missing from the index');
 assert.ok(pageSource.includes('function sourceLanguageForRestoredPath'), 'Workspace restore should infer language for direct saved-path previews');
@@ -921,7 +931,7 @@ assert.ok(pageSource.includes('function agentSessionResumePlan'), 'Agent rows sh
 assert.ok(pageSource.includes('function agentSessionResumeShellCommand'), 'Agent rows should expose shell-ready resume commands');
 assert.ok(pageSource.includes('function agentSessionModelLabel'), 'Agent rows should expose model metadata when session scanners find it');
 assert.ok(pageSource.includes('session.model'), 'Agent session filtering and rows should include model metadata');
-assert.ok(pageSource.includes('model: session?.model ?? null'), 'Workspace snapshots should preserve the agent session model');
+assert.ok(workspaceSnapshotPlanSource.includes('model: session?.model ?? null'), 'Workspace snapshots should preserve the agent session model');
 assert.ok(pageSource.includes('function copyAgentSessionResumePlan'), 'Agent commands should copy session resume plans');
 assert.ok(pageSource.includes('function copyAgentSessionResumeShellCommand'), 'Agent commands should copy shell-ready resume commands');
 assert.ok(pageSource.includes('editorInsightWidthStorageKey'), 'Editor shell should persist the inspector width');

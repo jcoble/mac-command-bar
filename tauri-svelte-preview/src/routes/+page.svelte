@@ -77,7 +77,6 @@
   } from '$lib/worktreeSafety';
   import { buildWorktreeCleanupPlan } from '$lib/worktreeCleanupPlan';
   import {
-    createWorkspaceSnapshot,
     describeWorkspaceSnapshotRestoreReadiness,
     parseStoredWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
@@ -87,9 +86,13 @@
     workspaceSnapshotsForWorktreePath,
     type WorkspaceSnapshot,
     type WorkspaceSnapshotEmbeddedTerminal,
-    type WorkspaceSnapshotProvider,
     type WorkspaceSnapshotViewState
   } from '$lib/workspaceSnapshot';
+  import {
+    createWorkspaceSessionSnapshotPlan,
+    workspaceSnapshotProviderForSession,
+    workspaceSnapshotSessionIDForSession
+  } from '$lib/workspaceSnapshotPlan';
   import {
     activateSourceDockPanel,
     createDefaultSourceDockLayout,
@@ -5269,29 +5272,24 @@
   }
 
   function captureWorkspaceSnapshot(session: AgentSession | null): WorkspaceSnapshot {
-    const cwd = session?.projectPath ?? selectedProject.path;
-    const project = workspaceSnapshotProjectForSession(session);
-    const snapshot = createWorkspaceSnapshot({
-      provider: workspaceSnapshotProviderForSession(session),
-      sessionID: session ? workspaceSnapshotSessionIDForSession(session) : selectedProject.id,
-      title: session?.title ?? `${selectedProject.name} workspace`,
-      model: session?.model ?? null,
-      project,
-      cwd,
-      worktreePath: snapshotWorktreePathForPath(cwd),
+    const plan = createWorkspaceSessionSnapshotPlan({
+      selectedProject,
+      projectOptions,
+      session,
+      selectedRecord,
+      selectedSourcePaths,
+      openSourceTabs: projectOpenSourceTabs,
       branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
-      selectedPath: workspaceSnapshotSelectedPathForProject(project),
       selectedLine: selectedSourceLine,
-      openPaths: workspaceSnapshotOpenPathsForProject(project),
       sourceActivityMode,
       sourceTerminalApp,
       browserUrl: activeBrowserUrl || null,
       viewState: workspaceSnapshotViewState(),
       embeddedTerminal: workspaceSnapshotEmbeddedTerminal(),
       dockLayout: sourceDockLayout,
-      resumeCommand: session ? agentSessionTerminalCommand(session) : null,
       capturedAt: Date.now()
     });
+    const snapshot = plan.snapshot;
     const nextSnapshots = upsertWorkspaceSnapshot(
       workspaceSnapshots,
       snapshot,
@@ -6098,34 +6096,6 @@
     return 'plain';
   }
 
-  function workspaceSnapshotProviderForSession(session: AgentSession | null): WorkspaceSnapshotProvider {
-    const provider = session?.provider.trim().toLowerCase();
-    if (provider?.startsWith('cmux-')) return 'cmux';
-    if (provider === 'codex' || provider === 'claude' || provider === 'cmux') return provider;
-    return 'manual';
-  }
-
-  function workspaceSnapshotSessionIDForSession(session: AgentSession) {
-    const sessionID = session.id.trim() || 'session';
-    const provider = session.provider.trim().toLowerCase();
-    return provider.startsWith('cmux-') ? `${provider}:${sessionID}` : sessionID;
-  }
-
-  function workspaceSnapshotProjectForSession(session: AgentSession | null): ProjectRoot {
-    const sessionPath = session?.projectPath?.trim();
-    if (!sessionPath) return selectedProject;
-
-    const normalizedSessionPath = normalizeProjectPath(sessionPath);
-    const existingProject = projectOptions.find(
-      (project) => normalizeProjectPath(project.path) === normalizedSessionPath
-    );
-    if (existingProject) return existingProject;
-
-    if (normalizedSessionPath === normalizeProjectPath(selectedProject.path)) return selectedProject;
-
-    return createProjectRoot(selectedProject.name, normalizedSessionPath);
-  }
-
   function workspaceSnapshotForAgentSession(session: AgentSession): WorkspaceSnapshot | null {
     const snapshotID = workspaceSnapshotIDForAgentSession(session);
     return workspaceSnapshots.find((snapshot) => snapshot.id === snapshotID) ?? null;
@@ -6233,30 +6203,6 @@
   function workspaceSnapshotIDForAgentSession(session: AgentSession) {
     const provider = workspaceSnapshotProviderForSession(session);
     return `${provider}:${workspaceSnapshotSessionIDForSession(session)}`;
-  }
-
-  function workspaceSnapshotSelectedPathForProject(project: ProjectRoot) {
-    if (!selectedRecord) return selectedSourcePaths[project.id] ?? null;
-
-    const projectPath = normalizeProjectPath(project.path);
-    const selectedPath = normalizeProjectPath(selectedRecord.path);
-    if (selectedPath === projectPath || selectedPath.startsWith(`${projectPath}/`)) return selectedRecord.path;
-
-    return `${project.path}/${selectedRecord.relativePath}`;
-  }
-
-  function workspaceSnapshotOpenPathsForProject(project: ProjectRoot) {
-    const projectPath = normalizeProjectPath(project.path);
-    return projectOpenSourceTabs.map((tab) => {
-      const tabPath = normalizeProjectPath(tab.path);
-      if (tabPath === projectPath || tabPath.startsWith(`${projectPath}/`)) return tab.path;
-      return `${project.path}/${tab.relativePath}`;
-    });
-  }
-
-  function snapshotWorktreePathForPath(path: string) {
-    const normalizedPath = normalizeProjectPath(path);
-    return normalizedPath.includes('/worktrees/') ? normalizedPath : null;
   }
 
   function agentSessionResumePlan(session: AgentSession) {
