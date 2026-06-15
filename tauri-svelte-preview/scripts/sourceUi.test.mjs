@@ -59,6 +59,38 @@ assert.ok(
   'The live source browser page should use the shared pane sizing helper'
 );
 assert.ok(
+  pageSource.includes('resolveSourcePaneWorkspacePlan') &&
+    pageSource.includes('const sourceWorkspacePlan = $derived(') &&
+    pageSource.includes('resolveSourcePaneWorkspacePlan<SourceWorkspacePaneID>({'),
+  'The source browser route should use the shared workspace planner for responsive pane pressure'
+);
+assert.ok(
+  pageSource.includes('let sourceWorkspaceElement = $state<HTMLElement | null>(null);') &&
+    pageSource.includes('let sourceWorkspaceWidth = $state(0);') &&
+    pageSource.includes('bind:this={sourceWorkspaceElement}') &&
+    pageSource.includes('function measureSourceWorkspaceWidth()') &&
+    pageSource.includes('measureSourceWorkspaceWidth();'),
+  'The source browser route should observe the rendered shell width before planning effective pane sizes'
+);
+assert.ok(
+  pageSource.includes('let effectiveSidePaneWidth = $derived(') &&
+    pageSource.includes('let effectiveContextPaneWidth = $derived(') &&
+    pageSource.includes('--side-pane-width: ${effectiveSidePaneWidth}px') &&
+    pageSource.includes('--context-pane-width: ${effectiveContextPaneWidth}px'),
+  'Viewport-forced pane sizes should flow through effective CSS variables instead of overwriting user sizes'
+);
+assert.ok(
+  pageSource.includes('class:activity-force-collapsed={activityPaneViewportCollapsed()}') &&
+    pageSource.includes('class:context-force-collapsed={contextPaneViewportCollapsed()}') &&
+    pageSource.includes('class:layout-pressure={sourceWorkspacePlan.overflowSize > 0}'),
+  'Viewport-forced rail/collapse states should be visible as layout classes'
+);
+assert.ok(
+  !/persist(?:Side|Context)PaneWidth\([^)]*effective(?:Side|Context)PaneWidth/.test(pageSource) &&
+    !/(?:sidePaneWidth|contextPaneWidth)\s*=\s*effective(?:Side|Context)PaneWidth/.test(pageSource),
+  'Responsive workspace planning must not persist viewport-forced effective pane widths as user restore sizes'
+);
+assert.ok(
   pageSource.includes('const activityPaneSizingConfig: SourcePaneSizingConfig') &&
     pageSource.includes('const contextPaneWidthSizingConfig: SourcePaneSizingConfig') &&
     pageSource.includes('const contextPaneHeightSizingConfig: SourcePaneSizingConfig') &&
@@ -967,9 +999,13 @@ assert.ok(pageSource.includes('delete nextSelectedSourcePaths[project.id]'), 'Fo
 assert.ok(pageSource.includes('sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);'), 'Forced project activation should clear stale source indexes');
 assert.ok(pageSource.includes('resetProjectOnboardingScanState(project);'), 'Project activation should run the stale scan reset helper');
 assert.ok(pageSource.includes("class:side-right={sidePanePosition === 'right'}"), 'Source shell should support moving the side pane to the right');
-assert.ok(pageSource.includes("class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}"), 'Workspace should support top context placement only when the context dock is active');
-assert.ok(pageSource.includes("class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}"), 'Workspace should support side context placement only when the context dock is active');
-assert.ok(pageSource.includes("class:context-bottom={contextPanelPlacement === 'bottom' && shouldRenderDockPanel('context')}"), 'Workspace should support bottom context placement only when the context dock is active');
+assert.ok(
+  pageSource.includes("class:context-top={contextPanelPlacement === 'top' && effectiveContextPaneVisible()}") &&
+    pageSource.includes("class:context-side={contextPanelPlacement === 'side' && effectiveContextPaneVisible()}") &&
+    pageSource.includes("class:context-bottom={contextPanelPlacement === 'bottom' && effectiveContextPaneVisible()}") &&
+    pageSource.includes("if (!shouldRenderDockPanel('context')) return false;"),
+  'Workspace context placement should require an active context dock plus the responsive effective visibility guard'
+);
 assert.ok(pageSource.includes('class="workspace-arrangement"'), 'Workspace should wrap context and editor into a rearrangeable layout');
 assert.ok(pageSource.includes('class="context-identity-item"'), 'Workspace context identity should render as a compact status line');
 assert.ok(pageSource.includes('class="workspace-main-column"'), 'Workspace should isolate the editor column');
@@ -1166,7 +1202,11 @@ assert.ok(pageSource.includes('layout-save-${preset.id}'), 'Command palette shou
 assert.ok(pageSource.includes('layout-reset-${preset.id}'), 'Command palette should reset saved layout presets');
 assert.ok(pageSource.includes('dock-move-${panelID}-${groupID}'), 'Command palette should expose valid panel move targets');
 assert.ok(pageSource.includes('dock-toggle-${panelID}'), 'Command palette should expose panel visibility toggles');
-assert.ok(pageSource.includes("class:activity-hidden={!shouldRenderDockPanel('activity')}"), 'Shell should collapse the Activity grid column');
+assert.ok(
+  pageSource.includes('class:activity-hidden={!effectiveActivityPaneVisible()}') &&
+    pageSource.includes("return shouldRenderDockPanel('activity') && !activityPaneViewportCollapsed();"),
+  'Shell should collapse the Activity grid column when the dock is hidden or viewport-forced collapsed'
+);
 assert.ok(pageSource.includes('class="activity-restore-button"'), 'Hidden Activity pane should expose a restore affordance');
 assert.ok(pageSource.includes("onclick={() => showDockPanel('activity')}"), 'Activity restore affordance should reopen the pane');
 assert.ok(pageSource.includes("if (panelID === 'activity')"), 'Activity restore should use Activity-specific dock placement');

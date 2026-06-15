@@ -126,6 +126,7 @@
     clampSourcePaneSize,
     deriveSourcePaneState,
     finishSourcePanePointerSize,
+    resolveSourcePaneWorkspacePlan,
     restoreSourcePaneExpandedSize,
     type SourcePaneSizingConfig
   } from '$lib/sourcePaneSizing';
@@ -374,6 +375,10 @@
   const bottomDockMinHeight = 96;
   const bottomDockMaxHeight = 1100;
   const bottomDockCollapseThreshold = 84;
+  const sourceWorkspaceMinimumEditorWidth = 720;
+  const sourceWorkspacePaneGapSize = 6;
+  const sourceWorkspaceDefaultViewportWidth =
+    sourceWorkspaceMinimumEditorWidth + sidePaneDefaultWidth + contextPaneDefaultWidth + sourceWorkspacePaneGapSize * 2;
   const activityPaneSizingConfig: SourcePaneSizingConfig = {
     defaultSize: sidePaneDefaultWidth,
     minSize: sidePaneMinWidth,
@@ -461,6 +466,7 @@
   type SourceContextPanelMode = 'grid' | 'stack';
   type SourceContextPanelPlacement = 'top' | 'side' | 'bottom';
   type SourceSidePanePosition = 'left' | 'right';
+  type SourceWorkspacePaneID = 'activity' | 'context';
   type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
   type GitTaskLedgerTone = 'blocked' | 'ready' | 'review' | 'protected' | 'clean';
   type WorktreeOwnerChipTone = 'live' | 'saved' | 'warning' | 'muted';
@@ -795,6 +801,8 @@
   let commandPaletteQuery = $state('');
   let commandPaletteIndex = $state(0);
   let commandPaletteInput = $state<HTMLInputElement | null>(null);
+  let sourceWorkspaceElement = $state<HTMLElement | null>(null);
+  let sourceWorkspaceWidth = $state(0);
   let fileTreeElement = $state<HTMLDivElement | null>(null);
   let embeddedTerminalElement = $state<HTMLDivElement | null>(null);
   let fileTreeScrollTop = $state(0);
@@ -988,6 +996,37 @@
     formatSourceScanStats(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
   );
   let sourceRuntimeNotice = $derived(sourceRuntimeNoticeText(runtime, error));
+  const sourceWorkspacePlan = $derived(
+    resolveSourcePaneWorkspacePlan<SourceWorkspacePaneID>({
+      viewportSize: sourceWorkspaceViewportSize(),
+      minEditorSize: sourceWorkspaceMinimumEditorWidth,
+      gapSize: sourceWorkspacePaneGapSize,
+      items: [
+        {
+          id: 'activity',
+          visible: shouldRenderDockPanel('activity'),
+          size: sidePaneWidth,
+          config: activityPaneSizingConfig,
+          collapsePriority: 2,
+          previousExpandedSize: sidePaneExpandedWidth
+        },
+        {
+          id: 'context',
+          visible: contextPanelPlacement === 'side' && shouldRenderDockPanel('context'),
+          size: contextPaneWidth,
+          config: contextPaneWidthSizingConfig,
+          collapsePriority: 1,
+          previousExpandedSize: contextPaneExpandedWidth
+        }
+      ]
+    })
+  );
+  let effectiveSidePaneWidth = $derived(sourceWorkspacePlanItem('activity')?.size ?? 0);
+  let effectiveContextPaneWidth = $derived(
+    contextPanelPlacement === 'side'
+      ? sourceWorkspacePlanItem('context')?.size ?? 0
+      : contextPaneWidth
+  );
   let gitStatusByRelativePath = $derived(
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
@@ -2805,6 +2844,34 @@
     if (commandPaletteIndex > lastResultIndex) {
       commandPaletteIndex = lastResultIndex;
     }
+  });
+
+  $effect(() => {
+    const element = sourceWorkspaceElement;
+    if (!element) return;
+
+    measureSourceWorkspaceWidth();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measureSourceWorkspaceWidth);
+      return () => window.removeEventListener('resize', measureSourceWorkspaceWidth);
+    }
+
+    let resizeFrame = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0;
+        measureSourceWorkspaceWidth();
+      });
+    });
+    resizeObserver.observe(element);
+    window.addEventListener('resize', measureSourceWorkspaceWidth);
+    return () => {
+      if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', measureSourceWorkspaceWidth);
+    };
   });
 
   $effect(() => {
@@ -10107,22 +10174,49 @@
   }
 
   function activityPaneRailOnly() {
-    return (
-      deriveSourcePaneState(
-        { visible: shouldRenderDockPanel('activity'), size: sidePaneWidth },
-        activityPaneSizingConfig
-      ) === 'rail'
-    );
+    return sourceWorkspacePlanItem('activity')?.state === 'rail';
   }
 
   function contextPaneRailOnly() {
+    return contextPanelPlacement === 'side' && sourceWorkspacePlanItem('context')?.state === 'rail';
+  }
+
+  function activityPaneViewportCollapsed() {
+    const item = sourceWorkspacePlanItem('activity');
+    return shouldRenderDockPanel('activity') && item?.reason === 'viewport-collapsed';
+  }
+
+  function contextPaneViewportCollapsed() {
+    const item = sourceWorkspacePlanItem('context');
     return (
       contextPanelPlacement === 'side' &&
-      deriveSourcePaneState(
-        { visible: shouldRenderDockPanel('context'), size: contextPaneWidth },
-        contextPaneWidthSizingConfig
-      ) === 'rail'
+      shouldRenderDockPanel('context') &&
+      item?.reason === 'viewport-collapsed'
     );
+  }
+
+  function effectiveActivityPaneVisible() {
+    return shouldRenderDockPanel('activity') && !activityPaneViewportCollapsed();
+  }
+
+  function effectiveContextPaneVisible() {
+    if (!shouldRenderDockPanel('context')) return false;
+    return contextPanelPlacement !== 'side' || !contextPaneViewportCollapsed();
+  }
+
+  function sourceWorkspaceViewportSize() {
+    const measuredWidth = Math.max(0, Math.round(sourceWorkspaceWidth));
+    if (measuredWidth > 0) return measuredWidth;
+
+    if (typeof window !== 'undefined') {
+      return Math.max(0, Math.round(window.innerWidth - 8));
+    }
+
+    return sourceWorkspaceDefaultViewportWidth;
+  }
+
+  function sourceWorkspacePlanItem(id: SourceWorkspacePaneID) {
+    return sourceWorkspacePlan.items.find((item) => item.id === id) ?? null;
   }
 
   function expandActivityPaneFromRail() {
@@ -12234,6 +12328,13 @@
     fileTreeScrollTop = fileTreeElement.scrollTop;
   }
 
+  function measureSourceWorkspaceWidth() {
+    if (typeof window === 'undefined') return;
+
+    const measuredWidth = sourceWorkspaceElement?.clientWidth ?? window.innerWidth - 8;
+    sourceWorkspaceWidth = Math.max(0, Math.round(measuredWidth));
+  }
+
   function handleFileTreeScroll(event: Event) {
     const target = event.currentTarget;
     if (!(target instanceof HTMLDivElement)) return;
@@ -12550,13 +12651,17 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 <main
+  bind:this={sourceWorkspaceElement}
   class="shell"
   class:side-right={sidePanePosition === 'right'}
-  class:activity-hidden={!shouldRenderDockPanel('activity')}
+  class:activity-hidden={!effectiveActivityPaneVisible()}
   class:activity-rail-only={activityPaneRailOnly()}
-  style={`--accent: #5ce2cf; --side-pane-width: ${sidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${contextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
+  class:activity-force-collapsed={activityPaneViewportCollapsed()}
+  class:context-force-collapsed={contextPaneViewportCollapsed()}
+  class:layout-pressure={sourceWorkspacePlan.overflowSize > 0}
+  style={`--accent: #5ce2cf; --side-pane-width: ${effectiveSidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${effectiveContextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
 >
-  {#if shouldRenderDockPanel('activity')}
+  {#if effectiveActivityPaneVisible()}
   <aside class="activity-shell" aria-label="Workspace browser">
     <nav class="activity-rail" aria-label="Workspace views">
       <button
@@ -14215,7 +14320,7 @@
     onpointerdown={beginSidePaneResize}
     onkeydown={handleSidePaneResizerKeydown}
   ></button>
-  {:else}
+  {:else if !activityPaneViewportCollapsed()}
     <button
       class="activity-restore-button"
       type="button"
@@ -14719,12 +14824,12 @@
 
       <div
       class="workspace-arrangement"
-      class:context-top={contextPanelPlacement === 'top' && shouldRenderDockPanel('context')}
-      class:context-side={contextPanelPlacement === 'side' && shouldRenderDockPanel('context')}
-      class:context-bottom={contextPanelPlacement === 'bottom' && shouldRenderDockPanel('context')}
+      class:context-top={contextPanelPlacement === 'top' && effectiveContextPaneVisible()}
+      class:context-side={contextPanelPlacement === 'side' && effectiveContextPaneVisible()}
+      class:context-bottom={contextPanelPlacement === 'bottom' && effectiveContextPaneVisible()}
       class:context-rail-only={contextPaneRailOnly()}
     >
-      {#if shouldRenderDockPanel('context')}
+      {#if effectiveContextPaneVisible()}
       <div class="workspace-context-column">
     <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextCardsTabbed()}>
       {#if hiddenContextCardIDs.size > 0}
