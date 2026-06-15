@@ -37,6 +37,10 @@ export type WorkspaceSnapshotViewState = {
   contextPanelCollapsed: boolean;
   editorInsightCollapsed: boolean;
   sidePanePosition: WorkspaceSnapshotSidePanePosition;
+  sidePaneWidth: number;
+  contextPaneWidth: number;
+  contextPaneHeight: number;
+  editorInsightWidth: number;
   sourceChromeCompact: boolean;
   sourceActivityFilter: string;
   hiddenContextCardIDs: WorkspaceSnapshotContextCardID[];
@@ -470,6 +474,10 @@ function normalizeWorkspaceSnapshotViewState(
     sidePanePosition: isWorkspaceSnapshotSidePanePosition(candidate.sidePanePosition)
       ? candidate.sidePanePosition
       : 'left',
+    sidePaneWidth: normalizeWorkspaceSnapshotDimension(candidate.sidePaneWidth, 407, 40, 1600),
+    contextPaneWidth: normalizeWorkspaceSnapshotDimension(candidate.contextPaneWidth, 330, 34, 1600),
+    contextPaneHeight: normalizeWorkspaceSnapshotDimension(candidate.contextPaneHeight, 260, 96, 1100),
+    editorInsightWidth: normalizeWorkspaceSnapshotDimension(candidate.editorInsightWidth, 260, 96, 1200),
     sourceChromeCompact:
       typeof candidate.sourceChromeCompact === 'boolean'
         ? candidate.sourceChromeCompact
@@ -486,6 +494,16 @@ function normalizeWorkspaceSnapshotViewState(
       ? candidate.sourceIntelligencePanel
       : 'symbols'
   };
+}
+
+function normalizeWorkspaceSnapshotDimension(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.round(value)));
 }
 
 function isWorkspaceSnapshotEmbeddedTerminal(value: unknown): value is WorkspaceSnapshotEmbeddedTerminal {

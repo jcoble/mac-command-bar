@@ -43,6 +43,10 @@ const snapshot = createWorkspaceSnapshot({
     contextPanelCollapsed: true,
     editorInsightCollapsed: false,
     sidePanePosition: 'right',
+    sidePaneWidth: 612,
+    contextPaneWidth: 452,
+    contextPaneHeight: 318,
+    editorInsightWidth: 284,
     sourceChromeCompact: true,
     sourceActivityFilter: 'tsk-127',
     hiddenContextCardIDs: ['runtime', 'runtime', 'repo'],
@@ -83,6 +87,10 @@ assert.deepEqual(snapshot.viewState, {
   contextPanelCollapsed: true,
   editorInsightCollapsed: false,
   sidePanePosition: 'right',
+  sidePaneWidth: 612,
+  contextPaneWidth: 452,
+  contextPaneHeight: 318,
+  editorInsightWidth: 284,
   sourceChromeCompact: true,
   sourceActivityFilter: 'tsk-127',
   hiddenContextCardIDs: ['runtime', 'repo'],
@@ -90,6 +98,23 @@ assert.deepEqual(snapshot.viewState, {
   sourceIntelligencePanel: 'git'
 });
 assert.equal(snapshot.dockLayout.activePanelByGroup.right, 'context');
+
+const narrowInsightSnapshot = createWorkspaceSnapshot({
+  provider: 'manual',
+  sessionID: 'narrow-insight',
+  title: 'Narrow insight pane',
+  project: { id: 'mac-command-bar', name: 'MacCommandBar', path: '/repo' },
+  cwd: '/repo',
+  viewState: {
+    editorInsightWidth: 104
+  },
+  capturedAt: 1_100
+});
+assert.equal(
+  narrowInsightSnapshot.viewState.editorInsightWidth,
+  104,
+  'workspace snapshots should preserve valid narrow editor insight pane widths'
+);
 
 const restored = restoreWorkspaceSnapshot(snapshot);
 assert.deepEqual(restored.selectedProjectID, 'ediplatform');
@@ -102,6 +127,26 @@ assert.equal(restored.sourceActivityMode, 'conversations');
 assert.equal(restored.sourceTerminalApp, 'Warp');
 assert.equal(restored.browserUrl, 'http://localhost:5177/customer/dashboard');
 assert.deepEqual(restored.viewState, snapshot.viewState);
+assert.equal(
+  restored.viewState.sidePaneWidth,
+  612,
+  'workspace restore should preserve the saved activity pane width'
+);
+assert.equal(
+  restored.viewState.contextPaneWidth,
+  452,
+  'workspace restore should preserve the saved side context pane width'
+);
+assert.equal(
+  restored.viewState.contextPaneHeight,
+  318,
+  'workspace restore should preserve the saved bottom context pane height'
+);
+assert.equal(
+  restored.viewState.editorInsightWidth,
+  284,
+  'workspace restore should preserve the saved editor insight width'
+);
 assert.equal(restored.cwd, '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-127-command-center');
 assert.deepEqual(restored.embeddedTerminal, snapshot.embeddedTerminal);
 assert.equal(restored.dockLayout.activePanelByGroup.right, 'context');
@@ -288,6 +333,10 @@ const storedSnapshot = parseStoredWorkspaceSnapshot({
     contextPanelCollapsed: false,
     editorInsightCollapsed: false,
     sidePanePosition: 'right',
+    sidePaneWidth: 12,
+    contextPaneWidth: 9999,
+    contextPaneHeight: 25,
+    editorInsightWidth: Number.NaN,
     sourceChromeCompact: false,
     sourceActivityFilter: '  task trail  ',
     hiddenContextCardIDs: ['runtime', 'bad-card', 'repo'],
@@ -311,6 +360,10 @@ assert.deepEqual(
     contextPanelCollapsed: false,
     editorInsightCollapsed: false,
     sidePanePosition: 'right',
+    sidePaneWidth: 40,
+    contextPaneWidth: 1600,
+    contextPaneHeight: 96,
+    editorInsightWidth: 260,
     sourceChromeCompact: false,
     sourceActivityFilter: 'task trail',
     hiddenContextCardIDs: ['runtime', 'repo'],

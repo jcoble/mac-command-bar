@@ -422,6 +422,181 @@ try {
   assert.equal(payloadEvents[1].artifactKind, 'trace');
   assert.equal(payloadEvents[1].artifactUrl, 'http://localhost:9323/trace');
 
+  const loopEnvelopeEvents = orchestrationEventInputsFromPayload({
+    run: {
+      id: 'run-e2e-42'
+    },
+    project: {
+      id: 'mac-command-bar',
+      name: 'MacCommandBar',
+      path: '/repo'
+    },
+    task: {
+      id: 'TSK-142'
+    },
+    activeAgent: {
+      id: 'orchestrator',
+      provider: 'codex',
+      role: 'orchestrator'
+    },
+    tally: {
+      scenarios: 2,
+      issues: 3,
+      fixes: 2,
+      retested: 2,
+      ui_verified: 1,
+      needs_decision: 1,
+      sign_offs: 1
+    },
+    scenario_batches: [
+      {
+        id: 'batch-auth',
+        title: 'Auth and settings smoke',
+        scenarios: [
+          {
+            id: 'scenario-auth-callback',
+            name: 'Google auth callback',
+            status: 'succeeded'
+          },
+          {
+            id: 'scenario-settings-save',
+            name: 'Settings save',
+            status: 'failed',
+            issue: {
+              id: 'SETTINGS-2'
+            }
+          }
+        ],
+        issues: [
+          {
+            id: 'AUTH-7',
+            scenario: 'Google auth callback',
+            title: 'Callback redirect loop',
+            status: 'needs-fix'
+          },
+          {
+            id: 'SETTINGS-2',
+            scenario: 'Settings save',
+            title: 'Save button never enables',
+            status: 'needs-fix'
+          }
+        ],
+        fix_tasks: [
+          {
+            id: 'fix-auth',
+            issue_id: 'AUTH-7',
+            title: 'Patch callback route',
+            agent: {
+              id: 'fixer-auth',
+              provider: 'claude',
+              role: 'fix-agent'
+            },
+            status: 'delegated'
+          },
+          {
+            id: 'fix-settings',
+            issue_id: 'SETTINGS-2',
+            title: 'Repair dirty form state',
+            agent: {
+              id: 'fixer-settings',
+              provider: 'codex',
+              role: 'fix-agent'
+            },
+            status: 'completed'
+          }
+        ],
+        retests: [
+          {
+            id: 'retest-auth',
+            issue_id: 'AUTH-7',
+            scenario: 'Google auth callback',
+            attempt: 2,
+            status: 'passed',
+            resolved: 1,
+            verified: 1,
+            artifact: {
+              type: 'trace',
+              path: '/repo/.codex-artifacts/auth-trace.zip'
+            }
+          },
+          {
+            id: 'retest-settings',
+            issue_id: 'SETTINGS-2',
+            scenario: 'Settings save',
+            attempt: 1,
+            status: 'failed',
+            failed: 1,
+            artifact: {
+              type: 'screenshot',
+              path: '/repo/.codex-artifacts/settings-failed.png'
+            }
+          }
+        ],
+        ui_proof_artifacts: [
+          {
+            id: 'proof-auth',
+            type: 'trace',
+            path: '/repo/.codex-artifacts/auth-trace.zip',
+            scenario: 'Google auth callback',
+            issue_id: 'AUTH-7'
+          }
+        ],
+        handoff: {
+          id: 'handoff-auth',
+          path: '/repo/.codex-artifacts/run-e2e-handoff.md'
+        },
+        decision: {
+          subject: 'Merge delegated auth/settings fixes?',
+          prompt: 'Approve merge after one passing retest and one known failed retest?',
+          reason: 'Human sign-off required before merging partial fix batch'
+        }
+      }
+    ]
+  });
+  assert.equal(loopEnvelopeEvents.length, 10);
+  assert.deepEqual(
+    loopEnvelopeEvents.map((event) => [
+      event.kind,
+      event.stepKind,
+      event.scenario,
+      event.issueID,
+      event.agentId,
+      event.artifactKind,
+      event.artifactPath
+    ]),
+    [
+      ['scenario.passed', 'scenario', 'Google auth callback', null, 'orchestrator', null, null],
+      ['test.failed', 'test', 'Settings save', 'SETTINGS-2', 'orchestrator', null, null],
+      ['issue.found', 'issue', 'Google auth callback', 'AUTH-7', 'orchestrator', null, null],
+      ['issue.found', 'issue', 'Settings save', 'SETTINGS-2', 'orchestrator', null, null],
+      ['batch.delegated', 'fix', null, 'AUTH-7', 'fixer-auth', null, null],
+      ['batch.delegated', 'fix', null, 'SETTINGS-2', 'fixer-settings', null, null],
+      ['ui.verified', 'retest', 'Google auth callback', 'AUTH-7', 'orchestrator', 'trace', '/repo/.codex-artifacts/auth-trace.zip'],
+      ['retest.failed', 'retest', 'Settings save', 'SETTINGS-2', 'orchestrator', 'screenshot', '/repo/.codex-artifacts/settings-failed.png'],
+      ['ui.verified', 'retest', 'Google auth callback', 'AUTH-7', 'orchestrator', 'trace', '/repo/.codex-artifacts/auth-trace.zip'],
+      ['approval.required', 'approval', null, null, 'orchestrator', 'handoff', '/repo/.codex-artifacts/run-e2e-handoff.md']
+    ]
+  );
+  assert.equal(loopEnvelopeEvents[0].runId, 'run-e2e-42');
+  assert.equal(loopEnvelopeEvents[0].projectID, 'mac-command-bar');
+  assert.equal(loopEnvelopeEvents[0].taskID, 'TSK-142');
+  assert.equal(loopEnvelopeEvents[0].scenarioCount, 2);
+  assert.equal(loopEnvelopeEvents[0].issueCount, 3);
+  assert.equal(loopEnvelopeEvents[0].fixCount, 2);
+  assert.equal(loopEnvelopeEvents[0].retestCount, 2);
+  assert.equal(loopEnvelopeEvents[0].verifiedCount, 1);
+  assert.equal(loopEnvelopeEvents[0].decisionCount, 1);
+  assert.equal(loopEnvelopeEvents[0].approvalCount, 1);
+  assert.equal(loopEnvelopeEvents[4].status, 'delegated');
+  assert.equal(loopEnvelopeEvents[5].status, 'completed');
+  assert.equal(loopEnvelopeEvents[6].retryAttempt, 2);
+  assert.equal(loopEnvelopeEvents[6].resolvedCount, 1);
+  assert.equal(loopEnvelopeEvents[6].verifiedCount, 1);
+  assert.equal(loopEnvelopeEvents[7].failedCount, 1);
+  assert.equal(loopEnvelopeEvents[9].approvalSubject, 'Merge delegated auth/settings fixes?');
+  assert.equal(loopEnvelopeEvents[9].blockerReason, 'Human sign-off required before merging partial fix batch');
+  assert.equal(loopEnvelopeEvents[9].decisionPrompt, 'Approve merge after one passing retest and one known failed retest?');
+
   const sampleEvents = orchestrationSampleEvents('run-e2e-loop', {
     runId: 'run-tsk-127',
     projectID: 'mac-command-bar',

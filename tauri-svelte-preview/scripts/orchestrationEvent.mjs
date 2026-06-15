@@ -622,6 +622,11 @@ export function orchestrationEventInputsFromPayload(payload) {
       throw new Error('Orchestration event payload must be a JSON object or array of objects');
     }
 
+    const loopEvents = orchestrationLoopEnvelopeEventInputs(entry);
+    if (loopEvents) {
+      return loopEvents.map((event) => normalizeOrchestrationEvent(event));
+    }
+
     const children = Array.isArray(entry.events)
       ? entry.events
       : Array.isArray(entry.items)
@@ -637,6 +642,227 @@ export function orchestrationEventInputsFromPayload(payload) {
     delete base.items;
     return children.map((child) => normalizeOrchestrationEvent({ ...base, ...child }));
   });
+}
+
+function orchestrationLoopEnvelopeEventInputs(entry) {
+  const batches = Array.isArray(entry.scenario_batches)
+    ? entry.scenario_batches
+    : Array.isArray(entry.scenarioBatches)
+      ? entry.scenarioBatches
+      : null;
+  if (!batches) return null;
+
+  const base = orchestrationEnvelopeBase(entry);
+  const tallyCounts = orchestrationEnvelopeTallyCounts(entry);
+  const events = batches.flatMap((batch) => orchestrationScenarioBatchEventInputs(base, batch));
+  if (events.length === 0) return [];
+
+  return events.map((event, index) => (index === 0 ? { ...event, ...tallyCounts } : event));
+}
+
+function orchestrationEnvelopeBase(entry) {
+  const base = { ...entry };
+  delete base.events;
+  delete base.items;
+  delete base.scenario_batches;
+  delete base.scenarioBatches;
+  delete base.tally;
+  delete base.tallies;
+  delete base.counts;
+  delete base.metrics;
+  return base;
+}
+
+function orchestrationScenarioBatchEventInputs(base, batchValue) {
+  const batch = objectValue(batchValue);
+  if (!batch) return [];
+
+  const events = [
+    ...arrayValue(batch.scenarios).flatMap((scenario) => orchestrationScenarioEventInputs(base, batch, scenario)),
+    ...arrayValue(batch.issues).flatMap((issue) => orchestrationIssueEventInputs(base, batch, issue)),
+    ...arrayValue(batch.fix_tasks).flatMap((task) => orchestrationFixTaskEventInputs(base, batch, task)),
+    ...arrayValue(batch.fixTasks).flatMap((task) => orchestrationFixTaskEventInputs(base, batch, task)),
+    ...arrayValue(batch.retests).flatMap((retest) => orchestrationRetestEventInputs(base, batch, retest)),
+    ...arrayValue(batch.ui_proof_artifacts).flatMap((artifact) =>
+      orchestrationUiProofArtifactEventInputs(base, batch, artifact)
+    ),
+    ...arrayValue(batch.uiProofArtifacts).flatMap((artifact) =>
+      orchestrationUiProofArtifactEventInputs(base, batch, artifact)
+    )
+  ];
+
+  const decisionEvent = orchestrationDecisionEventInput(base, batch);
+  if (decisionEvent) {
+    events.push(decisionEvent);
+  } else {
+    const handoffEvent = orchestrationHandoffEventInput(base, batch);
+    if (handoffEvent) events.push(handoffEvent);
+  }
+
+  return events;
+}
+
+function orchestrationScenarioEventInputs(base, batch, scenarioValue) {
+  const scenario = objectValue(scenarioValue);
+  if (!scenario) return [];
+
+  const status = optionalString(scenario.status);
+  const issue = objectValue(scenario.issue) ?? objectValue(scenario.finding);
+  const failed = isFailureStatus(status);
+  return [
+    {
+      ...base,
+      preset: failed ? 'test-failed' : isSuccessStatus(status) ? 'scenario-passed' : 'scenario-started',
+      status: failed ? 'failed' : undefined,
+      stepId: firstOptionalString(scenario.stepId, scenario.step_id, scenario.id, scenario.key),
+      scenario: firstOptionalString(scenario.name, scenario.title, scenario.id, scenario.key),
+      issueID: firstOptionalString(scenario.issueID, scenario.issueId, scenario.issue_id, issue?.id, issue?.key),
+      title: optionalString(scenario.title),
+      message: optionalString(scenario.summary) ?? optionalString(scenario.message) ?? optionalString(batch.title)
+    }
+  ];
+}
+
+function orchestrationIssueEventInputs(base, batch, issueValue) {
+  const issue = objectValue(issueValue);
+  if (!issue) return [];
+
+  return [
+    {
+      ...base,
+      preset: 'issue-found',
+      status: optionalString(issue.status),
+      stepId: firstOptionalString(issue.stepId, issue.step_id, issue.id, issue.key),
+      scenario: firstOptionalString(issue.scenario, issue.scenarioName, issue.scenario_name, batch.title),
+      issueID: firstOptionalString(issue.issueID, issue.issueId, issue.issue_id, issue.id, issue.key),
+      title: optionalString(issue.title),
+      message: optionalString(issue.summary) ?? optionalString(issue.message) ?? optionalString(issue.description)
+    }
+  ];
+}
+
+function orchestrationFixTaskEventInputs(base, batch, taskValue) {
+  const task = objectValue(taskValue);
+  if (!task) return [];
+
+  return [
+    {
+      ...base,
+      preset: 'batch-delegated',
+      status: optionalString(task.status),
+      stepId: firstOptionalString(task.stepId, task.step_id, task.id, task.key),
+      scenario: firstOptionalString(task.scenario, task.scenarioName, task.scenario_name),
+      issueID: firstOptionalString(task.issueID, task.issueId, task.issue_id, task.issue, task.finding),
+      title: optionalString(task.title),
+      message: optionalString(task.summary) ?? optionalString(task.message),
+      agent: objectValue(task.agent) ?? objectValue(task.delegate),
+      delegatedCount: firstDefined(task.delegatedCount, task.delegated_count),
+      fixCount: firstDefined(task.fixCount, task.fix_count)
+    }
+  ];
+}
+
+function orchestrationRetestEventInputs(base, batch, retestValue) {
+  const retest = objectValue(retestValue);
+  if (!retest) return [];
+
+  const status = optionalString(retest.status);
+  const preset = isFailureStatus(status)
+    ? 'retest-failed'
+    : isSuccessStatus(status)
+      ? 'ui-verified'
+      : 'retest-started';
+  return [
+    {
+      ...base,
+      preset,
+      status: isFailureStatus(status) ? 'failed' : undefined,
+      stepId: firstOptionalString(retest.stepId, retest.step_id, retest.id, retest.key),
+      scenario: firstOptionalString(retest.scenario, retest.scenarioName, retest.scenario_name, batch.title),
+      issueID: firstOptionalString(retest.issueID, retest.issueId, retest.issue_id, retest.issue, retest.finding),
+      retryAttempt: firstDefined(retest.retryAttempt, retest.retry_attempt, retest.attempt, retest.retry),
+      title: optionalString(retest.title),
+      message: optionalString(retest.summary) ?? optionalString(retest.message),
+      artifact: objectValue(retest.artifact) ?? firstObjectValue(retest.artifacts),
+      retestCount: firstDefined(retest.retestCount, retest.retest_count),
+      resolvedCount: firstDefined(retest.resolvedCount, retest.resolved_count, retest.resolved, retest.fixed),
+      verifiedCount: firstDefined(retest.verifiedCount, retest.verified_count, retest.verified, retest.ui_verified),
+      failedCount: firstDefined(retest.failedCount, retest.failed_count, retest.failed)
+    }
+  ];
+}
+
+function orchestrationUiProofArtifactEventInputs(base, batch, artifactValue) {
+  const artifact = objectValue(artifactValue);
+  if (!artifact) return [];
+
+  return [
+    {
+      ...base,
+      preset: 'ui-verified',
+      stepId: firstOptionalString(artifact.stepId, artifact.step_id, artifact.id, artifact.key),
+      scenario: firstOptionalString(artifact.scenario, artifact.scenarioName, artifact.scenario_name, batch.title),
+      issueID: firstOptionalString(artifact.issueID, artifact.issueId, artifact.issue_id, artifact.issue, artifact.finding),
+      title: optionalString(artifact.title),
+      message: optionalString(artifact.summary) ?? optionalString(artifact.message) ?? 'UI proof artifact available',
+      artifact
+    }
+  ];
+}
+
+function orchestrationDecisionEventInput(base, batch) {
+  const decision =
+    objectValue(batch.decision) ??
+    objectValue(batch.signoff) ??
+    objectValue(batch.signOff) ??
+    objectValue(batch.approval);
+  if (!decision) return null;
+
+  return {
+    ...base,
+    preset: 'approval-required',
+    scenario: firstOptionalString(decision.scenario, decision.scenarioName, decision.scenario_name),
+    issueID: firstOptionalString(decision.issueID, decision.issueId, decision.issue_id, decision.issue, decision.finding),
+    approvalSubject: firstOptionalString(decision.subject, decision.title, decision.message),
+    blockerReason: firstOptionalString(decision.reason, decision.blockerReason, decision.blocker_reason),
+    decisionPrompt: firstOptionalString(decision.prompt, decision.question, decision.message),
+    artifact: objectValue(batch.handoff),
+    artifactKind: objectValue(batch.handoff) ? 'handoff' : undefined,
+    approvalCount: firstDefined(decision.approvalCount, decision.approval_count, decision.signoffCount, decision.signoff_count),
+    decisionCount: firstDefined(decision.decisionCount, decision.decision_count)
+  };
+}
+
+function orchestrationHandoffEventInput(base, batch) {
+  const handoff = objectValue(batch.handoff);
+  if (!handoff) return null;
+
+  return {
+    ...base,
+    preset: 'handoff',
+    message: optionalString(handoff.summary) ?? optionalString(handoff.message),
+    artifact: handoff,
+    artifactKind: 'handoff'
+  };
+}
+
+function orchestrationEnvelopeTallyCounts(entry) {
+  const counts = objectValue(entry.tally) ?? objectValue(entry.tallies) ?? objectValue(entry.counts) ?? objectValue(entry.metrics);
+  if (!counts) return {};
+
+  return {
+    scenarioCount: firstDefined(counts.scenarioCount, counts.scenario_count, counts.scenario, counts.scenarios),
+    issueCount: firstDefined(counts.issueCount, counts.issue_count, counts.issue, counts.issues, counts.found),
+    testCount: firstDefined(counts.testCount, counts.test_count, counts.test, counts.tests),
+    retestCount: firstDefined(counts.retestCount, counts.retest_count, counts.retest, counts.retests, counts.retested),
+    fixCount: firstDefined(counts.fixCount, counts.fix_count, counts.fix, counts.fixes, counts.fixBatches, counts.fix_batches),
+    resolvedCount: firstDefined(counts.resolvedCount, counts.resolved_count, counts.resolved, counts.fixed),
+    verifiedCount: firstDefined(counts.verifiedCount, counts.verified_count, counts.verified, counts.uiVerified, counts.ui_verified),
+    delegatedCount: firstDefined(counts.delegatedCount, counts.delegated_count, counts.delegated, counts.delegations),
+    decisionCount: firstDefined(counts.decisionCount, counts.decision_count, counts.decision, counts.decisions, counts.needsDecision, counts.needs_decision),
+    approvalCount: firstDefined(counts.approvalCount, counts.approval_count, counts.approval, counts.approvals, counts.signoff, counts.signoffs, counts.signOffs, counts.sign_offs),
+    failedCount: firstDefined(counts.failedCount, counts.failed_count, counts.failed, counts.failures)
+  };
 }
 
 export async function readOrchestrationEventPayloadFile(filePath) {
@@ -1005,6 +1231,10 @@ function firstObjectValue(value) {
   return Array.isArray(value) ? value.find(isObjectLike) ?? null : null;
 }
 
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function firstOptionalString(...values) {
   for (const value of values) {
     const text = optionalAliasString(value);
@@ -1030,6 +1260,16 @@ function optionalString(value) {
   }
   const text = String(value).trim();
   return text ? text : null;
+}
+
+function isSuccessStatus(value) {
+  const text = optionalString(value)?.toLowerCase();
+  return Boolean(text && /^(success|succeeded|pass|passed|complete|completed|verified|done)$/.test(text));
+}
+
+function isFailureStatus(value) {
+  const text = optionalString(value)?.toLowerCase();
+  return Boolean(text && /^(fail|failed|failure|blocked|error|errored)$/.test(text));
 }
 
 function optionalCount(value, fieldName) {

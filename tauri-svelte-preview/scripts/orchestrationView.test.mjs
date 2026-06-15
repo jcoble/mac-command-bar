@@ -587,6 +587,167 @@ assert.deepEqual(
     '/repo/.codex-artifacts/run-e2e-tests-handoff.md'
   ]
 );
+assert.deepEqual(longRunningDigest.compact, {
+  currentStage: 'Needs sign-off',
+  stageTone: 'attention',
+  issueCount: 3,
+  fixCount: 2,
+  retestCount: 1,
+  latestArtifact: {
+    label: 'Handoff',
+    title: 'Handoff available',
+    href: null,
+    path: '/repo/.codex-artifacts/run-e2e-tests-handoff.md'
+  },
+  latestHandoff: {
+    label: 'Handoff',
+    title: 'Handoff available',
+    href: null,
+    path: '/repo/.codex-artifacts/run-e2e-tests-handoff.md'
+  },
+  signOffNeeded: true,
+  waitingDecision: 'Approval required: merge fix batch',
+  tally: '3 found · 2 fixed · 1 retested · 2 UI verified · 1 needs decision'
+});
+
+const tallySnapshotRun = {
+  ...run,
+  id: 'run-tally-snapshot',
+  title: 'Nested envelope tally run',
+  status: 'running',
+  agents: [],
+  steps: [],
+  artifacts: [],
+  links: [],
+  events: [
+    {
+      ...run.events[0],
+      id: 'tally-scenario',
+      runId: 'run-tally-snapshot',
+      kind: 'scenario.passed',
+      status: 'succeeded',
+      title: 'Scenario passed: Google auth callback',
+      message: 'Aggregate tally snapshot',
+      stepKind: 'scenario',
+      scenario: 'Google auth callback',
+      scenarioCount: 2,
+      issueCount: 3,
+      fixCount: 2,
+      retestCount: 2,
+      resolvedCount: 1,
+      verifiedCount: 1,
+      decisionCount: 1,
+      approvalCount: 1
+    },
+    {
+      ...run.events[0],
+      id: 'tally-issue-a',
+      runId: 'run-tally-snapshot',
+      timestamp: '2026-06-10T12:01:00.000Z',
+      kind: 'issue.found',
+      status: 'needs-fix',
+      title: 'Issue found: AUTH-7',
+      message: 'Callback redirect loop',
+      stepKind: 'issue',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7'
+    },
+    {
+      ...run.events[0],
+      id: 'tally-issue-b',
+      runId: 'run-tally-snapshot',
+      timestamp: '2026-06-10T12:02:00.000Z',
+      kind: 'issue.found',
+      status: 'needs-fix',
+      title: 'Issue found: SETTINGS-2',
+      message: 'Save button never enables',
+      stepKind: 'issue',
+      scenario: 'Settings save',
+      issueID: 'SETTINGS-2'
+    },
+    {
+      ...run.events[0],
+      id: 'tally-proof',
+      runId: 'run-tally-snapshot',
+      timestamp: '2026-06-10T12:03:00.000Z',
+      kind: 'ui.verified',
+      status: 'succeeded',
+      title: 'UI verified: Google auth callback',
+      message: 'Trace captured',
+      stepKind: 'retest',
+      scenario: 'Google auth callback',
+      issueID: 'AUTH-7',
+      artifactKind: 'trace',
+      artifactPath: '/repo/.codex-artifacts/auth-trace.zip'
+    },
+    {
+      ...run.events[1],
+      id: 'tally-decision',
+      runId: 'run-tally-snapshot',
+      timestamp: '2026-06-10T12:04:00.000Z',
+      title: 'Approval required: partial fix batch',
+      message: 'Awaiting owner sign-off',
+      scenario: null,
+      issueID: null
+    }
+  ]
+};
+const tallySnapshotMetrics = orchestrationRunMetrics(tallySnapshotRun);
+assert.equal(tallySnapshotMetrics.scenarioCount, 2);
+assert.equal(tallySnapshotMetrics.issueCount, 3);
+assert.equal(tallySnapshotMetrics.fixCount, 2);
+assert.equal(tallySnapshotMetrics.retestCount, 2);
+assert.equal(tallySnapshotMetrics.resolvedCount, 1);
+assert.equal(tallySnapshotMetrics.verifiedCount, 1);
+assert.equal(tallySnapshotMetrics.decisionCount, 1);
+assert.equal(tallySnapshotMetrics.approvalCount, 1);
+assert.deepEqual(orchestrationRunDigest(tallySnapshotRun).compact, {
+  currentStage: 'Needs sign-off',
+  stageTone: 'attention',
+  issueCount: 3,
+  fixCount: 2,
+  retestCount: 2,
+  latestArtifact: {
+    label: 'UI proof',
+    title: 'UI verified: Google auth callback',
+    href: null,
+    path: '/repo/.codex-artifacts/auth-trace.zip'
+  },
+  latestHandoff: null,
+  signOffNeeded: true,
+  waitingDecision: 'Approval required: partial fix batch',
+  tally: '3 found · 1 fixed · 2 retested · 1 UI verified · 1 needs decision'
+});
+
+const genericArtifactRun = {
+  ...run,
+  id: 'run-generic-artifact',
+  title: 'Generic report artifact run',
+  status: 'running',
+  agents: [],
+  steps: [],
+  artifacts: [
+    {
+      id: 'browser-report',
+      kind: 'report',
+      title: 'Browser preview artifact report',
+      path: '/repo/.codex-artifacts/browser-report.md',
+      url: null,
+      status: 'available'
+    }
+  ],
+  events: []
+};
+assert.equal(
+  orchestrationRunMetrics(genericArtifactRun).handoffCount,
+  0,
+  'generic report artifacts should not count as orchestration handoffs'
+);
+assert.equal(
+  orchestrationRunDigest(genericArtifactRun).compact.latestHandoff,
+  null,
+  'generic report artifacts should not populate the compact handoff reference'
+);
 
 assert.deepEqual(
   orchestrationAgentActivityItems(run).map((agent) => [

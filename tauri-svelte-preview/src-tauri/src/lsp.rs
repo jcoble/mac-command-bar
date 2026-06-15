@@ -2530,18 +2530,6 @@ fn server_spec_for_language(language: &str) -> Option<LspServerSpec> {
             command: "svelte-language-server",
             args: &["--stdio"],
         }),
-        "python" | "py" => Some(LspServerSpec {
-            server_name: "pyright",
-            language_id: "python",
-            command: "pyright-langserver",
-            args: &["--stdio"],
-        }),
-        "go" => Some(LspServerSpec {
-            server_name: "gopls",
-            language_id: "go",
-            command: "gopls",
-            args: &[],
-        }),
         _ => None,
     }
 }
@@ -2688,18 +2676,13 @@ mod tests {
         let svelte = server_spec_for_language("svelte").expect("svelte spec");
         assert_eq!(svelte.command, "svelte-language-server");
         assert_eq!(svelte.args, &["--stdio"]);
-
-        let python = server_spec_for_language("python").expect("python spec");
-        assert_eq!(python.command, "pyright-langserver");
-        assert_eq!(python.args, &["--stdio"]);
-
-        let go = server_spec_for_language("go").expect("go spec");
-        assert_eq!(go.command, "gopls");
     }
 
     #[test]
     fn maps_primary_native_lsp_languages_to_commands_and_lsp_ids() {
         let cases: &[(&str, &str, &str, &str, &[&str])] = &[
+            ("csharp", "csharp-ls", "csharp", "csharp-ls", &[]),
+            ("cs", "csharp-ls", "csharp", "csharp-ls", &[]),
             (
                 "svelte",
                 "svelte-language-server",
@@ -2766,6 +2749,7 @@ mod tests {
     fn lsp_status_uses_primary_language_command_mapping() {
         let root = unique_lsp_temp_root("mcb-lsp-status-mapping");
         let cases: &[(&str, &str, &str, &[&str])] = &[
+            ("csharp", "csharp", "csharp-ls", &[]),
             ("svelte", "svelte", "svelte-language-server", &["--stdio"]),
             (
                 "typescript",
@@ -2818,6 +2802,28 @@ mod tests {
     }
 
     #[test]
+    fn python_and_go_lsp_adapters_are_deferred() {
+        for language in ["python", "py", "go"] {
+            assert!(
+                server_spec_for_language(language).is_none(),
+                "{language} should not advertise a native LSP adapter yet"
+            );
+
+            let status = read_source_lsp_status_sync(PathBuf::from("."), language.to_string())
+                .expect("unsupported language status");
+            assert_eq!(status.language, language);
+            assert_eq!(status.language_id, "plaintext");
+            assert!(!status.available);
+            assert_eq!(status.server_name, "none");
+            assert!(status.command.is_empty());
+            assert_eq!(
+                status.reason.as_deref(),
+                Some("No language server configured for this file type")
+            );
+        }
+    }
+
+    #[test]
     fn lsp_readiness_lists_configured_language_servers() {
         let root = unique_lsp_temp_root("mcb-lsp-readiness");
         std::fs::create_dir_all(&root).unwrap();
@@ -2832,6 +2838,8 @@ mod tests {
             languages,
             vec!["csharp", "typescript", "javascript", "rust", "svelte"]
         );
+        assert!(!languages.contains(&"python"));
+        assert!(!languages.contains(&"go"));
         assert!(statuses.iter().all(|status| !status.server_name.is_empty()));
         assert!(statuses.iter().all(|status| !status.command.is_empty()));
 
@@ -2840,6 +2848,10 @@ mod tests {
 
     #[test]
     fn infers_languages_for_native_lsp_result_paths() {
+        assert_eq!(
+            language_for_path(Path::new("Widget.cs")).as_deref(),
+            Some("csharp")
+        );
         assert_eq!(
             language_for_path(Path::new("App.js")).as_deref(),
             Some("javascript")

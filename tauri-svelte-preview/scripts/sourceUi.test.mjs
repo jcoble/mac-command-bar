@@ -106,6 +106,10 @@ assertDeclaration('.shell:not(.activity-hidden) .activity-shell', 'grid-template
 assertDeclaration('.shell:not(.activity-hidden) .sidebar', 'display: none');
 assertDeclaration('.activity-shell', 'min-width: 0');
 assertDeclaration('.sidebar', 'container-type: inline-size');
+assertDeclaration('.project-controls', 'min-width: 0');
+assertDeclaration('.project-controls', 'overflow: hidden');
+assertDeclaration('.project-row', 'min-width: 0');
+assertDeclaration('.project-row', 'max-width: 100%');
 assert.ok(
   pageSource.includes('@container (max-width: 330px)') &&
     pageSource.includes('.project-row {\n      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;') &&
@@ -568,14 +572,24 @@ assert.ok(workspaceSnapshotSource.includes('contextPanelPlacement'), 'Workspace 
 assert.ok(workspaceSnapshotSource.includes('contextPanelCollapsed'), 'Workspace snapshots should serialize context pane visibility');
 assert.ok(workspaceSnapshotSource.includes('editorInsightCollapsed'), 'Workspace snapshots should serialize editor insight visibility');
 assert.ok(workspaceSnapshotSource.includes('sidePanePosition'), 'Workspace snapshots should serialize explorer side placement');
+assert.ok(workspaceSnapshotSource.includes('sidePaneWidth'), 'Workspace snapshots should serialize explorer pane width');
+assert.ok(workspaceSnapshotSource.includes('contextPaneWidth'), 'Workspace snapshots should serialize side context pane width');
+assert.ok(workspaceSnapshotSource.includes('contextPaneHeight'), 'Workspace snapshots should serialize bottom context pane height');
+assert.ok(workspaceSnapshotSource.includes('editorInsightWidth'), 'Workspace snapshots should serialize insight pane width');
 assert.ok(workspaceSnapshotSource.includes('sourceChromeCompact'), 'Workspace snapshots should serialize editor chrome density');
 assert.ok(workspaceSnapshotSource.includes('sourceActivityFilter'), 'Workspace snapshots should serialize the side activity filter');
 assert.ok(workspaceSnapshotSource.includes('browserUrl: string | null'), 'Workspace snapshots should serialize the browser dock URL');
 assert.ok(pageSource.includes('function applyWorkspaceSnapshotViewState'), 'Workspace restore should rehydrate compact pane view state');
+assert.ok(pageSource.includes('function sourceDockLayoutWithWorkspaceViewState'), 'Workspace restore should resize Dockview groups from saved pane dimensions');
+assert.ok(pageSource.includes('sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState)'), 'Workspace restore should apply saved dimensions before syncing Dockview state');
 assert.ok(pageSource.includes('persistContextPanelPlacement(contextPanelPlacement)'), 'Workspace restore should persist restored context placement');
 assert.ok(pageSource.includes('persistContextPanelCollapsed(contextPanelCollapsed)'), 'Workspace restore should persist restored context visibility');
 assert.ok(pageSource.includes('persistEditorInsightCollapsed(editorInsightCollapsed)'), 'Workspace restore should persist restored insight visibility');
 assert.ok(pageSource.includes('persistSidePanePosition(sidePanePosition)'), 'Workspace restore should persist restored explorer side placement');
+assert.ok(pageSource.includes('persistSidePaneWidth(sidePaneWidth)'), 'Workspace restore should persist restored explorer pane width');
+assert.ok(pageSource.includes('persistContextPaneWidth(contextPaneWidth)'), 'Workspace restore should persist restored side context pane width');
+assert.ok(pageSource.includes('persistContextPaneHeight(contextPaneHeight)'), 'Workspace restore should persist restored bottom context pane height');
+assert.ok(pageSource.includes('persistEditorInsightWidth(editorInsightWidth)'), 'Workspace restore should persist restored insight pane width');
 assert.ok(
   pageSource.includes('setSourceActivityFilter(viewState.sourceActivityFilter)'),
   'Workspace restore should rehydrate the side activity filter'

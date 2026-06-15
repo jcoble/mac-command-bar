@@ -83,6 +83,26 @@ export type OrchestrationLiveDigestItem = {
   path: string | null;
 };
 
+export type OrchestrationCompactDigestReference = {
+  label: string;
+  title: string;
+  href: string | null;
+  path: string | null;
+};
+
+export type OrchestrationCompactRunDigest = {
+  currentStage: string;
+  stageTone: OrchestrationStatusTone;
+  issueCount: number;
+  fixCount: number;
+  retestCount: number;
+  latestArtifact: OrchestrationCompactDigestReference | null;
+  latestHandoff: OrchestrationCompactDigestReference | null;
+  signOffNeeded: boolean;
+  waitingDecision: string | null;
+  tally: string;
+};
+
 export type OrchestrationAgentActivityItem = {
   id: string;
   tone: OrchestrationStatusTone;
@@ -117,6 +137,7 @@ export type OrchestrationRunDigest = {
   waitingDecision: OrchestrationAttentionItem | null;
   latestArtifact: OrchestrationLiveDigestItem | null;
   retestStatus: OrchestrationLiveDigestItem | null;
+  compact: OrchestrationCompactRunDigest;
   loopTally: string;
   autoResolveTally: string;
   metrics: OrchestrationRunMetrics;
@@ -151,7 +172,7 @@ type OrchestrationLoopKind =
   | 'handoff';
 
 type OrchestrationLoopMetricKind = OrchestrationLoopKind | 'decision' | 'approval';
-type OrchestrationLoopCountMap = Partial<Record<OrchestrationLoopMetricKind, number>>;
+type OrchestrationLoopCountMap = Partial<Record<OrchestrationLoopMetricKind, number | undefined>>;
 
 const retryPattern = /\b(retry|retries|retried|rerun|re-run)\b/i;
 const approvalPattern = /\b(approval|approve|approved|signoff|sign-off|confirm|confirmation|decision|manual review)\b/i;
@@ -164,7 +185,7 @@ const fixPattern = /\b(fix|fixed|repair|patch|resolve|resolved|auto-resolve|auto
 const resolvedPattern = /\b(resolved|fixed|closed|passed after fix|verified fix)\b/i;
 const verifiedPattern = /\b(ui verified|browser verified|verified in ui|ui passed|validated in browser|retest passed|re-tested passed)\b/i;
 const delegationPattern = /\b(delegated|delegate|assigned|sub-agent|subagent|fix batch|batch)\b/i;
-const handoffPattern = /\b(handoff|handover|handoff doc|handoff note|summary|report|artifact)\b/i;
+const handoffPattern = /\b(hand[- ]?off|handover)\b/i;
 
 export function orchestrationStatusTone(status: string): OrchestrationStatusTone {
   const normalized = status.trim().toLowerCase();
@@ -611,16 +632,20 @@ export function orchestrationRunDigest(run: OrchestrationRun): OrchestrationRunD
     orchestrationAttentionQueue(run, Number.POSITIVE_INFINITY).find((item) =>
       decisionPattern.test([item.label, item.title, item.summary].filter(Boolean).join(' '))
     ) ?? null;
+  const latestArtifact = orchestrationLatestArtifactDigestItem(run);
+  const retestStatus = orchestrationRetestStatusDigestItem(run);
+  const autoResolveTally = orchestrationAutoResolveTallyText(metrics);
 
   return {
     stage,
     currentActivity: orchestrationCurrentActivity(run),
     activeAgent,
     waitingDecision,
-    latestArtifact: orchestrationLatestArtifactDigestItem(run),
-    retestStatus: orchestrationRetestStatusDigestItem(run),
+    latestArtifact,
+    retestStatus,
+    compact: orchestrationCompactRunDigest(run, metrics, stage, latestArtifact, waitingDecision, autoResolveTally),
     loopTally: orchestrationLoopTallyText(metrics),
-    autoResolveTally: orchestrationAutoResolveTallyText(metrics),
+    autoResolveTally,
     metrics
   };
 }
@@ -890,6 +915,46 @@ function orchestrationRetestStatusDigestItem(run: OrchestrationRun): Orchestrati
   return item ? orchestrationDigestItemFromTimelineItem('retest', item, orchestrationLiveDigestLabel(item) ?? 'Retest') : null;
 }
 
+function orchestrationCompactRunDigest(
+  run: OrchestrationRun,
+  metrics: OrchestrationRunMetrics,
+  stage: OrchestrationRunStage,
+  latestArtifact: OrchestrationLiveDigestItem | null,
+  waitingDecision: OrchestrationAttentionItem | null,
+  tally: string
+): OrchestrationCompactRunDigest {
+  const latestHandoff = orchestrationLatestHandoffDigestItem(run);
+  return {
+    currentStage: stage.label,
+    stageTone: stage.tone,
+    issueCount: metrics.issueCount,
+    fixCount: metrics.fixCount,
+    retestCount: metrics.retestCount,
+    latestArtifact: compactDigestReference(latestArtifact),
+    latestHandoff: compactDigestReference(latestHandoff),
+    signOffNeeded: metrics.approvalCount > 0 || Boolean(waitingDecision),
+    waitingDecision: waitingDecision?.title ?? null,
+    tally
+  };
+}
+
+function orchestrationLatestHandoffDigestItem(run: OrchestrationRun): OrchestrationLiveDigestItem | null {
+  const item = orchestrationTimelineItems(run, Number.POSITIVE_INFINITY).find((timelineItem) =>
+    handoffPattern.test(searchTextForTimelineItem(timelineItem))
+  );
+  return item ? orchestrationDigestItemFromTimelineItem('handoff', item, 'Handoff') : null;
+}
+
+function compactDigestReference(item: OrchestrationLiveDigestItem | null): OrchestrationCompactDigestReference | null {
+  if (!item) return null;
+  return {
+    label: item.label,
+    title: item.title,
+    href: item.href,
+    path: item.path
+  };
+}
+
 function orchestrationDigestItemFromTimelineItem(
   prefix: string,
   item: OrchestrationTimelineItem,
@@ -1024,9 +1089,11 @@ function orchestrationLoopMetricCount(
   timeline: OrchestrationTimelineItem[],
   kind: OrchestrationLoopMetricKind
 ): number {
+  const hasExplicitCounts = timeline.some((item) => hasExplicitLoopCount(item, kind));
   return timeline.reduce((sum, item) => {
     const explicitCount = normalizeCount(item.loopCounts[kind]);
-    if (explicitCount > 0) return sum + explicitCount;
+    if (hasExplicitLoopCount(item, kind)) return sum + explicitCount;
+    if (hasExplicitCounts) return sum;
 
     return orchestrationLoopKindForTimelineItem(item) === kind ? sum + 1 : sum;
   }, 0);
@@ -1037,9 +1104,11 @@ function orchestrationPatternMetricCount(
   kind: OrchestrationLoopMetricKind,
   pattern: RegExp
 ): number {
+  const hasExplicitCounts = timeline.some((item) => hasExplicitLoopCount(item, kind));
   return timeline.reduce((sum, item) => {
     const explicitCount = normalizeCount(item.loopCounts[kind]);
-    if (explicitCount > 0) return sum + explicitCount;
+    if (hasExplicitLoopCount(item, kind)) return sum + explicitCount;
+    if (hasExplicitCounts) return sum;
 
     return pattern.test(searchTextForTimelineItem(item)) ? sum + 1 : sum;
   }, 0);
@@ -1047,17 +1116,26 @@ function orchestrationPatternMetricCount(
 
 function orchestrationEventLoopCounts(event: OrchestrationEvent): OrchestrationLoopCountMap {
   return {
-    scenario: normalizeCount(event.scenarioCount),
-    issue: normalizeCount(event.issueCount),
-    test: normalizeCount(event.testCount),
-    retest: normalizeCount(event.retestCount),
-    fix: normalizeCount(event.fixCount),
-    resolved: normalizeCount(event.resolvedCount),
-    verified: normalizeCount(event.verifiedCount),
-    delegation: normalizeCount(event.delegatedCount),
-    decision: normalizeCount(event.decisionCount),
-    approval: normalizeCount(event.approvalCount)
+    scenario: explicitLoopCount(event.scenarioCount),
+    issue: explicitLoopCount(event.issueCount),
+    test: explicitLoopCount(event.testCount),
+    retest: explicitLoopCount(event.retestCount),
+    fix: explicitLoopCount(event.fixCount),
+    resolved: explicitLoopCount(event.resolvedCount),
+    verified: explicitLoopCount(event.verifiedCount),
+    delegation: explicitLoopCount(event.delegatedCount),
+    decision: explicitLoopCount(event.decisionCount),
+    approval: explicitLoopCount(event.approvalCount)
   };
+}
+
+function hasExplicitLoopCount(item: OrchestrationTimelineItem, kind: OrchestrationLoopMetricKind): boolean {
+  return item.loopCounts[kind] !== undefined;
+}
+
+function explicitLoopCount(value: number | null | undefined): number | undefined {
+  if (!Number.isFinite(value ?? Number.NaN)) return undefined;
+  return Math.max(0, Math.floor(Number(value)));
 }
 
 function normalizeCount(value: number | null | undefined): number {

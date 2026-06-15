@@ -20,6 +20,7 @@ import {
   listenToTerminalOutput,
   listAgentSessionsFromTauri,
   listGitRepositorySummariesFromTauri,
+  listOrchestrationRunsFromTauri,
   listProjectWorktreesFromTauri,
   removeProjectWorktreeFromTauri,
   archiveProjectWorktreeFromTauri,
@@ -95,6 +96,16 @@ assert.equal(await archiveProjectWorktreeFromTauri('/tmp/repo', '/tmp/repo-workt
 assert.equal(await validateProjectRootFromTauri('/tmp/repo'), null);
 assert.equal(
   await listRuntimeContextsFromTauri([
+    {
+      id: 'repo',
+      name: 'Repo',
+      path: '/tmp/repo'
+    }
+  ]),
+  null
+);
+assert.equal(
+  await listOrchestrationRunsFromTauri([
     {
       id: 'repo',
       name: 'Repo',
@@ -275,11 +286,62 @@ assert.equal(
 const { clearMocks, mockIPC } = await import('@tauri-apps/api/mocks');
 const previousWindow = globalThis.window;
 const ipcCalls = [];
+const runtimeContextProjects = [{ id: 'repo', name: 'Repo', path: '/tmp/repo' }];
 
 globalThis.window = previousWindow ?? globalThis;
 mockIPC((cmd, args) => {
   ipcCalls.push({ cmd, args: structuredClone(args ?? {}) });
   switch (cmd) {
+    case 'list_agent_sessions':
+      return [
+        {
+          provider: 'codex',
+          id: 'session-1',
+          title: 'Codex session',
+          resumeCommands: ['codex resume session-1']
+        }
+      ];
+    case 'list_project_worktrees':
+      return [
+        {
+          repo: 'repo',
+          path: '/tmp/repo-worktree',
+          branch: 'cdx/tsk-283-native-activity',
+          isDirty: false,
+          hasUnmergedCommits: false,
+          deleteEligibility: 'requires-confirmation'
+        }
+      ];
+    case 'list_runtime_contexts':
+      return [
+        {
+          pid: 3456,
+          command: 'node',
+          port: 5173,
+          cwd: '/tmp/repo',
+          projectName: 'Repo',
+          rootLabel: 'main checkout'
+        }
+      ];
+    case 'list_orchestration_runs':
+      return [
+        {
+          id: 'run-1',
+          title: 'TSK-283 native activity',
+          status: 'running',
+          phase: 'implementation',
+          progress: 42,
+          projectName: 'Repo',
+          projectPath: '/tmp/repo',
+          rootLabel: 'main checkout',
+          summary: 'Guard native activity cards',
+          agents: [],
+          steps: [],
+          artifacts: [],
+          links: [],
+          events: []
+        }
+      ];
     case 'read_source_lsp_status':
       return {
         language: args.language,
@@ -299,7 +361,32 @@ mockIPC((cmd, args) => {
 });
 
 try {
+  ipcCalls.length = 0;
+  const nativeSessions = await listAgentSessionsFromTauri();
+  const nativeWorktrees = await listProjectWorktreesFromTauri('/tmp/repo');
+  const nativeRuntimeContexts = await listRuntimeContextsFromTauri(runtimeContextProjects);
+  const nativeOrchestrationRuns = await listOrchestrationRunsFromTauri(runtimeContextProjects);
+
+  assert.equal(nativeSessions.length, 1);
+  assert.equal(nativeSessions[0].id, 'session-1');
+  assert.equal(nativeWorktrees.length, 1);
+  assert.equal(nativeWorktrees[0].branch, 'cdx/tsk-283-native-activity');
+  assert.equal(nativeRuntimeContexts.length, 1);
+  assert.equal(nativeRuntimeContexts[0].port, 5173);
+  assert.equal(nativeOrchestrationRuns.length, 1);
+  assert.equal(nativeOrchestrationRuns[0].id, 'run-1');
+  assert.deepEqual(
+    ipcCalls.map(({ cmd, args }) => ({ cmd, args })),
+    [
+      { cmd: 'list_agent_sessions', args: {} },
+      { cmd: 'list_project_worktrees', args: { root: '/tmp/repo' } },
+      { cmd: 'list_runtime_contexts', args: { projects: runtimeContextProjects } },
+      { cmd: 'list_orchestration_runs', args: { projects: runtimeContextProjects } }
+    ]
+  );
+
   const targetStatusLanguages = ['svelte', 'typescript', 'tsx', 'javascript', 'jsx', 'rust'];
+  ipcCalls.length = 0;
   for (const language of targetStatusLanguages) {
     await readSourceLspStatusFromTauri('/tmp/repo', language);
   }

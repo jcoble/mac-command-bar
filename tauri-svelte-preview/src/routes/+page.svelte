@@ -5775,7 +5775,7 @@
     persistSourceTerminalApp(sourceTerminalApp);
     setBrowserDockUrl(restored.browserUrl ?? '');
     applyWorkspaceSnapshotViewState(restored.viewState);
-    sourceDockLayout = restored.dockLayout;
+    sourceDockLayout = sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState);
     syncSourceDockLayoutToWorkspace(sourceDockLayout);
     persistSourceDockLayout(sourceDockLayout);
     activeWorkspaceSessionKey = snapshot.id;
@@ -5812,6 +5812,10 @@
       contextPanelCollapsed,
       editorInsightCollapsed,
       sidePanePosition,
+      sidePaneWidth,
+      contextPaneWidth,
+      contextPaneHeight,
+      editorInsightWidth,
       sourceChromeCompact,
       sourceActivityFilter,
       hiddenContextCardIDs: [...hiddenContextCardIDs],
@@ -5826,6 +5830,10 @@
     contextPanelCollapsed = viewState.contextPanelCollapsed;
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
+    sidePaneWidth = clampSidePaneWidth(viewState.sidePaneWidth);
+    contextPaneWidth = clampContextPaneWidth(viewState.contextPaneWidth);
+    contextPaneHeight = clampContextPaneHeight(viewState.contextPaneHeight);
+    editorInsightWidth = clampEditorInsightWidth(viewState.editorInsightWidth);
     sourceChromeCompact = viewState.sourceChromeCompact;
     setSourceActivityFilter(viewState.sourceActivityFilter);
     hiddenContextCardIDs = new Set(viewState.hiddenContextCardIDs);
@@ -5836,6 +5844,10 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSidePanePosition(sidePanePosition);
+    persistSidePaneWidth(sidePaneWidth);
+    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneHeight(contextPaneHeight);
+    persistEditorInsightWidth(editorInsightWidth);
     persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
@@ -5846,7 +5858,9 @@
     return [
       `context ${viewState.contextPanelMode} ${viewState.contextPanelPlacement}${viewState.contextPanelCollapsed ? ' hidden' : ''}`,
       `active ${contextCardLabels[viewState.activeContextCardID]}`,
-      `explorer ${viewState.sidePanePosition}`,
+      `explorer ${viewState.sidePanePosition} ${viewState.sidePaneWidth}px`,
+      `context ${viewState.contextPaneWidth}px/${viewState.contextPaneHeight}px`,
+      `insight ${viewState.editorInsightWidth}px`,
       `chrome ${viewState.sourceChromeCompact ? 'compact' : 'comfortable'}`,
       viewState.sourceActivityFilter ? `filter "${viewState.sourceActivityFilter}"` : 'no activity filter',
       hiddenCount === 0 ? 'no hidden cards' : `${hiddenCount} hidden`,
@@ -10273,6 +10287,30 @@
       ...nextLayout,
       preset: sourceLayoutPreset
     });
+  }
+
+  function sourceDockLayoutWithWorkspaceViewState(
+    layout: SourceDockLayout,
+    viewState: WorkspaceSnapshotViewState
+  ): SourceDockLayout {
+    let nextLayout = normalizeSourceDockLayout(layout);
+    const activityGroupID = dockGroupIDForPanel(nextLayout, 'activity');
+    const contextGroupID = dockGroupIDForPanel(nextLayout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(nextLayout, 'insights');
+
+    if (activityGroupID === 'left' || activityGroupID === 'right') {
+      nextLayout = resizeSourceDockGroup(nextLayout, activityGroupID, viewState.sidePaneWidth);
+    }
+    if (contextGroupID === 'bottom') {
+      nextLayout = resizeSourceDockGroup(nextLayout, contextGroupID, viewState.contextPaneHeight);
+    } else if (contextGroupID === 'left' || contextGroupID === 'right') {
+      nextLayout = resizeSourceDockGroup(nextLayout, contextGroupID, viewState.contextPaneWidth);
+    }
+    if (insightsGroupID !== null && insightsGroupID !== contextGroupID) {
+      nextLayout = resizeSourceDockGroup(nextLayout, insightsGroupID, viewState.editorInsightWidth);
+    }
+
+    return normalizeSourceDockLayout(nextLayout);
   }
 
   function dockGroupIDForPanel(layout: SourceDockLayout, panelID: SourceDockPanelID): SourceDockGroupID | null {
@@ -17237,6 +17275,9 @@
   }
 
   .project-controls {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
     margin-bottom: 12px;
   }
 
@@ -18783,6 +18824,8 @@
     grid-template-columns: minmax(0, 1fr) 36px 36px 96px;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+    max-width: 100%;
     margin-bottom: 8px;
   }
 
