@@ -6,12 +6,25 @@ export type GitTaskLink = {
   href?: string;
 };
 
+export type GitTaskSearchTarget = {
+  kind: 'notion-search';
+  id: GitTaskID;
+  label: string;
+  query: string;
+};
+
 export type GitTaskLinkOptions = {
   baseURL?: string | URL | null;
 };
 
-const taskIDPattern = /(?<![A-Za-z0-9_])TSK-\d+(?![A-Za-z0-9_])/gi;
+const taskIDPattern = /(?<![A-Za-z0-9_])TSK-(\d+(?:-\d+)*)(?![A-Za-z0-9_])/gi;
+const humanTaskPattern = /(?<![A-Za-z0-9_])task\s+#?(\d+)(?![A-Za-z0-9_])/gi;
 const exactTaskIDPattern = /^\[?\s*(TSK-\d+)\s*\]?$/i;
+
+type GitTaskMatch = {
+  index: number;
+  taskIDs: GitTaskID[];
+};
 
 export function normalizeGitTaskID(input: string | null | undefined): GitTaskID | null {
   const match = exactTaskIDPattern.exec(String(input ?? '').trim());
@@ -22,13 +35,17 @@ export function extractGitTaskIDs(input: string | null | undefined): GitTaskID[]
   const text = String(input ?? '');
   const seen = new Set<GitTaskID>();
   const taskIDs: GitTaskID[] = [];
+  const matches = [...matchExplicitGitTaskIDs(text), ...matchHumanGitTaskIDs(text)].sort(
+    (left, right) => left.index - right.index
+  );
 
-  for (const match of text.matchAll(taskIDPattern)) {
-    const taskID = match[0].toUpperCase();
-    if (seen.has(taskID)) continue;
+  for (const match of matches) {
+    for (const taskID of match.taskIDs) {
+      if (seen.has(taskID)) continue;
 
-    seen.add(taskID);
-    taskIDs.push(taskID);
+      seen.add(taskID);
+      taskIDs.push(taskID);
+    }
   }
 
   return taskIDs;
@@ -52,6 +69,45 @@ export function buildGitTaskLinksFromText(
   const inputs = Array.isArray(input) ? input : [input];
   const taskIDs = uniqueGitTaskIDs(inputs.flatMap((item) => extractGitTaskIDs(item)));
   return taskIDs.map((taskID) => buildGitTaskLink(taskID, options)).filter(isGitTaskLink);
+}
+
+export function buildGitTaskSearchTarget(input: string | null | undefined): GitTaskSearchTarget | null {
+  const taskID = normalizeGitTaskID(input) ?? extractGitTaskIDs(input)[0] ?? null;
+  return taskID ? gitTaskSearchTarget(taskID) : null;
+}
+
+export function buildGitTaskSearchTargetsFromText(
+  input: string | null | undefined | readonly (string | null | undefined)[]
+): GitTaskSearchTarget[] {
+  const inputs = Array.isArray(input) ? input : [input];
+  return uniqueGitTaskIDs(inputs.flatMap((item) => extractGitTaskIDs(item))).map(gitTaskSearchTarget);
+}
+
+function matchExplicitGitTaskIDs(text: string): GitTaskMatch[] {
+  return [...text.matchAll(taskIDPattern)].flatMap((match) => {
+    const taskIDs = String(match[1] ?? '')
+      .split('-')
+      .filter(Boolean)
+      .map((taskID) => `TSK-${Number.parseInt(taskID, 10)}`);
+
+    return taskIDs.length > 0 ? [{ index: match.index ?? 0, taskIDs }] : [];
+  });
+}
+
+function matchHumanGitTaskIDs(text: string): GitTaskMatch[] {
+  return [...text.matchAll(humanTaskPattern)].map((match) => ({
+    index: match.index ?? 0,
+    taskIDs: [`TSK-${Number.parseInt(match[1] ?? '', 10)}`]
+  }));
+}
+
+function gitTaskSearchTarget(taskID: GitTaskID): GitTaskSearchTarget {
+  return {
+    kind: 'notion-search',
+    id: taskID,
+    label: taskID,
+    query: taskID
+  };
 }
 
 function uniqueGitTaskIDs(taskIDs: GitTaskID[]): GitTaskID[] {

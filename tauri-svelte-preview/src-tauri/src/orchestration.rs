@@ -911,9 +911,7 @@ fn orchestration_status_rank(status: &str) -> u8 {
     if normalized.is_empty() {
         return 0;
     }
-    if normalized.contains("fail")
-        || normalized.contains("error")
-        || normalized.contains("cancel")
+    if normalized.contains("fail") || normalized.contains("error") || normalized.contains("cancel")
     {
         return 6;
     }

@@ -200,6 +200,26 @@ export function sourceDockGroupSize(
   return groupByID(normalizeSourceDockLayout(layout).groups, groupID).size;
 }
 
+export function resizeSourceDockGroups(
+  layout: SourceDockLayout,
+  sizesByGroupID: Partial<Record<SourceDockGroupID, number>>
+): SourceDockLayout {
+  const normalized = normalizeSourceDockLayout(layout);
+  let nextLayout = normalized;
+
+  for (const groupID of dockGroupIDs) {
+    const size = sizesByGroupID[groupID];
+    if (size === undefined) continue;
+
+    nextLayout = resizeSourceDockGroup(nextLayout, groupID, size);
+  }
+
+  return normalizeSourceDockLayout({
+    ...nextLayout,
+    preset: normalized.preset
+  });
+}
+
 export function activateSourceDockPanel(
   layout: SourceDockLayout,
   panelID: SourceDockPanelID

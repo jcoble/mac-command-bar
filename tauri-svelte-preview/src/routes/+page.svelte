@@ -96,6 +96,7 @@
     hideSourceDockPanel,
     moveSourceDockPanel,
     normalizeSourceDockLayout,
+    resizeSourceDockGroups,
     resizeSourceDockGroup,
     showSourceDockPanel,
     sourceDockGroupSize,
@@ -160,6 +161,7 @@
     normalizeProjectPath,
     navigateSourceHistoryBack,
     navigateSourceHistoryForward,
+    parseStoredSourceScanCache,
     parseQuickOpenQuery,
     previewFromContent,
     pushSourceNavigationHistory,
@@ -293,6 +295,8 @@
   const customProjectRootsStorageKey = 'mac-command-bar.source-browser.custom-project-roots';
   const selectedProjectStorageKey = 'mac-command-bar.source-browser.selected-project';
   const selectedSourcePathStorageKey = 'mac-command-bar.source-browser.selected-source-paths';
+  const sourceScanCacheStorageKey = 'mac-command-bar.source-browser.source-scan-cache';
+  const sourceScanCacheSignatureVersion = 'source-scan-cache-v3';
   const recentSourceRecordsStorageKey = 'mac-command-bar.source-browser.recent-source-records';
   const openSourceTabsStorageKey = 'mac-command-bar.source-browser.open-source-tabs';
   const sourceActivityModeStorageKey = 'mac-command-bar.source-browser.activity-mode';
@@ -338,7 +342,7 @@
     'TSK-192':
       'https://app.notion.com/p/TSK-192-Add-conversation-workspace-restore-snapshots-37c394b0689d810d9d74e798a144a3e9'
   };
-  const sourceScanCacheMaxAgeMs = 5 * 60 * 1000;
+  const sourceScanCacheMaxAgeMs = 12 * 60 * 60 * 1000;
   const maxSourceScanCacheEntries = 8;
   const suspiciousSourceIndexFileThreshold = 24;
   const sourceTreeRowHeight = 30;
@@ -348,7 +352,7 @@
   const sidePaneMinWidth = 40;
   const sidePaneMaxWidth = 1600;
   const sidePaneCollapseThreshold = 48;
-  const sidePaneRailOnlyThreshold = 118;
+  const sidePaneRailOnlyThreshold = 260;
   const editorInsightDefaultWidth = 260;
   const editorInsightMinWidth = 96;
   const editorInsightMaxWidth = 1200;
@@ -357,7 +361,7 @@
   const contextPaneMinWidth = 34;
   const contextPaneMaxWidth = 1600;
   const contextPaneCollapseThreshold = 30;
-  const contextPaneRailOnlyThreshold = 160;
+  const contextPaneRailOnlyThreshold = 220;
   const contextPaneDefaultHeight = 260;
   const contextPaneMinHeight = 96;
   const contextPaneMaxHeight = 1100;
@@ -930,14 +934,18 @@
   );
   let sourceScanNeedsAttention = $derived(sourceScanHealth.needsAttention);
   let sourceScanHealthNote = $derived(sourceScanHealth.needsAttention ? sourceScanHealth.summary : '');
+  let selectedProjectSourceScanCacheSignature = $derived(sourceScanCacheSignatureForProject(selectedProject));
   let selectedProjectIndexEntry = $derived(
-    getSourceScanCacheEntry(
-      sourceScanCache,
-      selectedProject,
-      expandedSourceScanLimit,
-      Date.now(),
-      sourceScanCacheMaxAgeMs
-    )
+    selectedProjectSourceScanCacheSignature
+      ? getSourceScanCacheEntry(
+          sourceScanCache,
+          selectedProject,
+          expandedSourceScanLimit,
+          Date.now(),
+          sourceScanCacheMaxAgeMs,
+          selectedProjectSourceScanCacheSignature
+        )
+      : null
   );
   let selectedProjectScanMode = $derived(sourceScanModeByProject[selectedProject.id] ?? 'idle');
   let selectedProjectScanEvidence = $derived(
@@ -2842,15 +2850,18 @@
   ) {
     const generation = ++scanGeneration;
     const scanLimit = options.limit ?? expandedSourceScanLimit;
-    const cachedScan = options.force
-      ? null
-      : getSourceScanCacheEntry(
-          sourceScanCache,
-          project,
-          scanLimit,
-          Date.now(),
-          sourceScanCacheMaxAgeMs
-        );
+    const sourceSignature = sourceScanCacheSignatureForProject(project);
+    const cachedScan =
+      options.force || !sourceSignature
+        ? null
+        : getSourceScanCacheEntry(
+            sourceScanCache,
+            project,
+            scanLimit,
+            Date.now(),
+            sourceScanCacheMaxAgeMs,
+            sourceSignature
+          );
 
     const cachedScanNeedsRepair =
       cachedScan !== null &&
@@ -2858,6 +2869,7 @@
 
     if (cachedScanNeedsRepair) {
       sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+      persistSourceScanCache(sourceScanCache);
       setSourceScanMode(project.id, 'repair');
       fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
     } else if (cachedScan) {
@@ -2921,6 +2933,7 @@
         )
       ) {
         sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        persistSourceScanCache(sourceScanCache);
         setSourceScanMode(project.id, 'repair');
         fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
         await scanProject(project, preferredPath, {
@@ -2933,7 +2946,8 @@
       }
 
       const shouldCacheScanResult = !(options.skipTinyIndexRepair && suspiciousScanResult);
-      if (shouldCacheScanResult) {
+      const nextSourceSignature = sourceScanCacheSignatureForProject(project);
+      if (shouldCacheScanResult && nextSourceSignature) {
         sourceScanCache = upsertSourceScanCacheEntry(
           sourceScanCache,
           project,
@@ -2942,10 +2956,13 @@
           Date.now(),
           maxSourceScanCacheEntries,
           tauriScan.truncated,
-          tauriScan.stats
+          tauriScan.stats,
+          nextSourceSignature
         );
-      } else {
+        persistSourceScanCache(sourceScanCache);
+      } else if (!shouldCacheScanResult) {
         sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        persistSourceScanCache(sourceScanCache);
       }
       clearBackgroundIndexError(project.id);
 
@@ -3062,12 +3079,14 @@
 
   function resetProjectScanCache(project: ProjectRoot = selectedProject, limit = expandedSourceScanLimit) {
     sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+    persistSourceScanCache(sourceScanCache);
     fileActionStatus = `Index reset for ${project.name}`;
     return scanProject(project, selectedSourcePaths[project.id], { force: true, limit });
   }
 
   function resetProjectOnboardingScanState(project: ProjectRoot) {
     sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+    persistSourceScanCache(sourceScanCache);
     clearBackgroundIndexError(project.id);
     const nextScanModes = { ...sourceScanModeByProject };
     delete nextScanModes[project.id];
@@ -3123,7 +3142,8 @@
       Date.now(),
       sourceScanCacheMaxAgeMs,
       expandedSourceScanLimit,
-      suspiciousSourceIndexFileThreshold
+      suspiciousSourceIndexFileThreshold,
+      sourceScanCacheSignatureForProject
     );
 
     for (const project of projectsToIndex) {
@@ -3158,6 +3178,7 @@
         )
       ) {
         sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+        persistSourceScanCache(sourceScanCache);
         setSourceScanMode(project.id, 'tiny');
         backgroundIndexErrorByProject = {
           ...backgroundIndexErrorByProject,
@@ -3166,16 +3187,21 @@
         return;
       }
 
-      sourceScanCache = upsertSourceScanCacheEntry(
-        sourceScanCache,
-        project,
-        nextRecords,
-        tauriScan.limit,
-        Date.now(),
-        maxSourceScanCacheEntries,
-        tauriScan.truncated,
-        tauriScan.stats
-      );
+      const sourceSignature = sourceScanCacheSignatureForProject(project);
+      if (sourceSignature) {
+        sourceScanCache = upsertSourceScanCacheEntry(
+          sourceScanCache,
+          project,
+          nextRecords,
+          tauriScan.limit,
+          Date.now(),
+          maxSourceScanCacheEntries,
+          tauriScan.truncated,
+          tauriScan.stats,
+          sourceSignature
+        );
+        persistSourceScanCache(sourceScanCache);
+      }
       setSourceScanMode(project.id, 'background');
       clearBackgroundIndexError(project.id);
     } catch (indexError) {
@@ -3283,6 +3309,41 @@
     } finally {
       gitRepositorySummariesLoading = false;
     }
+  }
+
+  function sourceScanCacheSignatureForProject(project: ProjectRoot): string | null {
+    const projectPath = normalizeProjectPath(project.path);
+    const summary =
+      gitRepositorySummaries.find(
+        (candidate) =>
+          candidate.projectID === project.id ||
+          normalizeProjectPath(candidate.path) === projectPath
+      ) ?? null;
+
+    if (summary && !summary.error) {
+      return [
+        sourceScanCacheSignatureVersion,
+        'git',
+        projectPath,
+        normalizeProjectPath(summary.path),
+        summary.branch || 'detached',
+        summary.lastCommitSha || 'no-head',
+        summary.ahead,
+        summary.behind,
+        summary.stagedCount,
+        summary.unstagedCount,
+        summary.untrackedCount,
+        summary.dirtyCount,
+        summary.dirtySinceEpochMs ?? 0,
+        summary.dirtyStatusFingerprint
+      ].join('|');
+    }
+
+    if (gitRepositorySummariesLoading || gitRepositorySummaries.length === 0) {
+      return null;
+    }
+
+    return [sourceScanCacheSignatureVersion, 'path', projectPath].join('|');
   }
 
   async function loadGitCommitHistory(project: ProjectRoot = selectedProject) {
@@ -3436,10 +3497,12 @@
         dirtyCount: 0,
         ahead: 0,
         behind: 0,
+        hasUpstream: true,
         lastCommitSha: isMacCommandBar ? 'b022003' : null,
         lastCommitSubject: isMacCommandBar ? 'feat: add TSK-127 git history panel' : null,
         lastCommitAt: isMacCommandBar ? new Date().toISOString() : null,
         dirtySinceEpochMs: null,
+        dirtyStatusFingerprint: 'cbf29ce484222325',
         error: null
       };
     });
@@ -6485,7 +6548,7 @@
         untrackedCount: gitSummary?.untrackedCount ?? 0,
         aheadCount: gitSummary?.ahead ?? (worktree.hasUnmergedCommits ? 1 : 0),
         behindCount: gitSummary?.behind ?? 0,
-        hasUpstream: gitSummary ? true : !worktree.hasUnmergedCommits,
+        hasUpstream: gitSummary?.hasUpstream ?? !worktree.hasUnmergedCommits,
         lastActivityAgeDays: projectWorktreeLastActivityAgeDays(worktree),
         activeSessionCount: safety.activeSessionCount,
         savedWorkspaceCount: safety.savedWorkspaceCount,
@@ -10424,6 +10487,44 @@
     return normalizeSourceDockLayout(nextLayout);
   }
 
+  function sourceDockLayoutWithStoredPaneSizes(layout: SourceDockLayout): SourceDockLayout {
+    const normalizedLayout = normalizeSourceDockLayout(layout);
+    const activityGroupID = dockGroupIDForPanel(normalizedLayout, 'activity');
+    const contextGroupID = dockGroupIDForPanel(normalizedLayout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(normalizedLayout, 'insights');
+    const sizesByGroupID: Partial<Record<SourceDockGroupID, number>> = {};
+
+    if (activityGroupID === 'left' || activityGroupID === 'right') {
+      sizesByGroupID[activityGroupID] = sidePaneWidth;
+    }
+    if (contextGroupID === 'bottom') {
+      sizesByGroupID[contextGroupID] = contextPaneHeight;
+    } else if (contextGroupID === 'left' || contextGroupID === 'right') {
+      sizesByGroupID[contextGroupID] = contextPaneWidth;
+    }
+    if (insightsGroupID !== null && insightsGroupID !== contextGroupID) {
+      sizesByGroupID[insightsGroupID] = editorInsightWidth;
+    }
+
+    return resizeSourceDockGroups(normalizedLayout, sizesByGroupID);
+  }
+
+  function restoreLegacyPaneWidth(
+    storedWidth: number,
+    expandedWidth: number,
+    config: SourcePaneSizingConfig
+  ) {
+    const paneState = deriveSourcePaneState({ visible: true, size: storedWidth }, config);
+    if (paneState !== 'rail') return storedWidth;
+
+    const minState = deriveSourcePaneState({ visible: true, size: config.minSize }, config);
+    return minState === 'rail' && storedWidth <= config.minSize
+      ? storedWidth
+      : restoreSourcePaneExpandedSize(storedWidth, config, {
+          previousExpandedSize: expandedWidth
+        });
+  }
+
   function dockGroupIDForPanel(layout: SourceDockLayout, panelID: SourceDockPanelID): SourceDockGroupID | null {
     return layout.groups.find((group) => group.panelIDs.includes(panelID))?.id ?? null;
   }
@@ -11505,6 +11606,11 @@
     window.localStorage.setItem(selectedSourcePathStorageKey, JSON.stringify(paths));
   }
 
+  function persistSourceScanCache(cache: SourceScanCache) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(sourceScanCacheStorageKey, JSON.stringify(cache));
+  }
+
   function persistRecentSourceRecords(recentRecords: SourceRecentRecord[]) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
@@ -11564,6 +11670,24 @@
             typeof entry[1] === 'string' &&
             entry[1].trim().length > 0
         )
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  function loadStoredSourceScanCache(): SourceScanCache {
+    if (typeof window === 'undefined') return {};
+
+    try {
+      const storedValue = window.localStorage.getItem(sourceScanCacheStorageKey);
+      if (!storedValue) return {};
+
+      return parseStoredSourceScanCache(
+        JSON.parse(storedValue),
+        Date.now(),
+        sourceScanCacheMaxAgeMs,
+        maxSourceScanCacheEntries
       );
     } catch {
       return {};
@@ -11893,6 +12017,7 @@
     persistCustomProjectRoots(nextCustomProjectRoots);
     persistSelectedSourcePaths(nextSelectedSourcePaths);
     sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
+    persistSourceScanCache(sourceScanCache);
     fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
 
     await activateProject(repairedProject, {
@@ -12003,23 +12128,28 @@
     );
     if (repairedNestedRoot || activationGeneration !== projectActivationGeneration) return;
 
+    await loadGitRepositorySummaries(projects);
+    if (activationGeneration !== projectActivationGeneration) return;
+
     void loadProjectGitStatus(project);
     void loadGitCommitHistory(project);
     void loadRuntimeContexts(projects);
     void loadProjectWorktrees(project);
-    void loadGitRepositorySummaries(projects);
     void loadAgentSessions();
     void loadOrchestrationRuns(projects);
 
-    const cachedScan = options.forceScan
-      ? null
-      : getSourceScanCacheEntry(
-          sourceScanCache,
-          project,
-          scanLimit,
-          Date.now(),
-          sourceScanCacheMaxAgeMs
-        );
+    const sourceSignature = sourceScanCacheSignatureForProject(project);
+    const cachedScan =
+      options.forceScan || !sourceSignature
+        ? null
+        : getSourceScanCacheEntry(
+            sourceScanCache,
+            project,
+            scanLimit,
+            Date.now(),
+            sourceScanCacheMaxAgeMs,
+            sourceSignature
+          );
     const activationScanPlan = buildProjectActivationScanPlan({
       project,
       entry: cachedScan,
@@ -12249,6 +12379,7 @@
     const storedProjectOptions = mergeProjectRoots(defaultProjectRoots, storedCustomProjectRoots);
     const storedProjectID = loadStoredSelectedProjectID(storedProjectOptions);
     const storedSelectedSourcePaths = loadStoredSelectedSourcePaths();
+    const storedSourceScanCache = loadStoredSourceScanCache();
     const storedRecentSourceRecords = loadStoredRecentSourceRecords();
     const storedOpenSourceTabs = loadStoredOpenSourceTabs();
     const storedWorkspaceSnapshots = loadStoredWorkspaceSnapshots();
@@ -12312,6 +12443,7 @@
       persistCustomProjectRoots(startupCustomProjectRoots);
     }
     selectedSourcePaths = storedSelectedSourcePaths;
+    sourceScanCache = storedSourceScanCache;
     recentSourceRecords = storedRecentSourceRecords;
     openSourceTabs = storedOpenSourceTabs;
     workspaceSnapshots = storedWorkspaceSnapshots;
@@ -12328,11 +12460,17 @@
     browserUrl = storedBrowserDockUrl;
     browserInputUrl = storedBrowserDockUrl;
     sidePanePosition = migrateSourceLayout ? compactPreset.sidePanePosition : storedSidePanePosition;
-    sidePaneWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneWidth;
+    sidePaneWidth = migrateSourceLayout
+      ? compactPreset.sidePaneWidth
+      : restoreLegacyPaneWidth(storedSidePaneWidth, storedSidePaneExpandedWidth, activityPaneSizingConfig);
     sidePaneExpandedWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneExpandedWidth;
     editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
     editorInsightCollapsed = migrateSourceLayout ? compactPreset.editorInsightCollapsed : storedEditorInsightCollapsed;
-    contextPaneWidth = storedContextPaneWidth;
+    contextPaneWidth = restoreLegacyPaneWidth(
+      storedContextPaneWidth,
+      storedContextPaneExpandedWidth,
+      contextPaneWidthSizingConfig
+    );
     contextPaneExpandedWidth = storedContextPaneExpandedWidth;
     contextPaneHeight = storedContextPaneHeight;
     contextPanelCollapsed = migrateSourceLayout ? compactPreset.contextPanelCollapsed : storedContextPanelCollapsed;
@@ -12340,11 +12478,13 @@
     contextPanelPlacement = migrateSourceLayout ? compactPreset.contextPanelPlacement : storedContextPanelPlacement;
     hiddenContextCardIDs = storedHiddenContextCardIDs;
     activeContextCardID = storedActiveContextCardID;
-    sourceDockLayout = migrateSourceLayout || !storedSourceDockLayout
-      ? sourceDockLayoutFromWorkspace()
-      : storedSourceDockLayout;
+    const restoredSourceDockLayout =
+      !migrateSourceLayout && storedSourceDockLayout
+        ? sourceDockLayoutWithStoredPaneSizes(storedSourceDockLayout)
+        : null;
+    sourceDockLayout = restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace();
     if (!migrateSourceLayout && storedSourceDockLayout) {
-      syncSourceDockLayoutToWorkspace(storedSourceDockLayout);
+      syncSourceDockLayoutToWorkspace(sourceDockLayout);
     }
     persistSelectedProjectID(startupProject.id);
     if (migrateSourceLayout) {
@@ -12374,12 +12514,13 @@
       void loadGitCommitHistory(startupProject);
       void loadRuntimeContexts(startupProjectOptions);
       void loadProjectWorktrees(startupProject);
-      void loadGitRepositorySummaries(startupProjectOptions);
       void loadAgentSessions();
       void loadOrchestrationRuns(startupProjectOptions);
-      void scanProject(startupProject, storedSelectedSourcePaths[startupProject.id], { limit: expandedSourceScanLimit }).then(
-        () => indexProjectsInBackground(startupProjectOptions)
-      );
+      void (async () => {
+        await loadGitRepositorySummaries(startupProjectOptions);
+        await scanProject(startupProject, storedSelectedSourcePaths[startupProject.id], { limit: expandedSourceScanLimit });
+        await indexProjectsInBackground(startupProjectOptions);
+      })();
     }
 
     return () => {
@@ -20662,6 +20803,10 @@
     gap: 0;
   }
 
+  .workspace-arrangement.context-side.context-rail-only {
+    grid-template-columns: minmax(0, 1fr) 6px 34px;
+  }
+
   .workspace-arrangement.context-bottom {
     grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height));
     gap: 0;
@@ -24735,7 +24880,41 @@
     }
 
     .workspace-arrangement.context-side:not(.context-rail-only) {
-      grid-template-columns: minmax(0, 1fr) 6px minmax(160px, var(--context-pane-width));
+      grid-template-columns: minmax(0, 1fr) 6px 34px;
+    }
+
+    .workspace-arrangement.context-side:not(.context-rail-only) .workspace-context-column {
+      padding-right: 3px;
+      padding-left: 3px;
+    }
+
+    .workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid {
+      grid-template-columns: 28px;
+      grid-template-rows: minmax(0, 1fr);
+      gap: 0;
+      overflow: hidden;
+      padding-right: 0;
+      scrollbar-gutter: auto;
+    }
+
+    .workspace-arrangement.context-side:not(.context-rail-only) .context-restore-button,
+    .workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid > section {
+      display: none;
+    }
+
+    .workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs {
+      grid-column: 1;
+      grid-row: 1;
+      width: 28px;
+      max-width: 28px;
+      padding: 2px;
+      background: rgba(10, 12, 12, 0.5);
+    }
+
+    .workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs button {
+      width: 24px;
+      min-width: 24px;
+      height: 24px;
     }
   }
 

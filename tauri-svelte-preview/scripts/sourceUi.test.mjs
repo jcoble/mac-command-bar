@@ -41,12 +41,12 @@ function constNumber(source, constName) {
   return Number(match.groups.value);
 }
 
-function sideContextCssMinimum() {
-  const match = /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*6px\s*minmax\((?<minimum>\d+)px,\s*var\(--context-pane-width\)\)\s*;/m.exec(
+function sideContextResponsiveRailWidth() {
+  const match = /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*6px\s*(?<width>\d+)px\s*;/m.exec(
     blockFor('.workspace-arrangement.context-side:not(.context-rail-only)')
   );
-  assert.ok(match?.groups?.minimum, 'Side context non-rail grid should use a pixel minimum');
-  return Number(match.groups.minimum);
+  assert.ok(match?.groups?.width, 'Split-window side context rule should use a compact pixel rail');
+  return Number(match.groups.width);
 }
 
 assertDeclaration('.source-browser-stack', 'overflow: hidden');
@@ -181,6 +181,7 @@ assertDeclaration('.context-card-tab-icon', 'display: none');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'overflow-y: auto');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-columns: 28px minmax(0, 1fr)');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-rows: auto minmax(0, 1fr)');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only', 'grid-template-columns: minmax(0, 1fr) 6px 34px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'grid-template-columns: 28px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'overflow: hidden');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid > section', 'display: none');
@@ -194,22 +195,22 @@ assert.ok(
   'Side context rail should keep icon tabs visible while card bodies are hidden'
 );
 const contextPaneRailOnlyThreshold = constNumber(pageSource, 'contextPaneRailOnlyThreshold');
-const sideCompactCardMinimum = sideContextCssMinimum();
+const sideResponsiveRailWidth = sideContextResponsiveRailWidth();
 assert.equal(
   contextPaneRailOnlyThreshold,
-  160,
+  220,
   'Side context rail-only threshold should match the compact-card minimum'
 );
-assert.equal(sideCompactCardMinimum, 160, 'Side context non-rail CSS minimum should stay at 160px');
 assert.equal(
-  contextPaneRailOnlyThreshold,
-  sideCompactCardMinimum,
-  'Side context rail threshold and non-rail CSS minimum should stay aligned'
+  sideResponsiveRailWidth,
+  34,
+  'Split-window breakpoint should reduce the side context column to its icon rail'
 );
 assert.ok(
-  pageSource.includes('.workspace-arrangement.context-side:not(.context-rail-only) {\n      grid-template-columns: minmax(0, 1fr) 6px minmax(160px, var(--context-pane-width));') &&
-    !pageSource.includes('.workspace-arrangement.context-side .context-panel-grid > section {\n      display: none;'),
-  'Split-window breakpoint should preserve a usable side context pane unless the user explicitly collapses it'
+  pageSource.includes('.workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid > section') &&
+    pageSource.includes('.workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs button') &&
+    pageSource.includes('width: 24px;'),
+  'Split-window breakpoint should hide side-card bodies while keeping icon tabs available'
 );
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'flex-direction: column');
 assertDeclaration('.workspace-arrangement.context-side .context-stack-tabs', 'width: 28px');
@@ -404,10 +405,10 @@ assert.ok(
   'Startup should only auto-restore an explicitly active workspace snapshot'
 );
 assert.ok(pageSource.includes('const sidePaneMinWidth = 40'), 'Activity pane should shrink close to an icon rail instead of blocking split-window layouts');
-assert.ok(pageSource.includes('const sidePaneRailOnlyThreshold = 118'), 'Activity pane should have an explicit rail-only breakpoint');
+assert.ok(pageSource.includes('const sidePaneRailOnlyThreshold = 260'), 'Activity pane should rail before explorer controls become clipped');
 assert.ok(pageSource.includes('const contextPaneMinWidth = 34'), 'Context pane should shrink to a compact icon rail');
 assert.ok(pageSource.includes('const contextPaneMaxWidth = 1600'), 'Context pane should allow wide manual resizing instead of capping early');
-assert.ok(pageSource.includes('const contextPaneRailOnlyThreshold = 160'), 'Context pane rail breakpoint should align with the usable side-card minimum');
+assert.ok(pageSource.includes('const contextPaneRailOnlyThreshold = 220'), 'Context pane rail breakpoint should align with the usable side-card minimum');
 assert.ok(pageSource.includes('class:activity-rail-only={activityPaneRailOnly()}'), 'Source shell should expose rail-only activity mode through a class');
 assert.ok(pageSource.includes('class:context-rail-only={contextPaneRailOnly()}'), 'Workspace should expose rail-only context mode through a class');
 assert.ok(pageSource.includes('function expandActivityPaneFromRail'), 'Activity rail should have an explicit expand helper');
@@ -524,8 +525,8 @@ assert.ok(
   'Worktree safety summary should include saved workspace snapshot ownership'
 );
 assert.ok(
-  pageSource.includes('hasUpstream: gitSummary ? true : !worktree.hasUnmergedCommits'),
-  'Worktree cleanup planner should distinguish Git summaries from no-upstream fallback commits'
+  pageSource.includes('hasUpstream: gitSummary?.hasUpstream ?? !worktree.hasUnmergedCommits'),
+  'Worktree cleanup planner should use native upstream awareness when Git summaries are present'
 );
 assert.ok(pageSource.includes('savedWorkspaceCount: safety.savedWorkspaceCount'), 'Cleanup planner should block saved workspace ownership');
 assert.ok(pageSource.includes('isLocked: worktree.isLocked'), 'Cleanup planner should block locked worktrees');
@@ -1468,8 +1469,20 @@ assert.ok(
   'Startup should request an expanded fallback project scan'
 );
 assert.ok(
-  pageSource.includes('getSourceScanCacheEntry(\n      sourceScanCache,\n      selectedProject,\n      expandedSourceScanLimit'),
-  'Selected project index status should describe the expanded project scan cache'
+  pageSource.includes('await loadGitRepositorySummaries(startupProjectOptions);') &&
+    !pageSource.includes('void loadGitRepositorySummaries(startupProjectOptions);'),
+  'Startup should wait for Git summaries before the first source scan so cache signatures are available'
+);
+assert.ok(
+  pageSource.includes('restoreLegacyPaneWidth(storedSidePaneWidth, storedSidePaneExpandedWidth, activityPaneSizingConfig)') &&
+    pageSource.includes('restoreLegacyPaneWidth(\n      storedContextPaneWidth,'),
+  'Startup should migrate legacy narrow pane widths back to expanded sizes before restoring Dockview'
+);
+assert.ok(
+  pageSource.includes('let selectedProjectSourceScanCacheSignature = $derived(sourceScanCacheSignatureForProject(selectedProject));') &&
+    pageSource.includes('selectedProjectSourceScanCacheSignature\n      ? getSourceScanCacheEntry(') &&
+    pageSource.includes('selectedProjectSourceScanCacheSignature\n        )\n      : null'),
+  'Selected project index status should only trust signature-matched expanded project scan cache entries'
 );
 assert.ok(
   /void activateProject\(nextProject,\s*\{[\s\S]*?projects: projectOptions,[\s\S]*?scanLimit: expandedSourceScanLimit,[\s\S]*?clearFileFilter: true[\s\S]*?\}\);/.test(pageSource),
@@ -1513,8 +1526,8 @@ assert.ok(
   'Background project indexing should use the same expanded project scan limit'
 );
 assert.ok(
-  pageSource.includes('suspiciousSourceIndexFileThreshold\n    );'),
-  'Background project indexing should use the same suspicious-index threshold'
+  pageSource.includes('suspiciousSourceIndexFileThreshold,\n      sourceScanCacheSignatureForProject\n    );'),
+  'Background project indexing should use the same suspicious-index threshold and project freshness signature'
 );
 assert.ok(
   pageSource.includes('const suspiciousSourceIndexFileThreshold = 24'),

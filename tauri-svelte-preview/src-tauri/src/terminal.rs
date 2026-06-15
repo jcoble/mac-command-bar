@@ -470,11 +470,15 @@ mod tests {
             None
         );
         assert!(!write_terminal_session(&registry, "missing-terminal", "echo nope\n").unwrap());
-        assert!(!resize_terminal_session(&registry, "missing-terminal", Some(100), Some(32))
-            .unwrap());
+        assert!(
+            !resize_terminal_session(&registry, "missing-terminal", Some(100), Some(32)).unwrap()
+        );
         assert!(!close_terminal_session(&registry, "missing-terminal").unwrap());
 
-        assert_eq!(read_terminal_session_scrollback(&registry, "   ").unwrap(), None);
+        assert_eq!(
+            read_terminal_session_scrollback(&registry, "   ").unwrap(),
+            None
+        );
         assert!(!write_terminal_session(&registry, "   ", "echo nope\n").unwrap());
         assert!(!resize_terminal_session(&registry, "   ", Some(100), Some(32)).unwrap());
         assert!(!close_terminal_session(&registry, "   ").unwrap());

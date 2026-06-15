@@ -73,6 +73,7 @@ export type ProjectGitStatus = {
   branch: string | null;
   ahead: number;
   behind: number;
+  hasUpstream: boolean;
   files: ProjectGitFileStatus[];
 };
 
@@ -128,10 +129,12 @@ export type GitRepositorySummary = {
   dirtyCount: number;
   ahead: number;
   behind: number;
+  hasUpstream: boolean;
   lastCommitSha: string | null;
   lastCommitSubject: string | null;
   lastCommitAt: string | null;
   dirtySinceEpochMs: number | null;
+  dirtyStatusFingerprint: string;
   error: string | null;
 };
 

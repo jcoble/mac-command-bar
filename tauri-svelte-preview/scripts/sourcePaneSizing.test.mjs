@@ -12,7 +12,7 @@ const sidePaneConfig = {
   minSize: 40,
   maxSize: 1600,
   collapseThreshold: 48,
-  railThreshold: 118
+  railThreshold: 260
 };
 const sidePaneRailSizeConfig = {
   ...sidePaneConfig,
@@ -24,7 +24,7 @@ const contextPaneConfig = {
   minSize: 34,
   maxSize: 1600,
   collapseThreshold: 30,
-  railThreshold: 160
+  railThreshold: 220
 };
 const contextPaneRailSizeConfig = {
   ...contextPaneConfig,
@@ -54,7 +54,7 @@ assert.equal(
   'visible horizontal panes at or below the rail threshold should derive rail state'
 );
 assert.equal(
-  deriveSourcePaneState({ visible: true, size: 119 }, sidePaneConfig),
+  deriveSourcePaneState({ visible: true, size: 261 }, sidePaneConfig),
   'expanded',
   'visible horizontal panes above the rail threshold should derive expanded state'
 );
@@ -85,8 +85,13 @@ assert.deepEqual(
   'context pointer finish below the compact-card minimum should snap to the rail size'
 );
 assert.deepEqual(
-  finishSourcePanePointerSize(180, contextPaneRailSizeConfig),
-  { state: 'expanded', size: 180, persistedSize: 180 },
+  finishSourcePanePointerSize(220, contextPaneRailSizeConfig),
+  { state: 'rail', size: 34, persistedSize: 34 },
+  'context pointer finish at the compact-card minimum should still snap to the rail size'
+);
+assert.deepEqual(
+  finishSourcePanePointerSize(221, contextPaneRailSizeConfig),
+  { state: 'expanded', size: 221, persistedSize: 221 },
   'context pointer finish above the compact-card minimum should expand without a middle band'
 );
 assert.deepEqual(

@@ -352,6 +352,7 @@ export type SourceScanCacheEntry = {
   key: string;
   projectID: string;
   projectPath: string;
+  sourceSignature?: string;
   limit: number;
   truncated: boolean;
   records: SourceRecord[];
@@ -1230,13 +1231,17 @@ export function selectBackgroundIndexProjects(
   now: number,
   maxAgeMs: number,
   limit: number,
-  suspiciousThreshold = 0
+  suspiciousThreshold = 0,
+  sourceSignatureForProject?: (project: ProjectRoot) => string | null
 ): ProjectRoot[] {
   return projects.filter(
     (project) => {
       if (project.id === activeProjectID) return false;
 
-      const cacheEntry = getSourceScanCacheEntry(cache, project, limit, now, maxAgeMs);
+      const sourceSignature = sourceSignatureForProject?.(project) ?? null;
+      if (sourceSignatureForProject && !sourceSignature) return true;
+
+      const cacheEntry = getSourceScanCacheEntry(cache, project, limit, now, maxAgeMs, sourceSignature);
       return (
         cacheEntry === null ||
         sourceScanCacheEntryNeedsRepair(cacheEntry, limit, suspiciousThreshold)
@@ -2101,16 +2106,19 @@ export function getSourceScanCacheEntry(
   project: ProjectRoot,
   limit: number,
   now = Date.now(),
-  maxAgeMs = 5 * 60 * 1000
+  maxAgeMs = 5 * 60 * 1000,
+  sourceSignature?: string | null
 ): SourceScanCacheEntry | null {
   const projectPath = normalizeProjectPath(project.path);
   const requestedLimit = Math.max(0, Math.floor(limit));
+  const expectedSourceSignature = normalizeSourceScanCacheSignature(sourceSignature);
   const entries = Object.values(cache)
     .filter(
       (entry) =>
         entry.projectPath === projectPath &&
         entry.limit >= requestedLimit &&
-        now - entry.scannedAt <= maxAgeMs
+        now - entry.scannedAt <= maxAgeMs &&
+        (!expectedSourceSignature || entry.sourceSignature === expectedSourceSignature)
     )
     .sort((left, right) => left.limit - right.limit || right.scannedAt - left.scannedAt);
 
@@ -2125,18 +2133,21 @@ export function upsertSourceScanCacheEntry(
   scannedAt = Date.now(),
   maxEntries = 8,
   truncated = false,
-  stats?: SourceScanStats
+  stats?: SourceScanStats,
+  sourceSignature?: string | null
 ): SourceScanCache {
   const cappedMaxEntries = Math.max(0, Math.floor(maxEntries));
   if (cappedMaxEntries === 0) return {};
 
   const key = sourceScanCacheKey(project, limit);
+  const normalizedSourceSignature = normalizeSourceScanCacheSignature(sourceSignature);
   const nextEntries = [
     ...Object.values(cache).filter((entry) => entry.key !== key),
     {
       key,
       projectID: project.id,
       projectPath: normalizeProjectPath(project.path),
+      ...(normalizedSourceSignature ? { sourceSignature: normalizedSourceSignature } : {}),
       limit,
       truncated,
       records,
@@ -2148,6 +2159,148 @@ export function upsertSourceScanCacheEntry(
     .slice(-cappedMaxEntries);
 
   return Object.fromEntries(nextEntries.map((entry) => [entry.key, entry]));
+}
+
+export function parseStoredSourceScanCache(
+  value: unknown,
+  now = Date.now(),
+  maxAgeMs = 12 * 60 * 60 * 1000,
+  maxEntries = 8
+): SourceScanCache {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const safeNow = normalSourceScanTimestamp(now);
+  const safeMaxAgeMs = Math.max(0, Math.floor(maxAgeMs));
+  const safeMaxEntries = Math.max(0, Math.floor(maxEntries));
+  if (safeMaxEntries === 0) return {};
+
+  const entries = Object.values(value)
+    .map(parseStoredSourceScanCacheEntry)
+    .filter((entry): entry is SourceScanCacheEntry => {
+      if (!entry) return false;
+      return safeNow - entry.scannedAt <= safeMaxAgeMs;
+    })
+    .sort((left, right) => left.scannedAt - right.scannedAt)
+    .slice(-safeMaxEntries);
+
+  return Object.fromEntries(entries.map((entry) => [entry.key, entry]));
+}
+
+function parseStoredSourceScanCacheEntry(value: unknown): SourceScanCacheEntry | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const entry = value as Partial<SourceScanCacheEntry>;
+  if (
+    typeof entry.projectID !== 'string' ||
+    typeof entry.projectPath !== 'string' ||
+    typeof entry.sourceSignature !== 'string' ||
+    typeof entry.limit !== 'number' ||
+    typeof entry.truncated !== 'boolean' ||
+    typeof entry.scannedAt !== 'number' ||
+    !Array.isArray(entry.records) ||
+    !Number.isFinite(entry.limit) ||
+    !Number.isFinite(entry.scannedAt)
+  ) {
+    return null;
+  }
+
+  const projectPath = normalizeProjectPath(entry.projectPath);
+  const sourceSignature = normalizeSourceScanCacheSignature(entry.sourceSignature);
+  const limit = Math.max(0, Math.floor(entry.limit));
+  const records = entry.records
+    .map(parseStoredSourceRecord)
+    .filter((record): record is SourceRecord => record !== null);
+
+  if (!entry.projectID.trim() || !projectPath || !sourceSignature || records.length !== entry.records.length) {
+    return null;
+  }
+
+  const key = sourceScanCacheKey({ id: entry.projectID, name: entry.projectID, path: projectPath }, limit);
+  return {
+    key,
+    projectID: entry.projectID,
+    projectPath,
+    sourceSignature,
+    limit,
+    truncated: entry.truncated,
+    records,
+    scannedAt: normalSourceScanTimestamp(entry.scannedAt),
+    stats: parseStoredSourceScanStats(entry.stats)
+  };
+}
+
+function parseStoredSourceRecord(value: unknown): SourceRecord | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const record = value as Partial<SourceRecord>;
+  if (
+    typeof record.path !== 'string' ||
+    typeof record.relativePath !== 'string' ||
+    typeof record.fileName !== 'string' ||
+    typeof record.language !== 'string' ||
+    typeof record.byteCount !== 'number' ||
+    !Number.isFinite(record.byteCount)
+  ) {
+    return null;
+  }
+
+  return {
+    path: record.path,
+    relativePath: record.relativePath,
+    fileName: record.fileName,
+    language: record.language,
+    byteCount: Math.max(0, Math.floor(record.byteCount))
+  };
+}
+
+function parseStoredSourceScanStats(value: unknown): SourceScanStats | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+  const stats = value as SourceScanStats;
+  const nextStats: SourceScanStats = {
+    visitedEntries: sourceScanMetric(stats, 'visitedEntries', 'visitedEntryCount'),
+    matchedFiles: sourceScanMetric(stats, 'matchedFiles', 'matchedFileCount'),
+    skippedDirectories: sourceScanMetric(stats, 'skippedDirectories', 'skippedDirectoryCount'),
+    unsupportedFiles: sourceScanMetric(stats, 'unsupportedFiles', 'unsupportedFileCount'),
+    unreadableEntries: sourceScanMetric(stats, 'unreadableEntries', 'unreadableEntryCount')
+  };
+
+  for (const key of [
+    'requestedLimit',
+    'effectiveLimit',
+    'returnedFiles',
+    'returnedCount',
+    'collectionLimit',
+    'visitedEntryCount',
+    'matchedFileCount',
+    'skippedDirectoryCount',
+    'unsupportedFileCount',
+    'unreadableEntryCount'
+  ] as const) {
+    const value = optionalSourceScanMetric(stats[key]);
+    if (value !== null) {
+      nextStats[key] = value;
+    }
+  }
+
+  if (typeof stats.collectionLimitReached === 'boolean') {
+    nextStats.collectionLimitReached = stats.collectionLimitReached;
+  }
+
+  const skippedDirectorySamples = sourceScanSkippedDirectorySamples(stats).filter(isSourceSkippedDirectory);
+  if (skippedDirectorySamples.length > 0) {
+    nextStats.skippedDirectorySamples = skippedDirectorySamples;
+  }
+
+  return nextStats;
+}
+
+function normalSourceScanTimestamp(value: number): number {
+  return Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
+}
+
+function normalizeSourceScanCacheSignature(value: string | null | undefined): string {
+  return String(value ?? '').trim().slice(0, 512);
 }
 
 export function removeSourceScanCacheEntries(

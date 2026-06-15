@@ -5,6 +5,7 @@ import {
   hideSourceDockPanel,
   moveSourceDockPanel,
   normalizeSourceDockLayout,
+  resizeSourceDockGroups,
   resizeSourceDockGroup,
   showSourceDockPanel,
   sourceDockGroupSize,
@@ -125,6 +126,40 @@ assert.equal(
   sourceDockGroupSize(invalidResizeLayout, 'right'),
   330,
   'invalid dock group sizes should fall back to the group default'
+);
+
+const staleRailOnlyLayout = normalizeSourceDockLayout({
+  ...defaultLayout,
+  groups: [
+    { id: 'left', panelIDs: ['activity'], size: 240 },
+    { id: 'center', panelIDs: ['editor'], size: 1 },
+    { id: 'right', panelIDs: ['context', 'insights'], size: 200 },
+    { id: 'bottom', panelIDs: [], size: 260 }
+  ]
+});
+const restoredExpandedLayout = resizeSourceDockGroups(staleRailOnlyLayout, {
+  left: 360,
+  right: 360
+});
+assert.equal(
+  sourceDockGroupSize(restoredExpandedLayout, 'left'),
+  360,
+  'restoring explicit side pane width should replace stale rail-only persisted group size'
+);
+assert.equal(
+  sourceDockGroupSize(restoredExpandedLayout, 'right'),
+  360,
+  'restoring explicit context pane width should replace stale rail-only persisted group size'
+);
+assert.equal(
+  sourceDockGroupSize(staleRailOnlyLayout, 'left'),
+  240,
+  'restoring persisted pane sizes should not mutate the stale input layout'
+);
+assert.equal(
+  restoredExpandedLayout.preset,
+  staleRailOnlyLayout.preset,
+  'restoring persisted pane sizes should not mark the dock preset custom'
 );
 
 const activatedInsights = activateSourceDockPanel(defaultLayout, 'insights');

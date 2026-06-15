@@ -36,6 +36,7 @@ import {
   monacoLanguageForSource,
   navigateSourceHistoryBack,
   navigateSourceHistoryForward,
+  parseStoredSourceScanCache,
   parseQuickOpenQuery,
   pushSourceNavigationHistory,
   rankSourceRecords,
@@ -300,14 +301,55 @@ const scanStats = {
   unsupportedFiles: 4,
   unreadableEntries: 0
 };
-const scanCache = upsertSourceScanCacheEntry({}, project, records, 2_000, 10_000, 8, false, scanStats);
+const sourceSignature = 'source-scan-cache-v3|git|/repo|main|abc123|0|0|0|0|0|0|0|clean';
+const changedSourceSignature = 'source-scan-cache-v3|git|/repo|main|def456|0|0|0|0|0|0|0|clean';
+const scanCache = upsertSourceScanCacheEntry(
+  {},
+  project,
+  records,
+  2_000,
+  10_000,
+  8,
+  false,
+  scanStats,
+  sourceSignature
+);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.records.length, 2);
+assert.equal(
+  getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000, sourceSignature)?.records.length,
+  2
+);
+assert.equal(
+  getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000, changedSourceSignature),
+  null
+);
 assert.deepEqual(getSourceScanCacheEntry(scanCache, project, 2_000, 10_500, 1_000)?.stats, scanStats);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 1_000, 10_500, 1_000)?.limit, 2_000);
 assert.equal(getSourceScanCacheEntry(scanCache, otherProject, 2_000, 10_500, 1_000), null);
 assert.equal(getSourceScanCacheEntry(scanCache, project, 2_000, 12_000, 1_000), null);
 assert.equal(sourceScanCacheEntryNeedsRepair(scanCache['/repo::2000'], 2_000, 0), false);
 assert.equal(sourceScanCacheEntryNeedsRepair(scanCache['/repo::2000'], 2_000, 2), true);
+assert.deepEqual(
+  parseStoredSourceScanCache(
+    {
+      unsigned: { ...scanCache['/repo::2000'], sourceSignature: undefined, scannedAt: 10_000 },
+      stale: { ...scanCache['/repo::2000'], scannedAt: 1_000 },
+      malformed: { ...scanCache['/repo::2000'], records: [{ path: '/repo/src/Broken.ts' }] },
+      fresh: { ...scanCache['/repo::2000'], key: 'stale-key', scannedAt: 10_000 }
+    },
+    10_500,
+    1_000,
+    8
+  ),
+  {
+    '/repo::2000': {
+      ...scanCache['/repo::2000'],
+      key: '/repo::2000',
+      sourceSignature,
+      scannedAt: 10_000
+    }
+  }
+);
 
 assert.deepEqual(
   buildProjectActivationScanPlan({
@@ -390,6 +432,57 @@ assert.deepEqual(
   ),
   ['project-2']
 );
+const backgroundSourceSignature = 'source-scan-cache-v3|git|/repo-other|main|abc123|0|0|0|0|0|0|0|clean';
+const backgroundCache = upsertSourceScanCacheEntry(
+  {},
+  otherProject,
+  records,
+  2_000,
+  10_000,
+  8,
+  false,
+  scanStats,
+  backgroundSourceSignature
+);
+assert.deepEqual(
+  selectBackgroundIndexProjects(
+    [project, otherProject],
+    'project-1',
+    backgroundCache,
+    10_500,
+    1_000,
+    2_000,
+    0,
+    (candidate) => (candidate.id === 'project-2' ? backgroundSourceSignature : null)
+  ).map((indexProject) => indexProject.id),
+  []
+);
+assert.deepEqual(
+  selectBackgroundIndexProjects(
+    [project, otherProject],
+    'project-1',
+    backgroundCache,
+    10_500,
+    1_000,
+    2_000,
+    0,
+    (candidate) => (candidate.id === 'project-2' ? changedSourceSignature : null)
+  ).map((indexProject) => indexProject.id),
+  ['project-2']
+);
+assert.deepEqual(
+  selectBackgroundIndexProjects(
+    [project, otherProject],
+    'project-1',
+    backgroundCache,
+    10_500,
+    1_000,
+    2_000,
+    0,
+    () => null
+  ).map((indexProject) => indexProject.id),
+  ['project-2']
+);
 const suspiciousBackgroundCache = upsertSourceScanCacheEntry(
   {},
   otherProject,
@@ -398,7 +491,8 @@ const suspiciousBackgroundCache = upsertSourceScanCacheEntry(
   10_000,
   8,
   false,
-  scanStats
+  scanStats,
+  backgroundSourceSignature
 );
 assert.equal(
   sourceScanCacheEntryNeedsRepair(suspiciousBackgroundCache['/repo-other::25000'], 25_000, 2),
@@ -734,18 +828,34 @@ assert.deepEqual(
 
 const boundedScanCache = upsertSourceScanCacheEntry(
   upsertSourceScanCacheEntry(
-    upsertSourceScanCacheEntry({}, project, [records[0]], 2_000, 10_000, 2),
+    upsertSourceScanCacheEntry(
+      {},
+      project,
+      [records[0]],
+      2_000,
+      10_000,
+      2,
+      false,
+      undefined,
+      'source-scan-cache-v3|git|/repo|main|a|0|0|0|0|0|0|0|clean'
+    ),
     otherProject,
     [records[1]],
     2_000,
     11_000,
-    2
+    2,
+    false,
+    undefined,
+    'source-scan-cache-v3|git|/repo-other|main|b|0|0|0|0|0|0|0|clean'
   ),
   { ...project, id: 'project-3', path: '/third' },
   records,
   2_000,
   12_000,
-  2
+  2,
+  false,
+  undefined,
+  'source-scan-cache-v3|git|/third|main|c|0|0|0|0|0|0|0|clean'
 );
 assert.deepEqual(
   Object.values(boundedScanCache).map((entry) => entry.projectPath),

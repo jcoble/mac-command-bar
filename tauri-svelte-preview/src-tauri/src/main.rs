@@ -151,6 +151,7 @@ struct ProjectGitStatus {
     branch: Option<String>,
     ahead: usize,
     behind: usize,
+    has_upstream: bool,
     files: Vec<GitFileStatus>,
 }
 
@@ -253,10 +254,12 @@ struct GitRepositorySummary {
     dirty_count: usize,
     ahead: usize,
     behind: usize,
+    has_upstream: bool,
     last_commit_sha: Option<String>,
     last_commit_subject: Option<String>,
     last_commit_at: Option<String>,
     dirty_since_epoch_ms: Option<u64>,
+    dirty_status_fingerprint: String,
     error: Option<String>,
 }
 
@@ -2867,10 +2870,12 @@ fn git_repository_summary_for_path_result(
         dirty_count,
         ahead: status.ahead,
         behind: status.behind,
+        has_upstream: status.has_upstream,
         last_commit_sha,
         last_commit_subject,
         last_commit_at,
         dirty_since_epoch_ms: git_dirty_since_epoch_ms(path, &status.files),
+        dirty_status_fingerprint: git_dirty_status_fingerprint(&status.files),
         error: None,
     })
 }
@@ -2897,10 +2902,12 @@ fn empty_git_repository_summary(
         dirty_count: 0,
         ahead: 0,
         behind: 0,
+        has_upstream: false,
         last_commit_sha: None,
         last_commit_subject: None,
         last_commit_at: None,
         dirty_since_epoch_ms: None,
+        dirty_status_fingerprint: git_dirty_status_fingerprint(&[]),
         error,
     }
 }
@@ -2970,6 +2977,33 @@ fn git_dirty_since_epoch_ms(root: &Path, files: &[GitFileStatus]) -> Option<u64>
                 .and_then(|duration| u64::try_from(duration.as_millis()).ok())
         })
         .min()
+}
+
+fn git_dirty_status_fingerprint(files: &[GitFileStatus]) -> String {
+    let mut rows: Vec<String> = files
+        .iter()
+        .map(|file| {
+            [
+                file.relative_path.as_str(),
+                file.index_status.as_str(),
+                file.worktree_status.as_str(),
+                file.status.as_str(),
+                file.badge.as_str(),
+            ]
+            .join("\x1f")
+        })
+        .collect();
+    rows.sort();
+
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for row in rows {
+        for byte in row.as_bytes().iter().copied().chain([0]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    format!("{hash:016x}")
 }
 
 fn parse_git_commit_history(output: &str) -> Result<Vec<GitCommitHistoryEntry>, String> {
@@ -3259,15 +3293,17 @@ fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
         branch: None,
         ahead: 0,
         behind: 0,
+        has_upstream: false,
         files: Vec::new(),
     };
 
     for line in output.lines().filter(|line| !line.trim().is_empty()) {
         if let Some(header) = line.strip_prefix("## ") {
-            let (branch, ahead, behind) = parse_git_branch_header(header);
-            git_status.branch = branch;
-            git_status.ahead = ahead;
-            git_status.behind = behind;
+            let branch_header = parse_git_branch_header(header);
+            git_status.branch = branch_header.branch;
+            git_status.ahead = branch_header.ahead;
+            git_status.behind = branch_header.behind;
+            git_status.has_upstream = branch_header.has_upstream;
             continue;
         }
 
@@ -3303,7 +3339,15 @@ fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
     Ok(git_status)
 }
 
-fn parse_git_branch_header(header: &str) -> (Option<String>, usize, usize) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitBranchHeader {
+    branch: Option<String>,
+    ahead: usize,
+    behind: usize,
+    has_upstream: bool,
+}
+
+fn parse_git_branch_header(header: &str) -> GitBranchHeader {
     let mut branch_part = header.trim();
     let mut ahead = 0;
     let mut behind = 0;
@@ -3320,18 +3364,38 @@ fn parse_git_branch_header(header: &str) -> (Option<String>, usize, usize) {
         }
     }
 
-    if let Some(branch) = branch_part.strip_prefix("No commits yet on ") {
-        return (Some(branch.trim().to_string()), ahead, behind);
-    }
-
-    let branch = branch_part
-        .split("...")
+    let mut branch_parts = branch_part.splitn(2, "...");
+    let branch_name_part = branch_parts.next().unwrap_or_default().trim();
+    let has_upstream = branch_parts
         .next()
         .map(str::trim)
+        .is_some_and(|upstream| !upstream.is_empty());
+
+    if let Some(branch) = branch_part.strip_prefix("No commits yet on ") {
+        let branch = branch
+            .split("...")
+            .next()
+            .unwrap_or(branch)
+            .trim()
+            .to_string();
+        return GitBranchHeader {
+            branch: Some(branch),
+            ahead,
+            behind,
+            has_upstream,
+        };
+    }
+
+    let branch = Some(branch_name_part)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
 
-    (branch, ahead, behind)
+    GitBranchHeader {
+        branch,
+        ahead,
+        behind,
+        has_upstream,
+    }
 }
 
 fn normalize_git_status_path(path: &str) -> String {
@@ -4591,6 +4655,7 @@ mod tests {
         assert_eq!(status.branch.as_deref(), Some("main"));
         assert_eq!(status.ahead, 1);
         assert_eq!(status.behind, 2);
+        assert!(status.has_upstream);
         assert_eq!(
             status
                 .files
@@ -4618,7 +4683,60 @@ mod tests {
         assert_eq!(status.branch.as_deref(), Some("feature/source-browser"));
         assert_eq!(status.ahead, 0);
         assert_eq!(status.behind, 0);
+        assert!(!status.has_upstream);
         assert!(status.files.is_empty());
+    }
+
+    #[test]
+    fn parse_git_branch_header_reads_upstream_backed_branch() {
+        let parsed = parse_git_branch_header("main...origin/main");
+
+        assert_eq!(parsed.branch.as_deref(), Some("main"));
+        assert!(parsed.has_upstream);
+        assert_eq!(parsed.ahead, 0);
+        assert_eq!(parsed.behind, 0);
+    }
+
+    #[test]
+    fn parse_git_branch_header_reads_no_upstream_branch() {
+        let parsed = parse_git_branch_header("feature/source-browser");
+
+        assert_eq!(parsed.branch.as_deref(), Some("feature/source-browser"));
+        assert!(!parsed.has_upstream);
+        assert_eq!(parsed.ahead, 0);
+        assert_eq!(parsed.behind, 0);
+    }
+
+    #[test]
+    fn parse_git_branch_header_reads_ahead_behind_and_diverged_counts() {
+        let ahead = parse_git_branch_header("feature...origin/feature [ahead 1]");
+        assert_eq!(ahead.branch.as_deref(), Some("feature"));
+        assert!(ahead.has_upstream);
+        assert_eq!(ahead.ahead, 1);
+        assert_eq!(ahead.behind, 0);
+
+        let behind = parse_git_branch_header("feature...origin/feature [behind 2]");
+        assert_eq!(behind.branch.as_deref(), Some("feature"));
+        assert!(behind.has_upstream);
+        assert_eq!(behind.ahead, 0);
+        assert_eq!(behind.behind, 2);
+
+        let diverged = parse_git_branch_header("feature...origin/feature [ahead 3, behind 4]");
+        assert_eq!(diverged.branch.as_deref(), Some("feature"));
+        assert!(diverged.has_upstream);
+        assert_eq!(diverged.ahead, 3);
+        assert_eq!(diverged.behind, 4);
+    }
+
+    #[test]
+    fn parse_git_branch_header_does_not_infer_upstream_for_detached_or_no_commits() {
+        let detached = parse_git_branch_header("HEAD (no branch)");
+        assert_eq!(detached.branch.as_deref(), Some("HEAD (no branch)"));
+        assert!(!detached.has_upstream);
+
+        let no_commits = parse_git_branch_header("No commits yet on feature/source-browser");
+        assert_eq!(no_commits.branch.as_deref(), Some("feature/source-browser"));
+        assert!(!no_commits.has_upstream);
     }
 
     #[test]
@@ -4704,6 +4822,7 @@ mod tests {
         assert_eq!(summary.unstaged_count, 1);
         assert_eq!(summary.untracked_count, 1);
         assert_eq!(summary.dirty_count, 3);
+        assert!(!summary.has_upstream);
         assert!(summary.is_dirty);
         assert_eq!(summary.last_commit_subject.as_deref(), Some("initial"));
         assert!(summary
@@ -4711,8 +4830,45 @@ mod tests {
             .as_ref()
             .is_some_and(|sha| !sha.is_empty()));
         assert!(summary.dirty_since_epoch_ms.is_some());
+        assert_ne!(
+            summary.dirty_status_fingerprint,
+            git_dirty_status_fingerprint(&[]),
+            "dirty repositories should include a dirty status fingerprint"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_dirty_status_fingerprint_changes_for_path_or_status_changes() {
+        let first = git_dirty_status_fingerprint(&[GitFileStatus {
+            relative_path: "src/App.ts".to_string(),
+            index_status: "".to_string(),
+            worktree_status: "modified".to_string(),
+            status: "modified".to_string(),
+            badge: "M".to_string(),
+        }]);
+        let renamed_path = git_dirty_status_fingerprint(&[GitFileStatus {
+            relative_path: "src/Renamed.ts".to_string(),
+            index_status: "".to_string(),
+            worktree_status: "modified".to_string(),
+            status: "modified".to_string(),
+            badge: "M".to_string(),
+        }]);
+        let staged = git_dirty_status_fingerprint(&[GitFileStatus {
+            relative_path: "src/App.ts".to_string(),
+            index_status: "modified".to_string(),
+            worktree_status: "".to_string(),
+            status: "modified".to_string(),
+            badge: "M".to_string(),
+        }]);
+
+        assert_eq!(
+            git_dirty_status_fingerprint(&[]),
+            git_dirty_status_fingerprint(&[])
+        );
+        assert_ne!(first, renamed_path);
+        assert_ne!(first, staged);
     }
 
     #[test]
