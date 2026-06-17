@@ -45,6 +45,7 @@
   import { settings, defaultSettings } from '$lib/settingsStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
+  import Chip from '$lib/components/Chip.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -15960,7 +15961,7 @@
       </div>
 
       <div class="project-path-row">
-        <span title={selectedProject.path}>{selectedProject.path}</span>
+        <span class="project-path" title={selectedProject.path}>{selectedProject.path}</span>
         {#if selectedProjectIsCustom}
           <button class="icon-button danger" type="button" aria-label="Remove project root" title="Remove project root" onclick={removeSelectedProject}>
             <Trash2 size={14} strokeWidth={1.9} />
@@ -15968,7 +15969,9 @@
         {/if}
       </div>
       <div class="project-setup-row" title={projectSetupNoticeTitle()} aria-live={scanning ? 'polite' : 'off'}>
-        <span>{projectSetupNoticeText()}</span>
+        {#each projectSetupNoticeText().split(' · ') as setupSegment, setupIndex (setupIndex)}
+          <Chip size="xs" tone="muted">{setupSegment}</Chip>
+        {/each}
       </div>
 
       {#if scanning && sourceScanProgress}
@@ -19455,7 +19458,9 @@
       <div class="editor-frame" class:is-loading={loading}>
         <div class="editor-toolbar" aria-label="Editor controls">
           <div class="editor-file-state" title={preview.relativePath}>
-            <FileCode2 size={13} strokeWidth={1.8} />
+            <span class="editor-file-glyph" aria-hidden="true">
+              <FileCode2 size={13} strokeWidth={1.8} />
+            </span>
             <div class="editor-file-title">
               <strong>{preview.fileName}</strong>
               <small>
@@ -19466,16 +19471,16 @@
               </small>
             </div>
             {#if selectedSourceDirty}
-              <span>modified</span>
+              <Chip size="xs" tone="attention">modified</Chip>
             {/if}
             {#if sourceIntelligenceAvailable}
-              <span
-                class="editor-lsp-state"
-                class:ready={sourceLspStatus?.available}
-                class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}
-                title={sourceLspStatusTitle()}
-              >
-                {sourceLspStatusLabel()}
+              <span class="editor-lsp-chip" title={sourceLspStatusTitle()}>
+                <Chip
+                  size="xs"
+                  tone={sourceLspStatus?.available ? 'good' : (!sourceLspStatusLoading ? 'attention' : 'muted')}
+                >
+                  {sourceLspStatusLabel()}
+                </Chip>
               </span>
             {/if}
           </div>
@@ -20836,10 +20841,18 @@
       {#if sourceDockPanelVisible('terminal')}
         <section class="terminal-launchpad" aria-label="Terminal dock" use:sourceDockviewPanelAction={'terminal'}>
           <header class="terminal-launchpad-header">
-            <div>
-              <Terminal size={14} strokeWidth={2} />
+            <div class="terminal-launchpad-identity">
+              <span class="terminal-launchpad-glyph" aria-hidden="true">
+                <Terminal size={14} strokeWidth={2} />
+              </span>
               <strong>Terminal</strong>
-              <span>{terminalDockSummary()}</span>
+              <span class="terminal-launchpad-status" title={terminalDockSummary()}>
+                {#each terminalDockSummary().split(' · ') as statusSegment, statusIndex (statusIndex)}
+                  <Chip size="xs" tone={/\b(embedded live|active)\b/.test(statusSegment) ? 'live' : 'muted'}>
+                    {statusSegment}
+                  </Chip>
+                {/each}
+              </span>
             </div>
             <div class="terminal-launchpad-actions">
               <label class="terminal-inline-picker" title={`Open commands in ${sourceTerminalApp}`}>
@@ -20905,8 +20918,8 @@
           </header>
 
           <div class:active={Boolean(embeddedTerminalSession)} class="embedded-terminal-panel" aria-label="Embedded terminal">
-            <div class="embedded-terminal-toolbar">
-              <span>{embeddedTerminalStatusLabel()}</span>
+            <div class="embedded-terminal-toolbar" title={embeddedTerminalStatusLabel()}>
+              <span class="embedded-terminal-meta">{embeddedTerminalStatusLabel()}</span>
               {#if embeddedTerminalSession?.pid}
                 <code>pid {embeddedTerminalSession.pid}</code>
               {/if}
@@ -23962,10 +23975,10 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) 36px 36px 96px;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     min-width: 0;
     max-width: 100%;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
   }
 
   select,
@@ -23974,15 +23987,15 @@
   .form-button {
     height: 36px;
     min-width: 0;
-    color: #f3f5f4;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 9px;
-    background: rgba(255, 255, 255, 0.055);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
   }
 
   select {
     width: 100%;
-    padding: 0 12px;
+    padding: 0 var(--space-3);
     outline: 0;
   }
 
@@ -23990,19 +24003,19 @@
   .scan-button:focus-visible,
   .icon-button:focus-visible,
   .form-button:focus-visible {
-    border-color: rgba(92, 226, 207, 0.58);
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+    border-color: var(--color-focus);
+    box-shadow: var(--focus-ring);
   }
 
   .scan-button {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr);
     align-items: center;
-    gap: 7px;
-    padding: 0 10px;
-    color: #cbd3d1;
-    font-size: 12px;
-    font-weight: 760;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
+    color: var(--color-text-2);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     cursor: pointer;
   }
 
@@ -24023,40 +24036,40 @@
     place-items: center;
     width: 36px;
     padding: 0;
-    color: #cbd3d1;
+    color: var(--color-text-2);
     cursor: pointer;
   }
 
   .icon-button:hover {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.1);
+    color: var(--color-text);
+    background: var(--color-live-bg);
   }
 
   .icon-button.danger {
     width: 28px;
     height: 28px;
-    color: #f1a9a0;
-    border-radius: 8px;
+    color: var(--color-bad);
+    border-radius: var(--radius-md);
   }
 
   .icon-button.danger:hover {
-    background: rgba(225, 109, 93, 0.13);
+    background: var(--color-bad-bg);
   }
 
   .project-path-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     min-height: 28px;
-    margin-bottom: 2px;
-    color: #818d89;
+    margin-bottom: var(--space-1);
+    color: var(--color-text-3);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 650;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
   }
 
-  .project-path-row span {
+  .project-path {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -24064,33 +24077,25 @@
   }
 
   .project-setup-row {
-    display: block;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
     min-height: 18px;
-    margin: -1px 0 4px;
-    color: #96a4a0;
-    font-size: 10px;
-    font-weight: 760;
+    margin: var(--space-1) 0 var(--space-2);
     line-height: 1.25;
-  }
-
-  .project-setup-row span {
-    display: block;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .scan-progress {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 10px;
+    gap: var(--space-1) var(--space-3);
     min-height: 18px;
-    margin: 4px 0 2px;
-    color: #8fd8cf;
+    margin: var(--space-1) 0;
+    color: var(--color-live);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 760;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
   }
 
   .scan-progress span {
@@ -27857,10 +27862,10 @@
     max-height: none;
     margin-top: 0;
     overflow: hidden;
-    padding: 7px;
-    border: 1px solid rgba(255, 121, 198, 0.14);
-    border-radius: 8px;
-    background: #191a21;
+    padding: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
   }
 
   :global(.source-dockview-bottom-shell .terminal-launchpad) {
@@ -27874,11 +27879,11 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
     min-width: 0;
   }
 
-  .terminal-launchpad-header > div:first-child,
+  .terminal-launchpad-identity,
   .terminal-launchpad-actions,
   .terminal-inline-picker {
     display: inline-flex;
@@ -27886,45 +27891,52 @@
     min-width: 0;
   }
 
-  .terminal-launchpad-header > div:first-child {
-    gap: 6px;
-    color: #f8f8f2;
+  .terminal-launchpad-identity {
+    gap: var(--space-2);
+    color: var(--color-text);
   }
 
-  .terminal-launchpad-header strong,
-  .terminal-launchpad-header span {
+  .terminal-launchpad-glyph {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--color-text-2);
+  }
+
+  .terminal-launchpad-identity strong {
+    flex-shrink: 0;
     min-width: 0;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.01em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .terminal-launchpad-header strong {
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .terminal-launchpad-header span {
-    color: #b8b8c6;
-    font-size: 10px;
-    font-weight: 760;
+  .terminal-launchpad-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow: hidden;
   }
 
   .terminal-launchpad-actions {
     justify-content: end;
-    gap: 5px;
+    gap: var(--space-2);
   }
 
   .terminal-launchpad-actions .file-action-button {
     display: inline-flex;
     width: auto;
     min-width: 28px;
-    height: 24px;
-    gap: 5px;
-    padding: 0 8px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 820;
+    height: 26px;
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
   }
 
   .terminal-launchpad-actions .file-action-button.icon-only {
@@ -27933,71 +27945,73 @@
   }
 
   .terminal-inline-picker {
-    gap: 5px;
+    gap: var(--space-1);
   }
 
   .terminal-inline-picker span {
-    color: #b8b8c6;
-    font-size: 8px;
-    font-weight: 850;
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
   .terminal-inline-picker select {
     width: 94px;
-    height: 24px;
+    height: 26px;
     min-width: 0;
-    color: #f8f8f2;
-    border: 1px solid rgba(255, 121, 198, 0.18);
-    border-radius: 5px;
-    background: #282a36;
-    font-size: 10px;
-    font-weight: 820;
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-elevated);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
   }
 
   .embedded-terminal-panel {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 4px;
+    gap: var(--space-1);
     min-width: 0;
     min-height: 0;
     padding: 0;
-    border: 1px solid rgba(255, 121, 198, 0.2);
-    border-radius: 7px;
-    background: #282a36;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--color-elevated);
     overflow: hidden;
   }
 
   .embedded-terminal-panel.active {
-    border-color: rgba(255, 121, 198, 0.48);
+    box-shadow: inset 0 0 0 1px var(--color-live-bg);
   }
 
   .embedded-terminal-toolbar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     min-width: 0;
-    min-height: 26px;
-    padding: 0 8px;
-    border-bottom: 1px solid rgba(255, 121, 198, 0.12);
-    background: #21222c;
-    color: #b8b8c6;
-    font-size: 9px;
-    font-weight: 760;
+    min-height: 24px;
+    padding: 0 var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
   }
 
-  .embedded-terminal-toolbar span {
+  .embedded-terminal-meta {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    letter-spacing: 0.01em;
   }
 
   .embedded-terminal-toolbar code {
-    color: #8be9fd;
+    color: var(--color-text-3);
     font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
+    font-size: var(--text-xs);
   }
 
   .embedded-terminal-host {
@@ -28249,11 +28263,11 @@
     position: relative;
     grid-template-columns: minmax(0, 1fr) repeat(3, auto);
     align-items: center;
-    gap: 4px;
-    height: 22px;
-    padding: 0 4px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.025);
+    gap: var(--space-2);
+    height: 28px;
+    padding: 0 var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+    background: transparent;
   }
 
   .editor-mode-toggle {
@@ -28262,38 +28276,38 @@
     align-items: center;
     width: 128px;
     min-width: 0;
-    height: 20px;
-    padding: 1px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
+    height: 22px;
+    padding: 2px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
   }
 
   .editor-mode-toggle button {
     display: inline-grid;
     grid-template-columns: 12px minmax(0, 1fr);
     align-items: center;
-    gap: 4px;
+    gap: var(--space-1);
     min-width: 0;
-    height: 16px;
-    padding: 0 5px;
-    color: #9fa9a6;
+    height: 18px;
+    padding: 0 var(--space-1);
+    color: var(--color-text-2);
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: transparent;
-    font-size: 9px;
-    font-weight: 800;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
     cursor: pointer;
   }
 
   .editor-mode-toggle button.active {
-    color: #dffdf8;
-    background: rgba(92, 226, 207, 0.16);
+    color: var(--color-live);
+    background: var(--color-live-bg);
   }
 
   .editor-mode-toggle button:hover,
   .editor-mode-toggle button:focus-visible {
-    color: #f2f6f5;
+    color: var(--color-text);
     outline: 0;
   }
 
@@ -28309,19 +28323,24 @@
     grid-template-columns: 14px minmax(0, 1fr) auto auto;
     align-items: center;
     justify-self: start;
-    gap: 4px;
+    gap: var(--space-2);
     min-width: 0;
     max-width: 100%;
-    height: 18px;
-    padding: 0 2px;
-    color: #cbd3d1;
+    height: 20px;
+    padding: 0 var(--space-1);
+    color: var(--color-text);
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: transparent;
   }
 
+  .editor-file-glyph {
+    display: inline-flex;
+    align-items: center;
+    color: var(--color-text-3);
+  }
+
   .editor-file-state strong,
-  .editor-file-state span,
   .editor-file-state small {
     min-width: 0;
     overflow: hidden;
@@ -28331,72 +28350,59 @@
 
   .editor-file-title {
     display: inline-flex;
-    align-items: center;
-    gap: 6px;
+    align-items: baseline;
+    gap: var(--space-2);
     min-width: 0;
   }
 
   .editor-file-state strong {
-    font-size: 11px;
-    font-weight: 760;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
   }
 
   .editor-file-state small {
     flex: 0 0 auto;
-    color: #87918e;
+    color: var(--color-text-3);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 760;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
   }
 
-  .editor-file-state span {
-    color: #d8aa55;
-    font-size: 9px;
-    font-weight: 820;
-    text-transform: uppercase;
-  }
-
-  .editor-file-state .editor-lsp-state {
-    color: #9fa7a5;
-  }
-
-  .editor-file-state .editor-lsp-state.ready {
-    color: #72e2cf;
-  }
-
-  .editor-file-state .editor-lsp-state.unavailable {
-    color: #d8aa55;
+  .editor-lsp-chip {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
   }
 
   .editor-lsp-recovery-strip {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
+    gap: var(--space-1);
     min-width: 0;
-    height: 20px;
-    padding: 0 2px;
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.025);
+    height: 22px;
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    background: transparent;
   }
 
   .editor-lsp-recovery-action {
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 18px;
+    width: 24px;
+    height: 20px;
     padding: 0;
-    color: #9fa9a6;
+    color: var(--color-text-2);
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: transparent;
     cursor: pointer;
   }
 
   .editor-lsp-recovery-action:hover:not(:disabled),
   .editor-lsp-recovery-action:focus-visible {
-    color: #e8f6f3;
+    color: var(--color-text);
     outline: 0;
-    background: rgba(92, 226, 207, 0.12);
+    background: var(--color-live-bg);
   }
 
   .editor-lsp-recovery-action:disabled {
@@ -28552,34 +28558,32 @@
     position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-1);
     min-width: 0;
   }
 
   .editor-icon-button {
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 20px;
-    color: #aeb8b5;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
+    width: 24px;
+    height: 22px;
+    color: var(--color-text-2);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
     cursor: pointer;
   }
 
   .editor-icon-button:hover,
   .editor-icon-button:focus-visible {
-    color: #f2f6f5;
-    border-color: rgba(92, 226, 207, 0.4);
+    color: var(--color-text);
     outline: 0;
-    background: rgba(92, 226, 207, 0.1);
+    background: var(--color-live-bg);
   }
 
   .editor-icon-button.active {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.32);
-    background: rgba(92, 226, 207, 0.12);
+    color: var(--color-live);
+    background: var(--color-live-bg);
   }
 
   .editor-action-menu {
