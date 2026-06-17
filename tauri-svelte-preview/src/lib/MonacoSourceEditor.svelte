@@ -160,6 +160,18 @@
 		preview: SourcePreview;
 		content?: string;
 		editable?: boolean;
+		/**
+		 * Optional appearance overrides sourced from user settings. When a field
+		 * is present it is merged over the built-in `sourcePreviewAppearance`
+		 * values in {@link applyAppearance}. When the whole prop is undefined or
+		 * every field is undefined, behaviour is identical to the unconfigured
+		 * default (uses `sourcePreviewAppearance` exactly).
+		 */
+		appearanceOverride?: {
+			fontSize?: number;
+			fontFamily?: string;
+			lineHeight?: number;
+		};
 		externalDiagnostics?: SourceDiagnostic[];
 		loading?: boolean;
 		targetLine?: number | null;
@@ -201,6 +213,7 @@
 		preview,
 		content,
 		editable = false,
+		appearanceOverride,
 		externalDiagnostics = [],
 		loading = false,
 		targetLine = null,
@@ -1170,12 +1183,20 @@
 	function applyAppearance() {
 		if (!monacoApi || !editor) return;
 
+		// Start from the built-in appearance, then merge any user overrides that
+		// are actually present. When `appearanceOverride` is undefined (or every
+		// field is undefined) the resulting options are identical to the default
+		// `sourcePreviewAppearance`, so an unconfigured editor is unchanged.
+		const fontFamily = appearanceOverride?.fontFamily ?? sourcePreviewAppearance.fontFamily;
+		const fontSize = appearanceOverride?.fontSize ?? sourcePreviewAppearance.fontSize;
+		const lineHeight = appearanceOverride?.lineHeight ?? sourcePreviewAppearance.lineHeight;
+
 		editor.updateOptions({
-			fontFamily: sourcePreviewAppearance.fontFamily,
+			fontFamily,
 			fontLigatures: sourcePreviewAppearance.fontLigatures,
-			fontSize: sourcePreviewAppearance.fontSize,
+			fontSize,
 			letterSpacing: sourcePreviewAppearance.letterSpacing,
-			lineHeight: sourcePreviewAppearance.lineHeight,
+			lineHeight,
 			theme: sourcePreviewAppearance.theme.id,
 		});
 		monacoApi.editor.setTheme(sourcePreviewAppearance.theme.id);
@@ -2015,6 +2036,19 @@
 		if (isReady) {
 			applyPreview();
 			runIntelligenceCommand();
+		}
+	});
+
+	// Re-apply appearance whenever the user-provided overrides change. Reading
+	// the fields here registers them as dependencies. No-op until the editor is
+	// ready; when no override is set this re-runs applyAppearance() with the
+	// default values, leaving the editor visually unchanged.
+	$effect(() => {
+		void appearanceOverride?.fontSize;
+		void appearanceOverride?.fontFamily;
+		void appearanceOverride?.lineHeight;
+		if (isReady) {
+			applyAppearance();
 		}
 	});
 

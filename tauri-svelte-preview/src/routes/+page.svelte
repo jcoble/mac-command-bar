@@ -24,6 +24,7 @@
     RotateCcw,
     Save,
     Search,
+    Settings,
     SplitSquareHorizontal,
     Terminal,
     Trash2,
@@ -40,6 +41,8 @@
   import type { WebglAddon as XTermWebglAddon } from '@xterm/addon-webgl';
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import SettingsPanel from '$lib/SettingsPanel.svelte';
+  import { settings, defaultSettings } from '$lib/settingsStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
@@ -739,6 +742,68 @@
     worktrees: 230,
     repo: 210
   };
+
+  // ── Settings panel + live appearance wiring ──────────────────────────────
+  // The settings dialog open state. The gear in the activity rail toggles it.
+  let settingsOpen = $state(false);
+
+  // Baseline defaults the store ships with. Comparing the live settings against
+  // these lets us apply overrides ONLY when the user has actually changed a
+  // value — so an untouched install renders byte-for-byte identical to before
+  // this wiring existed (Monaco/terminal/app text all use their old hardcoded
+  // values via the unchanged default paths).
+  const appearanceDefaults = defaultSettings();
+
+  // Editor (Monaco) override: each field is included only when it differs from
+  // the editor default. When nothing changed, the object is empty/undefined and
+  // MonacoSourceEditor falls back entirely to sourcePreviewAppearance.
+  let editorAppearanceOverride = $derived.by(() => {
+    const override: { fontSize?: number; fontFamily?: string; lineHeight?: number } = {};
+    if (settings.editor.fontSize !== appearanceDefaults.editor.fontSize) {
+      override.fontSize = settings.editor.fontSize;
+    }
+    if (settings.editor.fontFamily !== appearanceDefaults.editor.fontFamily) {
+      override.fontFamily = settings.editor.fontFamily;
+    }
+    if (settings.editor.lineHeight !== appearanceDefaults.editor.lineHeight) {
+      override.lineHeight = settings.editor.lineHeight;
+    }
+    return Object.keys(override).length > 0 ? override : undefined;
+  });
+
+  // App (chrome/UI) font size: only override the inherited baseline when the
+  // user changed it. When unchanged, `--app-font-size` is left unset and the
+  // shell keeps inheriting the original :root size — no visual change.
+  let appFontSizeOverridden = $derived(
+    settings.appearance.appFontSize !== appearanceDefaults.appearance.appFontSize
+  );
+
+  // Embedded terminal (xterm) font. These are the EXACT values previously
+  // hardcoded in the XTerm constructor; they remain the source of truth for the
+  // default look. We only swap in a store value when the user actually changed
+  // it from the store default — so an untouched install keeps the original full
+  // font stack / 15px / 1.2 line height (the store default fontFamily is the
+  // bare "Google Sans Mono", which is NOT the same as this fallback stack).
+  const EMBEDDED_TERMINAL_FONT_DEFAULTS = {
+    fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+    fontSize: 15,
+    lineHeight: 1.2
+  } as const;
+
+  let embeddedTerminalAppearance = $derived({
+    fontFamily:
+      settings.terminal.fontFamily !== appearanceDefaults.terminal.fontFamily
+        ? settings.terminal.fontFamily
+        : EMBEDDED_TERMINAL_FONT_DEFAULTS.fontFamily,
+    fontSize:
+      settings.terminal.fontSize !== appearanceDefaults.terminal.fontSize
+        ? settings.terminal.fontSize
+        : EMBEDDED_TERMINAL_FONT_DEFAULTS.fontSize,
+    lineHeight:
+      settings.terminal.lineHeight !== appearanceDefaults.terminal.lineHeight
+        ? settings.terminal.lineHeight
+        : EMBEDDED_TERMINAL_FONT_DEFAULTS.lineHeight
+  });
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
@@ -3103,6 +3168,36 @@
       commandPaletteTextMatches(commandPaletteQuery, item.label, item.detail)
     ).slice(0, 12)
   );
+
+  // Apply terminal font settings live to an already-running embedded terminal.
+  // Reading the derived fields registers them as dependencies. We only touch the
+  // terminal when a value actually differs from its current options, so the
+  // first run after mount (values already match the constructor) is a no-op and
+  // never triggers a spurious refit/PTY resize.
+  $effect(() => {
+    const { fontFamily, fontSize, lineHeight } = embeddedTerminalAppearance;
+    const terminal = embeddedTerminal;
+    if (!terminal) return;
+
+    let changed = false;
+    if (terminal.options.fontFamily !== fontFamily) {
+      terminal.options.fontFamily = fontFamily;
+      changed = true;
+    }
+    if (terminal.options.fontSize !== fontSize) {
+      terminal.options.fontSize = fontSize;
+      changed = true;
+    }
+    if (terminal.options.lineHeight !== lineHeight) {
+      terminal.options.lineHeight = lineHeight;
+      changed = true;
+    }
+
+    if (changed) {
+      // Re-measure cell size and resize the PTY to match the new font metrics.
+      fitEmbeddedTerminal();
+    }
+  });
 
   $effect(() => {
     if (!quickOpenVisible) return;
@@ -7879,11 +7974,13 @@
           cursorStyle: 'block',
           allowProposedApi: true,
           macOptionIsMeta: true,
-          fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
-          fontSize: 15,
+          // Sourced from settings.terminal via embeddedTerminalAppearance, which
+          // falls back to the exact original hardcoded defaults when unchanged.
+          fontFamily: embeddedTerminalAppearance.fontFamily,
+          fontSize: embeddedTerminalAppearance.fontSize,
           fontWeight: 500,
           fontWeightBold: 760,
-          lineHeight: 1.2,
+          lineHeight: embeddedTerminalAppearance.lineHeight,
           scrollback: 8000,
           theme: {
             background: '#282a36',
@@ -15667,7 +15764,7 @@
   class:activity-force-collapsed={activityPaneViewportCollapsed()}
   class:context-force-collapsed={contextPaneViewportCollapsed()}
   class:layout-pressure={sourceWorkspacePlan.overflowSize > 0}
-  style={`--accent: #5ce2cf; --side-pane-width: ${effectiveSidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${effectiveContextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
+  style={`--accent: #5ce2cf; --side-pane-width: ${effectiveSidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${effectiveContextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px${appFontSizeOverridden ? `; --app-font-size: ${settings.appearance.appFontSize}px` : ''}`}
 >
   <SourceDockviewShell
     shellClass="source-dockview-workbench-shell"
@@ -15793,6 +15890,17 @@
         {#if sourceActivityBadgeVisible('git')}
           <strong>{sourceActivityCountLabel('git')}</strong>
         {/if}
+      </button>
+      <button
+        class="activity-rail-settings"
+        type="button"
+        data-testid="activity-rail-settings"
+        aria-label="Settings"
+        title="Settings"
+        onclick={() => (settingsOpen = !settingsOpen)}
+      >
+        <Settings size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Settings</span>
       </button>
       <button
         class="activity-rail-toggle"
@@ -19960,6 +20068,7 @@
                   {preview}
                   content={selectedSourceDraftContent}
                   editable={true}
+                  appearanceOverride={editorAppearanceOverride}
                   externalDiagnostics={sourceLspDiagnostics}
                   {loading}
                   targetLine={selectedSourceLine}
@@ -21006,6 +21115,8 @@
   {/if}
 </main>
 
+<SettingsPanel bind:open={settingsOpen} />
+
 {#if quickOpenVisible}
   <div class="quick-open-layer">
     <button
@@ -21161,6 +21272,11 @@
     --pane-resizer-size: 0px;
     --pane-resizer-hit-size: 10px;
     --bottom-dock-resizer-size: 8px;
+    /* App/chrome font size. When the user has NOT changed it, --app-font-size is
+       left unset and this falls back to --text-md — the exact size the shell
+       already inherited from :root, so the default look is unchanged. When set,
+       UI text scales to taste. */
+    font-size: var(--app-font-size, var(--text-md));
     position: relative;
     display: grid;
     grid-template-columns: var(--side-pane-width) minmax(0, 1fr);
@@ -21318,11 +21434,24 @@
     color: #6fdfcf;
   }
 
+  /* Settings gear sits at the bottom of the rail, just above the collapse
+     control. It claims the free space (margin-top:auto) so both it and the
+     toggle that follows are anchored to the bottom. */
+  .activity-rail button.activity-rail-settings {
+    margin-top: auto;
+  }
+
   .activity-rail button.activity-rail-toggle {
     margin-top: auto;
     color: #6fdfcf;
     border-color: rgba(92, 226, 207, 0.18);
     background: rgba(92, 226, 207, 0.055);
+  }
+
+  /* When the settings gear is present it already consumes the free space, so
+     the toggle should not add a second auto-margin gap above itself. */
+  .activity-rail button.activity-rail-settings + .activity-rail-toggle {
+    margin-top: 0;
   }
 
   .activity-rail button.activity-rail-toggle:hover,
