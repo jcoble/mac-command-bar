@@ -234,6 +234,44 @@ struct RuntimeContext {
     root_label: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaywrightProcessInfo {
+    pid: u32,
+    pgid: u32,
+    command: String,
+    name: String,
+    label: String,
+    elapsed: String,
+    args: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaywrightSessionInfo {
+    pgid: u32,
+    label: String,
+    pids: Vec<u32>,
+    processes: Vec<PlaywrightProcessInfo>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaywrightCleanupResult {
+    sessions: Vec<PlaywrightSessionInfo>,
+    terminated_pgids: Vec<u32>,
+    terminated_pids: Vec<u32>,
+    failed_pgids: Vec<PlaywrightCleanupFailure>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaywrightCleanupFailure {
+    pgid: u32,
+    pid: Option<u32>,
+    message: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct GitRepositorySummary {
@@ -962,6 +1000,20 @@ async fn list_runtime_contexts(
     tauri::async_runtime::spawn_blocking(move || list_runtime_contexts_sync(projects))
         .await
         .map_err(|error| format!("Runtime context task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_playwright_sessions() -> Result<Vec<PlaywrightSessionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(list_playwright_sessions_sync)
+        .await
+        .map_err(|error| format!("Playwright session scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn kill_playwright_sessions() -> Result<PlaywrightCleanupResult, String> {
+    tauri::async_runtime::spawn_blocking(kill_playwright_sessions_sync)
+        .await
+        .map_err(|error| format!("Playwright cleanup task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3131,6 +3183,311 @@ fn list_runtime_contexts_sync(
     Ok(contexts)
 }
 
+fn list_playwright_sessions_sync() -> Result<Vec<PlaywrightSessionInfo>, String> {
+    let output = Command::new("ps")
+        .args(["-axo", "pid=,pgid=,etime=,command="])
+        .output()
+        .map_err(|error| format!("Could not run ps: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Could not list processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Ok(group_playwright_processes(parse_playwright_processes(
+        &String::from_utf8_lossy(&output.stdout),
+    )))
+}
+
+fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
+    let sessions = list_playwright_sessions_sync()?;
+    kill_playwright_sessions_with(
+        sessions,
+        signal_process,
+        || std::thread::sleep(std::time::Duration::from_millis(800)),
+        list_playwright_sessions_sync,
+    )
+}
+
+fn kill_playwright_sessions_with<SignalProcess, SleepAfterTerm, ListSessions>(
+    sessions: Vec<PlaywrightSessionInfo>,
+    mut signal_process: SignalProcess,
+    sleep_after_term: SleepAfterTerm,
+    mut list_sessions: ListSessions,
+) -> Result<PlaywrightCleanupResult, String>
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
+    SleepAfterTerm: FnOnce(),
+    ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let mut terminated_pgids = Vec::new();
+    let mut terminated_pids = Vec::new();
+    let mut failed_pgids = Vec::new();
+
+    for session in &sessions {
+        let mut session_had_signal = false;
+        for pid in &session.pids {
+            if let Err(message) = signal_process(*pid, "TERM") {
+                failed_pgids.push(PlaywrightCleanupFailure {
+                    pgid: session.pgid,
+                    pid: Some(*pid),
+                    message,
+                });
+                continue;
+            }
+            session_had_signal = true;
+            terminated_pids.push(*pid);
+        }
+        if session_had_signal {
+            terminated_pgids.push(session.pgid);
+        }
+    }
+
+    sleep_after_term();
+
+    let remaining_pids = match list_sessions() {
+        Ok(remaining_sessions) => remaining_sessions
+            .into_iter()
+            .flat_map(|session| session.pids)
+            .collect::<HashSet<_>>(),
+        Err(error) => {
+            for pgid in &terminated_pgids {
+                failed_pgids.push(PlaywrightCleanupFailure {
+                    pgid: *pgid,
+                    pid: None,
+                    message: format!("Could not verify Playwright cleanup after TERM: {error}"),
+                });
+            }
+            return Ok(PlaywrightCleanupResult {
+                sessions,
+                terminated_pgids,
+                terminated_pids,
+                failed_pgids,
+            });
+        }
+    };
+    let terminated_pid_set = terminated_pids.iter().copied().collect::<HashSet<_>>();
+    for session in &sessions {
+        for pid in session
+            .pids
+            .iter()
+            .copied()
+            .filter(|pid| terminated_pid_set.contains(pid) && remaining_pids.contains(pid))
+        {
+            if let Err(message) = signal_process(pid, "KILL") {
+                failed_pgids.push(PlaywrightCleanupFailure {
+                    pgid: session.pgid,
+                    pid: Some(pid),
+                    message,
+                });
+            }
+        }
+    }
+
+    Ok(PlaywrightCleanupResult {
+        sessions,
+        terminated_pgids,
+        terminated_pids,
+        failed_pgids,
+    })
+}
+
+fn signal_process(pid: u32, signal: &str) -> Result<(), String> {
+    if pid == 0 || pid == std::process::id() {
+        return Err(format!("Refusing to signal unsafe process {pid}"));
+    }
+
+    let output = Command::new("kill")
+        .args([format!("-{signal}"), pid.to_string()])
+        .output()
+        .map_err(|error| format!("Could not run kill -{signal} for pid {pid}: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "kill -{signal} {pid} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn parse_playwright_processes(output: &str) -> Vec<PlaywrightProcessInfo> {
+    output
+        .lines()
+        .filter_map(parse_playwright_process_line)
+        .filter_map(|process| {
+            playwright_process_label(&process.command, &process.args)
+                .map(|label| PlaywrightProcessInfo { label, ..process })
+        })
+        .collect()
+}
+
+fn parse_playwright_process_line(line: &str) -> Option<PlaywrightProcessInfo> {
+    let (pid_text, rest) = next_ps_field(line)?;
+    let (pgid_text, rest) = next_ps_field(rest)?;
+    let (elapsed, args) = next_ps_field(rest)?;
+    let pid = pid_text.parse::<u32>().ok()?;
+    let pgid = pgid_text.parse::<u32>().ok()?;
+    let elapsed = elapsed.to_string();
+    let args = args.trim().to_string();
+    let command = args.clone();
+    let name = playwright_process_name(&args);
+
+    Some(PlaywrightProcessInfo {
+        pid,
+        pgid,
+        command,
+        name,
+        label: String::new(),
+        elapsed,
+        args,
+    })
+}
+
+fn next_ps_field(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start();
+    let split_index = trimmed.find(char::is_whitespace)?;
+    let (field, rest) = trimmed.split_at(split_index);
+    (!field.is_empty()).then_some((field, rest.trim_start()))
+}
+
+fn playwright_process_name(args: &str) -> String {
+    if args.contains("Google Chrome") {
+        return "Google Chrome".to_string();
+    }
+    if args.contains("Chromium") {
+        return "Chromium".to_string();
+    }
+    if has_playwright_mcp_command(args) {
+        return "playwright-mcp".to_string();
+    }
+    if has_playwright_cli_daemon(args) {
+        return "cliDaemon.js".to_string();
+    }
+    if has_playwright_cli_server(args) {
+        return "playwright/cli.js".to_string();
+    }
+
+    args.split_whitespace()
+        .next()
+        .map(|command| {
+            Path::new(command)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(command)
+                .to_string()
+        })
+        .unwrap_or_else(|| "process".to_string())
+}
+
+fn group_playwright_processes(processes: Vec<PlaywrightProcessInfo>) -> Vec<PlaywrightSessionInfo> {
+    let mut by_pgid: HashMap<u32, Vec<PlaywrightProcessInfo>> = HashMap::new();
+    for process in processes {
+        by_pgid.entry(process.pgid).or_default().push(process);
+    }
+
+    let mut sessions = by_pgid
+        .into_iter()
+        .map(|(pgid, mut processes)| {
+            processes.sort_by_key(|process| process.pid);
+            let pids = processes
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>();
+            let label = processes
+                .iter()
+                .find(|process| process.label != "Playwright browser")
+                .or_else(|| processes.first())
+                .map(|process| process.label.clone())
+                .unwrap_or_else(|| "Playwright session".to_string());
+            PlaywrightSessionInfo {
+                pgid,
+                label,
+                pids,
+                processes,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    sessions.sort_by(|left, right| left.pgid.cmp(&right.pgid));
+    sessions
+}
+
+fn playwright_process_label(command: &str, args: &str) -> Option<String> {
+    let combined = format!("{command} {args}");
+    if has_playwright_cli_daemon(&combined) {
+        return Some("Playwright CLI daemon".to_string());
+    }
+    if has_playwright_cli_server(&combined) {
+        return Some("Playwright CLI server".to_string());
+    }
+    if has_playwright_mcp_command(&combined) {
+        return Some("Playwright MCP".to_string());
+    }
+    if looks_like_chrome_command(command, args) && has_playwright_profile_arg(&combined) {
+        return Some("Playwright browser".to_string());
+    }
+
+    None
+}
+
+fn has_playwright_cli_daemon(command_line: &str) -> bool {
+    command_line.split_whitespace().any(|arg| {
+        let normalized = arg.replace('\\', "/");
+        normalized.ends_with("/cliDaemon.js")
+            && (normalized.contains("/node_modules/playwright-core/")
+                || normalized.contains("/node_modules/playwright/")
+                || normalized.contains("/node_modules/@playwright/"))
+    })
+}
+
+fn has_playwright_cli_server(command_line: &str) -> bool {
+    command_line
+        .split_whitespace()
+        .any(|arg| path_ends_with(arg, "/node_modules/playwright/cli.js"))
+        && command_line
+            .split_whitespace()
+            .any(|arg| arg == "run-cli-server")
+}
+
+fn has_playwright_mcp_command(command_line: &str) -> bool {
+    command_line.split_whitespace().any(|arg| {
+        let name = Path::new(arg)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(arg);
+        matches!(name, "playwright-mcp" | "playwright-mcp.js")
+    })
+}
+
+fn has_playwright_profile_arg(command_line: &str) -> bool {
+    command_line.split_whitespace().any(|arg| {
+        let Some(profile_path) = arg.strip_prefix("--user-data-dir=") else {
+            return false;
+        };
+        Path::new(profile_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with("playwright_chromiumdev_profile-"))
+    })
+}
+
+fn path_ends_with(value: &str, suffix: &str) -> bool {
+    value.replace('\\', "/").ends_with(suffix)
+}
+
+fn looks_like_chrome_command(command: &str, args: &str) -> bool {
+    let lower_command = command.to_ascii_lowercase();
+    let lower_args = args.to_ascii_lowercase();
+    lower_command.contains("chrome")
+        || lower_command.contains("chromium")
+        || lower_args.contains("google chrome")
+        || lower_args.contains("chromium")
+}
+
 fn parse_lsof_tcp_listeners(output: &str) -> Vec<ProcessListener> {
     let mut listeners = Vec::new();
     let mut current_pid: Option<u32> = None;
@@ -3863,6 +4220,8 @@ fn main() {
             list_git_repository_summaries,
             list_agent_sessions,
             list_runtime_contexts,
+            list_playwright_sessions,
+            kill_playwright_sessions,
             list_orchestration_runs,
             record_orchestration_event,
             start_terminal_session,
@@ -3880,6 +4239,103 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn playwright_process_parser_groups_only_owned_markers() {
+        let output = "\
+  101   100 00:01:02 /usr/local/bin/node node /repo/node_modules/playwright/cli.js run-cli-server
+  102   100 00:00:59 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/playwright_chromiumdev_profile-abc --type=browser
+  103   100 00:00:03 /usr/local/bin/node node /important/unrelated-worker.js
+  104   104 00:00:03 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=Default
+  105   105 00:00:03 /usr/local/bin/node node server.js
+";
+
+        let sessions = group_playwright_processes(parse_playwright_processes(output));
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].pgid, 100);
+        assert_eq!(sessions[0].pids, vec![101, 102]);
+        assert_eq!(sessions[0].label, "Playwright CLI server");
+    }
+
+    #[test]
+    fn playwright_process_detector_ignores_normal_chrome_vite_and_node() {
+        assert_eq!(
+            playwright_process_label(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "--profile-directory=Default"
+            ),
+            None
+        );
+        assert_eq!(
+            playwright_process_label(
+                "/usr/local/bin/node",
+                "node ./node_modules/vite/bin/vite.js"
+            ),
+            None
+        );
+        assert_eq!(
+            playwright_process_label("/usr/local/bin/node", "node ./scripts/worker.js"),
+            None
+        );
+    }
+
+    #[test]
+    fn playwright_process_detector_ignores_substring_marker_false_positives() {
+        let cases = [
+            (
+                "/usr/local/bin/node",
+                "node /tmp/not-playwright-mcp-helper.js",
+            ),
+            (
+                "/usr/local/bin/node",
+                "node /tmp/playwright/cli.js.backup run-cli-server",
+            ),
+            ("/usr/local/bin/node", "node /tmp/cliDaemon.js.notes"),
+        ];
+
+        for (command, args) in cases {
+            assert_eq!(playwright_process_label(command, args), None, "{args}");
+        }
+    }
+
+    #[test]
+    fn kill_playwright_sessions_reports_post_term_rescan_failure() {
+        let sessions = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![101, 102],
+            processes: Vec::new(),
+        }];
+        let mut signals = Vec::new();
+        let mut list_calls = 0;
+
+        let result = kill_playwright_sessions_with(
+            sessions,
+            |pid, signal| {
+                signals.push((pid, signal.to_string()));
+                Ok(())
+            },
+            || {},
+            || {
+                list_calls += 1;
+                Err("ps unavailable".to_string())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            signals,
+            vec![(101, "TERM".to_string()), (102, "TERM".to_string())]
+        );
+        assert_eq!(list_calls, 1);
+        assert_eq!(result.terminated_pgids, vec![100]);
+        assert_eq!(result.terminated_pids, vec![101, 102]);
+        assert_eq!(result.failed_pgids.len(), 1);
+        assert_eq!(result.failed_pgids[0].pgid, 100);
+        assert_eq!(result.failed_pgids[0].pid, None);
+        assert!(result.failed_pgids[0].message.contains("ps unavailable"));
+    }
 
     #[test]
     fn source_scan_groups_supported_files_and_skips_build_dirs() {

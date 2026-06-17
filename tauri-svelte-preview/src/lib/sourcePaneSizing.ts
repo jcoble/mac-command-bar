@@ -44,6 +44,7 @@ export type SourcePaneWorkspacePlan<TID extends string = string> = {
   viewportSize: number;
   minEditorSize: number;
   gapSize: number;
+  chromeSize: number;
   editorSize: number;
   overflowSize: number;
   items: SourcePaneWorkspacePlanItem<TID>[];
@@ -53,6 +54,7 @@ export type SourcePaneWorkspacePlanOptions<TID extends string = string> = {
   viewportSize: unknown;
   minEditorSize: unknown;
   gapSize?: unknown;
+  chromeSize?: unknown;
   items: SourcePaneWorkspaceItem<TID>[];
 };
 
@@ -156,6 +158,7 @@ export function resolveSourcePaneWorkspacePlan<TID extends string = string>(
   const viewportSize = Math.max(0, Math.round(finiteNumber(options.viewportSize, 0)));
   const minEditorSize = Math.max(0, Math.round(finiteNumber(options.minEditorSize, 0)));
   const gapSize = Math.max(0, Math.round(finiteNumber(options.gapSize, 0)));
+  const chromeSize = Math.max(0, Math.round(finiteNumber(options.chromeSize, 0)));
   const items: InternalSourcePaneWorkspacePlanItem[] = options.items.map((item, index) => {
     const normalizedConfig = normalizeSourcePaneSizingConfig(item.config);
     const resolved = resolveSourcePaneSize(
@@ -183,19 +186,18 @@ export function resolveSourcePaneWorkspacePlan<TID extends string = string>(
     };
   });
 
-  let overflowSize = workspaceOverflowSize(items, viewportSize, minEditorSize, gapSize);
+  let overflowSize = workspaceOverflowSize(items, viewportSize, minEditorSize, gapSize, chromeSize);
   if (overflowSize > 0) {
     for (const item of shrinkCandidates(items)) {
       if (overflowSize <= 0) break;
       const railSize = item.normalizedConfig.railSize ?? item.normalizedConfig.minSize;
       if (item.state !== 'expanded' || railSize >= item.size) continue;
 
-      const savedSize = item.size - railSize;
       item.state = 'rail';
       item.size = railSize;
       item.persistedSize = railSize;
       item.reason = 'viewport-rail';
-      overflowSize = Math.max(0, overflowSize - savedSize);
+      overflowSize = workspaceOverflowSize(items, viewportSize, minEditorSize, gapSize, chromeSize);
     }
   }
 
@@ -204,21 +206,21 @@ export function resolveSourcePaneWorkspacePlan<TID extends string = string>(
       if (overflowSize <= 0) break;
       if (item.state === 'collapsed' || item.size <= 0) continue;
 
-      const savedSize = item.size;
       item.state = 'collapsed';
       item.size = 0;
       item.persistedSize = item.restoreSize;
       item.reason = 'viewport-collapsed';
-      overflowSize = Math.max(0, overflowSize - savedSize);
+      overflowSize = workspaceOverflowSize(items, viewportSize, minEditorSize, gapSize, chromeSize);
     }
   }
 
   const publicItems = items.map(({ normalizedConfig, collapsePriority, ...item }) => item);
-  const usedSize = workspaceUsedSize(publicItems, gapSize);
+  const usedSize = workspaceUsedSize(publicItems, gapSize, chromeSize);
   return {
     viewportSize,
     minEditorSize,
     gapSize,
+    chromeSize,
     editorSize: Math.max(0, viewportSize - usedSize),
     overflowSize: Math.max(0, minEditorSize + usedSize - viewportSize),
     items: publicItems
@@ -293,14 +295,22 @@ function workspaceOverflowSize(
   items: Array<{ size: number }>,
   viewportSize: number,
   minEditorSize: number,
-  gapSize: number
+  gapSize: number,
+  chromeSize: number
 ): number {
-  return Math.max(0, workspaceUsedSize(items, gapSize) + minEditorSize - viewportSize);
+  return Math.max(0, workspaceUsedSize(items, gapSize, chromeSize) + minEditorSize - viewportSize);
 }
 
-function workspaceUsedSize(items: Array<{ size: number }>, gapSize: number): number {
+function workspaceUsedSize(
+  items: Array<{ size: number }>,
+  gapSize: number,
+  chromeSize: number
+): number {
   const visibleItems = items.filter((item) => item.size > 0);
-  return visibleItems.reduce((total, item) => total + item.size, 0) + visibleItems.length * gapSize;
+  return (
+    visibleItems.reduce((total, item) => total + item.size, 0) +
+    visibleItems.length * (gapSize + chromeSize)
+  );
 }
 
 function shrinkCandidates<TItem extends { collapsePriority: number; id: string }>(

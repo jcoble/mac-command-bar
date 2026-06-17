@@ -129,7 +129,6 @@ export type WorkspaceSnapshotRestoreReadinessTone = 'ready' | 'warning' | 'block
 
 export type WorkspaceSnapshotRestoreReadinessContext = {
   liveTerminalSessionIDs?: string[];
-  liveTerminalCwds?: string[];
   knownWorktreePaths?: string[];
 };
 
@@ -206,15 +205,13 @@ export function describeWorkspaceSnapshotRestoreReadiness(
   context: WorkspaceSnapshotRestoreReadinessContext = {}
 ): WorkspaceSnapshotRestoreReadiness {
   const liveTerminalSessionIDs = new Set((context.liveTerminalSessionIDs ?? []).map((id) => id.trim()).filter(Boolean));
-  const liveTerminalCwds = new Set(normalizePathList(context.liveTerminalCwds));
   const knownWorktreePaths = normalizePathList(context.knownWorktreePaths);
   const normalizedWorktreePath = snapshot.worktreePath ? normalizePath(snapshot.worktreePath) : null;
   const savedTerminal = snapshot.embeddedTerminal;
 
   if (
     savedTerminal &&
-    (liveTerminalSessionIDs.has(savedTerminal.sessionID) ||
-      liveTerminalCwds.has(normalizePath(savedTerminal.cwd)))
+    liveTerminalSessionIDs.has(savedTerminal.sessionID)
   ) {
     return {
       kind: 'live-terminal',

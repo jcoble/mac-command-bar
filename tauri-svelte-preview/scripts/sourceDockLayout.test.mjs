@@ -25,7 +25,7 @@ assert.deepEqual(
   ],
   'default layout should match the compact IDE shell'
 );
-assert.deepEqual(defaultLayout.hiddenPanelIDs, ['terminal', 'browser']);
+assert.deepEqual(defaultLayout.hiddenPanelIDs, ['terminal', 'browser', 'markdown']);
 assert.equal(defaultLayout.activePanelByGroup.center, 'editor');
 
 const movedContext = moveSourceDockPanel(defaultLayout, 'context', 'bottom');
@@ -58,7 +58,7 @@ assert.deepEqual(
   ['context'],
   'hiding a panel should remove it from its visible group'
 );
-assert.deepEqual(hiddenInsights.hiddenPanelIDs, ['terminal', 'browser', 'insights']);
+assert.deepEqual(hiddenInsights.hiddenPanelIDs, ['terminal', 'browser', 'markdown', 'insights']);
 
 const restoredInsights = showSourceDockPanel(hiddenInsights, 'insights');
 assert.deepEqual(
@@ -66,7 +66,7 @@ assert.deepEqual(
   ['context', 'insights'],
   'restoring a panel should return it to its preferred group'
 );
-assert.deepEqual(restoredInsights.hiddenPanelIDs, ['terminal', 'browser']);
+assert.deepEqual(restoredInsights.hiddenPanelIDs, ['terminal', 'browser', 'markdown']);
 assert.equal(restoredInsights.activePanelByGroup.right, 'insights');
 
 const attemptedEditorHide = hideSourceDockPanel(defaultLayout, 'editor');
@@ -75,7 +75,7 @@ assert.deepEqual(
   ['editor'],
   'the editor panel should remain visible'
 );
-assert.deepEqual(attemptedEditorHide.hiddenPanelIDs, ['terminal', 'browser']);
+assert.deepEqual(attemptedEditorHide.hiddenPanelIDs, ['terminal', 'browser', 'markdown']);
 
 const normalized = normalizeSourceDockLayout({
   preset: 'custom',
@@ -182,8 +182,33 @@ assert.deepEqual(
     ['editor', 'center', 'Editor'],
     ['context', 'right', 'Context'],
     ['insights', 'right', 'Insights'],
-    ['terminal', 'bottom', 'Terminal'],
-    ['browser', 'bottom', 'Browser']
+    ['terminal', 'center', 'Terminal'],
+    ['browser', 'center', 'Browser'],
+    ['markdown', 'center', 'Markdown']
   ],
   'panel descriptors should expose stable labels and preferred docking groups'
+);
+
+const restoredMarkdown = showSourceDockPanel(defaultLayout, 'markdown');
+assert.deepEqual(
+  restoredMarkdown.groups.find((group) => group.id === 'center')?.panelIDs,
+  ['editor', 'markdown'],
+  'showing markdown should add it to the center group alongside the editor'
+);
+assert.deepEqual(
+  restoredMarkdown.hiddenPanelIDs,
+  ['terminal', 'browser'],
+  'showing markdown should remove it from the hidden panel set'
+);
+
+const markdownToBottom = moveSourceDockPanel(restoredMarkdown, 'markdown', 'bottom');
+assert.deepEqual(
+  markdownToBottom.groups.find((group) => group.id === 'center')?.panelIDs,
+  ['editor', 'markdown'],
+  'markdown should stay in the center group even when moved toward the bottom'
+);
+assert.deepEqual(
+  markdownToBottom.groups.find((group) => group.id === 'bottom')?.panelIDs,
+  [],
+  'the bottom group should never hold the center-runtime markdown panel'
 );

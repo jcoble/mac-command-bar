@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 	import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+	import "monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/goToCommands";
+	import "monaco-editor/esm/vs/editor/standalone/browser/referenceSearch/standaloneReferenceSearch";
 	import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 	import TypeScriptWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 	import "monaco-editor/min/vs/editor/editor.main.css";
@@ -20,6 +22,7 @@
 		type SourceDocumentHighlight,
 		type SourceInlayHint,
 		type SourcePreview,
+		type SourceRecord,
 		type SourceReferenceTarget,
 		type SourceRenameResult,
 		type SourceSemanticToken,
@@ -69,6 +72,24 @@
 	type SourceEditorReferenceLookup = (
 		request: SourceEditorLookupRequest
 	) => SourceReferenceTarget[] | Promise<SourceReferenceTarget[]> | null | undefined;
+
+	type SourceEditorReferenceCountLookup = (
+		request: SourceEditorLookupRequest
+	) => number | Promise<number | null> | null | undefined;
+
+	type SourceEditorExternalPreviewLookup = (
+		record: SourceRecord
+	) => SourcePreview | Promise<SourcePreview | null> | null | undefined;
+
+	type SourceEditorExternalNavigationRequest = {
+		path: string;
+		line: number;
+		column: number;
+	};
+
+	type SourceEditorExternalNavigation = (
+		request: SourceEditorExternalNavigationRequest
+	) => void | Promise<void>;
 
 	type SourceEditorImplementationLookup = (
 		request: SourceEditorLookupRequest
@@ -129,6 +150,10 @@
 		request: SourceEditorRenameRequest
 	) => SourceRenameResult | Promise<SourceRenameResult | null> | null | undefined;
 
+	type MonacoCommandService = {
+		executeCommand: (id: string, ...args: unknown[]) => unknown;
+	};
+
 	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
 
 	type Props = {
@@ -147,6 +172,8 @@
 		onDiagnosticsChange?: (diagnostics: SourceDiagnostic[]) => void;
 		onDefinitionLookup?: SourceEditorDefinitionLookup;
 		onDocumentHighlightLookup?: SourceEditorDocumentHighlightLookup;
+		onExternalNavigation?: SourceEditorExternalNavigation;
+		onExternalPreviewLookup?: SourceEditorExternalPreviewLookup;
 		onFormatDocument?: SourceEditorFormatDocument;
 		onGoToLineRequest?: () => void;
 		onHoverLookup?: (request: SourceEditorLookupRequest) => SourceEditorHoverResult | Promise<SourceEditorHoverResult | null> | null;
@@ -158,6 +185,7 @@
 		onPreviousProblemRequest?: SourceEditorProblemNavigation;
 		onQuickOpenRequest?: () => void;
 		onReferenceLookup?: SourceEditorReferenceLookup;
+		onReferenceCountLookup?: SourceEditorReferenceCountLookup;
 		onRename?: SourceEditorRename;
 		onSaveRequest?: () => void;
 		onInlayHintLookup?: SourceEditorInlayHintLookup;
@@ -185,6 +213,8 @@
 		onDiagnosticsChange,
 		onDefinitionLookup,
 		onDocumentHighlightLookup,
+		onExternalNavigation,
+		onExternalPreviewLookup,
 		onFormatDocument,
 		onGoToLineRequest,
 		onHoverLookup,
@@ -196,6 +226,7 @@
 		onPreviousProblemRequest,
 		onQuickOpenRequest,
 		onReferenceLookup,
+		onReferenceCountLookup,
 		onRename,
 		onSaveRequest,
 		onInlayHintLookup,
@@ -210,8 +241,10 @@
 	let host = $state<HTMLDivElement | null>(null);
 	let editor = $state<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	let monacoApi: typeof Monaco | null = null;
+	let componentDestroyed = false;
 	let contentChangeDisposable: Monaco.IDisposable | null = null;
 	let markerChangeDisposable: Monaco.IDisposable | null = null;
+	let modelChangeDisposable: Monaco.IDisposable | null = null;
 	let mouseDefinitionDisposable: Monaco.IDisposable | null = null;
 	let semanticTokensDisposable: Monaco.IDisposable | null = null;
 	let hoverProviderDisposable: Monaco.IDisposable | null = null;
@@ -225,9 +258,11 @@
 	let signatureHelpProviderDisposable: Monaco.IDisposable | null = null;
 	let inlayHintsProviderDisposable: Monaco.IDisposable | null = null;
 	let referenceProviderDisposable: Monaco.IDisposable | null = null;
+	let codeLensProviderDisposable: Monaco.IDisposable | null = null;
 	let completionProviderDisposable: Monaco.IDisposable | null = null;
 	let documentSymbolProviderDisposable: Monaco.IDisposable | null = null;
 	let editorActionDisposables: Monaco.IDisposable[] = [];
+	let editorOpenerDisposable: Monaco.IDisposable | null = null;
 	let currentPath = "";
 	let currentTargetLine: number | null = null;
 	let currentTargetLineRequestId = -1;
@@ -236,8 +271,14 @@
 	let isReady = $state(false);
 	let layoutObserver: ResizeObserver | null = null;
 	let layoutFrame = 0;
+	let targetLineRevealFrame = 0;
 	let externalWorkspaceEditCommandId = "";
+	let codeLensReferenceCommandDisposable: Monaco.IDisposable | null = null;
+	let monacoCancellationSuppressionDepth = 0;
+	let monacoCancellationSuppressionTimer = 0;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
+	const codeLensReferenceCountCache = new Map<string, number>();
+	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 	const sourceLspMonacoLanguageIDs = [
 		"typescript",
@@ -246,6 +287,18 @@
 		"rust",
 		"html",
 	];
+	const sourceCodeLensSymbolKinds = new Set([
+		"class",
+		"constructor",
+		"enum",
+		"function",
+		"interface",
+		"method",
+		"property",
+		"record",
+		"struct",
+		"variable",
+	]);
 
 	function installWorker() {
 		const target = self as unknown as {
@@ -373,6 +426,7 @@
 					if (!request) return null;
 
 					const targets = await onDefinitionLookup?.(request);
+					await ensureSourceTargetModels(monaco, targets ?? []);
 					return (targets ?? []).map((target) => sourceDefinitionTargetToLocation(monaco, target));
 				},
 			}
@@ -389,7 +443,50 @@
 					if (!request) return null;
 
 					const targets = await onReferenceLookup?.(request);
+					await ensureSourceTargetModels(monaco, targets ?? []);
 					return (targets ?? []).map((target) => sourceReferenceTargetToLocation(monaco, target));
+				},
+			}
+		);
+	}
+
+	function registerSourceCodeLensProvider(monaco: typeof Monaco) {
+		codeLensProviderDisposable?.dispose();
+		codeLensProviderDisposable = monaco.languages.registerCodeLensProvider(
+			sourceLspMonacoLanguageIDs,
+			{
+				provideCodeLenses: (model) => {
+					const modelPreview = previewForModel(model);
+					const symbols = extractSourceSymbols(modelPreview, model.getValue())
+						.filter(isSourceCodeLensSymbol)
+						.slice(0, 120);
+
+					return {
+						lenses: symbols.map((symbol) => {
+							const request = sourceSymbolToLookupRequest(symbol);
+							return {
+								id: sourceCodeLensIdForRequest(model, request),
+								range: new monaco.Range(symbol.line, 1, symbol.line, 1),
+							};
+						}),
+						dispose() {},
+					};
+				},
+				resolveCodeLens: async (model, codeLens, token) => {
+					const request = sourceCodeLensLookupRequest(codeLens);
+					if (!request || token.isCancellationRequested) return codeLens;
+
+					const count = await sourceCodeLensReferenceCount(model, request);
+					if (token.isCancellationRequested) return codeLens;
+
+					return {
+						...codeLens,
+						command: {
+							id: codeLensReferenceCommandId,
+							title: formatReferenceCodeLensTitle(count),
+							arguments: [request],
+						},
+					};
 				},
 			}
 		);
@@ -423,6 +520,7 @@
 					if (!request) return null;
 
 					const targets = await onImplementationLookup?.(request);
+					await ensureSourceTargetModels(monaco, targets ?? []);
 					return (targets ?? []).map((target) =>
 						sourceImplementationTargetToLocation(monaco, target)
 					);
@@ -441,6 +539,7 @@
 					if (!request) return null;
 
 					const targets = await onTypeDefinitionLookup?.(request);
+					await ensureSourceTargetModels(monaco, targets ?? []);
 					return (targets ?? []).map((target) =>
 						sourceTypeDefinitionTargetToLocation(monaco, target)
 					);
@@ -606,6 +705,64 @@
 						sourceSymbolToDocumentSymbol(monaco, symbol)
 					),
 			}
+		);
+	}
+
+	function sourcePathFromMonacoUri(uri: Monaco.Uri | null | undefined) {
+		if (!uri) return "";
+		return uri.fsPath || decodeURIComponent(uri.path || "");
+	}
+
+	function locationFromMonacoSelection(
+		selection: Monaco.IRange | Monaco.IPosition | null | undefined
+	) {
+		const value = selection as
+			| Partial<
+					Monaco.IRange &
+						Monaco.IPosition & {
+							selectionStartLineNumber: number;
+							selectionStartColumn: number;
+							positionLineNumber: number;
+							positionColumn: number;
+						}
+			  >
+			| null
+			| undefined;
+		const line =
+			value?.startLineNumber ??
+			value?.selectionStartLineNumber ??
+			value?.lineNumber ??
+			value?.positionLineNumber ??
+			1;
+		const column =
+			value?.startColumn ??
+			value?.selectionStartColumn ??
+			value?.column ??
+			value?.positionColumn ??
+			1;
+		return { line: Math.max(1, line), column: Math.max(1, column) };
+	}
+
+	async function ensureSourceTargetModel(monaco: typeof Monaco, target: SourceRecord) {
+		const uri = monaco.Uri.file(target.path);
+		const existing = monaco.editor.getModel(uri);
+		if (existing) return existing;
+
+		const externalPreview = await onExternalPreviewLookup?.(target);
+		if (!externalPreview) return null;
+
+		const model = monaco.editor.createModel(
+			externalPreview.content,
+			monacoLanguageForSource(externalPreview.language),
+			uri
+		);
+		ownedModels.add(model);
+		return model;
+	}
+
+	async function ensureSourceTargetModels(monaco: typeof Monaco, targets: SourceRecord[]) {
+		await Promise.all(
+			targets.map((target) => ensureSourceTargetModel(monaco, target).catch(() => null))
 		);
 	}
 
@@ -907,6 +1064,89 @@
 		};
 	}
 
+	function isSourceCodeLensSymbol(symbol: SourceSymbol) {
+		if (!sourceCodeLensSymbolKinds.has(symbol.kind)) return false;
+		if (symbol.kind !== "variable") return true;
+		return /^(?:public|private|protected|internal|static|readonly|const|required|volatile|new)\b/.test(
+			symbol.detail
+		);
+	}
+
+	function sourceSymbolToLookupRequest(symbol: SourceSymbol): SourceEditorLookupRequest {
+		const symbolNameOffset = symbol.detail.lastIndexOf(symbol.name);
+		return {
+			symbolName: symbol.name,
+			line: symbol.line,
+			column: symbolNameOffset >= 0 ? symbol.column + symbolNameOffset : symbol.column,
+		};
+	}
+
+	function sourceCodeLensLookupRequest(
+		codeLens: Monaco.languages.CodeLens
+	): SourceEditorLookupRequest | null {
+		const request = codeLens.command?.arguments?.[0] as SourceEditorLookupRequest | undefined;
+		if (request?.symbolName && Number.isFinite(request.line) && Number.isFinite(request.column)) {
+			return request;
+		}
+
+		return parseSourceCodeLensID(codeLens.id);
+	}
+
+	function sourceCodeLensIdForRequest(
+		model: Monaco.editor.ITextModel,
+		request: SourceEditorLookupRequest
+	) {
+		return [
+			"mcb-ref-count",
+			model.getVersionId(),
+			request.line,
+			request.column,
+			encodeURIComponent(request.symbolName),
+		].join(":");
+	}
+
+	function parseSourceCodeLensID(id: string | undefined): SourceEditorLookupRequest | null {
+		if (!id?.startsWith("mcb-ref-count:")) return null;
+		const [, , line, column, encodedSymbolName] = id.split(":");
+		const parsedLine = Number(line);
+		const parsedColumn = Number(column);
+		const symbolName = encodedSymbolName ? decodeURIComponent(encodedSymbolName) : "";
+		if (!symbolName || !Number.isFinite(parsedLine) || !Number.isFinite(parsedColumn)) {
+			return null;
+		}
+
+		return {
+			symbolName,
+			line: parsedLine,
+			column: parsedColumn,
+		};
+	}
+
+	function codeLensReferenceCacheKey(
+		model: Monaco.editor.ITextModel,
+		request: SourceEditorLookupRequest
+	) {
+		return `${model.uri.toString()}::${model.getVersionId()}::${request.line}:${request.column}:${request.symbolName}`;
+	}
+
+	async function sourceCodeLensReferenceCount(
+		model: Monaco.editor.ITextModel,
+		request: SourceEditorLookupRequest
+	) {
+		const cacheKey = codeLensReferenceCacheKey(model, request);
+		const cachedCount = codeLensReferenceCountCache.get(cacheKey);
+		if (cachedCount !== undefined) return cachedCount;
+
+		const nextCount = Math.max(0, (await onReferenceCountLookup?.(request)) ?? 0);
+		codeLensReferenceCountCache.set(cacheKey, nextCount);
+		return nextCount;
+	}
+
+	function formatReferenceCodeLensTitle(count: number) {
+		const suffix = count >= 50 ? "+" : "";
+		return `${count}${suffix} ${count === 1 ? "reference" : "references"}`;
+	}
+
 	function encodeSemanticTokens(tokens: SourceSemanticToken[]): Uint32Array {
 		const data: number[] = [];
 		let previousLine = 0;
@@ -948,6 +1188,10 @@
 		const nextContent = content ?? preview.content;
 		const uri = monacoApi.Uri.file(preview.path);
 		let model = monacoApi.editor.getModel(uri);
+		if (model?.isDisposed()) {
+			ownedModels.delete(model);
+			model = null;
+		}
 
 		if (!model) {
 			model = monacoApi.editor.createModel(nextContent, language, uri);
@@ -982,8 +1226,7 @@
 			currentPath = preview.path;
 			currentTargetLine = targetLine;
 			currentTargetLineRequestId = targetLineRequestId;
-			editor.setPosition({ lineNumber, column: 1 });
-			editor.revealLineInCenterIfOutsideViewport(lineNumber);
+			revealTargetLine(model, lineNumber);
 			return;
 		}
 
@@ -1001,6 +1244,21 @@
 		currentTargetLineRequestId = targetLineRequestId;
 	}
 
+	function revealTargetLine(model: Monaco.editor.ITextModel, lineNumber: number) {
+		if (!editor) return;
+
+		const position = { lineNumber, column: 1 };
+		editor.setPosition(position);
+		editor.revealPositionInCenter(position);
+		if (targetLineRevealFrame) window.cancelAnimationFrame(targetLineRevealFrame);
+		targetLineRevealFrame = window.requestAnimationFrame(() => {
+			targetLineRevealFrame = 0;
+			if (editor?.getModel() !== model) return;
+			editor.setPosition(position);
+			editor.revealPositionInCenter(position);
+		});
+	}
+
 	function setModelValue(model: Monaco.editor.ITextModel, nextContent: string) {
 		applyingContent = true;
 		try {
@@ -1012,6 +1270,7 @@
 
 	function handleEditorContentChange() {
 		if (applyingContent || !editor) return;
+		codeLensReferenceCountCache.clear();
 		const nextContent = editor.getValue();
 		onContentChange?.(nextContent);
 		publishSymbols(nextContent);
@@ -1147,6 +1406,149 @@
 		void editor?.getAction("editor.action.referenceSearch.trigger")?.run();
 	}
 
+	function requestReferencesAtPosition(position: Monaco.IPosition) {
+		if (!editor) return;
+
+		editor.setPosition(position);
+		editor.revealPositionInCenterIfOutsideViewport(position);
+		editor.focus();
+		requestReferencesAtCursor();
+	}
+
+	function sourceEditorCommandService() {
+		return (
+			editor as unknown as { _commandService?: MonacoCommandService } | null
+		)?._commandService ?? null;
+	}
+
+	function isMonacoCancellationError(value: unknown) {
+		const error = value as { name?: unknown; message?: unknown } | null;
+		return error?.name === "Canceled" && error.message === "Canceled";
+	}
+
+	function suppressMonacoCancellationErrorsBriefly() {
+		if (monacoCancellationSuppressionTimer) {
+			window.clearTimeout(monacoCancellationSuppressionTimer);
+			monacoCancellationSuppressionTimer = 0;
+		}
+		monacoCancellationSuppressionDepth += 1;
+		return () => {
+			monacoCancellationSuppressionTimer = window.setTimeout(() => {
+				monacoCancellationSuppressionDepth = Math.max(
+					0,
+					monacoCancellationSuppressionDepth - 1
+				);
+				monacoCancellationSuppressionTimer = 0;
+			}, 120);
+		};
+	}
+
+	function handleMonacoCancellationWindowError(event: ErrorEvent) {
+		if (monacoCancellationSuppressionDepth === 0 || !isMonacoCancellationError(event.error)) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopImmediatePropagation();
+	}
+
+	function handleMonacoCancellationRejection(event: PromiseRejectionEvent) {
+		if (monacoCancellationSuppressionDepth === 0 || !isMonacoCancellationError(event.reason)) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopImmediatePropagation();
+	}
+
+	async function showCodeLensReferences(monaco: typeof Monaco, request: SourceEditorLookupRequest) {
+		if (!editor) return;
+
+		const position = {
+			lineNumber: Math.max(1, request.line),
+			column: Math.max(1, request.column),
+		};
+		const model = editor.getModel();
+		editor.setPosition(position);
+		editor.revealPositionInCenterIfOutsideViewport(position);
+		editor.focus();
+
+		const targets = (await onReferenceLookup?.(request)) ?? [];
+		await ensureSourceTargetModels(monaco, targets);
+		const locations = targets.map((target) => sourceReferenceTargetToLocation(monaco, target));
+		if (locations.length === 0 || !model) {
+			requestReferencesAtPosition(position);
+			return;
+		}
+
+		const commandService = sourceEditorCommandService();
+		if (!commandService) {
+			requestReferencesAtPosition(position);
+			return;
+		}
+
+		try {
+			await commandService.executeCommand(
+				"editor.action.peekLocations",
+				model.uri,
+				position,
+				locations,
+				"peek"
+			);
+		} catch (error) {
+			console.warn("Falling back to Monaco reference search after CodeLens peek failed", error);
+			requestReferencesAtPosition(position);
+		}
+	}
+
+	function runCodeLensReferenceCommand(monaco: typeof Monaco, request?: SourceEditorLookupRequest) {
+		if (!request) return;
+		void showCodeLensReferences(monaco, request);
+	}
+
+	function registerSourceCodeLensReferenceCommand(monaco: typeof Monaco) {
+		codeLensReferenceCommandDisposable?.dispose();
+		codeLensReferenceCommandDisposable = monaco.editor.registerCommand(
+			codeLensReferenceCommandId,
+			(_accessor, request?: SourceEditorLookupRequest) => {
+				runCodeLensReferenceCommand(monaco, request);
+			}
+		);
+	}
+
+	function installExternalEditorOpener(monaco: typeof Monaco) {
+		editorOpenerDisposable?.dispose();
+		editorOpenerDisposable = monaco.editor.registerEditorOpener({
+			openCodeEditor: (source, resource, selectionOrPosition) => {
+				if (!editor || source !== editor || !onExternalNavigation) return false;
+
+				const path = sourcePathFromMonacoUri(resource);
+				if (!path || path === currentPath) return false;
+
+				const targetModel = monaco.editor.getModel(resource);
+				if (!targetModel) return false;
+
+				const location = locationFromMonacoSelection(selectionOrPosition);
+				const position = {
+					lineNumber: location.line,
+					column: location.column
+				};
+				editor.setModel(targetModel);
+				editor.setPosition(position);
+				editor.revealPositionInCenterIfOutsideViewport(position);
+				editor.focus();
+
+				const releaseCancellationSuppression = suppressMonacoCancellationErrorsBriefly();
+				queueMicrotask(() => {
+					void Promise.resolve(onExternalNavigation({ path, ...location })).finally(
+						releaseCancellationSuppression
+					);
+				});
+				return true;
+			}
+		});
+	}
+
 	function requestImplementationAtCursor() {
 		const implementationAction = editor?.getAction("editor.action.peekImplementation");
 		if (implementationAction) {
@@ -1272,9 +1674,19 @@
 		};
 	}
 
-	onMount(async () => {
-		if (!host) return;
+	async function waitForConnectedMountHost(mountHost: HTMLDivElement) {
+		if (mountHost.isConnected) return true;
 
+		await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+		return !componentDestroyed && host === mountHost && mountHost.isConnected;
+	}
+
+	onMount(async () => {
+		const mountHost = host;
+		if (!mountHost) return;
+
+		window.addEventListener("error", handleMonacoCancellationWindowError);
+		window.addEventListener("unhandledrejection", handleMonacoCancellationRejection);
 		installWorker();
 
 		const modules = await Promise.all([
@@ -1314,6 +1726,13 @@
 			import("monaco-editor/esm/vs/language/json/monaco.contribution"),
 			import("monaco-editor/esm/vs/language/typescript/monaco.contribution"),
 		]);
+		if (
+			componentDestroyed ||
+			host !== mountHost ||
+			!(await waitForConnectedMountHost(mountHost))
+		) {
+			return;
+		}
 		const monaco = modules[0] as typeof Monaco;
 		const typeScriptLanguage = modules[modules.length - 1] as TypeScriptContribution;
 
@@ -1335,7 +1754,7 @@
 		registerSourceCompletionProvider(monaco);
 		registerSourceDocumentSymbolProvider(monaco);
 
-		editor = monaco.editor.create(host, {
+		editor = monaco.editor.create(mountHost, {
 			automaticLayout: false,
 			bracketPairColorization: { enabled: true },
 			contextmenu: true,
@@ -1374,6 +1793,7 @@
 			inlayHints: {
 				enabled: "on",
 			},
+			codeLens: true,
 			smoothScrolling: true,
 			stickyScroll: { enabled: false },
 			tabSize: 4,
@@ -1385,8 +1805,17 @@
 			editor.addCommand(0, (_accessor, action?: SourceCodeAction) => {
 				if (action) void onWorkspaceEditAction?.(action);
 			}) ?? "";
+		registerSourceCodeLensReferenceCommand(monaco);
+		registerSourceCodeLensProvider(monaco);
+		installExternalEditorOpener(monaco);
 
 		editorActionDisposables = [
+			editor.addAction({
+				id: codeLensReferenceCommandId,
+				label: "Find CodeLens References",
+				run: (_editor, request?: SourceEditorLookupRequest) =>
+					runCodeLensReferenceCommand(monaco, request),
+			}),
 			editor.addAction({
 				id: "mcb.source.goToDefinition",
 				label: "Go to Definition",
@@ -1553,6 +1982,10 @@
 		layoutObserver.observe(host);
 
 		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
+		modelChangeDisposable = editor.onDidChangeModel(() => {
+			codeLensReferenceCountCache.clear();
+			publishDiagnostics();
+		});
 		markerChangeDisposable = monaco.editor.onDidChangeMarkers((uris) => {
 			const modelUri = editor?.getModel()?.uri.toString();
 			if (modelUri && uris.some((uri) => uri.toString() === modelUri)) {
@@ -1586,13 +2019,26 @@
 	});
 
 	onDestroy(() => {
+		componentDestroyed = true;
 		if (layoutFrame) {
 			window.cancelAnimationFrame(layoutFrame);
 			layoutFrame = 0;
 		}
+		if (targetLineRevealFrame) {
+			window.cancelAnimationFrame(targetLineRevealFrame);
+			targetLineRevealFrame = 0;
+		}
+		window.removeEventListener("error", handleMonacoCancellationWindowError);
+		window.removeEventListener("unhandledrejection", handleMonacoCancellationRejection);
+		if (monacoCancellationSuppressionTimer) {
+			window.clearTimeout(monacoCancellationSuppressionTimer);
+			monacoCancellationSuppressionTimer = 0;
+		}
+		monacoCancellationSuppressionDepth = 0;
 		layoutObserver?.disconnect();
 		layoutObserver = null;
 		contentChangeDisposable?.dispose();
+		modelChangeDisposable?.dispose();
 		markerChangeDisposable?.dispose();
 		mouseDefinitionDisposable?.dispose();
 		semanticTokensDisposable?.dispose();
@@ -1607,8 +2053,13 @@
 		signatureHelpProviderDisposable?.dispose();
 		inlayHintsProviderDisposable?.dispose();
 		referenceProviderDisposable?.dispose();
+		codeLensProviderDisposable?.dispose();
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();
+		codeLensReferenceCommandDisposable?.dispose();
+		editorOpenerDisposable?.dispose();
+		codeLensReferenceCommandDisposable = null;
+		editorOpenerDisposable = null;
 		for (const disposable of editorActionDisposables) {
 			disposable.dispose();
 		}
@@ -1621,6 +2072,7 @@
 		}
 		editor?.dispose();
 		externalWorkspaceEditCommandId = "";
+		codeLensReferenceCountCache.clear();
 		for (const model of ownedModels) {
 			model.dispose();
 		}

@@ -1,3 +1,5 @@
+@import './lib/styles/tokens.css';
+
 :root {
   color-scheme: dark;
   font-family:
@@ -7,8 +9,8 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  background: #151717;
-  color: #eff2f1;
+  background: var(--color-bg);
+  color: var(--color-text);
   font-synthesis: none;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
@@ -26,7 +28,8 @@ body {
   background:
     linear-gradient(135deg, rgba(24, 141, 128, 0.16), transparent 34%),
     radial-gradient(circle at 88% 12%, rgba(208, 221, 140, 0.14), transparent 26%),
-    #141616;
+    var(--color-bg);
+  color: var(--color-text);
 }
 
 button,

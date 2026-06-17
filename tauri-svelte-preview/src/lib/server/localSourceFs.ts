@@ -1,4 +1,5 @@
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 import {
@@ -20,6 +21,14 @@ const maxSourceListLimit = 25_000;
 const maxPreviewBytes = 512 * 1024;
 const maxIntelligenceReadCount = 2_000;
 const maxSkippedDirectorySamples = 16;
+const claudeSessionFileLimit = 512;
+const claudeSessionTailBytes = 256 * 1024;
+const codexSessionFileLimit = 512;
+const codexSessionHeadBytes = 64 * 1024;
+const codexSessionTailBytes = 256 * 1024;
+const cmuxSessionResultHeadroom = 256;
+const agentSessionResultLimit =
+  claudeSessionFileLimit + codexSessionFileLimit + cmuxSessionResultHeadroom;
 
 type LocalSourceScanInput = {
   root: string;
@@ -41,6 +50,17 @@ export type LocalProjectRootValidationResult = {
   isGitRepository: boolean;
   gitRoot: string | null;
   message: string;
+};
+
+export type LocalAgentSessionRecord = {
+  provider: string;
+  id: string;
+  title: string;
+  description: string | null;
+  model: string | null;
+  projectPath: string | null;
+  lastActivity: string | null;
+  resumeCommands: string[];
 };
 
 export async function validateLocalProjectRoot(root: string): Promise<LocalProjectRootValidationResult> {
@@ -86,6 +106,52 @@ export async function validateLocalProjectRoot(root: string): Promise<LocalProje
   };
 }
 
+export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<LocalAgentSessionRecord[]> {
+  const homePath = homeRoot.trim();
+  if (!homePath) return [];
+
+  const records: LocalAgentSessionRecord[] = [];
+  const codexRecords: LocalAgentSessionRecord[] = [];
+  const codexIndex = path.join(homePath, '.codex', 'session_index.jsonl');
+  const codexIndexContents = await readFile(codexIndex, 'utf8').catch(() => '');
+  if (codexIndexContents) {
+    codexRecords.push(...parseCodexIndexJsonl(codexIndexContents));
+  }
+
+  const codexFiles = await sortFilesByModifiedDesc(
+    await jsonlFiles(path.join(homePath, '.codex', 'sessions'))
+  );
+  const codexMetadata: LocalAgentSessionRecord[] = [];
+  for (const filePath of codexFiles.slice(0, codexSessionFileLimit)) {
+    const contents = await readHeadAndTailUtf8(
+      filePath,
+      codexSessionHeadBytes,
+      codexSessionTailBytes
+    ).catch(() => '');
+    if (contents) codexMetadata.push(...parseCodexRolloutJsonl(contents));
+  }
+  records.push(...mergeCodexSessionMetadata(codexRecords, codexMetadata));
+
+  const cmuxRoot = path.join(homePath, '.cmuxterm');
+  for (const { agent, filePath } of await cmuxHookSessionFiles(cmuxRoot)) {
+    const contents = await readFile(filePath, 'utf8').catch(() => '');
+    if (contents) records.push(...parseCmuxHookSessionsJson(agent, contents));
+  }
+
+  const claudeFiles = await sortFilesByModifiedDesc(
+    await jsonlFiles(path.join(homePath, '.claude', 'projects'))
+  );
+  for (const filePath of claudeFiles.slice(0, claudeSessionFileLimit)) {
+    const projectPath = decodeClaudeProjectDir(path.basename(path.dirname(filePath))) ?? '';
+    const contents = await readTailUtf8(filePath, claudeSessionTailBytes).catch(() => '');
+    if (contents) records.push(...parseClaudeJsonl(contents, projectPath));
+  }
+
+  return mergeAgentSessionRecords(records)
+    .sort((left, right) => compareNullableStringsDescending(left.lastActivity, right.lastActivity))
+    .slice(0, agentSessionResultLimit);
+}
+
 async function findGitRoot(root: string): Promise<string | null> {
   let current = normalizeRootPath(root);
 
@@ -98,6 +164,265 @@ async function findGitRoot(root: string): Promise<string | null> {
     if (parent === current) return null;
     current = parent;
   }
+}
+
+function parseCodexIndexJsonl(input: string): LocalAgentSessionRecord[] {
+  return parseJsonLines(input).flatMap((value) => {
+    const id = optionalString(value.id);
+    if (!id) return [];
+
+    return [
+      {
+        provider: 'codex',
+        id,
+        title: optionalString(value.thread_name) ?? 'Untitled Codex session',
+        description: null,
+        model: modelFromValue(value),
+        projectPath: null,
+        lastActivity: optionalString(value.updated_at),
+        resumeCommands: [`codex resume ${id}`]
+      }
+    ];
+  });
+}
+
+function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[] {
+  const records: LocalAgentSessionRecord[] = [];
+
+  for (const value of parseJsonLines(input)) {
+    const type = optionalString(value.type);
+    if (type === 'session_meta') {
+      const payload = objectValue(value.payload);
+      const id = optionalString(payload?.id);
+      if (!payload || !id) continue;
+
+      const record: LocalAgentSessionRecord = {
+        provider: 'codex',
+        id,
+        title: 'Codex session',
+        description: null,
+        model: modelFromValue(payload),
+        projectPath: optionalString(payload.cwd),
+        lastActivity: optionalString(value.timestamp) ?? optionalString(payload.timestamp),
+        resumeCommands: [`codex resume ${id}`]
+      };
+      upsertAgentSessionRecord(records, record);
+      continue;
+    }
+
+    if (type === 'turn_context') {
+      const payload = objectValue(value.payload);
+      if (!payload) continue;
+      updateLatestCodexRecord(
+        records,
+        optionalString(payload.cwd),
+        null,
+        modelFromValue(payload),
+        optionalString(value.timestamp)
+      );
+      continue;
+    }
+
+    if (type === 'response_item') {
+      const cwd = codexResponseItemWorkdir(value);
+      const description = codexResponseItemDescription(value);
+      if (!cwd && !description) continue;
+      updateLatestCodexRecord(records, cwd, description, null, optionalString(value.timestamp));
+    }
+  }
+
+  return records;
+}
+
+function updateLatestCodexRecord(
+  records: LocalAgentSessionRecord[],
+  cwd: string | null,
+  description: string | null,
+  model: string | null,
+  lastActivity: string | null
+) {
+  const record = records[records.length - 1];
+  if (!record) return;
+
+  mergeAgentSessionRecord(record, {
+    provider: 'codex',
+    id: record.id,
+    title: record.title,
+    description,
+    model,
+    projectPath: cwd,
+    lastActivity,
+    resumeCommands: [`codex resume ${record.id}`]
+  });
+}
+
+function codexResponseItemWorkdir(value: Record<string, unknown>) {
+  const payload = objectValue(value.payload);
+  if (!payload || optionalString(payload.type) !== 'function_call') return null;
+
+  const rawArguments = optionalString(payload.arguments);
+  if (!rawArguments) return null;
+
+  const parsed = parseJsonObject(rawArguments);
+  return parsed ? optionalString(parsed.workdir) : null;
+}
+
+function codexResponseItemDescription(value: Record<string, unknown>) {
+  const payload = objectValue(value.payload);
+  if (!payload || optionalString(payload.type) !== 'message') return null;
+  if (optionalString(payload.role) !== 'user') return null;
+
+  const text = valueToText(payload.content);
+  return text ? compactText(text, 140) : null;
+}
+
+function mergeCodexSessionMetadata(
+  indexed: LocalAgentSessionRecord[],
+  metadata: LocalAgentSessionRecord[]
+) {
+  for (const record of metadata) {
+    upsertAgentSessionRecord(indexed, record);
+  }
+  return indexed;
+}
+
+function parseCmuxHookSessionsJson(agent: string, input: string): LocalAgentSessionRecord[] {
+  const value = parseJsonObject(input);
+  const sessions = objectValue(value?.sessions);
+  const normalizedAgent = agent.trim().toLowerCase();
+  if (!sessions || !normalizedAgent) return [];
+
+  return Object.entries(sessions).flatMap(([key, rawSession]) => {
+    const session = objectValue(rawSession);
+    if (!session) return [];
+
+    const id = optionalString(session.sessionId) ?? key.trim();
+    if (!id) return [];
+
+    const launchCommand = objectValue(session.launchCommand);
+    const cwd = optionalString(session.cwd) ?? optionalString(launchCommand?.workingDirectory);
+    const lastActivity =
+      timestampishString(session.updatedAt)
+      ?? timestampishString(session.startedAt)
+      ?? timestampishString(launchCommand?.capturedAt);
+    const status = optionalString(session.runtimeStatus) ?? optionalString(session.agentLifecycle);
+
+    return [
+      {
+        provider: `cmux-${normalizedAgent}`,
+        id,
+        title: cmuxSessionTitle(normalizedAgent, session, status, cwd),
+        description: cmuxSessionDescription(session),
+        model: modelFromValue(session),
+        projectPath: cwd,
+        lastActivity,
+        resumeCommands: cmuxResumeCommands(normalizedAgent, id, cwd)
+      }
+    ];
+  });
+}
+
+function parseClaudeJsonl(input: string, projectPath: string): LocalAgentSessionRecord[] {
+  const records: LocalAgentSessionRecord[] = [];
+
+  for (const value of parseJsonLines(input)) {
+    const id = optionalString(value.sessionId) ?? optionalString(value.session_id);
+    if (!id) continue;
+
+    const cwd = optionalString(value.cwd) ?? projectPath;
+    upsertAgentSessionRecord(records, {
+      provider: 'claude',
+      id,
+      title: titleFromClaudeMessage(value) ?? 'Claude session',
+      description: claudeSessionDescription(value),
+      model: modelFromValue(objectValue(value.message)) ?? modelFromValue(value),
+      projectPath: cwd || null,
+      lastActivity: optionalString(value.timestamp) ?? optionalString(value.created_at),
+      resumeCommands: [
+        `claude --resume ${id}`,
+        cwd ? `cd ${shellQuote(cwd)} && claude --resume ${id}` : `claude --resume ${id}`
+      ]
+    });
+  }
+
+  return records;
+}
+
+function mergeAgentSessionRecords(records: LocalAgentSessionRecord[]) {
+  const merged: LocalAgentSessionRecord[] = [];
+  for (const record of records) {
+    upsertAgentSessionRecord(merged, record);
+  }
+  return merged;
+}
+
+function upsertAgentSessionRecord(records: LocalAgentSessionRecord[], record: LocalAgentSessionRecord) {
+  const existing = records.find(
+    (candidate) => candidate.provider === record.provider && candidate.id === record.id
+  );
+  if (existing) {
+    mergeAgentSessionRecord(existing, record);
+  } else {
+    records.push(record);
+  }
+}
+
+function mergeAgentSessionRecord(existing: LocalAgentSessionRecord, candidate: LocalAgentSessionRecord) {
+  if (!existing.description) existing.description = candidate.description;
+  if (!existing.model) existing.model = candidate.model;
+  if (!existing.projectPath) existing.projectPath = candidate.projectPath;
+
+  const candidateIsNewer =
+    candidate.lastActivity !== null
+    && (existing.lastActivity === null || candidate.lastActivity > existing.lastActivity);
+  if (candidateIsNewer) {
+    existing.title = candidate.title;
+    existing.description = candidate.description ?? existing.description;
+    existing.model = candidate.model ?? existing.model;
+    existing.projectPath = candidate.projectPath ?? existing.projectPath;
+    existing.lastActivity = candidate.lastActivity;
+  }
+
+  for (const command of candidate.resumeCommands) {
+    if (!existing.resumeCommands.includes(command)) existing.resumeCommands.push(command);
+  }
+}
+
+async function jsonlFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await jsonlFiles(entryPath));
+    } else if (entry.isFile() && path.extname(entry.name) === '.jsonl') {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
+async function cmuxHookSessionFiles(root: string) {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('-hook-sessions.json'))
+    .map((entry) => ({
+      agent: entry.name.slice(0, -'-hook-sessions.json'.length),
+      filePath: path.join(root, entry.name)
+    }))
+    .filter((entry) => entry.agent.length > 0);
+}
+
+async function sortFilesByModifiedDesc(files: string[]) {
+  const entries = await Promise.all(
+    files.map(async (filePath) => ({
+      filePath,
+      modifiedAt: (await stat(filePath).catch(() => null))?.mtimeMs ?? 0
+    }))
+  );
+  return entries.sort((left, right) => right.modifiedAt - left.modifiedAt).map((entry) => entry.filePath);
 }
 
 export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise<SourceScanResult> {
@@ -734,6 +1059,233 @@ function localizedPathCompare(left: string, right: string) {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
+}
+
+async function readTailUtf8(filePath: string, maxBytes: number) {
+  const handle = await open(filePath, 'r');
+  try {
+    const fileStats = await handle.stat();
+    const start = Math.max(0, fileStats.size - maxBytes);
+    const buffer = Buffer.alloc(fileStats.size - start);
+    await handle.read(buffer, 0, buffer.length, start);
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readHeadAndTailUtf8(filePath: string, headBytes: number, tailBytes: number) {
+  const handle = await open(filePath, 'r');
+  try {
+    const fileStats = await handle.stat();
+    if (fileStats.size <= headBytes + tailBytes) {
+      return readFile(filePath, 'utf8');
+    }
+
+    const head = Buffer.alloc(headBytes);
+    await handle.read(head, 0, head.length, 0);
+
+    const tailStart = Math.max(0, fileStats.size - tailBytes);
+    const tail = Buffer.alloc(fileStats.size - tailStart);
+    await handle.read(tail, 0, tail.length, tailStart);
+
+    return `${head.toString('utf8')}\n${tail.toString('utf8')}`;
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseJsonLines(input: string): Record<string, unknown>[] {
+  return input
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      const parsed = parseJsonObject(line);
+      return parsed ? [parsed] : [];
+    });
+}
+
+function parseJsonObject(input: unknown): Record<string, unknown> | null {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    return input as Record<string, unknown>;
+  }
+
+  if (typeof input !== 'string' || !input.trim()) return null;
+
+  try {
+    const parsed = JSON.parse(input);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function modelFromValue(value: Record<string, unknown> | null): string | null {
+  if (!value) return null;
+  return optionalString(value.model) ?? optionalString(value.model_slug) ?? optionalString(value.modelSlug);
+}
+
+function titleFromClaudeMessage(value: Record<string, unknown>) {
+  const message = objectValue(value.message);
+  const text = valueToText(message?.content) ?? valueToText(value.summary);
+  if (!text?.trim()) return null;
+  return compactText(text, 80);
+}
+
+function valueToText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return null;
+
+  const text = value
+    .flatMap((item) => {
+      const object = objectValue(item);
+      return optionalString(object?.text) ?? optionalString(object?.content) ?? [];
+    })
+    .join(' ');
+  return text || null;
+}
+
+function cmuxSessionTitle(
+  agent: string,
+  value: Record<string, unknown>,
+  status: string | null,
+  cwd: string | null
+) {
+  const agentLabel = agentDisplayLabel(agent);
+  const detail =
+    optionalString(value.title)
+    ?? optionalString(value.name)
+    ?? optionalString(value.threadName)
+    ?? optionalString(value.conversationTitle)
+    ?? optionalString(value.taskTitle)
+    ?? optionalString(value.lastSubtitle)
+    ?? status
+    ?? pathDisplayName(cwd);
+
+  return detail ? `${agentLabel} · ${compactText(detail, 72)}` : `${agentLabel} session`;
+}
+
+function cmuxSessionDescription(value: Record<string, unknown>) {
+  const text =
+    optionalString(value.lastBody)
+    ?? optionalString(value.lastMessage)
+    ?? optionalString(value.summary);
+  return text ? compactText(text, 140) : null;
+}
+
+function claudeSessionDescription(value: Record<string, unknown>) {
+  const message = objectValue(value.message);
+  const text = valueToText(message?.content) ?? valueToText(value.summary);
+  return text ? compactText(text, 140) : null;
+}
+
+function agentDisplayLabel(agent: string) {
+  switch (agent) {
+    case 'codex':
+      return 'Codex';
+    case 'claude':
+      return 'Claude';
+    case 'gemini':
+      return 'Gemini';
+    case 'opencode':
+      return 'OpenCode';
+    case 'cursor':
+    case 'cursor-agent':
+      return 'Cursor';
+    case 'antigravity':
+    case 'agy':
+      return 'Antigravity';
+    case 'rovo':
+    case 'acli':
+      return 'Rovo';
+    default:
+      return agent ? `${agent.slice(0, 1).toUpperCase()}${agent.slice(1)}` : 'Agent';
+  }
+}
+
+function cmuxResumeCommands(agent: string, id: string, cwd: string | null) {
+  const command = (() => {
+    switch (agent) {
+      case 'codex':
+        return `codex resume ${id}`;
+      case 'claude':
+        return `claude --resume ${id}`;
+      case 'gemini':
+        return `gemini --resume ${id}`;
+      case 'opencode':
+        return `opencode --session ${id}`;
+      case 'amp':
+        return `amp threads continue ${id}`;
+      case 'antigravity':
+      case 'agy':
+        return `agy --conversation ${id}`;
+      case 'rovo':
+      case 'acli':
+        return `acli rovodev run --restore ${id}`;
+      case 'cursor':
+      case 'cursor-agent':
+        return `cursor-agent --resume ${id}`;
+      default:
+        return `${agent} --resume ${id}`;
+    }
+  })();
+
+  return cwd ? [command, `cd ${shellQuote(cwd)} && ${command}`] : [command];
+}
+
+function timestampishString(value: unknown): string | null {
+  if (typeof value === 'number') return unixTimestampNumberToIso(value);
+  if (typeof value !== 'string') return null;
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const numericValue = Number(trimmed);
+  return Number.isFinite(numericValue) ? unixTimestampNumberToIso(numericValue) ?? trimmed : trimmed;
+}
+
+function unixTimestampNumberToIso(value: number): string | null {
+  if (!Number.isFinite(value) || value < 0) return null;
+  const millis = value >= 1_000_000_000_000 ? value : value * 1000;
+  return new Date(millis).toISOString();
+}
+
+function decodeClaudeProjectDir(name: string) {
+  if (!name.trim()) return null;
+  const segments = name.split('-').filter(Boolean);
+  return segments.length > 0 ? `/${segments.join('/')}` : null;
+}
+
+function compactText(value: string, maxChars: number) {
+  const trimmed = value.split(/\s+/).filter(Boolean).join(' ');
+  return trimmed.length <= maxChars ? trimmed : `${trimmed.slice(0, Math.max(0, maxChars - 1))}...`;
+}
+
+function pathDisplayName(value: string | null) {
+  if (!value?.trim()) return null;
+  return path.basename(value.trim()) || null;
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function compareNullableStringsDescending(left: string | null, right: string | null) {
+  if (left === right) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return right.localeCompare(left);
 }
 
 function errorMessage(error: unknown) {

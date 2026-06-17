@@ -1,9 +1,11 @@
 <script lang="ts">
   import {
     Activity,
+    BookOpen,
     Braces,
     Check,
     ChevronDown,
+    ChevronLeft,
     ChevronRight,
     Copy,
     ExternalLink,
@@ -31,10 +33,18 @@
   import 'dockview-core/dist/styles/dockview.css';
   import '@xterm/xterm/css/xterm.css';
   import { onMount, tick } from 'svelte';
-  import type { SerializedDockview } from 'dockview-core';
+  import type { SerializedDockview, SerializedPaneview } from 'dockview-core';
   import type { FitAddon as XTermFitAddon } from '@xterm/addon-fit';
+  import type { SearchAddon as XTermSearchAddon } from '@xterm/addon-search';
+  import type { SerializeAddon as XTermSerializeAddon } from '@xterm/addon-serialize';
+  import type { WebglAddon as XTermWebglAddon } from '@xterm/addon-webgl';
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
+  import SourceWorkbench from '$lib/SourceWorkbench.svelte';
+  import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
+  import SourcePaneResizer from '$lib/SourcePaneResizer.svelte';
   import {
     cleanupPasteReplyDraft,
     cleanupPasteText,
@@ -82,6 +92,7 @@
     worktreePrimaryAction
   } from '$lib/worktreeSafety';
   import { buildWorktreeCleanupPlan } from '$lib/worktreeCleanupPlan';
+  import { buildWorktreeCleanupRunbook } from '$lib/worktreeCleanupRunbook';
   import {
     describeWorkspaceSnapshotRestoreReadiness,
     parseStoredWorkspaceSnapshot,
@@ -115,10 +126,16 @@
     type SourceDockPanelID
   } from '$lib/sourceDockLayout';
   import {
+    createSourcePaneviewStackWorkspace,
+    createSourceDockviewTabStackWorkspace,
     createSourceDockviewWorkspace,
     sourceDockviewMigrationSlicePlanOptions,
     sourceDockviewMigrationSliceStorageKey,
     sourceDockviewStorageKey,
+    type SourcePaneviewStackPanel,
+    type SourcePaneviewStackWorkspace,
+    type SourceDockviewTabStackPanel,
+    type SourceDockviewTabStackWorkspace,
     type SourceDockviewMigrationSliceID,
     type SourceDockviewWorkspace
   } from '$lib/sourceDockviewWorkspace';
@@ -154,7 +171,6 @@
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
     flattenSourceTree,
-    formatSourceRecordCount,
     formatSourceScanEvidence,
     formatSourceScanHealth,
     formatSourceScanRecovery,
@@ -244,7 +260,9 @@
     isNativeTauriRuntime,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
+    listAgentSessionsFromLocalBridge,
     listOrchestrationRunsFromTauri,
+    listPlaywrightSessionsFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
     listTerminalSessionsFromTauri,
@@ -279,6 +297,7 @@
     validateProjectRootFromTauri,
     writeTerminalSessionFromTauri,
     closeTerminalSessionFromTauri,
+    killPlaywrightSessionsFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type AgentSession,
@@ -287,6 +306,7 @@
     type OrchestrationArtifact,
     type OrchestrationEvent,
     type OrchestrationRun,
+    type PlaywrightSessionInfo,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
     type ProjectRootValidationResult,
@@ -373,12 +393,18 @@
   const contextPaneHeightCollapseThreshold = 84;
   const bottomDockDefaultHeight = 300;
   const bottomDockMinHeight = 96;
-  const bottomDockMaxHeight = 1100;
+  const bottomDockFallbackMaxHeight = 1100;
+  const bottomDockReservedEditorHeight = 148;
+  const bottomDockReservedChromeHeight = 92;
   const bottomDockCollapseThreshold = 84;
-  const sourceWorkspaceMinimumEditorWidth = 720;
-  const sourceWorkspacePaneGapSize = 6;
+  const sourceWorkspaceMinimumEditorWidth = 620;
+  const sourceWorkspacePaneGapSize = 0;
+  const sourceWorkspacePaneChromeSize = 0;
   const sourceWorkspaceDefaultViewportWidth =
-    sourceWorkspaceMinimumEditorWidth + sidePaneDefaultWidth + contextPaneDefaultWidth + sourceWorkspacePaneGapSize * 2;
+    sourceWorkspaceMinimumEditorWidth +
+    sidePaneDefaultWidth +
+    contextPaneDefaultWidth +
+    (sourceWorkspacePaneGapSize + sourceWorkspacePaneChromeSize) * 2;
   const activityPaneSizingConfig: SourcePaneSizingConfig = {
     defaultSize: sidePaneDefaultWidth,
     minSize: sidePaneMinWidth,
@@ -401,24 +427,52 @@
     maxSize: contextPaneMaxHeight,
     collapseThreshold: contextPaneHeightCollapseThreshold
   };
-  const bottomDockSizingConfig: SourcePaneSizingConfig = {
-    defaultSize: bottomDockDefaultHeight,
-    minSize: bottomDockMinHeight,
-    maxSize: bottomDockMaxHeight,
-    collapseThreshold: bottomDockCollapseThreshold
-  };
   const orchestrationRefreshIntervalMs = 5_000;
   const defaultOrchestrationEventFilePath = '/tmp/mcb-orchestration-events.jsonl';
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
-  const sourceLayoutVersion = '2026-06-compact-chrome';
-  const sourceDockviewInsightsEnabled = true;
+  const sourceLayoutVersion = '2026-06-center-runtime-no-bottom-row';
+  // A/B flag: when true, render the unified Task-2 `SourceWorkbench` (one Dockview with
+  // native drag-between-groups, tab switching, and border-drag resizing) as the whole shell.
+  // When false, fall back to the existing homemade shell + multi-Dockview path untouched.
+  const useUnifiedWorkbench = true;
+  const sourceDockviewWorkbenchEnabled = true;
+  const sourceDockviewWorkbenchStorageKey = sourceDockviewStorageKey;
+  const sourceDockviewActivityEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewActivitySliceID: SourceDockviewMigrationSliceID = 'activity-only';
+  const sourceDockviewActivityPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewActivitySliceID);
+  const sourceDockviewActivityPanelIDs = sourceDockviewActivityPlanOptions.panelIDs ?? [];
+  const sourceDockviewActivityStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewActivitySliceID);
+  const sourceDockviewInsightsEnabled = !sourceDockviewWorkbenchEnabled;
   const sourceDockviewInsightsSliceID: SourceDockviewMigrationSliceID = 'insights-only';
   const sourceDockviewInsightsPlanOptions =
     sourceDockviewMigrationSlicePlanOptions(sourceDockviewInsightsSliceID);
   const sourceDockviewInsightsPanelIDs = sourceDockviewInsightsPlanOptions.panelIDs ?? [];
   const sourceDockviewInsightsStorageKey =
     sourceDockviewMigrationSliceStorageKey(sourceDockviewInsightsSliceID);
+  const sourceDockviewContextEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewContextSliceID: SourceDockviewMigrationSliceID = 'context-insights';
+  const sourceDockviewContextPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewContextSliceID);
+  const sourceDockviewContextPanelIDs = sourceDockviewContextPlanOptions.panelIDs ?? [];
+  const sourceDockviewContextStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewContextSliceID);
+  const sourceDockviewCenterEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewCenterSliceID: SourceDockviewMigrationSliceID = 'center-runtime';
+  const sourceDockviewCenterPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewCenterSliceID);
+  const sourceDockviewCenterPanelIDs = sourceDockviewCenterPlanOptions.panelIDs ?? [];
+  const sourceDockviewCenterStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewCenterSliceID);
+  const sourceDockviewBottomEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewBottomSliceID: SourceDockviewMigrationSliceID = 'bottom-runtime';
+  const sourceDockviewBottomPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewBottomSliceID);
+  const sourceDockviewBottomPanelIDs = sourceDockviewBottomPlanOptions.panelIDs ?? [];
+  const sourceDockviewBottomStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewBottomSliceID);
   const initialProject = defaultProjectRoots[0];
   const macCommandBarRepoPath =
     defaultProjectRoots.find((project) => project.id === 'mac-command-bar')?.path ??
@@ -452,6 +506,7 @@
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
   type SourceEditorNavPanel = 'problems' | 'symbols' | 'definitions' | 'references';
+  type SourceEditorDisplayMode = 'source' | 'preview';
   type SourceActivityMode =
     | 'files'
     | 'clipboard'
@@ -461,10 +516,38 @@
     | 'agents'
     | 'worktrees'
     | 'git';
+  type SourceEditorFilePanelID = `file:${string}`;
+  type SourceFilesPaneID = 'files' | 'search' | 'recent';
+  type SourceConversationPaneID = 'active' | 'saved';
+  type SourceContextCardDockviewPanelID = SourceContextCardID;
+  const sourceEditorFileDockviewStorageKey = `${sourceDockviewStorageKey}.center.editor-files`;
+  const sourceFilesDockviewStorageKey = `${sourceDockviewStorageKey}.activity.files.paneview`;
+  const sourceFilesDockviewPanels: SourcePaneviewStackPanel<SourceFilesPaneID>[] = [
+    { id: 'files', title: 'Files', size: 460, minimumBodySize: 160, isExpanded: true },
+    { id: 'search', title: 'Search', size: 190, minimumBodySize: 72, isExpanded: false },
+    { id: 'recent', title: 'Recent', size: 170, minimumBodySize: 72, isExpanded: false }
+  ];
+  const sourceFilesDockviewPanelIDs = sourceFilesDockviewPanels.map((panel) => panel.id);
+  const sourceConversationDockviewStorageKey = `${sourceDockviewStorageKey}.activity.conversations.paneview`;
+  const sourceConversationDockviewPanels: SourcePaneviewStackPanel<SourceConversationPaneID>[] = [
+    { id: 'active', title: 'Active', size: 390, minimumBodySize: 120, isExpanded: true },
+    { id: 'saved', title: 'Saved', size: 210, minimumBodySize: 92, isExpanded: false }
+  ];
+  const sourceConversationDockviewPanelIDs = sourceConversationDockviewPanels.map((panel) => panel.id);
+  const sourceContextCardDockviewStorageKey = `${sourceDockviewStorageKey}.context.cards.paneview`;
   type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'runs' | 'sessions' | 'custom';
   type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
   type SourceContextPanelMode = 'grid' | 'stack';
+  type SourceContextPanelPresentationMode = 'grid' | 'stack' | 'tabs';
   type SourceContextPanelPlacement = 'top' | 'side' | 'bottom';
+  type SourceContextPanelPresentation = {
+    requestedMode: SourceContextPanelMode;
+    placement: SourceContextPanelPlacement;
+    presentationMode: SourceContextPanelPresentationMode;
+    stacked: boolean;
+    tabbed: boolean;
+    singleCard: boolean;
+  };
   type SourceSidePanePosition = 'left' | 'right';
   type SourceWorkspacePaneID = 'activity' | 'context';
   type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
@@ -531,7 +614,7 @@
     {
       id: 'review',
       label: 'Review',
-      title: 'Balanced source review with context visible',
+      title: 'Balanced source review with side context visible',
       activityMode: 'files',
       sidePaneWidth: sidePaneDefaultWidth,
       sidePanePosition: 'left',
@@ -540,8 +623,8 @@
       contextPaneWidth: contextPaneDefaultWidth,
       contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: false,
-      contextPanelMode: 'grid',
-      contextPanelPlacement: 'top',
+      contextPanelMode: 'stack',
+      contextPanelPlacement: 'side',
       chromeCompact: true,
       intelligencePanel: 'symbols'
     },
@@ -623,8 +706,21 @@
     'WezTerm',
     'Alacritty'
   ];
-  const dockTabGroupIDs: SourceDockGroupID[] = ['right', 'bottom'];
+  const sourceTerminalFallbackApp: SourceTerminalApp = 'Terminal';
+  const dockTabGroupIDs: SourceDockGroupID[] = sourceDockviewWorkbenchEnabled
+    ? []
+    : sourceDockviewBottomEnabled
+    ? ['right']
+    : ['right', 'bottom'];
   const dockPanelDragDataType = 'application/x-mcb-dock-panel';
+  const sourceDockviewWorkbenchPanelIDs: SourceDockPanelID[] = [
+    'activity',
+    'editor',
+    'context',
+    'insights',
+    'terminal',
+    'browser'
+  ];
   const managedDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
   const hideableDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
   const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
@@ -634,6 +730,13 @@
     agents: 'Agents',
     worktrees: 'Worktrees',
     repo: 'Git'
+  };
+  const contextCardPaneviewSizes: Record<SourceContextCardID, number> = {
+    orchestration: 210,
+    runtime: 160,
+    agents: 170,
+    worktrees: 230,
+    repo: 210
   };
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
@@ -653,6 +756,12 @@
   let runtimeContextsLoading = $state(false);
   let runtimeContextError = $state('');
   let runtimeContextSource = $state('browser preview');
+  let playwrightSessions = $state<PlaywrightSessionInfo[]>([]);
+  let playwrightSessionsLoading = $state(false);
+  let playwrightSessionError = $state('');
+  let playwrightSessionSource = $state('browser preview');
+  let playwrightSessionsKilling = $state(false);
+  let playwrightSessionsRequestID = 0;
   let projectWorktrees = $state<ProjectWorktree[]>([]);
   let projectWorktreesLoading = $state(false);
   let projectWorktreeError = $state('');
@@ -689,6 +798,7 @@
   let preview = $state<SourcePreview | null>(null);
   let sourceDraftContentByPath = $state<Record<string, string>>({});
   let savedSourceContentByPath = $state<Record<string, string>>({});
+  let sourceMarkdownPreviewModeByPath = $state<Record<string, SourceEditorDisplayMode>>({});
   let workspaceEditSourceRecordsByPath = $state<Record<string, SourceRecord>>({});
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
@@ -727,6 +837,16 @@
   let sourceSearchError = $state('');
   let sourceSearchInput = $state<HTMLInputElement | null>(null);
   let sourceActivityMode = $state<SourceActivityMode>('files');
+  let sourceEditorFileDockviewReady = $state(false);
+  let sourceEditorFileDockviewError = $state('');
+  let sourceFilesPane = $state<SourceFilesPaneID>('files');
+  let sourceFilesDockviewReady = $state(false);
+  let sourceFilesDockviewError = $state('');
+  let sourceConversationPane = $state<SourceConversationPaneID>('active');
+  let sourceConversationDockviewReady = $state(false);
+  let sourceConversationDockviewError = $state('');
+  let sourceContextCardDockviewReady = $state(false);
+  let sourceContextCardDockviewError = $state('');
   let sourceActivityFilter = $state('');
   let sourceActivityFiltersByMode = $state<Record<SourceActivityMode, string>>(createSourceActivityFilterState());
   let editorNavPanel = $state<SourceEditorNavPanel | null>(null);
@@ -763,8 +883,18 @@
   let contextPanelCollapsed = $state(true);
   let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
   let sourceFocusRestoreLayout = $state<SourceLayoutSnapshot | null>(null);
+  let sourceDockviewWorkbenchReady = $state(false);
+  let sourceDockviewWorkbenchError = $state('');
+  let sourceDockviewActivityReady = $state(false);
+  let sourceDockviewActivityError = $state('');
   let sourceDockviewInsightsReady = $state(false);
   let sourceDockviewInsightsError = $state('');
+  let sourceDockviewContextReady = $state(false);
+  let sourceDockviewContextError = $state('');
+  let sourceDockviewCenterReady = $state(false);
+  let sourceDockviewCenterError = $state('');
+  let sourceDockviewBottomReady = $state(false);
+  let sourceDockviewBottomError = $state('');
   let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
   let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
   let dockDropTargetPanelID = $state<SourceDockPanelID | null>(null);
@@ -773,6 +903,10 @@
   let activeContextCardID = $state<SourceContextCardID>('orchestration');
   let viewMenuOpen = $state(false);
   let editorActionMenuOpen = $state(false);
+  let activeActivityRowActionMenu = $state<string | null>(null);
+  let activeAgentRowActionMenu = $state<string | null>(null);
+  let activeWorktreeRowActionMenu = $state<string | null>(null);
+  let activeGitRowActionMenu = $state<string | null>(null);
   let query = $state('');
   let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(true);
@@ -803,6 +937,7 @@
   let commandPaletteInput = $state<HTMLInputElement | null>(null);
   let sourceWorkspaceElement = $state<HTMLElement | null>(null);
   let sourceWorkspaceWidth = $state(0);
+  let sourceWorkspaceHeight = $state(0);
   let fileTreeElement = $state<HTMLDivElement | null>(null);
   let embeddedTerminalElement = $state<HTMLDivElement | null>(null);
   let fileTreeScrollTop = $state(0);
@@ -814,16 +949,63 @@
   let projectFormError = $state('');
   let projectActivationGeneration = 0;
   let scanGeneration = 0;
+  let projectGitStatusRequestID = 0;
+  let selectedSourceGitDiffRequestID = 0;
   let sourceIntelligenceCommandId = 0;
   let sourceLspDiagnosticsTimer: number | null = null;
+  let sourceDockviewWorkbenchWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewWorkbenchResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewWorkbenchHostToken = 0;
+  // Unified Task-2 workbench handles (set by <SourceWorkbench> via bindable props).
+  let unifiedWorkbenchSetPanelElement = $state<
+    (panelID: SourceDockPanelID, element: HTMLElement | null) => void
+  >(() => {});
+  let unifiedWorkbenchReady = $state(false);
+  let unifiedWorkbenchError = $state('');
+  let sourceDockviewActivityWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewActivityResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewActivityHostToken = 0;
   let sourceDockviewInsightsWorkspace: SourceDockviewWorkspace | null = null;
   let sourceDockviewInsightsResizeObserver: ResizeObserver | null = null;
   let sourceDockviewInsightsHostToken = 0;
+  let sourceDockviewContextWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewContextResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewContextHostToken = 0;
+  let sourceDockviewCenterWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewCenterResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewCenterHostToken = 0;
+  let sourceDockviewBottomWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewBottomResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewBottomHostToken = 0;
   const sourceDockviewPanelElements = new Map<SourceDockPanelID, HTMLElement>();
+  let sourceEditorFileDockviewWorkspace: SourceDockviewTabStackWorkspace<SourceEditorFilePanelID> | null = null;
+  let sourceEditorFileDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceEditorFileDockviewHostToken = 0;
+  const sourceEditorFileDockviewPanelElements = new Map<SourceEditorFilePanelID, HTMLElement>();
+  let sourceFilesDockviewWorkspace: SourcePaneviewStackWorkspace<SourceFilesPaneID> | null = null;
+  let sourceFilesDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceFilesDockviewHostToken = 0;
+  const sourceFilesDockviewPanelElements = new Map<SourceFilesPaneID, HTMLElement>();
+  let sourceConversationDockviewWorkspace: SourcePaneviewStackWorkspace<SourceConversationPaneID> | null = null;
+  let sourceConversationDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceConversationDockviewHostToken = 0;
+  const sourceConversationDockviewPanelElements = new Map<SourceConversationPaneID, HTMLElement>();
+  let sourceContextCardDockviewWorkspace: SourcePaneviewStackWorkspace<SourceContextCardDockviewPanelID> | null = null;
+  let sourceContextCardDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceContextCardDockviewHostToken = 0;
+  const sourceContextCardDockviewPanelElements = new Map<SourceContextCardDockviewPanelID, HTMLElement>();
   let embeddedTerminal: XTermTerminal | null = null;
   let embeddedTerminalFitAddon: XTermFitAddon | null = null;
+  let embeddedTerminalSearchAddon: XTermSearchAddon | null = null;
+  let embeddedTerminalSerializeAddon: XTermSerializeAddon | null = null;
+  let embeddedTerminalWebglAddon: XTermWebglAddon | null = null;
+  let embeddedTerminalAddonStatus = $state('fit');
   let embeddedTerminalInputDisposable: { dispose: () => void } | null = null;
+  const embeddedTerminalDeferredFitDelays = [50, 180, 420];
+  let embeddedTerminalFitFrame = 0;
+  let embeddedTerminalFitTimers: number[] = [];
   let embeddedTerminalRendererLoading = false;
+  let embeddedTerminalRendererPromise: Promise<void> | null = null;
 
   type SourceScanOptions = {
     force?: boolean;
@@ -891,6 +1073,18 @@
   let projectOpenSourceTabs = $derived(
     openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
   );
+  let sourceEditorFileDockviewPanels = $derived(
+    projectOpenSourceTabs.map((tab) => ({
+      id: sourceEditorFilePanelID(tab),
+      title: sourceEditorFileDockviewTitle(tab)
+    }))
+  );
+  let sourceEditorFileDockviewPanelIDs = $derived(
+    sourceEditorFileDockviewPanels.map((panel) => panel.id)
+  );
+  let selectedSourceEditorFilePanelID = $derived(
+    selectedRecord ? sourceEditorFilePanelIDFromPath(selectedRecord.path) : sourceEditorFileDockviewPanels[0]?.id ?? null
+  );
   let parsedQuickOpenQuery = $derived(parseQuickOpenQuery(quickOpenQuery));
   let quickOpenWorkspaceSymbolMode = $derived(parsedQuickOpenQuery.searchQuery.startsWith('#'));
   let quickOpenWorkspaceSymbolQuery = $derived(
@@ -911,6 +1105,12 @@
     preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
   );
   let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
+  let selectedSourceMarkdownPreviewAvailable = $derived(sourceMarkdownPreviewAvailable(preview));
+  let selectedSourceEditorDisplayMode = $derived(
+    preview && selectedSourceMarkdownPreviewAvailable
+      ? sourceMarkdownPreviewModeByPath[preview.path] ?? 'source'
+      : 'source'
+  );
   let dirtyProjectSourceRecords = $derived(
     dirtySourceRecordsForProject(projectOpenSourceTabs, workspaceEditSourceRecordsByPath, selectedProject)
   );
@@ -924,9 +1124,6 @@
     preview ? sourceSupportsLanguageIntelligence(preview.language) : false
   );
   let sourceDiagnosticSummary = $derived(formatSourceDiagnosticSummary(sourceDiagnostics));
-  let recordCountLabel = $derived(
-    formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
-  );
   let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId));
   let scanSummaryLabel = $derived(
     formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
@@ -995,12 +1192,24 @@
   let sourceScanStatsLabel = $derived(
     formatSourceScanStats(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
   );
+  let sourceSidebarIndexStatusLabel = $derived(sourceSidebarIndexStatus());
+  let sourceSidebarScanMetaLabel = $derived(sourceSidebarScanMeta());
+  let sourceSidebarTreeCountLabel = $derived(sourceSidebarTreeCount());
+  let sourceSidebarTreeStatusLabel = $derived(sourceSidebarTreeStatus());
+  let sourceSidebarScanTelemetryLabel = $derived(
+    sourceSidebarScanTelemetry(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
+  );
+  let sourceSidebarCompactStatusLabel = $derived(sourceSidebarCompactStatus());
   let sourceRuntimeNotice = $derived(sourceRuntimeNoticeText(runtime, error));
+  let sourceSidebarCompactStatusTitle = $derived(sourceSidebarCompactTitle());
+  let sourceSidebarScanTelemetryExpanded = $derived(sourceSidebarScanTelemetryShouldExpand());
+  let sourceRuntimeNoticeExpanded = $derived(sourceRuntimeNoticeShouldExpand());
   const sourceWorkspacePlan = $derived(
     resolveSourcePaneWorkspacePlan<SourceWorkspacePaneID>({
       viewportSize: sourceWorkspaceViewportSize(),
       minEditorSize: sourceWorkspaceMinimumEditorWidth,
       gapSize: sourceWorkspacePaneGapSize,
+      chromeSize: sourceWorkspacePaneChromeSize,
       items: [
         {
           id: 'activity',
@@ -1012,7 +1221,7 @@
         },
         {
           id: 'context',
-          visible: contextPanelPlacement === 'side' && shouldRenderDockPanel('context'),
+          visible: contextPanelPlacement === 'side' && sourceDockPanelVisible('context'),
           size: contextPaneWidth,
           config: contextPaneWidthSizingConfig,
           collapsePriority: 1,
@@ -1141,6 +1350,21 @@
       activityTextMatchesFilter(
         sourceActivityFilter,
         session.provider,
+        agentSessionProviderLabel(session),
+        session.title,
+        session.model,
+        session.projectPath,
+        session.lastActivity,
+        agentSessionResumeCommand(session)
+      )
+    )
+  );
+  let filteredConversationAgentSessions = $derived(
+    agentSessions.filter((session) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        session.provider,
+        agentSessionProviderLabel(session),
         session.title,
         session.model,
         session.projectPath,
@@ -1366,6 +1590,25 @@
       activeSessionPaths: selectedProjectAgentSessionPaths
     })
   );
+  let projectWorktreeCleanupPlans = $derived(
+    prioritizedProjectWorktrees.map((worktree) => projectWorktreeCleanupPlan(worktree))
+  );
+  let projectWorktreeRunbookSafetyInputs = $derived(
+    prioritizedProjectWorktrees.map((worktree) => ({
+      path: worktree.path,
+      repoName: worktree.repo,
+      branch: worktree.branch,
+      taskID: worktree.taskID,
+      safety: projectWorktreeSafety(worktree)
+    }))
+  );
+  let projectWorktreeCleanupRunbook = $derived(
+    buildWorktreeCleanupRunbook({
+      cleanupPlans: projectWorktreeCleanupPlans,
+      decisionQueue: projectWorktreeDecisionQueue,
+      safetySummaries: projectWorktreeRunbookSafetyInputs
+    })
+  );
   let repoDashboardSummary = $derived(
     formatRepoDashboardSummary(
       gitRepositorySummaries,
@@ -1382,6 +1625,14 @@
       agentSessionSource
     )
   );
+  let conversationSessionSummary = $derived(
+    formatConversationSessionSummary(
+      agentSessions.length,
+      agentSessionsLoading,
+      agentSessionError,
+      agentSessionSource
+    )
+  );
   let orchestrationRunSummary = $derived(
     formatOrchestrationRunSummary(
       selectedProjectOrchestrationRuns.length,
@@ -1392,6 +1643,21 @@
   );
   let visibleContextCards = $derived(visibleContextCardIDs());
   let activeContextCard = $derived(activeVisibleContextCardID());
+  let sourceContextCardDockviewPanels = $derived(
+    visibleContextCards.map((cardID) => ({
+      id: cardID,
+      title: contextCardLabels[cardID],
+      size: contextCardPaneviewSizes[cardID],
+      minimumBodySize: 72,
+      isExpanded: true
+    }))
+  );
+  let sourceContextCardDockviewPanelIDs = $derived(
+    sourceContextCardDockviewPanels.map((panel) => panel.id)
+  );
+  let contextPanelPresentation = $derived(
+    resolveContextPanelPresentation(contextPanelMode, contextPanelPlacement)
+  );
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
   );
@@ -1507,6 +1773,15 @@
       perform: copySourceScanDiagnosticBrief
     },
     {
+      id: 'kill-playwright-sessions',
+      label: 'Kill Playwright sessions',
+      detail: playwrightSessions.length
+        ? `${playwrightSessions.length} active from ${playwrightSessionSource}`
+        : playwrightSessionError || 'No Playwright sessions',
+      disabled: playwrightSessions.length === 0 || playwrightSessionsLoading || playwrightSessionsKilling,
+      perform: killPlaywrightSessions
+    },
+    {
       id: 'scan-stop',
       label: 'Stop source scan',
       detail: sourceScanProgress?.status ?? 'Cancel the active scanner',
@@ -1611,7 +1886,7 @@
       disabled: workspaceSnapshots.length === 0,
       perform: () => {
         const snapshot = workspaceSnapshots[0];
-        if (snapshot) openWorkspaceSnapshotEmbeddedTerminal(snapshot);
+        if (snapshot) openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot);
       }
     },
     {
@@ -1687,7 +1962,7 @@
       id: `conversation-resume-snapshot-embedded-${snapshot.id}`,
       label: `Resume workspace embedded: ${snapshot.title}`,
       detail: snapshot.resumeCommand ?? workspaceSnapshotScopeLabel(snapshot),
-      perform: () => openWorkspaceSnapshotEmbeddedTerminal(snapshot)
+      perform: () => openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot)
     })),
     ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
       id: `conversation-copy-restore-plan-${snapshot.id}`,
@@ -2534,6 +2809,13 @@
       perform: copyProjectWorktreeCleanupBrief
     },
     {
+      id: 'worktree-cleanup-runbook',
+      label: 'Copy worktree cleanup runbook',
+      detail: projectWorktreeCleanupRunbook.headline,
+      disabled: projectWorktrees.length === 0,
+      perform: copyProjectWorktreeCleanupRunbook
+    },
+    {
       id: 'worktree-cleanup-script',
       label: 'Copy guarded worktree cleanup script',
       detail: projectWorktreeCleanupBrief.headline,
@@ -2668,6 +2950,16 @@
       disabled: false,
       perform: () => copyWorktreeCleanupPlan(worktree)
     })),
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => {
+      const commandBlock = projectWorktreeRunbookCommandBlock(worktree);
+      return {
+        id: `worktree-runbook-command-block-${worktree.path}`,
+        label: `Copy worktree runbook command block: ${worktree.branch}`,
+        detail: commandBlock?.title ?? projectWorktreeSafety(worktree).recommendation,
+        disabled: false,
+        perform: () => copyWorktreeRunbookCommandBlock(worktree)
+      };
+    }),
     ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-audit-command-${worktree.path}`,
       label: `Copy worktree audit command: ${worktree.branch}`,
@@ -2850,11 +3142,11 @@
     const element = sourceWorkspaceElement;
     if (!element) return;
 
-    measureSourceWorkspaceWidth();
+    measureSourceWorkspaceSize();
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', measureSourceWorkspaceWidth);
-      return () => window.removeEventListener('resize', measureSourceWorkspaceWidth);
+      window.addEventListener('resize', measureSourceWorkspaceSize);
+      return () => window.removeEventListener('resize', measureSourceWorkspaceSize);
     }
 
     let resizeFrame = 0;
@@ -2862,15 +3154,15 @@
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = 0;
-        measureSourceWorkspaceWidth();
+        measureSourceWorkspaceSize();
       });
     });
     resizeObserver.observe(element);
-    window.addEventListener('resize', measureSourceWorkspaceWidth);
+    window.addEventListener('resize', measureSourceWorkspaceSize);
     return () => {
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeObserver.disconnect();
-      window.removeEventListener('resize', measureSourceWorkspaceWidth);
+      window.removeEventListener('resize', measureSourceWorkspaceSize);
     };
   });
 
@@ -2942,9 +3234,7 @@
     const element = embeddedTerminalElement;
     if (!sourceDockPanelVisible('terminal') || !element) return;
 
-    void ensureEmbeddedTerminalRenderer().then(() => {
-      window.setTimeout(fitEmbeddedTerminal, 0);
-    });
+    void ensureEmbeddedTerminalRenderer().then(scheduleEmbeddedTerminalFit);
 
     if (typeof ResizeObserver === 'undefined') return;
 
@@ -2953,7 +3243,7 @@
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = 0;
-        fitEmbeddedTerminal();
+        scheduleEmbeddedTerminalFit();
       });
     });
     resizeObserver.observe(element);
@@ -3254,6 +3544,176 @@
     ].filter(Boolean).join('\n');
   }
 
+  function sourceSidebarIndexStatus() {
+    const indexError = backgroundIndexErrorByProject[selectedProject.id]?.trim() ?? '';
+    const normalizedQuery = query.trim();
+
+    if (error.trim() || indexError) return 'Scan needs attention';
+    if (sourceScanNeedsAttention) return sourceScanHealth.summary;
+    if (scanning) return 'Scanning source files';
+    if (backgroundIndexingProjectIDs.has(selectedProject.id)) return 'Indexing in background';
+    if (normalizedQuery.length > 0) return 'File filter active';
+    if (selectedProjectIndexEntry) return selectedProjectIndexEntry.truncated ? 'Index ready · limited' : 'Index ready';
+    if (sourceIndexLoading) return 'Loading index';
+    return 'Index not ready';
+  }
+
+  function sourceSidebarScanMeta() {
+    const parts = [];
+    const normalizedQuery = query.trim();
+
+    if (normalizedQuery.length > 0) {
+      parts.push(`Filter: ${normalizedQuery}`);
+    }
+
+    if (scanning) {
+      parts.push('Native scan');
+    } else {
+      switch (selectedProjectScanMode) {
+        case 'cache':
+          parts.push('Cached');
+          break;
+        case 'native':
+          parts.push('Fresh');
+          break;
+        case 'background':
+          parts.push('Background');
+          break;
+        case 'repair':
+          parts.push('Rebuilding');
+          break;
+        case 'tiny':
+          parts.push('Tiny index');
+          break;
+        case 'failed':
+          parts.push('Failed');
+          break;
+        case 'stopped':
+          parts.push('Stopped');
+          break;
+        default:
+          parts.push(selectedProjectIndexEntry ? 'Indexed' : 'Idle');
+          break;
+      }
+    }
+
+    if (selectedProjectIndexEntry) {
+      parts.push(formatRelativeAge(selectedProjectIndexEntry.scannedAt));
+    }
+
+    parts.push(
+      scanLimitReached || selectedProjectIndexEntry?.truncated
+        ? `${expandedSourceScanLimit.toLocaleString()} cap reached`
+        : `${expandedSourceScanLimit.toLocaleString()} cap`
+    );
+
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function sourceSidebarCompactStatus() {
+    const visibleCount = filteredRecords.length;
+    const totalCount = records.length;
+    const countLabel =
+      visibleCount === totalCount
+        ? `${totalCount.toLocaleString()} files`
+        : `${visibleCount.toLocaleString()} / ${totalCount.toLocaleString()} files`;
+    const parts = [countLabel, sourceSidebarScanMetaLabel];
+
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function sourceSidebarTreeCount() {
+    const visibleCount = filteredRecords.length;
+    const totalCount = records.length;
+    if (visibleCount === totalCount) return compactCountValue(totalCount);
+    return `${compactCountValue(visibleCount)} / ${compactCountValue(totalCount)}`;
+  }
+
+  function sourceSidebarTreeStatus() {
+    const parts = [sourceSidebarIndexStatusLabel, sourceSidebarScanMetaLabel];
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function sourceSidebarCompactTitle() {
+    return [
+      selectedProjectIndexSummary,
+      sourceSidebarCompactStatusLabel,
+      sourceSidebarScanTelemetryLabel,
+      sourceRuntimeNotice
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function sourceSidebarScanTelemetryShouldExpand() {
+    return Boolean(
+      sourceSidebarScanTelemetryLabel &&
+        (sourceScanNeedsAttention ||
+          scanLimitReached ||
+          selectedProjectScanEvidence.tone === 'warning' ||
+          selectedProjectScanEvidence.tone === 'error')
+    );
+  }
+
+  function sourceRuntimeNoticeShouldExpand() {
+    return Boolean(sourceRuntimeNotice && error.trim());
+  }
+
+  function sourceSidebarScanTelemetry(stats: SourceScanStats | null | undefined) {
+    if (!stats) return '';
+
+    const visitedEntries = sourceScanStatNumber(stats, 'visitedEntries', 'visitedEntryCount');
+    const skippedDirectories = sourceScanStatNumber(
+      stats,
+      'skippedDirectories',
+      'skippedDirectoryCount'
+    );
+    const unsupportedFiles = sourceScanStatNumber(stats, 'unsupportedFiles', 'unsupportedFileCount');
+    const unreadableEntries = sourceScanStatNumber(stats, 'unreadableEntries', 'unreadableEntryCount');
+    const collectionLimit = sourceScanOptionalStatNumber(stats.collectionLimit);
+    const parts = [];
+
+    if (visitedEntries > 0) {
+      parts.push(`${visitedEntries.toLocaleString()} entries checked`);
+    }
+    if (skippedDirectories > 0) {
+      parts.push(`${skippedDirectories.toLocaleString()} ${skippedDirectories === 1 ? 'dir' : 'dirs'} skipped`);
+    }
+    if (unsupportedFiles > 0) {
+      parts.push(`${unsupportedFiles.toLocaleString()} unsupported`);
+    }
+    if (unreadableEntries > 0) {
+      parts.push(`${unreadableEntries.toLocaleString()} unreadable`);
+    }
+    if (collectionLimit !== null && stats.collectionLimitReached) {
+      parts.push(`${collectionLimit.toLocaleString()} collection cap reached`);
+    }
+
+    return parts.join(' · ');
+  }
+
+  function sourceScanStatNumber(
+    stats: SourceScanStats,
+    primaryKey: keyof SourceScanStats,
+    fallbackKey: keyof SourceScanStats
+  ) {
+    const primaryValue = stats[primaryKey];
+    if (typeof primaryValue === 'number' && Number.isFinite(primaryValue)) {
+      return Math.max(0, Math.floor(primaryValue));
+    }
+
+    const fallbackValue = stats[fallbackKey];
+    if (typeof fallbackValue === 'number' && Number.isFinite(fallbackValue)) {
+      return Math.max(0, Math.floor(fallbackValue));
+    }
+
+    return 0;
+  }
+
+  function sourceScanOptionalStatNumber(value: number | null | undefined) {
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+  }
+
   async function indexProjectsInBackground(projects: ProjectRoot[]) {
     const projectsToIndex = selectBackgroundIndexProjects(
       projects,
@@ -3337,26 +3797,31 @@
 
   async function loadProjectGitStatus(project: ProjectRoot) {
     const projectID = project.id;
+    const requestID = ++projectGitStatusRequestID;
     projectGitLoading = true;
     projectGitStatus = null;
     projectGitError = '';
 
     try {
       const nextStatus = await readProjectGitStatusFromTauri(project.path);
-      if (selectedProjectID !== projectID) return;
+      if (!isCurrentProjectGitStatusRequest(requestID, projectID)) return;
 
       projectGitStatus = nextStatus;
       projectGitError = nextStatus ? '' : 'Native Git unavailable';
     } catch (gitError) {
-      if (selectedProjectID !== projectID) return;
+      if (!isCurrentProjectGitStatusRequest(requestID, projectID)) return;
 
       projectGitStatus = null;
       projectGitError = gitError instanceof Error ? gitError.message : 'Could not read Git status';
     } finally {
-      if (selectedProjectID === projectID) {
+      if (isCurrentProjectGitStatusRequest(requestID, projectID)) {
         projectGitLoading = false;
       }
     }
+  }
+
+  function isCurrentProjectGitStatusRequest(requestID: number, projectID: string) {
+    return requestID === projectGitStatusRequestID && selectedProjectID === projectID;
   }
 
   async function loadRuntimeContexts(projects: ProjectRoot[] = projectOptions) {
@@ -3549,24 +4014,38 @@
     agentSessionsLoading = true;
     agentSessionError = '';
 
+    let sessionScanError = '';
     try {
       const nativeSessions = await listAgentSessionsFromTauri();
       if (nativeSessions) {
         agentSessions = nativeSessions;
         agentSessionSource = 'native session scan';
+        agentSessionsLoading = false;
         return;
       }
-
-      agentSessions = demoAgentSessionsForProject(selectedProject);
-      agentSessionSource = 'browser preview';
     } catch (sessionError) {
-      agentSessions = demoAgentSessionsForProject(selectedProject);
-      agentSessionSource = 'browser preview';
-      agentSessionError =
+      sessionScanError =
         sessionError instanceof Error ? sessionError.message : 'Could not scan agent sessions';
+    }
+
+    try {
+      const bridgeSessions = await listAgentSessionsFromLocalBridge();
+      if (bridgeSessions) {
+        agentSessions = bridgeSessions;
+        agentSessionSource = 'browser local session scan';
+        return;
+      }
+    } catch (bridgeError) {
+      sessionScanError =
+        sessionScanError
+        || (bridgeError instanceof Error ? bridgeError.message : 'Could not scan local agent sessions');
     } finally {
       agentSessionsLoading = false;
     }
+
+    agentSessions = [];
+    agentSessionSource = 'browser preview';
+    agentSessionError = sessionScanError;
   }
 
   function demoRuntimeContextsForProject(project: ProjectRoot): RuntimeContext[] {
@@ -3870,20 +4349,6 @@
       linkLabel: null,
       linkUrl: null
     };
-  }
-
-  function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
-    return [
-      {
-        provider: 'codex',
-        id: 'preview-session',
-        title: `Review ${project.name}`,
-        model: null,
-        projectPath: project.path,
-        lastActivity: null,
-        resumeCommands: ['codex resume preview-session']
-      }
-    ];
   }
 
   function formatRuntimeContextSummary(
@@ -4816,6 +5281,7 @@
         return;
       }
 
+      projectGitStatusRequestID += 1;
       projectGitStatus = result.status;
       gitActionStatus = result.message;
       if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
@@ -4845,6 +5311,7 @@
         return;
       }
 
+      projectGitStatusRequestID += 1;
       projectGitStatus = result.status;
       gitActionStatus = result.message;
       if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
@@ -4872,6 +5339,7 @@
         return;
       }
 
+      projectGitStatusRequestID += 1;
       projectGitStatus = result.status;
       gitCommitMessage = '';
       gitActionStatus = result.message;
@@ -5280,6 +5748,18 @@
     return `${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'} · ${sessionSource}`;
   }
 
+  function formatConversationSessionSummary(
+    sessionCount: number,
+    loadingSessions: boolean,
+    sessionError: string,
+    sessionSource: string
+  ) {
+    if (loadingSessions) return 'Scanning local conversations';
+    if (sessionError) return sessionError;
+    if (sessionCount === 0) return `No local conversations · ${sessionSource}`;
+    return `${sessionCount} ${sessionCount === 1 ? 'conversation' : 'conversations'} · ${sessionSource}`;
+  }
+
   function agentSessionMatchesProject(session: AgentSession, project: ProjectRoot) {
     if (!session.projectPath) return true;
 
@@ -5287,12 +5767,57 @@
     const projectPath = normalizeProjectPath(project.path);
     if (sessionPath === projectPath || sessionPath.startsWith(`${projectPath}/`)) return true;
 
-    const projectName = project.name.toLowerCase();
-    return sessionPath.toLowerCase().includes(`/worktrees/${projectName}/`);
+    return projectWorktreeSlugCandidates(project).some((slug) =>
+      sessionPath.toLowerCase().includes(`/worktrees/${slug}/`)
+    );
+  }
+
+  function projectWorktreeSlugCandidates(project: ProjectRoot) {
+    return Array.from(new Set([
+      project.id,
+      project.name,
+      fileNameFromRestoredPath(project.path),
+      project.name.replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    ]
+      .map((value) => value.trim().toLowerCase())
+      .flatMap((value) => [value, value.replace(/\s+/g, '-'), value.replace(/[^a-z0-9]+/g, '-')])
+      .map((value) => value.replace(/^-+|-+$/g, ''))
+      .filter(Boolean)));
   }
 
   function agentSessionProjectLabel(session: AgentSession) {
     return session.projectPath ? formatSourceContextRootLabel(session.projectPath) : 'global';
+  }
+
+  function agentSessionProviderLabel(session: AgentSession) {
+    const provider = session.provider.trim().toLowerCase();
+    const cmuxAgent = provider.startsWith('cmux-') ? provider.slice('cmux-'.length) : '';
+    if (cmuxAgent) return `CMUX ${agentSessionProviderName(cmuxAgent)}`;
+    return agentSessionProviderName(provider);
+  }
+
+  function agentSessionProviderBadgeLabel(session: AgentSession) {
+    const provider = session.provider.trim().toLowerCase();
+    if (provider.startsWith('cmux-')) return 'CMUX';
+    return agentSessionProviderName(provider);
+  }
+
+  function agentSessionProviderName(provider: string) {
+    switch (provider) {
+      case 'codex':
+        return 'Codex';
+      case 'claude':
+        return 'Claude';
+      case 'gemini':
+        return 'Gemini';
+      case 'opencode':
+        return 'OpenCode';
+      case 'cursor':
+      case 'cursor-agent':
+        return 'Cursor';
+      default:
+        return provider ? `${provider.slice(0, 1).toUpperCase()}${provider.slice(1)}` : 'Agent';
+    }
   }
 
   function agentSessionModelLabel(session: AgentSession) {
@@ -5301,6 +5826,78 @@
 
   function agentSessionActivityLabel(session: AgentSession) {
     return formatActivityTimestamp(session.lastActivity);
+  }
+
+  function agentSessionTaskID(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const candidates = [
+      snapshot?.branch,
+      snapshot?.title,
+      session.title,
+      agentSessionProjectLabel(session),
+      session.projectPath
+    ];
+
+    for (const candidate of candidates) {
+      const match = String(candidate ?? '').match(/\b(?:TSK|tsk)-\d+\b/);
+      const taskID = normalizeGitTaskID(match?.[0]);
+      if (taskID) return taskID;
+    }
+
+    return null;
+  }
+
+  function worktreeForAgentSession(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const paths = [snapshot?.worktreePath, snapshot?.cwd, session.projectPath]
+      .map((path) => normalizeProjectPath(path ?? ''))
+      .filter(Boolean);
+
+    return prioritizedProjectWorktrees.find((worktree) => {
+      const worktreePath = normalizeProjectPath(worktree.path);
+      return paths.some((path) => path === worktreePath || path.startsWith(`${worktreePath}/`));
+    }) ?? null;
+  }
+
+  function agentSessionBranchLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const worktree = worktreeForAgentSession(session, snapshot);
+    if (snapshot?.branch) return snapshot.branch;
+    if (worktree?.branch) return worktree.branch;
+
+    const sessionPath = normalizeProjectPath(session.projectPath ?? '');
+    const projectPath = normalizeProjectPath(selectedProject.path);
+    if (sessionPath === projectPath || !sessionPath) {
+      return projectGitStatus?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? 'branch unknown';
+    }
+
+    return 'branch unknown';
+  }
+
+  function agentSessionRootLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const worktree = worktreeForAgentSession(session, snapshot);
+    if (worktree) return fileNameFromRestoredPath(worktree.path);
+    if (snapshot?.worktreePath) return fileNameFromRestoredPath(snapshot.worktreePath);
+    if (snapshot?.cwd) return formatSourceContextRootLabel(snapshot.cwd);
+    return agentSessionProjectLabel(session);
+  }
+
+  function agentSessionPathLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const worktree = worktreeForAgentSession(session, snapshot);
+    const path = snapshot?.worktreePath ?? snapshot?.cwd ?? worktree?.path ?? session.projectPath ?? '';
+    return path ? formatSourceContextRootLabel(path) : 'global';
+  }
+
+  function agentSessionFileContextLabel(snapshot: WorkspaceSnapshot | null) {
+    if (!snapshot) return 'no saved file context';
+    return workspaceSnapshotFileStateLabel(snapshot);
+  }
+
+  function agentSessionResumeMetaLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    return [
+      agentSessionActivityLabel(session),
+      session.provider.startsWith('cmux-') ? agentSessionProviderLabel(session) : '',
+      agentSessionBranchLabel(session, snapshot),
+      agentSessionRootLabel(session, snapshot),
+      session.model ? agentSessionModelLabel(session) : ''
+    ].filter(Boolean).join(' · ');
   }
 
   function formatActivityTimestamp(value: string | null | undefined) {
@@ -5349,6 +5946,26 @@
       ?? stripLeadingShellCdCommand(commands[0] ?? '');
   }
 
+  function withAgentTerminalColorEnv(command: string) {
+    const trimmed = command.trim();
+    if (!/^(codex\s+resume\b|claude\s+(--resume|-r|--continue|-c)\b)/.test(trimmed)) {
+      return trimmed;
+    }
+    if (/^env\s+/.test(trimmed) && /\bFORCE_COLOR=/.test(trimmed)) return trimmed;
+
+    return [
+      'env -u NO_COLOR',
+      'TERM=xterm-256color',
+      'COLORTERM=truecolor',
+      'TERM_PROGRAM=MacCommandBar',
+      'CLICOLOR=1',
+      'CLICOLOR_FORCE=1',
+      'FORCE_COLOR=3',
+      `COLORFGBG=${shellQuoteForCommand('15;0')}`,
+      trimmed
+    ].join(' ');
+  }
+
   function agentSessionResumeShellCommand(session: AgentSession) {
     const commands = agentSessionResumeCommandList(session);
     const shellCommand = commands.find(isLeadingShellCdCommand);
@@ -5365,6 +5982,43 @@
 
   function captureAgentSessionWorkspaceSnapshot(session: AgentSession): WorkspaceSnapshot {
     return captureWorkspaceSnapshot(session);
+  }
+
+  function createAgentSessionShellSnapshot(session: AgentSession): WorkspaceSnapshot {
+    const sessionPath = agentSessionProjectPath(session);
+    const project = ensureWorkspaceSnapshotProject(
+      createProjectRoot(fileNameFromRestoredPath(sessionPath), sessionPath)
+    );
+    const plan = createWorkspaceSessionSnapshotPlan({
+      selectedProject: project,
+      projectOptions,
+      session,
+      selectedRecord: null,
+      selectedSourcePaths: {},
+      openSourceTabs: [],
+      selectedLine: null,
+      sourceActivityMode: 'conversations',
+      sourceTerminalApp,
+      browserUrl: null,
+      viewState: {
+        ...workspaceSnapshotViewState(),
+        sourceActivityFilter: ''
+      },
+      embeddedTerminal: null,
+      dockLayout: showSourceDockPanel(sourceDockLayout, 'terminal'),
+      branch: null,
+      capturedAt: Date.now()
+    });
+    const snapshot = plan.snapshot;
+    const nextSnapshots = upsertWorkspaceSnapshot(
+      workspaceSnapshots,
+      snapshot,
+      maxWorkspaceSnapshots
+    );
+
+    workspaceSnapshots = nextSnapshots;
+    persistWorkspaceSnapshots(nextSnapshots);
+    return snapshot;
   }
 
   function activeWorkspaceAgentSession(): AgentSession | null {
@@ -5443,9 +6097,28 @@
 
   async function openAgentSessionWorkspace(session: AgentSession) {
     captureActiveWorkspaceBeforeSwitch();
-    const snapshot = workspaceSnapshotForAgentSession(session) ?? captureAgentSessionWorkspaceSnapshot(session);
+    const snapshot = workspaceSnapshotForAgentSession(session) ?? createAgentSessionShellSnapshot(session);
     await restoreConversationWorkspaceSnapshot(snapshot);
     markAgentSessionWorkspaceActive(session);
+  }
+
+  async function switchToConversationWorkspace(session: AgentSession) {
+    captureActiveWorkspaceBeforeSwitch();
+    const snapshot = workspaceSnapshotForAgentSession(session) ?? createAgentSessionShellSnapshot(session);
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+
+    await restoreConversationWorkspaceSnapshot(snapshot);
+    markAgentSessionWorkspaceActive(session);
+
+    if (!readiness.canResumeEmbedded) {
+      fileActionStatus =
+        readiness.kind === 'missing-worktree'
+          ? 'Conversation restored; repair worktree before terminal resume'
+          : `Conversation restored: ${session.title}`;
+      return;
+    }
+
+    await openWorkspaceSnapshotEmbeddedTerminal(snapshot, { restoreWorkspace: false });
   }
 
   function markAgentSessionWorkspaceActive(session: AgentSession) {
@@ -5484,7 +6157,9 @@
   }
 
   async function openWorkspaceSnapshotTerminal(snapshot: WorkspaceSnapshot) {
-    const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
+    const command = withAgentTerminalColorEnv(
+      stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '')
+    );
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
     const readiness = workspaceSnapshotRestoreReadiness(snapshot);
@@ -5504,36 +6179,40 @@
 
     try {
       if (command) {
-        const openedCommand = await openTerminalCommandFromTauri(
+        const openedCommand = await openTerminalCommandWithFallback(
           path,
           command,
           snapshot.sourceTerminalApp
         );
-        if (openedCommand) {
-          fileActionStatus = 'Opened workspace resume command';
+        if (openedCommand.opened) {
+          fileActionStatus = terminalOpenStatus(
+            openedCommand,
+            'Opened workspace resume command',
+            'opened workspace resume command in Terminal'
+          );
           return;
         }
       }
 
       const openedPath = path.trim()
-        ? await openTerminalPathFromTauri(path, snapshot.sourceTerminalApp)
-        : false;
+        ? await openTerminalPathWithFallback(path, snapshot.sourceTerminalApp)
+        : { opened: false, app: snapshot.sourceTerminalApp, usedFallback: false };
       if (command) await navigator.clipboard.writeText(command);
       fileActionStatus = command
-        ? openedPath
+        ? openedPath.opened
           ? 'Opened workspace terminal and copied resume command'
           : 'Workspace resume command copied'
-        : openedPath
+        : openedPath.opened
           ? 'Opened workspace terminal'
           : 'Native action unavailable';
     } catch (terminalError) {
       try {
         const openedPath = path.trim()
-          ? await openTerminalPathFromTauri(path, snapshot.sourceTerminalApp)
-          : false;
+          ? await openTerminalPathWithFallback(path, snapshot.sourceTerminalApp)
+          : { opened: false, app: snapshot.sourceTerminalApp, usedFallback: false };
         if (command) await navigator.clipboard.writeText(command);
         fileActionStatus = command
-          ? openedPath
+          ? openedPath.opened
             ? 'Opened workspace terminal and copied resume command'
             : 'Workspace resume command copied'
           : 'Native action unavailable';
@@ -5545,8 +6224,14 @@
     }
   }
 
-  async function openWorkspaceSnapshotEmbeddedTerminal(snapshot: WorkspaceSnapshot) {
-    const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
+  async function openWorkspaceSnapshotEmbeddedTerminal(
+    snapshot: WorkspaceSnapshot,
+    options: { restoreWorkspace?: boolean } = {}
+  ) {
+    const shouldRestoreWorkspace = options.restoreWorkspace ?? true;
+    const command = withAgentTerminalColorEnv(
+      stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '')
+    );
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
     const readiness = workspaceSnapshotRestoreReadiness(snapshot);
@@ -5558,7 +6243,9 @@
       return;
     }
 
-    await restoreConversationWorkspaceSnapshot(snapshot);
+    if (shouldRestoreWorkspace) {
+      await restoreConversationWorkspaceSnapshot(snapshot);
+    }
     showDockPanel('terminal');
     await tick();
 
@@ -5568,25 +6255,31 @@
     embeddedTerminalError = '';
 
     try {
-      if (command) {
-        if (
-          embeddedTerminalSession &&
-          normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(path)
-        ) {
-          await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
-          embeddedTerminalStatus = 'Running embedded workspace command';
-          fileActionStatus = 'Sent workspace command to embedded terminal';
-          embeddedTerminal?.focus();
-          return;
-        }
-
-        await startEmbeddedTerminalSession(path, command);
-        fileActionStatus = 'Started embedded workspace command';
+      const savedSession = embeddedTerminalSessionForSnapshot(snapshot);
+      if (savedSession) {
+        await attachEmbeddedTerminalSession(savedSession);
+        fileActionStatus = `Attached conversation terminal: ${snapshot.title}`;
         return;
       }
 
-      await openPathEmbeddedTerminal(path);
-      fileActionStatus = 'Opened embedded workspace terminal';
+      if (command) {
+        const session = await startEmbeddedTerminalSession(path, command);
+        if (session) {
+          bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
+          fileActionStatus = `Started conversation terminal: ${snapshot.title}`;
+        } else {
+          fileActionStatus = 'Embedded terminal unavailable';
+        }
+        return;
+      }
+
+      const session = await startEmbeddedTerminalSession(path);
+      if (session) {
+        bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
+        fileActionStatus = `Started conversation shell: ${snapshot.title}`;
+      } else {
+        fileActionStatus = 'Embedded terminal unavailable';
+      }
     } catch (terminalError) {
       error =
         terminalError instanceof Error
@@ -5803,31 +6496,10 @@
     await copyActivityCommand(workspaceSnapshotRepairPlan(snapshot), successStatus);
   }
 
-  function workspaceSnapshotsForTerminalPath(path: string, limit = 3): WorkspaceSnapshot[] {
-    const normalizedPath = normalizeProjectPath(path);
-    if (!normalizedPath) return [];
-
+  function workspaceSnapshotForEmbeddedTerminalSession(session: TerminalSessionInfo) {
     return [...workspaceSnapshots]
       .sort((left, right) => right.capturedAt - left.capturedAt)
-      .filter((snapshot) => {
-        const snapshotPaths = [
-          snapshot.embeddedTerminal?.cwd ?? '',
-          snapshot.cwd,
-          snapshot.worktreePath ?? '',
-          snapshot.project.path
-        ].map(normalizeProjectPath).filter(Boolean);
-        return snapshotPaths.includes(normalizedPath);
-      })
-      .slice(0, limit);
-  }
-
-  function workspaceSnapshotForEmbeddedTerminalSession(session: TerminalSessionInfo) {
-    const normalizedCwd = normalizeProjectPath(session.cwd);
-    const sessionMatch = [...workspaceSnapshots]
-      .sort((left, right) => right.capturedAt - left.capturedAt)
-      .find((snapshot) => snapshot.embeddedTerminal?.sessionID === session.sessionId);
-
-    return sessionMatch ?? workspaceSnapshotsForTerminalPath(normalizedCwd, 1)[0] ?? null;
+      .find((snapshot) => snapshot.embeddedTerminal?.sessionID === session.sessionId) ?? null;
   }
 
   function embeddedTerminalSessionWorkspaceLabel(session: TerminalSessionInfo) {
@@ -5977,7 +6649,7 @@
     persistSourceTerminalApp(sourceTerminalApp);
     setBrowserDockUrl(restored.browserUrl ?? '');
     applyWorkspaceSnapshotViewState(restored.viewState);
-    sourceDockLayout = sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState);
+    sourceDockLayout = ensureWorkbenchRightPanels(sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState));
     syncSourceDockLayoutToWorkspace(sourceDockLayout);
     persistSourceDockLayout(sourceDockLayout);
     activeWorkspaceSessionKey = snapshot.id;
@@ -6080,7 +6752,6 @@
 
     return describeWorkspaceSnapshotRestoreReadiness(snapshot, {
       liveTerminalSessionIDs: embeddedTerminalSessions.map((session) => session.sessionId),
-      liveTerminalCwds: embeddedTerminalSessions.map((session) => session.cwd),
       knownWorktreePaths: shouldUseCurrentWorktreeScan
         ? projectWorktrees.map((worktree) => worktree.path)
         : []
@@ -6098,12 +6769,7 @@
       if (!sessions) return;
 
       embeddedTerminalSessions = sessions;
-      const matchingSession =
-        sessions.find((session) => session.sessionId === savedTerminal.sessionID) ??
-        sessions.find(
-          (session) =>
-            normalizeProjectPath(session.cwd) === normalizeProjectPath(savedTerminal.cwd)
-        );
+      const matchingSession = sessions.find((session) => session.sessionId === savedTerminal.sessionID);
 
       if (matchingSession) {
         await attachEmbeddedTerminalSession(matchingSession);
@@ -6227,6 +6893,53 @@
   function workspaceSnapshotForAgentSession(session: AgentSession): WorkspaceSnapshot | null {
     const snapshotID = workspaceSnapshotIDForAgentSession(session);
     return workspaceSnapshots.find((snapshot) => snapshot.id === snapshotID) ?? null;
+  }
+
+  function agentSessionForWorkspaceSnapshot(snapshot: WorkspaceSnapshot): AgentSession | null {
+    return agentSessions.find((session) => workspaceSnapshotIDForAgentSession(session) === snapshot.id)
+      ?? null;
+  }
+
+  async function openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot: WorkspaceSnapshot) {
+    const session = agentSessionForWorkspaceSnapshot(snapshot);
+    if (session) {
+      await switchToConversationWorkspace(session);
+      return;
+    }
+
+    captureActiveWorkspaceBeforeSwitch();
+    await openWorkspaceSnapshotEmbeddedTerminal(snapshot);
+  }
+
+  function embeddedTerminalSnapshotForSession(session: TerminalSessionInfo): WorkspaceSnapshotEmbeddedTerminal {
+    return {
+      sessionID: session.sessionId,
+      cwd: session.cwd,
+      shell: session.shell,
+      startedAt: session.startedAt
+    };
+  }
+
+  function embeddedTerminalSessionForSnapshot(snapshot: WorkspaceSnapshot) {
+    const savedSessionID = snapshot.embeddedTerminal?.sessionID?.trim();
+    if (!savedSessionID) return null;
+
+    return embeddedTerminalSessions.find((session) => session.sessionId === savedSessionID)
+      ?? (embeddedTerminalSession?.sessionId === savedSessionID ? embeddedTerminalSession : null);
+  }
+
+  function bindWorkspaceSnapshotEmbeddedTerminal(
+    snapshot: WorkspaceSnapshot,
+    session: TerminalSessionInfo
+  ) {
+    const nextSnapshot: WorkspaceSnapshot = {
+      ...snapshot,
+      embeddedTerminal: embeddedTerminalSnapshotForSession(session),
+      capturedAt: Date.now()
+    };
+    const nextSnapshots = upsertWorkspaceSnapshot(workspaceSnapshots, nextSnapshot, maxWorkspaceSnapshots);
+    workspaceSnapshots = nextSnapshots;
+    persistWorkspaceSnapshots(nextSnapshots);
   }
 
   function worktreeWorkspaceSnapshots(worktree: ProjectWorktree, limit = 3): WorkspaceSnapshot[] {
@@ -6684,6 +7397,17 @@
     ].join('\n');
   }
 
+  function projectWorktreeCleanupRunbookItem(worktree: ProjectWorktree) {
+    const worktreePath = normalizeProjectPath(worktree.path);
+    return (
+      projectWorktreeCleanupRunbook.items.find((item) => normalizeProjectPath(item.path) === worktreePath) ?? null
+    );
+  }
+
+  function projectWorktreeRunbookCommandBlock(worktree: ProjectWorktree) {
+    return projectWorktreeCleanupRunbookItem(worktree)?.commandBlocks[0] ?? null;
+  }
+
   function projectWorktreePrimaryAction(worktree: ProjectWorktree) {
     return worktreePrimaryAction(projectWorktreeSafety(worktree));
   }
@@ -6742,6 +7466,20 @@
     return copyActivityCommand(
       formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree)),
       'Worktree cleanup plan copied'
+    );
+  }
+
+  function copyWorktreeRunbookCommandBlock(worktree: ProjectWorktree) {
+    const item = projectWorktreeCleanupRunbookItem(worktree);
+    const commandBlock = item?.commandBlocks[0] ?? null;
+    const copyText =
+      commandBlock?.copyText ??
+      item?.copyText ??
+      formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree));
+
+    return copyActivityCommand(
+      copyText,
+      commandBlock ? 'Worktree runbook command block copied' : 'Worktree runbook item copied'
     );
   }
 
@@ -6830,6 +7568,10 @@
     return copyActivityCommand(projectWorktreeCleanupBrief.report, 'Worktree cleanup brief copied');
   }
 
+  function copyProjectWorktreeCleanupRunbook() {
+    return copyActivityCommand(projectWorktreeCleanupRunbook.copyText, 'Worktree cleanup runbook copied');
+  }
+
   function copyProjectWorktreeCleanupScript() {
     const script = buildWorktreeCleanupScript(projectWorktrees, {
       primaryPath: selectedProject.path,
@@ -6856,7 +7598,7 @@
         return openAgentSessionWorkspace(session);
       case 'reattach':
       case 'resume':
-        return resumeAgentSessionEmbeddedTerminal(session);
+        return switchToConversationWorkspace(session);
       case 'save-workspace':
         captureAgentSessionWorkspaceSnapshot(session);
         return;
@@ -6873,12 +7615,109 @@
         ? `${selectedProjectAgentSessions.length} ${selectedProjectAgentSessions.length === 1 ? 'agent' : 'agents'}`
         : '',
       selectedProjectRuntimeContexts.length ? `${selectedProjectRuntimeContexts.length} active` : '',
+      playwrightSessions.length
+        ? `${playwrightSessions.length} Playwright`
+        : '',
       projectWorktrees.length
         ? `${projectWorktrees.length} ${projectWorktrees.length === 1 ? 'worktree' : 'worktrees'}`
         : ''
     ].filter(Boolean);
 
     return parts.join(' · ') || sourceTerminalApp;
+  }
+
+  type ExternalTerminalOpenResult = {
+    opened: boolean;
+    app: SourceTerminalApp;
+    usedFallback: boolean;
+    fallbackFrom?: SourceTerminalApp;
+  };
+
+  function terminalActionErrorMessage(terminalError: unknown) {
+    return terminalError instanceof Error ? terminalError.message : String(terminalError ?? '');
+  }
+
+  function shouldFallbackExternalTerminal(terminalError: unknown, app: SourceTerminalApp) {
+    if (app === sourceTerminalFallbackApp) return false;
+
+    const message = terminalActionErrorMessage(terminalError);
+    if (/unsupported terminal app/i.test(message)) return false;
+    if (/terminal command execution is not supported/i.test(message)) return false;
+
+    return true;
+  }
+
+  function persistSourceTerminalFallback(app: SourceTerminalApp) {
+    sourceTerminalApp = app;
+    persistSourceTerminalApp(app);
+  }
+
+  async function openTerminalPathWithFallback(
+    path: string,
+    preferredApp: SourceTerminalApp
+  ): Promise<ExternalTerminalOpenResult> {
+    try {
+      const opened = await openTerminalPathFromTauri(path, preferredApp);
+      return { opened, app: preferredApp, usedFallback: false };
+    } catch (terminalError) {
+      if (!shouldFallbackExternalTerminal(terminalError, preferredApp)) throw terminalError;
+
+      const opened = await openTerminalPathFromTauri(path, sourceTerminalFallbackApp);
+      if (opened) persistSourceTerminalFallback(sourceTerminalFallbackApp);
+      return {
+        opened,
+        app: sourceTerminalFallbackApp,
+        usedFallback: true,
+        fallbackFrom: preferredApp
+      };
+    }
+  }
+
+  async function openTerminalCommandWithFallback(
+    path: string,
+    command: string,
+    preferredApp: SourceTerminalApp
+  ): Promise<ExternalTerminalOpenResult> {
+    try {
+      const opened = await openTerminalCommandFromTauri(path, command, preferredApp);
+      return { opened, app: preferredApp, usedFallback: false };
+    } catch (terminalError) {
+      if (!shouldFallbackExternalTerminal(terminalError, preferredApp)) throw terminalError;
+
+      const opened = await openTerminalCommandFromTauri(path, command, sourceTerminalFallbackApp);
+      if (opened) persistSourceTerminalFallback(sourceTerminalFallbackApp);
+      return {
+        opened,
+        app: sourceTerminalFallbackApp,
+        usedFallback: true,
+        fallbackFrom: preferredApp
+      };
+    }
+  }
+
+  function terminalOpenStatus(
+    result: ExternalTerminalOpenResult,
+    normalStatus: string,
+    fallbackStatus: string
+  ) {
+    if (!result.usedFallback || !result.fallbackFrom) return normalStatus;
+    return `${result.fallbackFrom} unavailable; ${fallbackStatus}`;
+  }
+
+  function embeddedTerminalAddonLabel() {
+    const addonParts = embeddedTerminalAddonStatus
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part && (part !== 'webgl' || embeddedTerminalWebglAddon));
+    if (embeddedTerminalSearchAddon && !addonParts.includes('search')) addonParts.push('search');
+    if (embeddedTerminalSerializeAddon && !addonParts.includes('serialize')) addonParts.push('serialize');
+    if (embeddedTerminalWebglAddon && !addonParts.includes('webgl')) addonParts.push('webgl');
+    return addonParts.join(', ') || 'fit';
+  }
+
+  function openEmbeddedTerminalWebLink(event: MouseEvent, uri: string) {
+    event.preventDefault();
+    window.open(uri, '_blank', 'noopener,noreferrer');
   }
 
   async function loadEmbeddedTerminalSessions() {
@@ -6910,71 +7749,220 @@
     }
   }
 
+  async function loadPlaywrightSessions(force = false) {
+    if (playwrightSessionsLoading && !force) return;
+
+    const requestID = ++playwrightSessionsRequestID;
+    playwrightSessionsLoading = true;
+    playwrightSessionError = '';
+
+    try {
+      const sessions = await listPlaywrightSessionsFromTauri();
+      if (requestID !== playwrightSessionsRequestID) return;
+      if (!sessions) {
+        playwrightSessions = [];
+        playwrightSessionSource = 'browser preview';
+        return;
+      }
+
+      playwrightSessions = sessions;
+      playwrightSessionSource = 'native process scan';
+    } catch (sessionError) {
+      if (requestID !== playwrightSessionsRequestID) return;
+      playwrightSessions = [];
+      playwrightSessionSource = 'native process scan';
+      playwrightSessionError =
+        sessionError instanceof Error ? sessionError.message : 'Could not scan Playwright sessions';
+    } finally {
+      if (requestID === playwrightSessionsRequestID) {
+        playwrightSessionsLoading = false;
+      }
+    }
+  }
+
+  async function killPlaywrightSessions() {
+    if (playwrightSessionsKilling) return;
+
+    playwrightSessionsKilling = true;
+    playwrightSessionError = '';
+
+    try {
+      const result = await killPlaywrightSessionsFromTauri();
+      if (!result) {
+        playwrightSessionError = 'Playwright cleanup runs in the Tauri app.';
+        fileActionStatus = 'Open the Tauri app to stop Playwright sessions';
+        return;
+      }
+
+      const stoppedCount = result.terminatedPids.length;
+      const failedCount = result.failedPgids.length;
+      fileActionStatus = failedCount
+        ? `Stopped ${stoppedCount} Playwright processes; ${failedCount} failed`
+        : stoppedCount
+          ? `Stopped ${stoppedCount} Playwright processes`
+          : 'No Playwright sessions to stop';
+      await loadPlaywrightSessions(true);
+    } catch (cleanupError) {
+      playwrightSessionError =
+        cleanupError instanceof Error ? cleanupError.message : 'Could not stop Playwright sessions';
+      fileActionStatus = 'Playwright cleanup failed';
+    } finally {
+      playwrightSessionsKilling = false;
+    }
+  }
+
+  function embeddedTerminalHostReady() {
+    if (!embeddedTerminalElement) return false;
+    const rect = embeddedTerminalElement.getBoundingClientRect();
+    const width = Math.round(rect.width || embeddedTerminalElement.clientWidth);
+    const height = Math.round(rect.height || embeddedTerminalElement.clientHeight);
+    return width >= 40 && height >= 40;
+  }
+
+  function remountEmbeddedTerminalRenderer() {
+    if (!embeddedTerminal || !embeddedTerminalElement || !embeddedTerminal.element) return;
+    if (embeddedTerminal.element.parentElement === embeddedTerminalElement) return;
+
+    embeddedTerminalElement.replaceChildren(embeddedTerminal.element);
+    scheduleEmbeddedTerminalFit();
+  }
+
   async function ensureEmbeddedTerminalRenderer() {
-    if (embeddedTerminal || embeddedTerminalRendererLoading || !embeddedTerminalElement) return;
+    if (embeddedTerminal) {
+      remountEmbeddedTerminalRenderer();
+      return;
+    }
+    if (!embeddedTerminalElement) return;
+    if (embeddedTerminalRendererPromise) {
+      await embeddedTerminalRendererPromise;
+      remountEmbeddedTerminalRenderer();
+      return;
+    }
 
     embeddedTerminalRendererLoading = true;
     embeddedTerminalStatus = 'Loading embedded terminal';
 
-    try {
-      const [{ Terminal: XTerm }, { FitAddon }] = await Promise.all([
-        import('@xterm/xterm'),
-        import('@xterm/addon-fit')
-      ]);
+    embeddedTerminalRendererPromise = (async () => {
+      try {
+        const [
+          { Terminal: XTerm },
+          { FitAddon },
+          { SearchAddon },
+          { SerializeAddon },
+          { UnicodeGraphemesAddon },
+          { WebLinksAddon }
+        ] = await Promise.all([
+          import('@xterm/xterm'),
+          import('@xterm/addon-fit'),
+          import('@xterm/addon-search'),
+          import('@xterm/addon-serialize'),
+          import('@xterm/addon-unicode-graphemes'),
+          import('@xterm/addon-web-links')
+        ]);
 
-      if (!embeddedTerminalElement || embeddedTerminal) return;
+        if (!embeddedTerminalElement || embeddedTerminal) return;
 
-      const terminal = new XTerm({
-        convertEol: true,
-        cursorBlink: true,
-        fontFamily: sourcePreviewAppearance.fontFamily,
-        fontSize: 12,
-        lineHeight: 1.2,
-        scrollback: 3000,
-        theme: {
-          background: '#101414',
-          foreground: '#dce4e2',
-          cursor: '#72e2cf',
-          selectionBackground: '#274740',
-          black: '#1d2423',
-          red: '#ff6b7f',
-          green: '#72e2cf',
-          yellow: '#ffd166',
-          blue: '#61afef',
-          magenta: '#c678dd',
-          cyan: '#56dce0',
-          white: '#e8f0ee'
-        }
-      });
-      const fitAddon = new FitAddon();
-      terminal.loadAddon(fitAddon);
-      terminal.open(embeddedTerminalElement);
-      embeddedTerminalInputDisposable = terminal.onData((data) => {
-        if (!embeddedTerminalSession) {
-          embeddedTerminalStatus = 'Start a native terminal first';
-          return;
-        }
-
-        void writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data).catch(() => {
-          embeddedTerminalError = 'Could not write to embedded terminal';
+        const terminal = new XTerm({
+          convertEol: true,
+          cursorBlink: true,
+          cursorStyle: 'block',
+          allowProposedApi: true,
+          macOptionIsMeta: true,
+          fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+          fontSize: 15,
+          fontWeight: 500,
+          fontWeightBold: 760,
+          lineHeight: 1.2,
+          scrollback: 8000,
+          theme: {
+            background: '#282a36',
+            foreground: '#f8f8f2',
+            cursor: '#f8f8f2',
+            cursorAccent: '#282a36',
+            selectionBackground: '#44475a',
+            black: '#000000',
+            red: '#ff5555',
+            green: '#50fa7b',
+            yellow: '#f1fa8c',
+            blue: '#bd93f9',
+            magenta: '#ff79c6',
+            cyan: '#8be9fd',
+            white: '#bbbbbb',
+            brightBlack: '#555555',
+            brightRed: '#ff5555',
+            brightGreen: '#50fa7b',
+            brightYellow: '#f1fa8c',
+            brightBlue: '#caa9fa',
+            brightMagenta: '#ff79c6',
+            brightCyan: '#8be9fd',
+            brightWhite: '#ffffff'
+          }
         });
-      });
-      embeddedTerminal = terminal;
-      embeddedTerminalFitAddon = fitAddon;
-      embeddedTerminalStatus = 'Embedded terminal ready';
-      fitEmbeddedTerminal();
-    } catch (terminalError) {
-      embeddedTerminalError =
-        terminalError instanceof Error ? terminalError.message : 'Could not load embedded terminal';
-      embeddedTerminalStatus = 'Embedded terminal unavailable';
+        const fitAddon = new FitAddon();
+        const searchAddon = new SearchAddon({ highlightLimit: 2000 });
+        const serializeAddon = new SerializeAddon();
+        const unicodeGraphemesAddon = new UnicodeGraphemesAddon();
+        const webLinksAddon = new WebLinksAddon(openEmbeddedTerminalWebLink);
+        terminal.loadAddon(fitAddon);
+        terminal.loadAddon(searchAddon);
+        terminal.loadAddon(serializeAddon);
+        terminal.loadAddon(unicodeGraphemesAddon);
+        terminal.loadAddon(webLinksAddon);
+        terminal.open(embeddedTerminalElement);
+        let webglAddon: XTermWebglAddon | null = null;
+        try {
+          const { WebglAddon } = await import('@xterm/addon-webgl');
+          webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            webglAddon?.dispose();
+            if (embeddedTerminalWebglAddon === webglAddon) {
+              embeddedTerminalWebglAddon = null;
+              embeddedTerminalAddonStatus = embeddedTerminalAddonLabel();
+            }
+          });
+          terminal.loadAddon(webglAddon);
+        } catch {
+          webglAddon = null;
+        }
+        embeddedTerminalInputDisposable = terminal.onData((data) => {
+          if (!embeddedTerminalSession) {
+            embeddedTerminalStatus = 'Start a native terminal first';
+            return;
+          }
+
+          void writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data).catch(() => {
+            embeddedTerminalError = 'Could not write to embedded terminal';
+          });
+        });
+        embeddedTerminal = terminal;
+        embeddedTerminalFitAddon = fitAddon;
+        embeddedTerminalSearchAddon = searchAddon;
+        embeddedTerminalSerializeAddon = serializeAddon;
+        embeddedTerminalWebglAddon = webglAddon;
+        embeddedTerminalAddonStatus = ['fit', 'search', 'serialize', 'unicode', 'links', webglAddon ? 'webgl' : 'canvas']
+          .filter(Boolean)
+          .join(', ');
+        embeddedTerminalStatus = 'Embedded terminal ready';
+        scheduleEmbeddedTerminalFit();
+      } catch (terminalError) {
+        embeddedTerminalError =
+          terminalError instanceof Error ? terminalError.message : 'Could not load embedded terminal';
+        embeddedTerminalStatus = 'Embedded terminal unavailable';
+      } finally {
+        embeddedTerminalRendererLoading = false;
+      }
+    })();
+
+    try {
+      await embeddedTerminalRendererPromise;
     } finally {
-      embeddedTerminalRendererLoading = false;
+      embeddedTerminalRendererPromise = null;
     }
   }
 
   async function startEmbeddedTerminalSession(cwd = selectedProject.path, startupCommand = '') {
     const root = cwd.trim();
-    if (!root || embeddedTerminalStarting) return;
+    if (!root || embeddedTerminalStarting) return null;
     const command = startupCommand.trim();
 
     embeddedTerminalStarting = true;
@@ -6985,7 +7973,7 @@
       await ensureEmbeddedTerminalRenderer();
       if (!embeddedTerminal) {
         embeddedTerminalStatus = 'Embedded terminal unavailable';
-        return;
+        return null;
       }
 
       fitEmbeddedTerminal();
@@ -7000,7 +7988,7 @@
         embeddedTerminalStatus = 'Browser preview cannot start a native PTY';
         embeddedTerminal.writeln('\r\nEmbedded terminal is available in the Tauri app.');
         embeddedTerminal.writeln(`Use Project to open ${sourceTerminalApp} from browser preview.\r\n`);
-        return;
+        return null;
       }
 
       embeddedTerminalSession = session;
@@ -7008,14 +7996,16 @@
       embeddedTerminalStatus = command ? 'Running embedded command' : 'Native terminal running';
       embeddedTerminal.reset();
       embeddedTerminal.focus();
-      window.setTimeout(fitEmbeddedTerminal, 0);
+      scheduleEmbeddedTerminalFit();
       if (command) {
         await writeTerminalSessionFromTauri(session.sessionId, `${command}\r`);
       }
+      return session;
     } catch (terminalError) {
       embeddedTerminalError =
         terminalError instanceof Error ? terminalError.message : 'Could not start embedded terminal';
       embeddedTerminalStatus = 'Embedded terminal failed';
+      return null;
     } finally {
       embeddedTerminalStarting = false;
     }
@@ -7118,7 +8108,7 @@
       }
       embeddedTerminalStatus = 'Native terminal attached';
       embeddedTerminal.focus();
-      window.setTimeout(fitEmbeddedTerminal, 0);
+      scheduleEmbeddedTerminalFit();
     } catch (terminalError) {
       embeddedTerminalError =
         terminalError instanceof Error ? terminalError.message : 'Could not attach embedded terminal';
@@ -7168,8 +8158,13 @@
 
   function fitEmbeddedTerminal() {
     if (!embeddedTerminal || !embeddedTerminalFitAddon || !embeddedTerminalElement) return;
+    if (!embeddedTerminalHostReady()) {
+      embeddedTerminalStatus = 'Terminal fit pending';
+      return;
+    }
 
     try {
+      remountEmbeddedTerminalRenderer();
       embeddedTerminalFitAddon.fit();
       if (embeddedTerminalSession) {
         void resizeTerminalSessionFromTauri(
@@ -7183,6 +8178,35 @@
     } catch {
       embeddedTerminalStatus = 'Terminal fit pending';
     }
+  }
+
+  function clearEmbeddedTerminalFitSchedule() {
+    if (typeof window === 'undefined') return;
+
+    if (embeddedTerminalFitFrame) {
+      window.cancelAnimationFrame(embeddedTerminalFitFrame);
+      embeddedTerminalFitFrame = 0;
+    }
+    for (const timer of embeddedTerminalFitTimers) {
+      window.clearTimeout(timer);
+    }
+    embeddedTerminalFitTimers = [];
+  }
+
+  function scheduleEmbeddedTerminalFit() {
+    if (typeof window === 'undefined') {
+      fitEmbeddedTerminal();
+      return;
+    }
+
+    clearEmbeddedTerminalFitSchedule();
+    embeddedTerminalFitFrame = window.requestAnimationFrame(() => {
+      embeddedTerminalFitFrame = 0;
+      fitEmbeddedTerminal();
+    });
+    embeddedTerminalFitTimers = embeddedTerminalDeferredFitDelays.map((delay) =>
+      window.setTimeout(fitEmbeddedTerminal, delay)
+    );
   }
 
   function handleTerminalOutput(payload: TerminalOutputPayload) {
@@ -7216,9 +8240,14 @@
       void closeTerminalSessionFromTauri(session.sessionId);
     }
 
+    clearEmbeddedTerminalFitSchedule();
     embeddedTerminalInputDisposable?.dispose();
     embeddedTerminalInputDisposable = null;
     embeddedTerminalFitAddon = null;
+    embeddedTerminalSearchAddon = null;
+    embeddedTerminalSerializeAddon = null;
+    embeddedTerminalWebglAddon = null;
+    embeddedTerminalAddonStatus = 'fit';
     embeddedTerminal?.dispose();
     embeddedTerminal = null;
   }
@@ -7226,7 +8255,7 @@
   function embeddedTerminalStatusLabel(session = embeddedTerminalSession) {
     if (!session) return embeddedTerminalStatus;
 
-    return `${embeddedTerminalSessionTitle(session)} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''}`;
+    return `${embeddedTerminalSessionTitle(session)} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''} · ${embeddedTerminalAddonLabel()}`;
   }
 
   function embeddedTerminalSessionTitle(session: TerminalSessionInfo) {
@@ -7273,6 +8302,7 @@
   }
 
   function clearSelectedSourceGitDiff() {
+    selectedSourceGitDiffRequestID += 1;
     selectedSourceGitDiff = null;
     selectedSourceGitDiffLoading = false;
     selectedSourceGitDiffError = '';
@@ -7289,26 +8319,39 @@
 
     const expectedPath = record.path;
     const expectedProjectPath = project.path;
+    const requestID = ++selectedSourceGitDiffRequestID;
     selectedSourceGitDiff = null;
     selectedSourceGitDiffError = '';
     selectedSourceGitDiffLoading = true;
 
     try {
       const diff = await readSourceGitDiffFromTauri(expectedProjectPath, expectedPath);
-      if (selectedRecord?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (!isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) return;
 
       selectedSourceGitDiff = diff;
       if (!diff) selectedSourceGitDiffError = 'Native Git diff unavailable';
     } catch (gitDiffError) {
-      if (selectedRecord?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (!isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) return;
 
       selectedSourceGitDiffError =
         gitDiffError instanceof Error ? gitDiffError.message : 'Could not read Git diff';
     } finally {
-      if (selectedRecord?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+      if (isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) {
         selectedSourceGitDiffLoading = false;
       }
     }
+  }
+
+  function isCurrentSelectedSourceGitDiffRequest(
+    requestID: number,
+    expectedPath: string,
+    expectedProjectPath: string
+  ) {
+    return (
+      requestID === selectedSourceGitDiffRequestID &&
+      selectedRecord?.path === expectedPath &&
+      selectedProject.path === expectedProjectPath
+    );
   }
 
   async function loadSourceLspStatus(
@@ -7455,7 +8498,6 @@
         : nativeTargets
           ? ''
           : 'Browser preview definitions';
-      openEditorNavPanel('definitions');
 
       if (nextTargets.length === 0) {
         fileActionStatus = `No definition for ${normalizedSymbolName}`;
@@ -7472,11 +8514,50 @@
       );
       sourceDefinitionError =
         definitionError instanceof Error ? definitionError.message : 'Could not find definition';
-      openEditorNavPanel('definitions');
 
       return sourceDefinitionTargets;
     } finally {
       sourceDefinitionLoading = false;
+    }
+  }
+
+  async function findSourceDefinitionTargetsForEditor(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    if (!normalizedSymbolName) return [];
+
+    try {
+      const lspTargets = preview
+        ? await findSourceLspDefinitionsFromTauri(
+            { ...preview, content: selectedSourceDraftContent },
+            {
+              root: selectedProject.path,
+              line: request.line,
+              column: request.column,
+              limit: maxSourceDefinitionResults
+            }
+          ).catch(() => null)
+        : null;
+      if (lspTargets?.length) return lspTargets;
+
+      const nativeTargets = await findSourceDefinitionsFromTauri(
+        records,
+        normalizedSymbolName,
+        maxSourceDefinitionResults
+      );
+      return (
+        nativeTargets ??
+        findSourceDefinitionTargets(
+          records.map((record) => demoPreviewFor(record)),
+          normalizedSymbolName,
+          maxSourceDefinitionResults
+        )
+      );
+    } catch {
+      return findSourceDefinitionTargets(
+        records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceDefinitionResults
+      );
     }
   }
 
@@ -7550,7 +8631,6 @@
         : nativeTargets
           ? ''
           : 'Browser preview references';
-      openEditorNavPanel('references');
       fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
       return sourceReferenceTargets;
     } catch (referenceError) {
@@ -7561,11 +8641,120 @@
       );
       sourceReferenceError =
         referenceError instanceof Error ? referenceError.message : 'Could not find references';
-      openEditorNavPanel('references');
       return sourceReferenceTargets;
     } finally {
       sourceReferenceLoading = false;
     }
+  }
+
+  async function findSourceReferenceTargetsForEditor(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    if (!normalizedSymbolName) return [];
+
+    try {
+      const lspTargets = preview
+        ? await findSourceLspReferencesFromTauri(
+            { ...preview, content: selectedSourceDraftContent },
+            {
+              root: selectedProject.path,
+              line: request.line,
+              column: request.column,
+              limit: maxSourceSearchResults
+            }
+          ).catch(() => null)
+        : null;
+      if (lspTargets?.length) return lspTargets;
+
+      const nativeTargets = await findSourceReferencesFromTauri(
+        records,
+        normalizedSymbolName,
+        maxSourceSearchResults
+      );
+      return (
+        nativeTargets ??
+        findSourceReferenceTargets(
+          records.map((record) => demoPreviewFor(record)),
+          normalizedSymbolName,
+          maxSourceSearchResults
+        )
+      );
+    } catch {
+      return findSourceReferenceTargets(
+        records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceSearchResults
+      );
+    }
+  }
+
+  async function countSourceReferencesForCodeLens(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    if (!normalizedSymbolName) return 0;
+
+    try {
+      const lspTargets =
+        preview && sourceIntelligenceAvailable
+          ? await findSourceLspReferencesFromTauri(
+              { ...preview, content: selectedSourceDraftContent },
+              {
+                root: selectedProject.path,
+                line: request.line,
+                column: request.column,
+                limit: maxSourceSearchResults
+              }
+            ).catch(() => null)
+          : null;
+      if (lspTargets?.length) return lspTargets.length;
+
+      const nativeTargets = await findSourceReferencesFromTauri(
+        records,
+        normalizedSymbolName,
+        maxSourceSearchResults
+      ).catch(() => null);
+      if (nativeTargets) return nativeTargets.length;
+
+      return findSourceReferenceTargets(
+        records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceSearchResults
+      ).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  async function loadEditorExternalSourcePreview(record: SourceRecord) {
+    const sourceRecord = sourceRecordFromRestoredPath(selectedProject, record.path);
+
+    if (preview?.path === sourceRecord.path) {
+      return previewFromContent(
+        { ...sourceRecord, byteCount: new TextEncoder().encode(selectedSourceDraftContent).length },
+        selectedSourceDraftContent
+      );
+    }
+
+    const draft = sourceDraftContentByPath[sourceRecord.path];
+    const saved = savedSourceContentByPath[sourceRecord.path];
+    if (draft !== undefined && saved !== undefined) {
+      return previewFromContent(
+        { ...sourceRecord, byteCount: new TextEncoder().encode(draft).length },
+        draft
+      );
+    }
+
+    const sourcePreview = await readSourceFromTauri(sourceRecord);
+    if (sourcePreview) {
+      syncSourcePreviewContent(sourcePreview);
+      return sourcePreview;
+    }
+
+    const demoPreview = demoPreviewFor(sourceRecord);
+    return demoPreview.content.length > 0 ? demoPreview : null;
+  }
+
+  async function navigateEditorExternalSource(request: { path: string; line: number; column: number }) {
+    const record = sourceRecordFromRestoredPath(selectedProject, request.path);
+    await selectRecord(record, request.line);
   }
 
   function formatSourceReferenceSummary(
@@ -7626,7 +8815,6 @@
 
       sourceImplementationTargets = lspTargets;
       sourceImplementationError = '';
-      openEditorNavPanel('definitions');
       fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
       return lspTargets;
     } catch (implementationError) {
@@ -7635,10 +8823,30 @@
         implementationError instanceof Error
           ? implementationError.message
           : 'Could not find implementations';
-      openEditorNavPanel('definitions');
       return sourceImplementationTargets;
     } finally {
       sourceImplementationLoading = false;
+    }
+  }
+
+  async function findSourceImplementationTargetsForEditor(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    if (!normalizedSymbolName || !preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
+        (await findSourceLspImplementationsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceDefinitionResults
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
     }
   }
 
@@ -7700,7 +8908,6 @@
 
       sourceTypeDefinitionTargets = lspTargets;
       sourceTypeDefinitionError = '';
-      openEditorNavPanel('definitions');
       fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
       return lspTargets;
     } catch (typeDefinitionError) {
@@ -7709,10 +8916,30 @@
         typeDefinitionError instanceof Error
           ? typeDefinitionError.message
           : 'Could not find type definition';
-      openEditorNavPanel('definitions');
       return sourceTypeDefinitionTargets;
     } finally {
       sourceTypeDefinitionLoading = false;
+    }
+  }
+
+  async function findSourceTypeDefinitionTargetsForEditor(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    if (!normalizedSymbolName || !preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
+        (await findSourceLspTypeDefinitionsFromTauri(
+          { ...preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceDefinitionResults
+          }
+        )) ?? []
+      );
+    } catch {
+      return [];
     }
   }
 
@@ -7989,6 +9216,15 @@
     }
 
     if (
+      event.key === 'Escape' &&
+      (activeActivityRowActionMenu || activeAgentRowActionMenu || activeWorktreeRowActionMenu || activeGitRowActionMenu)
+    ) {
+      event.preventDefault();
+      closeRowActionMenus();
+      return;
+    }
+
+    if (
       (event.metaKey || event.ctrlKey) &&
       (event.key.toLowerCase() === 'k' || (event.shiftKey && event.key.toLowerCase() === 'p'))
     ) {
@@ -8042,15 +9278,148 @@
 
   function toggleEditorActionMenu() {
     editorActionMenuOpen = !editorActionMenuOpen;
+    if (editorActionMenuOpen) closeRowActionMenus();
   }
 
   function closeEditorActionMenu() {
     editorActionMenuOpen = false;
   }
 
+  function activityRowActionMenuID(scope: string, id: string) {
+    return `${scope}:${id}`;
+  }
+
+  function activityRowActionMenuOpen(scope: string, id: string) {
+    return activeActivityRowActionMenu === activityRowActionMenuID(scope, id);
+  }
+
+  function openActivityRowActionMenu(scope: string, id: string) {
+    activeActivityRowActionMenu = activityRowActionMenuID(scope, id);
+    closeAgentRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeGitRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleActivityRowActionMenu(scope: string, id: string) {
+    const menuID = activityRowActionMenuID(scope, id);
+    if (activeActivityRowActionMenu === menuID) {
+      closeActivityRowActionMenu();
+      return;
+    }
+
+    openActivityRowActionMenu(scope, id);
+  }
+
+  function closeActivityRowActionMenu() {
+    activeActivityRowActionMenu = null;
+  }
+
+  function agentRowActionMenuID(session: AgentSession, scope: 'conversation' | 'agent') {
+    return `${scope}:${session.provider}:${session.id}`;
+  }
+
+  function agentRowActionMenuOpen(session: AgentSession, scope: 'conversation' | 'agent') {
+    return activeAgentRowActionMenu === agentRowActionMenuID(session, scope);
+  }
+
+  function openAgentRowActionMenu(session: AgentSession, scope: 'conversation' | 'agent') {
+    activeAgentRowActionMenu = agentRowActionMenuID(session, scope);
+    closeActivityRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeGitRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleAgentRowActionMenu(session: AgentSession, scope: 'conversation' | 'agent') {
+    const menuID = agentRowActionMenuID(session, scope);
+    if (activeAgentRowActionMenu === menuID) {
+      closeAgentRowActionMenu();
+      return;
+    }
+
+    openAgentRowActionMenu(session, scope);
+  }
+
+  function closeAgentRowActionMenu() {
+    activeAgentRowActionMenu = null;
+  }
+
+  function worktreeRowActionMenuID(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    return `${scope}:${worktree.path}`;
+  }
+
+  function worktreeRowActionMenuOpen(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    return activeWorktreeRowActionMenu === worktreeRowActionMenuID(worktree, scope);
+  }
+
+  function openWorktreeRowActionMenu(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    activeWorktreeRowActionMenu = worktreeRowActionMenuID(worktree, scope);
+    closeActivityRowActionMenu();
+    closeAgentRowActionMenu();
+    closeGitRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleWorktreeRowActionMenu(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    const menuID = worktreeRowActionMenuID(worktree, scope);
+    if (activeWorktreeRowActionMenu === menuID) {
+      closeWorktreeRowActionMenu();
+      return;
+    }
+
+    openWorktreeRowActionMenu(worktree, scope);
+  }
+
+  function closeWorktreeRowActionMenu() {
+    activeWorktreeRowActionMenu = null;
+  }
+
+  function gitRowActionMenuID(id: string, scope: 'repository' | 'task-ledger') {
+    return `${scope}:${id}`;
+  }
+
+  function gitRowActionMenuOpen(id: string, scope: 'repository' | 'task-ledger') {
+    return activeGitRowActionMenu === gitRowActionMenuID(id, scope);
+  }
+
+  function openGitRowActionMenu(id: string, scope: 'repository' | 'task-ledger') {
+    activeGitRowActionMenu = gitRowActionMenuID(id, scope);
+    closeActivityRowActionMenu();
+    closeAgentRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleGitRowActionMenu(id: string, scope: 'repository' | 'task-ledger') {
+    const menuID = gitRowActionMenuID(id, scope);
+    if (activeGitRowActionMenu === menuID) {
+      closeGitRowActionMenu();
+      return;
+    }
+
+    openGitRowActionMenu(id, scope);
+  }
+
+  function closeGitRowActionMenu() {
+    activeGitRowActionMenu = null;
+  }
+
+  function closeRowActionMenus() {
+    closeActivityRowActionMenu();
+    closeAgentRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeGitRowActionMenu();
+  }
+
   function toggleViewMenu() {
     viewMenuOpen = !viewMenuOpen;
     closeEditorActionMenu();
+    if (viewMenuOpen) closeRowActionMenus();
   }
 
   function closeViewMenu() {
@@ -8063,6 +9432,7 @@
     commandPaletteIndex = 0;
     closeViewMenu();
     closeEditorActionMenu();
+    closeRowActionMenus();
     window.setTimeout(() => commandPaletteInput?.focus(), 0);
   }
 
@@ -8118,6 +9488,7 @@
     quickOpenVisible = true;
     quickOpenQuery = '';
     quickOpenIndex = 0;
+    closeRowActionMenus();
     window.setTimeout(() => quickOpenInput?.focus(), 0);
   }
 
@@ -8128,6 +9499,7 @@
     closeCommandPalette();
     closeViewMenu();
     closeEditorActionMenu();
+    closeRowActionMenus();
     window.setTimeout(() => {
       quickOpenInput?.focus();
       const cursor = quickOpenQuery.length;
@@ -8214,7 +9586,10 @@
 
   async function closeSourceTab(tab: SourceOpenTab, event: MouseEvent) {
     event.stopPropagation();
+    await closeSourceTabRecord(tab);
+  }
 
+  async function closeSourceTabRecord(tab: SourceOpenTab) {
     const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, selectedRecord?.path);
     await applySourceTabCloseResult(closeResult, isSourcePathDirty(tab.path) ? 'Closed tab; draft retained' : 'Closed tab');
   }
@@ -8561,8 +9936,10 @@
     error = '';
 
     try {
-      const opened = await openTerminalPathFromTauri(path, sourceTerminalApp);
-      fileActionStatus = opened ? 'Opened terminal' : 'Native action unavailable';
+      const opened = await openTerminalPathWithFallback(path, sourceTerminalApp);
+      fileActionStatus = opened.opened
+        ? terminalOpenStatus(opened, 'Opened terminal', 'opened terminal')
+        : 'Native action unavailable';
     } catch (terminalError) {
       error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal';
     } finally {
@@ -8571,52 +9948,11 @@
   }
 
   async function resumeAgentSessionEmbeddedTerminal(session: AgentSession) {
-    const command = agentSessionTerminalCommand(session);
-    if (!command.trim()) return;
-    if (
-      await copyAgentSessionMissingWorktreeRepairPlan(
-        session,
-        'Workspace repair plan copied before embedded resume'
-      )
-    ) {
-      return;
-    }
-
-    captureActiveWorkspaceBeforeSwitch();
-    captureAgentSessionWorkspaceSnapshot(session);
-    markAgentSessionWorkspaceActive(session);
-    showDockPanel('terminal');
-    await tick();
-
-    const path = agentSessionProjectPath(session);
-    fileActionBusy = `embedded-terminal-command:${session.provider}:${session.id}`;
-    fileActionStatus = '';
-    error = '';
-    embeddedTerminalError = '';
-
-    try {
-      if (embeddedTerminalSession) {
-        if (normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(path)) {
-          await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
-          embeddedTerminalStatus = 'Running embedded resume command';
-          fileActionStatus = 'Sent resume command to embedded terminal';
-          embeddedTerminal?.focus();
-          return;
-        }
-      }
-
-      await startEmbeddedTerminalSession(path, command);
-      fileActionStatus = 'Started embedded resume command';
-    } catch (terminalError) {
-      error = terminalError instanceof Error ? terminalError.message : 'Could not resume agent in embedded terminal';
-      embeddedTerminalStatus = 'Embedded resume failed';
-    } finally {
-      fileActionBusy = '';
-    }
+    return switchToConversationWorkspace(session);
   }
 
   async function openAgentSessionTerminal(session: AgentSession) {
-    const command = agentSessionTerminalCommand(session);
+    const command = withAgentTerminalColorEnv(agentSessionTerminalCommand(session));
     if (!command.trim()) return;
     if (
       await copyAgentSessionMissingWorktreeRepairPlan(
@@ -8636,26 +9972,30 @@
     error = '';
 
     try {
-      const openedCommand = await openTerminalCommandFromTauri(path, command, sourceTerminalApp);
-      if (openedCommand) {
-        fileActionStatus = 'Opened terminal resume command';
+      const openedCommand = await openTerminalCommandWithFallback(path, command, sourceTerminalApp);
+      if (openedCommand.opened) {
+        fileActionStatus = terminalOpenStatus(
+          openedCommand,
+          'Opened terminal resume command',
+          'opened terminal resume command'
+        );
         return;
       }
 
       const openedPath = path.trim()
-        ? await openTerminalPathFromTauri(path, sourceTerminalApp)
-        : false;
+        ? await openTerminalPathWithFallback(path, sourceTerminalApp)
+        : { opened: false, app: sourceTerminalApp, usedFallback: false };
       await navigator.clipboard.writeText(command);
-      fileActionStatus = openedPath
+      fileActionStatus = openedPath.opened
         ? 'Opened terminal and copied resume command'
         : 'Resume command copied';
     } catch (terminalError) {
       try {
         const openedPath = path.trim()
-          ? await openTerminalPathFromTauri(path, sourceTerminalApp)
-          : false;
+          ? await openTerminalPathWithFallback(path, sourceTerminalApp)
+          : { opened: false, app: sourceTerminalApp, usedFallback: false };
         await navigator.clipboard.writeText(command);
-        fileActionStatus = openedPath
+        fileActionStatus = openedPath.opened
           ? 'Opened terminal and copied resume command'
           : 'Resume command copied';
       } catch {
@@ -8831,6 +10171,21 @@
     const draftContent = sourceDraftContentByPath[path];
     const savedContent = savedSourceContentByPath[path];
     return draftContent !== undefined && savedContent !== undefined && draftContent !== savedContent;
+  }
+
+  function sourceMarkdownPreviewAvailable(nextPreview: SourcePreview | null) {
+    if (!nextPreview) return false;
+    const normalizedPath = nextPreview.path.toLowerCase();
+    return nextPreview.language === 'markdown' || normalizedPath.endsWith('.md') || normalizedPath.endsWith('.mdx');
+  }
+
+  function setSelectedSourceEditorDisplayMode(mode: SourceEditorDisplayMode) {
+    if (!preview || !sourceMarkdownPreviewAvailable(preview)) return;
+
+    sourceMarkdownPreviewModeByPath = {
+      ...sourceMarkdownPreviewModeByPath,
+      [preview.path]: mode
+    };
   }
 
   async function stageExternalWorkspaceEditDrafts(files: SourceRenameFileEdit[]) {
@@ -9058,7 +10413,7 @@
   }
 
   async function handleEditorDefinitionLookup(request: SourceEditorLookupRequest) {
-    return runSourceDefinitionLookup(request);
+    return findSourceDefinitionTargetsForEditor(request);
   }
 
   async function handleEditorHoverLookup(request: SourceEditorLookupRequest): Promise<SourceLspHover | null> {
@@ -9270,7 +10625,11 @@
   }
 
   async function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
-    return runSourceReferenceLookup(request);
+    return findSourceReferenceTargetsForEditor(request);
+  }
+
+  async function handleEditorReferenceCountLookup(request: SourceEditorLookupRequest) {
+    return countSourceReferencesForCodeLens(request);
   }
 
   async function handleEditorDocumentHighlightLookup(request: SourceEditorLookupRequest) {
@@ -9294,11 +10653,11 @@
   }
 
   async function handleEditorImplementationLookup(request: SourceEditorLookupRequest) {
-    return runSourceImplementationLookup(request);
+    return findSourceImplementationTargetsForEditor(request);
   }
 
   async function handleEditorTypeDefinitionLookup(request: SourceEditorLookupRequest) {
-    return runSourceTypeDefinitionLookup(request);
+    return findSourceTypeDefinitionTargetsForEditor(request);
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
@@ -9470,11 +10829,10 @@
     persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
-    sourceDockLayout = override?.dockLayout
+    const nextDockLayout = override?.dockLayout
       ? normalizeSourceDockLayout(override.dockLayout)
       : sourceDockLayoutFromWorkspace();
-    syncSourceDockLayoutToWorkspace(sourceDockLayout);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(nextDockLayout);
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -9532,7 +10890,7 @@
     sourceIntelligencePanel = snapshot.intelligencePanel;
     hiddenContextCardIDs = new Set(snapshot.hiddenContextCardIDs);
     activeContextCardID = snapshot.activeContextCardID;
-    sourceDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
+    const nextDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
 
     persistSourceLayoutPreset(sourceLayoutPreset);
     persistSourceActivityMode(sourceActivityMode);
@@ -9548,8 +10906,7 @@
     persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
-    syncSourceDockLayoutToWorkspace(sourceDockLayout);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(nextDockLayout);
     fileActionStatus = status;
 
     if (typeof window !== 'undefined') {
@@ -9613,6 +10970,7 @@
       case 'clipboard':
         return pasteCleanupHistory.length;
       case 'conversations':
+        return filteredConversationAgentSessions.length;
       case 'agents':
         return filteredProjectAgentSessions.length;
       case 'runs':
@@ -9624,6 +10982,31 @@
       case 'git':
         return filteredGitRepositoryRows.length;
     }
+  }
+
+  function sourceActivityCountLabel(mode: SourceActivityMode) {
+    return compactCountValue(sourceActivityCount(mode));
+  }
+
+  function sourceActivityButtonTitle(mode: SourceActivityMode) {
+    const count = sourceActivityCount(mode);
+    const label = sourceActivityLabel(mode);
+    return count > 0 ? `${label} · ${count.toLocaleString()}` : label;
+  }
+
+  function sourceActivityBadgeVisible(mode: SourceActivityMode) {
+    return sourceActivityMode === mode && sourceActivityCount(mode) > 0;
+  }
+
+  function compactCountValue(value: number | null | undefined) {
+    const count =
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    if (count >= 10000) return `${Math.round(count / 1000)}K`;
+    if (count >= 1000) {
+      const thousands = Math.round(count / 100) / 10;
+      return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K`;
+    }
+    return count.toLocaleString();
   }
 
   function sourceActivityFilterPlaceholder(mode: SourceActivityMode) {
@@ -9664,6 +11047,7 @@
       case 'clipboard':
         return pasteCleanupStats;
       case 'conversations':
+        return conversationSessionSummary;
       case 'agents':
         return agentSessionSummary;
       case 'runs':
@@ -9760,6 +11144,16 @@
   function persistSourceActivityMode(mode: SourceActivityMode) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceActivityModeStorageKey, mode);
+  }
+
+  async function selectSourceFilesPane(paneID: SourceFilesPaneID) {
+    sourceFilesPane = paneID;
+    await tick();
+    if (paneID === 'files') {
+      measureFileTreeViewport();
+    } else if (paneID === 'search') {
+      sourceSearchInput?.focus();
+    }
   }
 
   function loadStoredPasteCleanupMode(): PasteCleanupMode {
@@ -10036,8 +11430,19 @@
   function persistSourceLayoutVersion() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutVersionStorageKey, sourceLayoutVersion);
+  }
+
+  function clearMigratedSourceDockviewLayouts() {
+    if (typeof window === 'undefined') return;
     window.localStorage.removeItem(sourceDockviewStorageKey);
+    window.localStorage.removeItem(sourceDockviewActivityStorageKey);
     window.localStorage.removeItem(sourceDockviewInsightsStorageKey);
+    window.localStorage.removeItem(sourceDockviewContextStorageKey);
+    window.localStorage.removeItem(sourceDockviewCenterStorageKey);
+    window.localStorage.removeItem(sourceDockviewBottomStorageKey);
+    window.localStorage.removeItem(sourceFilesDockviewStorageKey);
+    window.localStorage.removeItem(sourceConversationDockviewStorageKey);
+    window.localStorage.removeItem(sourceContextCardDockviewStorageKey);
   }
 
   function loadStoredSourceTerminalApp(): SourceTerminalApp {
@@ -10093,6 +11498,7 @@
     }
 
     if (panelID === 'context') {
+      const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
       const nextContextPaneWidth =
         contextPanelPlacement === 'side' && contextPaneWidth <= contextPaneRailOnlyThreshold
           ? contextPaneDefaultWidth
@@ -10100,8 +11506,8 @@
       contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
-          showSourceDockPanel(sourceDockLayout, 'context'),
-          dockGroupForContextPanelPlacement(contextPanelPlacement),
+          moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+          contextGroupID,
           contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
         )
       );
@@ -10112,6 +11518,7 @@
     applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));
     if (panelID === 'terminal') {
       fileActionStatus = 'Terminal dock shown';
+      scheduleEmbeddedTerminalFit();
     }
     if (panelID === 'browser') {
       if (!browserUrl && defaultBrowserUrl) {
@@ -10122,7 +11529,13 @@
   }
 
   function resetSourceDockLayout() {
-    applySourceLayoutPreset('code');
+    if (sourceLayoutPresetOverrides.review) {
+      const nextOverrides = { ...sourceLayoutPresetOverrides };
+      delete nextOverrides.review;
+      sourceLayoutPresetOverrides = nextOverrides;
+      persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
+    }
+    applySourceLayoutPreset('review');
     fileActionStatus = 'Dock layout reset';
   }
 
@@ -10178,6 +11591,9 @@
   }
 
   function contextPaneRailOnly() {
+    // Dockview owns sizing in the unified workbench, so the homemade width-collapse plan must not
+    // force the context panel into its narrow rail-only presentation.
+    if (useUnifiedWorkbench) return false;
     return contextPanelPlacement === 'side' && sourceWorkspacePlanItem('context')?.state === 'rail';
   }
 
@@ -10187,10 +11603,12 @@
   }
 
   function contextPaneViewportCollapsed() {
+    // The unified workbench lets Dockview size the context group; never auto-collapse it here.
+    if (useUnifiedWorkbench) return false;
     const item = sourceWorkspacePlanItem('context');
     return (
       contextPanelPlacement === 'side' &&
-      shouldRenderDockPanel('context') &&
+      sourceDockPanelVisible('context') &&
       item?.reason === 'viewport-collapsed'
     );
   }
@@ -10200,7 +11618,7 @@
   }
 
   function effectiveContextPaneVisible() {
-    if (!shouldRenderDockPanel('context')) return false;
+    if (!sourceDockPanelVisible('context')) return false;
     return contextPanelPlacement !== 'side' || !contextPaneViewportCollapsed();
   }
 
@@ -10236,17 +11654,48 @@
   function collapseActivityPaneToRail() {
     markSourceLayoutCustom();
     snapActivityPaneToRail();
-    sourceDockLayout = resizeSourceDockGroup(
+    applySourceDockLayout(resizeSourceDockGroup(
       showSourceDockPanel(sourceDockLayout, 'activity'),
       sidePanePosition,
       sidePaneWidth
-    );
+    ));
     persistSidePaneWidth(sidePaneWidth);
-    persistSourceDockLayout(sourceDockLayout);
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
     fileActionStatus = 'Activity panel collapsed to rail';
+  }
+
+  function activityRailToggleLabel() {
+    return activityPaneRailOnly() ? 'Expand explorer from icon rail' : 'Collapse explorer to icon rail';
+  }
+
+  function activityRailToggleDirection() {
+    if (sidePanePosition === 'left') {
+      return activityPaneRailOnly() ? 'right' : 'left';
+    }
+
+    return activityPaneRailOnly() ? 'left' : 'right';
+  }
+
+  function toggleActivityPaneRail() {
+    markSourceLayoutCustom();
+
+    if (!sourceDockPanelVisible('activity')) {
+      showDockPanel('activity');
+      return;
+    }
+
+    if (activityPaneRailOnly()) {
+      expandActivityPaneFromRail();
+      fileActionStatus = 'Activity panel expanded';
+      if (typeof window !== 'undefined') {
+        window.setTimeout(measureFileTreeViewport, 0);
+      }
+      return;
+    }
+
+    collapseActivityPaneToRail();
   }
 
   function expandContextPaneFromRail() {
@@ -10272,15 +11721,14 @@
     contextPanelCollapsed = false;
     snapContextPaneToRail(false);
     const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
-    sourceDockLayout = resizeSourceDockGroup(
+    applySourceDockLayout(resizeSourceDockGroup(
       moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
       contextGroupID,
       contextPaneWidth
-    );
+    ));
     persistContextPanelPlacement(contextPanelPlacement);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPaneWidth(contextPaneWidth);
-    persistSourceDockLayout(sourceDockLayout);
     fileActionStatus = 'Context panel collapsed to rail';
   }
 
@@ -10431,7 +11879,7 @@
         return ['right'];
       case 'terminal':
       case 'browser':
-        return ['bottom'];
+        return ['center'];
       case 'editor':
         return ['center'];
     }
@@ -10483,16 +11931,187 @@
     const normalizedLayout = normalizeSourceDockLayout(layout);
     sourceDockLayout = normalizedLayout;
     syncSourceDockLayoutToWorkspace(normalizedLayout);
+    syncSourceDockviewWorkbenchLayout(normalizedLayout);
+    syncSourceDockviewActivityLayout(normalizedLayout);
+    syncSourceDockviewContextLayout(normalizedLayout);
     syncSourceDockviewInsightsLayout(normalizedLayout);
+    syncSourceDockviewCenterLayout(normalizedLayout);
+    syncSourceDockviewBottomLayout(normalizedLayout);
     persistSourceDockLayout(normalizedLayout);
+  }
+
+  function syncSourceDockviewWorkbenchLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewWorkbenchWorkspace) return;
+
+    sourceDockviewWorkbenchWorkspace.syncLayout(layout);
+    scheduleSourceDockviewPanelElementSync();
+    if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  type SourceDockviewGroup = SourceDockviewWorkspace['api']['groups'][number];
+
+  function syncSourceDockLayoutFromWorkbenchGroups(activePanelID: SourceDockPanelID | null = null) {
+    const workspace = sourceDockviewWorkbenchWorkspace;
+    if (!workspace) return;
+
+    const nextLayout = sourceDockLayoutFromDockviewGroups(workspace.api, activePanelID);
+    if (!nextLayout) return;
+
+    sourceDockLayout = nextLayout;
+    syncSourceDockLayoutToWorkspace(nextLayout);
+    persistSourceDockLayout(nextLayout);
+    if (activePanelID === 'terminal' || sourceDockviewWorkbenchOwnsPanel('terminal')) {
+      scheduleEmbeddedTerminalFit();
+    }
+  }
+
+  function sourceDockLayoutFromDockviewGroups(
+    api: SourceDockviewWorkspace['api'],
+    activePanelID: SourceDockPanelID | null
+  ): SourceDockLayout | null {
+    const currentLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const entries = api.groups
+      .map((group) => sourceDockviewGroupEntry(group))
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const editorEntry = entries.find((entry) => entry.panelIDs.includes('editor'));
+    if (!editorEntry) return null;
+
+    const groups = currentLayout.groups.map((group) => ({
+      ...group,
+      panelIDs: [] as SourceDockPanelID[]
+    }));
+    const visiblePanelIDs = new Set<SourceDockPanelID>();
+    const activePanelByGroup: SourceDockLayout['activePanelByGroup'] = {};
+
+    for (const entry of entries) {
+      const groupID = sourceDockGroupIDForDockviewGroup(entry.rect, editorEntry.rect, entry.panelIDs);
+      const targetGroup = groups.find((group) => group.id === groupID);
+      if (!targetGroup) continue;
+
+      targetGroup.panelIDs.push(...entry.panelIDs.filter((panelID) => !visiblePanelIDs.has(panelID)));
+      for (const panelID of entry.panelIDs) {
+        visiblePanelIDs.add(panelID);
+      }
+      targetGroup.size = sourceDockGroupSizeFromDockviewRect(groupID, entry.rect, currentLayout);
+      activePanelByGroup[groupID] = entry.activePanelID ?? activePanelByGroup[groupID];
+    }
+
+    const activeGroupID = activePanelID
+      ? groups.find((group) => group.panelIDs.includes(activePanelID))?.id
+      : null;
+    if (activePanelID && activeGroupID) {
+      activePanelByGroup[activeGroupID] = activePanelID;
+    }
+
+    return normalizeSourceDockLayout({
+      ...currentLayout,
+      preset: 'custom',
+      groups,
+      hiddenPanelIDs: currentLayout.hiddenPanelIDs.filter((panelID) => !visiblePanelIDs.has(panelID)),
+      activePanelByGroup
+    });
+  }
+
+  function sourceDockviewGroupEntry(group: SourceDockviewGroup) {
+    const panelIDs = group.panels
+      .map((panel) => sourceDockviewWorkbenchPanelID(panel.id))
+      .filter((panelID): panelID is SourceDockPanelID => panelID !== null);
+    if (panelIDs.length === 0) return null;
+
+    return {
+      panelIDs,
+      activePanelID: sourceDockviewWorkbenchPanelID(group.activePanel?.id),
+      rect: group.element.getBoundingClientRect()
+    };
+  }
+
+  function sourceDockviewWorkbenchPanelID(value: unknown): SourceDockPanelID | null {
+    return sourceDockviewWorkbenchPanelIDs.includes(value as SourceDockPanelID)
+      ? (value as SourceDockPanelID)
+      : null;
+  }
+
+  function syncSourceDockviewPanelElements() {
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function scheduleSourceDockviewPanelElementSync() {
+    syncSourceDockviewPanelElements();
+    queueMicrotask(syncSourceDockviewPanelElements);
+    if (typeof window !== 'undefined') {
+      window.setTimeout(syncSourceDockviewPanelElements, 0);
+      window.setTimeout(syncSourceDockviewPanelElements, 80);
+    }
+  }
+
+  function sourceDockGroupIDForDockviewGroup(
+    rect: DOMRect,
+    editorRect: DOMRect,
+    panelIDs: SourceDockPanelID[]
+  ): SourceDockGroupID {
+    const tolerance = 8;
+    if (panelIDs.includes('editor')) return 'center';
+    if (rect.right <= editorRect.left + tolerance) return 'left';
+    if (rect.left >= editorRect.right - tolerance) return 'right';
+    if (rect.top >= editorRect.bottom - tolerance) return 'bottom';
+    return 'center';
+  }
+
+  function sourceDockGroupSizeFromDockviewRect(
+    groupID: SourceDockGroupID,
+    rect: DOMRect,
+    layout: SourceDockLayout
+  ) {
+    if (groupID === 'left' || groupID === 'right') return Math.max(1, Math.round(rect.width));
+    if (groupID === 'bottom') return Math.max(1, Math.round(rect.height));
+    return sourceDockGroupSize(layout, groupID);
+  }
+
+  function syncSourceDockviewActivityLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewActivityWorkspace) return;
+
+    sourceDockviewActivityWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function syncSourceDockviewContextLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewContextWorkspace) return;
+
+    sourceDockviewContextWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
   }
 
   function syncSourceDockviewInsightsLayout(layout: SourceDockLayout) {
     if (!sourceDockviewInsightsWorkspace) return;
 
     sourceDockviewInsightsWorkspace.syncLayout(layout);
-    for (const [panelID, element] of sourceDockviewPanelElements) {
-      sourceDockviewInsightsWorkspace.setPanelElement(panelID, element);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function syncSourceDockviewCenterLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewCenterWorkspace) return;
+
+    sourceDockviewCenterWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+    if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function syncSourceDockviewBottomLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewBottomWorkspace) return;
+
+    sourceDockviewBottomWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
     }
   }
 
@@ -10558,10 +12177,23 @@
     if (!editorInsightCollapsed && insightsGroupID !== null && insightsGroupID !== contextGroupID) {
       nextLayout = resizeSourceDockGroup(nextLayout, insightsGroupID, editorInsightWidth);
     }
+    if (!contextPanelCollapsed && contextGroupID !== null) {
+      nextLayout = activateSourceDockPanel(nextLayout, 'context');
+    }
     return normalizeSourceDockLayout({
       ...nextLayout,
       preset: sourceLayoutPreset
     });
+  }
+
+  function ensureWorkbenchRightPanels(layout: SourceDockLayout): SourceDockLayout {
+    // Under the unified workbench, Dockview owns panel visibility through its tabs, so the legacy
+    // collapse flags must not hide context/insights — doing so left the right pane empty (only its
+    // icon rail showed). Force both back into the visible right group (moveSourceDockPanel un-hides).
+    if (!useUnifiedWorkbench) return layout;
+    let next = moveSourceDockPanel(layout, 'context', 'right');
+    next = moveSourceDockPanel(next, 'insights', 'right');
+    return next;
   }
 
   function sourceDockLayoutWithWorkspaceViewState(
@@ -10680,6 +12312,29 @@
     return dockGroupIDForPanel(sourceDockLayout, panelID) !== null;
   }
 
+  function editorInsightsDockColumnVisible() {
+    return (
+      !editorInsightCollapsed &&
+      shouldRenderDockPanel('insights') &&
+      !sourceDockviewWorkbenchOwnsPanel('insights') &&
+      !sourceDockviewContextOwnsPanel('insights')
+    );
+  }
+
+  function sourceIntelligencePanelMounted() {
+    // In the unified workbench, Dockview owns the Insights tab; mount its content whenever the
+    // panel is present in the layout, independent of the old `editorInsightCollapsed` rail state
+    // (which otherwise leaves the Insights tab empty under the `code` preset default).
+    if (useUnifiedWorkbench) return sourceDockviewWorkbenchOwnsPanel('insights');
+    return (
+      !editorInsightCollapsed &&
+      sourceDockPanelVisible('insights') &&
+      (shouldRenderDockPanel('insights') ||
+        sourceDockviewWorkbenchOwnsPanel('insights') ||
+        sourceDockviewContextOwnsPanel('insights'))
+    );
+  }
+
   function hiddenDockPanelIDs() {
     return normalizeSourceDockLayout(sourceDockLayout).hiddenPanelIDs.filter((panelID) =>
       hideableDockPanelIDs.includes(panelID)
@@ -10726,7 +12381,7 @@
 
   function loadStoredSourceDockviewLayout(
     storageKey: string,
-    panelIDs?: SourceDockPanelID[]
+    panelIDs?: string[]
   ): SerializedDockview | null {
     if (typeof window === 'undefined') return null;
 
@@ -10747,7 +12402,7 @@
 
   function sourceDockviewLayoutOnlyContainsPanels(
     layout: SerializedDockview,
-    panelIDs: SourceDockPanelID[]
+    panelIDs: string[]
   ) {
     const expectedPanelIDs = new Set<string>(panelIDs);
     const storedPanelIDs = Object.keys(layout.panels ?? {});
@@ -10759,9 +12414,98 @@
     );
   }
 
+  function loadStoredSourcePaneviewLayout(
+    storageKey: string,
+    panelIDs: string[]
+  ): SerializedPaneview | null {
+    if (typeof window === 'undefined') return null;
+
+    try {
+      const storedLayout = window.localStorage.getItem(storageKey);
+      if (!storedLayout) return null;
+
+      const parsedLayout = JSON.parse(storedLayout) as SerializedPaneview;
+      if (!sourcePaneviewLayoutOnlyContainsPanels(parsedLayout, panelIDs)) {
+        return null;
+      }
+
+      return parsedLayout;
+    } catch {
+      return null;
+    }
+  }
+
+  function sourcePaneviewLayoutOnlyContainsPanels(
+    layout: SerializedPaneview,
+    panelIDs: string[]
+  ) {
+    const expectedPanelIDs = new Set<string>(panelIDs);
+    const storedPanelIDs = (layout.views ?? []).map((view) => view.data.id);
+
+    return (
+      storedPanelIDs.length > 0 &&
+      storedPanelIDs.every((panelID) => expectedPanelIDs.has(panelID)) &&
+      panelIDs.every((panelID) => storedPanelIDs.includes(panelID))
+    );
+  }
+
   function persistSourceDockviewLayout(storageKey: string, layout: SerializedDockview) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(storageKey, JSON.stringify(layout));
+  }
+
+  function persistSourcePaneviewLayout(storageKey: string, layout: SerializedPaneview) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(storageKey, JSON.stringify(layout));
+  }
+
+  function sourceEditorFilePanelID(tab: Pick<SourceOpenTab, 'path'>): SourceEditorFilePanelID {
+    return sourceEditorFilePanelIDFromPath(tab.path);
+  }
+
+  function sourceEditorFilePanelIDFromPath(path: string): SourceEditorFilePanelID {
+    return `file:${path}` as SourceEditorFilePanelID;
+  }
+
+  function sourceEditorFilePathFromPanelID(panelID: SourceEditorFilePanelID): string {
+    return panelID.slice('file:'.length);
+  }
+
+  function sourceEditorFileTabForPanelID(panelID: SourceEditorFilePanelID): SourceOpenTab | null {
+    const path = sourceEditorFilePathFromPanelID(panelID);
+    return projectOpenSourceTabs.find((tab) => tab.path === path) ?? null;
+  }
+
+  function sourceEditorFileDockviewTitle(tab: SourceOpenTab): string {
+    return `${isSourcePathDirty(tab.path) ? '* ' : ''}${tab.fileName}`;
+  }
+
+  function sourceDockviewWorkbenchHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewWorkbenchHostToken;
+    void initializeSourceDockviewWorkbench(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewWorkbenchHostToken === token) {
+          sourceDockviewWorkbenchHostToken += 1;
+          disposeSourceDockviewWorkbench();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewActivityHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewActivityHostToken;
+    void initializeSourceDockviewActivity(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewActivityHostToken === token) {
+          sourceDockviewActivityHostToken += 1;
+          disposeSourceDockviewActivity();
+        }
+      }
+    };
   }
 
   function sourceDockviewInsightsHostAction(node: HTMLElement) {
@@ -10778,7 +12522,112 @@
     };
   }
 
+  function sourceDockviewContextHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewContextHostToken;
+    void initializeSourceDockviewContext(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewContextHostToken === token) {
+          sourceDockviewContextHostToken += 1;
+          disposeSourceDockviewContext();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewCenterHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewCenterHostToken;
+    void initializeSourceDockviewCenter(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewCenterHostToken === token) {
+          sourceDockviewCenterHostToken += 1;
+          disposeSourceDockviewCenter();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewBottomHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewBottomHostToken;
+    void initializeSourceDockviewBottom(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewBottomHostToken === token) {
+          sourceDockviewBottomHostToken += 1;
+          disposeSourceDockviewBottom();
+        }
+      }
+    };
+  }
+
+  function sourceEditorFileDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceEditorFileDockviewHostToken;
+    void initializeSourceEditorFileDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceEditorFileDockviewHostToken === token) {
+          sourceEditorFileDockviewHostToken += 1;
+          disposeSourceEditorFileDockview();
+        }
+      }
+    };
+  }
+
+  function sourceFilesDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceFilesDockviewHostToken;
+    void initializeSourceFilesDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceFilesDockviewHostToken === token) {
+          sourceFilesDockviewHostToken += 1;
+          disposeSourceFilesDockview();
+        }
+      }
+    };
+  }
+
+  function sourceConversationDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceConversationDockviewHostToken;
+    void initializeSourceConversationDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceConversationDockviewHostToken === token) {
+          sourceConversationDockviewHostToken += 1;
+          disposeSourceConversationDockview();
+        }
+      }
+    };
+  }
+
+  function sourceContextCardDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceContextCardDockviewHostToken;
+    void initializeSourceContextCardDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceContextCardDockviewHostToken === token) {
+          sourceContextCardDockviewHostToken += 1;
+          disposeSourceContextCardDockview();
+        }
+      }
+    };
+  }
+
   function sourceDockviewPanelAction(node: HTMLElement, panelID: SourceDockPanelID) {
+    const handleDockviewLayout = () => {
+      if (panelID === 'terminal') {
+        void ensureEmbeddedTerminalRenderer().then(scheduleEmbeddedTerminalFit);
+      }
+    };
+
+    node.addEventListener('source-dockview-layout', handleDockviewLayout);
     registerSourceDockviewPanelElement(panelID, node);
 
     return {
@@ -10789,9 +12638,478 @@
         registerSourceDockviewPanelElement(panelID, node);
       },
       destroy() {
+        node.removeEventListener('source-dockview-layout', handleDockviewLayout);
         unregisterSourceDockviewPanelElement(panelID, node);
       }
     };
+  }
+
+  function sourceFilesDockviewPanelAction(node: HTMLElement, panelID: SourceFilesPaneID) {
+    registerSourceFilesDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceFilesPaneID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceFilesDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceFilesDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceFilesDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  function sourceConversationDockviewPanelAction(node: HTMLElement, panelID: SourceConversationPaneID) {
+    registerSourceConversationDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceConversationPaneID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceConversationDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceConversationDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceConversationDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  function sourceContextCardDockviewPanelAction(node: HTMLElement, panelID: SourceContextCardDockviewPanelID) {
+    registerSourceContextCardDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceContextCardDockviewPanelID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceContextCardDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceContextCardDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceContextCardDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  function sourceEditorFileDockviewPanelAction(node: HTMLElement, panelID: SourceEditorFilePanelID) {
+    registerSourceEditorFileDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceEditorFilePanelID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceEditorFileDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceEditorFileDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceEditorFileDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  async function initializeSourceDockviewWorkbench(node: HTMLElement, token: number) {
+    if (!sourceDockviewWorkbenchEnabled) return;
+
+    sourceDockviewWorkbenchReady = false;
+    sourceDockviewWorkbenchError = '';
+
+    await tick();
+    if (token !== sourceDockviewWorkbenchHostToken) return;
+
+    disposeSourceDockviewWorkbench();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: sourceDockLayout,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewWorkbenchStorageKey),
+        onDidLayoutChange: (layout) => {
+          persistSourceDockviewLayout(sourceDockviewWorkbenchStorageKey, layout);
+          syncSourceDockLayoutFromWorkbenchGroups();
+          if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelClose: (panelID) => {
+          if (panelID === 'editor') {
+            syncSourceDockviewWorkbenchLayout(sourceDockLayout);
+            fileActionStatus = 'Editor tab restored';
+            return;
+          }
+          if (panelID === 'context') {
+            contextPanelCollapsed = true;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'context'));
+            fileActionStatus = 'Context panel hidden';
+            return;
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = true;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
+            fileActionStatus = 'Insights panel hidden';
+            return;
+          }
+          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+          fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (!panelID) return;
+          if (panelID === 'context') {
+            contextPanelCollapsed = false;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = false;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+          }
+          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
+          persistSourceDockLayout(sourceDockLayout);
+          if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelMove: (panelID, layout) => {
+          persistSourceDockviewLayout(sourceDockviewWorkbenchStorageKey, layout);
+          syncSourceDockLayoutFromWorkbenchGroups(panelID);
+        }
+      });
+
+      if (token !== sourceDockviewWorkbenchHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewWorkbenchWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewWorkbenchResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewWorkbench(node)
+      );
+      sourceDockviewWorkbenchResizeObserver.observe(node);
+      sourceDockviewWorkbenchReady = true;
+      layoutSourceDockviewWorkbench(node);
+    } catch (dockviewError) {
+      sourceDockviewWorkbenchError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview workbench unavailable';
+      sourceDockviewWorkbenchReady = false;
+      disposeSourceDockviewWorkbench();
+    }
+  }
+
+  async function initializeSourceDockviewActivity(node: HTMLElement, token: number) {
+    if (!sourceDockviewActivityEnabled) return;
+
+    sourceDockviewActivityReady = false;
+    sourceDockviewActivityError = '';
+
+    await tick();
+    if (token !== sourceDockviewActivityHostToken) return;
+
+    disposeSourceDockviewActivity();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: sourceDockLayout,
+        ...sourceDockviewActivityPlanOptions,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewActivityStorageKey),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceDockviewActivityStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          if (panelID !== 'activity') return;
+          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'activity'));
+          fileActionStatus = 'Activity panel hidden';
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'activity') return;
+          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
+          persistSourceDockLayout(sourceDockLayout);
+        }
+      });
+
+      if (token !== sourceDockviewActivityHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewActivityWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewActivityResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewActivity(node)
+      );
+      sourceDockviewActivityResizeObserver.observe(node);
+      sourceDockviewActivityReady = true;
+      layoutSourceDockviewActivity(node);
+    } catch (dockviewError) {
+      sourceDockviewActivityError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview activity dock unavailable';
+      sourceDockviewActivityReady = false;
+      disposeSourceDockviewActivity();
+    }
+  }
+
+  async function initializeSourceEditorFileDockview(node: HTMLElement, token: number) {
+    sourceEditorFileDockviewReady = false;
+    sourceEditorFileDockviewError = '';
+
+    await tick();
+    if (token !== sourceEditorFileDockviewHostToken) return;
+
+    disposeSourceEditorFileDockview();
+
+    if (sourceEditorFileDockviewPanels.length === 0) {
+      sourceEditorFileDockviewReady = true;
+      return;
+    }
+
+    try {
+      const workspace = await createSourceDockviewTabStackWorkspace(node, {
+        panels: sourceEditorFileDockviewPanels,
+        rootPanelID: selectedSourceEditorFilePanelID ?? undefined,
+        storedLayout: loadStoredSourceDockviewLayout(
+          sourceEditorFileDockviewStorageKey,
+          sourceEditorFileDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceEditorFileDockviewStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          const tab = sourceEditorFileTabForPanelID(panelID);
+          if (!tab) return;
+          void closeSourceTabRecord(tab);
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (!panelID) return;
+          const tab = sourceEditorFileTabForPanelID(panelID);
+          if (!tab || tab.path === selectedRecord?.path) return;
+          void selectOpenTab(tab);
+        }
+      });
+
+      if (token !== sourceEditorFileDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceEditorFileDockviewWorkspace = workspace;
+      for (const panelID of sourceEditorFileDockviewPanelElements.keys()) {
+        syncSourceEditorFileDockviewPanelElement(panelID);
+      }
+      sourceEditorFileDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceEditorFileDockview(node)
+      );
+      sourceEditorFileDockviewResizeObserver.observe(node);
+      sourceEditorFileDockviewReady = true;
+      layoutSourceEditorFileDockview(node);
+    } catch (dockviewError) {
+      sourceEditorFileDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Editor file tabs unavailable';
+      sourceEditorFileDockviewReady = false;
+      disposeSourceEditorFileDockview();
+    }
+  }
+
+  async function initializeSourceFilesDockview(node: HTMLElement, token: number) {
+    sourceFilesDockviewReady = false;
+    sourceFilesDockviewError = '';
+
+    await tick();
+    if (token !== sourceFilesDockviewHostToken) return;
+
+    disposeSourceFilesDockview();
+
+    try {
+      const workspace = await createSourcePaneviewStackWorkspace(node, {
+        panels: sourceFilesDockviewPanels,
+        storedLayout: loadStoredSourcePaneviewLayout(
+          sourceFilesDockviewStorageKey,
+          sourceFilesDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourcePaneviewLayout(sourceFilesDockviewStorageKey, layout)
+      });
+
+      if (token !== sourceFilesDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceFilesDockviewWorkspace = workspace;
+      for (const panelID of sourceFilesDockviewPanelElements.keys()) {
+        syncSourceFilesDockviewPanelElement(panelID);
+      }
+      sourceFilesDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceFilesDockview(node)
+      );
+      sourceFilesDockviewResizeObserver.observe(node);
+      sourceFilesDockviewReady = true;
+      layoutSourceFilesDockview(node);
+    } catch (dockviewError) {
+      sourceFilesDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Source files panels unavailable';
+      sourceFilesDockviewReady = false;
+      disposeSourceFilesDockview();
+    }
+  }
+
+  async function initializeSourceConversationDockview(node: HTMLElement, token: number) {
+    sourceConversationDockviewReady = false;
+    sourceConversationDockviewError = '';
+
+    await tick();
+    if (token !== sourceConversationDockviewHostToken) return;
+
+    disposeSourceConversationDockview();
+
+    try {
+      const workspace = await createSourcePaneviewStackWorkspace(node, {
+        panels: sourceConversationDockviewPanels,
+        storedLayout: loadStoredSourcePaneviewLayout(
+          sourceConversationDockviewStorageKey,
+          sourceConversationDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourcePaneviewLayout(sourceConversationDockviewStorageKey, layout)
+      });
+
+      if (token !== sourceConversationDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceConversationDockviewWorkspace = workspace;
+      for (const panelID of sourceConversationDockviewPanelElements.keys()) {
+        syncSourceConversationDockviewPanelElement(panelID);
+      }
+      sourceConversationDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceConversationDockview(node)
+      );
+      sourceConversationDockviewResizeObserver.observe(node);
+      sourceConversationDockviewReady = true;
+      layoutSourceConversationDockview(node);
+    } catch (dockviewError) {
+      sourceConversationDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Conversation panels unavailable';
+      sourceConversationDockviewReady = false;
+      disposeSourceConversationDockview();
+    }
+  }
+
+  async function initializeSourceContextCardDockview(node: HTMLElement, token: number) {
+    sourceContextCardDockviewReady = false;
+    sourceContextCardDockviewError = '';
+
+    await tick();
+    if (token !== sourceContextCardDockviewHostToken) return;
+
+    disposeSourceContextCardDockview();
+
+    if (sourceContextCardDockviewPanels.length === 0) {
+      sourceContextCardDockviewReady = true;
+      return;
+    }
+
+    try {
+      const workspace = await createSourcePaneviewStackWorkspace(node, {
+        panels: sourceContextCardDockviewPanels,
+        storedLayout: loadStoredSourcePaneviewLayout(
+          sourceContextCardDockviewStorageKey,
+          sourceContextCardDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourcePaneviewLayout(sourceContextCardDockviewStorageKey, layout)
+      });
+
+      if (token !== sourceContextCardDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceContextCardDockviewWorkspace = workspace;
+      for (const panelID of sourceContextCardDockviewPanelElements.keys()) {
+        syncSourceContextCardDockviewPanelElement(panelID);
+      }
+      sourceContextCardDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceContextCardDockview(node)
+      );
+      sourceContextCardDockviewResizeObserver.observe(node);
+      sourceContextCardDockviewReady = true;
+      layoutSourceContextCardDockview(node);
+    } catch (dockviewError) {
+      sourceContextCardDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Context card panels unavailable';
+      sourceContextCardDockviewReady = false;
+      disposeSourceContextCardDockview();
+    }
+  }
+
+  async function initializeSourceDockviewContext(node: HTMLElement, token: number) {
+    if (!sourceDockviewContextEnabled) return;
+
+    sourceDockviewContextReady = false;
+    sourceDockviewContextError = '';
+
+    await tick();
+    if (token !== sourceDockviewContextHostToken) return;
+
+    disposeSourceDockviewContext();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: sourceDockLayout,
+        ...sourceDockviewContextPlanOptions,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewContextStorageKey),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceDockviewContextStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          if (panelID === 'context') {
+            contextPanelCollapsed = true;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'context'));
+            fileActionStatus = 'Context panel hidden';
+            return;
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = true;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
+            fileActionStatus = 'Insights panel hidden';
+          }
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'context' && panelID !== 'insights') return;
+          if (panelID === 'context') {
+            contextPanelCollapsed = false;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = false;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+          }
+          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
+          persistSourceDockLayout(sourceDockLayout);
+        }
+      });
+
+      if (token !== sourceDockviewContextHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewContextWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewContextResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewContext(node)
+      );
+      sourceDockviewContextResizeObserver.observe(node);
+      sourceDockviewContextReady = true;
+      layoutSourceDockviewContext(node);
+    } catch (dockviewError) {
+      sourceDockviewContextError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview context dock unavailable';
+      sourceDockviewContextReady = false;
+      disposeSourceDockviewContext();
+    }
   }
 
   async function initializeSourceDockviewInsights(node: HTMLElement, token: number) {
@@ -10809,10 +13127,7 @@
       const workspace = await createSourceDockviewWorkspace(node, {
         layout: sourceDockLayout,
         ...sourceDockviewInsightsPlanOptions,
-        storedLayout: loadStoredSourceDockviewLayout(
-          sourceDockviewInsightsStorageKey,
-          sourceDockviewInsightsPanelIDs
-        ),
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewInsightsStorageKey),
         onDidLayoutChange: (layout) =>
           persistSourceDockviewLayout(sourceDockviewInsightsStorageKey, layout),
         onDidPanelClose: (panelID) => {
@@ -10830,8 +13145,8 @@
       }
 
       sourceDockviewInsightsWorkspace = workspace;
-      for (const [panelID, element] of sourceDockviewPanelElements) {
-        workspace.setPanelElement(panelID, element);
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
       }
       sourceDockviewInsightsResizeObserver = new ResizeObserver(() =>
         layoutSourceDockviewInsights(node)
@@ -10847,15 +13162,364 @@
     }
   }
 
+  async function initializeSourceDockviewCenter(node: HTMLElement, token: number) {
+    if (!sourceDockviewCenterEnabled) return;
+
+    sourceDockviewCenterReady = false;
+    sourceDockviewCenterError = '';
+
+    await tick();
+    if (token !== sourceDockviewCenterHostToken) return;
+
+    disposeSourceDockviewCenter();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: sourceDockLayout,
+        ...sourceDockviewCenterPlanOptions,
+        storedLayout: null,
+        restoreStoredLayout: false,
+        onDidLayoutChange: (layout) => {
+          persistSourceDockviewLayout(sourceDockviewCenterStorageKey, layout);
+          if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelClose: (panelID) => {
+          if (panelID === 'editor') {
+            syncSourceDockviewCenterLayout(sourceDockLayout);
+            fileActionStatus = 'Editor tab restored';
+            return;
+          }
+          if (panelID !== 'terminal' && panelID !== 'browser') return;
+          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+          fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'editor' && panelID !== 'terminal' && panelID !== 'browser') return;
+          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
+          persistSourceDockLayout(sourceDockLayout);
+          if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
+        }
+      });
+
+      if (token !== sourceDockviewCenterHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewCenterWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewCenterResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewCenter(node)
+      );
+      sourceDockviewCenterResizeObserver.observe(node);
+      sourceDockviewCenterReady = true;
+      layoutSourceDockviewCenter(node);
+    } catch (dockviewError) {
+      sourceDockviewCenterError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview center dock unavailable';
+      sourceDockviewCenterReady = false;
+      disposeSourceDockviewCenter();
+    }
+  }
+
+  async function initializeSourceDockviewBottom(node: HTMLElement, token: number) {
+    if (!sourceDockviewBottomEnabled) return;
+
+    sourceDockviewBottomReady = false;
+    sourceDockviewBottomError = '';
+
+    await tick();
+    if (token !== sourceDockviewBottomHostToken) return;
+
+    disposeSourceDockviewBottom();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: sourceDockLayout,
+        ...sourceDockviewBottomPlanOptions,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewBottomStorageKey),
+        onDidLayoutChange: (layout) => {
+          persistSourceDockviewLayout(sourceDockviewBottomStorageKey, layout);
+          if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelClose: (panelID) => {
+          if (panelID !== 'terminal' && panelID !== 'browser') return;
+          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+          fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'terminal' && panelID !== 'browser') return;
+          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
+          persistSourceDockLayout(sourceDockLayout);
+          if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
+        }
+      });
+
+      if (token !== sourceDockviewBottomHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewBottomWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewBottomResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewBottom(node)
+      );
+      sourceDockviewBottomResizeObserver.observe(node);
+      sourceDockviewBottomReady = true;
+      layoutSourceDockviewBottom(node);
+    } catch (dockviewError) {
+      sourceDockviewBottomError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview bottom dock unavailable';
+      sourceDockviewBottomReady = false;
+      disposeSourceDockviewBottom();
+    }
+  }
+
   function registerSourceDockviewPanelElement(panelID: SourceDockPanelID, element: HTMLElement) {
     sourceDockviewPanelElements.set(panelID, element);
-    sourceDockviewInsightsWorkspace?.setPanelElement(panelID, element);
+    syncSourceDockviewPanelElement(panelID);
   }
 
   function unregisterSourceDockviewPanelElement(panelID: SourceDockPanelID, element: HTMLElement) {
     if (sourceDockviewPanelElements.get(panelID) !== element) return;
     sourceDockviewPanelElements.delete(panelID);
-    sourceDockviewInsightsWorkspace?.setPanelElement(panelID, null);
+    syncSourceDockviewPanelElement(panelID);
+  }
+
+  function registerSourceFilesDockviewPanelElement(panelID: SourceFilesPaneID, element: HTMLElement) {
+    sourceFilesDockviewPanelElements.set(panelID, element);
+    syncSourceFilesDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceFilesDockviewPanelElement(panelID: SourceFilesPaneID, element: HTMLElement) {
+    if (sourceFilesDockviewPanelElements.get(panelID) !== element) return;
+    sourceFilesDockviewPanelElements.delete(panelID);
+    syncSourceFilesDockviewPanelElement(panelID);
+  }
+
+  function registerSourceConversationDockviewPanelElement(panelID: SourceConversationPaneID, element: HTMLElement) {
+    sourceConversationDockviewPanelElements.set(panelID, element);
+    syncSourceConversationDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceConversationDockviewPanelElement(
+    panelID: SourceConversationPaneID,
+    element: HTMLElement
+  ) {
+    if (sourceConversationDockviewPanelElements.get(panelID) !== element) return;
+    sourceConversationDockviewPanelElements.delete(panelID);
+    syncSourceConversationDockviewPanelElement(panelID);
+  }
+
+  function registerSourceContextCardDockviewPanelElement(
+    panelID: SourceContextCardDockviewPanelID,
+    element: HTMLElement
+  ) {
+    sourceContextCardDockviewPanelElements.set(panelID, element);
+    syncSourceContextCardDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceContextCardDockviewPanelElement(
+    panelID: SourceContextCardDockviewPanelID,
+    element: HTMLElement
+  ) {
+    if (sourceContextCardDockviewPanelElements.get(panelID) !== element) return;
+    sourceContextCardDockviewPanelElements.delete(panelID);
+    syncSourceContextCardDockviewPanelElement(panelID);
+  }
+
+  function registerSourceEditorFileDockviewPanelElement(
+    panelID: SourceEditorFilePanelID,
+    element: HTMLElement
+  ) {
+    sourceEditorFileDockviewPanelElements.set(panelID, element);
+    syncSourceEditorFileDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceEditorFileDockviewPanelElement(
+    panelID: SourceEditorFilePanelID,
+    element: HTMLElement
+  ) {
+    if (sourceEditorFileDockviewPanelElements.get(panelID) !== element) return;
+    sourceEditorFileDockviewPanelElements.delete(panelID);
+    syncSourceEditorFileDockviewPanelElement(panelID);
+  }
+
+  function syncSourceDockviewPanelElement(panelID: SourceDockPanelID) {
+    const element = sourceDockviewPanelElements.get(panelID) ?? null;
+
+    if (useUnifiedWorkbench) {
+      // Route the panel's existing content root into the unified Task-2 workbench bridge.
+      // Hand the old single-Dockview workbench `null` so the two never fight over the element.
+      unifiedWorkbenchSetPanelElement(panelID, sourceDockPanelVisible(panelID) ? element : null);
+      sourceDockviewWorkbenchWorkspace?.setPanelElement(panelID, null);
+      return;
+    }
+
+    sourceDockviewWorkbenchWorkspace?.setPanelElement(
+      panelID,
+      sourceDockviewWorkbenchOwnsPanel(panelID) ? element : null
+    );
+    if (sourceDockviewWorkbenchEnabled) return;
+
+    const contextOwnsPanel = sourceDockviewContextOwnsPanel(panelID);
+    const centerOwnsPanel = sourceDockviewCenterOwnsPanel(panelID);
+    const bottomOwnsPanel = sourceDockviewBottomOwnsPanel(panelID);
+
+    sourceDockviewActivityWorkspace?.setPanelElement(
+      panelID,
+      panelID === 'activity' && sourceDockviewActivityOwnsPanel(panelID) ? element : null
+    );
+    sourceDockviewContextWorkspace?.setPanelElement(
+      panelID,
+      contextOwnsPanel ? element : null
+    );
+    sourceDockviewInsightsWorkspace?.setPanelElement(
+      panelID,
+      panelID === 'insights' && !contextOwnsPanel ? element : null
+    );
+    sourceDockviewCenterWorkspace?.setPanelElement(
+      panelID,
+      centerOwnsPanel ? element : null
+    );
+    sourceDockviewBottomWorkspace?.setPanelElement(
+      panelID,
+      bottomOwnsPanel ? element : null
+    );
+  }
+
+  function syncAllSourceDockviewPanelElements() {
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function handleUnifiedWorkbenchOwnershipChange() {
+    if (!useUnifiedWorkbench) return;
+    syncAllSourceDockviewPanelElements();
+    if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function syncSourceFilesDockviewPanelElement(panelID: SourceFilesPaneID) {
+    sourceFilesDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceFilesDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceConversationDockviewPanelElement(panelID: SourceConversationPaneID) {
+    sourceConversationDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceConversationDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceContextCardDockviewPanelElement(panelID: SourceContextCardDockviewPanelID) {
+    sourceContextCardDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceContextCardDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceEditorFileDockviewPanelElement(panelID: SourceEditorFilePanelID) {
+    sourceEditorFileDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceEditorFileDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceContextCardDockviewPanels() {
+    if (!sourceContextCardDockviewWorkspace) return;
+
+    sourceContextCardDockviewWorkspace.syncPanels(sourceContextCardDockviewPanels);
+    for (const panelID of sourceContextCardDockviewPanelElements.keys()) {
+      syncSourceContextCardDockviewPanelElement(panelID);
+    }
+  }
+
+  function syncSourceEditorFileDockviewPanels() {
+    if (!sourceEditorFileDockviewWorkspace) return;
+
+    sourceEditorFileDockviewWorkspace.syncPanels(
+      sourceEditorFileDockviewPanels,
+      selectedSourceEditorFilePanelID ?? undefined
+    );
+    for (const panelID of sourceEditorFileDockviewPanelElements.keys()) {
+      syncSourceEditorFileDockviewPanelElement(panelID);
+    }
+  }
+
+  function sourceFilesDockviewPanelTitle(panelID: SourceFilesPaneID) {
+    return sourceFilesDockviewPanels.find((panel) => panel.id === panelID)?.title ?? panelID;
+  }
+
+  function sourceConversationDockviewPanelTitle(panelID: SourceConversationPaneID) {
+    return sourceConversationDockviewPanels.find((panel) => panel.id === panelID)?.title ?? panelID;
+  }
+
+  function sourceDockviewWorkbenchOwnsPanel(panelID: SourceDockPanelID) {
+    return sourceDockviewWorkbenchEnabled && sourceDockPanelVisible(panelID);
+  }
+
+  function sourceDockviewActivityOwnsPanel(panelID: SourceDockPanelID) {
+    return sourceDockviewActivityEnabled && panelID === 'activity' && sourceDockPanelVisible('activity');
+  }
+
+  function sourceDockviewContextOwnsPanel(panelID: SourceDockPanelID) {
+    if (!sourceDockviewContextEnabled) return false;
+    if (panelID === 'context') return sourceDockPanelVisible('context');
+    if (panelID !== 'insights') return false;
+
+    const contextGroupID = dockGroupIDForPanel(sourceDockLayout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+    return contextGroupID !== null && insightsGroupID === contextGroupID;
+  }
+
+  function sourceDockviewCenterOwnsPanel(panelID: SourceDockPanelID) {
+    if (!sourceDockviewCenterEnabled) return false;
+    if (panelID === 'editor') return sourceDockPanelVisible('editor');
+    if (panelID !== 'terminal' && panelID !== 'browser') return false;
+    return sourceDockPanelVisible(panelID);
+  }
+
+  function sourceDockviewBottomOwnsPanel(panelID: SourceDockPanelID) {
+    if (!sourceDockviewBottomEnabled) return false;
+    if (panelID !== 'terminal' && panelID !== 'browser') return false;
+    return false;
+  }
+
+  function runtimeDockPanelRendered() {
+    return false;
+  }
+
+  function layoutSourceDockviewWorkbench(node: HTMLElement) {
+    if (!sourceDockviewWorkbenchWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewWorkbenchWorkspace.api.layout(width, height, true);
+    if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function layoutSourceDockviewActivity(node: HTMLElement) {
+    if (!sourceDockviewActivityWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewActivityWorkspace.api.layout(width, height, true);
+  }
+
+  function layoutSourceDockviewContext(node: HTMLElement) {
+    if (!sourceDockviewContextWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewContextWorkspace.api.layout(width, height, true);
   }
 
   function layoutSourceDockviewInsights(node: HTMLElement) {
@@ -10866,6 +13530,72 @@
     sourceDockviewInsightsWorkspace.api.layout(width, height, true);
   }
 
+  function layoutSourceDockviewCenter(node: HTMLElement) {
+    if (!sourceDockviewCenterWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewCenterWorkspace.api.layout(width, height, true);
+    if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function layoutSourceDockviewBottom(node: HTMLElement) {
+    if (!sourceDockviewBottomWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewBottomWorkspace.api.layout(width, height, true);
+    if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function layoutSourceEditorFileDockview(node: HTMLElement) {
+    if (!sourceEditorFileDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceEditorFileDockviewWorkspace.api.layout(width, height, true);
+  }
+
+  function layoutSourceFilesDockview(node: HTMLElement) {
+    if (!sourceFilesDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceFilesDockviewWorkspace.api.layout(width, height);
+  }
+
+  function layoutSourceConversationDockview(node: HTMLElement) {
+    if (!sourceConversationDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceConversationDockviewWorkspace.api.layout(width, height);
+  }
+
+  function layoutSourceContextCardDockview(node: HTMLElement) {
+    if (!sourceContextCardDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceContextCardDockviewWorkspace.api.layout(width, height);
+  }
+
+  function disposeSourceDockviewWorkbench() {
+    sourceDockviewWorkbenchResizeObserver?.disconnect();
+    sourceDockviewWorkbenchResizeObserver = null;
+    sourceDockviewWorkbenchWorkspace?.dispose();
+    sourceDockviewWorkbenchWorkspace = null;
+    sourceDockviewWorkbenchReady = false;
+  }
+
+  function disposeSourceDockviewActivity() {
+    sourceDockviewActivityResizeObserver?.disconnect();
+    sourceDockviewActivityResizeObserver = null;
+    sourceDockviewActivityWorkspace?.dispose();
+    sourceDockviewActivityWorkspace = null;
+    sourceDockviewActivityReady = false;
+  }
+
   function disposeSourceDockviewInsights() {
     sourceDockviewInsightsResizeObserver?.disconnect();
     sourceDockviewInsightsResizeObserver = null;
@@ -10874,9 +13604,75 @@
     sourceDockviewInsightsReady = false;
   }
 
+  function disposeSourceDockviewContext() {
+    sourceDockviewContextResizeObserver?.disconnect();
+    sourceDockviewContextResizeObserver = null;
+    sourceDockviewContextWorkspace?.dispose();
+    sourceDockviewContextWorkspace = null;
+    sourceDockviewContextReady = false;
+  }
+
+  function disposeSourceDockviewCenter() {
+    sourceDockviewCenterResizeObserver?.disconnect();
+    sourceDockviewCenterResizeObserver = null;
+    sourceDockviewCenterWorkspace?.dispose();
+    sourceDockviewCenterWorkspace = null;
+    sourceDockviewCenterReady = false;
+  }
+
+  function disposeSourceDockviewBottom() {
+    sourceDockviewBottomResizeObserver?.disconnect();
+    sourceDockviewBottomResizeObserver = null;
+    sourceDockviewBottomWorkspace?.dispose();
+    sourceDockviewBottomWorkspace = null;
+    sourceDockviewBottomReady = false;
+  }
+
+  function disposeSourceEditorFileDockview() {
+    sourceEditorFileDockviewResizeObserver?.disconnect();
+    sourceEditorFileDockviewResizeObserver = null;
+    sourceEditorFileDockviewWorkspace?.dispose();
+    sourceEditorFileDockviewWorkspace = null;
+    sourceEditorFileDockviewReady = false;
+  }
+
+  function disposeSourceFilesDockview() {
+    sourceFilesDockviewResizeObserver?.disconnect();
+    sourceFilesDockviewResizeObserver = null;
+    sourceFilesDockviewWorkspace?.dispose();
+    sourceFilesDockviewWorkspace = null;
+    sourceFilesDockviewReady = false;
+  }
+
+  function disposeSourceConversationDockview() {
+    sourceConversationDockviewResizeObserver?.disconnect();
+    sourceConversationDockviewResizeObserver = null;
+    sourceConversationDockviewWorkspace?.dispose();
+    sourceConversationDockviewWorkspace = null;
+    sourceConversationDockviewReady = false;
+  }
+
+  function disposeSourceContextCardDockview() {
+    sourceContextCardDockviewResizeObserver?.disconnect();
+    sourceContextCardDockviewResizeObserver = null;
+    sourceContextCardDockviewWorkspace?.dispose();
+    sourceContextCardDockviewWorkspace = null;
+    sourceContextCardDockviewReady = false;
+  }
+
+  $effect(() => {
+    sourceEditorFileDockviewPanels;
+    selectedSourceEditorFilePanelID;
+    syncSourceEditorFileDockviewPanels();
+  });
+
+  $effect(() => {
+    sourceContextCardDockviewPanels;
+    syncSourceContextCardDockviewPanels();
+  });
+
   function persistDockGroupSize(groupID: SourceDockGroupID, size: number) {
-    sourceDockLayout = resizeSourceDockGroup(sourceDockLayout, groupID, size);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(resizeSourceDockGroup(sourceDockLayout, groupID, size));
   }
 
   function loadStoredSidePanePosition(): SourceSidePanePosition {
@@ -10894,9 +13690,13 @@
     markSourceLayoutCustom();
     sidePanePosition = position;
     persistSidePanePosition(position);
-    sourceDockLayout = moveSourceDockPanel(sourceDockLayout, 'activity', position);
-    sourceDockLayout = resizeSourceDockGroup(sourceDockLayout, position, sidePaneWidth);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      resizeSourceDockGroup(
+        moveSourceDockPanel(sourceDockLayout, 'activity', position),
+        position,
+        sidePaneWidth
+      )
+    );
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
@@ -11003,6 +13803,12 @@
   }
 
   function handleSidePaneResizerKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleActivityPaneRail();
+      return;
+    }
+
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
 
     event.preventDefault();
@@ -11046,20 +13852,24 @@
     markSourceLayoutCustom();
     contextPanelCollapsed = !contextPanelCollapsed;
     persistContextPanelCollapsed(contextPanelCollapsed);
-    sourceDockLayout = contextPanelCollapsed
+    const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
+    const nextLayout = contextPanelCollapsed
       ? hideSourceDockPanel(sourceDockLayout, 'context')
-      : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
-    persistSourceDockLayout(sourceDockLayout);
+      : activateSourceDockPanel(
+          moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+          'context'
+        );
+    applySourceDockLayout(nextLayout);
   }
 
   function toggleEditorInsightCollapsed() {
     markSourceLayoutCustom();
     editorInsightCollapsed = !editorInsightCollapsed;
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    sourceDockLayout = editorInsightCollapsed
+    const nextLayout = editorInsightCollapsed
       ? hideSourceDockPanel(sourceDockLayout, 'insights')
       : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(nextLayout);
   }
 
   function showEditorInsightPanel(panel: SourceIntelligencePanel) {
@@ -11067,8 +13877,9 @@
     sourceIntelligencePanel = panel;
     editorInsightCollapsed = false;
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights')
+    );
   }
 
   function clearSourceLookupResults() {
@@ -11102,7 +13913,41 @@
   }
 
   function contextCardsTabbed() {
-    return contextPanelMode === 'stack' || contextPanelPlacement === 'side';
+    return contextPanelPresentation.tabbed;
+  }
+
+  function contextCardsStacked() {
+    return contextPanelPresentation.stacked;
+  }
+
+  function contextCardsUsePaneviewStack() {
+    // In the unified workbench the context panel always renders the expanded, Dockview-sized
+    // paneview card stack (Runs / Runtime / Agents / Worktrees / Git) — never the rail or a
+    // single tabbed card — regardless of the old grid/stack mode or placement state.
+    if (useUnifiedWorkbench) return sourceDockviewWorkbenchOwnsPanel('context');
+    return contextCardsTabbed() && (sourceDockviewWorkbenchOwnsPanel('context') || !contextPaneRailOnly());
+  }
+
+  function contextCardsUseRailTabs() {
+    if (useUnifiedWorkbench) return false;
+    return contextCardsTabbed() && !sourceDockviewWorkbenchOwnsPanel('context') && contextPaneRailOnly();
+  }
+
+  function resolveContextPanelPresentation(
+    mode: SourceContextPanelMode,
+    placement: SourceContextPanelPlacement
+  ): SourceContextPanelPresentation {
+    const presentationMode: SourceContextPanelPresentationMode =
+      mode === 'stack' || placement === 'side' ? 'tabs' : 'grid';
+
+    return {
+      requestedMode: mode,
+      placement,
+      presentationMode,
+      stacked: presentationMode !== 'grid',
+      tabbed: presentationMode === 'tabs',
+      singleCard: presentationMode === 'tabs'
+    };
   }
 
   function activeVisibleContextCardID() {
@@ -11112,7 +13957,8 @@
 
   function shouldRenderContextCard(cardID: SourceContextCardID) {
     if (!isContextCardVisible(cardID)) return false;
-    return !contextCardsTabbed() || activeVisibleContextCardID() === cardID;
+    if (contextCardsUsePaneviewStack()) return true;
+    return !contextPanelPresentation.singleCard || activeVisibleContextCardID() === cardID;
   }
 
   function selectActiveContextCard(cardID: SourceContextCardID) {
@@ -11140,9 +13986,17 @@
     if (contextPaneRailOnly()) {
       expandContextPaneFromRail();
     }
-    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistContextPanelCollapsed(contextPanelCollapsed);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      activateSourceDockPanel(
+        moveSourceDockPanel(
+          showSourceDockPanel(sourceDockLayout, 'context'),
+          'context',
+          dockGroupForContextPanelPlacement(contextPanelPlacement)
+        ),
+        'context'
+      )
+    );
   }
 
   function showContextCard(cardID: SourceContextCardID) {
@@ -11155,11 +14009,19 @@
     if (contextPaneRailOnly()) {
       expandContextPaneFromRail();
     }
-    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistHiddenContextCards(nextCardIDs);
     persistActiveContextCard(cardID);
     persistContextPanelCollapsed(contextPanelCollapsed);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      activateSourceDockPanel(
+        moveSourceDockPanel(
+          showSourceDockPanel(sourceDockLayout, 'context'),
+          'context',
+          dockGroupForContextPanelPlacement(contextPanelPlacement)
+        ),
+        'context'
+      )
+    );
   }
 
   function selectContextPanelMode(mode: SourceContextPanelMode) {
@@ -11174,17 +14036,14 @@
     contextPanelCollapsed = false;
     persistContextPanelPlacement(placement);
     persistContextPanelCollapsed(contextPanelCollapsed);
-    sourceDockLayout = moveSourceDockPanel(
-      sourceDockLayout,
-      'context',
-      dockGroupForContextPanelPlacement(placement)
+    const contextGroupID = dockGroupForContextPanelPlacement(placement);
+    applySourceDockLayout(
+      resizeSourceDockGroup(
+        moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+        contextGroupID,
+        placement === 'bottom' ? contextPaneHeight : contextPaneWidth
+      )
     );
-    sourceDockLayout = resizeSourceDockGroup(
-      sourceDockLayout,
-      dockGroupForContextPanelPlacement(placement),
-      placement === 'bottom' ? contextPaneHeight : contextPaneWidth
-    );
-    persistSourceDockLayout(sourceDockLayout);
   }
 
   function loadStoredContextPanelCollapsed() {
@@ -11563,15 +14422,37 @@
   }
 
   function bottomDockPanelVisible() {
-    return shouldRenderDockPanel('terminal') || shouldRenderDockPanel('browser');
+    return sourceDockviewBottomOwnsPanel('terminal') || sourceDockviewBottomOwnsPanel('browser');
   }
 
   function bottomDockHeight() {
     return clampBottomDockHeight(sourceDockGroupSize(sourceDockLayout, 'bottom'));
   }
 
+  function bottomDockSizingConfig(): SourcePaneSizingConfig {
+    return {
+      defaultSize: bottomDockDefaultHeight,
+      minSize: bottomDockMinHeight,
+      maxSize: bottomDockAvailableMaxHeight(),
+      collapseThreshold: bottomDockCollapseThreshold
+    };
+  }
+
+  function bottomDockAvailableMaxHeight() {
+    const measuredHeight = Math.max(0, Math.round(sourceWorkspaceHeight));
+    const viewportHeight =
+      measuredHeight > 0
+        ? measuredHeight
+        : typeof window !== 'undefined'
+          ? Math.max(0, Math.round(window.innerHeight))
+          : bottomDockFallbackMaxHeight;
+    const availableHeight = viewportHeight - bottomDockReservedEditorHeight - bottomDockReservedChromeHeight;
+
+    return Math.max(bottomDockMinHeight, Math.round(availableHeight));
+  }
+
   function clampBottomDockHeight(height: number) {
-    return clampSourcePaneSize(height, bottomDockSizingConfig);
+    return clampSourcePaneSize(height, bottomDockSizingConfig());
   }
 
   function beginBottomDockResize(event: PointerEvent) {
@@ -11589,7 +14470,7 @@
       persistDockGroupSize('bottom', clampBottomDockHeight(latestRawHeight));
     };
     const finishResize = () => {
-      const finishedSize = finishSourcePanePointerSize(latestRawHeight, bottomDockSizingConfig, {
+      const finishedSize = finishSourcePanePointerSize(latestRawHeight, bottomDockSizingConfig(), {
         previousExpandedSize: startHeight
       });
       if (finishedSize.state === 'collapsed') {
@@ -11636,7 +14517,7 @@
     }
     const rawNextBottomDockHeight = bottomDockHeight() + direction * 24;
     if (direction < 0) {
-      const finishedSize = finishSourcePanePointerSize(rawNextBottomDockHeight, bottomDockSizingConfig, {
+      const finishedSize = finishSourcePanePointerSize(rawNextBottomDockHeight, bottomDockSizingConfig(), {
         previousExpandedSize: bottomDockHeight()
       });
       if (finishedSize.state === 'collapsed') {
@@ -12328,11 +15209,13 @@
     fileTreeScrollTop = fileTreeElement.scrollTop;
   }
 
-  function measureSourceWorkspaceWidth() {
+  function measureSourceWorkspaceSize() {
     if (typeof window === 'undefined') return;
 
-    const measuredWidth = sourceWorkspaceElement?.clientWidth ?? window.innerWidth - 8;
+    const measuredWidth = sourceWorkspaceElement?.clientWidth ?? window.innerWidth;
+    const measuredHeight = sourceWorkspaceElement?.clientHeight ?? window.innerHeight;
     sourceWorkspaceWidth = Math.max(0, Math.round(measuredWidth));
+    sourceWorkspaceHeight = Math.max(0, Math.round(measuredHeight));
   }
 
   function handleFileTreeScroll(event: Event) {
@@ -12590,12 +15473,13 @@
       !migrateSourceLayout && storedSourceDockLayout
         ? sourceDockLayoutWithStoredPaneSizes(storedSourceDockLayout)
         : null;
-    sourceDockLayout = restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace();
+    sourceDockLayout = ensureWorkbenchRightPanels(restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace());
     if (!migrateSourceLayout && storedSourceDockLayout) {
       syncSourceDockLayoutToWorkspace(sourceDockLayout);
     }
     persistSelectedProjectID(startupProject.id);
     if (migrateSourceLayout) {
+      clearMigratedSourceDockviewLayouts();
       persistSourceLayoutPreset(sourceLayoutPreset);
       persistSourceActivityMode(sourceActivityMode);
       persistSidePanePosition(sidePanePosition);
@@ -12612,6 +15496,7 @@
     persistSourceLayoutVersion();
     window.setTimeout(measureFileTreeViewport, 0);
     void loadEmbeddedTerminalSessions();
+    void loadPlaywrightSessions();
     if (startupWorkspaceSnapshot) {
       fileActionStatus = `Restoring workspace snapshot: ${startupWorkspaceSnapshot.title}`;
       void restoreConversationWorkspaceSnapshot(startupWorkspaceSnapshot).then(() =>
@@ -12639,7 +15524,15 @@
       unlistenSourceScanProgress?.();
       unlistenTerminalOutput?.();
       disposeEmbeddedTerminal();
+      disposeSourceDockviewWorkbench();
+      disposeSourceDockviewActivity();
+      disposeSourceDockviewContext();
       disposeSourceDockviewInsights();
+      disposeSourceDockviewCenter();
+      disposeSourceDockviewBottom();
+      disposeSourceFilesDockview();
+      disposeSourceConversationDockview();
+      disposeSourceContextCardDockview();
     };
   });
 </script>
@@ -12661,96 +15554,145 @@
   class:layout-pressure={sourceWorkspacePlan.overflowSize > 0}
   style={`--accent: #5ce2cf; --side-pane-width: ${effectiveSidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${effectiveContextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
 >
-  {#if effectiveActivityPaneVisible()}
-  <aside class="activity-shell" aria-label="Workspace browser">
+  <SourceDockviewShell
+    shellClass="source-dockview-workbench-shell"
+    hostClass="source-dockview-workbench-host"
+    errorClass="source-dockview-workbench-error"
+    enabled={sourceDockviewWorkbenchEnabled && !useUnifiedWorkbench}
+    ready={sourceDockviewWorkbenchReady}
+    error={sourceDockviewWorkbenchError}
+    hostAction={sourceDockviewWorkbenchHostAction}
+  >
+  {#if sourceDockviewWorkbenchOwnsPanel('activity') || effectiveActivityPaneVisible()}
+  <SourceDockviewShell
+    shellClass="source-dockview-activity-shell"
+    hostClass="source-dockview-activity-host"
+    errorClass="source-dockview-activity-error"
+    enabled={sourceDockviewActivityEnabled}
+    ready={sourceDockviewActivityReady}
+    error={sourceDockviewActivityError}
+    hostAction={sourceDockviewActivityHostAction}
+  >
+  <aside class="activity-shell" aria-label="Workspace browser" use:sourceDockviewPanelAction={'activity'}>
     <nav class="activity-rail" aria-label="Workspace views">
       <button
         class:active={sourceActivityMode === 'files'}
         type="button"
         aria-label="Files"
-        title="Files"
+        title={sourceActivityButtonTitle('files')}
         onclick={() => selectSourceActivityMode('files')}
       >
         <FolderGit2 size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Files</span>
-        <strong>{sourceActivityCount('files')}</strong>
+        {#if sourceActivityBadgeVisible('files')}
+          <strong>{sourceActivityCountLabel('files')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'clipboard'}
         type="button"
         aria-label="Clipboard"
-        title="Clipboard"
+        title={sourceActivityButtonTitle('clipboard')}
         onclick={() => selectSourceActivityMode('clipboard')}
       >
         <Copy size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Clipboard</span>
-        <strong>{sourceActivityCount('clipboard')}</strong>
+        {#if sourceActivityBadgeVisible('clipboard')}
+          <strong>{sourceActivityCountLabel('clipboard')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'conversations'}
         type="button"
         aria-label="Conversations"
-        title="Conversations"
+        title={sourceActivityButtonTitle('conversations')}
         onclick={() => selectSourceActivityMode('conversations')}
       >
         <History size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Conversations</span>
-        <strong>{sourceActivityCount('conversations')}</strong>
+        {#if sourceActivityBadgeVisible('conversations')}
+          <strong>{sourceActivityCountLabel('conversations')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'runs'}
         type="button"
         aria-label="Runs"
-        title="Runs"
+        title={sourceActivityButtonTitle('runs')}
         onclick={() => selectSourceActivityMode('runs')}
       >
         <Network size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Runs</span>
-        <strong>{sourceActivityCount('runs')}</strong>
+        {#if sourceActivityBadgeVisible('runs')}
+          <strong>{sourceActivityCountLabel('runs')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'sessions'}
         type="button"
         aria-label="Active sessions"
-        title="Active sessions"
+        title={sourceActivityButtonTitle('sessions')}
         onclick={() => selectSourceActivityMode('sessions')}
       >
         <SplitSquareHorizontal size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Active sessions</span>
-        <strong>{sourceActivityCount('sessions')}</strong>
+        {#if sourceActivityBadgeVisible('sessions')}
+          <strong>{sourceActivityCountLabel('sessions')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'agents'}
         type="button"
         aria-label="Agents"
-        title="Agents"
+        title={sourceActivityButtonTitle('agents')}
         onclick={() => selectSourceActivityMode('agents')}
       >
         <Activity size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Agents</span>
-        <strong>{sourceActivityCount('agents')}</strong>
+        {#if sourceActivityBadgeVisible('agents')}
+          <strong>{sourceActivityCountLabel('agents')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'worktrees'}
         type="button"
         aria-label="Worktrees"
-        title="Worktrees"
+        title={sourceActivityButtonTitle('worktrees')}
         onclick={() => selectSourceActivityMode('worktrees')}
       >
         <FolderSearch size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Worktrees</span>
-        <strong>{sourceActivityCount('worktrees')}</strong>
+        {#if sourceActivityBadgeVisible('worktrees')}
+          <strong>{sourceActivityCountLabel('worktrees')}</strong>
+        {/if}
       </button>
       <button
         class:active={sourceActivityMode === 'git'}
         type="button"
         aria-label="Git and tasks"
-        title="Git and tasks"
+        title={sourceActivityButtonTitle('git')}
         onclick={() => selectSourceActivityMode('git')}
       >
         <Braces size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Git and tasks</span>
-        <strong>{sourceActivityCount('git')}</strong>
+        {#if sourceActivityBadgeVisible('git')}
+          <strong>{sourceActivityCountLabel('git')}</strong>
+        {/if}
+      </button>
+      <button
+        class="activity-rail-toggle"
+        type="button"
+        data-testid="activity-rail-toggle"
+        aria-label={activityRailToggleLabel()}
+        title={activityRailToggleLabel()}
+        onclick={toggleActivityPaneRail}
+      >
+        {#if activityRailToggleDirection() === 'left'}
+          <ChevronLeft size={18} strokeWidth={1.9} />
+        {:else}
+          <ChevronRight size={18} strokeWidth={1.9} />
+        {/if}
+        <span class="activity-rail-label">{activityRailToggleLabel()}</span>
       </button>
     </nav>
 
@@ -12842,6 +15784,22 @@
 
     {#if sourceActivityMode === 'files'}
       <div class="source-browser-stack">
+      <SourceDockviewShell
+        shellClass="source-dockview-files-shell"
+        hostClass="source-dockview-files-host"
+        errorClass="source-dockview-files-error"
+        enabled={true}
+        ready={sourceFilesDockviewReady}
+        error={sourceFilesDockviewError}
+        hostAction={sourceFilesDockviewHostAction}
+      >
+      <div
+        id="source-files-search-pane"
+        class="source-files-pane source-files-search-pane"
+        role="tabpanel"
+        aria-label="Search source files"
+        use:sourceFilesDockviewPanelAction={'search'}
+      >
       <label class="search-box">
         <Search size={16} strokeWidth={1.8} />
         <input bind:value={query} placeholder="Filter source files" />
@@ -12888,15 +15846,17 @@
           </div>
         {/if}
       </form>
+      </div>
 
+      <div
+        id="source-files-recent-pane"
+        class="source-files-pane source-files-recent-pane"
+        role="tabpanel"
+        aria-label="Recent source files"
+        use:sourceFilesDockviewPanelAction={'recent'}
+      >
       {#if projectRecentRecords.length > 0}
         <div class="recent-panel" aria-label="Recent source files">
-          <div class="recent-heading">
-            <span class="recent-heading-icon">
-              <History size={15} strokeWidth={1.8} />
-            </span>
-            <span>Recent</span>
-          </div>
           <div class="recent-list">
             {#each projectRecentRecords as recentRecord (recentRecord.path)}
               <button
@@ -12916,17 +15876,27 @@
             {/each}
           </div>
         </div>
+      {:else}
+        <div class="empty-tree">
+          <History size={17} strokeWidth={1.8} />
+          <span>No recent source files</span>
+        </div>
       {/if}
+      </div>
 
-      <div class="source-list-panel">
+      <div
+        id="source-files-tree-pane"
+        class="source-list-panel source-files-pane"
+        role="tabpanel"
+        aria-label="Files in selected project"
+        use:sourceFilesDockviewPanelAction={'files'}
+      >
         <div class="tree-panel-header">
-          <div class="tree-heading">
-            <FolderGit2 size={15} strokeWidth={1.8} />
-            <span>{selectedProject.name}</span>
-            <strong>{recordCountLabel}</strong>
-          </div>
-          <div class="scan-summary-row">
-            <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
+          <div class="source-section-toolbar">
+            <div class="source-section-header tree-heading source-section-title" title={sourceSidebarTreeStatusLabel}>
+              <FolderGit2 size={15} strokeWidth={1.8} />
+              <span>{selectedProject.name}</span>
+            </div>
             <button
               class="scan-diagnostic-button"
               type="button"
@@ -12937,18 +15907,24 @@
               <Copy size={12} strokeWidth={1.9} />
             </button>
           </div>
-          <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
-          <div
-            class="scan-evidence"
-            data-tone={selectedProjectScanEvidence.tone}
-            title={selectedProjectScanEvidence.detail}
-          >
-            {selectedProjectScanEvidence.label}
+          <div class="scan-summary-row">
+            <div
+              class="scan-summary"
+              data-tone={selectedProjectScanEvidence.tone}
+              title={sourceSidebarCompactStatusTitle}
+            >
+              <span class="index-summary" data-tone={selectedProjectScanEvidence.tone}>
+                {sourceSidebarIndexStatusLabel}
+              </span>
+              <span class="scan-evidence" data-tone={selectedProjectScanEvidence.tone}>
+                {sourceSidebarScanMetaLabel}
+              </span>
+            </div>
           </div>
-          {#if sourceScanStatsLabel}
-            <div class="scan-stats" title={sourceScanStatsLabel}>{sourceScanStatsLabel}</div>
+          {#if sourceSidebarScanTelemetryExpanded}
+            <div class="scan-stats" title={sourceScanStatsLabel}>{sourceSidebarScanTelemetryLabel}</div>
           {/if}
-          {#if sourceRuntimeNotice}
+          {#if sourceRuntimeNoticeExpanded}
             <div class="scan-runtime-note" title={sourceRuntimeNotice}>
               <span>{sourceRuntimeNotice}</span>
               <button
@@ -13114,6 +16090,7 @@
           {/if}
         </div>
       </div>
+      </SourceDockviewShell>
       </div>
     {:else}
       <div class="activity-panel" aria-label={sourceActivityPanelLabel}>
@@ -13343,6 +16320,10 @@
                     runMetrics.approvalCount > 0}
                   class:live={orchestrationStatusClass(run.status) === 'live'}
                   title={orchestrationRunTitle(run)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openActivityRowActionMenu('run', run.id);
+                  }}
                 >
                   <div class="run-row-heading">
                     <span class="run-heading-badges">
@@ -13479,66 +16460,115 @@
                       {/each}
                     </div>
                   {/if}
-                  <div class="activity-row-actions" aria-label="Run actions">
+                  <div class="activity-row-actions run-activity-actions row-action-menu-anchor" aria-label="Run actions">
                     <button
                       type="button"
-                      aria-label="Copy run summary"
-                      title="Copy run summary"
-                      onclick={() => copyOrchestrationRunSummary(run)}
+                      aria-label="Run actions"
+                      aria-haspopup="menu"
+                      aria-expanded={activityRowActionMenuOpen('run', run.id)}
+                      title="Run actions"
+                      onclick={() => toggleActivityRowActionMenu('run', run.id)}
                     >
-                      <Activity size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Copy run handoff"
-                      title="Copy run handoff"
-                      onclick={() => copyOrchestrationRunHandoff(run)}
-                    >
-                      <FileCode2 size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy current run activity"
-                      title="Copy current run activity"
-                      onclick={() => copyOrchestrationCurrentActivity(run)}
-                    >
-                      <History size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy run id"
-                      title="Copy run id"
-                      onclick={() => copyActivityCommand(run.id, 'Run id copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    {#if run.taskID}
-                      <button
-                        type="button"
-                        aria-label="Copy run task reference"
-                        title="Copy run task reference"
-                        onclick={() => copyOrchestrationTaskReference(run)}
-                      >
-                        <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                    {#if run.projectPath}
-                      <button
-                        type="button"
-                        aria-label="Open run project path"
-                        title="Open project path"
-                        onclick={() => openActivityPath(run.projectPath)}
-                      >
-                        <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Open run project in terminal"
-                        title="Open project in terminal"
-                        onclick={() => openActivityTerminalPath(run.projectPath)}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+                    {#if activityRowActionMenuOpen('run', run.id)}
+                      <div class="row-action-menu" role="menu" aria-label="Run actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy run summary"
+                          title="Copy run summary"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationRunSummary(run);
+                          }}
+                        >
+                          <Activity size={12} strokeWidth={2} />
+                          <span>Copy summary</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy run handoff"
+                          title="Copy run handoff"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationRunHandoff(run);
+                          }}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                          <span>Copy handoff</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy current run activity"
+                          title="Copy current run activity"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationCurrentActivity(run);
+                          }}
+                        >
+                          <History size={12} strokeWidth={2} />
+                          <span>Copy activity</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy run id"
+                          title="Copy run id"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyActivityCommand(run.id, 'Run id copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy run id</span>
+                        </button>
+                        {#if run.taskID}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy run task reference"
+                            title="Copy run task reference"
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              copyOrchestrationTaskReference(run);
+                            }}
+                          >
+                            <ExternalLink size={12} strokeWidth={2} />
+                            <span>Copy task ref</span>
+                          </button>
+                        {/if}
+                        {#if run.projectPath}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open run project path"
+                            title="Open project path"
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              openActivityPath(run.projectPath);
+                            }}
+                          >
+                            <ExternalLink size={12} strokeWidth={2} />
+                            <span>Open path</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open run project in terminal"
+                            title="Open project in terminal"
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              openActivityTerminalPath(run.projectPath);
+                            }}
+                          >
+                            <Terminal size={12} strokeWidth={2} />
+                            <span>Open terminal</span>
+                          </button>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
@@ -13546,8 +16576,23 @@
             {/if}
           </div>
         {:else if sourceActivityMode === 'conversations'}
-          <div class="activity-panel-list" aria-label="Conversation list">
-            <section class="workspace-snapshot-section" aria-label="Saved workspace snapshots">
+          <div class="activity-panel-list conversation-activity-list" aria-label="Conversation list">
+            <SourceDockviewShell
+              shellClass="source-dockview-conversation-shell"
+              hostClass="source-dockview-conversation-host"
+              errorClass="source-dockview-conversation-error"
+              enabled={true}
+              ready={sourceConversationDockviewReady}
+              error={sourceConversationDockviewError}
+              hostAction={sourceConversationDockviewHostAction}
+            >
+            <section
+              id="conversation-saved-pane"
+              class="workspace-snapshot-section conversation-dockview-pane"
+              role="tabpanel"
+              aria-label="Saved workspace snapshots"
+              use:sourceConversationDockviewPanelAction={'saved'}
+            >
               <div class="workspace-snapshot-toolbar">
                 <div>
                   <strong>Saved Workspaces</strong>
@@ -13570,6 +16615,10 @@
                       class="workspace-snapshot-row"
                       class:active={activeWorkspaceSessionKey === snapshot.id}
                       title={workspaceSnapshotRestorePlan(snapshot)}
+                      oncontextmenu={(event) => {
+                        event.preventDefault();
+                        openActivityRowActionMenu('workspace-snapshot', snapshot.id);
+                      }}
                     >
                       <button
                         type="button"
@@ -13586,72 +16635,124 @@
                           </span>
                         </div>
                       </button>
-                      <div class="activity-row-actions" aria-label="Workspace snapshot actions">
+                      <div
+                        class="activity-row-actions workspace-snapshot-actions row-action-menu-anchor"
+                        aria-label="Workspace snapshot actions"
+                      >
                         <button
                           type="button"
-                          aria-label="Resume workspace snapshot in embedded terminal"
-                          title={
-                            readiness.kind === 'missing-worktree'
-                              ? 'Copy missing worktree repair plan'
-                              : snapshot.resumeCommand
-                              ? 'Resume workspace in embedded terminal'
-                              : 'Open workspace shell in embedded terminal'
-                          }
-                          onclick={() => openWorkspaceSnapshotEmbeddedTerminal(snapshot)}
+                          aria-label="Workspace snapshot actions"
+                          aria-haspopup="menu"
+                          aria-expanded={activityRowActionMenuOpen('workspace-snapshot', snapshot.id)}
+                          title="Workspace snapshot actions"
+                          onclick={() => toggleActivityRowActionMenu('workspace-snapshot', snapshot.id)}
                         >
-                          <Terminal size={12} strokeWidth={2} />
+                          <MoreHorizontal size={13} strokeWidth={2} />
                         </button>
-                        <button
-                          type="button"
-                          aria-label="Copy workspace restore plan"
-                          title="Copy restore plan"
-                          onclick={() => copyWorkspaceSnapshotRestorePlan(snapshot)}
-                        >
-                          <FileCode2 size={12} strokeWidth={2} />
-                        </button>
-                        {#if readiness.kind === 'missing-worktree'}
-                          <button
-                            type="button"
-                            aria-label="Copy workspace repair plan"
-                            title={readiness.repairLabel ?? 'Copy repair plan'}
-                            onclick={() => copyWorkspaceSnapshotRepairPlan(snapshot)}
-                          >
-                            <FolderSearch size={12} strokeWidth={2} />
-                          </button>
+                        {#if activityRowActionMenuOpen('workspace-snapshot', snapshot.id)}
+                          <div class="row-action-menu" role="menu" aria-label="Workspace snapshot actions">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Resume workspace snapshot in embedded terminal"
+                              title={
+                                readiness.kind === 'missing-worktree'
+                                  ? 'Copy missing worktree repair plan'
+                                  : snapshot.resumeCommand
+                                  ? 'Resume workspace in embedded terminal'
+                                  : 'Open workspace shell in embedded terminal'
+                              }
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot);
+                              }}
+                            >
+                              <Terminal size={12} strokeWidth={2} />
+                              <span>Resume embedded</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Copy workspace restore plan"
+                              title="Copy restore plan"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                copyWorkspaceSnapshotRestorePlan(snapshot);
+                              }}
+                            >
+                              <FileCode2 size={12} strokeWidth={2} />
+                              <span>Copy restore plan</span>
+                            </button>
+                            {#if readiness.kind === 'missing-worktree'}
+                              <button
+                                type="button"
+                                role="menuitem"
+                                aria-label="Copy workspace repair plan"
+                                title={readiness.repairLabel ?? 'Copy repair plan'}
+                                onclick={() => {
+                                  closeActivityRowActionMenu();
+                                  copyWorkspaceSnapshotRepairPlan(snapshot);
+                                }}
+                              >
+                                <FolderSearch size={12} strokeWidth={2} />
+                                <span>Copy repair plan</span>
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Copy workspace resume command"
+                              title="Copy resume command"
+                              disabled={!snapshot.resumeCommand}
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                copyActivityCommand(snapshot.resumeCommand ?? '', 'Resume command copied');
+                              }}
+                            >
+                              <Copy size={12} strokeWidth={2} />
+                              <span>Copy resume</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Open workspace path"
+                              title="Open workspace path"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                openWorkspaceSnapshotPath(snapshot);
+                              }}
+                            >
+                              <ExternalLink size={12} strokeWidth={2} />
+                              <span>Open path</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Open workspace in terminal"
+                              title="Open workspace in terminal"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                openWorkspaceSnapshotPathTerminal(snapshot);
+                              }}
+                            >
+                              <Terminal size={12} strokeWidth={2} />
+                              <span>Open terminal</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Delete workspace snapshot"
+                              title="Delete workspace snapshot"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                deleteWorkspaceSnapshot(snapshot);
+                              }}
+                            >
+                              <Trash2 size={12} strokeWidth={2} />
+                              <span>Delete snapshot</span>
+                            </button>
+                          </div>
                         {/if}
-                        <button
-                          type="button"
-                          aria-label="Copy workspace resume command"
-                          title="Copy resume command"
-                          disabled={!snapshot.resumeCommand}
-                          onclick={() => copyActivityCommand(snapshot.resumeCommand ?? '', 'Resume command copied')}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Open workspace path"
-                          title="Open workspace path"
-                          onclick={() => openWorkspaceSnapshotPath(snapshot)}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Open workspace in terminal"
-                          title="Open workspace in terminal"
-                          onclick={() => openWorkspaceSnapshotPathTerminal(snapshot)}
-                        >
-                          <Terminal size={12} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Delete workspace snapshot"
-                          title="Delete workspace snapshot"
-                          onclick={() => deleteWorkspaceSnapshot(snapshot)}
-                        >
-                          <Trash2 size={12} strokeWidth={2} />
-                        </button>
                       </div>
                     </div>
                   {/each}
@@ -13661,114 +16762,176 @@
               {/if}
             </section>
 
-            {#if filteredWorkspaceSnapshots.length === 0 && filteredProjectAgentSessions.length === 0}
-              <div class="activity-empty">No conversations</div>
-            {/if}
-            {#if filteredProjectAgentSessions.length > 0}
-              {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
+            <div
+              id="conversation-active-pane"
+              class="conversation-active-pane conversation-dockview-pane"
+              role="tabpanel"
+              aria-label="Active conversations"
+              use:sourceConversationDockviewPanelAction={'active'}
+            >
+            {#if filteredConversationAgentSessions.length === 0}
+              <div class="activity-empty">No active conversations</div>
+            {:else}
+              {#each filteredConversationAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                 {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
                 {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
+                {@const sessionTaskID = agentSessionTaskID(session, sessionSnapshot)}
                 <div
                   class="activity-session-row conversation-session-row"
                   class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}
                   title={agentSessionResumePlan(session)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openAgentRowActionMenu(session, 'conversation');
+                  }}
                 >
                   <button
                     type="button"
                     class="conversation-session-open"
                     aria-label="Open conversation workspace"
-                    onclick={() => openAgentSessionWorkspace(session)}
+                    onclick={() => switchToConversationWorkspace(session)}
                   >
-                    <span class="agent-provider-badge">{session.provider}</span>
-                    <div class="activity-row-main">
-                      <strong>{session.title}</strong>
-                      <small>{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
-                      <small>
-                        {#if session.model}{agentSessionModelLabel(session)} · {/if}{agentSessionActivityLabel(session)}
-                      </small>
-                      {#if sessionReadiness}
-                        <span class={`workspace-snapshot-readiness ${sessionReadiness.tone}`} title={sessionReadiness.detail}>
-                          {sessionReadiness.label} · {sessionReadiness.detail}
-                        </span>
-                      {/if}
-                      <span
-                        class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
-                        aria-label="Recommended session focus action"
-                        title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
-                      >
-                        <em>{sessionFocusLane.label}</em>
-                        <strong>{sessionFocusLane.detail}</strong>
+                    <span class="agent-provider-badge" title={agentSessionProviderLabel(session)}>
+                      {agentSessionProviderBadgeLabel(session)}
+                    </span>
+                    <div class="activity-row-main conversation-session-main">
+                      <span class="conversation-session-title-line">
+                        <strong>{session.title}</strong>
+                        {#if sessionTaskID}
+                          <span class="session-task-chip">{sessionTaskID}</span>
+                        {/if}
                       </span>
+                      {#if session.description}
+                        <small class="conversation-session-description">{session.description}</small>
+                      {/if}
+                      <small class="conversation-session-meta">{agentSessionResumeMetaLabel(session, sessionSnapshot)}</small>
+                      <small class="conversation-session-path" title={agentSessionProjectPath(session)}>
+                        {agentSessionPathLabel(session, sessionSnapshot)}
+                      </small>
+                      {#if sessionSnapshot}
+                        <small class="workspace-snapshot-file-state">{agentSessionFileContextLabel(sessionSnapshot)}</small>
+                      {/if}
                     </div>
                   </button>
-                  <div class="activity-row-actions" aria-label="Conversation actions">
+                  <div class="activity-row-actions conversation-session-actions row-action-menu-anchor" aria-label="Conversation actions">
+                    <span
+                      class={`agent-session-focus-lane conversation-row-status ${sessionFocusLane.tone}`}
+                      aria-label="Recommended session focus action"
+                      title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
+                    >
+                      <em>{sessionFocusLane.label}</em>
+                    </span>
                     <button
                       type="button"
-                      aria-label="Save conversation workspace snapshot"
-                      title="Save workspace snapshot"
-                      onclick={() => captureAgentSessionWorkspaceSnapshot(session)}
+                      aria-label="Conversation actions"
+                      aria-haspopup="menu"
+                      aria-expanded={agentRowActionMenuOpen(session, 'conversation')}
+                      title="Conversation actions"
+                      onclick={() => toggleAgentRowActionMenu(session, 'conversation')}
                     >
-                      <Save size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Restore conversation workspace"
-                      title={sessionSnapshot ? 'Restore workspace snapshot' : 'No saved workspace snapshot'}
-                      disabled={!sessionSnapshot}
-                      onclick={() => restoreAgentSessionWorkspaceSnapshot(session)}
-                    >
-                      <RotateCcw size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy conversation workspace restore plan"
-                      title={sessionSnapshot ? 'Copy workspace restore plan' : 'No saved workspace snapshot'}
-                      disabled={!sessionSnapshot}
-                      onclick={() => copyAgentSessionWorkspaceRestorePlan(session)}
-                    >
-                      <FileCode2 size={12} strokeWidth={2} />
-                    </button>
-                    {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
-                      <button
-                        type="button"
-                        aria-label="Copy conversation workspace repair plan"
-                        title={sessionReadiness.repairLabel ?? 'Copy repair plan'}
-                        onclick={() => copyAgentSessionWorkspaceRepairPlan(session)}
-                      >
-                        <FolderSearch size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      aria-label="Copy agent resume command"
-                      title="Copy resume command"
-                      onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    {#if session.projectPath}
-                      <button
-                        type="button"
-                        aria-label="Open agent project path"
-                        title="Open project path"
-                        onclick={() => openActivityPath(session.projectPath ?? '')}
-                      >
-                        <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Resume agent in embedded terminal"
-                        title="Resume in embedded terminal"
-                        onclick={() => resumeAgentSessionEmbeddedTerminal(session)}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+                    {#if agentRowActionMenuOpen(session, 'conversation')}
+                      <div class="row-action-menu" role="menu" aria-label="Conversation actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Save conversation workspace snapshot"
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            captureAgentSessionWorkspaceSnapshot(session);
+                          }}
+                        >
+                          <Save size={12} strokeWidth={2} />
+                          <span>Save snapshot</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Restore conversation workspace"
+                          disabled={!sessionSnapshot}
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            restoreAgentSessionWorkspaceSnapshot(session);
+                          }}
+                        >
+                          <RotateCcw size={12} strokeWidth={2} />
+                          <span>Restore workspace</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy conversation workspace restore plan"
+                          disabled={!sessionSnapshot}
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            copyAgentSessionWorkspaceRestorePlan(session);
+                          }}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                          <span>Copy restore plan</span>
+                        </button>
+                        {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy conversation workspace repair plan"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              copyAgentSessionWorkspaceRepairPlan(session);
+                            }}
+                          >
+                            <FolderSearch size={12} strokeWidth={2} />
+                            <span>Copy repair plan</span>
+                          </button>
+                        {/if}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy agent resume command"
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy resume command</span>
+                        </button>
+                        {#if session.projectPath}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open agent project path"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              openActivityPath(session.projectPath ?? '');
+                            }}
+                          >
+                            <ExternalLink size={12} strokeWidth={2} />
+                            <span>Open project path</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Resume agent in embedded terminal"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              resumeAgentSessionEmbeddedTerminal(session);
+                            }}
+                          >
+                            <Terminal size={12} strokeWidth={2} />
+                            <span>Resume embedded</span>
+                          </button>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
               {/each}
             {/if}
+            </div>
+            </SourceDockviewShell>
           </div>
         {:else if sourceActivityMode === 'sessions'}
           <div class="activity-panel-list" aria-label="Active session list">
@@ -13776,47 +16939,86 @@
               <div class="activity-empty">No active sessions</div>
             {:else}
               {#each filteredProjectRuntimeContexts as context (`activity:${context.pid}:${context.port}:${context.cwd}`)}
-                <div class="activity-runtime-row" title={context.cwd}>
+                <div
+                  class="activity-runtime-row"
+                  title={context.cwd}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openActivityRowActionMenu('runtime', `${context.pid}:${context.port}:${context.cwd}`);
+                  }}
+                >
                   <span class="runtime-port">:{context.port}</span>
                   <div class="activity-row-main">
                     <strong>{context.command}</strong>
                     <small>{context.rootLabel} · {context.cwd}</small>
                   </div>
-                  <div class="activity-row-actions" aria-label="Active session actions">
+                  <div class="activity-row-actions runtime-activity-actions row-action-menu-anchor" aria-label="Active session actions">
                     <button
                       type="button"
-                      aria-label="Copy active session command"
-                      title="Copy session command"
-                      onclick={() => copyActivityCommand(`${context.command} ${context.cwd}`, 'Session command copied')}
+                      aria-label="Active session actions"
+                      aria-haspopup="menu"
+                      aria-expanded={activityRowActionMenuOpen('runtime', `${context.pid}:${context.port}:${context.cwd}`)}
+                      title="Active session actions"
+                      onclick={() => toggleActivityRowActionMenu('runtime', `${context.pid}:${context.port}:${context.cwd}`)}
                     >
-                      <Copy size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <a
-                      class="activity-icon-link"
-                      href={runtimeContextUrl(context)}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label="Open active session URL"
-                      title={runtimeContextUrl(context)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </a>
-                    <button
-                      type="button"
-                      aria-label="Open active session path"
-                      title="Open session path"
-                      onclick={() => openActivityPath(context.cwd)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open active session in terminal"
-                      title="Open session in terminal"
-                      onclick={() => openActivityTerminalPath(context.cwd)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
+                    {#if activityRowActionMenuOpen('runtime', `${context.pid}:${context.port}:${context.cwd}`)}
+                      <div class="row-action-menu" role="menu" aria-label="Active session actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy active session command"
+                          title="Copy session command"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyActivityCommand(`${context.command} ${context.cwd}`, 'Session command copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy command</span>
+                        </button>
+                        <a
+                          class="row-action-menu-link"
+                          role="menuitem"
+                          href={runtimeContextUrl(context)}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label="Open active session URL"
+                          title={runtimeContextUrl(context)}
+                          onclick={() => closeActivityRowActionMenu()}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open URL</span>
+                        </a>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open active session path"
+                          title="Open session path"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            openActivityPath(context.cwd);
+                          }}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open path</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open active session in terminal"
+                          title="Open session in terminal"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            openActivityTerminalPath(context.cwd);
+                          }}
+                        >
+                          <Terminal size={12} strokeWidth={2} />
+                          <span>Open terminal</span>
+                        </button>
+                      </div>
+                    {/if}
                   </div>
                 </div>
               {/each}
@@ -13831,15 +17033,21 @@
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                 {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
                 {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-                <div class="activity-session-row" title={agentSessionResumePlan(session)}>
-                  <span class="agent-provider-badge">{session.provider}</span>
-                  <div class="activity-row-main">
+                <div
+                  class="activity-session-row agent-activity-row"
+                  title={agentSessionResumePlan(session)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openAgentRowActionMenu(session, 'agent');
+                  }}
+                >
+                  <span class="agent-provider-badge" title={agentSessionProviderLabel(session)}>
+                    {agentSessionProviderBadgeLabel(session)}
+                  </span>
+                  <div class="activity-row-main agent-activity-main">
                     <strong>{session.title}</strong>
-                    <small>
-                      {#if session.model}{agentSessionModelLabel(session)} · {/if}
-                      {agentSessionResumeCommand(session)}
-                    </small>
-                    <small>{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
+                    <small class="agent-activity-meta">{agentSessionResumeMetaLabel(session, sessionSnapshot)}</small>
+                    <small class="agent-activity-state">{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
                     {#if sessionReadiness}
                       <span class={`workspace-snapshot-readiness ${sessionReadiness.tone}`} title={sessionReadiness.detail}>
                         {sessionReadiness.label}
@@ -13858,58 +17066,97 @@
                       <strong>{sessionFocusLane.detail}</strong>
                     </span>
                   </div>
-                  <div class="activity-row-actions" aria-label="Agent actions">
+                  <div class="activity-row-actions agent-activity-actions row-action-menu-anchor" aria-label="Agent actions">
                     <button
                       type="button"
-                      aria-label="Copy agent focus plan"
-                      title={agentSessionWorkspaceReadinessLabel(session)}
-                      onclick={() => copyAgentSessionResumePlan(session)}
+                      aria-label="Agent actions"
+                      aria-haspopup="menu"
+                      aria-expanded={agentRowActionMenuOpen(session, 'agent')}
+                      title="Agent actions"
+                      onclick={() => toggleAgentRowActionMenu(session, 'agent')}
                     >
-                      <FileCode2 size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Open agent workspace"
-                      title={sessionSnapshot ? 'Restore agent workspace' : 'Open and save current agent workspace'}
-                      onclick={() => openAgentSessionWorkspace(session)}
-                    >
-                      <RotateCcw size={12} strokeWidth={2} />
-                    </button>
-                    {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
-                      <button
-                        type="button"
-                        aria-label="Copy agent workspace repair plan"
-                        title={sessionReadiness.repairLabel ?? 'Copy repair plan'}
-                        onclick={() => copyAgentSessionWorkspaceRepairPlan(session)}
-                      >
-                        <FolderSearch size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      aria-label="Copy agent resume command"
-                      title="Copy resume command"
-                      onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    {#if session.projectPath}
-                      <button
-                        type="button"
-                        aria-label="Reveal agent project path"
-                        title="Reveal project path"
-                        onclick={() => revealActivityPath(session.projectPath ?? '')}
-                      >
-                        <FolderSearch size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Resume agent in terminal"
-                        title="Resume in terminal"
-                        onclick={() => openAgentSessionTerminal(session)}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+                    {#if agentRowActionMenuOpen(session, 'agent')}
+                      <div class="row-action-menu" role="menu" aria-label="Agent actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy agent focus plan"
+                          title={agentSessionWorkspaceReadinessLabel(session)}
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            copyAgentSessionResumePlan(session);
+                          }}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                          <span>Copy focus plan</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open agent workspace"
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            openAgentSessionWorkspace(session);
+                          }}
+                        >
+                          <RotateCcw size={12} strokeWidth={2} />
+                          <span>{sessionSnapshot ? 'Restore workspace' : 'Open workspace'}</span>
+                        </button>
+                        {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy agent workspace repair plan"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              copyAgentSessionWorkspaceRepairPlan(session);
+                            }}
+                          >
+                            <FolderSearch size={12} strokeWidth={2} />
+                            <span>Copy repair plan</span>
+                          </button>
+                        {/if}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy agent resume command"
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy resume command</span>
+                        </button>
+                        {#if session.projectPath}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Reveal agent project path"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              revealActivityPath(session.projectPath ?? '');
+                            }}
+                          >
+                            <FolderSearch size={12} strokeWidth={2} />
+                            <span>Reveal project path</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Resume agent in terminal"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              openAgentSessionTerminal(session);
+                            }}
+                          >
+                            <Terminal size={12} strokeWidth={2} />
+                            <span>Resume in terminal</span>
+                          </button>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
@@ -13921,6 +17168,38 @@
             {#if filteredProjectWorktrees.length === 0}
               <div class="activity-empty">No worktrees</div>
             {:else}
+              <div class="activity-worktree-runbook" aria-label="Worktree cleanup runbook controls">
+                <div
+                  class="worktree-runbook-strip"
+                  aria-label="Worktree cleanup runbook summary"
+                  title={projectWorktreeCleanupRunbook.headline}
+                >
+                  <span class="worktree-runbook-chip safe">
+                    <strong>{projectWorktreeCleanupRunbook.counts.safeRemovable}</strong>
+                    <span>safe</span>
+                  </span>
+                  <span class="worktree-runbook-chip backup">
+                    <strong>{projectWorktreeCleanupRunbook.counts.backupRequired}</strong>
+                    <span>backup</span>
+                  </span>
+                  <span class="worktree-runbook-chip blocked">
+                    <strong>{projectWorktreeCleanupRunbook.counts.blocked}</strong>
+                    <span>blocked</span>
+                  </span>
+                  <span class="worktree-runbook-chip saved">
+                    <strong>{projectWorktreeCleanupRunbook.counts.savedWorkspaceReview}</strong>
+                    <span>saved</span>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Copy worktree cleanup runbook"
+                  title="Copy cleanup runbook"
+                  onclick={copyProjectWorktreeCleanupRunbook}
+                >
+                  <Braces size={12} strokeWidth={2} />
+                </button>
+              </div>
               {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
                 {@const safety = projectWorktreeSafety(worktree)}
                 {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
@@ -13935,6 +17214,10 @@
                   class:protected={eligibilityKind === 'protected'}
                   class:ready={eligibilityKind === 'ready'}
                   title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openWorktreeRowActionMenu(worktree, 'activity');
+                  }}
                 >
                   <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
                   <div class="activity-row-main worktree-row-main">
@@ -13990,92 +17273,304 @@
                       </button>
                     {/if}
                   </div>
-                  <div class="activity-row-actions" aria-label="Worktree actions">
+                  <div class="activity-row-actions worktree-activity-actions row-action-menu-anchor" aria-label="Worktree actions">
                     <button
                       type="button"
-                      aria-label="Copy worktree cleanup plan"
-                      title="Copy cleanup plan"
-                      onclick={() => copyWorktreeCleanupPlan(worktree)}
+                      aria-label="Worktree actions"
+                      aria-haspopup="menu"
+                      aria-expanded={worktreeRowActionMenuOpen(worktree, 'activity')}
+                      title="Worktree actions"
+                      onclick={() => toggleWorktreeRowActionMenu(worktree, 'activity')}
                     >
-                      <Copy size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      class={`worktree-primary-action ${primaryAction.kind}`}
-                      type="button"
-                      aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
-                      title={primaryAction.title}
-                      disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
-                      onclick={() => runWorktreePrimaryAction(worktree)}
-                    >
-                      {#if primaryAction.kind === 'cleanup'}
-                        <Trash2 size={12} strokeWidth={2} />
-                      {:else if primaryAction.kind === 'backup'}
-                        <Save size={12} strokeWidth={2} />
-                      {:else}
-                        <History size={12} strokeWidth={2} />
-                      {/if}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree in source browser"
-                      title="Open worktree in source browser"
-                      onclick={() => openWorktreeInSourceBrowser(worktree)}
-                    >
-                      <FolderOpen size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy worktree path"
-                      title="Copy worktree path"
-                      onclick={() => copyActivityCommand(worktree.path, 'Worktree path copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree path"
-                      title="Open worktree path"
-                      onclick={() => openActivityPath(worktree.path)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree in terminal"
-                      title="Open worktree in terminal"
-                      onclick={() => openActivityTerminalPath(worktree.path)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree in embedded terminal"
-                      title="Open worktree in embedded terminal"
-                      onclick={() => openPathEmbeddedTerminal(worktree.path)}
-                    >
-                      <PanelBottom size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Reveal worktree path"
-                      title="Reveal worktree path"
-                      onclick={() => revealActivityPath(worktree.path)}
-                    >
-                      <FolderSearch size={12} strokeWidth={2} />
-                    </button>
+                    {#if worktreeRowActionMenuOpen(worktree, 'activity')}
+                      <div class="row-action-menu" role="menu" aria-label="Worktree actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy worktree cleanup plan"
+                          title="Copy cleanup plan"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            copyWorktreeCleanupPlan(worktree);
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy cleanup plan</span>
+                        </button>
+                        <button
+                          class={`worktree-primary-action ${primaryAction.kind}`}
+                          type="button"
+                          role="menuitem"
+                          aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
+                          title={primaryAction.title}
+                          disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            runWorktreePrimaryAction(worktree);
+                          }}
+                        >
+                          {#if primaryAction.kind === 'cleanup'}
+                            <Trash2 size={12} strokeWidth={2} />
+                          {:else if primaryAction.kind === 'backup'}
+                            <Save size={12} strokeWidth={2} />
+                          {:else}
+                            <History size={12} strokeWidth={2} />
+                          {/if}
+                          <span>{primaryAction.label}</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open worktree in source browser"
+                          title="Open worktree in source browser"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            openWorktreeInSourceBrowser(worktree);
+                          }}
+                        >
+                          <FolderOpen size={12} strokeWidth={2} />
+                          <span>Open in source browser</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy worktree path"
+                          title="Copy worktree path"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            copyActivityCommand(worktree.path, 'Worktree path copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy path</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open worktree path"
+                          title="Open worktree path"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            openActivityPath(worktree.path);
+                          }}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open path</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open worktree in terminal"
+                          title="Open worktree in terminal"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            openActivityTerminalPath(worktree.path);
+                          }}
+                        >
+                          <Terminal size={12} strokeWidth={2} />
+                          <span>Open terminal</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open worktree in embedded terminal"
+                          title="Open worktree in embedded terminal"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            openPathEmbeddedTerminal(worktree.path);
+                          }}
+                        >
+                          <PanelBottom size={12} strokeWidth={2} />
+                          <span>Open embedded terminal</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Reveal worktree path"
+                          title="Reveal worktree path"
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            revealActivityPath(worktree.path);
+                          }}
+                        >
+                          <FolderSearch size={12} strokeWidth={2} />
+                          <span>Reveal path</span>
+                        </button>
+                      </div>
+                    {/if}
                   </div>
                 </div>
               {/each}
             {/if}
           </div>
         {:else if sourceActivityMode === 'git'}
-          <div class="activity-panel-list" aria-label="Git and task list">
-            <div class="git-graph-summary-strip" aria-label="Git graph view model summary" title={selectedProjectGitTaskSearchSummary}>
-              <span>{selectedProjectGitGraphSummary}</span>
-              {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
-                <small>{selectedProjectGitGraph.taskSearchTargets.length} search targets</small>
+          <div class="activity-panel-list activity-git-panel" data-testid="git-activity-panel" aria-label="Source Control">
+            <section class="activity-git-source-control" aria-label="Source Control changes">
+              <div class="activity-git-heading">
+                <div>
+                  <strong>Source Control</strong>
+                  <small>{selectedProject.name} · {formatSourceContextRootLabel(selectedProject.path)}</small>
+                </div>
+                <button
+                  class="activity-git-refresh"
+                  type="button"
+                  aria-label="Refresh source control status"
+                  title="Refresh source control status"
+                  disabled={projectGitLoading}
+                  onclick={() => loadProjectGitStatus(selectedProject)}
+                >
+                  <RefreshCw size={13} strokeWidth={2} />
+                </button>
+              </div>
+              <div
+                class="git-branch-health-strip activity-git-health-strip"
+                data-testid="git-branch-summary"
+                aria-label="Source control branch health"
+                title={selectedProjectGitBranchHealth.detail}
+              >
+                {#each selectedProjectGitBranchHealth.chips as chip (`activity:${chip.label}:${chip.value}`)}
+                  <span class={`git-branch-health-chip ${chip.tone}`}>
+                    <strong>{chip.label}</strong>
+                    <span>{chip.value}</span>
+                  </span>
+                {/each}
+              </div>
+              <details class="git-command-drawer activity-git-command-drawer" data-testid="git-command-drawer">
+                <summary>
+                  <span>Commands</span>
+                  <small>fetch, pull, push, commit</small>
+                </summary>
+                <div class="activity-git-command-strip" aria-label="Source control commands">
+                  <div class="activity-git-remote-row">
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Fetch selected repository"
+                      title="Fetch selected repository"
+                      disabled={gitRemoteActionDisabled}
+                      onclick={() => runGitRemoteAction('fetch')}
+                    >
+                      <RefreshCw size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
+                    </button>
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Pull selected repository"
+                      title="Pull selected repository with fast-forward only"
+                      disabled={gitRemoteActionDisabled}
+                      onclick={() => runGitRemoteAction('pull')}
+                    >
+                      <ChevronDown size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
+                    </button>
+                    <button
+                      class="git-action-button"
+                      type="button"
+                      aria-label="Push selected repository"
+                      title="Push selected repository"
+                      disabled={gitRemoteActionDisabled}
+                      onclick={() => runGitRemoteAction('push')}
+                    >
+                      <ExternalLink size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'push' ? 'Pushing' : 'Push'}</span>
+                    </button>
+                  </div>
+                  <div class="git-commit-row activity-git-commit-row">
+                    <textarea
+                      class="git-commit-input"
+                      bind:value={gitCommitMessage}
+                      aria-label="Git commit message"
+                      placeholder="Message (Cmd+Enter to commit staged changes)"
+                      rows="2"
+                    ></textarea>
+                    <button
+                      class="git-action-button commit"
+                      type="button"
+                      aria-label="Commit staged Git changes"
+                      title="Commit staged Git changes"
+                      disabled={gitCommitDisabled}
+                      onclick={commitGitChanges}
+                    >
+                      <Check size={12} strokeWidth={2} />
+                      <span>{gitActionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
+                    </button>
+                  </div>
+                </div>
+              </details>
+              <div class="activity-git-status-heading">
+                <strong>Changes</strong>
+                <span>{selectedProjectGitFileGroupSummary}</span>
+              </div>
+              <div
+                class="git-status-list activity-source-control-list"
+                data-testid="git-changed-files"
+                aria-label="Source Control changed files"
+              >
+                {#if projectGitLoading}
+                  <div class="activity-empty compact">Loading changed files</div>
+                {:else if projectGitError}
+                  <div class="activity-empty compact">{projectGitError}</div>
+                {:else if selectedProjectGitChangedFiles.length === 0}
+                  <div class="activity-empty compact">No changed files</div>
+                {:else}
+                  {#each selectedProjectGitFileGroups as group (group.id)}
+                    {#if group.files.length > 0}
+                      <details
+                        class="git-status-group"
+                        data-testid={`git-status-group-${group.id}`}
+                        aria-label={`${group.label} Git files`}
+                        open
+                      >
+                        <summary class="git-status-group-heading">
+                          <strong>{group.label}</strong>
+                          <span>{group.files.length}</span>
+                          <button
+                            type="button"
+                            disabled={gitActionBusy !== ''}
+                            onclick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void runGitStatusGroupAction(group);
+                            }}
+                          >
+                            {gitStatusGroupActionLabel(group)}
+                          </button>
+                        </summary>
+                        {#each group.files as fileStatus (`activity:${group.id}:${fileStatus.relativePath}`)}
+                          <button
+                            class="git-status-row"
+                            class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
+                            data-git-path={fileStatus.relativePath}
+                            data-git-status={fileStatus.status}
+                            type="button"
+                            title={gitStatusFileTitle(fileStatus)}
+                            onclick={() => selectGitStatusFile(fileStatus)}
+                          >
+                            <strong>{fileStatus.badge}</strong>
+                            <span>{fileStatus.relativePath}</span>
+                            <small>{gitStatusFileSummary(fileStatus)}</small>
+                          </button>
+                        {/each}
+                      </details>
+                    {/if}
+                  {/each}
+                {/if}
+              </div>
+              {#if gitActionError || gitActionStatus}
+                <div class:error={Boolean(gitActionError)} class="git-action-message">
+                  {gitActionError || gitActionStatus}
+                </div>
               {/if}
-            </div>
+            </section>
+
+            <details class="activity-git-secondary-section" data-testid="git-repositories-section">
+              <summary>
+                <span>Repositories</span>
+                <small>{filteredGitRepositoryRows.length}</small>
+              </summary>
             {#if filteredGitRepositoryRows.length === 0}
               <div class="activity-empty">No repositories</div>
             {:else}
@@ -14084,6 +17579,10 @@
                   class="activity-repo-row"
                   class:dirty={row.dirty.isDirty || row.error}
                   title={repoDashboardTitle(row)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openGitRowActionMenu(row.id, 'repository');
+                  }}
                 >
                   <div class="activity-row-main">
                     <strong>{row.projectName}</strong>
@@ -14103,46 +17602,85 @@
                     <span class="repo-branch-badge">{repoDashboardTaskLabel(row)}</span>
                   {/if}
                   <small>{repoDashboardDirtyLabel(row)} · {repoDashboardRemoteLabel(row)}</small>
-                  <div class="activity-row-actions" aria-label="Repository actions">
+                  <div class="activity-row-actions repository-activity-actions row-action-menu-anchor" aria-label="Repository actions">
                     <button
                       type="button"
-                      aria-label="Copy repository path"
-                      title="Copy repository path"
-                      onclick={() => copyActivityCommand(row.path, 'Repository path copied')}
+                      aria-label="Repository actions"
+                      aria-haspopup="menu"
+                      aria-expanded={gitRowActionMenuOpen(row.id, 'repository')}
+                      title="Repository actions"
+                      onclick={() => toggleGitRowActionMenu(row.id, 'repository')}
                     >
-                      <Copy size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Open repository path"
-                      title="Open repository path"
-                      onclick={() => openActivityPath(row.path)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open repository in terminal"
-                      title="Open repository in terminal"
-                      onclick={() => openActivityTerminalPath(row.path)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Reveal repository path"
-                      title="Reveal repository path"
-                      onclick={() => revealActivityPath(row.path)}
-                    >
-                      <FolderSearch size={12} strokeWidth={2} />
-                    </button>
+                    {#if gitRowActionMenuOpen(row.id, 'repository')}
+                      <div class="row-action-menu" role="menu" aria-label="Repository actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy repository path"
+                          title="Copy repository path"
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            copyActivityCommand(row.path, 'Repository path copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy path</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open repository path"
+                          title="Open repository path"
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            openActivityPath(row.path);
+                          }}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open path</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open repository in terminal"
+                          title="Open repository in terminal"
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            openActivityTerminalPath(row.path);
+                          }}
+                        >
+                          <Terminal size={12} strokeWidth={2} />
+                          <span>Open terminal</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Reveal repository path"
+                          title="Reveal repository path"
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            revealActivityPath(row.path);
+                          }}
+                        >
+                          <FolderSearch size={12} strokeWidth={2} />
+                          <span>Reveal path</span>
+                        </button>
+                      </div>
+                    {/if}
                   </div>
                 </div>
               {/each}
             {/if}
+            </details>
 
             {#if selectedProjectGitTaskLedger.length > 0}
-              <div class="activity-subheading">Task ledger</div>
+              <details class="activity-git-secondary-section" data-testid="git-task-ledger-section">
+                <summary>
+                  <span>Task ledger</span>
+                  <small>{selectedProjectGitTaskLedger.length}</small>
+                </summary>
               {#each selectedProjectGitTaskLedger as row (row.taskID)}
                 {@const ledgerWorktree = row.primaryWorktree}
                 {@const ledgerAction = ledgerWorktree ? projectWorktreePrimaryAction(ledgerWorktree) : null}
@@ -14151,6 +17689,10 @@
                   data-task-ledger-id={row.taskID}
                   tabindex="-1"
                   title={gitTaskLedgerTitle(row)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openGitRowActionMenu(row.taskID, 'task-ledger');
+                  }}
                 >
                   <div class="activity-row-main">
                     <strong class="task-ledger-title">
@@ -14194,61 +17736,117 @@
                       <span class="task-ledger-chip">commits {row.commitCount}</span>
                     {/if}
                   </div>
-                  <div class="activity-row-actions" aria-label="Task ledger actions">
+                  <div class="activity-row-actions task-ledger-actions row-action-menu-anchor" aria-label="Task ledger actions">
                     <button
                       type="button"
-                      aria-label={`Open task reference for ${row.taskID}`}
-                      title="Open task reference"
-                      disabled={!gitTaskUrl(row.taskID)}
-                      onclick={() => openGitTaskReference(row.taskID)}
+                      aria-label={`Task ledger actions for ${row.taskID}`}
+                      aria-haspopup="menu"
+                      aria-expanded={gitRowActionMenuOpen(row.taskID, 'task-ledger')}
+                      title="Task ledger actions"
+                      onclick={() => toggleGitRowActionMenu(row.taskID, 'task-ledger')}
                     >
-                      <ExternalLink size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label={`Copy task ledger for ${row.taskID}`}
-                      title="Copy task ledger"
-                      onclick={() => copyGitTaskLedger(row)}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Open worktree for ${row.taskID}`}
-                      title="Open task worktree in source browser"
-                      disabled={!ledgerWorktree}
-                      onclick={() => ledgerWorktree && openWorktreeInSourceBrowser(ledgerWorktree)}
-                    >
-                      <FolderOpen size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      class={ledgerAction ? `worktree-primary-action ${ledgerAction.kind}` : 'worktree-primary-action'}
-                      type="button"
-                      aria-label={`Run worktree action for ${row.taskID}`}
-                      title={ledgerAction?.title ?? 'No worktree action'}
-                      disabled={!ledgerWorktree || (ledgerWorktree ? fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
-                      onclick={() => ledgerWorktree && runWorktreePrimaryAction(ledgerWorktree)}
-                    >
-                      {#if ledgerAction?.kind === 'cleanup'}
-                        <Trash2 size={12} strokeWidth={2} />
-                      {:else if ledgerAction?.kind === 'backup'}
-                        <Save size={12} strokeWidth={2} />
-                      {:else}
-                        <History size={12} strokeWidth={2} />
-                      {/if}
-                    </button>
+                    {#if gitRowActionMenuOpen(row.taskID, 'task-ledger')}
+                      <div class="row-action-menu" role="menu" aria-label={`Task ledger actions for ${row.taskID}`}>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label={`Open task reference for ${row.taskID}`}
+                          title="Open task reference"
+                          disabled={!gitTaskUrl(row.taskID)}
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            openGitTaskReference(row.taskID);
+                          }}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open task reference</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label={`Copy task ledger for ${row.taskID}`}
+                          title="Copy task ledger"
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            copyGitTaskLedger(row);
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy task ledger</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label={`Open worktree for ${row.taskID}`}
+                          title="Open task worktree in source browser"
+                          disabled={!ledgerWorktree}
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            if (ledgerWorktree) openWorktreeInSourceBrowser(ledgerWorktree);
+                          }}
+                        >
+                          <FolderOpen size={12} strokeWidth={2} />
+                          <span>Open worktree</span>
+                        </button>
+                        <button
+                          class={ledgerAction ? `worktree-primary-action ${ledgerAction.kind}` : 'worktree-primary-action'}
+                          type="button"
+                          role="menuitem"
+                          aria-label={`Run worktree action for ${row.taskID}`}
+                          title={ledgerAction?.title ?? 'No worktree action'}
+                          disabled={!ledgerWorktree || (ledgerWorktree ? fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
+                          onclick={() => {
+                            closeGitRowActionMenu();
+                            if (ledgerWorktree) runWorktreePrimaryAction(ledgerWorktree);
+                          }}
+                        >
+                          {#if ledgerAction?.kind === 'cleanup'}
+                            <Trash2 size={12} strokeWidth={2} />
+                          {:else if ledgerAction?.kind === 'backup'}
+                            <Save size={12} strokeWidth={2} />
+                          {:else}
+                            <History size={12} strokeWidth={2} />
+                          {/if}
+                          <span>{ledgerAction?.label ?? 'Run worktree action'}</span>
+                        </button>
+                      </div>
+                    {/if}
                   </div>
                 </div>
               {/each}
+              </details>
             {/if}
 
-            <div class="activity-subheading">Recent commits</div>
-            {#if filteredGitCommitRows.length === 0}
-              <div class="activity-empty">No commits</div>
-            {:else}
-              {#each filteredGitCommitRows.slice(0, 8) as row (row.sha)}
+            <details class="activity-git-secondary-section" data-testid="git-history-section">
+              <summary>
+                <span>Recent commits</span>
+                <small>{filteredGitCommitRows.length}</small>
+              </summary>
+              <div
+                class="git-graph-summary-strip activity-git-graph-summary"
+                aria-label="Git graph view model summary"
+                title={selectedProjectGitTaskSearchSummary}
+              >
+                <span>{selectedProjectGitGraphSummary}</span>
+                {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
+                  <small>{selectedProjectGitGraph.taskSearchTargets.length} search targets</small>
+                {/if}
+              </div>
+              {#if filteredGitCommitRows.length === 0}
+                <div class="activity-empty">No commits</div>
+              {:else}
+                {#each filteredGitCommitRows.slice(0, 8) as row (row.sha)}
                 {@const entry = gitCommitEntryForRow(row)}
-                <div class="activity-commit-row" title={row.detailLabel}>
+                <div
+                  class="activity-commit-row"
+                  title={row.detailLabel}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openActivityRowActionMenu('commit', row.sha);
+                  }}
+                >
                   <span
                     class={`git-graph-marker ${row.graphKind}`}
                     aria-label={row.topologyLabel}
@@ -14270,40 +17868,70 @@
                         {row.taskID}
                       </a>
                     {/if}
-                    <div class="activity-row-actions" aria-label="Commit actions">
+                    <div class="activity-row-actions commit-activity-actions row-action-menu-anchor" aria-label="Commit actions">
                       <button
                         type="button"
-                        aria-label="Copy commit SHA"
-                        title="Copy commit SHA"
-                        disabled={!entry}
-                        onclick={() => entry && copyGitCommitSha(entry)}
+                        aria-label="Commit actions"
+                        aria-haspopup="menu"
+                        aria-expanded={activityRowActionMenuOpen('commit', row.sha)}
+                        title="Commit actions"
+                        onclick={() => toggleActivityRowActionMenu('commit', row.sha)}
                       >
-                        <Copy size={12} strokeWidth={2} />
+                        <MoreHorizontal size={13} strokeWidth={2} />
                       </button>
-                      <button
-                        type="button"
-                        aria-label="Copy commit summary"
-                        title="Copy commit summary"
-                        disabled={!entry}
-                        onclick={() => entry && copyGitCommitSummary(entry)}
-                      >
-                        <History size={12} strokeWidth={2} />
-                      </button>
-                      {#if row.taskID}
-                        <button
-                          type="button"
-                          aria-label="Copy task reference"
-                          title="Copy task reference"
-                          onclick={() => copyGitTaskReference(row.taskID)}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                        </button>
+                      {#if activityRowActionMenuOpen('commit', row.sha)}
+                        <div class="row-action-menu" role="menu" aria-label="Commit actions">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy commit SHA"
+                            title="Copy commit SHA"
+                            disabled={!entry}
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              if (entry) copyGitCommitSha(entry);
+                            }}
+                          >
+                            <Copy size={12} strokeWidth={2} />
+                            <span>Copy SHA</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy commit summary"
+                            title="Copy commit summary"
+                            disabled={!entry}
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              if (entry) copyGitCommitSummary(entry);
+                            }}
+                          >
+                            <History size={12} strokeWidth={2} />
+                            <span>Copy summary</span>
+                          </button>
+                          {#if row.taskID}
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Copy task reference"
+                              title="Copy task reference"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                copyGitTaskReference(row.taskID);
+                              }}
+                            >
+                              <ExternalLink size={12} strokeWidth={2} />
+                              <span>Copy task ref</span>
+                            </button>
+                          {/if}
+                        </div>
                       {/if}
                     </div>
                   </div>
                 </div>
               {/each}
             {/if}
+            </details>
           </div>
           {/if}
         {/if}
@@ -14311,16 +17939,20 @@
     {/if}
     </div>
   </aside>
+  </SourceDockviewShell>
 
-  <button
-    class="side-pane-resizer"
-    type="button"
-    aria-label="Resize side pane"
-    title="Resize side pane"
-    onpointerdown={beginSidePaneResize}
-    onkeydown={handleSidePaneResizerKeydown}
-  ></button>
-  {:else if !activityPaneViewportCollapsed()}
+  {#if !sourceDockviewWorkbenchEnabled}
+    <SourcePaneResizer
+      className="side-pane-resizer"
+      ariaLabel="Resize side pane"
+      title="Drag to resize. Press Enter or double-click to collapse or expand."
+      orientation="vertical"
+      onpointerdown={beginSidePaneResize}
+      ondblclick={toggleActivityPaneRail}
+      onkeydown={handleSidePaneResizerKeydown}
+    />
+  {/if}
+  {:else if !sourceDockviewWorkbenchEnabled && !activityPaneViewportCollapsed()}
     <button
       class="activity-restore-button"
       type="button"
@@ -14698,6 +18330,7 @@
       </span>
     </div>
 
+      {#if !sourceDockviewWorkbenchEnabled}
       <div
         class="dock-panel-tabs"
         class:empty={!hasDockPanelTabs()}
@@ -14821,6 +18454,7 @@
           {/each}
         </div>
       {/if}
+      {/if}
 
       <div
       class="workspace-arrangement"
@@ -14829,15 +18463,58 @@
       class:context-bottom={contextPanelPlacement === 'bottom' && effectiveContextPaneVisible()}
       class:context-rail-only={contextPaneRailOnly()}
     >
-      {#if effectiveContextPaneVisible()}
+      {#if sourceDockviewWorkbenchOwnsPanel('context') || effectiveContextPaneVisible()}
+      {#if useUnifiedWorkbench}
+      <!--
+        Unified workbench: render a clean, spacious collapsible-section stack as the context
+        panel content and route it into the Dockview via the same setPanelElement bridge. The
+        legacy grid/stack/rail context markup (the else branch below) is bypassed entirely.
+      -->
+      <div class="workbench-context-host" use:sourceDockviewPanelAction={'context'}>
+        <WorkbenchContextPanel
+          runs={selectedProjectOrchestrationRuns}
+          runsSummary={orchestrationRunSummary}
+          runsLoading={orchestrationRunsLoading}
+          runtimeContexts={selectedProjectRuntimeContexts}
+          runtimeSummary={runtimeContextSummary}
+          runtimeLoading={runtimeContextsLoading}
+          agents={selectedProjectAgentSessions}
+          agentsSummary={agentSessionSummary}
+          agentsLoading={agentSessionsLoading}
+          worktrees={prioritizedProjectWorktrees}
+          worktreesSummary={projectWorktreeSummary}
+          worktreesSafetyStats={projectWorktreeSafetyStats}
+          worktreesLoading={projectWorktreesLoading}
+          repos={selectedProjectRepositorySummaries}
+          reposSummary={repoDashboardSummary}
+          reposLoading={gitRepositorySummariesLoading}
+          projectName={selectedProject.name}
+        />
+      </div>
+      {:else}
       <div class="workspace-context-column">
-    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextCardsTabbed()}>
+        <SourceDockviewShell
+          shellClass="source-dockview-context-shell"
+          hostClass="source-dockview-context-host"
+          errorClass="source-dockview-context-error"
+          enabled={sourceDockviewContextEnabled}
+          ready={sourceDockviewContextReady}
+          error={sourceDockviewContextError}
+          hostAction={sourceDockviewContextHostAction}
+        >
+    <div
+	      class="context-panel-grid"
+	      class:collapsed={contextPanelCollapsed && !sourceDockviewWorkbenchOwnsPanel('context')}
+	      class:stacked={contextCardsStacked()}
+	      class:paneview-card-stack={contextCardsUsePaneviewStack()}
+	      use:sourceDockviewPanelAction={'context'}
+	    >
       {#if hiddenContextCardIDs.size > 0}
         <button class="context-restore-button" type="button" onclick={showAllContextCards}>
           Show hidden cards
         </button>
       {/if}
-      {#if contextCardsTabbed() && visibleContextCards.length > 0}
+      {#if contextCardsUseRailTabs() && visibleContextCards.length > 0}
         <div class="context-stack-tabs" aria-label="Context card tabs">
           {#each visibleContextCards as cardID (cardID)}
             <button
@@ -14863,8 +18540,18 @@
           {/each}
         </div>
       {/if}
+	      {#key contextCardsUsePaneviewStack()}
+	      <SourceDockviewShell
+	        shellClass="source-paneview-context-cards-shell"
+	        hostClass="source-paneview-context-cards-host"
+	        errorClass="source-paneview-context-cards-error"
+	        enabled={contextCardsUsePaneviewStack() && visibleContextCards.length > 0}
+	        ready={sourceContextCardDockviewReady}
+	        error={sourceContextCardDockviewError}
+	        hostAction={sourceContextCardDockviewHostAction}
+      >
       {#if shouldRenderContextCard('orchestration')}
-      <section class="orchestration-context-panel" aria-label="Orchestration runs">
+      <section class="orchestration-context-panel" aria-label="Orchestration runs" use:sourceContextCardDockviewPanelAction={'orchestration'}>
         <div class="orchestration-context-header">
           <div>
             <strong>Orchestration Runs</strong>
@@ -14940,14 +18627,18 @@
               {@const runMetrics = orchestrationRunMetrics(run)}
               {@const contextLoopStages = contextOrchestrationLoopStages(runMetrics)}
               {@const contextLiveDigest = orchestrationLiveDigestItems(run, 3)}
-              <div
-                class="orchestration-context-row"
-                class:bad={orchestrationStatusClass(run.status) === 'bad'}
-                class:attention={orchestrationStatusClass(run.status) === 'attention' ||
-                  runMetrics.attentionCount > 0 ||
-                  runMetrics.approvalCount > 0}
-                class:live={orchestrationStatusClass(run.status) === 'live'}
-                >
+	              <div
+	                class="orchestration-context-row"
+	                class:bad={orchestrationStatusClass(run.status) === 'bad'}
+	                class:attention={orchestrationStatusClass(run.status) === 'attention' ||
+	                  runMetrics.attentionCount > 0 ||
+	                  runMetrics.approvalCount > 0}
+	                class:live={orchestrationStatusClass(run.status) === 'live'}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openActivityRowActionMenu('context-run', run.id);
+                  }}
+	                >
                 <div class="orchestration-context-main">
                   <div class="orchestration-context-title">
                     <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
@@ -14992,24 +18683,48 @@
                     {/each}
                   </div>
                 </div>
-                <div class="orchestration-context-actions" aria-label="Context run actions">
-                  <button
-                    type="button"
-                    aria-label="Focus context run"
-                    title="Focus run"
-                    onclick={() => focusOrchestrationRun(run)}
-                  >
-                    <Search size={11} strokeWidth={2} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Copy context run handoff"
-                    title="Copy run handoff"
-                    onclick={() => copyOrchestrationRunHandoff(run)}
-                  >
-                    <FileCode2 size={11} strokeWidth={2} />
-                  </button>
-                </div>
+	                <div class="orchestration-context-actions row-action-menu-anchor" aria-label="Context run actions">
+	                  <button
+	                    type="button"
+	                    aria-label="Context run actions"
+                      aria-haspopup="menu"
+                      aria-expanded={activityRowActionMenuOpen('context-run', run.id)}
+	                    title="Context run actions"
+	                    onclick={() => toggleActivityRowActionMenu('context-run', run.id)}
+	                  >
+	                    <MoreHorizontal size={13} strokeWidth={2} />
+	                  </button>
+                    {#if activityRowActionMenuOpen('context-run', run.id)}
+                      <div class="row-action-menu" role="menu" aria-label="Context run actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Focus context run"
+                          title="Focus run"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            focusOrchestrationRun(run);
+                          }}
+                        >
+                          <Search size={12} strokeWidth={2} />
+                          <span>Focus run</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy context run handoff"
+                          title="Copy run handoff"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationRunHandoff(run);
+                          }}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                          <span>Copy handoff</span>
+                        </button>
+                      </div>
+                    {/if}
+	                </div>
               </div>
             {/each}
           </div>
@@ -15024,7 +18739,7 @@
       {/if}
 
       {#if shouldRenderContextCard('runtime')}
-      <section class="runtime-context-panel" aria-label="Runtime contexts">
+      <section class="runtime-context-panel" aria-label="Runtime contexts" use:sourceContextCardDockviewPanelAction={'runtime'}>
         <div class="runtime-context-header">
           <div>
             <strong>Runtime Contexts</strong>
@@ -15084,7 +18799,7 @@
       {/if}
 
       {#if shouldRenderContextCard('agents')}
-      <section class="agent-session-panel" aria-label="Agent sessions">
+      <section class="agent-session-panel" aria-label="Agent sessions" use:sourceContextCardDockviewPanelAction={'agents'}>
         <div class="agent-session-header">
           <div>
             <strong>Agent Sessions</strong>
@@ -15118,12 +18833,21 @@
               {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
               {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
               {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
+              {@const sessionTaskID = agentSessionTaskID(session, sessionSnapshot)}
               <div class="agent-session-row" title={agentSessionResumePlan(session)}>
-                <span class="agent-provider-badge">{session.provider}</span>
-                <strong>{session.title}</strong>
-                <span>{agentSessionProjectLabel(session)}</span>
-                {#if session.model}<span>{agentSessionModelLabel(session)}</span>{/if}
-                <small>{agentSessionActivityLabel(session)}</small>
+                <span class="agent-provider-badge" title={agentSessionProviderLabel(session)}>
+                  {agentSessionProviderBadgeLabel(session)}
+                </span>
+                <div class="agent-session-row-main">
+                  <span class="conversation-session-title-line">
+                    <strong>{session.title}</strong>
+                    {#if sessionTaskID}
+                      <span class="session-task-chip">{sessionTaskID}</span>
+                    {/if}
+                  </span>
+                  <small>{agentSessionResumeMetaLabel(session, sessionSnapshot)}</small>
+                  <small title={agentSessionProjectPath(session)}>{agentSessionPathLabel(session, sessionSnapshot)}</small>
+                </div>
                 <button
                   type="button"
                   class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
@@ -15148,7 +18872,7 @@
       {/if}
 
       {#if shouldRenderContextCard('worktrees')}
-      <section class="worktree-context-panel" aria-label="Worktree safety">
+      <section class="worktree-context-panel" aria-label="Worktree safety" use:sourceContextCardDockviewPanelAction={'worktrees'}>
         <div class="worktree-context-header">
           <div>
             <strong>Worktree Safety</strong>
@@ -15164,6 +18888,16 @@
               onclick={copyProjectWorktreeCleanupBrief}
             >
               <Copy size={13} strokeWidth={1.9} />
+            </button>
+            <button
+              class="file-action-button"
+              type="button"
+              aria-label="Copy worktree cleanup runbook"
+              title="Copy cleanup runbook"
+              disabled={projectWorktrees.length === 0}
+              onclick={copyProjectWorktreeCleanupRunbook}
+            >
+              <Braces size={13} strokeWidth={1.9} />
             </button>
             <button
               class="file-action-button"
@@ -15196,6 +18930,30 @@
             </button>
           </div>
         </div>
+        {#if projectWorktrees.length > 0}
+          <div
+            class="worktree-runbook-strip"
+            aria-label="Worktree cleanup runbook summary"
+            title={projectWorktreeCleanupRunbook.headline}
+          >
+            <span class="worktree-runbook-chip safe">
+              <strong>{projectWorktreeCleanupRunbook.counts.safeRemovable}</strong>
+              <span>safe</span>
+            </span>
+            <span class="worktree-runbook-chip backup">
+              <strong>{projectWorktreeCleanupRunbook.counts.backupRequired}</strong>
+              <span>backup</span>
+            </span>
+            <span class="worktree-runbook-chip blocked">
+              <strong>{projectWorktreeCleanupRunbook.counts.blocked}</strong>
+              <span>blocked</span>
+            </span>
+            <span class="worktree-runbook-chip saved">
+              <strong>{projectWorktreeCleanupRunbook.counts.savedWorkspaceReview}</strong>
+              <span>saved/review</span>
+            </span>
+          </div>
+        {/if}
         {#if projectWorktreeDecisionQueue.length > 0}
           <div class="worktree-decision-queue" aria-label="Worktree cleanup decision queue">
             {#each projectWorktreeDecisionQueue as group (group.id)}
@@ -15212,8 +18970,12 @@
                     {@const decisionLane = worktreeDecisionLane(entry.safety)}
                     {@const cleanupPlan = projectWorktreeCleanupPlan(entry.worktree)}
                     <div
-                      class="worktree-decision-item"
+                      class="worktree-decision-item row-action-menu-anchor"
                       title={formatWorktreeCleanupPlanReport(entry.worktree, cleanupPlan)}
+                      oncontextmenu={(event) => {
+                        event.preventDefault();
+                        openWorktreeRowActionMenu(entry.worktree, 'queue');
+                      }}
                     >
                       <span class={`worktree-status-badge ${entry.safety.kind}`}>{entry.safety.badge}</span>
                       <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
@@ -15226,37 +18988,66 @@
                         </small>
                       </div>
                       <button
-                        class={`worktree-primary-action ${entry.primaryAction.kind}`}
                         type="button"
-                        aria-label={`${entry.primaryAction.label} worktree: ${entry.worktree.branch}`}
-                        title={entry.primaryAction.title}
-                        disabled={fileActionBusy === `worktree-primary:${entry.worktree.path}`}
-                        onclick={() => runWorktreePrimaryAction(entry.worktree)}
+                        aria-label="Queued worktree actions"
+                        aria-haspopup="menu"
+                        aria-expanded={worktreeRowActionMenuOpen(entry.worktree, 'queue')}
+                        title="Queued worktree actions"
+                        onclick={() => toggleWorktreeRowActionMenu(entry.worktree, 'queue')}
                       >
-                        {#if entry.primaryAction.kind === 'cleanup'}
-                          <Trash2 size={11} strokeWidth={2} />
-                        {:else if entry.primaryAction.kind === 'backup'}
-                          <Save size={11} strokeWidth={2} />
-                        {:else}
-                          <History size={11} strokeWidth={2} />
-                        {/if}
+                        <MoreHorizontal size={12} strokeWidth={2} />
                       </button>
-                      <button
-                        type="button"
-                        aria-label="Open queued worktree in source browser"
-                        title="Open in source browser"
-                        onclick={() => openWorktreeInSourceBrowser(entry.worktree)}
-                      >
-                        <FolderOpen size={11} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Open queued worktree in embedded terminal"
-                        title="Open embedded terminal"
-                        onclick={() => openPathEmbeddedTerminal(entry.worktree.path)}
-                      >
-                        <PanelBottom size={11} strokeWidth={2} />
-                      </button>
+                      {#if worktreeRowActionMenuOpen(entry.worktree, 'queue')}
+                        <div class="row-action-menu" role="menu" aria-label="Queued worktree actions">
+                          <button
+                            class={`worktree-primary-action ${entry.primaryAction.kind}`}
+                            type="button"
+                            role="menuitem"
+                            aria-label={`${entry.primaryAction.label} worktree: ${entry.worktree.branch}`}
+                            title={entry.primaryAction.title}
+                            disabled={fileActionBusy === `worktree-primary:${entry.worktree.path}`}
+                            onclick={() => {
+                              closeWorktreeRowActionMenu();
+                              runWorktreePrimaryAction(entry.worktree);
+                            }}
+                          >
+                            {#if entry.primaryAction.kind === 'cleanup'}
+                              <Trash2 size={12} strokeWidth={2} />
+                            {:else if entry.primaryAction.kind === 'backup'}
+                              <Save size={12} strokeWidth={2} />
+                            {:else}
+                              <History size={12} strokeWidth={2} />
+                            {/if}
+                            <span>{entry.primaryAction.label}</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open queued worktree in source browser"
+                            title="Open in source browser"
+                            onclick={() => {
+                              closeWorktreeRowActionMenu();
+                              openWorktreeInSourceBrowser(entry.worktree);
+                            }}
+                          >
+                            <FolderOpen size={12} strokeWidth={2} />
+                            <span>Open in source browser</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open queued worktree in embedded terminal"
+                            title="Open embedded terminal"
+                            onclick={() => {
+                              closeWorktreeRowActionMenu();
+                              openPathEmbeddedTerminal(entry.worktree.path);
+                            }}
+                          >
+                            <PanelBottom size={12} strokeWidth={2} />
+                            <span>Open embedded terminal</span>
+                          </button>
+                        </div>
+                      {/if}
                     </div>
                   {/each}
                   {#if group.entries.length > 3}
@@ -15277,12 +19068,17 @@
               {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
               {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
               {@const ownerChips = worktreeOwnerChips(worktree, safety)}
+              {@const runbookCommandBlock = projectWorktreeRunbookCommandBlock(worktree)}
               <div
                 class="worktree-context-row"
                 class:blocked={eligibilityKind === 'blocked'}
                 class:protected={eligibilityKind === 'protected'}
                 class:ready={eligibilityKind === 'ready'}
                 title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
+                oncontextmenu={(event) => {
+                  event.preventDefault();
+                  openWorktreeRowActionMenu(worktree, 'context');
+                }}
               >
                 <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
                 <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
@@ -15329,59 +19125,109 @@
                   <strong>Next</strong>
                   {worktreeCleanupPlanNextStep(cleanupPlan)}
                 </small>
-                <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
-                  {#if latestSnapshot}
-                    <button
-                      class="worktree-snapshot-chip"
-                      type="button"
-                      aria-label="Restore latest saved workspace for worktree"
-                      title={worktreeWorkspaceSnapshotTitle(worktree)}
-                      onclick={() => restoreConversationWorkspaceSnapshot(latestSnapshot)}
-                    >
-                      <History size={11} strokeWidth={2} />
-                      <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
-                    </button>
+                <div class="worktree-context-actions row-action-menu-anchor" aria-label="Worktree cleanup actions">
+                  <button
+                    type="button"
+                    aria-label="Worktree cleanup actions"
+                    aria-haspopup="menu"
+                    aria-expanded={worktreeRowActionMenuOpen(worktree, 'context')}
+                    title="Worktree cleanup actions"
+                    onclick={() => toggleWorktreeRowActionMenu(worktree, 'context')}
+                  >
+                    <MoreHorizontal size={13} strokeWidth={2} />
+                  </button>
+                  {#if worktreeRowActionMenuOpen(worktree, 'context')}
+                    <div class="row-action-menu" role="menu" aria-label="Worktree cleanup actions">
+                      {#if latestSnapshot}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Restore latest saved workspace for worktree"
+                          title={worktreeWorkspaceSnapshotTitle(worktree)}
+                          onclick={() => {
+                            closeWorktreeRowActionMenu();
+                            restoreConversationWorkspaceSnapshot(latestSnapshot);
+                          }}
+                        >
+                          <History size={12} strokeWidth={2} />
+                          <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
+                        </button>
+                      {/if}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        aria-label="Copy worktree runbook command block"
+                        title={runbookCommandBlock?.title ?? 'Copy runbook item'}
+                        onclick={() => {
+                          closeWorktreeRowActionMenu();
+                          copyWorktreeRunbookCommandBlock(worktree);
+                        }}
+                      >
+                        <Braces size={12} strokeWidth={2} />
+                        <span>Copy runbook block</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        aria-label="Copy worktree cleanup plan"
+                        title="Copy cleanup plan"
+                        onclick={() => {
+                          closeWorktreeRowActionMenu();
+                          copyWorktreeCleanupPlan(worktree);
+                        }}
+                      >
+                        <Copy size={12} strokeWidth={2} />
+                        <span>Copy cleanup plan</span>
+                      </button>
+                      <button
+                        class={`worktree-primary-action ${primaryAction.kind}`}
+                        type="button"
+                        role="menuitem"
+                        aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
+                        title={primaryAction.title}
+                        disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
+                        onclick={() => {
+                          closeWorktreeRowActionMenu();
+                          runWorktreePrimaryAction(worktree);
+                        }}
+                      >
+                        {#if primaryAction.kind === 'cleanup'}
+                          <Trash2 size={12} strokeWidth={2} />
+                        {:else if primaryAction.kind === 'backup'}
+                          <Save size={12} strokeWidth={2} />
+                        {:else}
+                          <History size={12} strokeWidth={2} />
+                        {/if}
+                        <span>{primaryAction.label}</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        aria-label="Open worktree in embedded terminal"
+                        title="Open worktree in embedded terminal"
+                        onclick={() => {
+                          closeWorktreeRowActionMenu();
+                          openPathEmbeddedTerminal(worktree.path);
+                        }}
+                      >
+                        <PanelBottom size={12} strokeWidth={2} />
+                        <span>Open embedded terminal</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        aria-label="Open worktree in source browser"
+                        title="Open worktree in source browser"
+                        onclick={() => {
+                          closeWorktreeRowActionMenu();
+                          openWorktreeInSourceBrowser(worktree);
+                        }}
+                      >
+                        <FolderOpen size={12} strokeWidth={2} />
+                        <span>Open in source browser</span>
+                      </button>
+                    </div>
                   {/if}
-                  <button
-                    type="button"
-                    aria-label="Copy worktree cleanup plan"
-                    title="Copy cleanup plan"
-                    onclick={() => copyWorktreeCleanupPlan(worktree)}
-                  >
-                    <Copy size={12} strokeWidth={2} />
-                  </button>
-                  <button
-                    class={`worktree-primary-action ${primaryAction.kind}`}
-                    type="button"
-                    aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
-                    title={primaryAction.title}
-                    disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
-                    onclick={() => runWorktreePrimaryAction(worktree)}
-                  >
-                    {#if primaryAction.kind === 'cleanup'}
-                      <Trash2 size={12} strokeWidth={2} />
-                    {:else if primaryAction.kind === 'backup'}
-                      <Save size={12} strokeWidth={2} />
-                    {:else}
-                      <History size={12} strokeWidth={2} />
-                    {/if}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Open worktree in embedded terminal"
-                    title="Open worktree in embedded terminal"
-                    onclick={() => openPathEmbeddedTerminal(worktree.path)}
-                  >
-                    <PanelBottom size={12} strokeWidth={2} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Open worktree in source browser"
-                    title="Open worktree in source browser"
-                    onclick={() => openWorktreeInSourceBrowser(worktree)}
-                  >
-                    <FolderOpen size={12} strokeWidth={2} />
-                  </button>
                 </div>
               </div>
             {/each}
@@ -15395,7 +19241,7 @@
       {/if}
 
       {#if shouldRenderContextCard('repo')}
-      <section class="repo-dashboard-panel" aria-label="Repository dashboard">
+      <section class="repo-dashboard-panel" aria-label="Repository dashboard" use:sourceContextCardDockviewPanelAction={'repo'}>
         <div class="repo-dashboard-header">
           <div>
             <strong>Repo Dashboard</strong>
@@ -15466,74 +19312,58 @@
         {/if}
       </section>
       {/if}
+      </SourceDockviewShell>
+      {/key}
     </div>
+        </SourceDockviewShell>
       </div>
 
-      <button
-        class="context-pane-resizer"
-        type="button"
-        aria-label="Resize context pane"
-        title="Resize context pane"
-        onpointerdown={beginContextPaneResize}
-        onkeydown={handleContextPaneResizerKeydown}
-      ></button>
+      {#if !sourceDockviewWorkbenchEnabled}
+        <SourcePaneResizer
+          className="context-pane-resizer"
+          ariaLabel="Resize context pane"
+          title="Resize context pane"
+          orientation={contextPanelPlacement === 'bottom' ? 'horizontal' : 'vertical'}
+          onpointerdown={beginContextPaneResize}
+          onkeydown={handleContextPaneResizerKeydown}
+        />
+      {/if}
+      {/if}
       {/if}
 
       <div class="workspace-main-column">
+      <SourceDockviewShell
+        shellClass="source-dockview-center-shell"
+        hostClass="source-dockview-center-host"
+        errorClass="source-dockview-center-error"
+        enabled={sourceDockviewCenterEnabled}
+        ready={sourceDockviewCenterReady}
+        error={sourceDockviewCenterError}
+        hostAction={sourceDockviewCenterHostAction}
+      >
+      <section class="source-editor-dock-panel" aria-label="Source editor" use:sourceDockviewPanelAction={'editor'}>
 
     {#if projectOpenSourceTabs.length > 0}
-      <div class="tab-strip" aria-label="Open source files">
+      <SourceDockviewShell
+        shellClass="source-dockview-editor-files-shell"
+        hostClass="source-dockview-editor-files-host"
+        errorClass="source-dockview-editor-files-error"
+        enabled={true}
+        ready={sourceEditorFileDockviewReady}
+        error={sourceEditorFileDockviewError}
+        hostAction={sourceEditorFileDockviewHostAction}
+      >
         {#each projectOpenSourceTabs as tab (tab.path)}
           {@const tabGitStatus = gitStatusForSourceRecord(tab)}
-          <div
-            class="source-tab"
+          <section
+            class="source-editor-file-pane"
             class:active={tab.path === selectedRecord?.path}
             class:dirty={isSourcePathDirty(tab.path)}
+            aria-label={`Source editor for ${tab.fileName}`}
+            data-source-path={tab.path}
+            use:sourceEditorFileDockviewPanelAction={sourceEditorFilePanelID(tab)}
           >
-            <button
-              class="tab-select-button"
-              type="button"
-              aria-label={`Select ${tab.fileName}`}
-              title={tab.relativePath}
-              onclick={() => selectOpenTab(tab)}
-            >
-              <span class="tab-file-icon">
-                <FileCode2 size={14} strokeWidth={1.8} />
-              </span>
-              <span>{tab.fileName}</span>
-              <small>{tab.language}</small>
-              {#if tabGitStatus}
-                <span class="git-status-badge" title={tabGitStatus.status}>{tabGitStatus.badge}</span>
-              {/if}
-              {#if isSourcePathDirty(tab.path)}
-                <span class="tab-dirty-dot" aria-hidden="true"></span>
-              {/if}
-            </button>
-            <button
-              class="tab-close-button"
-              type="button"
-              aria-label={`Close ${tab.fileName}`}
-              title={`Close ${tab.fileName}`}
-              onclick={(event) => closeSourceTab(tab, event)}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        {/each}
-      </div>
-    {/if}
-
-    {#if preview}
-      <div class="path-row">
-        <span>{preview.relativePath}</span>
-        <strong>
-          {selectedIndex} / {records.length}
-          {#if selectedSourceLine}
-            · line {selectedSourceLine}
-          {/if}
-        </strong>
-      </div>
-    {/if}
+            {#if tab.path === selectedRecord?.path}
 
     {#if fileActionStatus}
       <div class="file-action-feedback">{fileActionStatus}</div>
@@ -15551,7 +19381,15 @@
         <div class="editor-toolbar" aria-label="Editor controls">
           <div class="editor-file-state" title={preview.relativePath}>
             <FileCode2 size={13} strokeWidth={1.8} />
-            <strong>{preview.fileName}</strong>
+            <div class="editor-file-title">
+              <strong>{preview.fileName}</strong>
+              <small>
+                {selectedIndex} / {records.length}
+                {#if selectedSourceLine}
+                  · line {selectedSourceLine}
+                {/if}
+              </small>
+            </div>
             {#if selectedSourceDirty}
               <span>modified</span>
             {/if}
@@ -15596,6 +19434,32 @@
                 onclick={copySourceLspInstallCommand}
               >
                 <Terminal size={13} strokeWidth={2} />
+              </button>
+            </div>
+          {/if}
+          {#if selectedSourceMarkdownPreviewAvailable}
+            <div class="editor-mode-toggle" role="tablist" aria-label="Markdown editor mode">
+              <button
+                class:active={selectedSourceEditorDisplayMode === 'source'}
+                type="button"
+                role="tab"
+                aria-selected={selectedSourceEditorDisplayMode === 'source'}
+                title="Edit Markdown source"
+                onclick={() => setSelectedSourceEditorDisplayMode('source')}
+              >
+                <FileCode2 size={12} strokeWidth={2} />
+                <span>Source</span>
+              </button>
+              <button
+                class:active={selectedSourceEditorDisplayMode === 'preview'}
+                type="button"
+                role="tab"
+                aria-selected={selectedSourceEditorDisplayMode === 'preview'}
+                title="Preview Markdown"
+                onclick={() => setSelectedSourceEditorDisplayMode('preview')}
+              >
+                <BookOpen size={12} strokeWidth={2} />
+                <span>Preview</span>
               </button>
             </div>
           {/if}
@@ -16114,52 +19978,64 @@
           </div>
         {/if}
 
-        <div class="editor-body-grid" class:insights-hidden={editorInsightCollapsed || !shouldRenderDockPanel('insights')}>
+        <div class="editor-body-grid" class:insights-hidden={!editorInsightsDockColumnVisible()}>
           <div class="editor-canvas">
-            {#key sourcePreviewAppearanceKey}
-              <MonacoSourceEditor
-                {preview}
+            {#if selectedSourceMarkdownPreviewAvailable && selectedSourceEditorDisplayMode === 'preview'}
+              <SourceMarkdownPreview
                 content={selectedSourceDraftContent}
-                editable={true}
-                externalDiagnostics={sourceLspDiagnostics}
-                {loading}
-                targetLine={selectedSourceLine}
-                targetLineRequestId={selectedSourceLineRequestId}
-                intelligenceCommand={sourceIntelligenceCommand}
-                onCodeActionLookup={handleEditorCodeActionLookup}
-                onContentChange={updateSelectedSourceDraft}
-                onCommandPaletteRequest={openCommandPalette}
-                onCompletionLookup={handleEditorCompletionLookup}
-                onDiagnosticsChange={handleEditorDiagnosticsChange}
-                onDefinitionLookup={handleEditorDefinitionLookup}
-                onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}
-                onFormatDocument={handleEditorFormatDocument}
-                onGoToLineRequest={openCurrentFileGoToLine}
-                onHoverLookup={handleEditorHoverLookup}
-                onImplementationLookup={handleEditorImplementationLookup}
-                onInlayHintLookup={handleEditorInlayHintLookup}
-                onNavigateBackRequest={navigateSourceBack}
-                onNavigateForwardRequest={navigateSourceForward}
-                onNextProblemRequest={selectNextSourceDiagnostic}
-                onProblemsRequest={() => openEditorNavPanel('problems')}
-                onPreviousProblemRequest={selectPreviousSourceDiagnostic}
-                onQuickOpenRequest={openQuickOpen}
-                onReferenceLookup={handleEditorReferenceLookup}
-                onRename={handleEditorRename}
-                onSaveRequest={saveSelectedSourceFile}
-                onSemanticTokensLookup={handleEditorSemanticTokensLookup}
-                onSignatureHelpLookup={handleEditorSignatureHelpLookup}
-                onSymbolsRequest={() => openEditorNavPanel('symbols')}
-                onSymbolsChange={handleEditorSymbolsChange}
-                onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
-                onWorkspaceEditAction={handleEditorWorkspaceEditAction}
+                fileName={preview.fileName}
+                relativePath={preview.relativePath}
+                dirty={selectedSourceDirty}
               />
-            {/key}
+            {:else}
+              {#key sourcePreviewAppearanceKey}
+                <MonacoSourceEditor
+                  {preview}
+                  content={selectedSourceDraftContent}
+                  editable={true}
+                  externalDiagnostics={sourceLspDiagnostics}
+                  {loading}
+                  targetLine={selectedSourceLine}
+                  targetLineRequestId={selectedSourceLineRequestId}
+                  intelligenceCommand={sourceIntelligenceCommand}
+                  onCodeActionLookup={handleEditorCodeActionLookup}
+                  onContentChange={updateSelectedSourceDraft}
+                  onCommandPaletteRequest={openCommandPalette}
+                  onCompletionLookup={handleEditorCompletionLookup}
+                  onDiagnosticsChange={handleEditorDiagnosticsChange}
+                  onDefinitionLookup={handleEditorDefinitionLookup}
+                  onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}
+                  onExternalNavigation={navigateEditorExternalSource}
+                  onExternalPreviewLookup={loadEditorExternalSourcePreview}
+                  onFormatDocument={handleEditorFormatDocument}
+                  onGoToLineRequest={openCurrentFileGoToLine}
+                  onHoverLookup={handleEditorHoverLookup}
+                  onImplementationLookup={handleEditorImplementationLookup}
+                  onInlayHintLookup={handleEditorInlayHintLookup}
+                  onNavigateBackRequest={navigateSourceBack}
+                  onNavigateForwardRequest={navigateSourceForward}
+                  onNextProblemRequest={selectNextSourceDiagnostic}
+                  onProblemsRequest={() => openEditorNavPanel('problems')}
+                  onPreviousProblemRequest={selectPreviousSourceDiagnostic}
+                  onQuickOpenRequest={openQuickOpen}
+                  onReferenceCountLookup={handleEditorReferenceCountLookup}
+                  onReferenceLookup={handleEditorReferenceLookup}
+                  onRename={handleEditorRename}
+                  onSaveRequest={saveSelectedSourceFile}
+                  onSemanticTokensLookup={handleEditorSemanticTokensLookup}
+                  onSignatureHelpLookup={handleEditorSignatureHelpLookup}
+                  onSymbolsRequest={() => openEditorNavPanel('symbols')}
+                  onSymbolsChange={handleEditorSymbolsChange}
+                  onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
+                  onWorkspaceEditAction={handleEditorWorkspaceEditAction}
+                />
+              {/key}
+            {/if}
 
-            {#if editorInsightCollapsed && editorNavPanel === null && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
+            {#if editorInsightCollapsed && editorNavPanel === null && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
               <div class="editor-lookup-popover" aria-label="Editor lookup results">
                 <div class="editor-lookup-header">
-                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
+                  <strong>{sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
                   <button
                     class="editor-lookup-close"
                     type="button"
@@ -16185,24 +20061,6 @@
                           <strong>{target.kind}</strong>
                           <span>{target.symbolName}</span>
                           <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                  {#if sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading}
-                    {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
-                      <div class="intelligence-empty">No references</div>
-                    {:else}
-                      {#each sourceReferenceTargets as target (`inline:${target.path}:${target.line}:${target.column}`)}
-                        <button
-                          class="reference-row"
-                          type="button"
-                          title={target.excerpt}
-                          onclick={() => selectSourceReferenceTarget(target)}
-                        >
-                          <strong>{target.line}:{target.column}</strong>
-                          <span>{target.fileName}</span>
-                          <small>{target.excerpt}</small>
                         </button>
                       {/each}
                     {/if}
@@ -16248,7 +20106,8 @@
             {/if}
           </div>
 
-          {#if !editorInsightCollapsed && shouldRenderDockPanel('insights')}
+          {#if sourceIntelligencePanelMounted()}
+            {#if editorInsightsDockColumnVisible()}
             <button
               class="editor-insight-resizer"
               type="button"
@@ -16257,20 +20116,19 @@
               onpointerdown={beginEditorInsightResize}
               onkeydown={handleEditorInsightResizerKeydown}
             ></button>
+            {/if}
 
-            <div
-              class="source-dockview-insights-shell"
-              class:dockview-enabled={sourceDockviewInsightsEnabled}
-              class:dockview-ready={sourceDockviewInsightsReady}
-              class:dockview-error={Boolean(sourceDockviewInsightsError)}
+            <SourceDockviewShell
+              shellClass={editorInsightsDockColumnVisible()
+                ? 'source-dockview-insights-shell'
+                : 'source-dockview-insights-parking'}
+              hostClass="source-dockview-insights-host"
+              errorClass="source-dockview-insights-error"
+              enabled={editorInsightsDockColumnVisible() && sourceDockviewInsightsEnabled}
+              ready={editorInsightsDockColumnVisible() && sourceDockviewInsightsReady}
+              error={editorInsightsDockColumnVisible() ? sourceDockviewInsightsError : ''}
+              hostAction={sourceDockviewInsightsHostAction}
             >
-              {#if sourceDockviewInsightsEnabled}
-                <div
-                  class="source-dockview-insights-host"
-                  aria-hidden={!sourceDockviewInsightsReady}
-                  use:sourceDockviewInsightsHostAction
-                ></div>
-              {/if}
               <aside
                 class="source-intelligence-panel"
                 aria-label="Language intelligence"
@@ -16837,12 +20695,7 @@
               </div>
             {/if}
             </aside>
-              {#if sourceDockviewInsightsError}
-                <div class="source-dockview-insights-error" role="status">
-                  {sourceDockviewInsightsError}
-                </div>
-              {/if}
-            </div>
+            </SourceDockviewShell>
           {/if}
         </div>
       </div>
@@ -16853,20 +20706,55 @@
         <span>Scan a project or choose a file from the tree.</span>
       </div>
     {/if}
-
-      {#if bottomDockPanelVisible()}
-        <button
-          class="bottom-dock-resizer"
-          type="button"
-          aria-label="Resize bottom dock"
-          title="Resize bottom dock"
-          onpointerdown={beginBottomDockResize}
-          onkeydown={handleBottomDockResizerKeydown}
-        ></button>
+            {:else}
+              <button
+                class="editor-file-placeholder"
+                type="button"
+                title={tab.relativePath}
+                onclick={() => selectOpenTab(tab)}
+              >
+                <FileCode2 size={28} strokeWidth={1.55} />
+                <strong>{tab.fileName}</strong>
+                <span>{tab.relativePath}</span>
+                <small>
+                  {tab.language}
+                  {#if tabGitStatus}
+                    · {tabGitStatus.status}
+                  {/if}
+                  {#if isSourcePathDirty(tab.path)}
+                    · modified
+                  {/if}
+                </small>
+              </button>
+            {/if}
+          </section>
+        {/each}
+      </SourceDockviewShell>
+    {:else}
+      {#if fileActionStatus}
+        <div class="file-action-feedback">{fileActionStatus}</div>
       {/if}
 
-      {#if shouldRenderDockPanel('terminal')}
-        <section class="terminal-launchpad" aria-label="Terminal dock">
+      {#if error}
+        <div class="inline-error">
+          <Activity size={15} strokeWidth={1.8} />
+          <span>{error}</span>
+        </div>
+      {/if}
+
+      <div class="empty-preview">
+        <FileCode2 size={34} strokeWidth={1.55} />
+        <strong>No source file loaded</strong>
+        <span>Scan a project or choose a file from the tree.</span>
+      </div>
+    {/if}
+      </section>
+      </SourceDockviewShell>
+
+      <div class="source-runtime-panel-stage" aria-hidden="true">
+
+      {#if sourceDockPanelVisible('terminal')}
+        <section class="terminal-launchpad" aria-label="Terminal dock" use:sourceDockviewPanelAction={'terminal'}>
           <header class="terminal-launchpad-header">
             <div>
               <Terminal size={14} strokeWidth={2} />
@@ -16920,7 +20808,7 @@
                 type="button"
                 aria-label="Fit embedded terminal"
                 title="Fit embedded terminal"
-                onclick={fitEmbeddedTerminal}
+                onclick={scheduleEmbeddedTerminalFit}
               >
                 <RefreshCw size={13} strokeWidth={2} />
               </button>
@@ -16949,198 +20837,11 @@
             {/if}
           </div>
 
-          <form class="embedded-terminal-command" onsubmit={submitEmbeddedTerminalCommand}>
-            <Terminal size={13} strokeWidth={2} />
-            <input
-              bind:value={embeddedTerminalCommandDraft}
-              aria-label="Embedded terminal command"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder={embeddedTerminalSession ? 'Run command in active terminal' : 'Run command in project terminal'}
-            />
-            <button
-              type="submit"
-              disabled={
-                !embeddedTerminalCommandDraft.trim() ||
-                embeddedTerminalStarting ||
-                (!embeddedTerminalSession && !selectedProject.path)
-              }
-            >
-              Run
-            </button>
-          </form>
-
-          <div class="terminal-launchpad-grid">
-            <div class="terminal-launchpad-list" aria-label="Embedded terminal sessions">
-              <div class="terminal-launchpad-title">
-                <span>Embedded</span>
-                <strong>{embeddedTerminalSessions.length}</strong>
-              </div>
-              {#if embeddedTerminalSessionsLoading}
-                <div class="terminal-launchpad-empty">Refreshing terminals</div>
-              {:else if embeddedTerminalSessions.length === 0}
-                <div class="terminal-launchpad-empty">No embedded terminals</div>
-              {:else}
-                {#each embeddedTerminalSessions.slice(0, 3) as session (`terminal-session:${session.sessionId}`)}
-                  <div
-                    class:active={embeddedTerminalSession?.sessionId === session.sessionId}
-                    class="terminal-launchpad-row"
-                    title={embeddedTerminalSessionFocusPlan(session)}
-                  >
-                    <span class="runtime-port">PTY</span>
-                    <div>
-                      <strong>{embeddedTerminalSessionTitle(session)}</strong>
-                      <small>{embeddedTerminalSessionMetaLabel(session)}</small>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Attach embedded terminal session"
-                      title="Attach embedded terminal"
-                      disabled={embeddedTerminalSession?.sessionId === session.sessionId}
-                      onclick={() => attachEmbeddedTerminalSession(session)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Close listed embedded terminal session"
-                      title="Close embedded terminal"
-                      onclick={() => closeListedEmbeddedTerminalSession(session)}
-                    >
-                      <X size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-              {#if embeddedTerminalSessionsError}
-                <div class="terminal-launchpad-empty">{embeddedTerminalSessionsError}</div>
-              {/if}
-            </div>
-
-            <div class="terminal-launchpad-list" aria-label="Active terminal contexts">
-              <div class="terminal-launchpad-title">
-                <span>Active</span>
-                <strong>{selectedProjectRuntimeContexts.length}</strong>
-              </div>
-              {#if selectedProjectRuntimeContexts.length === 0}
-                <div class="terminal-launchpad-empty">No active contexts</div>
-              {:else}
-                {#each selectedProjectRuntimeContexts.slice(0, 3) as context (`terminal:${context.pid}:${context.port}:${context.cwd}`)}
-                  <div class="terminal-launchpad-row" title={context.cwd}>
-                    <span class="runtime-port">:{context.port}</span>
-                    <div>
-                      <strong>{context.command}</strong>
-                      <small>{context.rootLabel}</small>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Open active context in embedded terminal"
-                      title="Open context in embedded terminal"
-                      onclick={() => openPathEmbeddedTerminal(context.cwd)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-
-            <div class="terminal-launchpad-list" aria-label="Agent terminal resumes">
-              <div class="terminal-launchpad-title">
-                <span>Agents</span>
-                <strong>{selectedProjectAgentSessions.length}</strong>
-              </div>
-              {#if selectedProjectAgentSessions.length === 0}
-                <div class="terminal-launchpad-empty">No resumable agents</div>
-              {:else}
-                {#each selectedProjectAgentSessions.slice(0, 3) as session, index (agentSessionRowKey(session, index, 'terminal'))}
-                  {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-                  {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
-                  {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-                  <div class="terminal-launchpad-row terminal-agent-row" title={agentSessionResumePlan(session)}>
-                    <span class="agent-provider-badge">{session.provider}</span>
-                    <div>
-                      <strong>{session.title}</strong>
-                      <small>{agentSessionProjectLabel(session)} · {sessionReadiness?.label ?? 'No saved workspace'}</small>
-                      <span
-                        class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
-                        aria-label="Recommended session focus action"
-                        title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
-                      >
-                        <em>{sessionFocusLane.label}</em>
-                        <strong>{sessionFocusLane.detail}</strong>
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label={sessionReadiness?.kind === 'missing-worktree'
-                        ? 'Copy terminal agent repair plan'
-                        : 'Copy terminal agent focus plan'}
-                      title={sessionReadiness?.kind === 'missing-worktree'
-                        ? (sessionReadiness.repairLabel ?? 'Copy repair plan')
-                        : agentSessionWorkspaceReadinessLabel(session)}
-                      onclick={() =>
-                        sessionReadiness?.kind === 'missing-worktree'
-                          ? copyAgentSessionWorkspaceRepairPlan(session)
-                          : copyAgentSessionResumePlan(session)}
-                    >
-                      {#if sessionReadiness?.kind === 'missing-worktree'}
-                        <FolderSearch size={12} strokeWidth={2} />
-                      {:else}
-                        <FileCode2 size={12} strokeWidth={2} />
-                      {/if}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Resume agent from terminal dock"
-                      title="Resume agent in embedded terminal"
-                      onclick={() => resumeAgentSessionEmbeddedTerminal(session)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-
-            <div class="terminal-launchpad-list" aria-label="Worktree terminal shortcuts">
-              <div class="terminal-launchpad-title">
-                <span>Worktrees</span>
-                <strong>{projectWorktrees.length}</strong>
-              </div>
-              {#if projectWorktrees.length === 0}
-                <div class="terminal-launchpad-empty">No worktrees</div>
-              {:else}
-                {#each prioritizedProjectWorktrees.slice(0, 3) as worktree (`terminal:${worktree.path}`)}
-                  {@const safety = projectWorktreeSafety(worktree)}
-                  {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
-                  <div
-                    class="terminal-launchpad-row"
-                    title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
-                  >
-                    <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
-                    <div>
-                      <strong>{worktree.branch}</strong>
-                      <small>{safety.reason}</small>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Open worktree from terminal dock"
-                      title="Open worktree in embedded terminal"
-                      onclick={() => openPathEmbeddedTerminal(worktree.path)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-          </div>
         </section>
       {/if}
 
-      {#if shouldRenderDockPanel('browser')}
-        <section class="browser-dock" aria-label="Browser dock">
+      {#if sourceDockPanelVisible('browser')}
+        <section class="browser-dock" aria-label="Browser dock" use:sourceDockviewPanelAction={'browser'}>
           <header class="browser-dock-header">
             <div class="browser-dock-title">
               <Network size={14} strokeWidth={2} />
@@ -17237,8 +20938,101 @@
         </section>
       {/if}
       </div>
+      </div>
     </div>
   </section>
+  </SourceDockviewShell>
+
+  {#if useUnifiedWorkbench}
+    <SourceWorkbench
+      layout={sourceDockLayout}
+      bind:setPanelElement={unifiedWorkbenchSetPanelElement}
+      bind:ready={unifiedWorkbenchReady}
+      bind:error={unifiedWorkbenchError}
+      onPanelOwnershipChange={handleUnifiedWorkbenchOwnershipChange}
+    />
+  {/if}
+
+  {#if sourceDockviewWorkbenchEnabled && hiddenDockPanelIDs().length > 0}
+    <div class="hidden-dock-panel-rail workbench-hidden-dock-panel-rail" aria-label="Hidden dock panels">
+      {#each hiddenDockPanelIDs() as panelID (panelID)}
+        <button
+          class="hidden-dock-panel-button"
+          type="button"
+          aria-label={`Restore ${dockPanelLabel(panelID)} panel`}
+          title={`Restore ${dockPanelLabel(panelID)} panel`}
+          onclick={() => restoreHiddenDockPanel(panelID)}
+        >
+          {#if panelID === 'activity'}
+            <FolderGit2 size={13} strokeWidth={1.9} />
+          {:else if panelID === 'context'}
+            <Network size={13} strokeWidth={1.9} />
+          {:else if panelID === 'insights'}
+            <Search size={13} strokeWidth={1.9} />
+          {:else if panelID === 'terminal'}
+            <Terminal size={13} strokeWidth={1.9} />
+          {:else}
+            <ExternalLink size={13} strokeWidth={1.9} />
+          {/if}
+          <span>{dockPanelLabel(panelID)}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if sourceDockviewWorkbenchEnabled}
+    <div class="workbench-global-controls">
+      <button
+        class="topbar-command-button view-menu-button"
+        type="button"
+        aria-label="View menu"
+        aria-haspopup="menu"
+        aria-expanded={viewMenuOpen}
+        title="View menu"
+        onclick={toggleViewMenu}
+      >
+        <MoreHorizontal size={15} strokeWidth={2} />
+        <span>View</span>
+      </button>
+
+      {#if viewMenuOpen}
+        <div class="view-menu workbench-view-menu" role="menu" aria-label="View options">
+          <section class="view-menu-section" aria-label="Workspace layout presets">
+            <span>Layout</span>
+            <div class="view-menu-button-grid">
+              {#each sourceLayoutPresets as preset (preset.id)}
+                <button
+                  class:active={sourceLayoutPreset === preset.id}
+                  type="button"
+                  role="menuitem"
+                  aria-label={`Use ${preset.label} layout`}
+                  title={preset.title}
+                  onclick={() => {
+                    applySourceLayoutPreset(preset.id);
+                    closeViewMenu();
+                  }}
+                >
+                  {preset.label}
+                </button>
+              {/each}
+            </div>
+            <button
+              class="view-menu-wide-button"
+              type="button"
+              role="menuitem"
+              onclick={() => {
+                resetSourceDockLayout();
+                closeViewMenu();
+              }}
+            >
+              Reset dock layout
+            </button>
+          </section>
+
+        </div>
+      {/if}
+    </div>
+  {/if}
 </main>
 
 {#if quickOpenVisible}
@@ -17393,25 +21187,27 @@
 
 <style>
   .shell {
+    --pane-resizer-size: 0px;
+    --pane-resizer-hit-size: 10px;
+    --bottom-dock-resizer-size: 8px;
     position: relative;
     display: grid;
-    grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr);
+    grid-template-columns: var(--side-pane-width) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     gap: 0;
-    width: calc(100vw - 8px);
-    height: calc(100dvh - 8px);
-    min-height: min(520px, calc(100dvh - 8px));
-    margin: 4px auto;
+    width: 100vw;
+    height: 100dvh;
+    min-height: min(520px, 100dvh);
+    margin: 0;
     overflow: hidden;
-    border: 1px solid rgba(231, 238, 235, 0.12);
-    border-radius: 12px;
-    background: rgba(24, 26, 26, 0.92);
-    box-shadow:
-      0 32px 90px rgba(0, 0, 0, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border: 0;
+    border-radius: 0;
+    background: #191a21;
+    box-shadow: none;
   }
 
   .shell.side-right {
-    grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width);
+    grid-template-columns: minmax(0, 1fr) var(--side-pane-width);
   }
 
   .shell.activity-hidden {
@@ -17422,12 +21218,17 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .source-dockview-activity-shell {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
   .shell.activity-rail-only {
-    grid-template-columns: 56px 6px minmax(0, 1fr);
+    grid-template-columns: 56px minmax(0, 1fr);
   }
 
   .shell.side-right.activity-rail-only {
-    grid-template-columns: minmax(0, 1fr) 6px 56px;
+    grid-template-columns: minmax(0, 1fr) 56px;
   }
 
   .shell.activity-hidden .workspace {
@@ -17446,23 +21247,29 @@
   }
 
   .shell.side-right .side-pane-resizer {
+    right: var(--side-pane-width);
+    left: auto;
+    transform: translateX(50%);
+  }
+
+  .shell.side-right .source-dockview-activity-shell {
     grid-column: 2;
     grid-row: 1;
   }
 
   .shell.side-right .activity-shell {
     grid-template-columns: minmax(0, 1fr) 46px;
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
     border-right: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    border-left: 0;
   }
 
   .shell.side-right .activity-rail {
     grid-column: 2;
     grid-row: 1;
     border-right: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.07);
+    border-left: 0;
   }
 
   .shell.side-right .sidebar {
@@ -17472,6 +21279,10 @@
 
   .shell.activity-rail-only .activity-shell {
     grid-template-columns: 46px;
+  }
+
+  .shell.activity-rail-only .source-dockview-activity-shell {
+    min-width: 0;
   }
 
   .shell.activity-rail-only .sidebar {
@@ -17492,8 +21303,8 @@
     grid-template-columns: 46px minmax(0, 1fr);
     min-width: 0;
     overflow: hidden;
-    background: rgba(19, 21, 21, 0.94);
-    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    background: #191a21;
+    border-right: 0;
   }
 
   .activity-rail {
@@ -17505,7 +21316,7 @@
     min-width: 0;
     padding: 10px 4px;
     overflow: hidden;
-    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    border-right: 0;
     background: rgba(9, 12, 12, 0.42);
   }
 
@@ -17534,6 +21345,20 @@
 
   .activity-rail button.active {
     color: #6fdfcf;
+  }
+
+  .activity-rail button.activity-rail-toggle {
+    margin-top: auto;
+    color: #6fdfcf;
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.055);
+  }
+
+  .activity-rail button.activity-rail-toggle:hover,
+  .activity-rail button.activity-rail-toggle:focus-visible {
+    color: #f2fffc;
+    border-color: rgba(92, 226, 207, 0.38);
+    background: rgba(92, 226, 207, 0.14);
   }
 
   .activity-rail button strong {
@@ -17611,25 +21436,100 @@
   }
 
   .side-pane-resizer {
-    width: 6px;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--side-pane-width);
+    z-index: 18;
+    width: var(--pane-resizer-hit-size);
     min-width: 0;
     padding: 0;
+    touch-action: none;
     cursor: col-resize;
     border: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.045);
-    border-right: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
+    background: transparent;
+    transform: translateX(-50%);
+  }
+
+  .shell.activity-rail-only .side-pane-resizer {
+    left: 56px;
+  }
+
+  .shell.side-right.activity-rail-only .side-pane-resizer {
+    right: 56px;
+    left: auto;
+    transform: translateX(50%);
+  }
+
+  .side-pane-resizer::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 56px;
+    border-radius: 999px;
+    background: rgba(126, 240, 223, 0.58);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.46);
+    content: "";
+    opacity: 0;
+    transform: translate(-50%, -50%);
+    transition:
+      background 140ms ease,
+      height 140ms ease,
+      opacity 140ms ease,
+      width 140ms ease;
+  }
+
+  .context-pane-resizer::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 38px;
+    border-radius: 999px;
+    background: rgba(126, 240, 223, 0.46);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.46);
+    content: "";
+    opacity: 0;
+    transform: translate(-50%, -50%);
+    transition:
+      background 140ms ease,
+      height 140ms ease,
+      opacity 140ms ease,
+      width 140ms ease;
   }
 
   .side-pane-resizer:hover,
   .side-pane-resizer:focus-visible {
     outline: 0;
-    background: rgba(92, 226, 207, 0.18);
+    background: transparent;
+  }
+
+  .side-pane-resizer:hover::after,
+  .side-pane-resizer:focus-visible::after,
+  .context-pane-resizer:hover::after,
+  .context-pane-resizer:focus-visible::after,
+  .bottom-dock-resizer:hover::after,
+  .bottom-dock-resizer:focus-visible::after {
+    background: rgba(223, 253, 248, 0.72);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.56), 0 0 12px rgba(92, 226, 207, 0.22);
+    opacity: 1;
   }
 
   :global(body.resizing-source-pane) {
     cursor: col-resize;
     user-select: none;
+  }
+
+  :global(body.resizing-source-pane) .side-pane-resizer {
+    background: transparent;
+  }
+
+  :global(body.resizing-source-pane) .side-pane-resizer::after {
+    width: 3px;
+    height: 72px;
+    background: rgba(223, 253, 248, 0.86);
+    opacity: 1;
   }
 
   .sidebar {
@@ -17696,8 +21596,57 @@
   .source-browser-stack {
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
+    gap: 8px;
+    height: 100%;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .source-files-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .source-files-search-pane {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .source-files-search-pane .global-search-panel {
+    grid-template-rows: auto auto minmax(0, 1fr);
+    min-height: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .source-files-search-pane .source-search-results {
+    max-height: none;
+  }
+
+  .source-files-recent-pane {
+    display: grid;
+    min-height: 0;
+  }
+
+  .source-files-recent-pane .recent-panel {
+    min-height: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
+    border-bottom: 0;
+    overflow: hidden;
+  }
+
+  .source-files-recent-pane .recent-list {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
   }
 
   .activity-panel {
@@ -18039,6 +21988,182 @@
     scrollbar-width: thin;
   }
 
+  .activity-git-panel {
+    grid-template-rows: minmax(0, auto);
+    gap: 8px;
+  }
+
+  .conversation-activity-list {
+    align-content: stretch;
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .conversation-active-pane {
+    display: grid;
+    align-content: start;
+    gap: 7px;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .conversation-activity-list .workspace-snapshot-section {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .activity-git-source-control {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    padding: 7px;
+    border: 1px solid rgba(92, 226, 207, 0.12);
+    border-radius: 8px;
+    background: rgba(92, 226, 207, 0.035);
+  }
+
+  .activity-git-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .activity-git-heading div {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .activity-git-heading strong,
+  .activity-git-heading small,
+  .activity-git-status-heading strong,
+  .activity-git-status-heading span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-git-heading strong {
+    color: #eef6f3;
+    font-size: 13px;
+    font-weight: 860;
+  }
+
+  .activity-git-heading small {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .activity-git-refresh {
+    display: grid;
+    place-items: center;
+    width: 25px;
+    height: 25px;
+    padding: 0;
+    color: #91a19d;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+  }
+
+  .activity-git-refresh:hover,
+  .activity-git-refresh:focus-visible {
+    color: #eaf5f2;
+    border-color: rgba(92, 226, 207, 0.36);
+    outline: 0;
+    background: rgba(92, 226, 207, 0.12);
+  }
+
+  .activity-git-refresh:disabled {
+    cursor: default;
+    opacity: 0.48;
+  }
+
+  .activity-git-status-heading {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    color: #dfe8e5;
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .activity-git-status-heading span {
+    color: #8d9995;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .activity-git-secondary-section {
+    display: grid;
+    min-width: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 5px;
+  }
+
+  .activity-git-secondary-section summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 25px;
+    color: #cbd6d3;
+    list-style: none;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 850;
+  }
+
+  .activity-git-secondary-section summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .activity-git-secondary-section summary::before {
+    width: 0;
+    height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 5px solid rgba(174, 184, 181, 0.76);
+    content: "";
+    transition: transform 140ms ease, border-left-color 140ms ease;
+  }
+
+  .activity-git-secondary-section[open] summary::before {
+    transform: rotate(90deg);
+  }
+
+  .activity-git-secondary-section summary span,
+  .activity-git-secondary-section summary small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-git-secondary-section summary small {
+    color: #7ff0df;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 9px;
+    font-weight: 820;
+  }
+
   .workspace-snapshot-section {
     display: grid;
     gap: 6px;
@@ -18210,11 +22335,14 @@
   }
 
   .activity-worktree-row {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .conversation-session-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 28px;
+    align-items: start;
+    min-height: 86px;
+    overflow: visible;
   }
 
   .conversation-session-row.active {
@@ -18224,10 +22352,11 @@
 
   .conversation-session-open {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
+    grid-template-columns: minmax(36px, max-content) minmax(0, 1fr);
+    align-items: start;
     gap: 8px;
     min-width: 0;
+    min-height: 64px;
     padding: 0;
     color: inherit;
     text-align: left;
@@ -18246,6 +22375,160 @@
     outline-offset: 2px;
   }
 
+  .conversation-session-main,
+  .agent-session-row-main {
+    gap: 2px;
+    align-content: center;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .conversation-session-title-line {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .conversation-session-title-line strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conversation-session-meta,
+  .conversation-session-description,
+  .conversation-session-path,
+  .agent-session-row-main small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conversation-session-path {
+    color: #73817c;
+    font-size: 10px;
+  }
+
+  .conversation-session-description {
+    color: #a7b1ae;
+    font-size: 10px;
+    font-weight: 690;
+    line-height: 1.25;
+  }
+
+  .session-task-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: 15px;
+    padding: 0 5px;
+    color: #09211d;
+    border: 1px solid rgba(92, 226, 207, 0.32);
+    border-radius: 999px;
+    background: #76e6cf;
+    font-size: 7px;
+    font-weight: 900;
+    line-height: 15px;
+  }
+
+  .conversation-session-row .activity-row-actions {
+    opacity: 0.42;
+    transition: opacity 120ms ease;
+  }
+
+  .conversation-session-actions {
+    display: grid;
+    grid-template-columns: 23px;
+    grid-template-rows: 23px auto;
+    align-items: start;
+    justify-items: end;
+    gap: 4px;
+    max-width: 28px;
+  }
+
+  .conversation-row-status {
+    grid-row: 2;
+    width: 100%;
+    max-width: 64px;
+    height: 22px;
+    padding: 0 5px;
+  }
+
+  .conversation-row-status em {
+    text-align: center;
+  }
+
+  .conversation-session-row:hover .activity-row-actions,
+  .conversation-session-row:focus-within .activity-row-actions {
+    opacity: 1;
+  }
+
+  .agent-activity-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "badge main actions";
+    align-items: start;
+    gap: 6px 8px;
+    min-height: 76px;
+    overflow: hidden;
+    padding: 7px;
+  }
+
+  .agent-activity-row > .agent-provider-badge {
+    grid-area: badge;
+    align-self: start;
+    max-width: 76px;
+  }
+
+  .agent-activity-main {
+    grid-area: main;
+    gap: 2px;
+    align-content: center;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .agent-activity-state {
+    color: #73817c;
+    font-size: 8px;
+  }
+
+  .agent-activity-row .workspace-snapshot-readiness,
+  .agent-activity-row .agent-session-focus-lane {
+    justify-self: start;
+    max-width: 100%;
+  }
+
+  .agent-activity-row .agent-session-focus-lane {
+    min-height: 16px;
+    padding: 0 5px;
+  }
+
+  .agent-activity-row .agent-session-focus-lane strong {
+    display: none;
+  }
+
+  .agent-activity-actions {
+    grid-area: actions;
+    justify-content: flex-end;
+    max-width: 28px;
+    overflow: visible;
+    opacity: 0.46;
+    transition: opacity 120ms ease;
+  }
+
+  .agent-activity-row:hover .agent-activity-actions,
+  .agent-activity-row:focus-within .agent-activity-actions {
+    opacity: 1;
+  }
+
+  .agent-activity-actions button {
+    flex: 0 0 auto;
+  }
+
   .activity-worktree-row {
     align-items: start;
     min-height: 58px;
@@ -18253,9 +22536,11 @@
   }
 
   .activity-worktree-row .activity-row-actions {
-    grid-column: 2;
-    justify-content: flex-start;
-    flex-wrap: wrap;
+    grid-column: 3;
+    align-self: start;
+    justify-content: flex-end;
+    max-width: 28px;
+    overflow: visible;
   }
 
   .activity-commit-row {
@@ -19021,6 +23306,100 @@
     color: #8d9995;
   }
 
+  .worktree-runbook-strip {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .activity-worktree-runbook {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 26px;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 5px 6px;
+    border: 1px solid rgba(92, 226, 207, 0.14);
+    border-radius: 9px;
+    background: rgba(92, 226, 207, 0.045);
+  }
+
+  .activity-worktree-runbook button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    color: #9feadf;
+    border: 1px solid rgba(92, 226, 207, 0.18);
+    border-radius: 7px;
+    background: rgba(8, 12, 11, 0.44);
+    cursor: pointer;
+  }
+
+  .activity-worktree-runbook button:hover {
+    color: #071b18;
+    border-color: rgba(92, 226, 207, 0.55);
+    background: #67dfd1;
+  }
+
+  .worktree-runbook-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    height: 18px;
+    padding: 0 6px;
+    overflow: hidden;
+    color: #aeb9b6;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 8px;
+    font-weight: 820;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+
+  .worktree-runbook-chip strong {
+    color: #f0f4f3;
+    font-size: 9px;
+    font-weight: 900;
+  }
+
+  .worktree-runbook-chip span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .worktree-runbook-chip.safe {
+    color: #071b18;
+    border-color: rgba(92, 226, 207, 0.34);
+    background: #67dfd1;
+  }
+
+  .worktree-runbook-chip.safe strong {
+    color: #071b18;
+  }
+
+  .worktree-runbook-chip.backup,
+  .worktree-runbook-chip.saved {
+    color: #e8c47d;
+    border-color: rgba(216, 170, 85, 0.24);
+    background: rgba(216, 170, 85, 0.08);
+  }
+
+  .worktree-runbook-chip.blocked {
+    color: #ffbd9f;
+    border-color: rgba(255, 142, 96, 0.24);
+    background: rgba(255, 142, 96, 0.09);
+  }
+
   .worktree-snapshot-chip {
     display: inline-flex;
     align-items: center;
@@ -19237,6 +23616,26 @@
     min-width: 0;
   }
 
+  .row-action-menu-anchor {
+    position: relative;
+    overflow: visible;
+  }
+
+  .row-action-menu {
+    position: absolute;
+    z-index: 14;
+    top: calc(100% + 4px);
+    right: 0;
+    display: grid;
+    width: 196px;
+    min-width: 0;
+    padding: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-radius: 8px;
+    background: rgba(21, 24, 24, 0.98);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
+  }
+
   .activity-row-actions button,
   .activity-icon-link {
     display: grid;
@@ -19249,6 +23648,160 @@
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.035);
     cursor: pointer;
+  }
+
+  .row-action-menu button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    align-items: center;
+    justify-content: stretch;
+    gap: 7px;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+  }
+
+  .row-action-menu-link {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    align-items: center;
+    justify-content: stretch;
+    gap: 7px;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+    text-decoration: none;
+  }
+
+  .row-action-menu button:hover:not(:disabled),
+  .row-action-menu button:focus-visible,
+  .row-action-menu-link:hover,
+  .row-action-menu-link:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .row-action-menu button span,
+  .row-action-menu-link span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-panel-list .conversation-session-row:has(.row-action-menu),
+  .activity-panel-list .agent-activity-row:has(.row-action-menu),
+  .activity-panel-list .workspace-snapshot-row:has(.row-action-menu),
+  .activity-panel-list .activity-runtime-row:has(.row-action-menu),
+  .activity-panel-list .activity-worktree-row:has(.row-action-menu),
+  .activity-panel-list .activity-repo-row:has(.row-action-menu),
+  .activity-panel-list .activity-task-ledger-row:has(.row-action-menu),
+  .activity-panel-list .activity-commit-row:has(.row-action-menu) {
+    align-items: start;
+  }
+
+  .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu),
+  .activity-panel-list .run-activity-actions:has(.row-action-menu),
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu),
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu),
+  .activity-panel-list .agent-activity-actions:has(.row-action-menu),
+  .activity-panel-list .worktree-activity-actions:has(.row-action-menu),
+  .activity-panel-list .repository-activity-actions:has(.row-action-menu),
+  .activity-panel-list .task-ledger-actions:has(.row-action-menu),
+  .activity-panel-list .activity-commit-meta:has(.row-action-menu),
+  .activity-panel-list .commit-activity-actions:has(.row-action-menu) {
+    display: contents;
+  }
+
+  .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu) > button,
+  .activity-panel-list .run-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button,
+  .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
+    justify-self: end;
+  }
+
+  .activity-panel-list .run-activity-actions:has(.row-action-menu) > button {
+    justify-self: end;
+  }
+
+  .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu) > button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .activity-panel-list .agent-activity-actions:has(.row-action-menu) > button {
+    grid-area: actions;
+    justify-self: end;
+  }
+
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button {
+    grid-column: 2;
+  }
+
+  .activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button {
+    grid-column: 4;
+    grid-row: 1;
+  }
+
+  .activity-panel-list .row-action-menu {
+    position: static;
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-top: -1px;
+  }
+
+  .workspace-context-column:has(.worktree-context-actions .row-action-menu),
+  .context-panel-grid:has(.worktree-context-actions .row-action-menu),
+  .worktree-context-panel:has(.worktree-context-actions .row-action-menu),
+  .worktree-context-list:has(.worktree-context-actions .row-action-menu) {
+    overflow: visible;
+  }
+
+  .workspace-context-column:has(.worktree-context-actions .row-action-menu),
+  .context-panel-grid:has(.worktree-context-actions .row-action-menu),
+  .worktree-context-panel:has(.worktree-context-actions .row-action-menu) {
+    position: relative;
+    z-index: 32;
+  }
+
+  .worktree-context-actions:has(.row-action-menu) {
+    position: relative;
+    z-index: 34;
+    max-width: none;
+  }
+
+  .worktree-context-actions .row-action-menu {
+    width: min(196px, calc(var(--context-pane-width) - 40px));
   }
 
   .activity-row-actions button:disabled {
@@ -19778,31 +24331,93 @@
 
   .recent-panel {
     display: grid;
-    gap: 7px;
-    padding-bottom: 12px;
-    margin-bottom: 12px;
+    gap: 6px;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
 
-  .recent-heading {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    color: #aeb8b5;
-    font-size: 12px;
-    font-weight: 700;
+  .source-sidebar-section {
+    min-width: 0;
   }
 
-  .recent-heading-icon,
+  .source-sidebar-section.collapsed {
+    flex: 0 0 auto;
+  }
+
+  .source-section-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .source-section-header {
+    display: grid;
+    grid-template-columns: 14px 18px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    height: 26px;
+    padding: 0 5px;
+    color: #aeb8b5;
+    text-align: left;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .source-section-header:hover,
+  .source-section-header:focus-visible {
+    color: #eef6f3;
+    outline: 0;
+    background: rgba(255, 255, 255, 0.055);
+  }
+
+  .source-section-header svg {
+    min-width: 0;
+    color: #8d9995;
+  }
+
+  .source-section-header svg:nth-of-type(2) {
+    color: #6fdfcf;
+  }
+
+  .source-section-header span,
+  .source-section-header small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source-section-header small {
+    color: #6fdfcf;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 820;
+  }
+
+  .source-section-title {
+    grid-template-columns: 18px minmax(0, 1fr);
+    cursor: default;
+  }
+
+  .source-section-title:hover,
+  .source-section-title:focus-visible {
+    color: #aeb8b5;
+    background: transparent;
+  }
+
   .recent-file-icon {
     display: grid;
     place-items: center;
     min-width: 0;
-  }
-
-  .recent-heading-icon {
-    color: #6fdfcf;
   }
 
   .recent-list {
@@ -19872,24 +24487,17 @@
     overflow: hidden;
   }
 
+  .source-list-panel.collapsed {
+    grid-template-rows: auto;
+    flex: 0 0 auto;
+  }
+
   .tree-panel-header {
     min-width: 0;
   }
 
   .tree-heading {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-    color: #aeb8b5;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .tree-heading strong {
-    color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    height: 27px;
   }
 
   .scan-summary-row {
@@ -19901,6 +24509,9 @@
   }
 
   .scan-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
     min-width: 0;
     overflow: hidden;
     color: #7f8b87;
@@ -19909,6 +24520,25 @@
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .scan-summary .index-summary,
+  .scan-summary .scan-evidence {
+    min-width: 0;
+    margin: 0;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .scan-summary .index-summary {
+    flex: 0 1 auto;
+    max-width: min(42%, 150px);
+  }
+
+  .scan-summary .scan-evidence {
+    flex: 1 1 0;
   }
 
   .scan-diagnostic-button {
@@ -19940,6 +24570,18 @@
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .index-summary[data-tone='warning'] {
+    color: #d8cba8;
+  }
+
+  .index-summary[data-tone='error'] {
+    color: #ff9a9a;
+  }
+
+  .index-summary[data-tone='muted'] {
+    color: #8a9693;
   }
 
   .scan-evidence {
@@ -20344,6 +24986,11 @@
     position: relative;
     display: flex;
     flex-direction: column;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -20707,6 +25354,12 @@
     margin: 0;
   }
 
+  .workspace.chrome-compact .dock-panel-tabs.empty {
+    height: 0;
+    min-height: 0;
+    margin: 0;
+  }
+
   .hidden-dock-panel-rail {
     position: absolute;
     top: 38px;
@@ -20762,6 +25415,33 @@
     border-color: rgba(92, 226, 207, 0.32);
     outline: 0;
     background: rgba(92, 226, 207, 0.1);
+  }
+
+  .workbench-global-controls {
+    position: absolute;
+    top: 7px;
+    right: 8px;
+    z-index: 36;
+    display: inline-grid;
+    place-items: center;
+    min-width: 0;
+  }
+
+  .workbench-global-controls > .topbar-command-button {
+    height: 25px;
+    min-width: 32px;
+    background: rgba(18, 20, 21, 0.9);
+    backdrop-filter: blur(14px);
+  }
+
+  .workbench-view-menu {
+    z-index: 37;
+  }
+
+  .workbench-hidden-dock-panel-rail {
+    top: 40px;
+    right: 8px;
+    z-index: 35;
   }
 
   .dock-drop-zones {
@@ -20924,8 +25604,11 @@
   }
 
   .workspace-arrangement {
+    position: relative;
     display: grid;
     flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
     grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
@@ -20937,22 +25620,24 @@
   }
 
   .workspace-arrangement.context-side {
-    grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width);
+    grid-template-columns: minmax(0, 1fr) var(--context-pane-width);
     grid-template-rows: minmax(0, 1fr);
     gap: 0;
   }
 
   .workspace-arrangement.context-side.context-rail-only {
-    grid-template-columns: minmax(0, 1fr) 6px 34px;
+    grid-template-columns: minmax(0, 1fr) 34px;
   }
 
   .workspace-arrangement.context-bottom {
-    grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height));
+    grid-template-rows: minmax(0, 1fr) minmax(96px, var(--context-pane-height));
     gap: 0;
   }
 
   .workspace-context-column,
   .workspace-main-column {
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -20968,15 +25653,30 @@
     flex-direction: column;
   }
 
+  .source-runtime-panel-stage {
+    position: fixed;
+    left: -1px;
+    bottom: -1px;
+    width: 1px;
+    height: 1px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    contain: layout paint;
+  }
+
   .workspace-arrangement.context-side .workspace-main-column {
     grid-column: 1;
     grid-row: 1;
   }
 
   .workspace-arrangement.context-side .workspace-context-column {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
-    padding-left: 6px;
+    padding-left: 0;
   }
 
   .workspace-arrangement.context-bottom .workspace-main-column {
@@ -20986,51 +25686,68 @@
 
   .workspace-arrangement.context-bottom .workspace-context-column {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
     min-height: 0;
     padding-top: 6px;
   }
 
   .context-pane-resizer {
+    position: absolute;
     display: none;
-    width: 6px;
+    z-index: 18;
+    width: var(--pane-resizer-hit-size);
     min-width: 0;
     padding: 0;
+    touch-action: none;
     cursor: col-resize;
     border: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.045);
-    border-right: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
+    background: transparent;
   }
 
   .workspace-arrangement.context-side .context-pane-resizer {
     display: block;
-    grid-column: 2;
-    grid-row: 1;
+    top: 0;
+    right: var(--context-pane-width);
+    bottom: 0;
+    transform: translateX(50%);
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .context-pane-resizer {
+    right: 34px;
   }
 
   .workspace-arrangement.context-bottom .context-pane-resizer {
     display: block;
-    grid-column: 1;
-    grid-row: 2;
+    right: 0;
+    bottom: var(--context-pane-height);
+    left: 0;
     width: auto;
-    height: 6px;
+    height: var(--pane-resizer-hit-size);
     cursor: row-resize;
-    border-top: 1px solid rgba(255, 255, 255, 0.045);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-    border-left: 0;
-    border-right: 0;
+    border: 0;
+    transform: translateY(50%);
   }
 
   .context-pane-resizer:hover,
   .context-pane-resizer:focus-visible {
     outline: 0;
-    background: rgba(92, 226, 207, 0.18);
+    background: transparent;
+  }
+
+  .workspace-arrangement.context-bottom .context-pane-resizer::after {
+    width: 42px;
+    height: 2px;
   }
 
   :global(body.resizing-context-pane) {
     cursor: col-resize;
     user-select: none;
+  }
+
+  :global(body.resizing-context-pane) .context-pane-resizer::after,
+  :global(body.resizing-context-pane-bottom) .context-pane-resizer::after {
+    background: rgba(223, 253, 248, 0.82);
+    opacity: 1;
   }
 
   :global(body.resizing-context-pane-bottom) {
@@ -21039,28 +25756,54 @@
   }
 
   .bottom-dock-resizer {
-    flex: 0 0 6px;
+    position: relative;
+    flex: 0 0 var(--bottom-dock-resizer-size);
     width: auto;
-    height: 6px;
-    min-height: 6px;
+    height: var(--bottom-dock-resizer-size);
+    min-height: var(--bottom-dock-resizer-size);
     margin: 5px 0 0;
     padding: 0;
+    touch-action: none;
     cursor: row-resize;
     border: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.045);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
+    border-top: 1px solid rgba(92, 226, 207, 0.1);
+    border-bottom: 1px solid rgba(92, 226, 207, 0.1);
+    background: rgba(92, 226, 207, 0.055);
   }
 
   .bottom-dock-resizer:hover,
   .bottom-dock-resizer:focus-visible {
     outline: 0;
-    background: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.2);
+  }
+
+  .bottom-dock-resizer::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 68px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(126, 240, 223, 0.58);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.46);
+    content: "";
+    transform: translate(-50%, -50%);
+    transition: background 140ms ease, width 140ms ease;
   }
 
   :global(body.resizing-bottom-dock) {
     cursor: row-resize;
     user-select: none;
+  }
+
+  :global(body.resizing-bottom-dock) .bottom-dock-resizer {
+    background: rgba(92, 226, 207, 0.24);
+  }
+
+  :global(body.resizing-bottom-dock) .bottom-dock-resizer::after {
+    width: 96px;
+    height: 4px;
+    background: rgba(223, 253, 248, 0.86);
   }
 
   .context-panel-grid {
@@ -21233,6 +25976,233 @@
     border-radius: 5px;
   }
 
+  .context-panel-grid.dockview-card-tabs {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    padding-right: 0;
+  }
+
+  .context-panel-grid.paneview-card-stack {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    padding-right: 0;
+  }
+
+  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+    padding-right: 0;
+    scrollbar-gutter: auto;
+  }
+
+  :global(.source-dockview-context-cards-shell:not(.dockview-enabled)) {
+    display: contents;
+  }
+
+  :global(.source-paneview-context-cards-shell:not(.dockview-enabled)) {
+    display: contents;
+  }
+
+  :global(.source-dockview-context-cards-shell.dockview-enabled) {
+    position: relative;
+    display: grid;
+    flex: 1 1 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: transparent;
+  }
+
+  :global(.source-paneview-context-cards-shell.dockview-enabled) {
+    position: relative;
+    display: grid;
+    flex: 1 1 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: transparent;
+  }
+
+  :global(.source-paneview-context-cards-shell),
+  :global(.source-paneview-context-cards-host),
+  :global(.source-paneview-context-cards-shell .source-paneview-panel-host),
+  :global(.source-paneview-context-cards-shell .source-paneview-attached-panel) {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  :global(.source-dockview-context-cards-host) {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    contain: layout paint;
+  }
+
+  :global(.source-paneview-context-cards-host) {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    contain: layout paint;
+  }
+
+  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready .source-dockview-context-cards-host) {
+    visibility: visible;
+  }
+
+  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready .source-paneview-context-cards-host) {
+    visibility: visible;
+  }
+
+  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .orchestration-context-panel),
+  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .runtime-context-panel),
+  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .agent-session-panel),
+  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .worktree-context-panel),
+  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .repo-dashboard-panel) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .orchestration-context-panel),
+  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .runtime-context-panel),
+  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .agent-session-panel),
+  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .worktree-context-panel),
+  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .repo-dashboard-panel) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  :global(.source-dockview-context-cards-shell .dockview-theme-dark) {
+    --dv-background-color: rgba(20, 23, 24, 0.72);
+    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
+    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
+    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
+    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
+    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
+    --dv-separator-border: transparent;
+  }
+
+  :global(.source-paneview-context-cards-shell .dockview-theme-dark) {
+    --dv-background-color: rgba(20, 23, 24, 0.72);
+    --dv-paneview-header-border-color: transparent;
+    --dv-active-sash-color: rgba(92, 226, 207, 0.42);
+    --dv-sash-color: transparent;
+    --dv-separator-border: transparent;
+  }
+
+  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .orchestration-context-panel,
+  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .runtime-context-panel,
+  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .agent-session-panel,
+  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .worktree-context-panel,
+  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .repo-dashboard-panel {
+    grid-column: auto;
+    grid-row: auto;
+    width: 100%;
+    height: 100%;
+    padding: 6px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .orchestration-context-panel,
+  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .runtime-context-panel,
+  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .agent-session-panel,
+  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .worktree-context-panel,
+  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .repo-dashboard-panel {
+    grid-column: auto;
+    grid-row: auto;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    min-width: 0;
+    padding: 6px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .context-panel-grid.paneview-card-stack .orchestration-context-list,
+  .context-panel-grid.paneview-card-stack .runtime-context-list,
+  .context-panel-grid.paneview-card-stack .agent-session-list,
+  .context-panel-grid.paneview-card-stack .worktree-context-list,
+  .context-panel-grid.paneview-card-stack .repo-dashboard-list {
+    height: 100%;
+    max-height: none;
+  }
+
+  :global(.source-paneview-context-cards-shell .source-paneview-panel-host),
+  :global(.source-paneview-context-cards-shell .source-paneview-attached-panel) {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+    justify-items: stretch;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  :global(.source-dockview-files-shell .source-paneview-panel-host),
+  :global(.source-dockview-conversation-shell .source-paneview-panel-host) {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+    justify-items: stretch;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.orchestration-context-panel),
+  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.runtime-context-panel),
+  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.agent-session-panel),
+  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.worktree-context-panel),
+  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.repo-dashboard-panel),
+  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.orchestration-context-panel),
+  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.runtime-context-panel),
+  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.agent-session-panel),
+  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.worktree-context-panel),
+  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.repo-dashboard-panel) {
+    grid-column: auto;
+    grid-row: auto;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: 6px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
   .workspace-arrangement.context-side .orchestration-context-header,
   .workspace-arrangement.context-side .runtime-context-header,
   .workspace-arrangement.context-side .agent-session-header,
@@ -21265,6 +26235,20 @@
   .workspace-arrangement.context-side .context-card-actions .file-action-button {
     width: 20px;
     height: 20px;
+  }
+
+  .workspace-arrangement.context-side .worktree-runbook-strip {
+    gap: 2px;
+  }
+
+  .workspace-arrangement.context-side .worktree-runbook-chip {
+    height: 16px;
+    padding: 0 5px;
+    line-height: 16px;
+  }
+
+  .workspace-arrangement.context-side .worktree-runbook-chip span {
+    display: none;
   }
 
   .workspace-arrangement.context-bottom .context-panel-grid {
@@ -21308,22 +26292,43 @@
 
   .workspace-arrangement.context-side .agent-session-row {
     grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
+    grid-template-areas:
+      "badge main"
+      "lane lane";
+    align-items: start;
+    min-height: 62px;
+    gap: 4px 6px;
   }
 
-  .workspace-arrangement.context-side .agent-session-row > span:not(.agent-provider-badge),
-  .workspace-arrangement.context-side .agent-session-row small {
+  .workspace-arrangement.context-side .agent-session-row > .agent-provider-badge {
+    grid-area: badge;
+    justify-self: start;
+    max-width: 58px;
+  }
+
+  .workspace-arrangement.context-side .agent-session-row-main {
+    grid-area: main;
+    min-width: 0;
+  }
+
+  .workspace-arrangement.context-side .agent-session-row-main small:last-of-type,
+  .workspace-arrangement.context-side .agent-session-row > small {
     display: none;
   }
 
+  .workspace-arrangement.context-side .agent-session-row-main small:first-of-type {
+    display: block;
+  }
+
   .workspace-arrangement.context-side .agent-session-focus-lane {
-    grid-column: 1 / -1;
+    grid-area: lane;
+    width: 100%;
     min-height: 16px;
     padding: 0 4px;
   }
 
   .workspace-arrangement.context-side .worktree-context-row {
-    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
     align-items: center;
   }
 
@@ -21345,8 +26350,13 @@
   }
 
   .workspace-arrangement.context-side .worktree-context-actions {
-    grid-column: 1 / -1;
-    flex-wrap: wrap;
+    grid-column: 4;
+    grid-row: 1;
+    align-self: start;
+    justify-self: end;
+    max-width: 28px;
+    overflow: visible;
+    flex-wrap: nowrap;
   }
 
   .workspace-arrangement.context-side .repo-dashboard-row {
@@ -21381,11 +26391,11 @@
 
   .workspace-arrangement.context-side .orchestration-context-meta {
     gap: 3px;
-    font-size: 7.5px;
+    font-size: 9px;
   }
 
   .workspace-arrangement.context-side .orchestration-context-current {
-    font-size: 8.5px;
+    font-size: 10px;
   }
 
   .workspace-arrangement.context-side .orchestration-context-loop-stages {
@@ -21396,7 +26406,7 @@
   .workspace-arrangement.context-side .context-loop-stage {
     height: 16px;
     padding: 0 4px;
-    font-size: 7.5px;
+    font-size: 9px;
   }
 
   .workspace-arrangement.context-side .runtime-port,
@@ -21409,7 +26419,7 @@
     min-height: 0;
     height: 16px;
     padding: 0 5px;
-    font-size: 8px;
+    font-size: 9px;
   }
 
   .workspace-arrangement.context-side .runtime-url-link,
@@ -21423,15 +26433,12 @@
     border-radius: 5px;
   }
 
-  .workspace-arrangement.context-side .worktree-context-actions .worktree-snapshot-chip {
-    max-width: 108px;
-    height: 20px;
-    padding: 0 5px;
+  .workspace-arrangement.context-side .orchestration-context-actions {
+    justify-content: start;
   }
 
-  .workspace-arrangement.context-side .orchestration-context-actions,
   .workspace-arrangement.context-side .worktree-context-actions {
-    justify-content: start;
+    justify-content: flex-end;
   }
 
   .orchestration-context-panel,
@@ -21715,6 +26722,10 @@
     scrollbar-width: thin;
   }
 
+  .worktree-decision-queue:has(.row-action-menu) {
+    max-height: 180px;
+  }
+
   .worktree-decision-group {
     display: grid;
     gap: 3px;
@@ -21791,16 +26802,17 @@
     display: grid;
     gap: 3px;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .worktree-decision-item {
     display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr) 20px 20px 20px;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 4px;
     min-width: 0;
     min-height: 24px;
+    overflow: visible;
     padding: 3px 4px;
     border-radius: 5px;
     background: rgba(0, 0, 0, 0.16);
@@ -21830,6 +26842,31 @@
     border-radius: 5px;
     background: rgba(255, 255, 255, 0.035);
     cursor: pointer;
+  }
+
+  .worktree-decision-item .row-action-menu button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    place-items: initial;
+    align-items: center;
+    justify-content: stretch;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+  }
+
+  .worktree-decision-item .row-action-menu {
+    position: static;
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-top: 2px;
   }
 
   .worktree-decision-item button.worktree-primary-action.backup {
@@ -21881,9 +26918,7 @@
   }
 
   .agent-session-row {
-    grid-template-columns:
-      auto minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.78fr) minmax(0, 0.64fr)
-      minmax(0, 0.95fr);
+    grid-template-columns: auto minmax(0, 1fr) minmax(88px, 0.72fr);
   }
 
   .worktree-context-row {
@@ -21898,6 +26933,27 @@
 
   .orchestration-context-row {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .orchestration-context-row:has(.row-action-menu) {
+    align-items: start;
+  }
+
+  .orchestration-context-actions:has(.row-action-menu) {
+    display: contents;
+  }
+
+  .orchestration-context-actions:has(.row-action-menu) > button {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .orchestration-context-actions .row-action-menu {
+    position: static;
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-top: -1px;
   }
 
   .orchestration-context-row.bad {
@@ -22044,6 +27100,24 @@
     cursor: pointer;
   }
 
+  .orchestration-context-actions .row-action-menu button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    place-items: initial;
+    align-items: center;
+    justify-content: stretch;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+  }
+
   .orchestration-context-actions button:hover,
   .orchestration-context-actions button:focus-visible {
     color: #eaf5f2;
@@ -22135,13 +27209,18 @@
     display: inline-grid;
     place-items: center;
     height: 20px;
+    max-width: 64px;
+    min-width: 0;
+    overflow: hidden;
     padding: 0 7px;
     color: #081916;
     border-radius: 999px;
     background: #81d6e4;
     font-size: 10px;
     font-weight: 820;
+    text-overflow: ellipsis;
     text-transform: capitalize;
+    white-space: nowrap;
   }
 
   .worktree-status-badge {
@@ -22292,6 +27371,8 @@
     justify-content: flex-end;
     gap: 3px;
     min-width: 0;
+    max-width: 28px;
+    overflow: visible;
   }
 
   .worktree-context-actions button {
@@ -22312,6 +27393,24 @@
     width: auto;
     max-width: 126px;
     padding: 0 6px;
+  }
+
+  .worktree-context-actions .row-action-menu button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    place-items: initial;
+    align-items: center;
+    justify-content: stretch;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
   }
 
   .worktree-context-actions button:hover,
@@ -22469,135 +27568,6 @@
     color: #9fb4af;
   }
 
-  .tab-strip {
-    display: flex;
-    gap: 4px;
-    min-width: 0;
-    padding-bottom: 3px;
-    margin: 0 0 6px;
-    overflow-x: auto;
-  }
-
-  .source-tab {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 22px;
-    align-items: center;
-    flex: 0 1 190px;
-    min-width: 132px;
-    max-width: 190px;
-    height: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .source-tab.active {
-    border-color: rgba(92, 226, 207, 0.42);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .source-tab.dirty {
-    border-color: rgba(216, 170, 85, 0.44);
-  }
-
-  .tab-select-button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr) auto 7px;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    height: 100%;
-    padding: 0 5px 0 7px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .tab-file-icon {
-    display: grid;
-    place-items: center;
-    min-width: 0;
-    color: #8d9995;
-  }
-
-  .source-tab.active .tab-file-icon {
-    color: #6fdfcf;
-  }
-
-  .tab-dirty-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-    background: #d8aa55;
-    box-shadow: 0 0 0 2px rgba(216, 170, 85, 0.14);
-  }
-
-  .tab-select-button span,
-  .tab-select-button small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .tab-select-button span {
-    font-size: 11px;
-    font-weight: 760;
-  }
-
-  .tab-select-button small {
-    color: #8d9995;
-    display: none;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .tab-close-button {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    color: #8d9995;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .tab-close-button:hover {
-    color: #f2f6f5;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .tab-select-button:focus-visible,
-  .tab-close-button:focus-visible {
-    outline: 0;
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .path-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 5px;
-    color: #87918e;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-  }
-
-  .path-row span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .path-row strong {
-    color: #cbd3d1;
-  }
-
   .file-actions {
     display: flex;
     align-items: center;
@@ -22667,19 +27637,137 @@
       0 18px 45px rgba(0, 0, 0, 0.2);
   }
 
+  .source-editor-dock-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .source-editor-file-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .editor-file-placeholder {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 5px;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    color: #8f9a96;
+    border: 0;
+    background: #17191e;
+    cursor: pointer;
+  }
+
+  .editor-file-placeholder strong,
+  .editor-file-placeholder span,
+  .editor-file-placeholder small {
+    max-width: min(520px, 86%);
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-file-placeholder strong {
+    color: #f2f6f5;
+    font-size: 13px;
+    font-weight: 820;
+  }
+
+  .editor-file-placeholder span,
+  .editor-file-placeholder small {
+    font-size: 10px;
+    font-weight: 760;
+  }
+
+  .editor-file-placeholder:hover,
+  .editor-file-placeholder:focus-visible {
+    color: #bff8ef;
+    outline: 0;
+  }
+
+  :global(.source-dockview-workbench-shell .editor-frame),
+  :global(.source-dockview-workbench-shell .empty-preview),
+  :global(.source-dockview-workbench-shell .source-dockview-editor-files-shell),
+  :global(.source-dockview-center-shell .editor-frame),
+  :global(.source-dockview-center-shell .empty-preview),
+  :global(.source-dockview-center-shell .source-dockview-editor-files-shell) {
+    height: 100%;
+  }
+
+  :global(.source-dockview-workbench-shell .source-dockview-attached-panel.terminal-launchpad),
+  :global(.source-dockview-workbench-shell .source-dockview-attached-panel.browser-dock),
+  :global(.source-dockview-center-shell .source-dockview-attached-panel.terminal-launchpad),
+  :global(.source-dockview-center-shell .source-dockview-attached-panel.browser-dock) {
+    flex: 1 1 0;
+    align-self: stretch;
+    width: 100%;
+    height: 100% !important;
+    min-height: 0;
+    max-height: none;
+    margin-top: 0;
+  }
+
+  :global(.source-dockview-workbench-shell .embedded-terminal-panel),
+  :global(.source-dockview-workbench-shell .embedded-terminal-host),
+  :global(.source-dockview-center-shell .embedded-terminal-panel),
+  :global(.source-dockview-center-shell .embedded-terminal-host) {
+    height: 100% !important;
+    min-height: 0;
+  }
+
+  :global(.source-dockview-workbench-shell .source-dockview-attached-panel.browser-dock),
+  :global(.source-dockview-center-shell .source-dockview-attached-panel.browser-dock) {
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+  }
+
+  :global(.source-dockview-workbench-shell .browser-frame-wrap),
+  :global(.source-dockview-workbench-shell .browser-frame),
+  :global(.source-dockview-center-shell .browser-frame-wrap),
+  :global(.source-dockview-center-shell .browser-frame) {
+    height: 100% !important;
+    min-height: 0;
+  }
+
   .terminal-launchpad {
     display: grid;
-    flex: 0 0 auto;
+    grid-template-rows: auto minmax(0, 1fr);
+    flex: 1 1 auto;
     gap: 6px;
-    height: min(var(--bottom-dock-height), 55dvh);
+    width: 100%;
+    height: 100%;
     min-width: 0;
-    max-height: min(var(--bottom-dock-height), 55dvh);
-    margin-top: 6px;
+    min-height: 0;
+    max-height: none;
+    margin-top: 0;
     overflow: hidden;
     padding: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.105);
+    border: 1px solid rgba(255, 121, 198, 0.14);
     border-radius: 8px;
-    background: rgba(15, 18, 18, 0.92);
+    background: #191a21;
+  }
+
+  :global(.source-dockview-bottom-shell .terminal-launchpad) {
+    flex: 0 0 auto;
+    height: var(--bottom-dock-height);
+    min-height: 96px;
+    margin-top: 6px;
   }
 
   .terminal-launchpad-header {
@@ -22700,13 +27788,11 @@
 
   .terminal-launchpad-header > div:first-child {
     gap: 6px;
-    color: #dce4e2;
+    color: #f8f8f2;
   }
 
   .terminal-launchpad-header strong,
-  .terminal-launchpad-header span,
-  .terminal-launchpad-row strong,
-  .terminal-launchpad-row small {
+  .terminal-launchpad-header span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -22719,7 +27805,7 @@
   }
 
   .terminal-launchpad-header span {
-    color: #8d9995;
+    color: #b8b8c6;
     font-size: 10px;
     font-weight: 760;
   }
@@ -22751,7 +27837,7 @@
   }
 
   .terminal-inline-picker span {
-    color: #7f8b88;
+    color: #b8b8c6;
     font-size: 8px;
     font-weight: 850;
     text-transform: uppercase;
@@ -22761,10 +27847,10 @@
     width: 94px;
     height: 24px;
     min-width: 0;
-    color: #dffdf8;
-    border: 1px solid rgba(255, 255, 255, 0.075);
+    color: #f8f8f2;
+    border: 1px solid rgba(255, 121, 198, 0.18);
     border-radius: 5px;
-    background: rgba(255, 255, 255, 0.04);
+    background: #282a36;
     font-size: 10px;
     font-weight: 820;
   }
@@ -22772,16 +27858,18 @@
   .embedded-terminal-panel {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 5px;
+    gap: 4px;
     min-width: 0;
-    padding: 6px;
-    border: 1px solid rgba(92, 226, 207, 0.11);
+    min-height: 0;
+    padding: 0;
+    border: 1px solid rgba(255, 121, 198, 0.2);
     border-radius: 7px;
-    background: rgba(8, 11, 11, 0.48);
+    background: #282a36;
+    overflow: hidden;
   }
 
   .embedded-terminal-panel.active {
-    border-color: rgba(92, 226, 207, 0.24);
+    border-color: rgba(255, 121, 198, 0.48);
   }
 
   .embedded-terminal-toolbar {
@@ -22790,7 +27878,11 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-    color: #8d9995;
+    min-height: 26px;
+    padding: 0 8px;
+    border-bottom: 1px solid rgba(255, 121, 198, 0.12);
+    background: #21222c;
+    color: #b8b8c6;
     font-size: 9px;
     font-weight: 760;
   }
@@ -22803,202 +27895,68 @@
   }
 
   .embedded-terminal-toolbar code {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    color: #8be9fd;
+    font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
     font-size: 9px;
   }
 
   .embedded-terminal-host {
-    height: clamp(96px, calc(var(--bottom-dock-height) - 226px), 360px);
-    min-height: 96px;
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    background: #101414;
+    border: 0;
+    border-radius: 0;
+    background: #282a36;
   }
 
   .embedded-terminal-host :global(.xterm) {
     height: 100%;
-    padding: 6px;
+    padding: 5px 8px 6px;
+    font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
   }
 
   .embedded-terminal-host :global(.xterm-viewport) {
     background: transparent !important;
   }
 
+  .embedded-terminal-host :global(.xterm-screen) {
+    min-height: 100%;
+  }
+
   .embedded-terminal-error {
     min-width: 0;
     overflow: hidden;
     color: #d8aa55;
+    font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
     font-size: 10px;
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .embedded-terminal-command {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 30px;
-    padding: 0 4px 0 8px;
-    border: 1px solid rgba(92, 226, 207, 0.12);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.035);
-    color: #72e2cf;
-  }
-
-  .embedded-terminal-command:focus-within {
-    border-color: rgba(92, 226, 207, 0.38);
-    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.1);
-  }
-
-  .embedded-terminal-command input {
-    height: 100%;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 720;
-  }
-
-  .embedded-terminal-command button {
-    height: 22px;
-    padding: 0 9px;
-    color: #08201c;
-    border: 0;
-    border-radius: 5px;
-    background: #72e2cf;
-    font-size: 10px;
-    font-weight: 860;
-    cursor: pointer;
-  }
-
-  .embedded-terminal-command button:disabled {
-    color: #78837f;
-    background: rgba(255, 255, 255, 0.08);
-    cursor: default;
-  }
-
-  .terminal-launchpad-grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .terminal-launchpad-list {
-    display: grid;
-    align-content: start;
-    gap: 4px;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .terminal-launchpad-title {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .terminal-launchpad-title strong {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-  }
-
-  .terminal-launchpad-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) 24px;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 4px 5px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .terminal-agent-row {
-    grid-template-columns: auto minmax(0, 1fr) 24px 24px;
-  }
-
-  .terminal-launchpad-row.active {
-    border-color: rgba(92, 226, 207, 0.24);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .terminal-launchpad-row > div {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .terminal-launchpad-row strong {
-    color: #eef4f2;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .terminal-launchpad-row small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 720;
-  }
-
-  .terminal-launchpad-row button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 22px;
-    color: #72e2cf;
-    border: 1px solid rgba(92, 226, 207, 0.18);
-    border-radius: 5px;
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .terminal-launchpad-row button:hover,
-  .terminal-launchpad-row button:focus-visible {
-    outline: 0;
-    background: rgba(92, 226, 207, 0.16);
-  }
-
-  .terminal-launchpad-empty {
-    display: grid;
-    place-items: center;
-    min-height: 30px;
-    color: #798481;
-    border: 1px dashed rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
   .browser-dock {
     display: grid;
     grid-template-rows: auto auto auto minmax(0, 1fr);
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     gap: 6px;
-    height: min(var(--bottom-dock-height), 55dvh);
+    width: 100%;
+    height: 100%;
     min-width: 0;
-    max-height: min(var(--bottom-dock-height), 55dvh);
-    margin-top: 6px;
+    min-height: 0;
+    max-height: none;
+    margin-top: 0;
     overflow: hidden;
     padding: 7px;
     border: 1px solid rgba(255, 255, 255, 0.105);
     border-radius: 8px;
     background: rgba(15, 18, 18, 0.92);
+  }
+
+  :global(.source-dockview-bottom-shell .browser-dock) {
+    flex: 0 0 auto;
+    height: var(--bottom-dock-height);
+    min-height: 96px;
+    margin-top: 6px;
   }
 
   .browser-dock-header,
@@ -23153,7 +28111,7 @@
   .browser-frame-wrap {
     min-height: 128px;
     min-width: 0;
-    height: clamp(128px, calc(var(--bottom-dock-height) - 122px), 520px);
+    height: 100%;
     overflow: hidden;
     border: 1px solid rgba(92, 226, 207, 0.11);
     border-radius: 7px;
@@ -23189,7 +28147,7 @@
   .editor-toolbar {
     display: grid;
     position: relative;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) repeat(3, auto);
     align-items: center;
     gap: 4px;
     height: 22px;
@@ -23198,9 +28156,57 @@
     background: rgba(255, 255, 255, 0.025);
   }
 
+  .editor-mode-toggle {
+    display: inline-grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+    width: 128px;
+    min-width: 0;
+    height: 20px;
+    padding: 1px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .editor-mode-toggle button {
+    display: inline-grid;
+    grid-template-columns: 12px minmax(0, 1fr);
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    height: 16px;
+    padding: 0 5px;
+    color: #9fa9a6;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    font-size: 9px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .editor-mode-toggle button.active {
+    color: #dffdf8;
+    background: rgba(92, 226, 207, 0.16);
+  }
+
+  .editor-mode-toggle button:hover,
+  .editor-mode-toggle button:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+  }
+
+  .editor-mode-toggle span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .editor-file-state {
     display: inline-grid;
-    grid-template-columns: 14px minmax(0, auto) auto auto;
+    grid-template-columns: 14px minmax(0, 1fr) auto auto;
     align-items: center;
     justify-self: start;
     gap: 4px;
@@ -23215,15 +28221,31 @@
   }
 
   .editor-file-state strong,
-  .editor-file-state span {
+  .editor-file-state span,
+  .editor-file-state small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .editor-file-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
   .editor-file-state strong {
     font-size: 11px;
+    font-weight: 760;
+  }
+
+  .editor-file-state small {
+    flex: 0 0 auto;
+    color: #87918e;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
     font-weight: 760;
   }
 
@@ -23578,79 +28600,6 @@
     background: rgba(20, 23, 24, 0.86);
   }
 
-  .source-dockview-insights-shell {
-    position: relative;
-    display: grid;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .source-dockview-insights-host,
-  .source-dockview-insights-shell > .source-intelligence-panel {
-    grid-area: 1 / 1;
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .source-dockview-insights-host {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    visibility: hidden;
-    contain: layout paint;
-  }
-
-  .source-dockview-insights-shell.dockview-ready .source-dockview-insights-host {
-    visibility: visible;
-  }
-
-  .source-dockview-insights-shell.dockview-ready > .source-intelligence-panel {
-    visibility: hidden;
-    pointer-events: none;
-  }
-
-  .source-dockview-insights-shell :global(.source-dockview-panel-host) {
-    display: flex;
-    min-width: 0;
-    min-height: 0;
-    width: 100%;
-    height: 100%;
-  }
-
-  .source-dockview-insights-shell :global(.source-dockview-attached-panel) {
-    width: 100%;
-    height: 100%;
-  }
-
-  .source-dockview-insights-shell :global(.dockview-theme-dark) {
-    --dv-background-color: rgba(20, 23, 24, 0.86);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
-  }
-
-  .source-dockview-insights-error {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
-    z-index: 4;
-    max-width: calc(100% - 16px);
-    overflow: hidden;
-    color: #ffb3a6;
-    border: 1px solid rgba(255, 123, 107, 0.32);
-    border-radius: 6px;
-    background: rgba(42, 21, 19, 0.92);
-    padding: 4px 6px;
-    font-size: 10px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .editor-lookup-popover {
     position: absolute;
     right: 12px;
@@ -23968,6 +28917,116 @@
     scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
     scrollbar-gutter: stable;
     scrollbar-width: thin;
+  }
+
+  .activity-source-control-list {
+    max-height: none;
+    padding: 0;
+    border-bottom: 0;
+    overflow: visible;
+  }
+
+  .activity-source-control-list .git-status-group {
+    gap: 2px;
+  }
+
+  .activity-source-control-list .git-status-group + .git-status-group {
+    padding-top: 5px;
+    border-top: 1px solid rgba(255, 255, 255, 0.055);
+  }
+
+  .activity-source-control-list .git-status-group-heading {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    cursor: pointer;
+    min-height: 21px;
+    padding: 0 2px;
+  }
+
+  .activity-source-control-list .git-status-group-heading::-webkit-details-marker {
+    display: none;
+  }
+
+  .activity-source-control-list .git-status-group-heading::before {
+    width: 0;
+    height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 5px solid rgba(174, 184, 181, 0.76);
+    content: "";
+    transform: rotate(90deg);
+    transition: transform 140ms ease, border-left-color 140ms ease;
+  }
+
+  .activity-source-control-list .git-status-group:not([open]) .git-status-group-heading::before {
+    transform: rotate(0deg);
+  }
+
+  .activity-source-control-list .git-status-row {
+    min-height: 27px;
+    padding: 4px 5px;
+    border-color: transparent;
+    border-radius: 5px;
+    background: transparent;
+  }
+
+  .activity-source-control-list .git-status-row:hover,
+  .activity-source-control-list .git-status-row:focus-visible {
+    border-color: rgba(92, 226, 207, 0.16);
+    outline: 0;
+    background: rgba(255, 255, 255, 0.045);
+  }
+
+  .activity-source-control-list .git-status-row.selected {
+    border-color: rgba(92, 226, 207, 0.3);
+    background: rgba(92, 226, 207, 0.095);
+  }
+
+  .activity-git-health-strip {
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  }
+
+  .activity-git-command-drawer {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.1);
+  }
+
+  .activity-git-command-drawer summary {
+    height: 27px;
+    padding: 0 8px;
+  }
+
+  .activity-git-command-strip {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+    padding: 0 6px 6px;
+  }
+
+  .activity-git-remote-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .activity-git-commit-row {
+    grid-template-columns: minmax(0, 1fr) minmax(78px, auto);
+  }
+
+  .activity-git-command-strip .git-action-button {
+    min-height: 25px;
+  }
+
+  .activity-git-command-strip .git-commit-input {
+    min-height: 34px;
+    background: rgba(0, 0, 0, 0.24);
+  }
+
+  .activity-git-graph-summary {
+    margin-top: -3px;
   }
 
   .git-status-overview {
@@ -25055,53 +30114,13 @@
     }
   }
 
-  @media (max-width: 1380px) {
-    .workspace-arrangement.context-side:not(.context-rail-only) {
-      grid-template-columns: minmax(0, 1fr) 6px 34px;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .workspace-context-column {
-      padding-right: 3px;
-      padding-left: 3px;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid {
-      grid-template-columns: 28px;
-      grid-template-rows: minmax(0, 1fr);
-      gap: 0;
-      overflow: hidden;
-      padding-right: 0;
-      scrollbar-gutter: auto;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-restore-button,
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid > section {
-      display: none;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs {
-      grid-column: 1;
-      grid-row: 1;
-      width: 28px;
-      max-width: 28px;
-      padding: 2px;
-      background: rgba(10, 12, 12, 0.5);
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs button {
-      width: 24px;
-      min-width: 24px;
-      height: 24px;
-    }
-  }
-
   @media (max-width: 1120px) {
     .shell:not(.activity-hidden) {
-      grid-template-columns: 56px 6px minmax(0, 1fr);
+      grid-template-columns: 56px minmax(0, 1fr);
     }
 
     .shell.side-right:not(.activity-hidden) {
-      grid-template-columns: minmax(0, 1fr) 6px 56px;
+      grid-template-columns: minmax(0, 1fr) 56px;
     }
 
     .shell:not(.activity-hidden) .activity-shell {
@@ -25121,10 +30140,10 @@
 
     .shell {
       grid-template-columns: 1fr;
-      width: calc(100vw - 20px);
+      width: 100vw;
       height: auto;
-      min-height: calc(100dvh - 20px);
-      margin: 10px;
+      min-height: 100dvh;
+      margin: 0;
     }
 
     .shell.side-right {
@@ -25227,11 +30246,6 @@
 
     .editor-frame {
       height: 520px;
-    }
-
-    .terminal-launchpad-grid {
-      grid-template-columns: 1fr;
-      overflow-y: auto;
     }
 
     .terminal-launchpad-header {

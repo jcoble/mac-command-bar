@@ -14,8 +14,15 @@ use serde_json::{json, Value};
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 const LSP_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_millis(1200);
 const MAX_LSP_HEADER_BYTES: usize = 8 * 1024;
-const SOURCE_LSP_READINESS_LANGUAGES: &[&str] =
-    &["csharp", "typescript", "javascript", "rust", "svelte"];
+const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
+    "csharp",
+    "typescript",
+    "tsx",
+    "javascript",
+    "jsx",
+    "rust",
+    "svelte",
+];
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2746,13 +2753,20 @@ mod tests {
     }
 
     #[test]
-    fn lsp_status_uses_primary_language_command_mapping() {
+    fn lsp_status_accepts_native_lsp_server_spec_aliases() {
         let root = unique_lsp_temp_root("mcb-lsp-status-mapping");
         let cases: &[(&str, &str, &str, &[&str])] = &[
             ("csharp", "csharp", "csharp-ls", &[]),
+            ("cs", "csharp", "csharp-ls", &[]),
             ("svelte", "svelte", "svelte-language-server", &["--stdio"]),
             (
                 "typescript",
+                "typescript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
+                "ts",
                 "typescript",
                 "typescript-language-server",
                 &["--stdio"],
@@ -2770,12 +2784,19 @@ mod tests {
                 &["--stdio"],
             ),
             (
+                "js",
+                "javascript",
+                "typescript-language-server",
+                &["--stdio"],
+            ),
+            (
                 "jsx",
                 "javascript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
             ("rust", "rust", "rust-analyzer", &[]),
+            ("rs", "rust", "rust-analyzer", &[]),
         ];
 
         for (language, language_id, command, args) in cases {
@@ -2824,7 +2845,7 @@ mod tests {
     }
 
     #[test]
-    fn lsp_readiness_lists_configured_language_servers() {
+    fn lsp_readiness_lists_file_variants_without_shorthand_alias_noise() {
         let root = unique_lsp_temp_root("mcb-lsp-readiness");
         std::fs::create_dir_all(&root).unwrap();
 
@@ -2836,8 +2857,36 @@ mod tests {
 
         assert_eq!(
             languages,
-            vec!["csharp", "typescript", "javascript", "rust", "svelte"]
+            vec![
+                "csharp",
+                "typescript",
+                "tsx",
+                "javascript",
+                "jsx",
+                "rust",
+                "svelte"
+            ]
         );
+        assert_eq!(
+            statuses
+                .iter()
+                .find(|status| status.language == "tsx")
+                .map(|status| status.language_id.as_str()),
+            Some("typescript")
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .find(|status| status.language == "jsx")
+                .map(|status| status.language_id.as_str()),
+            Some("javascript")
+        );
+        for shorthand_alias in ["cs", "ts", "js", "rs"] {
+            assert!(
+                !languages.contains(&shorthand_alias),
+                "{shorthand_alias} should be supported by per-file status but hidden from readiness"
+            );
+        }
         assert!(!languages.contains(&"python"));
         assert!(!languages.contains(&"go"));
         assert!(statuses.iter().all(|status| !status.server_name.is_empty()));

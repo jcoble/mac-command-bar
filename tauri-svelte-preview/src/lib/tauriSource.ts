@@ -155,6 +155,7 @@ export type AgentSession = {
   provider: string;
   id: string;
   title: string;
+  description?: string | null;
   model: string | null;
   projectPath: string | null;
   lastActivity: string | null;
@@ -171,6 +172,36 @@ export type RuntimeContext = {
   projectID: string | null;
   projectName: string;
   rootLabel: string;
+};
+
+export type PlaywrightProcessInfo = {
+  pid: number;
+  pgid: number;
+  command: string;
+  name: string;
+  label: string;
+  elapsed: string;
+  args: string;
+};
+
+export type PlaywrightSessionInfo = {
+  pgid: number;
+  label: string;
+  pids: number[];
+  processes: PlaywrightProcessInfo[];
+};
+
+export type PlaywrightCleanupFailure = {
+  pgid: number;
+  pid: number | null;
+  message: string;
+};
+
+export type PlaywrightCleanupResult = {
+  sessions: PlaywrightSessionInfo[];
+  terminatedPgids: number[];
+  terminatedPids: number[];
+  failedPgids: PlaywrightCleanupFailure[];
 };
 
 export type ProjectRootValidationResult = {
@@ -692,6 +723,10 @@ export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | nul
   return invoke<AgentSession[]>('list_agent_sessions');
 }
 
+export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {
+  return postLocalSourceBridge<AgentSession[]>('agent-sessions', {});
+}
+
 export async function listRuntimeContextsFromTauri(
   projects: RuntimeContextProject[]
 ): Promise<RuntimeContext[] | null> {
@@ -701,6 +736,24 @@ export async function listRuntimeContextsFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<RuntimeContext[]>('list_runtime_contexts', { projects });
+}
+
+export async function listPlaywrightSessionsFromTauri(): Promise<PlaywrightSessionInfo[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PlaywrightSessionInfo[]>('list_playwright_sessions');
+}
+
+export async function killPlaywrightSessionsFromTauri(): Promise<PlaywrightCleanupResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PlaywrightCleanupResult>('kill_playwright_sessions');
 }
 
 export async function listOrchestrationRunsFromTauri(

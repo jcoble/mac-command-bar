@@ -73,6 +73,12 @@ pub fn start_terminal_session<R: Runtime>(
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
+    command.env("TERM_PROGRAM", "MacCommandBar");
+    command.env("CLICOLOR", "1");
+    command.env("CLICOLOR_FORCE", "1");
+    command.env("FORCE_COLOR", "3");
+    command.env("COLORFGBG", "15;0");
+    command.env_remove("NO_COLOR");
 
     let child = pair
         .slave
@@ -194,17 +200,20 @@ pub fn resize_terminal_session(
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(false);
     };
-    let sessions = registry
+    let mut sessions = registry
         .inner
         .lock()
         .map_err(|_| "Terminal session registry is unavailable".to_string())?;
-    let Some(session) = sessions.get(session_id) else {
+    let Some(session) = sessions.get_mut(session_id) else {
         return Ok(false);
     };
+    let size = terminal_size_from_request(cols, rows);
     session
         .master
-        .resize(terminal_size_from_request(cols, rows))
+        .resize(size)
         .map_err(|error| format!("Could not resize terminal: {error}"))?;
+    session.info.cols = size.cols;
+    session.info.rows = size.rows;
     Ok(true)
 }
 
@@ -527,6 +536,13 @@ mod tests {
                 resize_terminal_session(&registry, &copied_session_id, Some(100), Some(32))
                     .expect("terminal session should resize")
             );
+            let resized_session = list_terminal_sessions(&registry)
+                .expect("terminal sessions should list after resize")
+                .into_iter()
+                .find(|listed| listed.session_id == session.session_id)
+                .expect("resized terminal session should still be listed");
+            assert_eq!(resized_session.cols, 100);
+            assert_eq!(resized_session.rows, 32);
 
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
