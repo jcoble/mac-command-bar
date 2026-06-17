@@ -41,7 +41,7 @@
 
   <DropdownMenu.Portal>
     <DropdownMenu.Content
-      class="menu-content"
+      class="mcb-menu-content"
       {align}
       {sideOffset}
     >
@@ -50,19 +50,19 @@
       {:else if items}
         {#each items as item (item.id)}
           {#if item.separatorBefore}
-            <DropdownMenu.Separator class="menu-separator" />
+            <DropdownMenu.Separator class="mcb-menu-separator" />
           {/if}
           <DropdownMenu.Item
-            class="menu-item{item.danger ? ' menu-item--danger' : ''}"
+            class="mcb-menu-item{item.danger ? ' mcb-menu-item--danger' : ''}"
             disabled={item.disabled}
             onSelect={item.onselect}
           >
             {#if item.icon}
-              <span class="menu-item__icon" aria-hidden="true">
+              <span class="mcb-menu-item__icon" aria-hidden="true">
                 <item.icon size={14} />
               </span>
             {/if}
-            <span class="menu-item__label">{item.label}</span>
+            <span class="mcb-menu-item__label">{item.label}</span>
           </DropdownMenu.Item>
         {/each}
       {/if}
@@ -72,7 +72,7 @@
 
 <style>
   /* ── Content panel ─────────────────────────────────────────────── */
-  :global(.menu-content) {
+  :global(.mcb-menu-content) {
     min-width: 180px;
     max-width: 280px;
     padding: var(--space-1);
@@ -84,7 +84,7 @@
     z-index: 9000;
 
     /* Subtle entrance */
-    animation: menu-in 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    animation: menu-in 130ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   @keyframes menu-in {
@@ -99,7 +99,7 @@
   }
 
   /* ── Separator ─────────────────────────────────────────────────── */
-  :global(.menu-separator) {
+  :global(.mcb-menu-separator) {
     display: block;
     height: 1px;
     margin: var(--space-1) calc(-1 * var(--space-1));
@@ -107,7 +107,7 @@
   }
 
   /* ── Item ──────────────────────────────────────────────────────── */
-  :global(.menu-item) {
+  :global(.mcb-menu-item) {
     display: flex;
     align-items: center;
     gap: var(--space-2);
@@ -123,43 +123,43 @@
     border: none;
     background: transparent;
     transition:
-      background-color 80ms ease,
-      color 80ms ease;
+      background-color 130ms ease,
+      color 130ms ease;
   }
 
-  :global(.menu-item[data-highlighted]) {
+  :global(.mcb-menu-item[data-highlighted]) {
     background-color: var(--color-surface);
     color: var(--color-text);
   }
 
-  :global(.menu-item[data-disabled]) {
-    opacity: 0.35;
+  :global(.mcb-menu-item[data-disabled]) {
+    opacity: 0.4;
     cursor: not-allowed;
     pointer-events: none;
   }
 
-  :global(.menu-item--danger) {
+  :global(.mcb-menu-item--danger) {
     color: var(--color-bad);
   }
 
-  :global(.menu-item--danger[data-highlighted]) {
+  :global(.mcb-menu-item--danger[data-highlighted]) {
     background-color: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
   /* ── Item parts ────────────────────────────────────────────────── */
-  :global(.menu-item__icon) {
+  :global(.mcb-menu-item__icon) {
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;
     opacity: 0.75;
   }
 
-  :global(.menu-item[data-highlighted] .menu-item__icon) {
+  :global(.mcb-menu-item[data-highlighted] .mcb-menu-item__icon) {
     opacity: 1;
   }
 
-  :global(.menu-item__label) {
+  :global(.mcb-menu-item__label) {
     flex: 1;
     white-space: nowrap;
     overflow: hidden;

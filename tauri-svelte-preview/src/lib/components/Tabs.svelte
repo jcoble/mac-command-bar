@@ -35,23 +35,23 @@
   }: Props = $props();
 </script>
 
-<Tabs.Root bind:value class="tabs-root">
-  <Tabs.List class="tabs-list">
+<Tabs.Root bind:value class="mcb-tabs-root">
+  <Tabs.List class="mcb-tabs-list">
     {#each tabs as tab (tab.value)}
-      <Tabs.Trigger value={tab.value} class="tabs-trigger">
+      <Tabs.Trigger value={tab.value} class="mcb-tabs-trigger">
         {#if tab.icon}
-          <span class="tabs-trigger__icon" aria-hidden="true">
+          <span class="mcb-tabs-trigger__icon" aria-hidden="true">
             <tab.icon />
           </span>
         {/if}
-        <span class="tabs-trigger__label">{tab.label}</span>
+        <span class="mcb-tabs-trigger__label">{tab.label}</span>
       </Tabs.Trigger>
     {/each}
   </Tabs.List>
 
   {#if panel}
     {#each tabs as tab (tab.value)}
-      <Tabs.Content value={tab.value} class="tabs-content">
+      <Tabs.Content value={tab.value} class="mcb-tabs-content">
         {@render panel(tab.value)}
       </Tabs.Content>
     {/each}
@@ -61,18 +61,18 @@
 </Tabs.Root>
 
 <style>
-  /* NOTE: .tabs-root / .tabs-list / .tabs-trigger / .tabs-content are classes
+  /* NOTE: .mcb-tabs-root / .mcb-tabs-list / .mcb-tabs-trigger / .mcb-tabs-content are classes
      forwarded to bits-ui-rendered DOM elements, so they must be targeted with
      :global(...) — Svelte's scope hash is never added to a child component's
-     markup. Only .tabs-trigger__label / __icon are local elements in this file. */
-  :global(.tabs-root) {
+     markup. Only .mcb-tabs-trigger__label / __icon are local elements in this file. */
+  :global(.mcb-tabs-root) {
     display: flex;
     flex-direction: column;
     width: 100%;
   }
 
   /* ── Tab list (pill row, borderless) ─────────────────── */
-  :global(.tabs-list) {
+  :global(.mcb-tabs-list) {
     display: flex;
     flex-direction: row;
     gap: var(--space-1);
@@ -82,7 +82,7 @@
   }
 
   /* ── Individual trigger ──────────────────────────────── */
-  :global(.tabs-trigger) {
+  :global(.mcb-tabs-trigger) {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
@@ -106,47 +106,47 @@
       background-color 130ms ease;
   }
 
-  :global(.tabs-trigger:hover:not([data-disabled])) {
+  :global(.mcb-tabs-trigger:hover:not([data-disabled])) {
     color: var(--color-text-2);
     background-color: var(--color-surface);
   }
 
   /* Active state via bits-ui data attribute */
-  :global(.tabs-trigger[data-state='active']) {
+  :global(.mcb-tabs-trigger[data-state='active']) {
     color: var(--color-text);
     border-bottom-color: var(--color-accent);
     font-weight: var(--weight-semibold);
   }
 
-  :global(.tabs-trigger:focus-visible) {
+  :global(.mcb-tabs-trigger:focus-visible) {
     box-shadow: var(--focus-ring);
   }
 
-  :global(.tabs-trigger[data-disabled]) {
-    opacity: 0.38;
+  :global(.mcb-tabs-trigger[data-disabled]) {
+    opacity: 0.4;
     cursor: not-allowed;
     pointer-events: none;
   }
 
   /* ── Icon inside trigger ─────────────────────────────── */
-  .tabs-trigger__icon {
+  .mcb-tabs-trigger__icon {
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;
   }
 
-  .tabs-trigger__icon :global(svg) {
+  .mcb-tabs-trigger__icon :global(svg) {
     width: 14px;
     height: 14px;
   }
 
   /* ── Content panel ───────────────────────────────────── */
-  :global(.tabs-content) {
+  :global(.mcb-tabs-content) {
     padding-block-start: var(--space-4);
     outline: none;
   }
 
-  :global(.tabs-content:focus-visible) {
+  :global(.mcb-tabs-content:focus-visible) {
     box-shadow: var(--focus-ring);
   }
 </style>

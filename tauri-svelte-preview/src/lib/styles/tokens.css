@@ -9,31 +9,31 @@
   /* ------------------------------------------------------------------
    * Color — background layers
    * ------------------------------------------------------------------ */
-  --color-bg:       #191a21;
-  --color-surface:  rgba(255, 255, 255, 0.045);
-  --color-elevated: rgba(255, 255, 255, 0.08);
+  --color-bg:       #17191e;
+  --color-surface:  rgba(255, 255, 255, 0.04);
+  --color-elevated: rgba(255, 255, 255, 0.075);
 
   /* ------------------------------------------------------------------
    * Color — text hierarchy
    * ------------------------------------------------------------------ */
-  --color-text:   #f2f6f5;
-  --color-text-2: #aab6b2;
-  --color-text-3: #8d9995;
+  --color-text:   #eef0f9;
+  --color-text-2: #a8adba;
+  --color-text-3: #767d8c;
 
   /* ------------------------------------------------------------------
    * Color — accent & interactive
    * ------------------------------------------------------------------ */
-  --color-accent: #5ce2cf;
+  --color-accent: #4bf3c8;
   --color-border: rgba(255, 255, 255, 0.08);
-  --color-focus:  rgba(92, 226, 207, 0.45);
+  --color-focus:  rgba(75, 243, 200, 0.45);
 
   /* ------------------------------------------------------------------
    * Color — status
    * ------------------------------------------------------------------ */
-  --color-live:      #5ce2cf;
+  --color-live:      #4bf3c8;
   --color-good:      #8bdc9b;
-  --color-bad:       #f36f6f;
-  --color-attention: #d8aa55;
+  --color-bad:       #ff6d91;
+  --color-attention: #ffd493;
   --color-idle:      rgba(255, 255, 255, 0.12);
 
   /* ------------------------------------------------------------------
@@ -95,9 +95,9 @@
    * Color — derived: text-on-accent + translucent status tints
    * ------------------------------------------------------------------ */
   --color-on-accent:     #0e1013;
-  --color-live-bg:       rgba(92, 226, 207, 0.12);
+  --color-live-bg:       rgba(75, 243, 200, 0.12);
   --color-good-bg:       rgba(139, 220, 155, 0.12);
-  --color-bad-bg:        rgba(243, 111, 111, 0.12);
-  --color-bad-bg-strong: rgba(243, 111, 111, 0.20);
-  --color-attention-bg:  rgba(216, 170, 85, 0.12);
+  --color-bad-bg:        rgba(255, 109, 145, 0.12);
+  --color-bad-bg-strong: rgba(255, 109, 145, 0.20);
+  --color-attention-bg:  rgba(255, 212, 147, 0.12);
 }

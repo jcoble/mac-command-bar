@@ -47,6 +47,17 @@
 </div>
 
 <style>
+  /*
+   * Borderless workbench theme — maps dockview-core 6 `--dv-*` vars onto our design
+   * tokens. Both `.dockview-theme-dark` and `.dockview-theme-dracula` are applied to the
+   * same host (see sourceDockviewWorkspace.ts), and the upstream `.dockview-theme-dracula`
+   * block reasserts its own hardcoded hex AFTER ours, so every scoped block below targets
+   * both classes to win the cascade. The shared variable set lives in `--dv-*` here so the
+   * look is defined once and reused per scope.
+   *
+   * Note: dockview-core 6 consumes `--dv-group-view-background-color` for panel/group
+   * surfaces (the old `--dv-background-color` name does not exist in v6 and was a no-op).
+   */
   :global(.source-dockview-workbench-shell) {
     position: absolute;
     inset: 0;
@@ -58,7 +69,7 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: #191a21;
+    background: var(--color-bg);
   }
 
   :global(.source-dockview-workbench-host),
@@ -87,16 +98,138 @@
     pointer-events: none;
   }
 
-  :global(.source-dockview-workbench-shell .dockview-theme-dark) {
-    --dv-background-color: #191a21;
-    --dv-tabs-and-actions-container-background-color: #191a21;
-    --dv-activegroup-visiblepanel-tab-background-color: #01131d;
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: #1f2030;
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: transparent;
+  :global(.source-dockview-workbench-shell .dockview-theme-dark),
+  :global(.source-dockview-workbench-shell .dockview-theme-dracula),
+  :global(.source-dockview-activity-shell .dockview-theme-dark),
+  :global(.source-dockview-activity-shell .dockview-theme-dracula),
+  :global(.source-dockview-center-shell .dockview-theme-dark),
+  :global(.source-dockview-center-shell .dockview-theme-dracula),
+  :global(.source-dockview-editor-files-shell .dockview-theme-dark),
+  :global(.source-dockview-editor-files-shell .dockview-theme-dracula),
+  :global(.source-dockview-bottom-shell .dockview-theme-dark),
+  :global(.source-dockview-bottom-shell .dockview-theme-dracula),
+  :global(.source-dockview-files-shell .dockview-theme-dark),
+  :global(.source-dockview-files-shell .dockview-theme-dracula),
+  :global(.source-dockview-conversation-shell .dockview-theme-dark),
+  :global(.source-dockview-conversation-shell .dockview-theme-dracula),
+  :global(.source-dockview-context-shell .dockview-theme-dark),
+  :global(.source-dockview-context-shell .dockview-theme-dracula),
+  :global(.source-dockview-insights-shell .dockview-theme-dark),
+  :global(.source-dockview-insights-shell .dockview-theme-dracula) {
+    /* surfaces */
+    --dv-group-view-background-color: var(--color-bg);
+    --dv-tabs-and-actions-container-background-color: var(--color-bg);
+
+    /* active tab: subtle surface fill + bright text */
+    --dv-activegroup-visiblepanel-tab-background-color: var(--color-surface);
+    --dv-activegroup-visiblepanel-tab-color: var(--color-text);
+    --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+    --dv-activegroup-hiddenpanel-tab-color: var(--color-text-3);
+
+    /* inactive tabs: transparent, muted text */
+    --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+    --dv-inactivegroup-visiblepanel-tab-color: var(--color-text-3);
+    --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+    --dv-inactivegroup-hiddenpanel-tab-color: var(--color-text-3);
+
+    /* borderless: hairline / transparent seams, no thick gutters */
+    --dv-separator-border: var(--color-border);
     --dv-tab-divider-color: transparent;
     --dv-paneview-header-border-color: transparent;
+    --dv-paneview-active-outline-color: var(--color-accent);
+    --dv-drag-over-background-color: var(--color-live-bg);
+    --dv-drag-over-border-color: var(--color-accent);
+    --dv-floating-box-shadow: var(--shadow-lg);
+
+    /* spacious, comfortable tabs */
+    --dv-tabs-and-actions-container-height: 38px;
+    --dv-tabs-and-actions-container-font-size: var(--text-sm);
+    --dv-tab-border-radius: var(--radius-sm);
+
+    /* thin scrollbars + smooth motion */
+    --dv-scrollbar-background-color: var(--color-text-3);
+    --dv-tabs-container-scrollbar-color: var(--color-text-3);
+    --dv-transition-duration: 0.13s;
+
+    /* sashes invisible at rest, faint accent when active */
+    --dv-sash-color: transparent;
+    --dv-active-sash-color: var(--color-focus);
+
+    /* context menu / icon hover surfaces */
+    --dv-icon-hover-background-color: var(--color-surface);
+    --dv-context-menu-background-color: var(--color-elevated);
+    --dv-context-menu-color: var(--color-text);
+  }
+
+  /* ----------------------------------------------------------------------
+   * Borderless structural polish. The `--dv-*` vars above carry colors, but a
+   * few seams (group/tab-strip/content borders) and the active-tab indicator
+   * are painted by hardcoded upstream rules — including the dracula theme's
+   * pink `::after` underline. These rules flatten the seams and retheme the
+   * indicator to a clean accent underline. Targets `.source-dockview-host`,
+   * which is present on every workbench/dock/paneview container.
+   * ---------------------------------------------------------------------- */
+  :global(.source-dockview-host .dv-groupview),
+  :global(.source-dockview-host .dv-tabs-and-actions-container),
+  :global(.source-dockview-host .dv-content-container),
+  :global(.source-dockview-host .dv-tabs-container),
+  :global(.source-dockview-host .dv-tab) {
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  /* Spacious, calm tabs — generous padding, no cramped seams, soft hover. */
+  :global(.source-dockview-host .dv-tab) {
+    gap: var(--space-2);
+    align-items: center;
+    padding: 0 var(--space-3);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    transition:
+      background-color 0.13s ease,
+      color 0.13s ease;
+  }
+
+  :global(.source-dockview-host .dv-groupview:not(.dv-active-group) .dv-tab.dv-inactive-tab:hover),
+  :global(.source-dockview-host .dv-groupview.dv-active-group .dv-tab.dv-inactive-tab:hover) {
+    color: var(--color-text-2);
+    background-color: var(--color-surface);
+  }
+
+  /* Active tab: bright text on a faint surface fill + a thin accent underline.
+     Overrides the dracula theme's hardcoded pink `::after`. The `.dockview-theme-dracula`
+     class (present on the same host node) is included so this out-specifies — and reliably
+     wins the source-order tie against — the upstream dracula rule without `!important`.
+     Active + inactive group variants both use the accent so focus state stays consistent. */
+  :global(.source-dockview-host.dockview-theme-dracula .dv-groupview > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-active-tab) {
+    position: relative;
+    color: var(--color-text);
+  }
+
+  :global(.source-dockview-host.dockview-theme-dracula .dv-groupview > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-active-tab::after) {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    top: auto;
+    height: 2px;
+    width: 100%;
+    content: '';
+    background-color: var(--color-accent);
+    z-index: 5;
+  }
+
+  :global(.source-dockview-host.dockview-theme-dracula .dv-groupview.dv-inactive-group > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-active-tab::after) {
+    background-color: var(--color-text-3);
+  }
+
+  /* Thin, unobtrusive overlay scrollbars on the dockview scroll surfaces. */
+  :global(.source-dockview-host .dv-scrollable .dv-scrollbar-horizontal) {
+    height: 6px;
+  }
+
+  :global(.source-dockview-host .dv-scrollable .dv-scrollbar-vertical) {
+    width: 6px;
   }
 
   :global(.source-dockview-activity-shell) {
@@ -107,7 +240,7 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: #191a21;
+    background: var(--color-bg);
   }
 
   :global(.source-dockview-activity-host),
@@ -137,16 +270,6 @@
   :global(.source-dockview-activity-shell.dockview-ready > .activity-shell) {
     visibility: hidden;
     pointer-events: none;
-  }
-
-  :global(.source-dockview-activity-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(15, 18, 18, 0.92);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
   }
 
   :global(.source-dockview-center-shell) {
@@ -187,16 +310,6 @@
   :global(.source-dockview-center-shell.dockview-ready > .source-editor-dock-panel) {
     visibility: hidden;
     pointer-events: none;
-  }
-
-  :global(.source-dockview-center-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(15, 18, 18, 0.92);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
   }
 
   :global(.source-dockview-editor-files-shell) {
@@ -241,16 +354,6 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-  }
-
-  :global(.source-dockview-editor-files-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(15, 18, 18, 0.92);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
   }
 
   :global(.source-dockview-bottom-shell) {
@@ -399,9 +502,9 @@
   }
 
   :global(.source-paneview-host .dv-pane-header) {
-    color: #dffdf8;
-    border-color: rgba(255, 255, 255, 0.055);
-    background: rgba(31, 32, 42, 0.96);
+    color: var(--color-text-2);
+    border-color: transparent;
+    background: var(--color-bg);
   }
 
   :global(.source-paneview-host .dv-default-header) {
@@ -412,8 +515,8 @@
     height: 100%;
     padding: 0 8px;
     overflow: hidden;
-    font-size: 12px;
-    font-weight: 780;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
   }
 
   :global(.source-paneview-host .dv-default-header span) {
@@ -429,7 +532,7 @@
     flex: 0 0 14px;
     width: 14px;
     height: 14px;
-    color: #dffdf8;
+    color: var(--color-text-2);
   }
 
   :global(.source-paneview-host .dv-pane-body) {
@@ -439,21 +542,11 @@
 
   :global(.source-paneview-host .dv-sash) {
     --dv-sash-color: transparent;
-    --dv-active-sash-color: rgba(92, 226, 207, 0.36);
+    --dv-active-sash-color: var(--color-focus);
   }
 
   :global(.source-paneview-host .dv-sash.dv-enabled:hover) {
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  :global(.source-dockview-bottom-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(15, 18, 18, 0.92);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
+    background: var(--color-live-bg);
   }
 
   :global(.source-dockview-files-shell) {
@@ -488,16 +581,6 @@
   :global(.source-dockview-files-shell.dockview-ready > .source-files-pane) {
     visibility: hidden;
     pointer-events: none;
-  }
-
-  :global(.source-dockview-files-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(15, 18, 18, 0.92);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
   }
 
   :global(.source-dockview-conversation-shell) {
@@ -544,16 +627,6 @@
     overflow-y: auto;
   }
 
-  :global(.source-dockview-conversation-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(15, 18, 18, 0.92);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
-  }
-
   :global(.source-dockview-context-shell) {
     position: relative;
     display: grid;
@@ -562,7 +635,7 @@
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: #191a21;
+    background: var(--color-bg);
   }
 
   :global(.source-dockview-context-host),
@@ -591,16 +664,6 @@
     pointer-events: none;
   }
 
-  :global(.source-dockview-context-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(20, 23, 24, 0.86);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
-  }
-
   :global(.source-dockview-context-shell .context-panel-grid) {
     grid-template-columns: 28px minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -610,7 +673,7 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-color: var(--color-text-3) transparent;
     scrollbar-gutter: stable;
     scrollbar-width: thin;
   }
@@ -624,7 +687,7 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-color: var(--color-text-3) transparent;
     scrollbar-gutter: stable;
     scrollbar-width: thin;
   }
@@ -796,7 +859,7 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: #191a21;
+    background: var(--color-bg);
   }
 
   :global(.source-dockview-insights-parking) {
@@ -835,31 +898,11 @@
     pointer-events: none;
   }
 
-  :global(.source-dockview-insights-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(20, 23, 24, 0.86);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
-  }
-
-  :global(.source-dockview-activity-shell .dockview-theme-dark),
-  :global(.source-dockview-context-shell .dockview-theme-dark),
-  :global(.source-dockview-insights-shell .dockview-theme-dark) {
-    --dv-background-color: #191a21;
-    --dv-tabs-and-actions-container-background-color: #191a21;
-    --dv-activegroup-visiblepanel-tab-background-color: #01131d;
-    --dv-inactivegroup-visiblepanel-tab-background-color: #1f2030;
-    --dv-separator-border: transparent;
-    --dv-tab-divider-color: transparent;
-    --dv-paneview-header-border-color: transparent;
-  }
-
   :global(.source-dockview-host.dockview-theme-dark),
-  :global(.source-dockview-host .dockview-theme-dark) {
-    --dv-separator-border: transparent;
+  :global(.source-dockview-host .dockview-theme-dark),
+  :global(.source-dockview-host.dockview-theme-dracula),
+  :global(.source-dockview-host .dockview-theme-dracula) {
+    --dv-separator-border: var(--color-border);
     --dv-tab-divider-color: transparent;
     --dv-paneview-header-border-color: transparent;
   }
@@ -889,18 +932,18 @@
   :global(.source-dockview-context-error),
   :global(.source-dockview-insights-error) {
     position: absolute;
-    right: 8px;
-    bottom: 8px;
+    right: var(--space-2);
+    bottom: var(--space-2);
     z-index: 4;
     max-width: calc(100% - 16px);
     overflow: hidden;
-    color: #ffb3a6;
-    border: 1px solid rgba(255, 123, 107, 0.32);
-    border-radius: 6px;
-    background: rgba(42, 21, 19, 0.92);
-    padding: 4px 6px;
-    font-size: 10px;
-    font-weight: 760;
+    color: var(--color-bad);
+    border: 1px solid var(--color-bad-bg-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-bad-bg);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

@@ -43,7 +43,7 @@
     <span class="title">{title}</span>
 
     {#if badge !== undefined && badge !== null && badge !== ''}
-      <span class="badge" aria-label="{badge} items">
+      <span class="section-count" aria-label="{badge} items">
         {badge}
       </span>
     {/if}
@@ -75,7 +75,7 @@
     border-radius: var(--radius-sm);
     text-align: left;
     color: var(--color-text-2);
-    transition: background 120ms ease, color 120ms ease;
+    transition: background 130ms ease, color 130ms ease;
   }
 
   .header:hover {
@@ -118,7 +118,9 @@
     text-overflow: ellipsis;
   }
 
-  .badge {
+  /* Inline count pill — a header-tuned affordance, intentionally distinct
+     from the standalone Badge component (own min-width/height for the row). */
+  .section-count {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -126,6 +128,7 @@
     color: var(--color-text-3);
     font-size: var(--text-xs);
     font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
     border-radius: var(--radius-pill);
     padding: 0 var(--space-2);
     min-width: 18px;

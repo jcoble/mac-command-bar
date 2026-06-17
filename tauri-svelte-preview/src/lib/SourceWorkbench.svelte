@@ -212,18 +212,18 @@
 
   .source-workbench-error-banner {
     position: absolute;
-    right: 8px;
-    bottom: 8px;
+    right: var(--space-2);
+    bottom: var(--space-2);
     z-index: 4;
     max-width: calc(100% - 16px);
     overflow: hidden;
-    color: #ffb3a6;
-    border: 1px solid rgba(255, 123, 107, 0.32);
-    border-radius: 6px;
-    background: rgba(42, 21, 19, 0.92);
-    padding: 4px 6px;
-    font-size: 10px;
-    font-weight: 760;
+    color: var(--color-bad);
+    border: 1px solid var(--color-bad-bg-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-bad-bg);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

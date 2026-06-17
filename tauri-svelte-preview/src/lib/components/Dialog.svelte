@@ -24,37 +24,37 @@
 
 <Dialog.Root bind:open>
   {#if trigger}
-    <Dialog.Trigger class="dialog-trigger-reset">
+    <Dialog.Trigger class="mcb-dialog-trigger-reset">
       {@render trigger()}
     </Dialog.Trigger>
   {/if}
 
   <Dialog.Portal>
-    <Dialog.Overlay class="dialog-overlay" />
+    <Dialog.Overlay class="mcb-dialog-overlay" />
 
-    <Dialog.Content class="dialog-content">
+    <Dialog.Content class="mcb-dialog-content">
       <!-- Header -->
       {#if title || description}
-        <div class="dialog-header">
-          <div class="dialog-header-text">
+        <div class="mcb-dialog-header">
+          <div class="mcb-dialog-header-text">
             {#if title}
-              <Dialog.Title class="dialog-title">{title}</Dialog.Title>
+              <Dialog.Title class="mcb-dialog-title">{title}</Dialog.Title>
             {/if}
             {#if description}
-              <Dialog.Description class="dialog-description">
+              <Dialog.Description class="mcb-dialog-description">
                 {description}
               </Dialog.Description>
             {/if}
           </div>
 
-          <Dialog.Close class="dialog-close" aria-label="Close dialog">
+          <Dialog.Close class="mcb-dialog-close" aria-label="Close dialog">
             <X size={16} aria-hidden="true" />
           </Dialog.Close>
         </div>
       {:else}
         <!-- No title/description — still render close button -->
-        <div class="dialog-close-row">
-          <Dialog.Close class="dialog-close" aria-label="Close dialog">
+        <div class="mcb-dialog-close-row">
+          <Dialog.Close class="mcb-dialog-close" aria-label="Close dialog">
             <X size={16} aria-hidden="true" />
           </Dialog.Close>
         </div>
@@ -62,14 +62,14 @@
 
       <!-- Body -->
       {#if children}
-        <div class="dialog-body">
+        <div class="mcb-dialog-body">
           {@render children()}
         </div>
       {/if}
 
       <!-- Footer -->
       {#if footer}
-        <div class="dialog-footer">
+        <div class="mcb-dialog-footer">
           {@render footer()}
         </div>
       {/if}
@@ -79,13 +79,13 @@
 
 <style>
   /* ── Trigger reset — let caller control all styling ─── */
-  :global(.dialog-trigger-reset) {
+  :global(.mcb-dialog-trigger-reset) {
     all: unset;
     cursor: pointer;
   }
 
   /* ── Overlay ──────────────────────────────────────────── */
-  :global(.dialog-overlay) {
+  :global(.mcb-dialog-overlay) {
     position: fixed;
     inset: 0;
     z-index: 100;
@@ -94,7 +94,7 @@
     animation: dialog-overlay-in 160ms ease forwards;
   }
 
-  :global(.dialog-overlay[data-state='closed']) {
+  :global(.mcb-dialog-overlay[data-state='closed']) {
     animation: dialog-overlay-out 130ms ease forwards;
   }
 
@@ -109,7 +109,7 @@
   }
 
   /* ── Content panel ────────────────────────────────────── */
-  :global(.dialog-content) {
+  :global(.mcb-dialog-content) {
     position: fixed;
     top: 50%;
     left: 50%;
@@ -134,7 +134,7 @@
     animation: dialog-content-in 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
 
-  :global(.dialog-content[data-state='closed']) {
+  :global(.mcb-dialog-content[data-state='closed']) {
     animation: dialog-content-out 140ms ease forwards;
   }
 
@@ -161,7 +161,7 @@
   }
 
   /* ── Header ───────────────────────────────────────────── */
-  .dialog-header {
+  .mcb-dialog-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -170,14 +170,14 @@
     border-bottom: 1px solid var(--color-border);
   }
 
-  .dialog-header-text {
+  .mcb-dialog-header-text {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     min-width: 0;
   }
 
-  :global(.dialog-title) {
+  :global(.mcb-dialog-title) {
     font-size: var(--text-md);
     font-weight: var(--weight-semibold);
     color: var(--color-text);
@@ -185,20 +185,20 @@
     margin: 0;
   }
 
-  :global(.dialog-description) {
+  :global(.mcb-dialog-description) {
     font-size: var(--text-sm);
     color: var(--color-text-2);
     line-height: 1.5;
     margin: 0;
   }
 
-  .dialog-close-row {
+  .mcb-dialog-close-row {
     display: flex;
     justify-content: flex-end;
     padding: var(--space-3) var(--space-3) 0;
   }
 
-  :global(.dialog-close) {
+  :global(.mcb-dialog-close) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -211,20 +211,20 @@
     color: var(--color-text-3);
     cursor: pointer;
     outline: none;
-    transition: background 120ms ease, color 120ms ease;
+    transition: background 130ms ease, color 130ms ease;
   }
 
-  :global(.dialog-close:hover) {
+  :global(.mcb-dialog-close:hover) {
     background: var(--color-elevated);
     color: var(--color-text);
   }
 
-  :global(.dialog-close:focus-visible) {
+  :global(.mcb-dialog-close:focus-visible) {
     box-shadow: var(--focus-ring);
   }
 
   /* ── Body ─────────────────────────────────────────────── */
-  .dialog-body {
+  .mcb-dialog-body {
     padding: var(--space-5);
     flex: 1;
     min-height: 0;
@@ -235,7 +235,7 @@
   }
 
   /* ── Footer ───────────────────────────────────────────── */
-  .dialog-footer {
+  .mcb-dialog-footer {
     display: flex;
     align-items: center;
     justify-content: flex-end;

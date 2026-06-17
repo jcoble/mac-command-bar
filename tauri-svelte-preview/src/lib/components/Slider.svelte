@@ -37,16 +37,16 @@
   const labelId = $props.id();
 </script>
 
-<div class="slider-wrapper" class:slider-wrapper--disabled={disabled}>
+<div class="mcb-slider-wrapper" class:mcb-slider-wrapper--disabled={disabled}>
   {#if label}
-    <div class="slider-header">
-      <span class="slider-label" id={labelId}>{label}</span>
-      <span class="slider-value">{value}</span>
+    <div class="mcb-slider-header">
+      <span class="mcb-slider-label" id={labelId}>{label}</span>
+      <span class="mcb-slider-value">{value}</span>
     </div>
   {:else}
     <!-- No label: show value inline above thumb track -->
-    <div class="slider-header slider-header--no-label">
-      <span class="slider-value">{value}</span>
+    <div class="mcb-slider-header mcb-slider-header--no-label">
+      <span class="mcb-slider-value">{value}</span>
     </div>
   {/if}
 
@@ -57,12 +57,12 @@
     {max}
     {step}
     {disabled}
-    class="slider-root"
+    class="mcb-slider-root"
   >
     {#snippet children({ thumbItems })}
       <!-- Track -->
-      <span class="slider-track">
-        <Slider.Range class="slider-range" />
+      <span class="mcb-slider-track">
+        <Slider.Range class="mcb-slider-range" />
       </span>
       <!-- Thumb(s) — single type always has exactly one.
            aria-labelledby/-label lands on the role="slider" element (bits
@@ -70,7 +70,7 @@
       {#each thumbItems as { index } (index)}
         <Slider.Thumb
           {index}
-          class="slider-thumb"
+          class="mcb-slider-thumb"
           aria-labelledby={label ? labelId : undefined}
           aria-label={label ? undefined : 'Value'}
         />
@@ -80,38 +80,38 @@
 </div>
 
 <style>
-  .slider-wrapper {
+  .mcb-slider-wrapper {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     width: 100%;
   }
 
-  .slider-wrapper--disabled {
+  .mcb-slider-wrapper--disabled {
     opacity: 0.4;
     pointer-events: none;
   }
 
   /* ── Label / value row ───────────────────────────────── */
-  .slider-header {
+  .mcb-slider-header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: var(--space-2);
   }
 
-  .slider-header--no-label {
+  .mcb-slider-header--no-label {
     justify-content: flex-end;
   }
 
-  .slider-label {
+  .mcb-slider-label {
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
     color: var(--color-text-2);
     user-select: none;
   }
 
-  .slider-value {
+  .mcb-slider-value {
     font-size: var(--text-xs);
     font-weight: var(--weight-medium);
     color: var(--color-text-2);
@@ -121,12 +121,12 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* NOTE: .slider-root / .slider-range / .slider-thumb are forwarded to
+  /* NOTE: .mcb-slider-root / .mcb-slider-range / .mcb-slider-thumb are forwarded to
      bits-ui-rendered elements, so they must use :global(...). Only
-     .slider-track / header / label / value are local elements here. */
+     .mcb-slider-track / header / label / value are local elements here. */
 
   /* ── Slider root — flex row, vertically centers track + thumb ── */
-  :global(.slider-root) {
+  :global(.mcb-slider-root) {
     position: relative;
     display: flex;
     width: 100%;
@@ -139,7 +139,7 @@
   }
 
   /* ── Track ───────────────────────────────────────────── */
-  .slider-track {
+  .mcb-slider-track {
     position: relative;
     height: 4px;
     width: 100%;
@@ -150,7 +150,7 @@
   }
 
   /* ── Range (filled portion) ──────────────────────────── */
-  :global(.slider-range) {
+  :global(.mcb-slider-range) {
     position: absolute;
     height: 100%;
     background-color: var(--color-accent);
@@ -158,7 +158,7 @@
   }
 
   /* ── Thumb ───────────────────────────────────────────── */
-  :global(.slider-thumb) {
+  :global(.mcb-slider-thumb) {
     display: block;
     width: 16px;
     height: 16px;
@@ -176,17 +176,17 @@
     transform: translateX(-50%);
   }
 
-  :global(.slider-thumb:hover) {
+  :global(.mcb-slider-thumb:hover) {
     transform: translateX(-50%) scale(1.1);
   }
 
   /* data-active is set by bits-ui while dragging */
-  :global(.slider-thumb[data-active]) {
+  :global(.mcb-slider-thumb[data-active]) {
     cursor: grabbing;
     transform: translateX(-50%) scale(0.97);
   }
 
-  :global(.slider-thumb:focus-visible) {
+  :global(.mcb-slider-thumb:focus-visible) {
     box-shadow: var(--focus-ring);
   }
 </style>

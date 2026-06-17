@@ -36,13 +36,13 @@
   }
 </script>
 
-<div class="switch-wrapper" class:switch-wrapper--disabled={disabled}>
+<div class="mcb-switch-wrapper" class:mcb-switch-wrapper--disabled={disabled}>
   {#if label}
     <!-- Clicking the label toggles the switch; the button keeps focus/role.
          aria-hidden keeps SRs from announcing the label twice (it already
          names the switch via aria-labelledby). -->
     <span
-      class="switch-label"
+      class="mcb-switch-label"
       id={labelId}
       aria-hidden="true"
       onclick={toggleFromLabel}
@@ -52,16 +52,16 @@
   <Switch.Root
     bind:checked
     {disabled}
-    class="switch-root"
+    class="mcb-switch-root"
     aria-labelledby={label ? labelId : undefined}
   >
-    <Switch.Thumb class="switch-thumb" />
+    <Switch.Thumb class="mcb-switch-thumb" />
   </Switch.Root>
 </div>
 
 <style>
   /* ── Wrapper — label + control in a row ─────────────── */
-  .switch-wrapper {
+  .mcb-switch-wrapper {
     display: inline-flex;
     align-items: center;
     gap: var(--space-3);
@@ -69,28 +69,28 @@
     user-select: none;
   }
 
-  .switch-wrapper--disabled {
+  .mcb-switch-wrapper--disabled {
     opacity: 0.4;
     cursor: not-allowed;
     pointer-events: none;
   }
 
   /* ── Label text ──────────────────────────────────────── */
-  .switch-label {
+  .mcb-switch-label {
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
     color: var(--color-text-2);
     cursor: pointer;
   }
 
-  /* NOTE: .switch-root / .switch-thumb are forwarded to bits-ui-rendered
+  /* NOTE: .mcb-switch-root / .mcb-switch-thumb are forwarded to bits-ui-rendered
      elements (button + span), so every selector touching them must be
      :global(...). In particular the checked-slide rule below: a scoped
-     left-hand side (.switch-root[data-state='checked']) never matches the
+     left-hand side (.mcb-switch-root[data-state='checked']) never matches the
      unhashed bits button, so the thumb would never move. */
 
   /* ── Track (the Switch.Root button) ─────────────────── */
-  :global(.switch-root) {
+  :global(.mcb-switch-root) {
     position: relative;
     display: inline-flex;
     align-items: center;
@@ -107,16 +107,16 @@
   }
 
   /* Checked state — bits-ui sets data-state="checked" */
-  :global(.switch-root[data-state='checked']) {
+  :global(.mcb-switch-root[data-state='checked']) {
     background-color: var(--color-accent);
   }
 
-  :global(.switch-root:focus-visible) {
+  :global(.mcb-switch-root:focus-visible) {
     box-shadow: var(--focus-ring);
   }
 
   /* ── Thumb (the sliding circle) ──────────────────────── */
-  :global(.switch-thumb) {
+  :global(.mcb-switch-thumb) {
     display: block;
     width: 14px;
     height: 14px;
@@ -132,7 +132,7 @@
   }
 
   /* Slide to the right when checked — whole compound selector must be global */
-  :global(.switch-root[data-state='checked'] .switch-thumb) {
+  :global(.mcb-switch-root[data-state='checked'] .mcb-switch-thumb) {
     transform: translateX(19px);
   }
 </style>

@@ -35,18 +35,18 @@
 -->
 <Tooltip.Provider {delayDuration}>
   <Tooltip.Root>
-    <Tooltip.Trigger class="tooltip-trigger">
+    <Tooltip.Trigger class="mcb-tooltip-trigger">
       {@render children()}
     </Tooltip.Trigger>
 
     <Tooltip.Portal>
-      <Tooltip.Content class="tooltip-content" {side} sideOffset={6}>
+      <Tooltip.Content class="mcb-tooltip-content" {side} sideOffset={6}>
         {#if content}
           {@render content()}
         {:else if text}
           {text}
         {/if}
-        <Tooltip.Arrow class="tooltip-arrow" />
+        <Tooltip.Arrow class="mcb-tooltip-arrow" />
       </Tooltip.Content>
     </Tooltip.Portal>
   </Tooltip.Root>
@@ -57,7 +57,7 @@
      inline-flex (not display:contents) so the trigger keeps a box — a
      focus-visible ring has something to paint on and the hover/pointer
      geometry stays intact. The trigger itself carries no visual chrome. */
-  :global(.tooltip-trigger) {
+  :global(.mcb-tooltip-trigger) {
     display: inline-flex;
     align-items: center;
     background: transparent;
@@ -71,12 +71,12 @@
     outline: none;
   }
 
-  :global(.tooltip-trigger:focus-visible) {
+  :global(.mcb-tooltip-trigger:focus-visible) {
     box-shadow: var(--focus-ring);
   }
 
   /* ── Content bubble ────────────────────────────────────────────── */
-  :global(.tooltip-content) {
+  :global(.mcb-tooltip-content) {
     padding: var(--space-1) var(--space-2);
     background-color: var(--color-elevated);
     border: 1px solid var(--color-border);
@@ -107,7 +107,7 @@
   }
 
   /* ── Arrow ─────────────────────────────────────────────────────── */
-  :global(.tooltip-arrow) {
+  :global(.mcb-tooltip-arrow) {
     fill: var(--color-elevated);
   }
 </style>

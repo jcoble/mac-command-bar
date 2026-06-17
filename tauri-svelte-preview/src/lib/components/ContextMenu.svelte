@@ -31,30 +31,30 @@
 </script>
 
 <ContextMenu.Root>
-  <ContextMenu.Trigger class="ctx-trigger">
+  <ContextMenu.Trigger class="mcb-ctx-trigger">
     {@render children()}
   </ContextMenu.Trigger>
 
   <ContextMenu.Portal>
-    <ContextMenu.Content class="menu-content" sideOffset={4}>
+    <ContextMenu.Content class="mcb-menu-content" sideOffset={4}>
       {#if content}
         {@render content()}
       {:else if items}
         {#each items as item (item.id)}
           {#if item.separatorBefore}
-            <ContextMenu.Separator class="menu-separator" />
+            <ContextMenu.Separator class="mcb-menu-separator" />
           {/if}
           <ContextMenu.Item
-            class="menu-item{item.danger ? ' menu-item--danger' : ''}"
+            class="mcb-menu-item{item.danger ? ' mcb-menu-item--danger' : ''}"
             disabled={item.disabled}
             onSelect={item.onselect}
           >
             {#if item.icon}
-              <span class="menu-item__icon" aria-hidden="true">
+              <span class="mcb-menu-item__icon" aria-hidden="true">
                 <item.icon size={14} />
               </span>
             {/if}
-            <span class="menu-item__label">{item.label}</span>
+            <span class="mcb-menu-item__label">{item.label}</span>
           </ContextMenu.Item>
         {/each}
       {/if}
@@ -64,19 +64,21 @@
 
 <style>
   /* ── Trigger wrapper: transparent, full area ───────────────────── */
-  :global(.ctx-trigger) {
+  :global(.mcb-ctx-trigger) {
     display: contents;
   }
 
-  /* ── Panel + items reuse the same tokens as Menu.svelte ─────────
-     These class names (.menu-content, .menu-separator, .menu-item,
-     .menu-item--danger, .menu-item__icon, .menu-item__label) are
-     intentionally identical so both components share one visual
-     language. In a future refactor they can move to a shared CSS
-     module. For now they are duplicated so each file is standalone.
+  /* ── Shared menu surface — CANONICAL SOURCE: Menu.svelte ────────
+     The .menu-* rules below (.mcb-menu-content, .mcb-menu-separator, .mcb-menu-item,
+     .mcb-menu-item--danger, .mcb-menu-item__icon, .mcb-menu-item__label) are a verbatim
+     copy of Menu.svelte so DropdownMenu and ContextMenu share one visual
+     language. They are :global, so whichever mounts first wins — keeping
+     them identical avoids silent divergence. EDIT Menu.svelte, then paste
+     here unchanged. (A future refactor can hoist these to a shared module;
+     that requires touching imports, so it's intentionally deferred.)
   ─────────────────────────────────────────────────────────────────── */
 
-  :global(.menu-content) {
+  :global(.mcb-menu-content) {
     min-width: 180px;
     max-width: 280px;
     padding: var(--space-1);
@@ -86,7 +88,9 @@
     box-shadow: var(--shadow-md);
     outline: none;
     z-index: 9000;
-    animation: menu-in 120ms cubic-bezier(0.16, 1, 0.3, 1);
+
+    /* Subtle entrance */
+    animation: menu-in 130ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   @keyframes menu-in {
@@ -100,14 +104,16 @@
     }
   }
 
-  :global(.menu-separator) {
+  /* ── Separator ─────────────────────────────────────────────────── */
+  :global(.mcb-menu-separator) {
     display: block;
     height: 1px;
     margin: var(--space-1) calc(-1 * var(--space-1));
     background-color: var(--color-border);
   }
 
-  :global(.menu-item) {
+  /* ── Item ──────────────────────────────────────────────────────── */
+  :global(.mcb-menu-item) {
     display: flex;
     align-items: center;
     gap: var(--space-2);
@@ -123,42 +129,43 @@
     border: none;
     background: transparent;
     transition:
-      background-color 80ms ease,
-      color 80ms ease;
+      background-color 130ms ease,
+      color 130ms ease;
   }
 
-  :global(.menu-item[data-highlighted]) {
+  :global(.mcb-menu-item[data-highlighted]) {
     background-color: var(--color-surface);
     color: var(--color-text);
   }
 
-  :global(.menu-item[data-disabled]) {
-    opacity: 0.35;
+  :global(.mcb-menu-item[data-disabled]) {
+    opacity: 0.4;
     cursor: not-allowed;
     pointer-events: none;
   }
 
-  :global(.menu-item--danger) {
+  :global(.mcb-menu-item--danger) {
     color: var(--color-bad);
   }
 
-  :global(.menu-item--danger[data-highlighted]) {
+  :global(.mcb-menu-item--danger[data-highlighted]) {
     background-color: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
-  :global(.menu-item__icon) {
+  /* ── Item parts ────────────────────────────────────────────────── */
+  :global(.mcb-menu-item__icon) {
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;
     opacity: 0.75;
   }
 
-  :global(.menu-item[data-highlighted] .menu-item__icon) {
+  :global(.mcb-menu-item[data-highlighted] .mcb-menu-item__icon) {
     opacity: 1;
   }
 
-  :global(.menu-item__label) {
+  :global(.mcb-menu-item__label) {
     flex: 1;
     white-space: nowrap;
     overflow: hidden;

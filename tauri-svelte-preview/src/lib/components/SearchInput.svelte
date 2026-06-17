@@ -120,7 +120,7 @@
     border-radius: var(--radius-sm);
     padding: var(--space-1);
     flex-shrink: 0;
-    transition: color 120ms ease, background 120ms ease;
+    transition: color 130ms ease, background 130ms ease;
   }
 
   .clear-btn:hover {

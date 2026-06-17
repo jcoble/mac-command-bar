@@ -4,16 +4,19 @@
 
   interface Props {
     tone?: Tone;
+    /** Accessible label so a bare count reads e.g. "3 notifications" instead of "3". */
+    ariaLabel?: string;
     children?: Snippet;
   }
 
-  let { tone = 'neutral', children }: Props = $props();
+  let { tone = 'neutral', ariaLabel, children }: Props = $props();
 </script>
 
 <span
   class="badge"
   data-tone={tone}
   style={toneStyle(tone)}
+  aria-label={ariaLabel}
 >
   {@render children?.()}
 </span>

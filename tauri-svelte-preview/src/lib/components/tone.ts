@@ -22,7 +22,7 @@ const TONE_MAP: Record<Tone, ToneTokens> = {
   good:      { color: 'var(--color-good)',      bg: 'var(--color-good-bg)'      },
   bad:       { color: 'var(--color-bad)',       bg: 'var(--color-bad-bg)'       },
   attention: { color: 'var(--color-attention)', bg: 'var(--color-attention-bg)' },
-  muted:     { color: 'var(--color-text-3)',    bg: 'var(--color-idle)'         },
+  muted:     { color: 'var(--color-text-3)',    bg: 'var(--color-surface)'      },
 };
 
 /**

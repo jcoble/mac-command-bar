@@ -11,6 +11,8 @@
     leadingIcon?: Component<{ size?: number | string; class?: string }>;
     /** When provided, renders a dismiss (×) button. */
     ondismiss?: () => void;
+    /** Accessible label for the dismiss button (e.g. "Remove Live"). Defaults to "Remove". */
+    dismissLabel?: string;
     children?: Snippet;
   }
 
@@ -19,6 +21,7 @@
     size = 'sm',
     leadingIcon: LeadingIcon,
     ondismiss,
+    dismissLabel = 'Remove',
     children,
   }: Props = $props();
 
@@ -45,7 +48,7 @@
     <button
       type="button"
       class="chip__dismiss"
-      aria-label="Remove"
+      aria-label={dismissLabel}
       onclick={ondismiss}
     >
       <X size={iconSize} />
@@ -78,6 +81,8 @@
 
   .chip--xs {
     font-size:      var(--text-xs);
+    /* 2px vertical / gap are intentionally below the --space scale floor
+       (4px): the xs chip needs a tighter inset than --space-1 allows. */
     padding:        2px var(--space-1);
     gap:            2px;
   }
@@ -103,7 +108,7 @@
     cursor:      pointer;
     border-radius: var(--radius-pill);
     opacity:     0.65;
-    transition:  opacity 120ms ease;
+    transition:  opacity 130ms ease;
     /* tighten touch target without affecting layout */
     margin-inline-start: 1px;
   }
