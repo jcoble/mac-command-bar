@@ -6267,21 +6267,27 @@
         return;
       }
 
+      const snapshotFallbackRoots = [snapshot.worktreePath, snapshot.cwd, snapshot.project?.path];
       if (command) {
-        const session = await startEmbeddedTerminalSession(path, command);
+        const session = await startEmbeddedTerminalSession(path, command, snapshotFallbackRoots);
         if (session) {
           bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
-          fileActionStatus = `Started conversation terminal: ${snapshot.title}`;
+          // Keep the cwd-fallback notice if one was raised; otherwise confirm resume.
+          fileActionStatus = fileActionStatus.startsWith('Working directory ‹')
+            ? fileActionStatus
+            : `Started conversation terminal: ${snapshot.title}`;
         } else {
           fileActionStatus = 'Embedded terminal unavailable';
         }
         return;
       }
 
-      const session = await startEmbeddedTerminalSession(path);
+      const session = await startEmbeddedTerminalSession(path, '', snapshotFallbackRoots);
       if (session) {
         bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
-        fileActionStatus = `Started conversation shell: ${snapshot.title}`;
+        fileActionStatus = fileActionStatus.startsWith('Working directory ‹')
+          ? fileActionStatus
+          : `Started conversation shell: ${snapshot.title}`;
       } else {
         fileActionStatus = 'Embedded terminal unavailable';
       }
@@ -7965,9 +7971,79 @@
     }
   }
 
-  async function startEmbeddedTerminalSession(cwd = selectedProject.path, startupCommand = '') {
-    const root = cwd.trim();
-    if (!root || embeddedTerminalStarting) return null;
+  // A cwd is unusable when it is empty or points at an OS temp/ephemeral dir
+  // (e.g. /private/var/folders/.../T). Spawning a PTY there makes the shell
+  // error out (compinit/compdef failures) so the agent session cannot resume.
+  function looksLikeEphemeralCwd(path: string): boolean {
+    const normalized = normalizeProjectPath(path);
+    if (!normalized) return true;
+    return (
+      normalized.startsWith('/private/var/folders/') ||
+      normalized.startsWith('/var/folders/') ||
+      normalized === '/tmp' ||
+      normalized.startsWith('/tmp/') ||
+      normalized === '/private/tmp' ||
+      normalized.startsWith('/private/tmp/')
+    );
+  }
+
+  // Best-effort $HOME for the running user. There is no frontend home-dir API,
+  // but every known project path lives under /Users/<user>, so derive it from
+  // the active project (falling back to the bundled repo path).
+  function homeDirGuess(): string {
+    const candidates = [selectedProject?.path, macCommandBarRepoPath];
+    for (const candidate of candidates) {
+      const normalized = normalizeProjectPath(candidate ?? '');
+      const match = normalized.match(/^(\/Users\/[^/]+)(?:\/|$)/);
+      if (match) return match[1];
+    }
+    return '';
+  }
+
+  // Resolve the first candidate that exists, is a directory, and is not an
+  // ephemeral temp dir. Uses the existing validate_project_root bridge (which
+  // works in both the Tauri runtime and the dev bridge) and also considers the
+  // detected git root of any otherwise-rejected candidate.
+  async function firstValidTerminalCwd(candidates: Array<string | null | undefined>): Promise<string> {
+    const seen = new Set<string>();
+    const queue = candidates
+      .map((candidate) => normalizeProjectPath(candidate ?? ''))
+      .filter((candidate) => candidate.length > 0);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const candidate = queue[index];
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (looksLikeEphemeralCwd(candidate)) continue;
+
+      let validation: ProjectRootValidationResult | null = null;
+      try {
+        validation = await validateProjectRootFromTauri(candidate);
+      } catch {
+        validation = null;
+      }
+
+      if (validation?.exists && validation.isDirectory) {
+        return candidate;
+      }
+
+      // If the candidate itself is gone but its git root survives, try that next.
+      const gitRoot = normalizeProjectPath(validation?.gitRoot ?? '');
+      if (gitRoot && !seen.has(gitRoot) && !looksLikeEphemeralCwd(gitRoot)) {
+        queue.push(gitRoot);
+      }
+    }
+
+    return '';
+  }
+
+  async function startEmbeddedTerminalSession(
+    cwd = selectedProject.path,
+    startupCommand = '',
+    fallbackRoots: Array<string | null | undefined> = []
+  ) {
+    const requestedRoot = cwd.trim();
+    if (!requestedRoot || embeddedTerminalStarting) return null;
     const command = startupCommand.trim();
 
     embeddedTerminalStarting = true;
@@ -7981,12 +8057,46 @@
         return null;
       }
 
+      // Resolution order: requested cwd → caller fallbacks (project/git roots) →
+      // active project path → $HOME. Never spawn in a dead/ephemeral directory.
+      const home = homeDirGuess();
+      const resolvedRoot = await firstValidTerminalCwd([
+        requestedRoot,
+        ...fallbackRoots,
+        selectedProject?.path,
+        home
+      ]);
+      let root = resolvedRoot || (home ? home : requestedRoot);
+      const usedFallback = normalizeProjectPath(root) !== normalizeProjectPath(requestedRoot);
+      if (usedFallback) {
+        fileActionStatus = `Working directory ‹${requestedRoot}› is unavailable — opened terminal in ‹${root}›.`;
+      }
+
       fitEmbeddedTerminal();
-      const session = await startTerminalSessionFromTauri({
+      let session = await startTerminalSessionFromTauri({
         cwd: root,
         cols: embeddedTerminal.cols || 96,
         rows: embeddedTerminal.rows || 24
+      }).catch((startError) => {
+        // A bad cwd can reject the native call outright; retry once at $HOME.
+        if (home && normalizeProjectPath(home) !== normalizeProjectPath(root)) {
+          return null;
+        }
+        throw startError;
       });
+
+      if (!session && home && normalizeProjectPath(home) !== normalizeProjectPath(root)) {
+        const retryRoot = root;
+        root = home;
+        session = await startTerminalSessionFromTauri({
+          cwd: root,
+          cols: embeddedTerminal.cols || 96,
+          rows: embeddedTerminal.rows || 24
+        });
+        if (session) {
+          fileActionStatus = `Working directory ‹${retryRoot}› is unavailable — opened terminal in ‹${root}›.`;
+        }
+      }
 
       if (!session) {
         embeddedTerminalError = 'Embedded terminal sessions run inside the Tauri app.';
@@ -20239,9 +20349,13 @@
                   {:else if selectedProjectGitChangedFiles.length === 0}
                     <div class="intelligence-empty">No changed files</div>
                   {:else}
+                    <div class="git-insights-section-heading">
+                      <span class="git-insights-section-title">Changes</span>
+                      <span class="git-insights-section-count">{selectedProjectGitChangedFiles.length}</span>
+                    </div>
                     <div class="git-status-overview">{selectedProjectGitFileGroupSummary}</div>
                     {#each selectedProjectGitFileGroups as group (group.id)}
-                      <section class="git-status-group" aria-label={`${group.label} Git files`}>
+                      <section class="git-status-group" data-group={group.id} aria-label={`${group.label} Git files`}>
                         <div class="git-status-group-heading">
                           <strong>{group.label}</strong>
                           <span>{group.files.length}</span>
@@ -20271,8 +20385,9 @@
                   {/if}
                 </div>
                 <div class="git-history-panel" aria-label="Git commit history">
-                  <div class="git-history-heading">
-                    <span>History</span>
+                  <div class="git-history-heading git-insights-section-heading">
+                    <span class="git-insights-section-title">History</span>
+                    <span class="git-insights-section-count">{selectedProjectGitGraph.commits.length}</span>
                     <small>{gitCommitHistorySummary}</small>
                   </div>
                   <div class="git-graph-summary-strip" aria-label="Git graph view model summary" title={selectedProjectGitTaskSearchSummary}>
@@ -20293,9 +20408,14 @@
                       </span>
                     {/each}
                   </div>
-                  {#if selectedProjectGitTaskIDs.length > 0}
+                  {#if selectedProjectGitTaskIDs.length > 0 || selectedProjectGitTaskSourceGroups.length > 0}
+                  <section class="git-insights-section" aria-label="Git tasks">
+                    <div class="git-insights-section-heading">
+                      <span class="git-insights-section-title">Tasks</span>
+                      <span class="git-insights-section-count">{selectedProjectGitTaskSourceGroups.length || selectedProjectGitTaskIDs.length}</span>
+                    </div>
+                  {#if selectedProjectGitTaskSourceGroups.length === 0 && selectedProjectGitTaskIDs.length > 0}
                     <div class="git-task-trail" aria-label="Git task links">
-                      <span>Tasks</span>
                       {#each selectedProjectGitTaskIDs as taskID (taskID)}
                         {#if gitTaskUrl(taskID)}
                           <a class="git-task-link" href={gitTaskUrl(taskID) ?? ''} target="_blank" rel="noreferrer">
@@ -20331,13 +20451,7 @@
                       {/each}
                     </div>
                   {/if}
-                  {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
-                    <div class="git-task-search-targets" aria-label="Git task search targets" title={selectedProjectGitTaskSearchSummary}>
-                      <span>Search</span>
-                      {#each selectedProjectGitGraph.taskSearchTargets as target (`${target.kind}:${target.id}`)}
-                        <small>{target.label}: {target.query}</small>
-                      {/each}
-                    </div>
+                  </section>
                   {/if}
                   {#if selectedGitCommit && selectedGitCommitRow}
                     <details
@@ -29781,6 +29895,769 @@
 
   .intelligence-row.diagnostic.warning strong {
     color: #d8aa55;
+  }
+
+  /* ============================================================
+   * Insights panel readability pass (TSK-346) — scoped overrides.
+   * All rules are scoped under .source-intelligence-panel so the
+   * shared git- and intelligence- base styles still serve the Activity
+   * Bar source-control view and the editor navigation drawer.
+   * Aesthetic: modern, minimal, spacious, borderless (VS Code),
+   * driven entirely by design tokens.
+   * ============================================================ */
+
+  /* ── Panel shell ────────────────────────────────────────────── */
+  .source-intelligence-panel {
+    border-left: 1px solid var(--color-border);
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  /* ── Tab switcher — borderless segmented, active = accent ────── */
+  .source-intelligence-panel .intelligence-tabs {
+    gap: var(--space-1);
+    padding: var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .source-intelligence-panel .intelligence-tabs button {
+    height: 28px;
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
+    color: var(--color-text-3);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.02em;
+    transition: background 130ms ease, color 130ms ease;
+  }
+
+  .source-intelligence-panel .intelligence-tabs button:hover {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .intelligence-tabs button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .source-intelligence-panel .intelligence-tabs button.active {
+    color: var(--color-on-accent);
+    border-color: transparent;
+    background: var(--color-accent);
+  }
+
+  .source-intelligence-panel .intelligence-tabs strong {
+    color: var(--color-text-3);
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--weight-semibold);
+  }
+
+  .source-intelligence-panel .intelligence-tabs button.active strong {
+    color: var(--color-on-accent);
+    opacity: 0.78;
+  }
+
+  /* ── Summaries / empty / loading states ─────────────────────── */
+  .source-intelligence-panel .intelligence-summary {
+    padding: var(--space-2) var(--space-3);
+    color: var(--color-text-3);
+    border-bottom: 1px solid var(--color-border);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .intelligence-empty {
+    min-height: 96px;
+    color: var(--color-text-3);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .intelligence-list {
+    padding: var(--space-2);
+  }
+
+  /* ── Shared section heading (Changes / History / Tasks) ──────── */
+  .source-intelligence-panel .git-insights-section {
+    display: grid;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .source-intelligence-panel .git-insights-section-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: var(--space-1) 0;
+  }
+
+  .source-intelligence-panel .git-insights-section-title {
+    flex: 0 0 auto;
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .source-intelligence-panel .git-insights-section-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 var(--space-2);
+    color: var(--color-text-3);
+    background: var(--color-elevated);
+    border-radius: var(--radius-pill);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  /* a trailing muted note inside a section heading (e.g. history summary) */
+  .source-intelligence-panel .git-insights-section-heading small {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ── Intelligence rows (Problems / Symbols) ─────────────────── */
+  .source-intelligence-panel .intelligence-row {
+    grid-template-columns: minmax(56px, auto) minmax(0, 1fr) auto;
+    gap: var(--space-2);
+    min-height: 34px;
+    padding: var(--space-2);
+    color: var(--color-text);
+    border-radius: var(--radius-sm);
+    transition: background 120ms ease;
+  }
+
+  .source-intelligence-panel .intelligence-row:hover,
+  .source-intelligence-panel .intelligence-row:focus-visible {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .intelligence-row:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .source-intelligence-panel .intelligence-row strong {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .source-intelligence-panel .intelligence-row span {
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-normal);
+  }
+
+  .source-intelligence-panel .intelligence-row small {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  /* Problems: tone-code severity via tokens */
+  .source-intelligence-panel .intelligence-row.diagnostic.error strong {
+    color: var(--color-bad);
+  }
+
+  .source-intelligence-panel .intelligence-row.diagnostic.warning strong {
+    color: var(--color-attention);
+  }
+
+  /* ── Git container ──────────────────────────────────────────── */
+  .source-intelligence-panel .git-diff-panel {
+    gap: 0;
+  }
+
+  /* ── Commands drawer ────────────────────────────────────────── */
+  .source-intelligence-panel .git-command-drawer {
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .source-intelligence-panel .git-command-drawer summary {
+    height: 34px;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .source-intelligence-panel .git-command-drawer summary::before {
+    border-left-color: var(--color-text-3);
+  }
+
+  .source-intelligence-panel .git-command-drawer summary small {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .source-intelligence-panel .git-controls {
+    gap: var(--space-2);
+    padding: 0 var(--space-3) var(--space-3);
+  }
+
+  .source-intelligence-panel .git-action-row,
+  .source-intelligence-panel .git-remote-row,
+  .source-intelligence-panel .git-commit-row {
+    gap: var(--space-2);
+  }
+
+  .source-intelligence-panel .git-action-button {
+    min-height: 28px;
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
+    color: var(--color-text-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+
+  .source-intelligence-panel .git-action-button:hover:not(:disabled),
+  .source-intelligence-panel .git-action-button:focus-visible {
+    color: var(--color-text);
+    border-color: var(--color-border);
+    outline: none;
+    background: var(--color-elevated);
+  }
+
+  .source-intelligence-panel .git-action-button.commit {
+    color: var(--color-on-accent);
+    border-color: transparent;
+    background: var(--color-accent);
+  }
+
+  .source-intelligence-panel .git-action-button.commit:hover:not(:disabled) {
+    color: var(--color-on-accent);
+    background: var(--color-accent);
+    opacity: 0.9;
+  }
+
+  .source-intelligence-panel .git-commit-input {
+    padding: var(--space-2);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    font-size: var(--text-sm);
+    line-height: 1.4;
+  }
+
+  .source-intelligence-panel .git-commit-input:focus {
+    border-color: transparent;
+    box-shadow: var(--focus-ring);
+  }
+
+  .source-intelligence-panel .git-action-message {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  .source-intelligence-panel .git-action-message.error {
+    color: var(--color-bad);
+  }
+
+  /* ── Changes (status list) ──────────────────────────────────── */
+  .source-intelligence-panel .git-status-list {
+    gap: var(--space-1);
+    max-height: 180px;
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .source-intelligence-panel .git-status-overview {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  .source-intelligence-panel .git-status-group {
+    gap: var(--space-1);
+  }
+
+  .source-intelligence-panel .git-status-group-heading {
+    min-height: 22px;
+    gap: var(--space-2);
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+  }
+
+  .source-intelligence-panel .git-status-group-heading span {
+    color: var(--color-text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .source-intelligence-panel .git-status-group-heading button {
+    height: 22px;
+    padding: 0 var(--space-2);
+    color: var(--color-text-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+
+  .source-intelligence-panel .git-status-group-heading button:hover:not(:disabled),
+  .source-intelligence-panel .git-status-group-heading button:focus-visible {
+    color: var(--color-text);
+    border-color: var(--color-border);
+    outline: none;
+    background: var(--color-elevated);
+  }
+
+  /* File rows — VS Code source-control style */
+  .source-intelligence-panel .git-status-row {
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    gap: var(--space-2);
+    min-height: 28px;
+    padding: var(--space-1) var(--space-2);
+    color: var(--color-text);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    transition: background 120ms ease;
+  }
+
+  .source-intelligence-panel .git-status-row:hover,
+  .source-intelligence-panel .git-status-row:focus-visible {
+    border-color: transparent;
+    outline: none;
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .git-status-row.selected {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+
+  .source-intelligence-panel .git-status-row:focus-visible {
+    box-shadow: var(--focus-ring);
+  }
+
+  /* status glyph (M/A/D/U) — tone-coded via tokens */
+  .source-intelligence-panel .git-status-row strong {
+    justify-self: center;
+    color: var(--color-text-3);
+    font-family: inherit;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-bold);
+  }
+
+  .source-intelligence-panel .git-status-row span {
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-normal);
+  }
+
+  /* dim the directory portion of the path, keep the filename emphasized:
+     handled by markup elsewhere; here we keep the secondary note muted */
+  .source-intelligence-panel .git-status-row small {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  /* Tone the status glyph by group (VS Code source-control convention):
+     staged = good/live, unstaged (modified) = attention, untracked = muted. */
+  .source-intelligence-panel .git-status-group[data-group="staged"] .git-status-row strong {
+    color: var(--color-good);
+  }
+
+  .source-intelligence-panel .git-status-group[data-group="unstaged"] .git-status-row strong {
+    color: var(--color-attention);
+  }
+
+  .source-intelligence-panel .git-status-group[data-group="untracked"] .git-status-row strong {
+    color: var(--color-text-3);
+  }
+
+  /* ── History panel ──────────────────────────────────────────── */
+  .source-intelligence-panel .git-history-panel {
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .source-intelligence-panel .git-history-heading {
+    color: var(--color-text);
+  }
+
+  /* compact summary strip — borderless, muted */
+  .source-intelligence-panel .git-graph-summary-strip {
+    min-height: 0;
+    gap: var(--space-2);
+    padding: 0;
+    color: var(--color-text-3);
+    border: none;
+    background: transparent;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  .source-intelligence-panel .git-graph-summary-strip span {
+    color: var(--color-text-2);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .git-graph-summary-strip small {
+    color: var(--color-text-3);
+  }
+
+  /* BRANCH/SYNC/WORKTREE/ROOT/HEAD — clean key→value chips */
+  .source-intelligence-panel .git-branch-health-strip {
+    gap: var(--space-1);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip {
+    gap: var(--space-2);
+    min-height: 24px;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip strong {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+  }
+
+  .source-intelligence-panel .git-branch-health-chip span {
+    color: var(--color-text);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip.clean span {
+    color: var(--color-good);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip.dirty span {
+    color: var(--color-attention);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip.warning span {
+    color: var(--color-attention);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip.error span {
+    color: var(--color-bad);
+  }
+
+  .source-intelligence-panel .git-branch-health-chip.muted span {
+    color: var(--color-text-3);
+  }
+
+  /* ── Tasks ──────────────────────────────────────────────────── */
+  .source-intelligence-panel .git-task-trail {
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .git-task-source-map {
+    gap: var(--space-1);
+  }
+
+  .source-intelligence-panel .git-task-source-row {
+    gap: var(--space-2);
+    min-height: 28px;
+    padding: var(--space-1) var(--space-2);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    transition: background 120ms ease;
+  }
+
+  .source-intelligence-panel .git-task-source-row:hover {
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .git-task-source-row small {
+    color: var(--color-text-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  .source-intelligence-panel .git-task-source-row button {
+    width: 22px;
+    height: 22px;
+    color: var(--color-text-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+
+  .source-intelligence-panel .git-task-source-row button:hover,
+  .source-intelligence-panel .git-task-source-row button:focus-visible {
+    color: var(--color-text);
+    border-color: var(--color-border);
+    outline: none;
+    background: var(--color-elevated);
+  }
+
+  /* task pill — readable accent chip */
+  .source-intelligence-panel .git-task-link {
+    min-height: 20px;
+    padding: 0 var(--space-2);
+    color: var(--color-on-accent);
+    background: var(--color-accent);
+    border-radius: var(--radius-pill);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* ── Selected commit detail drawer ──────────────────────────── */
+  .source-intelligence-panel .git-commit-detail-drawer {
+    gap: var(--space-1);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .git-commit-detail-drawer[open] {
+    background: var(--color-elevated);
+  }
+
+  .source-intelligence-panel .git-commit-detail-summary {
+    min-height: 30px;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .source-intelligence-panel .git-commit-detail-summary::before {
+    color: var(--color-text-3);
+  }
+
+  .source-intelligence-panel .git-commit-detail-summary-main strong {
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+  }
+
+  .source-intelligence-panel .git-commit-detail-summary-main small,
+  .source-intelligence-panel .git-commit-detail-summary-ref {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  .source-intelligence-panel .git-commit-detail-facts span {
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+  }
+
+  .source-intelligence-panel .git-commit-detail-facts strong {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+  }
+
+  .source-intelligence-panel .git-commit-detail-facts small {
+    color: var(--color-text-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  /* ── Commit history rows — clean two-line rows ──────────────── */
+  .source-intelligence-panel .git-history-list {
+    gap: var(--space-1);
+    max-height: 220px;
+  }
+
+  .source-intelligence-panel .git-history-row {
+    grid-template-columns: 14px minmax(0, 1fr) minmax(42px, auto);
+    gap: var(--space-2);
+    min-height: 36px;
+    padding: var(--space-1) var(--space-2);
+    color: var(--color-text);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    transition: background 120ms ease;
+  }
+
+  .source-intelligence-panel .git-history-row:hover {
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .git-history-row.selected {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+
+  .source-intelligence-panel .git-history-row.head,
+  .source-intelligence-panel .git-history-row.branch,
+  .source-intelligence-panel .git-history-row.merge,
+  .source-intelligence-panel .git-history-row.root {
+    border-color: transparent;
+  }
+
+  .source-intelligence-panel .git-history-row:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .source-intelligence-panel .git-history-main strong {
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .git-history-main small {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  /* subtle graph lane markers */
+  .source-intelligence-panel .git-graph-marker::before {
+    background: var(--color-border);
+  }
+
+  .source-intelligence-panel .git-graph-marker::after {
+    border-color: var(--color-text-3);
+    background: var(--color-bg);
+  }
+
+  .source-intelligence-panel .git-graph-marker.head::before {
+    background: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  }
+
+  .source-intelligence-panel .git-graph-marker.head::after {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+
+  .source-intelligence-panel .git-graph-marker.merge::after {
+    border-color: var(--color-attention);
+  }
+
+  /* ownership / ref badges — small tone chips */
+  .source-intelligence-panel .git-history-badge {
+    padding: 1px var(--space-2);
+    color: var(--color-text-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-pill);
+    background: var(--color-surface);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+  }
+
+  .source-intelligence-panel .git-history-badge.head {
+    color: var(--color-live);
+    border-color: var(--color-border);
+    background: var(--color-live-bg);
+  }
+
+  .source-intelligence-panel .git-history-badge.upstream {
+    color: var(--color-text-2);
+    border-color: var(--color-border);
+    background: var(--color-surface);
+  }
+
+  .source-intelligence-panel .git-history-badge.task {
+    color: var(--color-text-2);
+    border-color: var(--color-border);
+  }
+
+  .source-intelligence-panel .git-history-badge.tag,
+  .source-intelligence-panel .git-history-badge.merge {
+    color: var(--color-attention);
+    border-color: var(--color-border);
+    background: var(--color-attention-bg);
+  }
+
+  .source-intelligence-panel .git-history-actions {
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--color-elevated);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .source-intelligence-panel .git-history-actions button,
+  .source-intelligence-panel .git-commit-detail-actions button {
+    width: 22px;
+    height: 22px;
+    color: var(--color-text-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+
+  .source-intelligence-panel .git-history-actions button:hover,
+  .source-intelligence-panel .git-history-actions button:focus-visible,
+  .source-intelligence-panel .git-commit-detail-actions button:hover,
+  .source-intelligence-panel .git-commit-detail-actions button:focus-visible {
+    color: var(--color-text);
+    border-color: var(--color-border);
+    outline: none;
+    background: var(--color-elevated);
+  }
+
+  .source-intelligence-panel .git-ref-label {
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+  }
+
+  /* ── Diff block ─────────────────────────────────────────────── */
+  .source-intelligence-panel .git-diff-block {
+    margin: var(--space-3);
+    padding: var(--space-3);
+    color: var(--color-text-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+    font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .quick-open-layer,
