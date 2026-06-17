@@ -41,6 +41,7 @@
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import ConversationList from '$lib/components/ConversationList.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -1373,6 +1374,10 @@
       )
     )
   );
+  // Keys (per workspaceSnapshotIDForAgentSession) with a live terminal attached.
+  // Empty for now — the live-terminal manager isn't wired yet, so no LIVE dots;
+  // a later pass populates this once terminal lifecycle lands.
+  const conversationLiveKeys = new Set<string>();
   let filteredWorkspaceSnapshots = $derived(
     workspaceSnapshots.filter((snapshot) =>
       activityTextMatchesFilter(
@@ -16769,167 +16774,19 @@
               aria-label="Active conversations"
               use:sourceConversationDockviewPanelAction={'active'}
             >
-            {#if filteredConversationAgentSessions.length === 0}
-              <div class="activity-empty">No active conversations</div>
-            {:else}
-              {#each filteredConversationAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
-                {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-                {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
-                {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-                {@const sessionTaskID = agentSessionTaskID(session, sessionSnapshot)}
-                <div
-                  class="activity-session-row conversation-session-row"
-                  class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}
-                  title={agentSessionResumePlan(session)}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    openAgentRowActionMenu(session, 'conversation');
-                  }}
-                >
-                  <button
-                    type="button"
-                    class="conversation-session-open"
-                    aria-label="Open conversation workspace"
-                    onclick={() => switchToConversationWorkspace(session)}
-                  >
-                    <span class="agent-provider-badge" title={agentSessionProviderLabel(session)}>
-                      {agentSessionProviderBadgeLabel(session)}
-                    </span>
-                    <div class="activity-row-main conversation-session-main">
-                      <span class="conversation-session-title-line">
-                        <strong>{session.title}</strong>
-                        {#if sessionTaskID}
-                          <span class="session-task-chip">{sessionTaskID}</span>
-                        {/if}
-                      </span>
-                      {#if session.description}
-                        <small class="conversation-session-description">{session.description}</small>
-                      {/if}
-                      <small class="conversation-session-meta">{agentSessionResumeMetaLabel(session, sessionSnapshot)}</small>
-                      <small class="conversation-session-path" title={agentSessionProjectPath(session)}>
-                        {agentSessionPathLabel(session, sessionSnapshot)}
-                      </small>
-                      {#if sessionSnapshot}
-                        <small class="workspace-snapshot-file-state">{agentSessionFileContextLabel(sessionSnapshot)}</small>
-                      {/if}
-                    </div>
-                  </button>
-                  <div class="activity-row-actions conversation-session-actions row-action-menu-anchor" aria-label="Conversation actions">
-                    <span
-                      class={`agent-session-focus-lane conversation-row-status ${sessionFocusLane.tone}`}
-                      aria-label="Recommended session focus action"
-                      title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
-                    >
-                      <em>{sessionFocusLane.label}</em>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label="Conversation actions"
-                      aria-haspopup="menu"
-                      aria-expanded={agentRowActionMenuOpen(session, 'conversation')}
-                      title="Conversation actions"
-                      onclick={() => toggleAgentRowActionMenu(session, 'conversation')}
-                    >
-                      <MoreHorizontal size={13} strokeWidth={2} />
-                    </button>
-                    {#if agentRowActionMenuOpen(session, 'conversation')}
-                      <div class="row-action-menu" role="menu" aria-label="Conversation actions">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Save conversation workspace snapshot"
-                          onclick={() => {
-                            closeAgentRowActionMenu();
-                            captureAgentSessionWorkspaceSnapshot(session);
-                          }}
-                        >
-                          <Save size={12} strokeWidth={2} />
-                          <span>Save snapshot</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Restore conversation workspace"
-                          disabled={!sessionSnapshot}
-                          onclick={() => {
-                            closeAgentRowActionMenu();
-                            restoreAgentSessionWorkspaceSnapshot(session);
-                          }}
-                        >
-                          <RotateCcw size={12} strokeWidth={2} />
-                          <span>Restore workspace</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Copy conversation workspace restore plan"
-                          disabled={!sessionSnapshot}
-                          onclick={() => {
-                            closeAgentRowActionMenu();
-                            copyAgentSessionWorkspaceRestorePlan(session);
-                          }}
-                        >
-                          <FileCode2 size={12} strokeWidth={2} />
-                          <span>Copy restore plan</span>
-                        </button>
-                        {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            aria-label="Copy conversation workspace repair plan"
-                            onclick={() => {
-                              closeAgentRowActionMenu();
-                              copyAgentSessionWorkspaceRepairPlan(session);
-                            }}
-                          >
-                            <FolderSearch size={12} strokeWidth={2} />
-                            <span>Copy repair plan</span>
-                          </button>
-                        {/if}
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Copy agent resume command"
-                          onclick={() => {
-                            closeAgentRowActionMenu();
-                            copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied');
-                          }}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                          <span>Copy resume command</span>
-                        </button>
-                        {#if session.projectPath}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            aria-label="Open agent project path"
-                            onclick={() => {
-                              closeAgentRowActionMenu();
-                              openActivityPath(session.projectPath ?? '');
-                            }}
-                          >
-                            <ExternalLink size={12} strokeWidth={2} />
-                            <span>Open project path</span>
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            aria-label="Resume agent in embedded terminal"
-                            onclick={() => {
-                              closeAgentRowActionMenu();
-                              resumeAgentSessionEmbeddedTerminal(session);
-                            }}
-                          >
-                            <Terminal size={12} strokeWidth={2} />
-                            <span>Resume embedded</span>
-                          </button>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-            {/if}
+              <ConversationList
+                sessions={filteredConversationAgentSessions}
+                activeKey={activeWorkspaceSessionKey}
+                liveKeys={conversationLiveKeys}
+                keyFor={workspaceSnapshotIDForAgentSession}
+                filter={true}
+                onOpen={switchToConversationWorkspace}
+                onSave={captureAgentSessionWorkspaceSnapshot}
+                onRestore={restoreAgentSessionWorkspaceSnapshot}
+                onRepair={copyAgentSessionWorkspaceRepairPlan}
+                onCopyResume={(session) =>
+                  copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
+              />
             </div>
             </SourceDockviewShell>
           </div>
