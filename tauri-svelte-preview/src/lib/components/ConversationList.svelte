@@ -179,9 +179,11 @@
 </script>
 
 <div class="conversation-list">
-  <div class="conversation-list__search">
-    <SearchInput bind:value={query} placeholder="Search conversations" />
-  </div>
+  {#if !filter}
+    <div class="conversation-list__search">
+      <SearchInput bind:value={query} placeholder="Search conversations" />
+    </div>
+  {/if}
 
   {#if visibleSessions.length === 0}
     <div class="conversation-list__empty" role="status">
