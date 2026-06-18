@@ -287,7 +287,7 @@
 	let monacoCancellationSuppressionDepth = 0;
 	let monacoCancellationSuppressionTimer = 0;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
-	const codeLensReferenceCountCache = new Map<string, number>();
+	const codeLensReferenceCountCache = new Map<string, number | null>();
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 	const sourceLspMonacoLanguageIDs = [
@@ -495,6 +495,9 @@
 
 					const count = await sourceCodeLensReferenceCount(model, request);
 					if (token.isCancellationRequested) return codeLens;
+					// Unknown count (no LSP / skipped large-repo scan) ⇒ leave the lens
+					// without a command so Monaco shows no "N references" instead of "0".
+					if (count === null) return codeLens;
 
 					return {
 						...codeLens,
@@ -1154,7 +1157,10 @@
 		const cachedCount = codeLensReferenceCountCache.get(cacheKey);
 		if (cachedCount !== undefined) return cachedCount;
 
-		const nextCount = Math.max(0, (await onReferenceCountLookup?.(request)) ?? 0);
+		const lookup = await onReferenceCountLookup?.(request);
+		// null/undefined ⇒ the count is unknown (no LSP / skipped scan). Cache and
+		// return null so the lens renders without a count rather than "0".
+		const nextCount = typeof lookup === "number" ? Math.max(0, lookup) : null;
 		codeLensReferenceCountCache.set(cacheKey, nextCount);
 		return nextCount;
 	}

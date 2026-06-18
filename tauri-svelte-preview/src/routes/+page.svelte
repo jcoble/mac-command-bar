@@ -8640,25 +8640,64 @@
     }
   }
 
-  async function countSourceReferencesForCodeLens(request: SourceEditorLookupRequest) {
+  // A code-lens reference COUNT is a low-priority annotation, so cap its cost.
+  const codeLensReferenceCountTimeoutMs = 700;
+  const maxCodeLensNativeReferenceScanRecords = 1500;
+
+  function raceSourceCountTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(null);
+      }, ms);
+      const finish = (value: T | null) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      };
+      promise.then(finish, () => finish(null));
+    });
+  }
+
+  async function countSourceReferencesForCodeLens(
+    request: SourceEditorLookupRequest
+  ): Promise<number | null> {
     const normalizedSymbolName = request.symbolName.trim();
-    if (!normalizedSymbolName) return 0;
+    if (!normalizedSymbolName) return null;
+
+    // Prefer the indexed LSP, but a cold server's request can block for the
+    // full Rust LSP timeout (6s); ~15 visible lenses waiting that long is the
+    // "30s code-lens" freeze. Give the count a short budget, then fall back.
+    if (files.preview && sourceIntelligenceAvailable) {
+      const lspTargets = await raceSourceCountTimeout(
+        findSourceLspReferencesFromTauri(
+          { ...files.preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceSearchResults
+          }
+        ).catch(() => null),
+        codeLensReferenceCountTimeoutMs
+      );
+      if (lspTargets) return lspTargets.length;
+    }
+
+    // The native fallback reads file contents across the index. On the real
+    // Tauri runtime that means reading ~the whole project per symbol for a
+    // large repo (the other half of the freeze), so skip it past a size cap —
+    // the LSP owns big native repos. The web preview resolves this in-memory
+    // (the mock), so keep the fallback there and for small native repos, else
+    // counts vanish (regression 52ad343). Unknown ⇒ null so no count renders.
+    if (isNativeTauriRuntime() && files.records.length > maxCodeLensNativeReferenceScanRecords) {
+      return null;
+    }
 
     try {
-      const lspTargets =
-        files.preview && sourceIntelligenceAvailable
-          ? await findSourceLspReferencesFromTauri(
-              { ...files.preview, content: selectedSourceDraftContent },
-              {
-                root: selectedProject.path,
-                line: request.line,
-                column: request.column,
-                limit: maxSourceSearchResults
-              }
-            ).catch(() => null)
-          : null;
-      if (lspTargets?.length) return lspTargets.length;
-
       const nativeTargets = await findSourceReferencesFromTauri(
         files.records,
         normalizedSymbolName,
@@ -8672,7 +8711,7 @@
         maxSourceSearchResults
       ).length;
     } catch {
-      return 0;
+      return null;
     }
   }
 
