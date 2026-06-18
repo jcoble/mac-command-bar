@@ -44,6 +44,7 @@
   import { settings, defaultSettings } from '$lib/settingsStore.svelte';
   import { dock } from '$lib/stores/dockLayoutStore.svelte';
   import { files, isSourcePathDirty } from '$lib/stores/filesStore.svelte';
+  import { projectStore } from '$lib/stores/projectStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
@@ -813,14 +814,8 @@
         : EMBEDDED_TERMINAL_FONT_DEFAULTS.lineHeight
   });
 
-  let customProjectRoots = $state<ProjectRoot[]>([]);
-  let selectedSourcePaths = $state<Record<string, string>>({});
   let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
   let activeWorkspaceSessionKey = $state<string | null>(null);
-  let sourceScanCache = $state<SourceScanCache>({});
-  let sourceScanModeByProject = $state<Record<string, SourceScanEvidenceMode>>({});
-  let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
-  let backgroundIndexErrorByProject = $state<Record<string, string>>({});
   let projectGitStatus = $state<ProjectGitStatus | null>(null);
   let projectGitLoading = $state(false);
   let projectGitError = $state('');
@@ -860,7 +855,8 @@
   let agentSessionsLoading = $state(false);
   let agentSessionError = $state('');
   let agentSessionSource = $state('browser preview');
-  let selectedProjectID = $state(initialProject.id);
+  // Seed the project store's selected id (store inits ''); onMount overrides from storage.
+  projectStore.selectedID = initialProject.id;
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
@@ -970,7 +966,6 @@
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
   let projectRootValidating = $state(false);
-  let projectRootValidationByPath = $state<Record<string, ProjectRootValidationResult>>({});
   let quickOpenVisible = $state(false);
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
@@ -1086,12 +1081,12 @@
     action: 'stage' | 'unstage';
   };
 
-  let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
+  let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, projectStore.customRoots));
   let selectedProject = $derived(
-    projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject
+    projectOptions.find((project) => project.id === projectStore.selectedID) ?? projectOptions[0] ?? initialProject
   );
   let selectedProjectRootValidation = $derived(
-    projectRootValidationByPath[projectRootValidationKey(selectedProject.path)] ?? null
+    projectStore.rootValidationByPath[projectRootValidationKey(selectedProject.path)] ?? null
   );
   let selectedProjectRootValidationSummary = $derived(
     projectRootValidationSummary(selectedProjectRootValidation)
@@ -1100,7 +1095,7 @@
     projectRootGitRootSuggestion(selectedProject, selectedProjectRootValidation)
   );
   let selectedProjectIsCustom = $derived(
-    customProjectRoots.some((project) => project.id === selectedProject.id)
+    projectStore.customRoots.some((project) => project.id === selectedProject.id)
   );
   let filteredRecords = $derived(filterSourceRecords(files.records, files.query));
   let sourceTree = $derived(buildSourceTree(filteredRecords));
@@ -1197,7 +1192,7 @@
   let selectedProjectIndexEntry = $derived(
     selectedProjectSourceScanCacheSignature
       ? getSourceScanCacheEntry(
-          sourceScanCache,
+          projectStore.scan.cache,
           selectedProject,
           expandedSourceScanLimit,
           Date.now(),
@@ -1206,7 +1201,7 @@
         )
       : null
   );
-  let selectedProjectScanMode = $derived(sourceScanModeByProject[selectedProject.id] ?? 'idle');
+  let selectedProjectScanMode = $derived(projectStore.scan.modeByProject[selectedProject.id] ?? 'idle');
   let selectedProjectScanEvidence = $derived(
     formatSourceScanEvidence({
       project: selectedProject,
@@ -1235,8 +1230,8 @@
   let selectedProjectIndexSummary = $derived(
     formatSourceIndexSummary(
       selectedProjectIndexEntry,
-      backgroundIndexingProjectIDs.has(selectedProject.id),
-      backgroundIndexErrorByProject[selectedProject.id] ?? ''
+      projectStore.scan.backgroundIndexingIDs.has(selectedProject.id),
+      projectStore.scan.backgroundIndexErrorByProject[selectedProject.id] ?? ''
     )
   );
   let sourceScanStatsLabel = $derived(
@@ -3315,7 +3310,7 @@
 
   async function scanProject(
     project: ProjectRoot,
-    preferredPath = selectedSourcePaths[project.id] ?? files.selectedRecord?.path ?? null,
+    preferredPath = projectStore.selectedSourcePaths[project.id] ?? files.selectedRecord?.path ?? null,
     options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
@@ -3325,7 +3320,7 @@
       options.force || !sourceSignature
         ? null
         : getSourceScanCacheEntry(
-            sourceScanCache,
+            projectStore.scan.cache,
             project,
             scanLimit,
             Date.now(),
@@ -3338,8 +3333,8 @@
       sourceScanCacheEntryNeedsRepair(cachedScan, scanLimit, suspiciousSourceIndexFileThreshold);
 
     if (cachedScanNeedsRepair) {
-      sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-      persistSourceScanCache(sourceScanCache);
+      projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+      persistSourceScanCache(projectStore.scan.cache);
       setSourceScanMode(project.id, 'repair');
       fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
     } else if (cachedScan) {
@@ -3402,8 +3397,8 @@
           suspiciousSourceIndexFileThreshold
         )
       ) {
-        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-        persistSourceScanCache(sourceScanCache);
+        projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+        persistSourceScanCache(projectStore.scan.cache);
         setSourceScanMode(project.id, 'repair');
         fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
         await scanProject(project, preferredPath, {
@@ -3418,8 +3413,8 @@
       const shouldCacheScanResult = !(options.skipTinyIndexRepair && suspiciousScanResult);
       const nextSourceSignature = sourceScanCacheSignatureForProject(project);
       if (shouldCacheScanResult && nextSourceSignature) {
-        sourceScanCache = upsertSourceScanCacheEntry(
-          sourceScanCache,
+        projectStore.scan.cache = upsertSourceScanCacheEntry(
+          projectStore.scan.cache,
           project,
           nextRecords,
           tauriScan.limit,
@@ -3429,10 +3424,10 @@
           tauriScan.stats,
           nextSourceSignature
         );
-        persistSourceScanCache(sourceScanCache);
+        persistSourceScanCache(projectStore.scan.cache);
       } else if (!shouldCacheScanResult) {
-        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-        persistSourceScanCache(sourceScanCache);
+        projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+        persistSourceScanCache(projectStore.scan.cache);
       }
       clearBackgroundIndexError(project.id);
 
@@ -3548,23 +3543,23 @@
   }
 
   function resetProjectScanCache(project: ProjectRoot = selectedProject, limit = expandedSourceScanLimit) {
-    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-    persistSourceScanCache(sourceScanCache);
+    projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+    persistSourceScanCache(projectStore.scan.cache);
     fileActionStatus = `Index reset for ${project.name}`;
-    return scanProject(project, selectedSourcePaths[project.id], { force: true, limit });
+    return scanProject(project, projectStore.selectedSourcePaths[project.id], { force: true, limit });
   }
 
   function resetProjectOnboardingScanState(project: ProjectRoot) {
-    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-    persistSourceScanCache(sourceScanCache);
+    projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+    persistSourceScanCache(projectStore.scan.cache);
     clearBackgroundIndexError(project.id);
-    const nextScanModes = { ...sourceScanModeByProject };
+    const nextScanModes = { ...projectStore.scan.modeByProject };
     delete nextScanModes[project.id];
-    sourceScanModeByProject = nextScanModes;
+    projectStore.scan.modeByProject = nextScanModes;
 
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     delete nextSelectedSourcePaths[project.id];
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
 
     clearSourceRecordsForIncomingProject(project, true);
@@ -3605,13 +3600,13 @@
   }
 
   function sourceSidebarIndexStatus() {
-    const indexError = backgroundIndexErrorByProject[selectedProject.id]?.trim() ?? '';
+    const indexError = projectStore.scan.backgroundIndexErrorByProject[selectedProject.id]?.trim() ?? '';
     const normalizedQuery = files.query.trim();
 
     if (error.trim() || indexError) return 'Scan needs attention';
     if (sourceScanNeedsAttention) return sourceScanHealth.summary;
     if (files.scan.scanning) return 'Scanning source files';
-    if (backgroundIndexingProjectIDs.has(selectedProject.id)) return 'Indexing in background';
+    if (projectStore.scan.backgroundIndexingIDs.has(selectedProject.id)) return 'Indexing in background';
     if (normalizedQuery.length > 0) return 'File filter active';
     if (selectedProjectIndexEntry) return selectedProjectIndexEntry.truncated ? 'Index ready · limited' : 'Index ready';
     if (sourceIndexLoading) return 'Loading index';
@@ -3778,7 +3773,7 @@
     const projectsToIndex = selectBackgroundIndexProjects(
       projects,
       selectedProject.id,
-      sourceScanCache,
+      projectStore.scan.cache,
       Date.now(),
       sourceScanCacheMaxAgeMs,
       expandedSourceScanLimit,
@@ -3792,7 +3787,7 @@
   }
 
   async function indexProjectInBackground(project: ProjectRoot) {
-    if (project.id === selectedProject.id || backgroundIndexingProjectIDs.has(project.id)) return;
+    if (project.id === selectedProject.id || projectStore.scan.backgroundIndexingIDs.has(project.id)) return;
 
     setBackgroundProjectIndexing(project.id, true);
     clearBackgroundIndexError(project.id);
@@ -3817,11 +3812,11 @@
           suspiciousSourceIndexFileThreshold
         )
       ) {
-        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-        persistSourceScanCache(sourceScanCache);
+        projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+        persistSourceScanCache(projectStore.scan.cache);
         setSourceScanMode(project.id, 'tiny');
-        backgroundIndexErrorByProject = {
-          ...backgroundIndexErrorByProject,
+        projectStore.scan.backgroundIndexErrorByProject = {
+          ...projectStore.scan.backgroundIndexErrorByProject,
           [project.id]: `Only ${nextRecords.length.toLocaleString()} files indexed. Open the project to repair the index.`
         };
         return;
@@ -3829,8 +3824,8 @@
 
       const sourceSignature = sourceScanCacheSignatureForProject(project);
       if (sourceSignature) {
-        sourceScanCache = upsertSourceScanCacheEntry(
-          sourceScanCache,
+        projectStore.scan.cache = upsertSourceScanCacheEntry(
+          projectStore.scan.cache,
           project,
           nextRecords,
           tauriScan.limit,
@@ -3840,14 +3835,14 @@
           tauriScan.stats,
           sourceSignature
         );
-        persistSourceScanCache(sourceScanCache);
+        persistSourceScanCache(projectStore.scan.cache);
       }
       setSourceScanMode(project.id, 'background');
       clearBackgroundIndexError(project.id);
     } catch (indexError) {
       setSourceScanMode(project.id, 'failed');
-      backgroundIndexErrorByProject = {
-        ...backgroundIndexErrorByProject,
+      projectStore.scan.backgroundIndexErrorByProject = {
+        ...projectStore.scan.backgroundIndexErrorByProject,
         [project.id]: indexError instanceof Error ? indexError.message : 'Could not index project'
       };
     } finally {
@@ -3881,7 +3876,7 @@
   }
 
   function isCurrentProjectGitStatusRequest(requestID: number, projectID: string) {
-    return requestID === projectGitStatusRequestID && selectedProjectID === projectID;
+    return requestID === projectGitStatusRequestID && projectStore.selectedID === projectID;
   }
 
   async function loadRuntimeContexts(projects: ProjectRoot[] = projectOptions) {
@@ -3998,7 +3993,7 @@
 
     try {
       const nativeHistory = await readGitCommitHistoryFromTauri(project.path, maxGitCommitHistoryEntries);
-      if (selectedProjectID !== projectID) return;
+      if (projectStore.selectedID !== projectID) return;
 
       if (nativeHistory) {
         setGitCommitHistory(nativeHistory, 'native git log');
@@ -4007,13 +4002,13 @@
 
       setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
     } catch (historyError) {
-      if (selectedProjectID !== projectID) return;
+      if (projectStore.selectedID !== projectID) return;
 
       setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
       gitCommitHistoryError =
         historyError instanceof Error ? historyError.message : 'Could not read Git history';
     } finally {
-      if (selectedProjectID === projectID) {
+      if (projectStore.selectedID === projectID) {
         gitCommitHistoryLoading = false;
       }
     }
@@ -4726,7 +4721,7 @@
           indexEntry.truncated ? 'truncated' : 'complete'
         }, ${formatRelativeAge(indexEntry.scannedAt)} old`
       : 'none';
-    const selectedPath = selectedSourcePaths[selectedProject.id] ?? 'none';
+    const selectedPath = projectStore.selectedSourcePaths[selectedProject.id] ?? 'none';
     const currentFile = files.selectedRecord
       ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
@@ -6118,7 +6113,7 @@
       projectOptions,
       session,
       selectedRecord: files.selectedRecord,
-      selectedSourcePaths,
+      selectedSourcePaths: projectStore.selectedSourcePaths,
       openSourceTabs: projectOpenSourceTabs,
       branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
       selectedLine: files.selectedSourceLine,
@@ -6702,11 +6697,11 @@
     const restored = restoreWorkspaceSnapshot(snapshot);
     const project = ensureWorkspaceSnapshotProject(snapshot.project);
     const nextSelectedSourcePaths = {
-      ...selectedSourcePaths,
+      ...projectStore.selectedSourcePaths,
       ...restored.selectedSourcePaths
     };
 
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
     dock.activityMode = restored.sourceActivityMode;
     persistSourceActivityMode(dock.activityMode);
@@ -6857,7 +6852,7 @@
   ) {
     await activateProject(project, {
       scanLimit: expandedSourceScanLimit,
-      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots),
+      projects: mergeProjectRoots(defaultProjectRoots, projectStore.customRoots),
       waitForScan: false,
       preserveSelectedRecordOnScan: Boolean(restoredSelectedPath)
     });
@@ -6872,8 +6867,8 @@
     if (existingProject) return existingProject;
 
     const nextProject = createProjectRoot(project.name, project.path);
-    const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
-    customProjectRoots = nextCustomProjectRoots;
+    const nextCustomProjectRoots = mergeProjectRoots([], [...projectStore.customRoots, nextProject]);
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
     return nextProject;
   }
@@ -9155,25 +9150,25 @@
   }
 
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
-    const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
+    const nextProjectIDs = new Set(projectStore.scan.backgroundIndexingIDs);
     if (indexing) {
       nextProjectIDs.add(projectID);
     } else {
       nextProjectIDs.delete(projectID);
     }
-    backgroundIndexingProjectIDs = nextProjectIDs;
+    projectStore.scan.backgroundIndexingIDs = nextProjectIDs;
   }
 
   function clearBackgroundIndexError(projectID: string) {
-    if (!(projectID in backgroundIndexErrorByProject)) return;
+    if (!(projectID in projectStore.scan.backgroundIndexErrorByProject)) return;
 
-    const nextErrors = { ...backgroundIndexErrorByProject };
+    const nextErrors = { ...projectStore.scan.backgroundIndexErrorByProject };
     delete nextErrors[projectID];
-    backgroundIndexErrorByProject = nextErrors;
+    projectStore.scan.backgroundIndexErrorByProject = nextErrors;
   }
 
   function setSourceScanMode(projectID: string, mode: SourceScanEvidenceMode) {
-    sourceScanModeByProject = { ...sourceScanModeByProject, [projectID]: mode };
+    projectStore.scan.modeByProject = { ...projectStore.scan.modeByProject, [projectID]: mode };
   }
 
   function applySourceRecords(
@@ -9824,7 +9819,7 @@
   function trackSelectedSourceRecord(record: SourceRecord, project: ProjectRoot) {
     const openedAt = Date.now();
     const nextSelectedSourcePaths = {
-      ...selectedSourcePaths,
+      ...projectStore.selectedSourcePaths,
       [project.id]: record.path
     };
     const nextRecentSourceRecords = upsertRecentSourceRecord(
@@ -9843,7 +9838,7 @@
     );
     const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, project.id, nextProjectOpenTabs);
 
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     files.recentRecords = nextRecentSourceRecords;
     files.openTabs = nextOpenSourceTabs;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
@@ -9863,10 +9858,10 @@
   }
 
   function clearSelectedSourceRecordForProject(projectID: string) {
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     delete nextSelectedSourcePaths[projectID];
 
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     files.selectedRecord = null;
     files.selectedSourceLine = null;
     pendingTreeRevealPath = null;
@@ -10886,7 +10881,7 @@
 
   function handleProjectChange() {
     const nextProject =
-      projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
+      projectOptions.find((project) => project.id === projectStore.selectedID) ?? projectOptions[0] ?? initialProject;
     void activateProject(nextProject, {
       projects: projectOptions,
       scanLimit: expandedSourceScanLimit,
@@ -14952,8 +14947,8 @@
   }
 
   function rememberProjectRootValidation(validation: ProjectRootValidationResult) {
-    projectRootValidationByPath = {
-      ...projectRootValidationByPath,
+    projectStore.rootValidationByPath = {
+      ...projectStore.rootValidationByPath,
       [projectRootValidationKey(validation.path)]: validation
     };
   }
@@ -15050,9 +15045,9 @@
       return false;
     }
 
-    const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
+    const nextCustomProjectRoots = mergeProjectRoots([], [...projectStore.customRoots, nextProject]);
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
-    customProjectRoots = nextCustomProjectRoots;
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
     addingProject = false;
     projectFormError = '';
@@ -15100,7 +15095,7 @@
     if (!gitRoot) return false;
 
     const normalizedProjectPath = normalizeProjectPath(project.path);
-    const savedCustomProject = customProjectRoots.find(
+    const savedCustomProject = projectStore.customRoots.find(
       (candidate) =>
         candidate.id === project.id ||
         normalizeProjectPath(candidate.path) === normalizedProjectPath
@@ -15117,7 +15112,7 @@
     const nextCustomProjectRoots = mergeProjectRoots(
       [],
       [
-        ...customProjectRoots.filter((candidate) => {
+        ...projectStore.customRoots.filter((candidate) => {
           const candidatePath = normalizeProjectPath(candidate.path);
           return (
             candidate.id !== savedCustomProject.id &&
@@ -15129,18 +15124,18 @@
       ]
     );
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     if (nextSelectedSourcePaths[project.id] && !nextSelectedSourcePaths[repairedProject.id]) {
       nextSelectedSourcePaths[repairedProject.id] = nextSelectedSourcePaths[project.id];
     }
     delete nextSelectedSourcePaths[project.id];
 
-    customProjectRoots = nextCustomProjectRoots;
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.customRoots = nextCustomProjectRoots;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistCustomProjectRoots(nextCustomProjectRoots);
     persistSelectedSourcePaths(nextSelectedSourcePaths);
-    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-    persistSourceScanCache(sourceScanCache);
+    projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+    persistSourceScanCache(projectStore.scan.cache);
     fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
 
     await activateProject(repairedProject, {
@@ -15181,10 +15176,10 @@
     }
 
     const nextCustomProjectRoots = selectedProjectIsCustom
-      ? customProjectRoots.map((project) => (project.id === selectedProject.id ? nextProject : project))
-      : [...customProjectRoots, nextProject];
+      ? projectStore.customRoots.map((project) => (project.id === selectedProject.id ? nextProject : project))
+      : [...projectStore.customRoots, nextProject];
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
-    customProjectRoots = nextCustomProjectRoots;
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
     fileActionStatus = `Switched ${selectedProject.name} to Git root ${nextProject.path}.`;
     void activateProject(nextProject, {
@@ -15232,7 +15227,7 @@
     const projects = options.projects ?? projectOptions;
     const activationGeneration = ++projectActivationGeneration;
     const scanLimit = options.scanLimit ?? expandedSourceScanLimit;
-    selectedProjectID = project.id;
+    projectStore.selectedID = project.id;
     persistSelectedProjectID(project.id);
     if (options.clearFileFilter) {
       files.query = '';
@@ -15266,7 +15261,7 @@
       options.forceScan || !sourceSignature
         ? null
         : getSourceScanCacheEntry(
-            sourceScanCache,
+            projectStore.scan.cache,
             project,
             scanLimit,
             Date.now(),
@@ -15285,7 +15280,7 @@
     }
     const activationScanForcesRefresh = activationScanPlan.shouldScan;
 
-    const scanCompletion = scanProject(project, selectedSourcePaths[project.id], {
+    const scanCompletion = scanProject(project, projectStore.selectedSourcePaths[project.id], {
       force: activationScanForcesRefresh,
       limit: scanLimit,
       preserveSelectedRecord: options.preserveSelectedRecordOnScan
@@ -15309,15 +15304,15 @@
     if (!selectedProjectIsCustom) return;
 
     const removedProjectID = selectedProject.id;
-    const nextCustomProjectRoots = customProjectRoots.filter(
+    const nextCustomProjectRoots = projectStore.customRoots.filter(
       (project) => project.id !== removedProjectID
     );
-    customProjectRoots = nextCustomProjectRoots;
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
 
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     delete nextSelectedSourcePaths[removedProjectID];
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
 
     const nextRecentSourceRecords = files.recentRecords.filter(
@@ -15332,9 +15327,9 @@
     files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
-    if (selectedProjectID === removedProjectID) {
+    if (projectStore.selectedID === removedProjectID) {
       const fallbackProject = defaultProjectRoots[0];
-      selectedProjectID = fallbackProject.id;
+      projectStore.selectedID = fallbackProject.id;
       persistSelectedProjectID(fallbackProject.id);
       files.query = '';
       void loadProjectGitStatus(fallbackProject);
@@ -15570,17 +15565,17 @@
         ) ?? startupWorkspaceSnapshot.project
       : storedProject;
 
-    customProjectRoots = startupCustomProjectRoots;
+    projectStore.customRoots = startupCustomProjectRoots;
     if (!startupSnapshotProjectAlreadyKnown) {
       persistCustomProjectRoots(startupCustomProjectRoots);
     }
-    selectedSourcePaths = storedSelectedSourcePaths;
-    sourceScanCache = storedSourceScanCache;
+    projectStore.selectedSourcePaths = storedSelectedSourcePaths;
+    projectStore.scan.cache = storedSourceScanCache;
     files.recentRecords = storedRecentSourceRecords;
     files.openTabs = storedOpenSourceTabs;
     workspaceSnapshots = storedWorkspaceSnapshots;
     activeWorkspaceSessionKey = startupWorkspaceSnapshot?.id ?? storedActiveWorkspaceSessionKey;
-    selectedProjectID = startupProject.id;
+    projectStore.selectedID = startupProject.id;
     dock.activityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
     pasteCleanupHistory = storedPasteCleanupHistory;
@@ -15861,7 +15856,7 @@
 
     <div class="project-controls">
       <div class="project-row">
-        <select bind:value={selectedProjectID} onchange={handleProjectChange} aria-label="Project">
+        <select bind:value={projectStore.selectedID} onchange={handleProjectChange} aria-label="Project">
           {#each projectOptions as project}
             <option value={project.id}>{project.name}</option>
           {/each}
