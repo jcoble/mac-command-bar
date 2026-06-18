@@ -863,12 +863,6 @@
   let agentSessionError = $state('');
   let agentSessionSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
-  let selectedRecord = $state<SourceRecord | null>(null);
-  let selectedSourceLine = $state<number | null>(null);
-  let selectedSourceLineRequestId = $state(0);
-  let sourceNavigationBackStack = $state<SourceNavigationLocation[]>([]);
-  let sourceNavigationForwardStack = $state<SourceNavigationLocation[]>([]);
-  let preview = $state<SourcePreview | null>(null);
   let sourceDraftContentByPath = $state<Record<string, string>>({});
   let savedSourceContentByPath = $state<Record<string, string>>({});
   let sourceMarkdownPreviewModeByPath = $state<Record<string, SourceEditorDisplayMode>>({});
@@ -1150,7 +1144,7 @@
     sourceEditorFileDockviewPanels.map((panel) => panel.id)
   );
   let selectedSourceEditorFilePanelID = $derived(
-    selectedRecord ? sourceEditorFilePanelIDFromPath(selectedRecord.path) : sourceEditorFileDockviewPanels[0]?.id ?? null
+    files.selectedRecord ? sourceEditorFilePanelIDFromPath(files.selectedRecord.path) : sourceEditorFileDockviewPanels[0]?.id ?? null
   );
   let parsedQuickOpenQuery = $derived(parseQuickOpenQuery(quickOpenQuery));
   let quickOpenWorkspaceSymbolMode = $derived(parsedQuickOpenQuery.searchQuery.startsWith('#'));
@@ -1163,19 +1157,19 @@
   let quickOpenActiveResultCount = $derived(
     quickOpenWorkspaceSymbolMode ? workspaceSymbolResults.length : quickOpenResults.length
   );
-  let sourceNavigationCanGoBack = $derived(sourceNavigationBackStack.length > 0);
-  let sourceNavigationCanGoForward = $derived(sourceNavigationForwardStack.length > 0);
+  let sourceNavigationCanGoBack = $derived(files.navBackStack.length > 0);
+  let sourceNavigationCanGoForward = $derived(files.navForwardStack.length > 0);
   let selectedIndex = $derived(
-    selectedRecord ? files.records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
+    files.selectedRecord ? files.records.findIndex((record) => record.path === files.selectedRecord?.path) + 1 : 0
   );
   let selectedSourceDraftContent = $derived(
-    preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
+    files.preview ? sourceDraftContentByPath[files.preview.path] ?? files.preview.content : ''
   );
-  let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
-  let selectedSourceMarkdownPreviewAvailable = $derived(sourceMarkdownPreviewAvailable(preview));
+  let selectedSourceDirty = $derived(files.preview ? isSourcePathDirty(files.preview.path) : false);
+  let selectedSourceMarkdownPreviewAvailable = $derived(sourceMarkdownPreviewAvailable(files.preview));
   let selectedSourceEditorDisplayMode = $derived(
-    preview && selectedSourceMarkdownPreviewAvailable
-      ? sourceMarkdownPreviewModeByPath[preview.path] ?? 'source'
+    files.preview && selectedSourceMarkdownPreviewAvailable
+      ? sourceMarkdownPreviewModeByPath[files.preview.path] ?? 'source'
       : 'source'
   );
   let dirtyProjectSourceRecords = $derived(
@@ -1185,10 +1179,10 @@
     projectOpenSourceTabs.filter((tab) => !isSourcePathDirty(tab.path)).length
   );
   let otherCleanProjectOpenSourceTabCount = $derived(
-    projectOpenSourceTabs.filter((tab) => tab.path !== selectedRecord?.path && !isSourcePathDirty(tab.path)).length
+    projectOpenSourceTabs.filter((tab) => tab.path !== files.selectedRecord?.path && !isSourcePathDirty(tab.path)).length
   );
   let sourceIntelligenceAvailable = $derived(
-    preview ? sourceSupportsLanguageIntelligence(preview.language) : false
+    files.preview ? sourceSupportsLanguageIntelligence(files.preview.language) : false
   );
   let sourceDiagnosticSummary = $derived(formatSourceDiagnosticSummary(sourceDiagnostics));
   let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId));
@@ -1313,7 +1307,7 @@
   let selectedProjectGitFileGroupSummary = $derived(
     formatGitStatusFileGroupSummary(selectedProjectGitFileGroups)
   );
-  let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(selectedRecord));
+  let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(files.selectedRecord));
   let selectedGitPathActionDisabled = $derived(
     !selectedRecordGitStatus || selectedSourceDirty || gitActionBusy !== ''
   );
@@ -1786,14 +1780,14 @@
       id: 'workspace-symbols',
       label: 'Search workspace symbols',
       detail: 'Cmd+P then #symbol',
-      disabled: !preview || !sourceIntelligenceAvailable,
+      disabled: !files.preview || !sourceIntelligenceAvailable,
       perform: openWorkspaceSymbolQuickOpen
     },
     {
       id: 'go-to-line',
       label: 'Go to line',
-      detail: selectedRecord ? `${selectedRecord.relativePath}:line` : 'No file',
-      disabled: !selectedRecord,
+      detail: files.selectedRecord ? `${files.selectedRecord.relativePath}:line` : 'No file',
+      disabled: !files.selectedRecord,
       perform: openCurrentFileGoToLine
     },
     {
@@ -1821,14 +1815,14 @@
       label: 'Scan current project',
       detail: selectedProject.name,
       disabled: scanning,
-      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
+      perform: () => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-project-expanded',
       label: `Scan current project up to ${expandedSourceScanLimit.toLocaleString()} files`,
       detail: selectedProject.name,
       disabled: scanning,
-      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
+      perform: () => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-reset-index',
@@ -2085,15 +2079,15 @@
     {
       id: 'close-current-tab',
       label: 'Close current tab',
-      detail: selectedRecord?.fileName ?? 'No file',
-      disabled: !selectedRecord,
+      detail: files.selectedRecord?.fileName ?? 'No file',
+      disabled: !files.selectedRecord,
       perform: closeSelectedSourceTab
     },
     {
       id: 'close-other-clean-tabs',
       label: 'Close other clean tabs',
       detail: `${otherCleanProjectOpenSourceTabCount} clean`,
-      disabled: !selectedRecord || otherCleanProjectOpenSourceTabCount === 0,
+      disabled: !files.selectedRecord || otherCleanProjectOpenSourceTabCount === 0,
       perform: closeOtherCleanSourceTabs
     },
     {
@@ -2106,105 +2100,105 @@
     {
       id: 'format-document',
       label: 'Format document',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('format')
     },
     {
       id: 'rename-symbol',
       label: 'Rename symbol',
       detail: 'F2',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('rename')
     },
     {
       id: 'quick-fix',
       label: 'Quick fix',
       detail: 'Alt+Enter',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('quick-fix')
     },
     {
       id: 'trigger-completions',
       label: 'Trigger completions',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('completion')
     },
     {
       id: 'show-signature-help',
       label: 'Show signature help',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('signature-help')
     },
     {
       id: 'revert-file',
       label: 'Revert file',
-      detail: preview?.fileName ?? 'No file',
+      detail: files.preview?.fileName ?? 'No file',
       disabled: !selectedSourceDirty || fileActionBusy === 'save',
       perform: revertSelectedSourceFile
     },
     {
       id: 'copy-path',
       label: 'Copy file path',
-      detail: preview?.relativePath ?? 'No file',
-      disabled: !preview || fileActionBusy === 'copy',
+      detail: files.preview?.relativePath ?? 'No file',
+      disabled: !files.preview || fileActionBusy === 'copy',
       perform: copySelectedPath
     },
     {
       id: 'source-copy-context-brief',
       label: 'Copy source context brief',
-      detail: selectedRecord?.relativePath ?? selectedProject.name,
+      detail: files.selectedRecord?.relativePath ?? selectedProject.name,
       disabled: !selectedProject.path,
       perform: copySourceContextBrief
     },
     {
       id: 'open-file-native',
       label: 'Open file in IDE',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || fileActionBusy === 'open',
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || fileActionBusy === 'open',
       perform: openSelectedFile
     },
     {
       id: 'reveal-file',
       label: 'Reveal file in Finder',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || fileActionBusy === 'reveal',
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || fileActionBusy === 'reveal',
       perform: revealSelectedFile
     },
     {
       id: 'go-definition',
       label: 'Go to definition',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading,
       perform: () => requestSourceIntelligenceAction('definition')
     },
     {
       id: 'find-references',
       label: 'Find references',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading,
       perform: () => requestSourceIntelligenceAction('references')
     },
     {
       id: 'find-implementations',
       label: 'Find implementations',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('implementation')
     },
     {
       id: 'go-type-definition',
       label: 'Go to type definition',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('type-definition')
     },
     {
       id: 'show-hover',
       label: 'Show hover',
-      detail: preview?.language ?? 'No language',
+      detail: files.preview?.language ?? 'No language',
       disabled: !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('hover')
     },
@@ -2224,22 +2218,22 @@
     {
       id: 'source-copy-intelligence-brief',
       label: 'Copy source intelligence brief',
-      detail: preview?.fileName ?? selectedProject.name,
-      disabled: !preview,
+      detail: files.preview?.fileName ?? selectedProject.name,
+      disabled: !files.preview,
       perform: copySourceIntelligenceBrief
     },
     {
       id: 'lsp-retry-status',
       label: 'Retry language server status',
       detail: sourceLspStatusLabel(),
-      disabled: !preview || !sourceIntelligenceAvailable || sourceLspStatusLoading,
-      perform: () => loadSourceLspStatus(preview, selectedProject)
+      disabled: !files.preview || !sourceIntelligenceAvailable || sourceLspStatusLoading,
+      perform: () => loadSourceLspStatus(files.preview, selectedProject)
     },
     {
       id: 'lsp-copy-status',
       label: 'Copy language server status',
       detail: sourceLspStatusLabel(),
-      disabled: !preview,
+      disabled: !files.preview,
       perform: copySourceLspStatusReport
     },
     {
@@ -3103,19 +3097,19 @@
     {
       id: 'git-stage-file',
       label: 'Stage selected file',
-      detail: selectedRecord?.relativePath ?? 'No file',
-      disabled: selectedGitPathActionDisabled || !selectedRecord,
+      detail: files.selectedRecord?.relativePath ?? 'No file',
+      disabled: selectedGitPathActionDisabled || !files.selectedRecord,
       perform: () => {
-        if (selectedRecord) void runGitPathAction('stage', [selectedRecord.relativePath]);
+        if (files.selectedRecord) void runGitPathAction('stage', [files.selectedRecord.relativePath]);
       }
     },
     {
       id: 'git-unstage-file',
       label: 'Unstage selected file',
-      detail: selectedRecord?.relativePath ?? 'No file',
-      disabled: selectedGitUnstageDisabled || !selectedRecord,
+      detail: files.selectedRecord?.relativePath ?? 'No file',
+      disabled: selectedGitUnstageDisabled || !files.selectedRecord,
       perform: () => {
-        if (selectedRecord) void runGitPathAction('unstage', [selectedRecord.relativePath]);
+        if (files.selectedRecord) void runGitPathAction('unstage', [files.selectedRecord.relativePath]);
       }
     },
     {
@@ -3193,7 +3187,7 @@
       return;
     }
 
-    if (!query || !preview || !sourceIntelligenceAvailable) {
+    if (!query || !files.preview || !sourceIntelligenceAvailable) {
       workspaceSymbolResults = [];
       workspaceSymbolError = '';
       workspaceSymbolLoading = false;
@@ -3332,7 +3326,7 @@
 
   async function scanProject(
     project: ProjectRoot,
-    preferredPath = selectedSourcePaths[project.id] ?? selectedRecord?.path ?? null,
+    preferredPath = selectedSourcePaths[project.id] ?? files.selectedRecord?.path ?? null,
     options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
@@ -3475,11 +3469,11 @@
     } catch (scanError) {
       if (generation !== scanGeneration) return;
       files.records = [];
-      selectedRecord = null;
-      selectedSourceLine = null;
+      files.selectedRecord = null;
+      files.selectedSourceLine = null;
       scanLimitReached = false;
       sourceScanStats = null;
-      preview = null;
+      files.preview = null;
       files.expandedFolderIds = new Set();
       syncSourcePreviewContent(null);
       runtime = 'source scan unavailable';
@@ -3491,7 +3485,7 @@
         scanning = false;
         activeSourceScanId = '';
         sourceScanProgress = null;
-        if (!selectedRecord) loading = false;
+        if (!files.selectedRecord) loading = false;
       }
     }
   }
@@ -3517,11 +3511,11 @@
   }
 
   function clearSourceRecordsForIncomingProject(project: ProjectRoot, force = false) {
-    const hasCurrentSourceState = files.records.length > 0 || selectedRecord !== null || preview !== null;
+    const hasCurrentSourceState = files.records.length > 0 || files.selectedRecord !== null || files.preview !== null;
     const hasDifferentSelectedRecord =
-      selectedRecord !== null && !sourceRecordBelongsToProject(selectedRecord, project);
+      files.selectedRecord !== null && !sourceRecordBelongsToProject(files.selectedRecord, project);
     const hasDifferentRecords =
-      selectedRecord === null &&
+      files.selectedRecord === null &&
       files.records.length > 0 &&
       files.records.some((record) => !sourceRecordBelongsToProject(record, project));
 
@@ -3529,13 +3523,13 @@
     if (force && !hasCurrentSourceState && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
 
     files.records = [];
-    selectedRecord = null;
-    selectedSourceLine = null;
-    sourceNavigationBackStack = [];
-    sourceNavigationForwardStack = [];
+    files.selectedRecord = null;
+    files.selectedSourceLine = null;
+    files.navBackStack = [];
+    files.navForwardStack = [];
     scanLimitReached = false;
     sourceScanStats = null;
-    preview = null;
+    files.preview = null;
     files.expandedFolderIds = new Set();
     syncSourcePreviewContent(null);
   }
@@ -4580,8 +4574,8 @@
 
   function sourceContextBriefText() {
     const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
     const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
       const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
@@ -4597,8 +4591,8 @@
       `Git: ${sourceContextIdentity.gitSummary}`,
       `Tasks: ${tasks}`,
       `Current file: ${currentFile}`,
-      `Language: ${preview?.language ?? 'none'}`,
-      `Line: ${selectedSourceLine ?? 'unknown'}`,
+      `Language: ${files.preview?.language ?? 'none'}`,
+      `Line: ${files.selectedSourceLine ?? 'unknown'}`,
       `LSP: ${sourceLspStatusLabel()}`,
       `Index: ${selectedProjectIndexSummary}`,
       `Dirty files: ${dirtyProjectSourceRecords.length}`,
@@ -4609,8 +4603,8 @@
   }
 
   function sourceIntelligenceBriefText() {
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
     const definitionLines = sourceDefinitionTargets.slice(0, 8).map((target) => {
       return `- ${target.symbolName} (${target.kind}) ${target.relativePath}:${target.line}`;
@@ -4636,7 +4630,7 @@
       `Project: ${selectedProject.name}`,
       `Root: ${selectedProject.path}`,
       `Current file: ${currentFile}`,
-      `Language: ${preview?.language ?? 'none'}`,
+      `Language: ${files.preview?.language ?? 'none'}`,
       `LSP: ${sourceLspStatusLabel()}`,
       `Problems: ${sourceDiagnosticSummary}`,
       problemLines.length > 0 ? problemLines.join('\n') : '- none',
@@ -4655,8 +4649,8 @@
 
   function sourceLayoutDiagnosticText() {
     const normalizedLayout = normalizeSourceDockLayout(dock.layout);
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
     const activePreset = sourceLayoutPresets.find((preset) => preset.id === dock.layoutPreset);
     const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
@@ -4744,8 +4738,8 @@
         }, ${formatRelativeAge(indexEntry.scannedAt)} old`
       : 'none';
     const selectedPath = selectedSourcePaths[selectedProject.id] ?? 'none';
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
     const recentFiles = projectRecentRecords.slice(0, 6).map((record) => `- ${record.relativePath}`);
     const openTabs = projectOpenSourceTabs.slice(0, 6).map((tab) => {
@@ -5360,7 +5354,7 @@
       projectGitStatusRequestID += 1;
       projectGitStatus = result.status;
       gitActionStatus = result.message;
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
     } catch (gitError) {
       gitActionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
@@ -5390,7 +5384,7 @@
       projectGitStatusRequestID += 1;
       projectGitStatus = result.status;
       gitActionStatus = result.message;
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
       if (action !== 'fetch') void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
@@ -5419,7 +5413,7 @@
       projectGitStatus = result.status;
       gitCommitMessage = '';
       gitActionStatus = result.message;
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
       void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
@@ -6134,11 +6128,11 @@
       selectedProject,
       projectOptions,
       session,
-      selectedRecord,
+      selectedRecord: files.selectedRecord,
       selectedSourcePaths,
       openSourceTabs: projectOpenSourceTabs,
       branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
-      selectedLine: selectedSourceLine,
+      selectedLine: files.selectedSourceLine,
       sourceActivityMode: dock.activityMode,
       sourceTerminalApp,
       browserUrl: activeBrowserUrl || null,
@@ -7158,7 +7152,7 @@
     return `'${value.replace(/'/g, "'\\''")}'`;
   }
 
-  function sourceLspInstallCommand(language: SourcePreview['language'] | null | undefined = preview?.language) {
+  function sourceLspInstallCommand(language: SourcePreview['language'] | null | undefined = files.preview?.language) {
     switch (language) {
       case 'csharp':
         return 'dotnet tool install --global csharp-ls';
@@ -7188,23 +7182,23 @@
 
   function sourceLspStatusLabel() {
     if (sourceLspStatusLoading) return 'lsp...';
-    if (!preview) return 'no file';
-    if (!sourceSupportsLanguageIntelligence(preview.language)) return 'syntax only';
+    if (!files.preview) return 'no file';
+    if (!sourceSupportsLanguageIntelligence(files.preview.language)) return 'syntax only';
     if (sourceLspStatus?.available) return 'lsp';
     return 'index fallback';
   }
 
   function sourceLspStatusReportLines() {
-    if (!preview) return ['No source file loaded'];
+    if (!files.preview) return ['No source file loaded'];
 
-    const supported = sourceSupportsLanguageIntelligence(preview.language);
-    const installCommand = sourceLspInstallCommand(preview.language);
+    const supported = sourceSupportsLanguageIntelligence(files.preview.language);
+    const installCommand = sourceLspInstallCommand(files.preview.language);
     const runtimeCommand = sourceLspRuntimeCommand();
     const statusReason =
       sourceLspStatusError || sourceLspStatus?.reason || 'Using project index fallback';
     const lines = [
-      `File: ${preview.relativePath}`,
-      `Language: ${preview.language}`,
+      `File: ${files.preview.relativePath}`,
+      `Language: ${files.preview.language}`,
       `Mode: ${sourceLspStatusLabel()}`
     ];
 
@@ -8497,10 +8491,10 @@
   }
 
   async function loadSelectedSourceGitDiff(
-    record: SourceRecord | null = selectedRecord,
+    record: SourceRecord | null = files.selectedRecord,
     project: ProjectRoot = selectedProject
   ) {
-    if (!record || selectedRecord?.path !== record.path) {
+    if (!record || files.selectedRecord?.path !== record.path) {
       clearSelectedSourceGitDiff();
       return;
     }
@@ -8537,13 +8531,13 @@
   ) {
     return (
       requestID === selectedSourceGitDiffRequestID &&
-      selectedRecord?.path === expectedPath &&
+      files.selectedRecord?.path === expectedPath &&
       selectedProject.path === expectedProjectPath
     );
   }
 
   async function loadSourceLspStatus(
-    nextPreview: SourcePreview | null = preview,
+    nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
   ) {
     sourceLspStatus = null;
@@ -8560,7 +8554,7 @@
 
     try {
       const status = await readSourceLspStatusFromTauri(expectedProjectPath, nextPreview.language);
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
 
       sourceLspStatus = status;
       if (!status) {
@@ -8569,12 +8563,12 @@
         sourceLspStatusError = status.reason ?? 'Language server unavailable';
       }
     } catch (lspStatusError) {
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
 
       sourceLspStatusError =
         lspStatusError instanceof Error ? lspStatusError.message : 'Could not read LSP status';
     } finally {
-      if (preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+      if (files.preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
         sourceLspStatusLoading = false;
       }
     }
@@ -8654,9 +8648,9 @@
     sourceDefinitionLoading = true;
     fileActionStatus = `Looking up ${normalizedSymbolName}`;
     try {
-      const lspTargets = preview
+      const lspTargets = files.preview
         ? await findSourceLspDefinitionsFromTauri(
-            { ...preview, content: selectedSourceDraftContent },
+            { ...files.preview, content: selectedSourceDraftContent },
             {
               root: selectedProject.path,
               line: request.line,
@@ -8714,9 +8708,9 @@
     if (!normalizedSymbolName) return [];
 
     try {
-      const lspTargets = preview
+      const lspTargets = files.preview
         ? await findSourceLspDefinitionsFromTauri(
-            { ...preview, content: selectedSourceDraftContent },
+            { ...files.preview, content: selectedSourceDraftContent },
             {
               root: selectedProject.path,
               line: request.line,
@@ -8787,9 +8781,9 @@
     sourceReferenceLoading = true;
     fileActionStatus = `Finding references for ${normalizedSymbolName}`;
     try {
-      const lspTargets = preview
+      const lspTargets = files.preview
         ? await findSourceLspReferencesFromTauri(
-            { ...preview, content: selectedSourceDraftContent },
+            { ...files.preview, content: selectedSourceDraftContent },
             {
               root: selectedProject.path,
               line: request.line,
@@ -8840,9 +8834,9 @@
     if (!normalizedSymbolName) return [];
 
     try {
-      const lspTargets = preview
+      const lspTargets = files.preview
         ? await findSourceLspReferencesFromTauri(
-            { ...preview, content: selectedSourceDraftContent },
+            { ...files.preview, content: selectedSourceDraftContent },
             {
               root: selectedProject.path,
               line: request.line,
@@ -8881,9 +8875,9 @@
 
     try {
       const lspTargets =
-        preview && sourceIntelligenceAvailable
+        files.preview && sourceIntelligenceAvailable
           ? await findSourceLspReferencesFromTauri(
-              { ...preview, content: selectedSourceDraftContent },
+              { ...files.preview, content: selectedSourceDraftContent },
               {
                 root: selectedProject.path,
                 line: request.line,
@@ -8914,7 +8908,7 @@
   async function loadEditorExternalSourcePreview(record: SourceRecord) {
     const sourceRecord = sourceRecordFromRestoredPath(selectedProject, record.path);
 
-    if (preview?.path === sourceRecord.path) {
+    if (files.preview?.path === sourceRecord.path) {
       return previewFromContent(
         { ...sourceRecord, byteCount: new TextEncoder().encode(selectedSourceDraftContent).length },
         selectedSourceDraftContent
@@ -8980,7 +8974,7 @@
       return [];
     }
 
-    if (!preview || !sourceIntelligenceAvailable) {
+    if (!files.preview || !sourceIntelligenceAvailable) {
       sourceImplementationTargets = [];
       sourceImplementationError = 'Language server unavailable';
       fileActionStatus = `No implementation lookup for ${normalizedSymbolName}`;
@@ -8992,7 +8986,7 @@
     try {
       const lspTargets =
         (await findSourceLspImplementationsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -9019,12 +9013,12 @@
 
   async function findSourceImplementationTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
-    if (!normalizedSymbolName || !preview || !sourceIntelligenceAvailable) return [];
+    if (!normalizedSymbolName || !files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspImplementationsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -9073,7 +9067,7 @@
       return [];
     }
 
-    if (!preview || !sourceIntelligenceAvailable) {
+    if (!files.preview || !sourceIntelligenceAvailable) {
       sourceTypeDefinitionTargets = [];
       sourceTypeDefinitionError = 'Language server unavailable';
       fileActionStatus = `No type definition lookup for ${normalizedSymbolName}`;
@@ -9085,7 +9079,7 @@
     try {
       const lspTargets =
         (await findSourceLspTypeDefinitionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -9112,12 +9106,12 @@
 
   async function findSourceTypeDefinitionTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
-    if (!normalizedSymbolName || !preview || !sourceIntelligenceAvailable) return [];
+    if (!normalizedSymbolName || !files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspTypeDefinitionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -9209,21 +9203,21 @@
     const nextSelection = selectPreferredSourceRecord(
       nextRecords,
       preferredPath,
-      selectedRecord?.path
+      files.selectedRecord?.path
     );
     const shouldPreserveSelectedRecord =
       Boolean(options.preserveSelectedRecord) &&
       Boolean(preferredPath) &&
-      selectedRecord?.path === preferredPath &&
+      files.selectedRecord?.path === preferredPath &&
       nextSelection?.path !== preferredPath;
 
     if (shouldPreserveSelectedRecord) {
       return null;
     }
 
-    selectedRecord = nextSelection;
-    selectedSourceLine = null;
-    preview = nextSelection ? previewFromContent(nextSelection, '') : null;
+    files.selectedRecord = nextSelection;
+    files.selectedSourceLine = null;
+    files.preview = nextSelection ? previewFromContent(nextSelection, '') : null;
     files.expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
     clearSourceSearchResults();
     clearSourceDefinitionTargets();
@@ -9251,7 +9245,7 @@
           : 'browser source bridge'
         : 'browser preview';
       const nextPreview = tauriPreview ?? demoPreviewFor(record);
-      preview = nextPreview;
+      files.preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
       void loadSourceLspStatus(nextPreview);
       void loadSourceLspDiagnostics(nextPreview);
@@ -9262,7 +9256,7 @@
       runtime = 'browser preview';
       error = previewError instanceof Error ? previewError.message : 'Could not read source file';
       const nextPreview = demoPreviewFor(record);
-      preview = nextPreview;
+      files.preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
       void loadSourceLspStatus(nextPreview);
       void loadSourceLspDiagnostics(nextPreview);
@@ -9276,20 +9270,20 @@
   }
 
   function currentSourceNavigationLocation() {
-    return selectedRecord ? sourceNavigationLocationForRecord(selectedRecord, selectedSourceLine) : null;
+    return files.selectedRecord ? sourceNavigationLocationForRecord(files.selectedRecord, files.selectedSourceLine) : null;
   }
 
   function recordSourceNavigation(nextLocation: SourceNavigationLocation | null) {
     const nextBackStack = pushSourceNavigationHistory(
-      sourceNavigationBackStack,
+      files.navBackStack,
       currentSourceNavigationLocation(),
       nextLocation,
       maxSourceNavigationHistoryEntries
     );
 
-    if (nextBackStack !== sourceNavigationBackStack) {
-      sourceNavigationBackStack = nextBackStack;
-      sourceNavigationForwardStack = [];
+    if (nextBackStack !== files.navBackStack) {
+      files.navBackStack = nextBackStack;
+      files.navForwardStack = [];
     }
   }
 
@@ -9301,25 +9295,25 @@
 
   async function navigateSourceBack() {
     const step = navigateSourceHistoryBack(
-      sourceNavigationBackStack,
-      sourceNavigationForwardStack,
+      files.navBackStack,
+      files.navForwardStack,
       currentSourceNavigationLocation()
     );
 
-    sourceNavigationBackStack = step.backStack;
-    sourceNavigationForwardStack = step.forwardStack;
+    files.navBackStack = step.backStack;
+    files.navForwardStack = step.forwardStack;
     if (step.target) await selectSourceNavigationLocation(step.target);
   }
 
   async function navigateSourceForward() {
     const step = navigateSourceHistoryForward(
-      sourceNavigationBackStack,
-      sourceNavigationForwardStack,
+      files.navBackStack,
+      files.navForwardStack,
       currentSourceNavigationLocation()
     );
 
-    sourceNavigationBackStack = step.backStack;
-    sourceNavigationForwardStack = step.forwardStack;
+    files.navBackStack = step.backStack;
+    files.navForwardStack = step.forwardStack;
     if (step.target) await selectSourceNavigationLocation(step.target);
   }
 
@@ -9332,9 +9326,9 @@
       recordSourceNavigation(sourceNavigationLocationForRecord(record, targetLine));
     }
 
-    selectedRecord = record;
-    selectedSourceLine = targetLine;
-    if (targetLine) selectedSourceLineRequestId += 1;
+    files.selectedRecord = record;
+    files.selectedSourceLine = targetLine;
+    if (targetLine) files.selectedSourceLineRequestId += 1;
     expandFoldersForRecord(record);
     requestSourceTreeReveal(record);
     trackSelectedSourceRecord(record, selectedProject);
@@ -9358,7 +9352,7 @@
       return;
     }
 
-    const selectedPath = selectedRecord?.path ?? '';
+    const selectedPath = files.selectedRecord?.path ?? '';
     const currentIndex = dirtyRecords.findIndex((record) => record.path === selectedPath);
     const nextIndex =
       currentIndex === -1
@@ -9679,10 +9673,10 @@
   }
 
   function openCurrentFileGoToLine() {
-    if (!selectedRecord) return;
+    if (!files.selectedRecord) return;
 
     quickOpenVisible = true;
-    quickOpenQuery = `${selectedRecord.relativePath}:`;
+    quickOpenQuery = `${files.selectedRecord.relativePath}:`;
     quickOpenIndex = 0;
     window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
@@ -9757,17 +9751,17 @@
   }
 
   async function closeSourceTabRecord(tab: SourceOpenTab) {
-    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, selectedRecord?.path);
+    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, files.selectedRecord?.path);
     await applySourceTabCloseResult(closeResult, isSourcePathDirty(tab.path) ? 'Closed tab; draft retained' : 'Closed tab');
   }
 
   async function closeSelectedSourceTab() {
-    if (!selectedRecord) return;
+    if (!files.selectedRecord) return;
 
-    const selectedTab = projectOpenSourceTabs.find((tab) => tab.path === selectedRecord?.path);
+    const selectedTab = projectOpenSourceTabs.find((tab) => tab.path === files.selectedRecord?.path);
     if (!selectedTab) return;
 
-    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, selectedTab.path, selectedRecord.path);
+    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, selectedTab.path, files.selectedRecord.path);
     await applySourceTabCloseResult(
       closeResult,
       isSourcePathDirty(selectedTab.path) ? 'Closed current tab; draft retained' : 'Closed current tab'
@@ -9775,11 +9769,11 @@
   }
 
   async function closeOtherCleanSourceTabs() {
-    if (!selectedRecord) return;
+    if (!files.selectedRecord) return;
 
     const closeResult = closeOtherCleanOpenSourceTabs(
       projectOpenSourceTabs,
-      selectedRecord.path,
+      files.selectedRecord.path,
       dirtyProjectSourcePathSet()
     );
     await applySourceTabCloseResult(
@@ -9793,7 +9787,7 @@
   async function closeAllCleanSourceTabs() {
     const closeResult = closeAllCleanOpenSourceTabs(
       projectOpenSourceTabs,
-      selectedRecord?.path,
+      files.selectedRecord?.path,
       dirtyProjectSourcePathSet()
     );
     const retainedDraftNote =
@@ -9820,7 +9814,7 @@
     openSourceTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
-    if (closeResult.nextActivePath === selectedRecord?.path) {
+    if (closeResult.nextActivePath === files.selectedRecord?.path) {
       fileActionStatus = status;
       return;
     }
@@ -9884,12 +9878,12 @@
     delete nextSelectedSourcePaths[projectID];
 
     selectedSourcePaths = nextSelectedSourcePaths;
-    selectedRecord = null;
-    selectedSourceLine = null;
+    files.selectedRecord = null;
+    files.selectedSourceLine = null;
     pendingTreeRevealPath = null;
     pendingTreeFocusRowIndex = null;
     scanLimitReached = false;
-    preview = null;
+    files.preview = null;
     resetSourceIntelligence();
     clearSelectedSourceGitDiff();
     loading = false;
@@ -9907,12 +9901,12 @@
   }
 
   async function copySelectedPath() {
-    if (!preview) return;
+    if (!files.preview) return;
 
     fileActionBusy = 'copy';
 
     try {
-      await copyTextToClipboard(preview.path, 'Path copied');
+      await copyTextToClipboard(files.preview.path, 'Path copied');
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy source path';
     } finally {
@@ -10174,14 +10168,14 @@
   }
 
   async function openSelectedFile() {
-    if (!preview) return;
+    if (!files.preview) return;
 
     fileActionBusy = 'open';
     fileActionStatus = '';
     error = '';
 
     try {
-      const opened = await openSourceFileFromTauri(preview.path);
+      const opened = await openSourceFileFromTauri(files.preview.path);
       fileActionStatus = opened ? 'Opened file' : 'Native action unavailable';
     } catch (openError) {
       error = openError instanceof Error ? openError.message : 'Could not open source file';
@@ -10191,14 +10185,14 @@
   }
 
   async function revealSelectedFile() {
-    if (!preview) return;
+    if (!files.preview) return;
 
     fileActionBusy = 'reveal';
     fileActionStatus = '';
     error = '';
 
     try {
-      const revealed = await revealSourceFileFromTauri(preview.path);
+      const revealed = await revealSourceFileFromTauri(files.preview.path);
       fileActionStatus = revealed ? 'Revealed in Finder' : 'Native action unavailable';
     } catch (revealError) {
       error = revealError instanceof Error ? revealError.message : 'Could not reveal source file';
@@ -10208,9 +10202,9 @@
   }
 
   async function saveSelectedSourceFile() {
-    if (!preview || !selectedRecord || !selectedSourceDirty) return;
+    if (!files.preview || !files.selectedRecord || !selectedSourceDirty) return;
 
-    const record = selectedRecord;
+    const record = files.selectedRecord;
     const content = selectedSourceDraftContent;
     fileActionBusy = 'save';
     fileActionStatus = '';
@@ -10225,8 +10219,8 @@
 
       commitSourcePreviewContent(savedPreview);
       runtime = 'tauri file write';
-      if (selectedRecord?.path === record.path) {
-        preview = savedPreview;
+      if (files.selectedRecord?.path === record.path) {
+        files.preview = savedPreview;
       }
       void loadProjectGitStatus(selectedProject);
       void loadSelectedSourceGitDiff(record);
@@ -10260,15 +10254,15 @@
         }
 
         commitSourcePreviewContent(savedPreview);
-        if (selectedRecord?.path === record.path) {
-          preview = savedPreview;
+        if (files.selectedRecord?.path === record.path) {
+          files.preview = savedPreview;
         }
         savedCount += 1;
       }
 
       runtime = 'tauri file write';
       void loadProjectGitStatus(selectedProject);
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       fileActionStatus = `Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`;
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save all source files';
@@ -10278,23 +10272,23 @@
   }
 
   function revertSelectedSourceFile() {
-    if (!preview || !selectedSourceDirty) return;
+    if (!files.preview || !selectedSourceDirty) return;
 
-    const savedContent = savedSourceContentByPath[preview.path] ?? preview.content;
+    const savedContent = savedSourceContentByPath[files.preview.path] ?? files.preview.content;
     sourceDraftContentByPath = {
       ...sourceDraftContentByPath,
-      [preview.path]: savedContent
+      [files.preview.path]: savedContent
     };
     fileActionStatus = 'Reverted edits';
     error = '';
   }
 
   function updateSelectedSourceDraft(content: string) {
-    if (!preview) return;
+    if (!files.preview) return;
 
     sourceDraftContentByPath = {
       ...sourceDraftContentByPath,
-      [preview.path]: content
+      [files.preview.path]: content
     };
     scheduleSourceLspDiagnostics();
   }
@@ -10347,17 +10341,17 @@
   }
 
   function setSelectedSourceEditorDisplayMode(mode: SourceEditorDisplayMode) {
-    if (!preview || !sourceMarkdownPreviewAvailable(preview)) return;
+    if (!files.preview || !sourceMarkdownPreviewAvailable(files.preview)) return;
 
     sourceMarkdownPreviewModeByPath = {
       ...sourceMarkdownPreviewModeByPath,
-      [preview.path]: mode
+      [files.preview.path]: mode
     };
   }
 
-  async function stageExternalWorkspaceEditDrafts(files: SourceRenameFileEdit[]) {
-    const selectedPath = preview?.path ?? '';
-    const externalFiles = files.filter((file) => file.path !== selectedPath && file.edits.length > 0);
+  async function stageExternalWorkspaceEditDrafts(renameEditFiles: SourceRenameFileEdit[]) {
+    const selectedPath = files.preview?.path ?? '';
+    const externalFiles = renameEditFiles.filter((file) => file.path !== selectedPath && file.edits.length > 0);
     if (externalFiles.length === 0) {
       return { fileCount: 0, editCount: 0, missingCount: 0 };
     }
@@ -10465,18 +10459,18 @@
   }
 
   function scheduleSourceLspDiagnostics() {
-    if (!preview || !sourceIntelligenceAvailable) return;
+    if (!files.preview || !sourceIntelligenceAvailable) return;
     if (sourceLspDiagnosticsTimer !== null) {
       window.clearTimeout(sourceLspDiagnosticsTimer);
     }
     sourceLspDiagnosticsTimer = window.setTimeout(() => {
       sourceLspDiagnosticsTimer = null;
-      void loadSourceLspDiagnostics(preview);
+      void loadSourceLspDiagnostics(files.preview);
     }, 650);
   }
 
   async function loadSourceLspDiagnostics(
-    nextPreview: SourcePreview | null = preview,
+    nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
   ) {
     if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) {
@@ -10497,17 +10491,17 @@
           column: 1
         }
       );
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
       sourceLspDiagnostics = diagnostics ?? [];
     } catch {
-      if (preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+      if (files.preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
         sourceLspDiagnostics = [];
       }
     }
   }
 
   async function loadSourceLspSymbols(
-    nextPreview: SourcePreview | null = preview,
+    nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
   ) {
     if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) return;
@@ -10526,7 +10520,7 @@
           limit: 100
         }
       );
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
       if (symbols?.length) sourceSymbols = symbols;
     } catch {
       // Parser-provided Monaco symbols stay in place when native LSP is unavailable.
@@ -10535,7 +10529,7 @@
 
   async function loadSourceLspWorkspaceSymbols(query: string) {
     const normalizedQuery = query.trim();
-    const sourcePreview = preview;
+    const sourcePreview = files.preview;
     if (!normalizedQuery || !sourcePreview || !sourceSupportsLanguageIntelligence(sourcePreview.language)) {
       workspaceSymbolResults = [];
       workspaceSymbolError = '';
@@ -10584,11 +10578,11 @@
   }
 
   async function handleEditorHoverLookup(request: SourceEditorLookupRequest): Promise<SourceLspHover | null> {
-    if (!preview || !sourceIntelligenceAvailable) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
     try {
       return await findSourceLspHoverFromTauri(
-        { ...preview, content: selectedSourceDraftContent },
+        { ...files.preview, content: selectedSourceDraftContent },
         {
           root: selectedProject.path,
           line: request.line,
@@ -10603,12 +10597,12 @@
   async function handleEditorCompletionLookup(
     request: SourceEditorLookupRequest
   ): Promise<SourceCompletionItem[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspCompletionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -10625,11 +10619,11 @@
   async function handleEditorSignatureHelpLookup(
     request: SourceEditorLookupRequest
   ): Promise<SourceSignatureHelp | null> {
-    if (!preview || !sourceIntelligenceAvailable) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
     try {
       return await findSourceLspSignatureHelpFromTauri(
-        { ...preview, content: selectedSourceDraftContent },
+        { ...files.preview, content: selectedSourceDraftContent },
         {
           root: selectedProject.path,
           line: request.line,
@@ -10644,12 +10638,12 @@
   async function handleEditorInlayHintLookup(
     request: SourceEditorInlayHintLookupRequest
   ): Promise<SourceInlayHint[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspInlayHintsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.startLine,
@@ -10688,12 +10682,12 @@
   async function handleEditorCodeActionLookup(
     request: SourceCodeActionLookupRequest
   ): Promise<SourceCodeAction[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspCodeActionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             ...request,
             root: selectedProject.path,
@@ -10721,13 +10715,13 @@
   }
 
   async function handleEditorFormatDocument(): Promise<SourceTextEdit[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     fileActionStatus = 'Formatting source file';
     try {
       const edits =
         (await formatSourceWithLspFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: 1,
@@ -10751,12 +10745,12 @@
     column: number;
     newName: string;
   }): Promise<SourceRenameResult | null> {
-    if (!preview || !sourceIntelligenceAvailable) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
     fileActionStatus = 'Renaming symbol';
     try {
       const result = await renameSourceWithLspFromTauri(
-        { ...preview, content: selectedSourceDraftContent },
+        { ...files.preview, content: selectedSourceDraftContent },
         {
           root: selectedProject.path,
           line: request.line,
@@ -10764,11 +10758,11 @@
           newName: request.newName
         }
       );
-      const files = result?.files ?? [];
+      const renameResultFiles = result?.files ?? [];
       const currentFileEditCount =
-        files.find((file) => file.path === preview.path)?.edits.length ?? 0;
-      const totalEditCount = files.reduce((count, file) => count + file.edits.length, 0);
-      const externalDrafts = await stageExternalWorkspaceEditDrafts(files);
+        renameResultFiles.find((file) => file.path === files.preview.path)?.edits.length ?? 0;
+      const totalEditCount = renameResultFiles.reduce((count, file) => count + file.edits.length, 0);
+      const externalDrafts = await stageExternalWorkspaceEditDrafts(renameResultFiles);
       const renameParts = [
         currentFileEditCount > 0
           ? `${currentFileEditCount.toLocaleString()} current-file ${currentFileEditCount === 1 ? 'edit' : 'edits'}`
@@ -10800,12 +10794,12 @@
   }
 
   async function handleEditorDocumentHighlightLookup(request: SourceEditorLookupRequest) {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspDocumentHighlightsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -10828,7 +10822,7 @@
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
-    if (!preview || loading) return;
+    if (!files.preview || loading) return;
     if (
       (action === 'hover' ||
         action === 'implementation' ||
@@ -10886,7 +10880,7 @@
 
   function currentSourceDiagnosticNavigationRequest() {
     return {
-      line: selectedSourceLine ?? 1,
+      line: files.selectedSourceLine ?? 1,
       column: 1
     };
   }
@@ -10896,15 +10890,15 @@
   }
 
   function revealSourceLine(line: number, recordNavigation = true) {
-    if (!preview || !selectedRecord) return;
+    if (!files.preview || !files.selectedRecord) return;
 
     const nextLine = Math.max(1, Math.floor(line));
     if (recordNavigation) {
-      recordSourceNavigation(sourceNavigationLocationForRecord(selectedRecord, nextLine));
+      recordSourceNavigation(sourceNavigationLocationForRecord(files.selectedRecord, nextLine));
     }
 
-    selectedSourceLine = nextLine;
-    selectedSourceLineRequestId += 1;
+    files.selectedSourceLine = nextLine;
+    files.selectedSourceLineRequestId += 1;
   }
 
   function handleProjectChange() {
@@ -11244,7 +11238,7 @@
   function refreshSourceActivityMode(mode: SourceActivityMode = dock.activityMode) {
     switch (mode) {
       case 'files':
-        void scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit });
+        void scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit });
         break;
       case 'clipboard':
         break;
@@ -13046,7 +13040,7 @@
         onDidActivePanelChange: (panelID) => {
           if (!panelID) return;
           const tab = sourceEditorFileTabForPanelID(panelID);
-          if (!tab || tab.path === selectedRecord?.path) return;
+          if (!tab || tab.path === files.selectedRecord?.path) return;
           void selectOpenTab(tab);
         }
       });
@@ -16037,7 +16031,7 @@
           <div class="recent-list">
             {#each projectRecentRecords as recentRecord (recentRecord.path)}
               <button
-                class:active={recentRecord.path === selectedRecord?.path}
+                class:active={recentRecord.path === files.selectedRecord?.path}
                 type="button"
                 title={recentRecord.relativePath}
                 onclick={() => selectRecentRecord(recentRecord)}
@@ -16185,7 +16179,7 @@
               type="button"
               aria-label={`Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
               title={`Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-              onclick={() => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })}
+              onclick={() => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })}
             >
               <Plus size={13} strokeWidth={2} />
               <span>Scan {expandedSourceScanLimitShortLabel}</span>
@@ -16220,7 +16214,7 @@
               {@const isExpanded = isFolderExpanded(node)}
               {@const gitStatus = node.file ? gitStatusForSourceRecord(node.file) : null}
               <button
-                class:active={!isFolder && node.file?.path === selectedRecord?.path}
+                class:active={!isFolder && node.file?.path === files.selectedRecord?.path}
                 class:folder-row={isFolder}
                 class:file-row={!isFolder}
                 type="button"
@@ -17260,7 +17254,7 @@
                         {#each group.files as fileStatus (`activity:${group.id}:${fileStatus.relativePath}`)}
                           <button
                             class="git-status-row"
-                            class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
+                            class:selected={files.selectedRecord?.relativePath === fileStatus.relativePath}
                             data-git-path={fileStatus.relativePath}
                             data-git-status={fileStatus.status}
                             type="button"
@@ -17693,7 +17687,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Source Preview</p>
-        <h2 title={sourceContextIdentity.summary}>{preview?.fileName ?? 'No file selected'}</h2>
+        <h2 title={sourceContextIdentity.summary}>{files.preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="topbar-tools">
         <button
@@ -18238,13 +18232,13 @@
           {@const tabGitStatus = gitStatusForSourceRecord(tab)}
           <section
             class="source-editor-file-pane"
-            class:active={tab.path === selectedRecord?.path}
+            class:active={tab.path === files.selectedRecord?.path}
             class:dirty={isSourcePathDirty(tab.path)}
             aria-label={`Source editor for ${tab.fileName}`}
             data-source-path={tab.path}
             use:sourceEditorFileDockviewPanelAction={sourceEditorFilePanelID(tab)}
           >
-            {#if tab.path === selectedRecord?.path}
+            {#if tab.path === files.selectedRecord?.path}
 
     {#if fileActionStatus}
       <div class="file-action-feedback">{fileActionStatus}</div>
@@ -18257,19 +18251,19 @@
       </div>
     {/if}
 
-    {#if preview}
+    {#if files.preview}
       <div class="editor-frame" class:is-loading={loading}>
         <div class="editor-toolbar" aria-label="Editor controls">
-          <div class="editor-file-state" title={preview.relativePath}>
+          <div class="editor-file-state" title={files.preview.relativePath}>
             <span class="editor-file-glyph" aria-hidden="true">
               <FileCode2 size={13} strokeWidth={1.8} />
             </span>
             <div class="editor-file-title">
-              <strong>{preview.fileName}</strong>
+              <strong>{files.preview.fileName}</strong>
               <small>
                 {selectedIndex} / {files.records.length}
-                {#if selectedSourceLine}
-                  · line {selectedSourceLine}
+                {#if files.selectedSourceLine}
+                  · line {files.selectedSourceLine}
                 {/if}
               </small>
             </div>
@@ -18295,7 +18289,7 @@
                 aria-label="Retry language server status"
                 title="Retry language server status"
                 disabled={sourceLspStatusLoading}
-                onclick={() => loadSourceLspStatus(preview, selectedProject)}
+                onclick={() => loadSourceLspStatus(files.preview, selectedProject)}
               >
                 <RefreshCw size={13} strokeWidth={2} />
               </button>
@@ -18402,7 +18396,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Close current source tab"
-                  disabled={!selectedRecord}
+                  disabled={!files.selectedRecord}
                   onclick={() => {
                     closeEditorActionMenu();
                     void closeSelectedSourceTab();
@@ -18415,7 +18409,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Close other clean source tabs"
-                  disabled={!selectedRecord || otherCleanProjectOpenSourceTabCount === 0}
+                  disabled={!files.selectedRecord || otherCleanProjectOpenSourceTabCount === 0}
                   onclick={() => {
                     closeEditorActionMenu();
                     void closeOtherCleanSourceTabs();
@@ -18443,7 +18437,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Format source file"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  disabled={!files.preview || loading || !sourceIntelligenceAvailable}
                   onclick={() => {
                     closeEditorActionMenu();
                     requestSourceIntelligenceAction('format');
@@ -18456,7 +18450,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Rename symbol"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  disabled={!files.preview || loading || !sourceIntelligenceAvailable}
                   onclick={() => {
                     closeEditorActionMenu();
                     requestSourceIntelligenceAction('rename');
@@ -18470,7 +18464,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Quick fix"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
+                  disabled={!files.preview || loading || !sourceIntelligenceAvailable}
                   onclick={() => {
                     closeEditorActionMenu();
                     requestSourceIntelligenceAction('quick-fix');
@@ -18596,21 +18590,21 @@
             {#if selectedSourceMarkdownPreviewAvailable && selectedSourceEditorDisplayMode === 'preview'}
               <SourceMarkdownPreview
                 content={selectedSourceDraftContent}
-                fileName={preview.fileName}
-                relativePath={preview.relativePath}
+                fileName={files.preview.fileName}
+                relativePath={files.preview.relativePath}
                 dirty={selectedSourceDirty}
               />
             {:else}
               {#key sourcePreviewAppearanceKey}
                 <MonacoSourceEditor
-                  {preview}
+                  preview={files.preview}
                   content={selectedSourceDraftContent}
                   editable={true}
                   appearanceOverride={editorAppearanceOverride}
                   externalDiagnostics={sourceLspDiagnostics}
                   {loading}
-                  targetLine={selectedSourceLine}
-                  targetLineRequestId={selectedSourceLineRequestId}
+                  targetLine={files.selectedSourceLine}
+                  targetLineRequestId={files.selectedSourceLineRequestId}
                   intelligenceCommand={sourceIntelligenceCommand}
                   onCodeActionLookup={handleEditorCodeActionLookup}
                   onContentChange={updateSelectedSourceDraft}
@@ -18907,7 +18901,7 @@
                       aria-label="Stage selected source file"
                       title={selectedSourceDirty ? 'Save the source file before staging it' : 'Stage selected source file'}
                       disabled={selectedGitPathActionDisabled}
-                      onclick={() => selectedRecord && runGitPathAction('stage', [selectedRecord.relativePath])}
+                      onclick={() => files.selectedRecord && runGitPathAction('stage', [files.selectedRecord.relativePath])}
                     >
                       <Plus size={12} strokeWidth={2} />
                       <span>{gitActionBusy === 'stage' ? 'Staging' : 'Stage'}</span>
@@ -18918,7 +18912,7 @@
                       aria-label="Unstage selected source file"
                       title="Unstage selected source file"
                       disabled={selectedGitUnstageDisabled}
-                      onclick={() => selectedRecord && runGitPathAction('unstage', [selectedRecord.relativePath])}
+                      onclick={() => files.selectedRecord && runGitPathAction('unstage', [files.selectedRecord.relativePath])}
                     >
                       <RotateCcw size={12} strokeWidth={2} />
                       <span>{gitActionBusy === 'unstage' ? 'Unstaging' : 'Unstage'}</span>
@@ -19015,7 +19009,7 @@
                         {#each group.files as fileStatus (`${group.id}:${fileStatus.relativePath}`)}
                           <button
                             class="git-status-row"
-                            class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
+                            class:selected={files.selectedRecord?.relativePath === fileStatus.relativePath}
                             type="button"
                             title={gitStatusFileTitle(fileStatus)}
                             onclick={() => selectGitStatusFile(fileStatus)}
@@ -19531,7 +19525,7 @@
     symbolQuery={quickOpenWorkspaceSymbolQuery}
     symbolLoading={workspaceSymbolLoading}
     symbolError={workspaceSymbolError}
-    symbolsAvailable={!!preview && sourceIntelligenceAvailable}
+    symbolsAvailable={!!files.preview && sourceIntelligenceAvailable}
     targetLine={parsedQuickOpenQuery.targetLine}
     onKeydown={handleQuickOpenKeydown}
     onSelectFile={chooseQuickOpenRecord}
