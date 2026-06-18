@@ -44,6 +44,7 @@
   import { settings, defaultSettings } from '$lib/settingsStore.svelte';
   import { dock } from '$lib/stores/dockLayoutStore.svelte';
   import { files, isSourcePathDirty } from '$lib/stores/filesStore.svelte';
+  import { gitStore } from '$lib/stores/gitStore.svelte';
   import { projectStore } from '$lib/stores/projectStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
@@ -822,9 +823,6 @@
 
   let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
   let activeWorkspaceSessionKey = $state<string | null>(null);
-  let projectGitStatus = $state<ProjectGitStatus | null>(null);
-  let projectGitLoading = $state(false);
-  let projectGitError = $state('');
   let runtimeContexts = $state<RuntimeContext[]>([]);
   let runtimeContextsLoading = $state(false);
   let runtimeContextError = $state('');
@@ -839,15 +837,6 @@
   let projectWorktreesLoading = $state(false);
   let projectWorktreeError = $state('');
   let projectWorktreeSource = $state('browser preview');
-  let gitRepositorySummaries = $state<GitRepositorySummary[]>([]);
-  let gitRepositorySummariesLoading = $state(false);
-  let gitRepositorySummaryError = $state('');
-  let gitRepositorySummarySource = $state('browser preview');
-  let gitCommitHistory = $state<GitCommitHistoryEntry[]>([]);
-  let selectedGitCommitSha = $state('');
-  let gitCommitHistoryLoading = $state(false);
-  let gitCommitHistoryError = $state('');
-  let gitCommitHistorySource = $state('browser preview');
   let orchestrationRuns = $state<OrchestrationRun[]>([]);
   let orchestrationRunsLoading = $state(false);
   let orchestrationRunError = $state('');
@@ -869,13 +858,6 @@
   let sourceLspStatus = $state<SourceLspStatus | null>(null);
   let sourceLspStatusLoading = $state(false);
   let sourceLspStatusError = $state('');
-  let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
-  let selectedSourceGitDiffLoading = $state(false);
-  let selectedSourceGitDiffError = $state('');
-  let gitCommitMessage = $state('');
-  let gitActionBusy = $state<'stage' | 'unstage' | 'commit' | 'fetch' | 'pull' | 'push' | ''>('');
-  let gitActionStatus = $state('');
-  let gitActionError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
   let sourceIntelligencePanel = $state<SourceIntelligencePanel>('git');
   let sourceSearchQuery = $state('');
@@ -947,7 +929,6 @@
   let activeActivityRowActionMenu = $state<string | null>(null);
   let activeAgentRowActionMenu = $state<string | null>(null);
   let activeWorktreeRowActionMenu = $state<string | null>(null);
-  let activeGitRowActionMenu = $state<string | null>(null);
   // Scan/index state moved to files.scan.* (Phase A4); runtime/error stay page-level (cross-cutting).
   let runtime = $state('pending source scan');
   let error = $state('');
@@ -1305,9 +1286,9 @@
       : dock.contextPaneWidth
   );
   let gitStatusByRelativePath = $derived(
-    new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
+    new Map((gitStore.status?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
-  let selectedProjectGitChangedFiles = $derived(projectGitStatus?.files ?? []);
+  let selectedProjectGitChangedFiles = $derived(gitStore.status?.files ?? []);
   let selectedProjectGitFileGroups = $derived(
     buildGitStatusFileGroups(selectedProjectGitChangedFiles)
   );
@@ -1316,37 +1297,37 @@
   );
   let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(files.selectedRecord));
   let selectedGitPathActionDisabled = $derived(
-    !selectedRecordGitStatus || selectedSourceDirty || gitActionBusy !== ''
+    !selectedRecordGitStatus || selectedSourceDirty || gitStore.actionBusy !== ''
   );
   let selectedGitUnstageDisabled = $derived(
-    !selectedRecordGitStatus || !isGitFileStaged(selectedRecordGitStatus) || gitActionBusy !== ''
+    !selectedRecordGitStatus || !isGitFileStaged(selectedRecordGitStatus) || gitStore.actionBusy !== ''
   );
   let gitHasStagedChanges = $derived(selectedProjectGitChangedFiles.some(isGitFileStaged));
   let gitCommitDisabled = $derived(
-    gitCommitMessage.trim().length === 0 || !gitHasStagedChanges || gitActionBusy !== ''
+    gitStore.commitMessage.trim().length === 0 || !gitHasStagedChanges || gitStore.actionBusy !== ''
   );
-  let gitRemoteActionDisabled = $derived(projectGitLoading || Boolean(projectGitError) || gitActionBusy !== '');
+  let gitRemoteActionDisabled = $derived(gitStore.statusLoading || Boolean(gitStore.statusError) || gitStore.actionBusy !== '');
   let gitCommitHistorySummary = $derived(
     formatGitCommitHistorySummary(
-      gitCommitHistory.length,
-      gitCommitHistoryLoading,
-      gitCommitHistoryError,
-      gitCommitHistorySource
+      gitStore.commitHistory.length,
+      gitStore.commitHistoryLoading,
+      gitStore.commitHistoryError,
+      gitStore.commitHistorySource
     )
   );
   let selectedGitCommit = $derived(
-    gitCommitHistory.find((entry) => entry.sha === selectedGitCommitSha) ?? gitCommitHistory[0] ?? null
+    gitStore.commitHistory.find((entry) => entry.sha === gitStore.selectedCommitSha) ?? gitStore.commitHistory[0] ?? null
   );
   let selectedSourceGitSummary = $derived(
     formatSelectedSourceGitSummary(
       selectedRecordGitStatus,
-      selectedSourceGitDiff,
-      selectedSourceGitDiffLoading,
-      selectedSourceGitDiffError
+      gitStore.selectedDiff,
+      gitStore.selectedDiffLoading,
+      gitStore.selectedDiffError
     )
   );
   let projectGitSummary = $derived(
-    formatSourceContextGitSummary(projectGitStatus, projectGitLoading, projectGitError)
+    formatSourceContextGitSummary(gitStore.status, gitStore.statusLoading, gitStore.statusError)
   );
   let sourceContextIdentity = $derived(
     formatSourceContextIdentity(selectedProject, projectGitSummary, runtime)
@@ -1499,7 +1480,7 @@
     })
   );
   let selectedProjectRepositorySummaries = $derived(
-    gitRepositorySummaries.filter(
+    gitStore.repositorySummaries.filter(
       (summary) =>
         summary.projectID === selectedProject.id ||
         normalizeProjectPath(summary.path) === normalizeProjectPath(selectedProject.path)
@@ -1507,18 +1488,18 @@
   );
   let repositoryDashboardGitGraph = $derived(
     buildGitGraphViewModel({
-      repositories: gitRepositorySummaries,
+      repositories: gitStore.repositorySummaries,
       commits: []
     })
   );
   let selectedProjectGitGraph = $derived(
     buildGitGraphViewModel({
       repositories: selectedProjectRepositorySummaries,
-      commits: gitCommitHistory
+      commits: gitStore.commitHistory
     })
   );
   let selectedGitCommitRow = $derived(
-    selectedProjectGitGraph.commits.find((entry) => entry.sha === selectedGitCommitSha) ??
+    selectedProjectGitGraph.commits.find((entry) => entry.sha === gitStore.selectedCommitSha) ??
       selectedProjectGitGraph.commits[0] ??
       null
   );
@@ -1560,25 +1541,25 @@
   let selectedProjectPrimaryRepoSummary = $derived(selectedProjectRepositorySummaries[0] ?? null);
   let selectedProjectGitBranchHealth = $derived(
     formatGitBranchHealthSummary({
-      branch: projectGitStatus?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? null,
-      ahead: projectGitStatus?.ahead ?? selectedProjectPrimaryRepoSummary?.ahead ?? 0,
-      behind: projectGitStatus?.behind ?? selectedProjectPrimaryRepoSummary?.behind ?? 0,
-      stagedCount: projectGitStatus
+      branch: gitStore.status?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? null,
+      ahead: gitStore.status?.ahead ?? selectedProjectPrimaryRepoSummary?.ahead ?? 0,
+      behind: gitStore.status?.behind ?? selectedProjectPrimaryRepoSummary?.behind ?? 0,
+      stagedCount: gitStore.status
         ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'staged')
         : selectedProjectPrimaryRepoSummary?.stagedCount ?? 0,
-      unstagedCount: projectGitStatus
+      unstagedCount: gitStore.status
         ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'unstaged')
         : selectedProjectPrimaryRepoSummary?.unstagedCount ?? 0,
-      untrackedCount: projectGitStatus
+      untrackedCount: gitStore.status
         ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'untracked')
         : selectedProjectPrimaryRepoSummary?.untrackedCount ?? 0,
-      changedCount: projectGitStatus
+      changedCount: gitStore.status
         ? selectedProjectGitChangedFiles.length
         : selectedProjectPrimaryRepoSummary?.dirtyCount ?? 0,
-      isDirty: projectGitStatus
+      isDirty: gitStore.status
         ? selectedProjectGitChangedFiles.length > 0
         : selectedProjectPrimaryRepoSummary?.isDirty ?? false,
-      error: projectGitError || selectedProjectPrimaryRepoSummary?.error || null,
+      error: gitStore.statusError || selectedProjectPrimaryRepoSummary?.error || null,
       rootLabel: selectedProjectPrimaryRepoSummary?.rootLabel ?? formatSourceContextRootLabel(selectedProject.path),
       lastCommitSha: selectedProjectPrimaryRepoSummary?.lastCommitSha ?? null
     })
@@ -1586,12 +1567,12 @@
   let selectedProjectGitGraphSummary = $derived(
     formatGitGraphSummary(
       selectedProjectGitGraph,
-      gitRepositorySummariesLoading,
-      gitRepositorySummaryError,
-      gitRepositorySummarySource,
-      gitCommitHistoryLoading,
-      gitCommitHistoryError,
-      gitCommitHistorySource
+      gitStore.repositorySummariesLoading,
+      gitStore.repositorySummaryError,
+      gitStore.repositorySummarySource,
+      gitStore.commitHistoryLoading,
+      gitStore.commitHistoryError,
+      gitStore.commitHistorySource
     )
   );
   let selectedProjectGitTaskIDs = $derived(
@@ -1683,10 +1664,10 @@
   );
   let repoDashboardSummary = $derived(
     formatRepoDashboardSummary(
-      gitRepositorySummaries,
-      gitRepositorySummariesLoading,
-      gitRepositorySummaryError,
-      gitRepositorySummarySource
+      gitStore.repositorySummaries,
+      gitStore.repositorySummariesLoading,
+      gitStore.repositorySummaryError,
+      gitStore.repositorySummarySource
     )
   );
   let agentSessionSummary = $derived(
@@ -2814,7 +2795,7 @@
       id: 'git-refresh-history',
       label: 'Refresh Git history',
       detail: selectedProject.name,
-      disabled: gitCommitHistoryLoading,
+      disabled: gitStore.commitHistoryLoading,
       perform: () => loadGitCommitHistory(selectedProject)
     },
     {
@@ -2888,13 +2869,13 @@
       detail: row.nextAction,
       perform: () => focusGitTaskLedger(row.taskID)
     })),
-    ...gitCommitHistory.slice(0, 8).map((entry) => ({
+    ...gitStore.commitHistory.slice(0, 8).map((entry) => ({
       id: `git-copy-commit-${entry.sha}`,
       label: `Copy commit: ${entry.shortSha}`,
       detail: entry.subject,
       perform: () => copyGitCommitSummary(entry)
     })),
-    ...gitCommitHistory.slice(0, 8).map((entry) => ({
+    ...gitStore.commitHistory.slice(0, 8).map((entry) => ({
       id: `git-copy-commit-handoff-${entry.sha}`,
       label: `Copy commit handoff: ${entry.shortSha}`,
       detail: entry.subject,
@@ -3809,24 +3790,24 @@
   async function loadProjectGitStatus(project: ProjectRoot) {
     const projectID = project.id;
     const requestID = ++projectGitStatusRequestID;
-    projectGitLoading = true;
-    projectGitStatus = null;
-    projectGitError = '';
+    gitStore.statusLoading = true;
+    gitStore.status = null;
+    gitStore.statusError = '';
 
     try {
       const nextStatus = await readProjectGitStatusFromTauri(project.path);
       if (!isCurrentProjectGitStatusRequest(requestID, projectID)) return;
 
-      projectGitStatus = nextStatus;
-      projectGitError = nextStatus ? '' : 'Native Git unavailable';
+      gitStore.status = nextStatus;
+      gitStore.statusError = nextStatus ? '' : 'Native Git unavailable';
     } catch (gitError) {
       if (!isCurrentProjectGitStatusRequest(requestID, projectID)) return;
 
-      projectGitStatus = null;
-      projectGitError = gitError instanceof Error ? gitError.message : 'Could not read Git status';
+      gitStore.status = null;
+      gitStore.statusError = gitError instanceof Error ? gitError.message : 'Could not read Git status';
     } finally {
       if (isCurrentProjectGitStatusRequest(requestID, projectID)) {
-        projectGitLoading = false;
+        gitStore.statusLoading = false;
       }
     }
   }
@@ -3884,33 +3865,33 @@
   }
 
   async function loadGitRepositorySummaries(projects: ProjectRoot[] = projectOptions) {
-    gitRepositorySummariesLoading = true;
-    gitRepositorySummaryError = '';
+    gitStore.repositorySummariesLoading = true;
+    gitStore.repositorySummaryError = '';
 
     try {
       const nativeSummaries = await listGitRepositorySummariesFromTauri(projects);
       if (nativeSummaries) {
-        gitRepositorySummaries = nativeSummaries;
-        gitRepositorySummarySource = 'native git dashboard';
+        gitStore.repositorySummaries = nativeSummaries;
+        gitStore.repositorySummarySource = 'native git dashboard';
         return;
       }
 
-      gitRepositorySummaries = demoGitRepositorySummariesForProjects(projects);
-      gitRepositorySummarySource = 'browser preview';
+      gitStore.repositorySummaries = demoGitRepositorySummariesForProjects(projects);
+      gitStore.repositorySummarySource = 'browser preview';
     } catch (summaryError) {
-      gitRepositorySummaries = demoGitRepositorySummariesForProjects(projects);
-      gitRepositorySummarySource = 'browser preview';
-      gitRepositorySummaryError =
+      gitStore.repositorySummaries = demoGitRepositorySummariesForProjects(projects);
+      gitStore.repositorySummarySource = 'browser preview';
+      gitStore.repositorySummaryError =
         summaryError instanceof Error ? summaryError.message : 'Could not scan repositories';
     } finally {
-      gitRepositorySummariesLoading = false;
+      gitStore.repositorySummariesLoading = false;
     }
   }
 
   function sourceScanCacheSignatureForProject(project: ProjectRoot): string | null {
     const projectPath = normalizeProjectPath(project.path);
     const summary =
-      gitRepositorySummaries.find(
+      gitStore.repositorySummaries.find(
         (candidate) =>
           candidate.projectID === project.id ||
           normalizeProjectPath(candidate.path) === projectPath
@@ -3935,7 +3916,7 @@
       ].join('|');
     }
 
-    if (gitRepositorySummariesLoading || gitRepositorySummaries.length === 0) {
+    if (gitStore.repositorySummariesLoading || gitStore.repositorySummaries.length === 0) {
       return null;
     }
 
@@ -3944,8 +3925,8 @@
 
   async function loadGitCommitHistory(project: ProjectRoot = selectedProject) {
     const projectID = project.id;
-    gitCommitHistoryLoading = true;
-    gitCommitHistoryError = '';
+    gitStore.commitHistoryLoading = true;
+    gitStore.commitHistoryError = '';
 
     try {
       const nativeHistory = await readGitCommitHistoryFromTauri(project.path, maxGitCommitHistoryEntries);
@@ -3961,21 +3942,21 @@
       if (projectStore.selectedID !== projectID) return;
 
       setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
-      gitCommitHistoryError =
+      gitStore.commitHistoryError =
         historyError instanceof Error ? historyError.message : 'Could not read Git history';
     } finally {
       if (projectStore.selectedID === projectID) {
-        gitCommitHistoryLoading = false;
+        gitStore.commitHistoryLoading = false;
       }
     }
   }
 
   function setGitCommitHistory(entries: GitCommitHistoryEntry[], source: string) {
-    gitCommitHistory = entries;
-    gitCommitHistorySource = source;
+    gitStore.commitHistory = entries;
+    gitStore.commitHistorySource = source;
 
-    if (!entries.some((entry) => entry.sha === selectedGitCommitSha)) {
-      selectedGitCommitSha = entries[0]?.sha ?? '';
+    if (!entries.some((entry) => entry.sha === gitStore.selectedCommitSha)) {
+      gitStore.selectedCommitSha = entries[0]?.sha ?? '';
     }
   }
 
@@ -4474,13 +4455,13 @@
   }
 
   function gitWorkspaceBriefText() {
-    const branch = projectGitStatus?.branch ?? selectedProjectGitGraph.repositories[0]?.branchLabel ?? 'unknown';
+    const branch = gitStore.status?.branch ?? selectedProjectGitGraph.repositories[0]?.branchLabel ?? 'unknown';
     const aheadBehind =
-      projectGitStatus
-        ? `ahead ${projectGitStatus.ahead} / behind ${projectGitStatus.behind}`
+      gitStore.status
+        ? `ahead ${gitStore.status.ahead} / behind ${gitStore.status.behind}`
         : 'ahead/behind unknown';
     const changedFiles =
-      projectGitStatus
+      gitStore.status
         ? `${selectedProjectGitChangedFiles.length} changed file${selectedProjectGitChangedFiles.length === 1 ? '' : 's'}`
         : 'changed files unknown';
     const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
@@ -4748,7 +4729,7 @@
   }
 
   function gitCommitEntryForRow(row: GitGraphCommitRow) {
-    return gitCommitHistory.find((entry) => entry.sha === row.sha) ?? null;
+    return gitStore.commitHistory.find((entry) => entry.sha === row.sha) ?? null;
   }
 
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
@@ -4788,7 +4769,7 @@
   }
 
   function selectGitCommit(entry: GitCommitHistoryEntry) {
-    selectedGitCommitSha = entry.sha;
+    gitStore.selectedCommitSha = entry.sha;
   }
 
   function handleGitCommitRowKeydown(event: KeyboardEvent, entry: GitCommitHistoryEntry) {
@@ -4824,7 +4805,7 @@
     const parents = entry.parentShas.length > 0 ? entry.parentShas.join(', ') : 'none';
     const firstParent = entry.parentShas[0] ?? '';
     const taskReference = entry.taskID ? gitTaskReferenceText(entry.taskID) : 'none';
-    const branch = projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
+    const branch = gitStore.status?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
     const inspectCommands = [
       `cd ${shellQuoteForCommand(selectedProject.path)}`,
       `git show --stat --oneline ${entry.sha}`,
@@ -5245,7 +5226,7 @@
   async function selectGitStatusFile(fileStatus: ProjectGitFileStatus) {
     const record = files.records.find((sourceRecord) => sourceRecord.relativePath === fileStatus.relativePath);
     if (!record) {
-      gitActionStatus = `No indexed source record for ${fileStatus.relativePath}`;
+      gitStore.actionStatus = `No indexed source record for ${fileStatus.relativePath}`;
       return;
     }
 
@@ -5256,9 +5237,9 @@
     const nextPaths = paths.map((path) => path.trim()).filter(Boolean);
     if (nextPaths.length === 0) return;
 
-    gitActionBusy = action;
-    gitActionError = '';
-    gitActionStatus = '';
+    gitStore.actionBusy = action;
+    gitStore.actionError = '';
+    gitStore.actionStatus = '';
 
     try {
       const result =
@@ -5267,26 +5248,26 @@
           : await unstageGitPathsFromTauri(selectedProject.path, nextPaths);
 
       if (!result) {
-        gitActionStatus = 'Native Git unavailable';
+        gitStore.actionStatus = 'Native Git unavailable';
         return;
       }
 
       projectGitStatusRequestID += 1;
-      projectGitStatus = result.status;
-      gitActionStatus = result.message;
+      gitStore.status = result.status;
+      gitStore.actionStatus = result.message;
       if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
     } catch (gitError) {
-      gitActionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
+      gitStore.actionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
     } finally {
-      gitActionBusy = '';
+      gitStore.actionBusy = '';
     }
   }
 
   async function runGitRemoteAction(action: 'fetch' | 'pull' | 'push') {
-    gitActionBusy = action;
-    gitActionError = '';
-    gitActionStatus = '';
+    gitStore.actionBusy = action;
+    gitStore.actionError = '';
+    gitStore.actionStatus = '';
 
     try {
       const result =
@@ -5297,49 +5278,49 @@
             : await pushGitRepositoryFromTauri(selectedProject.path);
 
       if (!result) {
-        gitActionStatus = 'Native Git unavailable';
+        gitStore.actionStatus = 'Native Git unavailable';
         return;
       }
 
       projectGitStatusRequestID += 1;
-      projectGitStatus = result.status;
-      gitActionStatus = result.message;
+      gitStore.status = result.status;
+      gitStore.actionStatus = result.message;
       if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
       if (action !== 'fetch') void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
-      gitActionError = gitError instanceof Error ? gitError.message : `Could not ${action} repository`;
+      gitStore.actionError = gitError instanceof Error ? gitError.message : `Could not ${action} repository`;
     } finally {
-      gitActionBusy = '';
+      gitStore.actionBusy = '';
     }
   }
 
   async function commitGitChanges() {
-    const message = gitCommitMessage.trim();
+    const message = gitStore.commitMessage.trim();
     if (!message) return;
 
-    gitActionBusy = 'commit';
-    gitActionError = '';
-    gitActionStatus = '';
+    gitStore.actionBusy = 'commit';
+    gitStore.actionError = '';
+    gitStore.actionStatus = '';
 
     try {
       const result = await commitGitRepositoryFromTauri(selectedProject.path, message);
       if (!result) {
-        gitActionStatus = 'Native Git unavailable';
+        gitStore.actionStatus = 'Native Git unavailable';
         return;
       }
 
       projectGitStatusRequestID += 1;
-      projectGitStatus = result.status;
-      gitCommitMessage = '';
-      gitActionStatus = result.message;
+      gitStore.status = result.status;
+      gitStore.commitMessage = '';
+      gitStore.actionStatus = result.message;
       if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
       void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
-      gitActionError = gitError instanceof Error ? gitError.message : 'Could not commit Git changes';
+      gitStore.actionError = gitError instanceof Error ? gitError.message : 'Could not commit Git changes';
     } finally {
-      gitActionBusy = '';
+      gitStore.actionBusy = '';
     }
   }
 
@@ -5855,7 +5836,7 @@
     const sessionPath = normalizeProjectPath(session.projectPath ?? '');
     const projectPath = normalizeProjectPath(selectedProject.path);
     if (sessionPath === projectPath || !sessionPath) {
-      return projectGitStatus?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? 'branch unknown';
+      return gitStore.status?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? 'branch unknown';
     }
 
     return 'branch unknown';
@@ -6051,7 +6032,7 @@
       selectedRecord: files.selectedRecord,
       selectedSourcePaths: projectStore.selectedSourcePaths,
       openSourceTabs: projectOpenSourceTabs,
-      branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
+      branch: gitStore.status?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
       selectedLine: files.selectedSourceLine,
       sourceActivityMode: dock.activityMode,
       sourceTerminalApp,
@@ -7303,7 +7284,7 @@
     const worktreePath = normalizeProjectPath(worktree.path);
     if (!worktreePath) return null;
 
-    return gitRepositorySummaries.find((summary) => normalizeProjectPath(summary.path) === worktreePath) ?? null;
+    return gitStore.repositorySummaries.find((summary) => normalizeProjectPath(summary.path) === worktreePath) ?? null;
   }
 
   function projectWorktreeLastActivityAgeDays(worktree: ProjectWorktree) {
@@ -8380,9 +8361,9 @@
   }
 
   function selectedSourceGitBadge() {
-    if (selectedSourceGitDiffLoading) return '...';
+    if (gitStore.selectedDiffLoading) return '...';
     if (selectedRecordGitStatus?.badge) return selectedRecordGitStatus.badge;
-    if (selectedSourceGitDiff?.status && selectedSourceGitDiff.status !== 'clean') return 'M';
+    if (gitStore.selectedDiff?.status && gitStore.selectedDiff.status !== 'clean') return 'M';
     return '0';
   }
 
@@ -8405,9 +8386,9 @@
 
   function clearSelectedSourceGitDiff() {
     selectedSourceGitDiffRequestID += 1;
-    selectedSourceGitDiff = null;
-    selectedSourceGitDiffLoading = false;
-    selectedSourceGitDiffError = '';
+    gitStore.selectedDiff = null;
+    gitStore.selectedDiffLoading = false;
+    gitStore.selectedDiffError = '';
   }
 
   async function loadSelectedSourceGitDiff(
@@ -8422,24 +8403,24 @@
     const expectedPath = record.path;
     const expectedProjectPath = project.path;
     const requestID = ++selectedSourceGitDiffRequestID;
-    selectedSourceGitDiff = null;
-    selectedSourceGitDiffError = '';
-    selectedSourceGitDiffLoading = true;
+    gitStore.selectedDiff = null;
+    gitStore.selectedDiffError = '';
+    gitStore.selectedDiffLoading = true;
 
     try {
       const diff = await readSourceGitDiffFromTauri(expectedProjectPath, expectedPath);
       if (!isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) return;
 
-      selectedSourceGitDiff = diff;
-      if (!diff) selectedSourceGitDiffError = 'Native Git diff unavailable';
+      gitStore.selectedDiff = diff;
+      if (!diff) gitStore.selectedDiffError = 'Native Git diff unavailable';
     } catch (gitDiffError) {
       if (!isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) return;
 
-      selectedSourceGitDiffError =
+      gitStore.selectedDiffError =
         gitDiffError instanceof Error ? gitDiffError.message : 'Could not read Git diff';
     } finally {
       if (isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) {
-        selectedSourceGitDiffLoading = false;
+        gitStore.selectedDiffLoading = false;
       }
     }
   }
@@ -8963,7 +8944,7 @@
 
     if (
       event.key === 'Escape' &&
-      (activeActivityRowActionMenu || activeAgentRowActionMenu || activeWorktreeRowActionMenu || activeGitRowActionMenu)
+      (activeActivityRowActionMenu || activeAgentRowActionMenu || activeWorktreeRowActionMenu || gitStore.activeRowActionMenu)
     ) {
       event.preventDefault();
       closeRowActionMenus();
@@ -9129,11 +9110,11 @@
   }
 
   function gitRowActionMenuOpen(id: string, scope: 'repository' | 'task-ledger') {
-    return activeGitRowActionMenu === gitRowActionMenuID(id, scope);
+    return gitStore.activeRowActionMenu === gitRowActionMenuID(id, scope);
   }
 
   function openGitRowActionMenu(id: string, scope: 'repository' | 'task-ledger') {
-    activeGitRowActionMenu = gitRowActionMenuID(id, scope);
+    gitStore.activeRowActionMenu = gitRowActionMenuID(id, scope);
     closeActivityRowActionMenu();
     closeAgentRowActionMenu();
     closeWorktreeRowActionMenu();
@@ -9143,7 +9124,7 @@
 
   function toggleGitRowActionMenu(id: string, scope: 'repository' | 'task-ledger') {
     const menuID = gitRowActionMenuID(id, scope);
-    if (activeGitRowActionMenu === menuID) {
+    if (gitStore.activeRowActionMenu === menuID) {
       closeGitRowActionMenu();
       return;
     }
@@ -9152,7 +9133,7 @@
   }
 
   function closeGitRowActionMenu() {
-    activeGitRowActionMenu = null;
+    gitStore.activeRowActionMenu = null;
   }
 
   function closeRowActionMenus() {
@@ -10848,7 +10829,7 @@
       case 'worktrees':
         return projectWorktreesLoading;
       case 'git':
-        return gitRepositorySummariesLoading || gitCommitHistoryLoading;
+        return gitStore.repositorySummariesLoading || gitStore.commitHistoryLoading;
     }
   }
 
@@ -16597,7 +16578,7 @@
                   type="button"
                   aria-label="Refresh source control status"
                   title="Refresh source control status"
-                  disabled={projectGitLoading}
+                  disabled={gitStore.statusLoading}
                   onclick={() => loadProjectGitStatus(selectedProject)}
                 >
                   <RefreshCw size={13} strokeWidth={2} />
@@ -16632,7 +16613,7 @@
                       onclick={() => runGitRemoteAction('fetch')}
                     >
                       <RefreshCw size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
+                      <span>{gitStore.actionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
                     </button>
                     <button
                       class="git-action-button"
@@ -16643,7 +16624,7 @@
                       onclick={() => runGitRemoteAction('pull')}
                     >
                       <ChevronDown size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
+                      <span>{gitStore.actionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
                     </button>
                     <button
                       class="git-action-button"
@@ -16654,13 +16635,13 @@
                       onclick={() => runGitRemoteAction('push')}
                     >
                       <ExternalLink size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'push' ? 'Pushing' : 'Push'}</span>
+                      <span>{gitStore.actionBusy === 'push' ? 'Pushing' : 'Push'}</span>
                     </button>
                   </div>
                   <div class="git-commit-row activity-git-commit-row">
                     <textarea
                       class="git-commit-input"
-                      bind:value={gitCommitMessage}
+                      bind:value={gitStore.commitMessage}
                       aria-label="Git commit message"
                       placeholder="Message (Cmd+Enter to commit staged changes)"
                       rows="2"
@@ -16674,7 +16655,7 @@
                       onclick={commitGitChanges}
                     >
                       <Check size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
+                      <span>{gitStore.actionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
                     </button>
                   </div>
                 </div>
@@ -16688,10 +16669,10 @@
                 data-testid="git-changed-files"
                 aria-label="Source Control changed files"
               >
-                {#if projectGitLoading}
+                {#if gitStore.statusLoading}
                   <div class="activity-empty compact">Loading changed files</div>
-                {:else if projectGitError}
-                  <div class="activity-empty compact">{projectGitError}</div>
+                {:else if gitStore.statusError}
+                  <div class="activity-empty compact">{gitStore.statusError}</div>
                 {:else if selectedProjectGitChangedFiles.length === 0}
                   <div class="activity-empty compact">No changed files</div>
                 {:else}
@@ -16708,7 +16689,7 @@
                           <span>{group.files.length}</span>
                           <button
                             type="button"
-                            disabled={gitActionBusy !== ''}
+                            disabled={gitStore.actionBusy !== ''}
                             onclick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -16738,9 +16719,9 @@
                   {/each}
                 {/if}
               </div>
-              {#if gitActionError || gitActionStatus}
-                <div class:error={Boolean(gitActionError)} class="git-action-message">
-                  {gitActionError || gitActionStatus}
+              {#if gitStore.actionError || gitStore.actionStatus}
+                <div class:error={Boolean(gitStore.actionError)} class="git-action-message">
+                  {gitStore.actionError || gitStore.actionStatus}
                 </div>
               {/if}
             </section>
@@ -17666,7 +17647,7 @@
           worktreesLoading={projectWorktreesLoading}
           repos={selectedProjectRepositorySummaries}
           reposSummary={repoDashboardSummary}
-          reposLoading={gitRepositorySummariesLoading}
+          reposLoading={gitStore.repositorySummariesLoading}
           projectName={selectedProject.name}
         />
       </div>
@@ -17711,7 +17692,7 @@
                 <details class="git-command-drawer">
                   <summary>
                     <span>Commands</span>
-                    <small>{gitActionError || gitActionStatus || (gitHasStagedChanges ? 'staged changes ready' : 'stage, fetch, pull, push')}</small>
+                    <small>{gitStore.actionError || gitStore.actionStatus || (gitHasStagedChanges ? 'staged changes ready' : 'stage, fetch, pull, push')}</small>
                   </summary>
                   <div class="git-controls" aria-label="Git working tree controls">
                   <div class="git-action-row">
@@ -17724,7 +17705,7 @@
                       onclick={() => files.selectedRecord && runGitPathAction('stage', [files.selectedRecord.relativePath])}
                     >
                       <Plus size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'stage' ? 'Staging' : 'Stage'}</span>
+                      <span>{gitStore.actionBusy === 'stage' ? 'Staging' : 'Stage'}</span>
                     </button>
                     <button
                       class="git-action-button"
@@ -17735,7 +17716,7 @@
                       onclick={() => files.selectedRecord && runGitPathAction('unstage', [files.selectedRecord.relativePath])}
                     >
                       <RotateCcw size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'unstage' ? 'Unstaging' : 'Unstage'}</span>
+                      <span>{gitStore.actionBusy === 'unstage' ? 'Unstaging' : 'Unstage'}</span>
                     </button>
                   </div>
                   <div class="git-remote-row">
@@ -17748,7 +17729,7 @@
                       onclick={() => runGitRemoteAction('fetch')}
                     >
                       <RefreshCw size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
+                      <span>{gitStore.actionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
                     </button>
                     <button
                       class="git-action-button"
@@ -17759,7 +17740,7 @@
                       onclick={() => runGitRemoteAction('pull')}
                     >
                       <ChevronDown size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
+                      <span>{gitStore.actionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
                     </button>
                     <button
                       class="git-action-button"
@@ -17770,13 +17751,13 @@
                       onclick={() => runGitRemoteAction('push')}
                     >
                       <ExternalLink size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'push' ? 'Pushing' : 'Push'}</span>
+                      <span>{gitStore.actionBusy === 'push' ? 'Pushing' : 'Push'}</span>
                     </button>
                   </div>
                   <div class="git-commit-row">
                     <textarea
                       class="git-commit-input"
-                      bind:value={gitCommitMessage}
+                      bind:value={gitStore.commitMessage}
                       aria-label="Git commit message"
                       placeholder="Commit message"
                       rows="2"
@@ -17790,21 +17771,21 @@
                       onclick={commitGitChanges}
                     >
                       <Check size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
+                      <span>{gitStore.actionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
                     </button>
                   </div>
-                  {#if gitActionError || gitActionStatus}
-                    <div class:error={Boolean(gitActionError)} class="git-action-message">
-                      {gitActionError || gitActionStatus}
+                  {#if gitStore.actionError || gitStore.actionStatus}
+                    <div class:error={Boolean(gitStore.actionError)} class="git-action-message">
+                      {gitStore.actionError || gitStore.actionStatus}
                     </div>
                   {/if}
                   </div>
                 </details>
                 <div class="git-status-list" aria-label="Changed Git files">
-                  {#if projectGitLoading}
+                  {#if gitStore.statusLoading}
                     <div class="intelligence-empty">Loading changed files</div>
-                  {:else if projectGitError}
-                    <div class="intelligence-empty">{projectGitError}</div>
+                  {:else if gitStore.statusError}
+                    <div class="intelligence-empty">{gitStore.statusError}</div>
                   {:else if selectedProjectGitChangedFiles.length === 0}
                     <div class="intelligence-empty">No changed files</div>
                   {:else}
@@ -17820,7 +17801,7 @@
                           <span>{group.files.length}</span>
                           <button
                             type="button"
-                            disabled={gitActionBusy !== ''}
+                            disabled={gitStore.actionBusy !== ''}
                             onclick={() => runGitStatusGroupAction(group)}
                           >
                             {gitStatusGroupActionLabel(group)}
@@ -17996,10 +17977,10 @@
                     </details>
                   {/if}
                   <div class="git-history-list">
-                    {#if gitCommitHistoryLoading}
+                    {#if gitStore.commitHistoryLoading}
                       <div class="intelligence-empty">Loading history</div>
-                    {:else if gitCommitHistoryError}
-                      <div class="intelligence-empty">{gitCommitHistoryError}</div>
+                    {:else if gitStore.commitHistoryError}
+                      <div class="intelligence-empty">{gitStore.commitHistoryError}</div>
                     {:else if selectedProjectGitGraph.commits.length === 0}
                       <div class="intelligence-empty">No commits</div>
                     {:else}
@@ -18007,7 +17988,7 @@
                         {@const entry = gitCommitEntryForRow(row)}
                         <div
                           class={`git-history-row ${row.graphKind}`}
-                          class:selected={selectedGitCommitSha === row.sha}
+                          class:selected={gitStore.selectedCommitSha === row.sha}
                           role="button"
                           tabindex="0"
                           title={row.detailLabel}
@@ -18093,12 +18074,12 @@
                   </div>
                 </div>
                 <div class="intelligence-summary">{selectedSourceGitSummary}</div>
-                {#if selectedSourceGitDiffLoading}
+                {#if gitStore.selectedDiffLoading}
                   <div class="intelligence-empty">Loading Git diff</div>
-                {:else if selectedSourceGitDiffError}
-                  <div class="intelligence-empty">{selectedSourceGitDiffError}</div>
-                {:else if selectedSourceGitDiff?.diff}
-                  <pre class="git-diff-block">{selectedSourceGitDiff.diff}</pre>
+                {:else if gitStore.selectedDiffError}
+                  <div class="intelligence-empty">{gitStore.selectedDiffError}</div>
+                {:else if gitStore.selectedDiff?.diff}
+                  <pre class="git-diff-block">{gitStore.selectedDiff.diff}</pre>
                 {:else}
                   <div class="intelligence-empty">No diff for selected file</div>
                 {/if}
