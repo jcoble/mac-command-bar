@@ -395,7 +395,6 @@
   const editorInsightDefaultWidth = 260;
   const editorInsightMinWidth = 96;
   const editorInsightMaxWidth = 1200;
-  const editorInsightCollapseThreshold = 76;
   const contextPaneDefaultWidth = 330;
   const contextPaneMinWidth = 34;
   const contextPaneMaxWidth = 1600;
@@ -12450,15 +12449,6 @@
     return dockGroupIDForPanel(dock.layout, panelID) !== null;
   }
 
-  function editorInsightsDockColumnVisible() {
-    return (
-      !editorInsightCollapsed &&
-      shouldRenderDockPanel('insights') &&
-      !sourceDockviewWorkbenchOwnsPanel('insights') &&
-      !sourceDockviewContextOwnsPanel('insights')
-    );
-  }
-
   function sourceIntelligencePanelMounted() {
     // In the unified workbench, Dockview owns the Insights tab; mount its content whenever the
     // panel is present in the layout, independent of the old `editorInsightCollapsed` rail state
@@ -14292,65 +14282,6 @@
   function clampEditorInsightWidth(width: number) {
     if (!Number.isFinite(width)) return editorInsightDefaultWidth;
     return Math.min(editorInsightMaxWidth, Math.max(editorInsightMinWidth, Math.round(width)));
-  }
-
-  function beginEditorInsightResize(event: PointerEvent) {
-    if (event.button !== 0 || typeof window === 'undefined') return;
-
-    const startX = event.clientX;
-    const startWidth = editorInsightWidth;
-    let latestRawWidth = startWidth;
-    event.preventDefault();
-    markSourceLayoutCustom();
-    editorInsightCollapsed = false;
-    persistEditorInsightCollapsed(editorInsightCollapsed);
-    window.document.body.classList.add('resizing-editor-insight');
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      latestRawWidth = startWidth - (moveEvent.clientX - startX);
-      editorInsightWidth = clampEditorInsightWidth(latestRawWidth);
-    };
-    const finishResize = () => {
-      if (latestRawWidth <= editorInsightCollapseThreshold) {
-        hideDockPanel('insights');
-        files.fileActionStatus = 'Insights pane hidden';
-      } else {
-        persistEditorInsightWidth(editorInsightWidth);
-        const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
-        if (insightsGroupID !== null) {
-          persistDockGroupSize(insightsGroupID, editorInsightWidth);
-        }
-      }
-      window.document.body.classList.remove('resizing-editor-insight');
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', finishResize);
-      window.removeEventListener('pointercancel', finishResize);
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', finishResize);
-    window.addEventListener('pointercancel', finishResize);
-  }
-
-  function handleEditorInsightResizerKeydown(event: KeyboardEvent) {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-
-    event.preventDefault();
-    markSourceLayoutCustom();
-    editorInsightCollapsed = false;
-    persistEditorInsightCollapsed(editorInsightCollapsed);
-    const direction = event.key === 'ArrowLeft' ? 1 : -1;
-    if (editorInsightWidth <= editorInsightMinWidth && direction < 0) {
-      hideDockPanel('insights');
-      files.fileActionStatus = 'Insights pane hidden';
-      return;
-    }
-    editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
-    persistEditorInsightWidth(editorInsightWidth);
-    const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
-    if (insightsGroupID !== null) {
-      persistDockGroupSize(insightsGroupID, editorInsightWidth);
-    }
   }
 
   function loadStoredContextPaneWidth() {
@@ -18562,7 +18493,7 @@
           </div>
         </div>
 
-        <div class="editor-body-grid" class:insights-hidden={!editorInsightsDockColumnVisible()}>
+        <div class="editor-body-grid">
           <div class="editor-canvas">
             {#if selectedSourceMarkdownPreviewAvailable && selectedSourceEditorDisplayMode === 'preview'}
               <SourceMarkdownPreview
@@ -18614,102 +18545,16 @@
                 />
               {/key}
             {/if}
-
-            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
-              <div class="editor-lookup-popover" aria-label="Editor lookup results">
-                <div class="editor-lookup-header">
-                  <strong>{sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
-                  <button
-                    class="editor-lookup-close"
-                    type="button"
-                    aria-label="Close lookup results"
-                    title="Close lookup results"
-                    onclick={clearSourceLookupResults}
-                  >
-                    <X size={13} strokeWidth={2} />
-                  </button>
-                </div>
-                <div class="editor-lookup-list">
-                  {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
-                    {#if sourceDefinitionTargets.length === 0 && !sourceDefinitionLoading}
-                      <div class="intelligence-empty">No definition</div>
-                    {:else}
-                      {#each sourceDefinitionTargets as target (`inline:${target.path}:${target.line}:${target.symbolName}`)}
-                        <button
-                          class="definition-row"
-                          type="button"
-                          title={target.detail}
-                          onclick={() => selectSourceDefinitionTarget(target)}
-                        >
-                          <strong>{target.kind}</strong>
-                          <span>{target.symbolName}</span>
-                          <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                  {#if sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading}
-                    {#if sourceImplementationTargets.length === 0 && !sourceImplementationLoading}
-                      <div class="intelligence-empty">No implementations</div>
-                    {:else}
-                      {#each sourceImplementationTargets as target (`inline-implementation:${target.path}:${target.line}:${target.symbolName}`)}
-                        <button
-                          class="definition-row"
-                          type="button"
-                          title={target.detail}
-                          onclick={() => selectSourceImplementationTarget(target)}
-                        >
-                          <strong>{target.kind}</strong>
-                          <span>{target.symbolName}</span>
-                          <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                  {#if sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading}
-                    {#if sourceTypeDefinitionTargets.length === 0 && !sourceTypeDefinitionLoading}
-                      <div class="intelligence-empty">No type definition</div>
-                    {:else}
-                      {#each sourceTypeDefinitionTargets as target (`inline-type-definition:${target.path}:${target.line}:${target.symbolName}`)}
-                        <button
-                          class="definition-row"
-                          type="button"
-                          title={target.detail}
-                          onclick={() => selectSourceTypeDefinitionTarget(target)}
-                        >
-                          <strong>{target.kind}</strong>
-                          <span>{target.symbolName}</span>
-                          <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                </div>
-              </div>
-            {/if}
           </div>
 
           {#if sourceIntelligencePanelMounted()}
-            {#if editorInsightsDockColumnVisible()}
-            <button
-              class="editor-insight-resizer"
-              type="button"
-              aria-label="Resize editor insights"
-              title="Resize editor insights"
-              onpointerdown={beginEditorInsightResize}
-              onkeydown={handleEditorInsightResizerKeydown}
-            ></button>
-            {/if}
-
             <SourceDockviewShell
-              shellClass={editorInsightsDockColumnVisible()
-                ? 'source-dockview-insights-shell'
-                : 'source-dockview-insights-parking'}
+              shellClass="source-dockview-insights-parking"
               hostClass="source-dockview-insights-host"
               errorClass="source-dockview-insights-error"
-              enabled={editorInsightsDockColumnVisible() && sourceDockviewInsightsEnabled}
-              ready={editorInsightsDockColumnVisible() && sourceDockviewInsightsReady}
-              error={editorInsightsDockColumnVisible() ? sourceDockviewInsightsError : ''}
+              enabled={sourceDockviewInsightsEnabled}
+              ready={sourceDockviewInsightsReady}
+              error={sourceDockviewInsightsError}
               hostAction={sourceDockviewInsightsHostAction}
             >
               <aside
@@ -24250,12 +24095,8 @@
   .editor-body-grid {
     display: grid;
     flex: 1 1 auto;
-    grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width);
-    min-height: 0;
-  }
-
-  .editor-body-grid.insights-hidden {
     grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
   }
 
   .editor-canvas {
@@ -24263,28 +24104,6 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-  }
-
-  .editor-insight-resizer {
-    width: 8px;
-    min-width: 0;
-    padding: 0;
-    cursor: col-resize;
-    border: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.045);
-    border-right: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .editor-insight-resizer:hover,
-  .editor-insight-resizer:focus-visible {
-    outline: 0;
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  :global(body.resizing-editor-insight) {
-    cursor: col-resize;
-    user-select: none;
   }
 
   .source-intelligence-panel {
@@ -24295,74 +24114,6 @@
     overflow: hidden;
     border-left: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(20, 23, 24, 0.86);
-  }
-
-  .editor-lookup-popover {
-    position: absolute;
-    right: 12px;
-    bottom: 12px;
-    z-index: 5;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    width: min(520px, calc(100% - 24px));
-    max-height: min(280px, calc(100% - 24px));
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid rgba(92, 226, 207, 0.24);
-    border-radius: 8px;
-    background: rgba(18, 21, 21, 0.96);
-    box-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
-  }
-
-  .editor-lookup-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    padding: 6px 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.075);
-  }
-
-  .editor-lookup-header strong {
-    min-width: 0;
-    overflow: hidden;
-    color: #e4efed;
-    font-size: 11px;
-    font-weight: 820;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-lookup-close {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    color: #aab6b2;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-lookup-close:hover,
-  .editor-lookup-close:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .editor-lookup-list {
-    display: grid;
-    gap: 4px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 6px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
   }
 
   .intelligence-tabs {
@@ -26518,15 +26269,6 @@
     .terminal-launchpad-actions {
       justify-content: start;
       overflow-x: auto;
-    }
-
-    .editor-body-grid {
-      grid-template-columns: 1fr;
-      grid-template-rows: minmax(0, 1fr) 148px;
-    }
-
-    .editor-insight-resizer {
-      display: none;
     }
 
     .source-intelligence-panel {
