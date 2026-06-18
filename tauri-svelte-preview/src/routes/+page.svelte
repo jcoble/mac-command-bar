@@ -3,7 +3,6 @@
     Activity,
     BookOpen,
     Braces,
-    Check,
     ChevronDown,
     ChevronLeft,
     ChevronRight,
@@ -54,6 +53,7 @@
   import GitInsightsPanel from '$lib/components/panels/GitInsightsPanel.svelte';
   import ActivityClipboardPanel from '$lib/components/panels/ActivityClipboardPanel.svelte';
   import ActivityWorktreesPanel from '$lib/components/panels/ActivityWorktreesPanel.svelte';
+  import ActivityGitPanel from '$lib/components/panels/ActivityGitPanel.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import HiddenDockRail from '$lib/components/chrome/HiddenDockRail.svelte';
@@ -16446,533 +16446,75 @@
             {/if}
           </div>
         {:else if dock.activityMode === 'git'}
-          <div class="activity-panel-list activity-git-panel" data-testid="git-activity-panel" aria-label="Source Control">
-            <section class="activity-git-source-control" aria-label="Source Control changes">
-              <div class="activity-git-heading">
-                <div>
-                  <strong>Source Control</strong>
-                  <small>{selectedProject.name} · {formatSourceContextRootLabel(selectedProject.path)}</small>
-                </div>
-                <button
-                  class="activity-git-refresh"
-                  type="button"
-                  aria-label="Refresh source control status"
-                  title="Refresh source control status"
-                  disabled={gitStore.statusLoading}
-                  onclick={() => loadProjectGitStatus(selectedProject)}
-                >
-                  <RefreshCw size={13} strokeWidth={2} />
-                </button>
-              </div>
-              <div
-                class="git-branch-health-strip activity-git-health-strip"
-                data-testid="git-branch-summary"
-                aria-label="Source control branch health"
-                title={selectedProjectGitBranchHealth.detail}
-              >
-                {#each selectedProjectGitBranchHealth.chips as chip (`activity:${chip.label}:${chip.value}`)}
-                  <span class={`git-branch-health-chip ${chip.tone}`}>
-                    <strong>{chip.label}</strong>
-                    <span>{chip.value}</span>
-                  </span>
-                {/each}
-              </div>
-              <details class="git-command-drawer activity-git-command-drawer" data-testid="git-command-drawer">
-                <summary>
-                  <span>Commands</span>
-                  <small>fetch, pull, push, commit</small>
-                </summary>
-                <div class="activity-git-command-strip" aria-label="Source control commands">
-                  <div class="activity-git-remote-row">
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Fetch selected repository"
-                      title="Fetch selected repository"
-                      disabled={gitRemoteActionDisabled}
-                      onclick={() => runGitRemoteAction('fetch')}
-                    >
-                      <RefreshCw size={12} strokeWidth={2} />
-                      <span>{gitStore.actionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
-                    </button>
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Pull selected repository"
-                      title="Pull selected repository with fast-forward only"
-                      disabled={gitRemoteActionDisabled}
-                      onclick={() => runGitRemoteAction('pull')}
-                    >
-                      <ChevronDown size={12} strokeWidth={2} />
-                      <span>{gitStore.actionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
-                    </button>
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Push selected repository"
-                      title="Push selected repository"
-                      disabled={gitRemoteActionDisabled}
-                      onclick={() => runGitRemoteAction('push')}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                      <span>{gitStore.actionBusy === 'push' ? 'Pushing' : 'Push'}</span>
-                    </button>
-                  </div>
-                  <div class="git-commit-row activity-git-commit-row">
-                    <textarea
-                      class="git-commit-input"
-                      bind:value={gitStore.commitMessage}
-                      aria-label="Git commit message"
-                      placeholder="Message (Cmd+Enter to commit staged changes)"
-                      rows="2"
-                    ></textarea>
-                    <button
-                      class="git-action-button commit"
-                      type="button"
-                      aria-label="Commit staged Git changes"
-                      title="Commit staged Git changes"
-                      disabled={gitCommitDisabled}
-                      onclick={commitGitChanges}
-                    >
-                      <Check size={12} strokeWidth={2} />
-                      <span>{gitStore.actionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
-                    </button>
-                  </div>
-                </div>
-              </details>
-              <div class="activity-git-status-heading">
-                <strong>Changes</strong>
-                <span>{selectedProjectGitFileGroupSummary}</span>
-              </div>
-              <div
-                class="git-status-list activity-source-control-list"
-                data-testid="git-changed-files"
-                aria-label="Source Control changed files"
-              >
-                {#if gitStore.statusLoading}
-                  <div class="activity-empty compact">Loading changed files</div>
-                {:else if gitStore.statusError}
-                  <div class="activity-empty compact">{gitStore.statusError}</div>
-                {:else if selectedProjectGitChangedFiles.length === 0}
-                  <div class="activity-empty compact">No changed files</div>
-                {:else}
-                  {#each selectedProjectGitFileGroups as group (group.id)}
-                    {#if group.files.length > 0}
-                      <details
-                        class="git-status-group"
-                        data-testid={`git-status-group-${group.id}`}
-                        aria-label={`${group.label} Git files`}
-                        open
-                      >
-                        <summary class="git-status-group-heading">
-                          <strong>{group.label}</strong>
-                          <span>{group.files.length}</span>
-                          <button
-                            type="button"
-                            disabled={gitStore.actionBusy !== ''}
-                            onclick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              void runGitStatusGroupAction(group);
-                            }}
-                          >
-                            {gitStatusGroupActionLabel(group)}
-                          </button>
-                        </summary>
-                        {#each group.files as fileStatus (`activity:${group.id}:${fileStatus.relativePath}`)}
-                          <button
-                            class="git-status-row"
-                            class:selected={files.selectedRecord?.relativePath === fileStatus.relativePath}
-                            data-git-path={fileStatus.relativePath}
-                            data-git-status={fileStatus.status}
-                            type="button"
-                            title={gitStatusFileTitle(fileStatus)}
-                            onclick={() => selectGitStatusFile(fileStatus)}
-                          >
-                            <strong>{fileStatus.badge}</strong>
-                            <span>{fileStatus.relativePath}</span>
-                            <small>{gitStatusFileSummary(fileStatus)}</small>
-                          </button>
-                        {/each}
-                      </details>
-                    {/if}
-                  {/each}
-                {/if}
-              </div>
-              {#if gitStore.actionError || gitStore.actionStatus}
-                <div class:error={Boolean(gitStore.actionError)} class="git-action-message">
-                  {gitStore.actionError || gitStore.actionStatus}
-                </div>
-              {/if}
-            </section>
-
-            <details class="activity-git-secondary-section" data-testid="git-repositories-section">
-              <summary>
-                <span>Repositories</span>
-                <small>{filteredGitRepositoryRows.length}</small>
-              </summary>
-            {#if filteredGitRepositoryRows.length === 0}
-              <div class="activity-empty">No repositories</div>
-            {:else}
-              {#each filteredGitRepositoryRows as row (`activity:${row.id}`)}
-                <div
-                  class="activity-repo-row"
-                  class:dirty={row.dirty.isDirty || row.error}
-                  title={repoDashboardTitle(row)}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    openGitRowActionMenu(row.id, 'repository');
-                  }}
-                >
-                  <div class="activity-row-main">
-                    <strong>{row.projectName}</strong>
-                    <small>{row.rootLabel}</small>
-                  </div>
-                  <span class="repo-branch-badge">{row.branchLabel}</span>
-                  {#if row.taskID && repoDashboardTaskUrl(row)}
-                    <a
-                      class="repo-task-link"
-                      href={repoDashboardTaskUrl(row) ?? ''}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {row.taskID}
-                    </a>
-                  {:else}
-                    <span class="repo-branch-badge">{repoDashboardTaskLabel(row)}</span>
-                  {/if}
-                  <small>{repoDashboardDirtyLabel(row)} · {repoDashboardRemoteLabel(row)}</small>
-                  <div class="activity-row-actions repository-activity-actions row-action-menu-anchor" aria-label="Repository actions">
-                    <button
-                      type="button"
-                      aria-label="Repository actions"
-                      aria-haspopup="menu"
-                      aria-expanded={gitRowActionMenuOpen(row.id, 'repository')}
-                      title="Repository actions"
-                      onclick={() => toggleGitRowActionMenu(row.id, 'repository')}
-                    >
-                      <MoreHorizontal size={13} strokeWidth={2} />
-                    </button>
-                    {#if gitRowActionMenuOpen(row.id, 'repository')}
-                      <div class="row-action-menu" role="menu" aria-label="Repository actions">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Copy repository path"
-                          title="Copy repository path"
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            copyActivityCommand(row.path, 'Repository path copied');
-                          }}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                          <span>Copy path</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Open repository path"
-                          title="Open repository path"
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            openActivityPath(row.path);
-                          }}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                          <span>Open path</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Open repository in terminal"
-                          title="Open repository in terminal"
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            openActivityTerminalPath(row.path);
-                          }}
-                        >
-                          <Terminal size={12} strokeWidth={2} />
-                          <span>Open terminal</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Reveal repository path"
-                          title="Reveal repository path"
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            revealActivityPath(row.path);
-                          }}
-                        >
-                          <FolderSearch size={12} strokeWidth={2} />
-                          <span>Reveal path</span>
-                        </button>
-                      </div>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-            {/if}
-            </details>
-
-            {#if selectedProjectGitTaskLedger.length > 0}
-              <details class="activity-git-secondary-section" data-testid="git-task-ledger-section">
-                <summary>
-                  <span>Task ledger</span>
-                  <small>{selectedProjectGitTaskLedger.length}</small>
-                </summary>
-              {#each selectedProjectGitTaskLedger as row (row.taskID)}
-                {@const ledgerWorktree = row.primaryWorktree}
-                {@const ledgerAction = ledgerWorktree ? projectWorktreePrimaryAction(ledgerWorktree) : null}
-                <div
-                  class={`activity-task-ledger-row ${row.tone}`}
-                  data-task-ledger-id={row.taskID}
-                  tabindex="-1"
-                  title={gitTaskLedgerTitle(row)}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    openGitRowActionMenu(row.taskID, 'task-ledger');
-                  }}
-                >
-                  <div class="activity-row-main">
-                    <strong class="task-ledger-title">
-                      {#if gitTaskUrl(row.taskID)}
-                        <a class="git-task-link" href={gitTaskUrl(row.taskID) ?? ''} target="_blank" rel="noreferrer">
-                          {row.taskID}
-                        </a>
-                      {:else}
-                        <span>{row.taskID}</span>
-                      {/if}
-                      <span>{row.nextAction}</span>
-                    </strong>
-                    <small>{row.sourceSummary} · {row.ownerSummary} · {row.cleanupSummary}</small>
-                  </div>
-                  <div class="activity-task-ledger-chips" aria-label={`${row.taskID} task metadata`}>
-                    {#if row.worktreeCount > 0}
-                      <span class="task-ledger-chip">wt {row.worktreeCount}</span>
-                    {/if}
-                    {#if row.blockedWorktreeCount > 0}
-                      <span class="task-ledger-chip blocked">blocked {row.blockedWorktreeCount}</span>
-                    {/if}
-                    {#if row.readyWorktreeCount > 0}
-                      <span class="task-ledger-chip ready">ready {row.readyWorktreeCount}</span>
-                    {/if}
-                    {#if row.staleCleanWorktreeCount > 0}
-                      <span class="task-ledger-chip stale">stale {row.staleCleanWorktreeCount}</span>
-                    {/if}
-                    {#if row.backupRequiredWorktreeCount > 0}
-                      <span class="task-ledger-chip backup">backup {row.backupRequiredWorktreeCount}</span>
-                    {/if}
-                    {#if row.activeSessionCount > 0}
-                      <span class="task-ledger-chip active">active {row.activeSessionCount}</span>
-                    {/if}
-                    {#if row.savedWorkspaceCount > 0}
-                      <span class="task-ledger-chip saved">saved {row.savedWorkspaceCount}</span>
-                    {/if}
-                    {#if row.runCount > 0}
-                      <span class="task-ledger-chip">runs {row.runCount}</span>
-                    {/if}
-                    {#if row.commitCount > 0}
-                      <span class="task-ledger-chip">commits {row.commitCount}</span>
-                    {/if}
-                  </div>
-                  <div class="activity-row-actions task-ledger-actions row-action-menu-anchor" aria-label="Task ledger actions">
-                    <button
-                      type="button"
-                      aria-label={`Task ledger actions for ${row.taskID}`}
-                      aria-haspopup="menu"
-                      aria-expanded={gitRowActionMenuOpen(row.taskID, 'task-ledger')}
-                      title="Task ledger actions"
-                      onclick={() => toggleGitRowActionMenu(row.taskID, 'task-ledger')}
-                    >
-                      <MoreHorizontal size={13} strokeWidth={2} />
-                    </button>
-                    {#if gitRowActionMenuOpen(row.taskID, 'task-ledger')}
-                      <div class="row-action-menu" role="menu" aria-label={`Task ledger actions for ${row.taskID}`}>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label={`Open task reference for ${row.taskID}`}
-                          title="Open task reference"
-                          disabled={!gitTaskUrl(row.taskID)}
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            openGitTaskReference(row.taskID);
-                          }}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                          <span>Open task reference</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label={`Copy task ledger for ${row.taskID}`}
-                          title="Copy task ledger"
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            copyGitTaskLedger(row);
-                          }}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                          <span>Copy task ledger</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label={`Open worktree for ${row.taskID}`}
-                          title="Open task worktree in source browser"
-                          disabled={!ledgerWorktree}
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            if (ledgerWorktree) openWorktreeInSourceBrowser(ledgerWorktree);
-                          }}
-                        >
-                          <FolderOpen size={12} strokeWidth={2} />
-                          <span>Open worktree</span>
-                        </button>
-                        <button
-                          class={ledgerAction ? `worktree-primary-action ${ledgerAction.kind}` : 'worktree-primary-action'}
-                          type="button"
-                          role="menuitem"
-                          aria-label={`Run worktree action for ${row.taskID}`}
-                          title={ledgerAction?.title ?? 'No worktree action'}
-                          disabled={!ledgerWorktree || (ledgerWorktree ? files.fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
-                          onclick={() => {
-                            closeGitRowActionMenu();
-                            if (ledgerWorktree) runWorktreePrimaryAction(ledgerWorktree);
-                          }}
-                        >
-                          {#if ledgerAction?.kind === 'cleanup'}
-                            <Trash2 size={12} strokeWidth={2} />
-                          {:else if ledgerAction?.kind === 'backup'}
-                            <Save size={12} strokeWidth={2} />
-                          {:else}
-                            <History size={12} strokeWidth={2} />
-                          {/if}
-                          <span>{ledgerAction?.label ?? 'Run worktree action'}</span>
-                        </button>
-                      </div>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-              </details>
-            {/if}
-
-            <details class="activity-git-secondary-section" data-testid="git-history-section">
-              <summary>
-                <span>Recent commits</span>
-                <small>{filteredGitCommitRows.length}</small>
-              </summary>
-              <div
-                class="git-graph-summary-strip activity-git-graph-summary"
-                aria-label="Git graph view model summary"
-                title={selectedProjectGitTaskSearchSummary}
-              >
-                <span>{selectedProjectGitGraphSummary}</span>
-                {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
-                  <small>{selectedProjectGitGraph.taskSearchTargets.length} search targets</small>
-                {/if}
-              </div>
-              {#if filteredGitCommitRows.length === 0}
-                <div class="activity-empty">No commits</div>
-              {:else}
-                {#each filteredGitCommitRows.slice(0, 8) as row (row.sha)}
-                {@const entry = gitCommitEntryForRow(row)}
-                <div
-                  class="activity-commit-row"
-                  title={row.detailLabel}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    openActivityRowActionMenu('commit', row.sha);
-                  }}
-                >
-                  <span
-                    class={`git-graph-marker ${row.graphKind}`}
-                    aria-label={row.topologyLabel}
-                    title={row.topologyLabel}
-                  ></span>
-                  <div class="activity-row-main">
-                    <strong>{row.subject}</strong>
-                    <small>{row.shortSha} · {formatGitCommitTime(row.committedAt)}</small>
-                  </div>
-                  <div class="activity-commit-meta">
-                    {#if row.taskID && gitTaskUrl(row.taskID)}
-                      <a
-                        class="git-task-link"
-                        href={gitTaskUrl(row.taskID) ?? ''}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
-                      >
-                        {row.taskID}
-                      </a>
-                    {/if}
-                    <div class="activity-row-actions commit-activity-actions row-action-menu-anchor" aria-label="Commit actions">
-                      <button
-                        type="button"
-                        aria-label="Commit actions"
-                        aria-haspopup="menu"
-                        aria-expanded={activityRowActionMenuOpen('commit', row.sha)}
-                        title="Commit actions"
-                        onclick={() => toggleActivityRowActionMenu('commit', row.sha)}
-                      >
-                        <MoreHorizontal size={13} strokeWidth={2} />
-                      </button>
-                      {#if activityRowActionMenuOpen('commit', row.sha)}
-                        <div class="row-action-menu" role="menu" aria-label="Commit actions">
-                          <button
-                            type="button"
-                            role="menuitem"
-                            aria-label="Copy commit SHA"
-                            title="Copy commit SHA"
-                            disabled={!entry}
-                            onclick={() => {
-                              closeActivityRowActionMenu();
-                              if (entry) copyGitCommitSha(entry);
-                            }}
-                          >
-                            <Copy size={12} strokeWidth={2} />
-                            <span>Copy SHA</span>
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            aria-label="Copy commit summary"
-                            title="Copy commit summary"
-                            disabled={!entry}
-                            onclick={() => {
-                              closeActivityRowActionMenu();
-                              if (entry) copyGitCommitSummary(entry);
-                            }}
-                          >
-                            <History size={12} strokeWidth={2} />
-                            <span>Copy summary</span>
-                          </button>
-                          {#if row.taskID}
-                            <button
-                              type="button"
-                              role="menuitem"
-                              aria-label="Copy task reference"
-                              title="Copy task reference"
-                              onclick={() => {
-                                closeActivityRowActionMenu();
-                                copyGitTaskReference(row.taskID);
-                              }}
-                            >
-                              <ExternalLink size={12} strokeWidth={2} />
-                              <span>Copy task ref</span>
-                            </button>
-                          {/if}
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                </div>
-              {/each}
-            {/if}
-            </details>
-          </div>
+          <ActivityGitPanel
+            projectName={selectedProject.name}
+            projectPath={selectedProject.path}
+            selectedRelativePath={files.selectedRecord?.relativePath}
+            fileActionBusy={files.fileActionBusy}
+            bind:commitMessage={gitStore.commitMessage}
+            git={{
+              actionBusy: gitStore.actionBusy,
+              actionStatus: gitStore.actionStatus,
+              actionError: gitStore.actionError,
+              statusLoading: gitStore.statusLoading,
+              statusError: gitStore.statusError,
+              remoteActionDisabled: gitRemoteActionDisabled,
+              commitDisabled: gitCommitDisabled,
+              branchHealth: selectedProjectGitBranchHealth,
+              changedFiles: selectedProjectGitChangedFiles,
+              fileGroups: selectedProjectGitFileGroups,
+              fileGroupSummary: selectedProjectGitFileGroupSummary,
+              repositoryRows: filteredGitRepositoryRows,
+              taskLedger: selectedProjectGitTaskLedger,
+              graph: selectedProjectGitGraph,
+              graphSummary: selectedProjectGitGraphSummary,
+              taskSearchSummary: selectedProjectGitTaskSearchSummary,
+              commitRows: filteredGitCommitRows
+            }}
+            format={{
+              rootLabel: formatSourceContextRootLabel,
+              statusGroupActionLabel: gitStatusGroupActionLabel,
+              statusFileTitle: gitStatusFileTitle,
+              statusFileSummary: gitStatusFileSummary,
+              taskUrl: gitTaskUrl,
+              repoTitle: repoDashboardTitle,
+              repoTaskUrl: repoDashboardTaskUrl,
+              repoTaskLabel: repoDashboardTaskLabel,
+              repoDirtyLabel: repoDashboardDirtyLabel,
+              repoRemoteLabel: repoDashboardRemoteLabel,
+              taskLedgerTitle: gitTaskLedgerTitle,
+              commitTime: formatGitCommitTime,
+              commitEntryForRow: gitCommitEntryForRow,
+              commitTaskSourceLabel: gitGraphCommitTaskSourceLabel,
+              worktreePrimaryAction: projectWorktreePrimaryAction
+            }}
+            actions={{
+              onRefreshStatus: () => loadProjectGitStatus(selectedProject),
+              onRemoteAction: runGitRemoteAction,
+              onCommit: commitGitChanges,
+              onStatusGroupAction: runGitStatusGroupAction,
+              onSelectStatusFile: selectGitStatusFile,
+              onCopyCommand: copyActivityCommand,
+              onOpenPath: openActivityPath,
+              onOpenTerminalPath: openActivityTerminalPath,
+              onRevealPath: revealActivityPath,
+              onOpenTaskReference: openGitTaskReference,
+              onCopyTaskLedger: copyGitTaskLedger,
+              onOpenWorktreeInSourceBrowser: openWorktreeInSourceBrowser,
+              onRunWorktreePrimaryAction: runWorktreePrimaryAction,
+              onCopyCommitSha: copyGitCommitSha,
+              onCopyCommitSummary: copyGitCommitSummary,
+              onCopyTaskReference: copyGitTaskReference,
+              repoRowActionMenuOpen: gitRowActionMenuOpen,
+              onOpenRepoRowActionMenu: openGitRowActionMenu,
+              onToggleRepoRowActionMenu: toggleGitRowActionMenu,
+              onCloseRepoRowActionMenu: closeGitRowActionMenu,
+              commitRowActionMenuOpen: activityRowActionMenuOpen,
+              onOpenCommitRowActionMenu: openActivityRowActionMenu,
+              onToggleCommitRowActionMenu: toggleActivityRowActionMenu,
+              onCloseCommitRowActionMenu: closeActivityRowActionMenu
+            }}
+          />
           {/if}
         {/if}
       </div>
@@ -18069,11 +17611,6 @@
     scrollbar-width: thin;
   }
 
-  .activity-git-panel {
-    grid-template-rows: minmax(0, auto);
-    gap: 8px;
-  }
-
   .conversation-activity-list {
     align-content: stretch;
     grid-template-rows: minmax(0, 1fr);
@@ -18100,149 +17637,6 @@
     padding-right: 2px;
     scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
     scrollbar-width: thin;
-  }
-
-  .activity-git-source-control {
-    display: grid;
-    gap: 7px;
-    min-width: 0;
-    padding: 7px;
-    border: 1px solid rgba(92, 226, 207, 0.12);
-    border-radius: 8px;
-    background: rgba(92, 226, 207, 0.035);
-  }
-
-  .activity-git-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .activity-git-heading div {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .activity-git-heading strong,
-  .activity-git-heading small,
-  .activity-git-status-heading strong,
-  .activity-git-status-heading span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .activity-git-heading strong {
-    color: #eef6f3;
-    font-size: 13px;
-    font-weight: 860;
-  }
-
-  .activity-git-heading small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .activity-git-refresh {
-    display: grid;
-    place-items: center;
-    width: 25px;
-    height: 25px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .activity-git-refresh:hover,
-  .activity-git-refresh:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.36);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .activity-git-refresh:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .activity-git-status-heading {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    color: #dfe8e5;
-    font-size: 10px;
-    font-weight: 850;
-  }
-
-  .activity-git-status-heading span {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .activity-git-secondary-section {
-    display: grid;
-    min-width: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    padding-top: 5px;
-  }
-
-  .activity-git-secondary-section summary {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    min-height: 25px;
-    color: #cbd6d3;
-    list-style: none;
-    cursor: pointer;
-    font-size: 10px;
-    font-weight: 850;
-  }
-
-  .activity-git-secondary-section summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .activity-git-secondary-section summary::before {
-    width: 0;
-    height: 0;
-    border-top: 4px solid transparent;
-    border-bottom: 4px solid transparent;
-    border-left: 5px solid rgba(174, 184, 181, 0.76);
-    content: "";
-    transition: transform 140ms ease, border-left-color 140ms ease;
-  }
-
-  .activity-git-secondary-section[open] summary::before {
-    transform: rotate(90deg);
-  }
-
-  .activity-git-secondary-section summary span,
-  .activity-git-secondary-section summary small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .activity-git-secondary-section summary small {
-    color: #7ff0df;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
-    font-weight: 820;
   }
 
   .workspace-snapshot-section {
@@ -18394,9 +17788,7 @@
 
   .activity-session-row,
   .activity-runtime-row,
-  .activity-repo-row,
-  .activity-run-row,
-  .activity-commit-row {
+  .activity-run-row {
     display: grid;
     align-items: center;
     gap: 8px;
@@ -18477,21 +17869,12 @@
     flex: 0 0 auto;
   }
 
-  .activity-commit-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .activity-repo-row {
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
-  }
-
   .activity-run-row {
     align-items: stretch;
     gap: 7px;
   }
 
-  .activity-run-row.bad,
-  .activity-repo-row.dirty {
+  .activity-run-row.bad {
     background: rgba(216, 170, 85, 0.09);
   }
 
@@ -19110,8 +18493,7 @@
 
   /* .activity-row-main base lives in src/app.css (:global). */
   .activity-row-main strong,
-  .activity-row-main small,
-  .activity-repo-row small {
+  .activity-row-main small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -19124,116 +18506,10 @@
     font-weight: 790;
   }
 
-  .activity-row-main small,
-  .activity-repo-row small {
+  .activity-row-main small {
     color: #8d9995;
     font-size: 10px;
     font-weight: 720;
-  }
-
-  .activity-repo-row > small {
-    grid-column: 1 / 4;
-  }
-
-  .activity-task-ledger-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    padding: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .activity-task-ledger-row.blocked {
-    border-color: rgba(216, 170, 85, 0.28);
-    background: rgba(216, 170, 85, 0.055);
-  }
-
-  .activity-task-ledger-row.ready {
-    border-color: rgba(92, 226, 207, 0.24);
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .task-ledger-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .task-ledger-title > span {
-    min-width: 0;
-    overflow: hidden;
-    color: #dce6e3;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .activity-task-ledger-chips {
-    display: inline-flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 3px;
-    max-width: 138px;
-    min-width: 0;
-  }
-
-  .task-ledger-chip {
-    max-width: 72px;
-    height: 18px;
-    padding: 0 6px;
-    overflow: hidden;
-    color: #9ba7a4;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 9px;
-    font-weight: 820;
-    line-height: 18px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .task-ledger-chip.blocked,
-  .task-ledger-chip.active {
-    color: #e6c170;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .task-ledger-chip.ready {
-    color: #7ff0df;
-    border-color: rgba(92, 226, 207, 0.26);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .task-ledger-chip.stale {
-    color: #7ff0df;
-    border-color: rgba(92, 226, 207, 0.22);
-    background: rgba(92, 226, 207, 0.065);
-  }
-
-  .task-ledger-chip.saved {
-    color: #8fe7dc;
-    border-color: rgba(92, 226, 207, 0.18);
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .task-ledger-chip.backup {
-    color: #e6c170;
-    border-color: rgba(216, 170, 85, 0.22);
-    background: rgba(216, 170, 85, 0.075);
-  }
-
-  .activity-commit-meta {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 5px;
-    min-width: 0;
   }
 
   /*
@@ -19310,10 +18586,7 @@
   .activity-panel-list .conversation-session-row:has(.row-action-menu),
   .activity-panel-list .agent-activity-row:has(.row-action-menu),
   .activity-panel-list .workspace-snapshot-row:has(.row-action-menu),
-  .activity-panel-list .activity-runtime-row:has(.row-action-menu),
-  .activity-panel-list .activity-repo-row:has(.row-action-menu),
-  .activity-panel-list .activity-task-ledger-row:has(.row-action-menu),
-  .activity-panel-list .activity-commit-row:has(.row-action-menu) {
+  .activity-panel-list .activity-runtime-row:has(.row-action-menu) {
     align-items: start;
   }
 
@@ -19321,21 +18594,14 @@
   .activity-panel-list .run-activity-actions:has(.row-action-menu),
   .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu),
   .activity-panel-list .runtime-activity-actions:has(.row-action-menu),
-  .activity-panel-list .agent-activity-actions:has(.row-action-menu),
-  .activity-panel-list .repository-activity-actions:has(.row-action-menu),
-  .activity-panel-list .task-ledger-actions:has(.row-action-menu),
-  .activity-panel-list .activity-commit-meta:has(.row-action-menu),
-  .activity-panel-list .commit-activity-actions:has(.row-action-menu) {
+  .activity-panel-list .agent-activity-actions:has(.row-action-menu) {
     display: contents;
   }
 
   .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu) > button,
   .activity-panel-list .run-activity-actions:has(.row-action-menu) > button,
   .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
-  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button,
-  .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button,
-  .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button,
-  .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button {
     justify-self: end;
   }
 
@@ -19350,24 +18616,13 @@
   }
 
   .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
-  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button,
-  .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button {
     grid-column: 3;
     grid-row: 1;
   }
 
   .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button {
     grid-column: 2;
-  }
-
-  .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button {
-    grid-column: 4;
-    grid-row: 1;
   }
 
   .activity-panel-list .row-action-menu {
@@ -21567,54 +20822,6 @@
     overflow: hidden;
   }
 
-  .git-command-drawer {
-    flex: 0 0 auto;
-    min-width: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .git-command-drawer summary {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 28px;
-    padding: 0 8px;
-    color: #dce5e2;
-    list-style: none;
-    cursor: pointer;
-    font-size: 10px;
-    font-weight: 840;
-  }
-
-  .git-command-drawer summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .git-command-drawer summary::before {
-    width: 0;
-    height: 0;
-    border-top: 4px solid transparent;
-    border-bottom: 4px solid transparent;
-    border-left: 5px solid #8d9995;
-    content: "";
-  }
-
-  .git-command-drawer[open] summary::before {
-    transform: rotate(90deg);
-  }
-
-  .git-command-drawer summary small {
-    min-width: 0;
-    overflow: hidden;
-    color: #899591;
-    font-size: 9px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .git-controls {
     display: grid;
     flex: 0 0 auto;
@@ -21623,8 +20830,7 @@
   }
 
   .git-action-row,
-  .git-remote-row,
-  .git-commit-row {
+  .git-remote-row {
     display: grid;
     min-width: 0;
     gap: 5px;
@@ -21638,206 +20844,6 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .git-commit-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: stretch;
-  }
-
-  .git-action-button {
-    display: grid;
-    grid-template-columns: 13px minmax(0, auto);
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 24px;
-    padding: 0 6px;
-    color: #cfd8d5;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 9px;
-    font-weight: 820;
-    cursor: pointer;
-  }
-
-  .git-action-button.commit {
-    color: #dff8f4;
-    border-color: rgba(92, 226, 207, 0.28);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .git-action-button:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .git-action-button span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-commit-input {
-    width: 100%;
-    min-width: 0;
-    min-height: 32px;
-    padding: 6px 7px;
-    resize: none;
-    color: #e6ecea;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    outline: none;
-    background: rgba(0, 0, 0, 0.22);
-    font: inherit;
-    font-size: 10px;
-    line-height: 1.3;
-  }
-
-  .git-commit-input:focus {
-    border-color: rgba(92, 226, 207, 0.42);
-  }
-
-  .git-action-message {
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-action-message.error {
-    color: #ff8f8f;
-  }
-
-  .git-status-list {
-    display: grid;
-    flex: 0 0 auto;
-    gap: 5px;
-    max-height: 150px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .activity-source-control-list {
-    max-height: none;
-    padding: 0;
-    border-bottom: 0;
-    overflow: visible;
-  }
-
-  .activity-source-control-list .git-status-group {
-    gap: 2px;
-  }
-
-  .activity-source-control-list .git-status-group + .git-status-group {
-    padding-top: 5px;
-    border-top: 1px solid rgba(255, 255, 255, 0.055);
-  }
-
-  .activity-source-control-list .git-status-group-heading {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-    cursor: pointer;
-    min-height: 21px;
-    padding: 0 2px;
-  }
-
-  .activity-source-control-list .git-status-group-heading::-webkit-details-marker {
-    display: none;
-  }
-
-  .activity-source-control-list .git-status-group-heading::before {
-    width: 0;
-    height: 0;
-    border-top: 4px solid transparent;
-    border-bottom: 4px solid transparent;
-    border-left: 5px solid rgba(174, 184, 181, 0.76);
-    content: "";
-    transform: rotate(90deg);
-    transition: transform 140ms ease, border-left-color 140ms ease;
-  }
-
-  .activity-source-control-list .git-status-group:not([open]) .git-status-group-heading::before {
-    transform: rotate(0deg);
-  }
-
-  .activity-source-control-list .git-status-row {
-    min-height: 27px;
-    padding: 4px 5px;
-    border-color: transparent;
-    border-radius: 5px;
-    background: transparent;
-  }
-
-  .activity-source-control-list .git-status-row:hover,
-  .activity-source-control-list .git-status-row:focus-visible {
-    border-color: rgba(92, 226, 207, 0.16);
-    outline: 0;
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .activity-source-control-list .git-status-row.selected {
-    border-color: rgba(92, 226, 207, 0.3);
-    background: rgba(92, 226, 207, 0.095);
-  }
-
-  .activity-git-health-strip {
-    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-  }
-
-  .activity-git-command-drawer {
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 6px;
-    background: rgba(0, 0, 0, 0.1);
-  }
-
-  .activity-git-command-drawer summary {
-    height: 27px;
-    padding: 0 8px;
-  }
-
-  .activity-git-command-strip {
-    display: grid;
-    gap: 5px;
-    min-width: 0;
-    padding: 0 6px 6px;
-  }
-
-  .activity-git-remote-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .activity-git-commit-row {
-    grid-template-columns: minmax(0, 1fr) minmax(78px, auto);
-  }
-
-  .activity-git-command-strip .git-action-button {
-    min-height: 25px;
-  }
-
-  .activity-git-command-strip .git-commit-input {
-    min-height: 34px;
-    background: rgba(0, 0, 0, 0.24);
-  }
-
-  .activity-git-graph-summary {
-    margin-top: -3px;
-  }
-
   .git-status-overview {
     min-width: 0;
     overflow: hidden;
@@ -21846,108 +20852,6 @@
     font-weight: 780;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .git-status-group {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .git-status-group-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 22px;
-    color: #aeb8b5;
-    font-size: 9px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .git-status-group-heading strong,
-  .git-status-group-heading span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-status-group-heading button {
-    min-width: 0;
-    height: 20px;
-    padding: 0 6px;
-    color: #cfd8d5;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 8.5px;
-    font-weight: 820;
-    cursor: pointer;
-    text-transform: none;
-  }
-
-  .git-status-group-heading button:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .git-status-group-heading button:hover:not(:disabled),
-  .git-status-group-heading button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .git-status-row {
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) minmax(0, 76px);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 5px 7px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.035);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .git-status-row.selected {
-    border-color: rgba(92, 226, 207, 0.32);
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .git-status-row strong,
-  .git-status-row span,
-  .git-status-row small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-status-row strong {
-    color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .git-status-row span {
-    font-size: 10px;
-    font-weight: 780;
-  }
-
-  .git-status-row small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 760;
   }
 
   .git-history-panel {
@@ -21991,7 +20895,6 @@
     font-weight: 820;
   }
 
-  .git-graph-summary-strip,
   .git-task-search-targets {
     display: flex;
     align-items: center;
@@ -22008,24 +20911,11 @@
     font-weight: 780;
   }
 
-  .git-graph-summary-strip span,
-  .git-graph-summary-strip small,
   .git-task-search-targets small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .git-graph-summary-strip span {
-    flex: 1 1 auto;
-    color: #dce5e2;
-    font-weight: 830;
-  }
-
-  .git-graph-summary-strip small {
-    flex: 0 0 auto;
-    color: #8d9995;
   }
 
   .git-task-search-targets {
@@ -22049,67 +20939,6 @@
 
   .git-task-search-targets small {
     max-width: 160px;
-  }
-
-  .git-branch-health-strip {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .git-branch-health-chip {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 22px;
-    padding: 3px 6px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.032);
-  }
-
-  .git-branch-health-chip strong,
-  .git-branch-health-chip span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-branch-health-chip strong {
-    color: #8d9995;
-    font-size: 8px;
-    font-weight: 860;
-    text-transform: uppercase;
-  }
-
-  .git-branch-health-chip span {
-    color: #dce5e2;
-    font-size: 9px;
-    font-weight: 780;
-  }
-
-  .git-branch-health-chip.clean span {
-    color: #72e2cf;
-  }
-
-  .git-branch-health-chip.dirty span {
-    color: #d8aa55;
-  }
-
-  .git-branch-health-chip.warning span {
-    color: #9fd0f0;
-  }
-
-  .git-branch-health-chip.error span {
-    color: #ff8d8d;
-  }
-
-  .git-branch-health-chip.muted span {
-    color: #9fa9a6;
   }
 
   .git-task-source-map {
@@ -22338,77 +21167,6 @@
 
   .git-history-row.root {
     border-color: rgba(174, 184, 181, 0.18);
-  }
-
-  .git-graph-marker {
-    position: relative;
-    display: grid;
-    place-items: center;
-    width: 14px;
-    height: 22px;
-  }
-
-  .git-graph-marker::before {
-    position: absolute;
-    inset: -8px auto;
-    width: 1px;
-    background: rgba(111, 223, 207, 0.22);
-    content: "";
-  }
-
-  .git-graph-marker::after {
-    z-index: 1;
-    width: 8px;
-    height: 8px;
-    border: 2px solid rgba(111, 223, 207, 0.72);
-    border-radius: 999px;
-    background: #171b1b;
-    content: "";
-  }
-
-  .git-graph-marker.head::before {
-    width: 2px;
-    background: rgba(111, 223, 207, 0.44);
-  }
-
-  .git-graph-marker.head::after {
-    width: 10px;
-    height: 10px;
-    border-color: #6fdfcf;
-    background: #6fdfcf;
-    box-shadow: 0 0 0 3px rgba(111, 223, 207, 0.14);
-  }
-
-  .git-graph-marker.branch::after {
-    border-color: rgba(132, 201, 222, 0.84);
-    background: #171b1b;
-  }
-
-  .git-graph-marker.merge::before {
-    background: linear-gradient(
-      180deg,
-      rgba(216, 170, 85, 0.15),
-      rgba(216, 170, 85, 0.5),
-      rgba(111, 223, 207, 0.2)
-    );
-  }
-
-  .git-graph-marker.merge::after {
-    width: 10px;
-    height: 10px;
-    border-color: rgba(216, 170, 85, 0.9);
-    border-radius: 3px;
-    background: #171b1b;
-  }
-
-  .git-graph-marker.root::before {
-    inset: -8px auto 50%;
-    background: rgba(174, 184, 181, 0.2);
-  }
-
-  .git-graph-marker.root::after {
-    border-color: rgba(174, 184, 181, 0.75);
-    background: rgba(174, 184, 181, 0.2);
   }
 
   .git-history-main,
