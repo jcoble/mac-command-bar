@@ -21530,15 +21530,13 @@
     cursor: default;
   }
 
-  .activity-row-actions button.worktree-primary-action.backup,
-  .worktree-context-actions button.worktree-primary-action.backup {
+  .activity-row-actions button.worktree-primary-action.backup {
     color: #d8aa55;
     border-color: rgba(216, 170, 85, 0.2);
     background: rgba(216, 170, 85, 0.08);
   }
 
-  .activity-row-actions button.worktree-primary-action.cleanup,
-  .worktree-context-actions button.worktree-primary-action.cleanup {
+  .activity-row-actions button.worktree-primary-action.cleanup {
     color: #79eadb;
     border-color: rgba(92, 226, 207, 0.28);
     background: rgba(92, 226, 207, 0.1);
@@ -23365,22 +23363,10 @@
   }
 
 
-  .workspace-arrangement.context-side .worktree-context-row > span:not(.worktree-status-badge):not(.worktree-decision-lane),
-  .workspace-arrangement.context-side .worktree-context-row > em,
-  .workspace-arrangement.context-side .worktree-context-row > .git-task-link,
-  .workspace-arrangement.context-side .worktree-task-empty,
-  .workspace-arrangement.context-side .worktree-recommendation,
-  .workspace-arrangement.context-side .worktree-next-check {
-    display: none;
-  }
-
-
   .workspace-arrangement.context-side .orchestration-context-list,
   .workspace-arrangement.context-side .orchestration-decision-queue,
   .workspace-arrangement.context-side .runtime-context-list,
   .workspace-arrangement.context-side .agent-session-list,
-  .workspace-arrangement.context-side .worktree-decision-queue,
-  .workspace-arrangement.context-side .worktree-context-list,
   .workspace-arrangement.context-side .repo-dashboard-list {
     align-content: start;
     align-items: start;
@@ -23398,8 +23384,6 @@
   .workspace-arrangement.context-side .runtime-port,
   .workspace-arrangement.context-side .runtime-url-link,
   .workspace-arrangement.context-side .agent-provider-badge,
-  .workspace-arrangement.context-side .worktree-status-badge,
-  .workspace-arrangement.context-side .worktree-decision-lane,
   .workspace-arrangement.context-side .repo-branch-badge,
   .workspace-arrangement.context-side .repo-task-link {
     min-height: 0;
@@ -23519,165 +23503,6 @@
     background: rgba(216, 170, 85, 0.14);
   }
 
-  .worktree-decision-queue {
-    display: grid;
-    gap: 4px;
-    max-height: 132px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
-
-  .worktree-decision-queue:has(.row-action-menu) {
-    max-height: 180px;
-  }
-
-  .worktree-decision-group {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-    padding: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.12);
-  }
-
-  .worktree-decision-group.blocked {
-    border-color: rgba(216, 170, 85, 0.2);
-    background: rgba(216, 170, 85, 0.07);
-  }
-
-  .worktree-decision-group.ready {
-    border-color: rgba(92, 226, 207, 0.18);
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .worktree-decision-group.review,
-  .worktree-decision-group.protected {
-    background: rgba(255, 255, 255, 0.032);
-  }
-
-
-  .worktree-decision-group-header div,
-  .worktree-decision-item div {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .worktree-decision-group-header strong,
-  .worktree-decision-group-header small,
-  .worktree-decision-group-header span,
-  .worktree-decision-item strong,
-  .worktree-decision-item small,
-  .worktree-decision-more {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-
-  .worktree-decision-items {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-    overflow: visible;
-  }
-
-  .worktree-decision-item {
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    min-height: 24px;
-    overflow: visible;
-    padding: 3px 4px;
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.16);
-  }
-
-  .worktree-decision-item strong {
-    color: #edf4f2;
-    font-size: 10px;
-    font-weight: 800;
-  }
-
-  .worktree-decision-item small,
-  .worktree-decision-more {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 720;
-  }
-
-  .worktree-decision-item button {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .worktree-decision-item .row-action-menu button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr);
-    place-items: initial;
-    align-items: center;
-    justify-content: stretch;
-    width: 100%;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd3d1;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    font-size: 11px;
-    font-weight: 730;
-    text-align: left;
-  }
-
-  .worktree-decision-item .row-action-menu {
-    position: static;
-    grid-column: 1 / -1;
-    width: 100%;
-    margin-top: 2px;
-  }
-
-  .worktree-decision-item button.worktree-primary-action.backup {
-    color: #d8aa55;
-    border-color: rgba(216, 170, 85, 0.22);
-    background: rgba(216, 170, 85, 0.09);
-  }
-
-  .worktree-decision-item button.worktree-primary-action.cleanup {
-    color: #79eadb;
-    border-color: rgba(92, 226, 207, 0.3);
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .worktree-decision-item button:hover,
-  .worktree-decision-item button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.36);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .worktree-decision-item button:disabled {
-    opacity: 0.38;
-    cursor: default;
-  }
-
-
   .context-loop-stage {
     display: inline-grid;
     grid-template-columns: minmax(0, auto) auto;
@@ -23756,13 +23581,6 @@
   .agent-session-row strong,
   .agent-session-row span,
   .agent-session-row small,
-  .worktree-context-row strong,
-  .worktree-context-row span,
-  .worktree-context-row small,
-  .worktree-context-row em,
-  .worktree-context-main,
-  .worktree-context-main strong,
-  .worktree-context-main small,
   .repo-dashboard-main,
   .repo-dashboard-main strong,
   .repo-dashboard-main small,
@@ -26783,10 +26601,6 @@
     }
 
     .runtime-context-row {
-      grid-template-columns: auto minmax(0, 1fr);
-    }
-
-    .worktree-context-row {
       grid-template-columns: auto minmax(0, 1fr);
     }
 
