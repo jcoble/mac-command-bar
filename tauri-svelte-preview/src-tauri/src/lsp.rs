@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1273,12 +1273,20 @@ fn spawn_lsp_child(
         return Err("Project root is not a directory".to_string());
     }
 
-    let mut child = Command::new(&server.command)
+    let mut command = Command::new(&server.command);
+    command
         .args(server.spec.args)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    // Hand the server the same enriched PATH used to discover it, so servers that shell
+    // out at runtime (the `rust-analyzer` rustup proxy → toolchain; `csharp-ls` → dotnet)
+    // resolve their tools even when the app was Finder/Dock-launched with a minimal PATH.
+    if let Some(search_path) = lsp_search_path_env() {
+        command.env("PATH", search_path);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start {}: {error}", server.spec.server_name))?;
 
@@ -2670,9 +2678,25 @@ fn executable_path(path: PathBuf) -> Option<String> {
 }
 
 fn command_search_paths() -> Vec<PathBuf> {
-    let mut paths = env::var_os("PATH").map(split_paths).unwrap_or_default();
+    // Start from the user's *login-shell* PATH (the same environment the embedded
+    // terminal loads with `-l`), not just the PATH this process inherited. A
+    // Finder/Dock-launched .app inherits only the minimal launchd PATH
+    // (/usr/bin:/bin:/usr/sbin:/sbin), so login-only toolchain dirs — `~/.cargo/bin`
+    // (rust-analyzer), nvm node bins, `~/.dotnet/tools` — would be invisible and a
+    // real, installed language server would be misreported as "not installed,"
+    // forcing the regex index fallback. See spec §5.5 / §9 (login-shell `-l` fix).
+    let mut paths = login_shell_path()
+        .map(|path| split_paths(OsString::from(path)))
+        .unwrap_or_default();
+    if let Some(inherited) = env::var_os("PATH") {
+        paths.extend(split_paths(inherited));
+    }
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        // Explicit, well-known toolchain dirs as a belt-and-suspenders fallback so the
+        // common servers still resolve even if the login-shell probe is unavailable.
+        paths.push(home.join(".cargo/bin"));
         paths.push(home.join(".dotnet/tools"));
+        paths.push(home.join(".local/bin"));
         paths.extend(nvm_bin_paths(&home));
     }
     paths.extend([
@@ -2682,6 +2706,57 @@ fn command_search_paths() -> Vec<PathBuf> {
         PathBuf::from("/bin"),
     ]);
     dedupe_paths(paths)
+}
+
+/// The combined LSP search path (login-shell PATH + inherited + toolchain dirs) as a
+/// single PATH-formatted string, suitable for the spawned server child's `PATH` env.
+fn lsp_search_path_env() -> Option<OsString> {
+    env::join_paths(command_search_paths()).ok()
+}
+
+/// The user's full PATH as a login shell would compute it, captured once.
+///
+/// Cached because the probe spawns a shell (~30ms) and the value is stable for the
+/// life of the process. `None` when no usable shell exists or the probe fails — callers
+/// fall back to the inherited PATH plus the hardcoded toolchain dirs above.
+fn login_shell_path() -> Option<String> {
+    static LOGIN_SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
+    LOGIN_SHELL_PATH
+        .get_or_init(probe_login_shell_path)
+        .clone()
+}
+
+/// Spawn the user's login shell (`$SHELL -lc 'printf %s $PATH'`) and capture its PATH.
+///
+/// Mirrors `terminal.rs`'s `-l` login-shell spawn so LSP binary detection sees exactly
+/// the same toolchain dirs the embedded terminal does. Only POSIX login shells are
+/// probed; anything unexpected (or a non-zero/garbled result) yields `None`.
+fn probe_login_shell_path() -> Option<String> {
+    let shell = env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    let shell_name = Path::new(&shell).file_name().and_then(|name| name.to_str())?;
+    if !matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish") {
+        return None;
+    }
+
+    let output = Command::new(&shell)
+        .arg("-l")
+        .arg("-c")
+        .arg("printf '%s' \"$PATH\"")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 fn split_paths(paths: OsString) -> Vec<PathBuf> {
@@ -2761,6 +2836,39 @@ fn percent_decode_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_search_paths_include_cargo_bin_so_rust_analyzer_resolves() {
+        // Regression: rust-analyzer commonly lives ONLY at ~/.cargo/bin (a rustup proxy),
+        // which is on the login PATH but NOT the launchd PATH a Finder-launched .app
+        // inherits. Omitting it made an installed rust-analyzer report as "not installed"
+        // and forced the regex index fallback. Spec §5.5.
+        let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let paths = command_search_paths();
+        assert!(
+            paths.contains(&home.join(".cargo/bin")),
+            "~/.cargo/bin must be searched for language-server binaries (rust-analyzer)"
+        );
+        assert!(
+            paths.contains(&home.join(".dotnet/tools")),
+            "~/.dotnet/tools must be searched (csharp-ls)"
+        );
+    }
+
+    #[test]
+    fn command_search_paths_are_deduped_and_joinable_into_a_path_env() {
+        // The same combined set is handed to spawned servers as their PATH, so it must
+        // contain no duplicates and round-trip through env::join_paths.
+        let paths = command_search_paths();
+        let deduped = dedupe_paths(paths.clone());
+        assert_eq!(paths.len(), deduped.len(), "search paths must already be deduped");
+        assert!(
+            lsp_search_path_env().is_some(),
+            "combined search path must join into a valid PATH env value"
+        );
+    }
 
     #[test]
     fn resolves_language_server_specs() {
