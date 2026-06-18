@@ -43,6 +43,7 @@
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import { settings, defaultSettings } from '$lib/settingsStore.svelte';
   import { dock } from '$lib/stores/dockLayoutStore.svelte';
+  import { files } from '$lib/stores/filesStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
@@ -862,7 +863,6 @@
   let agentSessionError = $state('');
   let agentSessionSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
-  let records = $state<SourceRecord[]>([]);
   let selectedRecord = $state<SourceRecord | null>(null);
   let selectedSourceLine = $state<number | null>(null);
   let selectedSourceLineRequestId = $state(0);
@@ -974,8 +974,6 @@
   let activeAgentRowActionMenu = $state<string | null>(null);
   let activeWorktreeRowActionMenu = $state<string | null>(null);
   let activeGitRowActionMenu = $state<string | null>(null);
-  let query = $state('');
-  let expandedFolderIds = $state<Set<string>>(new Set());
   let loading = $state(true);
   let scanning = $state(false);
   let activeSourceScanId = $state('');
@@ -1121,10 +1119,10 @@
   let selectedProjectIsCustom = $derived(
     customProjectRoots.some((project) => project.id === selectedProject.id)
   );
-  let filteredRecords = $derived(filterSourceRecords(records, query));
+  let filteredRecords = $derived(filterSourceRecords(files.records, files.query));
   let sourceTree = $derived(buildSourceTree(filteredRecords));
-  let autoExpandFolders = $derived(query.trim().length > 0);
-  let visibleTreeRows = $derived(flattenSourceTree(sourceTree, expandedFolderIds, autoExpandFolders));
+  let autoExpandFolders = $derived(files.query.trim().length > 0);
+  let visibleTreeRows = $derived(flattenSourceTree(sourceTree, files.expandedFolderIds, autoExpandFolders));
   let virtualizedTreeRows = $derived(
     virtualizeSourceTreeRows(
       visibleTreeRows,
@@ -1160,7 +1158,7 @@
     quickOpenWorkspaceSymbolMode ? parsedQuickOpenQuery.searchQuery.slice(1).trim() : ''
   );
   let quickOpenResults = $derived(
-    quickOpenWorkspaceSymbolMode ? [] : rankSourceRecords(records, quickOpenQuery, 12)
+    quickOpenWorkspaceSymbolMode ? [] : rankSourceRecords(files.records, quickOpenQuery, 12)
   );
   let quickOpenActiveResultCount = $derived(
     quickOpenWorkspaceSymbolMode ? workspaceSymbolResults.length : quickOpenResults.length
@@ -1168,7 +1166,7 @@
   let sourceNavigationCanGoBack = $derived(sourceNavigationBackStack.length > 0);
   let sourceNavigationCanGoForward = $derived(sourceNavigationForwardStack.length > 0);
   let selectedIndex = $derived(
-    selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
+    selectedRecord ? files.records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
   );
   let selectedSourceDraftContent = $derived(
     preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
@@ -1195,16 +1193,16 @@
   let sourceDiagnosticSummary = $derived(formatSourceDiagnosticSummary(sourceDiagnostics));
   let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId));
   let scanSummaryLabel = $derived(
-    formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
+    formatSourceScanSummary(filteredRecords.length, files.records.length, scanLimitReached, files.query)
   );
   let sourceScanHealth = $derived(
     formatSourceScanHealth({
-      totalCount: records.length,
+      totalCount: files.records.length,
       filteredCount: filteredRecords.length,
       truncated: scanLimitReached,
       requestedLimit: expandedSourceScanLimit,
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
-      query,
+      query: files.query,
       scanning,
       loading: sourceIndexLoading,
       error
@@ -1239,12 +1237,12 @@
   );
   let sourceScanRecovery = $derived(
     formatSourceScanRecovery({
-      totalCount: records.length,
+      totalCount: files.records.length,
       filteredCount: filteredRecords.length,
       truncated: scanLimitReached,
       requestedLimit: expandedSourceScanLimit,
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
-      query,
+      query: files.query,
       scanning,
       loading: sourceIndexLoading,
       error,
@@ -3476,13 +3474,13 @@
       }
     } catch (scanError) {
       if (generation !== scanGeneration) return;
-      records = [];
+      files.records = [];
       selectedRecord = null;
       selectedSourceLine = null;
       scanLimitReached = false;
       sourceScanStats = null;
       preview = null;
-      expandedFolderIds = new Set();
+      files.expandedFolderIds = new Set();
       syncSourcePreviewContent(null);
       runtime = 'source scan unavailable';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
@@ -3519,18 +3517,18 @@
   }
 
   function clearSourceRecordsForIncomingProject(project: ProjectRoot, force = false) {
-    const hasCurrentSourceState = records.length > 0 || selectedRecord !== null || preview !== null;
+    const hasCurrentSourceState = files.records.length > 0 || selectedRecord !== null || preview !== null;
     const hasDifferentSelectedRecord =
       selectedRecord !== null && !sourceRecordBelongsToProject(selectedRecord, project);
     const hasDifferentRecords =
       selectedRecord === null &&
-      records.length > 0 &&
-      records.some((record) => !sourceRecordBelongsToProject(record, project));
+      files.records.length > 0 &&
+      files.records.some((record) => !sourceRecordBelongsToProject(record, project));
 
     if (!force && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
     if (force && !hasCurrentSourceState && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
 
-    records = [];
+    files.records = [];
     selectedRecord = null;
     selectedSourceLine = null;
     sourceNavigationBackStack = [];
@@ -3538,7 +3536,7 @@
     scanLimitReached = false;
     sourceScanStats = null;
     preview = null;
-    expandedFolderIds = new Set();
+    files.expandedFolderIds = new Set();
     syncSourcePreviewContent(null);
   }
 
@@ -3625,7 +3623,7 @@
 
   function sourceSidebarIndexStatus() {
     const indexError = backgroundIndexErrorByProject[selectedProject.id]?.trim() ?? '';
-    const normalizedQuery = query.trim();
+    const normalizedQuery = files.query.trim();
 
     if (error.trim() || indexError) return 'Scan needs attention';
     if (sourceScanNeedsAttention) return sourceScanHealth.summary;
@@ -3639,7 +3637,7 @@
 
   function sourceSidebarScanMeta() {
     const parts = [];
-    const normalizedQuery = query.trim();
+    const normalizedQuery = files.query.trim();
 
     if (normalizedQuery.length > 0) {
       parts.push(`Filter: ${normalizedQuery}`);
@@ -3691,7 +3689,7 @@
 
   function sourceSidebarCompactStatus() {
     const visibleCount = filteredRecords.length;
-    const totalCount = records.length;
+    const totalCount = files.records.length;
     const countLabel =
       visibleCount === totalCount
         ? `${totalCount.toLocaleString()} files`
@@ -3703,7 +3701,7 @@
 
   function sourceSidebarTreeCount() {
     const visibleCount = filteredRecords.length;
-    const totalCount = records.length;
+    const totalCount = files.records.length;
     if (visibleCount === totalCount) return compactCountValue(totalCount);
     return `${compactCountValue(visibleCount)} / ${compactCountValue(totalCount)}`;
   }
@@ -4736,7 +4734,7 @@
     const unsupportedFiles = stats?.unsupportedFiles ?? stats?.unsupportedFileCount;
     const unreadableEntries = stats?.unreadableEntries ?? stats?.unreadableEntryCount;
     const activeScan = scanning
-      ? `running (${(sourceScanProgress?.matchedFiles ?? records.length).toLocaleString()} matched / ${(
+      ? `running (${(sourceScanProgress?.matchedFiles ?? files.records.length).toLocaleString()} matched / ${(
           sourceScanProgress?.visitedEntries ?? 0
         ).toLocaleString()} visited)`
       : 'idle';
@@ -4784,9 +4782,9 @@
       `Root label: ${sourceContextIdentity.rootLabel}`,
       `Root validation: ${selectedProjectRootValidationSummary}`,
       `Scan limit: ${expandedSourceScanLimit.toLocaleString()}`,
-      `Indexed files: ${records.length.toLocaleString()}`,
+      `Indexed files: ${files.records.length.toLocaleString()}`,
       `Filtered files: ${filteredRecords.length.toLocaleString()}`,
-      `Query: ${query.trim() || 'none'}`,
+      `Query: ${files.query.trim() || 'none'}`,
       `Limit reached: ${scanLimitReached ? 'yes' : 'no'}`,
       `Needs attention: ${sourceScanNeedsAttention ? 'yes' : 'no'}`,
       `Health: ${sourceScanHealthNote || 'ok'}`,
@@ -5331,7 +5329,7 @@
   }
 
   async function selectGitStatusFile(fileStatus: ProjectGitFileStatus) {
-    const record = records.find((sourceRecord) => sourceRecord.relativePath === fileStatus.relativePath);
+    const record = files.records.find((sourceRecord) => sourceRecord.relativePath === fileStatus.relativePath);
     if (!record) {
       gitActionStatus = `No indexed source record for ${fileStatus.relativePath}`;
       return;
@@ -6929,7 +6927,7 @@
 
   function sourceRecordFromRestoredPath(project: ProjectRoot, path: string): SourceRecord {
     const normalizedPath = normalizeProjectPath(path);
-    const existingRecord = records.find((record) => normalizeProjectPath(record.path) === normalizedPath);
+    const existingRecord = files.records.find((record) => normalizeProjectPath(record.path) === normalizedPath);
     if (existingRecord) return existingRecord;
 
     const normalizedProjectPath = normalizeProjectPath(project.path);
@@ -8594,21 +8592,21 @@
     sourceSearchLoading = true;
     try {
       const nativeResults = await searchSourceFilesFromTauri(
-        records,
+        files.records,
         normalizedQuery,
         maxSourceSearchResults
       );
       sourceSearchResults =
         nativeResults ??
         findSourceSearchMatches(
-          records.map((record) => demoPreviewFor(record)),
+          files.records.map((record) => demoPreviewFor(record)),
           normalizedQuery,
           maxSourceSearchResults
         );
       sourceSearchError = nativeResults ? '' : 'Browser preview results';
     } catch (searchError) {
       sourceSearchResults = findSourceSearchMatches(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedQuery,
         maxSourceSearchResults
       );
@@ -8632,7 +8630,7 @@
   }
 
   async function selectSourceSearchResult(result: SourceSearchMatch) {
-    const record = records.find((sourceRecord) => sourceRecord.path === result.path) ?? result;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === result.path) ?? result;
     await selectRecord(record, result.line);
   }
 
@@ -8670,14 +8668,14 @@
       const nativeTargets = lspTargets?.length
         ? lspTargets
         : await findSourceDefinitionsFromTauri(
-            records,
+            files.records,
             normalizedSymbolName,
             maxSourceDefinitionResults
           );
       const nextTargets =
         nativeTargets ??
         findSourceDefinitionTargets(
-          records.map((record) => demoPreviewFor(record)),
+          files.records.map((record) => demoPreviewFor(record)),
           normalizedSymbolName,
           maxSourceDefinitionResults
         );
@@ -8698,7 +8696,7 @@
       return nextTargets;
     } catch (definitionError) {
       sourceDefinitionTargets = findSourceDefinitionTargets(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedSymbolName,
         maxSourceDefinitionResults
       );
@@ -8730,21 +8728,21 @@
       if (lspTargets?.length) return lspTargets;
 
       const nativeTargets = await findSourceDefinitionsFromTauri(
-        records,
+        files.records,
         normalizedSymbolName,
         maxSourceDefinitionResults
       );
       return (
         nativeTargets ??
         findSourceDefinitionTargets(
-          records.map((record) => demoPreviewFor(record)),
+          files.records.map((record) => demoPreviewFor(record)),
           normalizedSymbolName,
           maxSourceDefinitionResults
         )
       );
     } catch {
       return findSourceDefinitionTargets(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedSymbolName,
         maxSourceDefinitionResults
       );
@@ -8764,7 +8762,7 @@
   }
 
   async function selectSourceDefinitionTarget(target: SourceDefinitionTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
     await selectRecord(record, target.line);
   }
 
@@ -8803,7 +8801,7 @@
       const nativeTargets = lspTargets?.length
         ? lspTargets
         : await findSourceReferencesFromTauri(
-            records,
+            files.records,
             normalizedSymbolName,
             maxSourceSearchResults
           );
@@ -8812,7 +8810,7 @@
           ? lspTargets
           : nativeTargets ??
             findSourceReferenceTargets(
-              records.map((record) => demoPreviewFor(record)),
+              files.records.map((record) => demoPreviewFor(record)),
               normalizedSymbolName,
               maxSourceSearchResults
             );
@@ -8825,7 +8823,7 @@
       return sourceReferenceTargets;
     } catch (referenceError) {
       sourceReferenceTargets = findSourceReferenceTargets(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedSymbolName,
         maxSourceSearchResults
       );
@@ -8856,21 +8854,21 @@
       if (lspTargets?.length) return lspTargets;
 
       const nativeTargets = await findSourceReferencesFromTauri(
-        records,
+        files.records,
         normalizedSymbolName,
         maxSourceSearchResults
       );
       return (
         nativeTargets ??
         findSourceReferenceTargets(
-          records.map((record) => demoPreviewFor(record)),
+          files.records.map((record) => demoPreviewFor(record)),
           normalizedSymbolName,
           maxSourceSearchResults
         )
       );
     } catch {
       return findSourceReferenceTargets(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedSymbolName,
         maxSourceSearchResults
       );
@@ -8897,14 +8895,14 @@
       if (lspTargets?.length) return lspTargets.length;
 
       const nativeTargets = await findSourceReferencesFromTauri(
-        records,
+        files.records,
         normalizedSymbolName,
         maxSourceSearchResults
       ).catch(() => null);
       if (nativeTargets) return nativeTargets.length;
 
       return findSourceReferenceTargets(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedSymbolName,
         maxSourceSearchResults
       ).length;
@@ -8960,7 +8958,7 @@
   }
 
   async function selectSourceReferenceTarget(target: SourceReferenceTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
     await selectRecord(record, target.line);
   }
 
@@ -9053,7 +9051,7 @@
   }
 
   async function selectSourceImplementationTarget(target: SourceDefinitionTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
     await selectRecord(record, target.line);
   }
 
@@ -9162,7 +9160,7 @@
   }
 
   async function selectSourceTypeDefinitionTarget(target: SourceDefinitionTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
     await selectRecord(record, target.line);
   }
 
@@ -9203,7 +9201,7 @@
     stats: SourceScanStats | null = null,
     options: { preserveSelectedRecord?: boolean } = {}
   ): SourceRecord | null {
-    records = nextRecords;
+    files.records = nextRecords;
     runtime = nextRuntime;
     scanLimitReached = truncated;
     sourceScanStats = stats;
@@ -9226,7 +9224,7 @@
     selectedRecord = nextSelection;
     selectedSourceLine = null;
     preview = nextSelection ? previewFromContent(nextSelection, '') : null;
-    expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
+    files.expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
     clearSourceSearchResults();
     clearSourceDefinitionTargets();
     clearSourceReferenceTargets();
@@ -9296,7 +9294,7 @@
   }
 
   async function selectSourceNavigationLocation(location: SourceNavigationLocation) {
-    const record = records.find((sourceRecord) => sourceRecord.path === location.path) ??
+    const record = files.records.find((sourceRecord) => sourceRecord.path === location.path) ??
       sourceRecordFromRestoredPath(selectedProject, location.path);
     await selectRecord(record, location.line, false);
   }
@@ -9344,12 +9342,12 @@
   }
 
   async function selectRecentRecord(recentRecord: SourceRecentRecord) {
-    const record = records.find((sourceRecord) => sourceRecord.path === recentRecord.path) ?? recentRecord;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === recentRecord.path) ?? recentRecord;
     await selectRecord(record);
   }
 
   async function selectOpenTab(tab: SourceOpenTab) {
-    const record = records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
     await selectRecord(record);
   }
 
@@ -9901,11 +9899,11 @@
   }
 
   function expandFoldersForRecord(record: SourceRecord) {
-    const nextFolderIds = new Set(expandedFolderIds);
+    const nextFolderIds = new Set(files.expandedFolderIds);
     for (const folderID of folderIdsForSourceRecord(record)) {
       nextFolderIds.add(folderID);
     }
-    expandedFolderIds = nextFolderIds;
+    files.expandedFolderIds = nextFolderIds;
   }
 
   async function copySelectedPath() {
@@ -10422,7 +10420,7 @@
 
   function sourceRecordForWorkspaceEditFile(file: SourceRenameFileEdit): SourceRecord {
     const existingRecord =
-      records.find((record) => record.path === file.path) ??
+      files.records.find((record) => record.path === file.path) ??
       projectOpenSourceTabs.find((record) => record.path === file.path) ??
       workspaceEditSourceRecordsByPath[file.path];
     if (existingRecord) return existingRecord;
@@ -15260,7 +15258,7 @@
     selectedProjectID = project.id;
     persistSelectedProjectID(project.id);
     if (options.clearFileFilter) {
-      query = '';
+      files.query = '';
     }
     if (options.forceScan) {
       resetProjectOnboardingScanState(project);
@@ -15361,7 +15359,7 @@
       const fallbackProject = defaultProjectRoots[0];
       selectedProjectID = fallbackProject.id;
       persistSelectedProjectID(fallbackProject.id);
-      query = '';
+      files.query = '';
       void loadProjectGitStatus(fallbackProject);
       void loadGitCommitHistory(fallbackProject);
       void scanProject(fallbackProject, nextSelectedSourcePaths[fallbackProject.id]);
@@ -15482,17 +15480,17 @@
   }
 
   function isFolderExpanded(node: SourceTreeNode): boolean {
-    return autoExpandFolders || expandedFolderIds.has(node.id);
+    return autoExpandFolders || files.expandedFolderIds.has(node.id);
   }
 
   function toggleFolder(node: SourceTreeNode) {
-    const nextFolderIds = new Set(expandedFolderIds);
+    const nextFolderIds = new Set(files.expandedFolderIds);
     if (nextFolderIds.has(node.id)) {
       nextFolderIds.delete(node.id);
     } else {
       nextFolderIds.add(node.id);
     }
-    expandedFolderIds = nextFolderIds;
+    files.expandedFolderIds = nextFolderIds;
   }
 
   function selectTreeNode(node: SourceTreeNode) {
@@ -15981,7 +15979,7 @@
       >
       <label class="search-box">
         <Search size={16} strokeWidth={1.8} />
-        <input bind:value={query} placeholder="Filter source files" />
+        <input bind:value={files.query} placeholder="Filter source files" />
       </label>
 
       <form class="global-search-panel" onsubmit={handleGlobalSourceSearchSubmit}>
@@ -16201,7 +16199,7 @@
           onscroll={handleFileTreeScroll}
           aria-label="Files in selected project"
         >
-          {#if scanning && records.length === 0}
+          {#if scanning && files.records.length === 0}
             {#each Array.from({ length: 8 }) as _, index}
               <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
             {/each}
@@ -18269,7 +18267,7 @@
             <div class="editor-file-title">
               <strong>{preview.fileName}</strong>
               <small>
-                {selectedIndex} / {records.length}
+                {selectedIndex} / {files.records.length}
                 {#if selectedSourceLine}
                   · line {selectedSourceLine}
                 {/if}
