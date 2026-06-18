@@ -21614,134 +21614,6 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
-  .conversation-session-row {
-    grid-template-columns: minmax(0, 1fr) 28px;
-    align-items: start;
-    min-height: 86px;
-    overflow: visible;
-  }
-
-  .conversation-session-row.active {
-    border-color: color-mix(in srgb, var(--accent) 62%, transparent);
-    background: rgba(92, 226, 207, 0.085);
-  }
-
-  .conversation-session-open {
-    display: grid;
-    grid-template-columns: minmax(36px, max-content) minmax(0, 1fr);
-    align-items: start;
-    gap: 8px;
-    min-width: 0;
-    min-height: 64px;
-    padding: 0;
-    color: inherit;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .conversation-session-open:hover .activity-row-main strong,
-  .conversation-session-open:focus-visible .activity-row-main strong {
-    color: #9cebe0;
-  }
-
-  .conversation-session-open:focus-visible {
-    outline: 1px solid rgba(92, 226, 207, 0.34);
-    outline-offset: 2px;
-  }
-
-  .conversation-session-main,
-  .agent-session-row-main {
-    gap: 2px;
-    align-content: center;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .conversation-session-title-line {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .conversation-session-title-line strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .conversation-session-meta,
-  .conversation-session-description,
-  .conversation-session-path,
-  .agent-session-row-main small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .conversation-session-path {
-    color: #73817c;
-    font-size: 10px;
-  }
-
-  .conversation-session-description {
-    color: #a7b1ae;
-    font-size: 10px;
-    font-weight: 690;
-    line-height: 1.25;
-  }
-
-  .session-task-chip {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    height: 15px;
-    padding: 0 5px;
-    color: #09211d;
-    border: 1px solid rgba(92, 226, 207, 0.32);
-    border-radius: 999px;
-    background: #76e6cf;
-    font-size: 7px;
-    font-weight: 900;
-    line-height: 15px;
-  }
-
-  .conversation-session-row .activity-row-actions {
-    opacity: 0.42;
-    transition: opacity 120ms ease;
-  }
-
-  .conversation-session-actions {
-    display: grid;
-    grid-template-columns: 23px;
-    grid-template-rows: 23px auto;
-    align-items: start;
-    justify-items: end;
-    gap: 4px;
-    max-width: 28px;
-  }
-
-  .conversation-row-status {
-    grid-row: 2;
-    width: 100%;
-    max-width: 64px;
-    height: 22px;
-    padding: 0 5px;
-  }
-
-  .conversation-row-status em {
-    text-align: center;
-  }
-
-  .conversation-session-row:hover .activity-row-actions,
-  .conversation-session-row:focus-within .activity-row-actions {
-    opacity: 1;
-  }
 
   .agent-activity-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -22083,13 +21955,6 @@
     overflow: hidden;
   }
 
-  .orchestration-context-digest {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-    min-width: 0;
-    overflow: hidden;
-  }
 
   .run-live-digest-chip {
     display: inline-grid;
@@ -22106,11 +21971,6 @@
     background: rgba(255, 255, 255, 0.04);
   }
 
-  .orchestration-context-digest .run-live-digest-chip {
-    max-width: 132px;
-    min-height: 18px;
-    padding: 0 5px;
-  }
 
   .run-live-digest-chip em,
   .run-live-digest-chip strong {
@@ -22531,15 +22391,6 @@
     white-space: nowrap;
   }
 
-  .worktree-owner-strip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-  }
 
   .worktree-owner-chip {
     display: inline-grid;
@@ -22582,14 +22433,6 @@
     color: #8d9995;
   }
 
-  .worktree-runbook-strip {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-  }
 
   .activity-worktree-runbook {
     display: grid;
@@ -22623,58 +22466,6 @@
     background: #67dfd1;
   }
 
-  .worktree-runbook-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    height: 18px;
-    padding: 0 6px;
-    overflow: hidden;
-    color: #aeb9b6;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 8px;
-    font-weight: 820;
-    line-height: 18px;
-    white-space: nowrap;
-  }
-
-  .worktree-runbook-chip strong {
-    color: #f0f4f3;
-    font-size: 9px;
-    font-weight: 900;
-  }
-
-  .worktree-runbook-chip span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .worktree-runbook-chip.safe {
-    color: #071b18;
-    border-color: rgba(92, 226, 207, 0.34);
-    background: #67dfd1;
-  }
-
-  .worktree-runbook-chip.safe strong {
-    color: #071b18;
-  }
-
-  .worktree-runbook-chip.backup,
-  .worktree-runbook-chip.saved {
-    color: #e8c47d;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-runbook-chip.blocked {
-    color: #ffbd9f;
-    border-color: rgba(255, 142, 96, 0.24);
-    background: rgba(255, 142, 96, 0.09);
-  }
 
   .worktree-snapshot-chip {
     display: inline-flex;
@@ -22710,25 +22501,6 @@
     background: rgba(92, 226, 207, 0.14);
   }
 
-  .worktree-plan-line {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-    color: #8fbdb6;
-    font-size: 10px;
-    font-weight: 730;
-    line-height: 1.2;
-  }
-
-  .worktree-plan-line > span:last-child {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
   .worktree-plan-lane {
     display: inline-grid;
@@ -23017,10 +22789,6 @@
     justify-self: end;
   }
 
-  .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu) > button {
-    grid-column: 2;
-    grid-row: 1;
-  }
 
   .activity-panel-list .agent-activity-actions:has(.row-action-menu) > button {
     grid-area: actions;
@@ -23056,29 +22824,6 @@
     margin-top: -1px;
   }
 
-  .workspace-context-column:has(.worktree-context-actions .row-action-menu),
-  .context-panel-grid:has(.worktree-context-actions .row-action-menu),
-  .worktree-context-panel:has(.worktree-context-actions .row-action-menu),
-  .worktree-context-list:has(.worktree-context-actions .row-action-menu) {
-    overflow: visible;
-  }
-
-  .workspace-context-column:has(.worktree-context-actions .row-action-menu),
-  .context-panel-grid:has(.worktree-context-actions .row-action-menu),
-  .worktree-context-panel:has(.worktree-context-actions .row-action-menu) {
-    position: relative;
-    z-index: 32;
-  }
-
-  .worktree-context-actions:has(.row-action-menu) {
-    position: relative;
-    z-index: 34;
-    max-width: none;
-  }
-
-  .worktree-context-actions .row-action-menu {
-    width: min(196px, calc(var(--context-pane-width) - 40px));
-  }
 
   .activity-row-actions button:disabled {
     opacity: 0.38;
@@ -24911,10 +24656,6 @@
     overflow: hidden;
   }
 
-  .workspace-context-column {
-    display: grid;
-    min-height: 0;
-  }
 
   .workspace-main-column {
     display: flex;
@@ -24941,23 +24682,12 @@
     grid-row: 1;
   }
 
-  .workspace-arrangement.context-side .workspace-context-column {
-    grid-column: 2;
-    grid-row: 1;
-    padding-left: 0;
-  }
 
   .workspace-arrangement.context-bottom .workspace-main-column {
     grid-column: 1;
     grid-row: 1;
   }
 
-  .workspace-arrangement.context-bottom .workspace-context-column {
-    grid-column: 1;
-    grid-row: 2;
-    min-height: 0;
-    padding-top: 6px;
-  }
 
   .context-pane-resizer {
     position: absolute;
@@ -25074,243 +24804,6 @@
     background: rgba(223, 253, 248, 0.86);
   }
 
-  .context-panel-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 6px;
-    min-width: 0;
-    min-height: 0;
-    margin: -2px 0 8px;
-  }
-
-  .context-panel-grid.collapsed {
-    display: none;
-  }
-
-  .context-panel-grid.stacked {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .context-stack-tabs {
-    display: flex;
-    min-width: 0;
-    max-width: 100%;
-    padding: 2px;
-    gap: 2px;
-    overflow-x: auto;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
-    background: rgba(10, 12, 12, 0.34);
-    scrollbar-width: none;
-  }
-
-  .context-stack-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  .context-stack-tabs button {
-    position: relative;
-    display: inline-grid;
-    grid-template-columns: minmax(0, 1fr);
-    place-items: center;
-    min-width: max-content;
-    height: 24px;
-    padding: 0 9px;
-    color: #9da8a5;
-    font: inherit;
-    font-size: 10px;
-    font-weight: 800;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-  }
-
-  .context-card-tab-icon {
-    display: none;
-  }
-
-  .context-stack-tabs button:hover,
-  .context-stack-tabs button:focus-visible {
-    color: #ecf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .context-stack-tabs button.active {
-    color: #0a1816;
-    background: #67dfd1;
-  }
-
-  .workspace-arrangement.context-side .context-panel-grid {
-    grid-template-columns: 28px minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    align-content: stretch;
-    height: 100%;
-    margin: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .workspace-context-column {
-    padding-right: 3px;
-    padding-left: 3px;
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .context-panel-grid {
-    grid-template-columns: 28px;
-    grid-template-rows: minmax(0, 1fr);
-    gap: 0;
-    overflow: hidden;
-    padding-right: 0;
-    scrollbar-gutter: auto;
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .context-restore-button,
-  .workspace-arrangement.context-side.context-rail-only .context-panel-grid > section {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .context-stack-tabs {
-    grid-column: 1;
-    grid-row: 1;
-    width: 28px;
-    max-width: 28px;
-    padding: 2px;
-    background: rgba(10, 12, 12, 0.5);
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .context-stack-tabs button {
-    width: 24px;
-    min-width: 24px;
-    height: 24px;
-  }
-
-  .workspace-arrangement.context-side .context-restore-button {
-    grid-column: 1 / -1;
-    grid-row: 1;
-  }
-
-  .workspace-arrangement.context-side .context-stack-tabs {
-    grid-column: 1;
-    grid-row: 2;
-    flex-direction: column;
-    align-items: center;
-    width: 28px;
-    max-width: 28px;
-    height: 100%;
-    max-height: 100%;
-    overflow-x: hidden;
-    overflow-y: auto;
-    border-radius: 6px;
-  }
-
-  .workspace-arrangement.context-side .context-stack-tabs button {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    min-width: 22px;
-    height: 22px;
-    padding: 0;
-  }
-
-  .workspace-arrangement.context-side .context-stack-tabs button span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-
-  .workspace-arrangement.context-side .context-card-tab-icon {
-    display: block;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-panel,
-  .workspace-arrangement.context-side .runtime-context-panel,
-  .workspace-arrangement.context-side .agent-session-panel,
-  .workspace-arrangement.context-side .worktree-context-panel,
-  .workspace-arrangement.context-side .repo-dashboard-panel {
-    grid-column: 2;
-    grid-row: 2;
-    gap: 4px;
-    padding: 5px;
-    overflow: hidden;
-    border-radius: 5px;
-  }
-
-  .context-panel-grid.dockview-card-tabs {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    margin: 0;
-    overflow: hidden;
-    padding-right: 0;
-  }
-
-  .context-panel-grid.paneview-card-stack {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    margin: 0;
-    overflow: hidden;
-    padding-right: 0;
-  }
-
-  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack {
-    display: flex;
-    height: 100%;
-    overflow: hidden;
-    padding-right: 0;
-    scrollbar-gutter: auto;
-  }
-
-  :global(.source-dockview-context-cards-shell:not(.dockview-enabled)) {
-    display: contents;
-  }
-
-  :global(.source-paneview-context-cards-shell:not(.dockview-enabled)) {
-    display: contents;
-  }
-
-  :global(.source-dockview-context-cards-shell.dockview-enabled) {
-    position: relative;
-    display: grid;
-    flex: 1 1 0;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    background: transparent;
-  }
-
-  :global(.source-paneview-context-cards-shell.dockview-enabled) {
-    position: relative;
-    display: grid;
-    flex: 1 1 0;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    background: transparent;
-  }
-
-  :global(.source-paneview-context-cards-shell),
-  :global(.source-paneview-context-cards-host),
-  :global(.source-paneview-context-cards-shell .source-paneview-panel-host),
-  :global(.source-paneview-context-cards-shell .source-paneview-attached-panel) {
-    box-sizing: border-box;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-  }
 
   :global(.source-dockview-context-cards-host) {
     grid-area: 1 / 1;
@@ -25323,117 +24816,6 @@
     contain: layout paint;
   }
 
-  :global(.source-paneview-context-cards-host) {
-    grid-area: 1 / 1;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    visibility: hidden;
-    contain: layout paint;
-  }
-
-  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready .source-dockview-context-cards-host) {
-    visibility: visible;
-  }
-
-  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready .source-paneview-context-cards-host) {
-    visibility: visible;
-  }
-
-  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .orchestration-context-panel),
-  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .runtime-context-panel),
-  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .agent-session-panel),
-  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .worktree-context-panel),
-  :global(.source-dockview-context-cards-shell.dockview-enabled.dockview-ready > .repo-dashboard-panel) {
-    visibility: hidden;
-    pointer-events: none;
-  }
-
-  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .orchestration-context-panel),
-  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .runtime-context-panel),
-  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .agent-session-panel),
-  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .worktree-context-panel),
-  :global(.source-paneview-context-cards-shell.dockview-enabled.dockview-ready > .repo-dashboard-panel) {
-    visibility: hidden;
-    pointer-events: none;
-  }
-
-  :global(.source-dockview-context-cards-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(20, 23, 24, 0.72);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: transparent;
-  }
-
-  :global(.source-paneview-context-cards-shell .dockview-theme-dark) {
-    --dv-background-color: rgba(20, 23, 24, 0.72);
-    --dv-paneview-header-border-color: transparent;
-    --dv-active-sash-color: rgba(92, 226, 207, 0.42);
-    --dv-sash-color: transparent;
-    --dv-separator-border: transparent;
-  }
-
-  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .orchestration-context-panel,
-  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .runtime-context-panel,
-  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .agent-session-panel,
-  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .worktree-context-panel,
-  .workspace-arrangement.context-side .context-panel-grid.dockview-card-tabs .repo-dashboard-panel {
-    grid-column: auto;
-    grid-row: auto;
-    width: 100%;
-    height: 100%;
-    padding: 6px;
-    overflow: hidden;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-
-  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .orchestration-context-panel,
-  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .runtime-context-panel,
-  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .agent-session-panel,
-  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .worktree-context-panel,
-  .workspace-arrangement.context-side .context-panel-grid.paneview-card-stack .repo-dashboard-panel {
-    grid-column: auto;
-    grid-row: auto;
-    width: 100%;
-    max-width: none;
-    height: 100%;
-    min-width: 0;
-    padding: 6px;
-    overflow: hidden;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-
-  .context-panel-grid.paneview-card-stack .orchestration-context-list,
-  .context-panel-grid.paneview-card-stack .runtime-context-list,
-  .context-panel-grid.paneview-card-stack .agent-session-list,
-  .context-panel-grid.paneview-card-stack .worktree-context-list,
-  .context-panel-grid.paneview-card-stack .repo-dashboard-list {
-    height: 100%;
-    max-height: none;
-  }
-
-  :global(.source-paneview-context-cards-shell .source-paneview-panel-host),
-  :global(.source-paneview-context-cards-shell .source-paneview-attached-panel) {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr);
-    align-items: stretch;
-    justify-items: stretch;
-    width: 100%;
-    height: 100%;
-    max-width: none;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
 
   :global(.source-dockview-files-shell .source-paneview-panel-host),
   :global(.source-dockview-conversation-shell .source-paneview-panel-host) {
@@ -25447,146 +24829,6 @@
     min-height: 0;
   }
 
-  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.orchestration-context-panel),
-  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.runtime-context-panel),
-  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.agent-session-panel),
-  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.worktree-context-panel),
-  :global(.source-dockview-workbench-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.repo-dashboard-panel),
-  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.orchestration-context-panel),
-  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.runtime-context-panel),
-  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.agent-session-panel),
-  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.worktree-context-panel),
-  :global(.source-dockview-context-shell .source-paneview-context-cards-shell .source-paneview-attached-panel.repo-dashboard-panel) {
-    grid-column: auto;
-    grid-row: auto;
-    width: 100%;
-    max-width: none;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    padding: 6px;
-    overflow: hidden;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-header,
-  .workspace-arrangement.context-side .runtime-context-header,
-  .workspace-arrangement.context-side .agent-session-header,
-  .workspace-arrangement.context-side .worktree-context-header,
-  .workspace-arrangement.context-side .repo-dashboard-header {
-    min-height: 22px;
-    gap: 4px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-header strong,
-  .workspace-arrangement.context-side .runtime-context-header strong,
-  .workspace-arrangement.context-side .agent-session-header strong,
-  .workspace-arrangement.context-side .worktree-context-header strong,
-  .workspace-arrangement.context-side .repo-dashboard-header strong {
-    font-size: 10px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-header span,
-  .workspace-arrangement.context-side .runtime-context-header span,
-  .workspace-arrangement.context-side .agent-session-header span,
-  .workspace-arrangement.context-side .worktree-context-header span,
-  .workspace-arrangement.context-side .repo-dashboard-header span {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .context-card-actions {
-    gap: 2px;
-  }
-
-  .workspace-arrangement.context-side .context-card-actions .file-action-button {
-    width: 20px;
-    height: 20px;
-  }
-
-  .workspace-arrangement.context-side .worktree-runbook-strip {
-    gap: 2px;
-  }
-
-  .workspace-arrangement.context-side .worktree-runbook-chip {
-    height: 16px;
-    padding: 0 5px;
-    line-height: 16px;
-  }
-
-  .workspace-arrangement.context-side .worktree-runbook-chip span {
-    display: none;
-  }
-
-  .workspace-arrangement.context-bottom .context-panel-grid {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    align-content: start;
-    height: 100%;
-    margin: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row,
-  .workspace-arrangement.context-side .agent-session-row,
-  .workspace-arrangement.context-side .worktree-context-row,
-  .workspace-arrangement.context-side .repo-dashboard-row,
-  .workspace-arrangement.context-side .orchestration-context-row {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: start;
-    gap: 3px;
-    padding: 3px 4px;
-    border-radius: 4px;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row {
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row strong {
-    grid-column: 1 / -1;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row > span:not(.runtime-port),
-  .workspace-arrangement.context-side .runtime-context-row small {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row {
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas:
-      "badge main"
-      "lane lane";
-    align-items: start;
-    min-height: 62px;
-    gap: 4px 6px;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row > .agent-provider-badge {
-    grid-area: badge;
-    justify-self: start;
-    max-width: 58px;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row-main {
-    grid-area: main;
-    min-width: 0;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row-main small:last-of-type,
-  .workspace-arrangement.context-side .agent-session-row > small {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row-main small:first-of-type {
-    display: block;
-  }
 
   .workspace-arrangement.context-side .agent-session-focus-lane {
     grid-area: lane;
@@ -25595,10 +24837,6 @@
     padding: 0 4px;
   }
 
-  .workspace-arrangement.context-side .worktree-context-row {
-    grid-template-columns: auto auto minmax(0, 1fr) auto;
-    align-items: center;
-  }
 
   .workspace-arrangement.context-side .worktree-context-row > span:not(.worktree-status-badge):not(.worktree-decision-lane),
   .workspace-arrangement.context-side .worktree-context-row > em,
@@ -25609,32 +24847,6 @@
     display: none;
   }
 
-  .workspace-arrangement.context-side .worktree-plan-line {
-    grid-column: 1 / -1;
-  }
-
-  .workspace-arrangement.context-side .worktree-plan-line > span:last-child {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .worktree-context-actions {
-    grid-column: 4;
-    grid-row: 1;
-    align-self: start;
-    justify-self: end;
-    max-width: 28px;
-    overflow: visible;
-    flex-wrap: nowrap;
-  }
-
-  .workspace-arrangement.context-side .repo-dashboard-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-  }
-
-  .workspace-arrangement.context-side .repo-dashboard-metric {
-    display: none;
-  }
 
   .workspace-arrangement.context-side .orchestration-context-list,
   .workspace-arrangement.context-side .orchestration-decision-queue,
@@ -25649,27 +24861,6 @@
     max-height: none;
   }
 
-  .workspace-arrangement.context-side .orchestration-context-main {
-    gap: 3px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-title {
-    gap: 4px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-meta {
-    gap: 3px;
-    font-size: 9px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-current {
-    font-size: 10px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-loop-stages {
-    flex-wrap: wrap;
-    max-height: 38px;
-  }
 
   .workspace-arrangement.context-side .context-loop-stage {
     height: 16px;
@@ -25695,183 +24886,6 @@
     justify-self: start;
   }
 
-  .workspace-arrangement.context-side .worktree-context-actions button {
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-actions {
-    justify-content: start;
-  }
-
-  .workspace-arrangement.context-side .worktree-context-actions {
-    justify-content: flex-end;
-  }
-
-  .orchestration-context-panel,
-  .runtime-context-panel,
-  .agent-session-panel,
-  .worktree-context-panel,
-  .repo-dashboard-panel {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 6px;
-    min-width: 0;
-    min-height: 0;
-    padding: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .orchestration-context-header,
-  .runtime-context-header,
-  .agent-session-header,
-  .worktree-context-header,
-  .repo-dashboard-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .orchestration-context-header div,
-  .runtime-context-header div,
-  .agent-session-header div,
-  .worktree-context-header div,
-  .repo-dashboard-header div {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .orchestration-context-header strong,
-  .orchestration-context-header span,
-  .runtime-context-header strong,
-  .runtime-context-header span,
-  .agent-session-header strong,
-  .agent-session-header span,
-  .worktree-context-header strong,
-  .worktree-context-header span,
-  .repo-dashboard-header strong,
-  .repo-dashboard-header span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .orchestration-context-header strong,
-  .runtime-context-header strong,
-  .agent-session-header strong,
-  .worktree-context-header strong,
-  .repo-dashboard-header strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 800;
-  }
-
-  .orchestration-context-header span,
-  .runtime-context-header span,
-  .agent-session-header span,
-  .worktree-context-header span,
-  .repo-dashboard-header span {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 740;
-  }
-
-  .context-card-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .context-card-actions .file-action-button {
-    width: 24px;
-    height: 22px;
-    border-radius: 6px;
-  }
-
-  .context-card-close {
-    color: #8d9995;
-  }
-
-  .context-card-close:hover {
-    color: #f2f6f5;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .context-restore-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 0;
-    height: 24px;
-    padding: 0 8px;
-    color: #8fd8cf;
-    border: 1px solid rgba(92, 226, 207, 0.22);
-    border-radius: 6px;
-    background: rgba(92, 226, 207, 0.08);
-    font-size: 10px;
-    font-weight: 800;
-    cursor: pointer;
-  }
-
-  .orchestration-context-list,
-  .runtime-context-list,
-  .agent-session-list,
-  .worktree-context-list,
-  .repo-dashboard-list {
-    display: grid;
-    gap: 4px;
-    max-height: 96px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
-
-  .runtime-context-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .agent-session-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .worktree-context-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .repo-dashboard-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .orchestration-context-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .orchestration-decision-queue {
-    display: grid;
-    gap: 4px;
-    max-height: 82px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
 
   .orchestration-decision-item {
     display: grid;
@@ -26019,13 +25033,6 @@
     background: rgba(255, 255, 255, 0.032);
   }
 
-  .worktree-decision-group-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
 
   .worktree-decision-group-header div,
   .worktree-decision-item div {
@@ -26046,25 +25053,6 @@
     white-space: nowrap;
   }
 
-  .worktree-decision-group-header strong {
-    color: #f0f4f3;
-    font-size: 10px;
-    font-weight: 850;
-  }
-
-  .worktree-decision-group-header small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 730;
-  }
-
-  .worktree-decision-group-header span {
-    max-width: 132px;
-    color: #8fbdb6;
-    font-size: 8px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
 
   .worktree-decision-items {
     display: grid;
@@ -26162,134 +25150,6 @@
     cursor: default;
   }
 
-  .worktree-decision-more {
-    padding: 1px 4px 0;
-  }
-
-  .orchestration-context-row,
-  .runtime-context-row,
-  .agent-session-row,
-  .worktree-context-row,
-  .repo-dashboard-row {
-    display: grid;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    padding: 5px 6px;
-    color: #cbd3d1;
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.14);
-  }
-
-  .runtime-context-row {
-    grid-template-columns: auto auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
-  }
-
-  .agent-session-row {
-    grid-template-columns: auto minmax(0, 1fr) minmax(88px, 0.72fr);
-  }
-
-  .worktree-context-row {
-    grid-template-columns:
-      auto auto minmax(0, 0.9fr) minmax(0, 0.44fr) auto minmax(0, 0.9fr) minmax(0, 1fr)
-      minmax(0, 1fr) auto;
-  }
-
-  .repo-dashboard-row {
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.75fr) minmax(0, 0.7fr) minmax(0, 0.82fr) minmax(0, 0.65fr);
-  }
-
-  .orchestration-context-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .orchestration-context-row:has(.row-action-menu) {
-    align-items: start;
-  }
-
-  .orchestration-context-actions:has(.row-action-menu) {
-    display: contents;
-  }
-
-  .orchestration-context-actions:has(.row-action-menu) > button {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
-  }
-
-  .orchestration-context-actions .row-action-menu {
-    position: static;
-    grid-column: 1 / -1;
-    width: 100%;
-    margin-top: -1px;
-  }
-
-  .orchestration-context-row.bad {
-    background: rgba(216, 95, 95, 0.1);
-  }
-
-  .orchestration-context-row.attention {
-    background: rgba(216, 170, 85, 0.09);
-  }
-
-  .orchestration-context-row.live {
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .orchestration-context-main {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .orchestration-context-title,
-  .orchestration-context-meta,
-  .orchestration-context-loop-stages,
-  .orchestration-context-actions {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-  }
-
-  .orchestration-context-title {
-    gap: 5px;
-  }
-
-  .orchestration-context-title .run-status-badge {
-    flex: 0 0 auto;
-  }
-
-  .orchestration-context-title .git-task-link {
-    flex: 0 0 auto;
-    height: 18px;
-    padding: 0 5px;
-    font-size: 8px;
-  }
-
-  .orchestration-context-meta {
-    gap: 4px;
-    color: #8d9995;
-    font-size: 8px;
-    font-weight: 780;
-    text-transform: uppercase;
-  }
-
-  .orchestration-context-meta span + span::before {
-    content: "·";
-    margin-right: 4px;
-    color: #586560;
-  }
-
-  .orchestration-context-current {
-    color: #aab5b2;
-    font-size: 9px;
-    font-weight: 720;
-  }
-
-  .orchestration-context-loop-stages {
-    gap: 3px;
-    overflow: hidden;
-  }
 
   .context-loop-stage {
     display: inline-grid;
@@ -26350,65 +25210,6 @@
     font-weight: 900;
   }
 
-  .orchestration-context-actions {
-    align-self: start;
-    gap: 3px;
-  }
-
-  .orchestration-context-actions button {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .orchestration-context-actions .row-action-menu button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr);
-    place-items: initial;
-    align-items: center;
-    justify-content: stretch;
-    width: 100%;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd3d1;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    font-size: 11px;
-    font-weight: 730;
-    text-align: left;
-  }
-
-  .orchestration-context-actions button:hover,
-  .orchestration-context-actions button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .worktree-context-row.blocked {
-    background: rgba(216, 170, 85, 0.09);
-  }
-
-  .worktree-context-row.protected {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .worktree-context-row.ready {
-    background: rgba(92, 226, 207, 0.06);
-  }
-
-  .repo-dashboard-row.dirty {
-    background: rgba(216, 170, 85, 0.09);
-  }
 
   .runtime-port,
   .orchestration-context-main,
@@ -26458,20 +25259,6 @@
     font-weight: 820;
   }
 
-  .runtime-url-link {
-    display: inline-grid;
-    place-items: center;
-    height: 22px;
-    padding: 0 7px;
-    color: #7ce5d5;
-    text-decoration: none;
-    white-space: nowrap;
-    border: 1px solid rgba(92, 226, 207, 0.22);
-    border-radius: 999px;
-    background: rgba(92, 226, 207, 0.08);
-    font-size: 10px;
-    font-weight: 850;
-  }
 
   .agent-provider-badge {
     display: inline-grid;
@@ -26570,23 +25357,6 @@
     background: rgba(255, 255, 255, 0.035);
   }
 
-  .worktree-next-check {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: #8fbdb6;
-    font-size: 10px;
-    font-weight: 730;
-  }
-
-  .worktree-next-check strong {
-    flex: 0 0 auto;
-    color: #6fdfcf;
-    font-size: 9px;
-    font-weight: 860;
-    letter-spacing: 0;
-    text-transform: uppercase;
-  }
 
   .repo-branch-badge {
     color: #6fdfcf;
@@ -26595,139 +25365,6 @@
     font-weight: 820;
   }
 
-  .worktree-context-row.blocked .worktree-status-badge {
-    color: #211606;
-    background: #d8aa55;
-  }
-
-  .worktree-context-main {
-    display: grid;
-    gap: 2px;
-  }
-
-  .worktree-context-main .worktree-owner-strip {
-    flex-wrap: nowrap;
-    white-space: normal;
-  }
-
-  .runtime-context-row strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .agent-session-row strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .worktree-context-row strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .worktree-task-empty {
-    color: #6f7a76;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .worktree-context-actions {
-    display: inline-flex;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-    max-width: 28px;
-    overflow: visible;
-  }
-
-  .worktree-context-actions button {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .worktree-context-actions .worktree-snapshot-chip {
-    display: inline-flex;
-    width: auto;
-    max-width: 126px;
-    padding: 0 6px;
-  }
-
-  .worktree-context-actions .row-action-menu button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr);
-    place-items: initial;
-    align-items: center;
-    justify-content: stretch;
-    width: 100%;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd3d1;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    font-size: 11px;
-    font-weight: 730;
-    text-align: left;
-  }
-
-  .worktree-context-actions button:hover,
-  .worktree-context-actions button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.36);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .worktree-context-actions button:disabled {
-    opacity: 0.38;
-    cursor: default;
-  }
-
-  .repo-dashboard-main {
-    display: grid;
-    gap: 2px;
-  }
-
-  .repo-dashboard-main strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .repo-dashboard-main small {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 720;
-  }
-
-  .repo-dashboard-metric {
-    display: grid;
-    gap: 2px;
-  }
-
-  .repo-dashboard-metric span {
-    color: #6fdfcf;
-    font-size: 9px;
-    font-weight: 840;
-    text-transform: uppercase;
-  }
-
-  .repo-dashboard-metric strong {
-    color: #cbd3d1;
-    font-size: 10px;
-    font-weight: 760;
-  }
 
   .repo-task-link {
     display: inline-flex;
@@ -26746,19 +25383,6 @@
     white-space: nowrap;
   }
 
-  .runtime-context-row span,
-  .runtime-context-row small,
-  .agent-session-row span,
-  .agent-session-row small,
-  .worktree-context-row span,
-  .worktree-context-row small,
-  .worktree-context-row em,
-  .repo-dashboard-row em {
-    color: #8d9995;
-    font-size: 10px;
-    font-style: normal;
-    font-weight: 720;
-  }
 
   .agent-session-focus-lane {
     display: inline-grid;
