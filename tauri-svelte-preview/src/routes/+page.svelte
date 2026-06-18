@@ -514,7 +514,6 @@
     endColumn: number;
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
-  type SourceEditorNavPanel = 'problems' | 'symbols' | 'definitions' | 'references';
   type SourceEditorDisplayMode = 'source' | 'preview';
   type SourceActivityMode =
     | 'files'
@@ -920,7 +919,6 @@
   let sourceContextCardDockviewError = $state('');
   let sourceActivityFilter = $state('');
   let sourceActivityFiltersByMode = $state<Record<SourceActivityMode, string>>(createSourceActivityFilterState());
-  let editorNavPanel = $state<SourceEditorNavPanel | null>(null);
   let pasteCleanupInput = $state('');
   let pasteCleanupReplyDraft = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
@@ -2213,30 +2211,6 @@
       detail: preview?.language ?? 'No language',
       disabled: !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('hover')
-    },
-    {
-      id: 'editor-local-problems',
-      label: 'Show local problems drawer',
-      detail: sourceDiagnosticSummary,
-      perform: () => openEditorNavPanel('problems')
-    },
-    {
-      id: 'editor-local-symbols',
-      label: 'Show local symbols drawer',
-      detail: `${sourceSymbols.length} symbols`,
-      perform: () => openEditorNavPanel('symbols')
-    },
-    {
-      id: 'editor-local-definitions',
-      label: 'Show local definitions drawer',
-      detail: sourceLookupSummary,
-      perform: () => openEditorNavPanel('definitions')
-    },
-    {
-      id: 'editor-local-references',
-      label: 'Show local references drawer',
-      detail: sourceReferenceSummary || 'No references yet',
-      perform: () => openEditorNavPanel('references')
     },
     {
       id: 'clear-source-lookups',
@@ -4668,7 +4642,6 @@
       `Current file: ${currentFile}`,
       `Language: ${preview?.language ?? 'none'}`,
       `LSP: ${sourceLspStatusLabel()}`,
-      `Drawer: ${editorNavPanel ?? 'closed'}`,
       `Problems: ${sourceDiagnosticSummary}`,
       problemLines.length > 0 ? problemLines.join('\n') : '- none',
       `Symbols: ${sourceSymbols.length}`,
@@ -9190,18 +9163,6 @@
     return 'No lookups yet';
   }
 
-  function openEditorNavPanel(panel: SourceEditorNavPanel) {
-    editorNavPanel = panel;
-  }
-
-  function toggleEditorNavPanel(panel: SourceEditorNavPanel) {
-    editorNavPanel = editorNavPanel === panel ? null : panel;
-  }
-
-  function closeEditorNavPanel() {
-    editorNavPanel = null;
-  }
-
   async function selectSourceTypeDefinitionTarget(target: SourceDefinitionTarget) {
     const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
     await selectRecord(record, target.line);
@@ -9273,7 +9234,6 @@
     clearSourceReferenceTargets();
     clearSourceImplementationTargets();
     clearSourceTypeDefinitionTargets();
-    closeEditorNavPanel();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -14110,9 +14070,6 @@
     sourceTypeDefinitionQuery = '';
     sourceTypeDefinitionError = '';
     sourceTypeDefinitionLoading = false;
-    if (editorNavPanel === 'definitions' || editorNavPanel === 'references') {
-      closeEditorNavPanel();
-    }
   }
 
   function isContextCardVisible(cardID: SourceContextCardID) {
@@ -18932,185 +18889,6 @@
           </div>
         </div>
 
-        <div class="editor-local-nav" aria-label="Editor navigation">
-          <button
-            class:active={editorNavPanel === 'problems'}
-            type="button"
-            aria-label="Show editor problems"
-            title={sourceDiagnosticSummary}
-            onclick={() => toggleEditorNavPanel('problems')}
-          >
-            <Activity size={12} strokeWidth={2} />
-            <span>Problems</span>
-            <strong>{sourceDiagnostics.length}</strong>
-          </button>
-          <button
-            class:active={editorNavPanel === 'symbols'}
-            type="button"
-            aria-label="Show editor symbols"
-            title={`${sourceSymbols.length} symbols`}
-            onclick={() => toggleEditorNavPanel('symbols')}
-          >
-            <FileCode2 size={12} strokeWidth={2} />
-            <span>Symbols</span>
-            <strong>{sourceSymbols.length}</strong>
-          </button>
-          <button
-            class:active={editorNavPanel === 'definitions'}
-            type="button"
-            aria-label="Show definition results"
-            title={sourceLookupSummary}
-            onclick={() => toggleEditorNavPanel('definitions')}
-          >
-            <Search size={12} strokeWidth={2} />
-            <span>Defs</span>
-            <strong>{sourceLookupLoading ? '...' : sourceDefinitionNavCount}</strong>
-          </button>
-          <button
-            class:active={editorNavPanel === 'references'}
-            type="button"
-            aria-label="Show reference results"
-            title={sourceReferenceSummary || 'References'}
-            onclick={() => toggleEditorNavPanel('references')}
-          >
-            <Braces size={12} strokeWidth={2} />
-            <span>Refs</span>
-            <strong>{sourceReferenceLoading ? '...' : sourceReferenceTargets.length}</strong>
-          </button>
-        </div>
-
-        {#if editorNavPanel}
-          <div class="editor-nav-drawer" aria-label="Editor navigation drawer">
-            <div class="editor-nav-drawer-header">
-              <strong>
-                {editorNavPanel === 'problems'
-                  ? 'Problems'
-                  : editorNavPanel === 'symbols'
-                    ? 'Symbols'
-                    : editorNavPanel === 'references'
-                      ? 'References'
-                      : 'Definitions'}
-              </strong>
-              <span>
-                {editorNavPanel === 'problems'
-                  ? sourceDiagnosticSummary
-                  : editorNavPanel === 'symbols'
-                    ? `${sourceSymbols.length} symbols`
-                    : editorNavPanel === 'references'
-                      ? sourceReferenceSummary || 'No references yet'
-                      : sourceLookupSummary}
-              </span>
-              <button
-                class="editor-nav-close"
-                type="button"
-                aria-label="Close editor navigation drawer"
-                title="Close"
-                onclick={closeEditorNavPanel}
-              >
-                <X size={12} strokeWidth={2} />
-              </button>
-            </div>
-
-            <div class="editor-nav-list">
-              {#if editorNavPanel === 'problems'}
-                {#if sourceDiagnostics.length === 0}
-                  <div class="intelligence-empty compact">No problems</div>
-                {:else}
-                  {#each sourceDiagnostics as diagnostic, index (`nav:${diagnostic.line}:${diagnostic.column}:${index}`)}
-                    <button
-                      class="intelligence-row diagnostic"
-                      class:error={diagnostic.severity === 'error'}
-                      class:warning={diagnostic.severity === 'warning'}
-                      type="button"
-                      title={diagnostic.message}
-                      onclick={() => selectSourceDiagnostic(diagnostic)}
-                    >
-                      <strong>{diagnostic.severity}</strong>
-                      <span>{diagnostic.message}</span>
-                      <small>{diagnostic.line}:{diagnostic.column}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {:else if editorNavPanel === 'symbols'}
-                {#if sourceSymbols.length === 0}
-                  <div class="intelligence-empty compact">No symbols</div>
-                {:else}
-                  {#each sourceSymbols as symbol (`nav:${symbol.kind}:${symbol.name}:${symbol.line}`)}
-                    <button
-                      class="intelligence-row"
-                      type="button"
-                      title={symbol.detail}
-                      onclick={() => selectSourceSymbol(symbol)}
-                    >
-                      <strong>{symbol.kind}</strong>
-                      <span>{symbol.name}</span>
-                      <small>{symbol.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {:else if editorNavPanel === 'references'}
-                {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
-                  <div class="intelligence-empty compact">No references</div>
-                {:else}
-                  {#each sourceReferenceTargets as target (`nav:${target.path}:${target.line}:${target.column}`)}
-                    <button
-                      class="reference-row"
-                      type="button"
-                      title={target.excerpt}
-                      onclick={() => selectSourceReferenceTarget(target)}
-                    >
-                      <strong>{target.line}:{target.column}</strong>
-                      <span>{target.fileName}</span>
-                      <small>{target.excerpt}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {:else}
-                {#if sourceDefinitionTargets.length === 0 && sourceImplementationTargets.length === 0 && sourceTypeDefinitionTargets.length === 0 && !sourceLookupLoading}
-                  <div class="intelligence-empty compact">No definitions</div>
-                {:else}
-                  {#each sourceDefinitionTargets as target (`nav-definition:${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                  {#each sourceImplementationTargets as target (`nav-implementation:${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceImplementationTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                  {#each sourceTypeDefinitionTargets as target (`nav-type-definition:${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceTypeDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {/if}
-            </div>
-          </div>
-        {/if}
-
         <div class="editor-body-grid" class:insights-hidden={!editorInsightsDockColumnVisible()}>
           <div class="editor-canvas">
             {#if selectedSourceMarkdownPreviewAvailable && selectedSourceEditorDisplayMode === 'preview'}
@@ -19149,7 +18927,6 @@
                   onNavigateBackRequest={navigateSourceBack}
                   onNavigateForwardRequest={navigateSourceForward}
                   onNextProblemRequest={selectNextSourceDiagnostic}
-                  onProblemsRequest={() => openEditorNavPanel('problems')}
                   onPreviousProblemRequest={selectPreviousSourceDiagnostic}
                   onQuickOpenRequest={openQuickOpen}
                   onReferenceCountLookup={handleEditorReferenceCountLookup}
@@ -19158,7 +18935,6 @@
                   onSaveRequest={saveSelectedSourceFile}
                   onSemanticTokensLookup={handleEditorSemanticTokensLookup}
                   onSignatureHelpLookup={handleEditorSignatureHelpLookup}
-                  onSymbolsRequest={() => openEditorNavPanel('symbols')}
                   onSymbolsChange={handleEditorSymbolsChange}
                   onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
                   onWorkspaceEditAction={handleEditorWorkspaceEditAction}
@@ -19166,7 +18942,7 @@
               {/key}
             {/if}
 
-            {#if editorInsightCollapsed && editorNavPanel === null && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
+            {#if editorInsightCollapsed && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
               <div class="editor-lookup-popover" aria-label="Editor lookup results">
                 <div class="editor-lookup-header">
                   <strong>{sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
@@ -25475,150 +25251,6 @@
   .editor-lsp-recovery-action:disabled {
     cursor: default;
     opacity: 0.38;
-  }
-
-  .editor-local-nav {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 3px;
-    min-width: 0;
-    height: 24px;
-    padding: 2px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    background: rgba(10, 13, 14, 0.42);
-  }
-
-  .editor-local-nav button {
-    display: inline-grid;
-    grid-template-columns: 13px auto;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    min-width: 0;
-    height: 20px;
-    padding: 0 5px;
-    color: #9ca8a4;
-    border: 1px solid rgba(255, 255, 255, 0.065);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.03);
-    font-size: 10px;
-    font-weight: 800;
-    cursor: pointer;
-  }
-
-  .editor-local-nav button.active {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.32);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .editor-local-nav button:hover,
-  .editor-local-nav button:focus-visible {
-    color: #f1f7f5;
-    border-color: rgba(92, 226, 207, 0.28);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .editor-local-nav strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-local-nav span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .editor-local-nav strong {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 860;
-  }
-
-  .editor-nav-drawer {
-    display: grid;
-    grid-template-rows: 28px minmax(0, 1fr);
-    max-height: 190px;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    border-bottom: 1px solid rgba(92, 226, 207, 0.14);
-    background: rgba(14, 18, 18, 0.94);
-  }
-
-  .editor-nav-drawer-header {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) 22px;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 0 6px 0 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  }
-
-  .editor-nav-drawer-header strong,
-  .editor-nav-drawer-header span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-nav-drawer-header strong {
-    color: #eef6f4;
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .editor-nav-drawer-header span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .editor-nav-close {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    color: #9fa9a6;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-nav-close:hover,
-  .editor-nav-close:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .editor-nav-list {
-    display: grid;
-    align-content: start;
-    gap: 3px;
-    min-height: 0;
-    min-width: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 5px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
   }
 
   .editor-menu-anchor {
