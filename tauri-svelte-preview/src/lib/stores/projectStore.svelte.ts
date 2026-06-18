@@ -4,14 +4,20 @@
  * Holds the core project STATE: the selected project id, user-added custom
  * project roots, the per-project last-open source path (the files↔project
  * bridge), and the project-keyed scan/index bookkeeping. Extracted from
- * `src/routes/+page.svelte` (master plan, Phase A). Consumers `import { project }`
- * and read/write `project.x`; reads/writes are tracked by Svelte's runes runtime.
+ * `src/routes/+page.svelte` (master plan, Phase A). Consumers
+ * `import { projectStore }` and read/write `projectStore.x`; reads/writes are
+ * tracked by Svelte's runes runtime.
+ *
+ * NAME: exported as `projectStore` (not `project`) on purpose — `project` and
+ * `projects` are both pervasive local/param names in `+page.svelte`
+ * (`scanProject(project)`, `loadGitRepositorySummaries(projects)`, …), so a short
+ * store name would shadow-collide. `projectStore` is collision-free.
  *
  * Pattern mirrors `src/lib/settingsStore.svelte.ts` / `dockLayoutStore.svelte.ts`.
  *
  * SCOPE: values only. All Tauri calls (`validate_project_root`,
  * `list_source_files`, …), every `$effect`, persistence, and the page `$derived`
- * graph STAY in `+page.svelte` and act on `project.*`.
+ * graph STAY in `+page.svelte` and act on `projectStore.*`.
  *
  * NOTE — what deliberately stays page-`$derived` (NOT here): `selectedProject`
  * (the resolved root object) and `projectOptions` (the merged list) are page
@@ -28,11 +34,12 @@ import type { ProjectRootValidationResult } from '$lib/tauriSource';
 
 /**
  * The single reactive "project" state object. Read/write fields directly
- * (e.g. `project.selectedID`, `project.selectedSourcePaths`); reads/writes are
- * tracked by Svelte's runes runtime. `selectedProject` / `projectOptions` remain
- * page `$derived` over these fields + imported defaults (see module note).
+ * (e.g. `projectStore.selectedID`, `projectStore.selectedSourcePaths`);
+ * reads/writes are tracked by Svelte's runes runtime. `selectedProject` /
+ * `projectOptions` remain page `$derived` over these fields + imported defaults
+ * (see module note).
  */
-export const project = $state({
+export const projectStore = $state({
 	/** The selected project's id. Seeded at hydrate with `defaultProjectRoots[0].id`. */
 	selectedID: '',
 	/** User-added custom project roots (merged with `defaultProjectRoots` in the page). */
