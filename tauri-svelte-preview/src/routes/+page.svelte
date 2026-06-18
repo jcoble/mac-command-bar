@@ -729,12 +729,6 @@
     'Alacritty'
   ];
   const sourceTerminalFallbackApp: SourceTerminalApp = 'Terminal';
-  const dockTabGroupIDs: SourceDockGroupID[] = sourceDockviewWorkbenchEnabled
-    ? []
-    : sourceDockviewBottomEnabled
-    ? ['right']
-    : ['right', 'bottom'];
-  const dockPanelDragDataType = 'application/x-mcb-dock-panel';
   const sourceDockviewWorkbenchPanelIDs: SourceDockPanelID[] = [
     'activity',
     'editor',
@@ -920,10 +914,6 @@
   let sourceDockviewCenterError = $state('');
   let sourceDockviewBottomReady = $state(false);
   let sourceDockviewBottomError = $state('');
-  let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
-  let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
-  let dockDropTargetPanelID = $state<SourceDockPanelID | null>(null);
-  let dockDropTargetPanelPlacement = $state<'before' | 'after' | null>(null);
   let hiddenContextCardIDs = $state<Set<SourceContextCardID>>(new Set());
   let activeContextCardID = $state<SourceContextCardID>('orchestration');
   let viewMenuOpen = $state(false);
@@ -11500,119 +11490,6 @@
     moveDockPanelToGroup(panelID, groupID, targetIndex);
   }
 
-  function moveDockPanelFromTab(panelID: SourceDockPanelID, event: Event) {
-    const groupID = (event.currentTarget as HTMLSelectElement | null)?.value as SourceDockGroupID;
-    if (!dockPanelMoveTargets(panelID).includes(groupID)) return;
-
-    moveDockPanelToManagedGroup(panelID, groupID);
-  }
-
-  function beginDockPanelDrag(panelID: SourceDockPanelID, event: DragEvent) {
-    if (dockPanelMoveTargets(panelID).length <= 1) return;
-
-    draggingDockPanelID = panelID;
-    dockDropTargetGroupID = null;
-    dockDropTargetPanelID = null;
-    event.dataTransfer?.setData(dockPanelDragDataType, panelID);
-    event.dataTransfer?.setData('text/plain', panelID);
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = 'move';
-    }
-  }
-
-  function dragOverDockDropZone(event: DragEvent, groupID: SourceDockGroupID) {
-    const panelID = draggedDockPanelID(event);
-    if (!panelID || !dockPanelMoveTargets(panelID).includes(groupID)) return;
-
-    event.preventDefault();
-    dockDropTargetGroupID = groupID;
-    dockDropTargetPanelID = null;
-    dockDropTargetPanelPlacement = null;
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = 'move';
-    }
-  }
-
-  function dragOverDockPanelTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
-    const panelID = draggedDockPanelID(event);
-    if (!panelID || panelID === targetPanelID) return;
-
-    const targetGroupID = dockGroupIDForPanel(dock.layout, targetPanelID);
-    if (!targetGroupID || !dockPanelMoveTargets(panelID).includes(targetGroupID)) return;
-
-    event.preventDefault();
-    dockDropTargetGroupID = targetGroupID;
-    dockDropTargetPanelID = targetPanelID;
-    dockDropTargetPanelPlacement = dockPanelTabDropPlacement(event);
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = 'move';
-    }
-  }
-
-  function dockPanelTabDropPlacement(event: DragEvent): 'before' | 'after' {
-    const target = event.currentTarget as HTMLElement | null;
-    const rect = target?.getBoundingClientRect();
-    if (!rect) return 'before';
-
-    return event.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
-  }
-
-  function dropDockPanelOnGroup(event: DragEvent, groupID: SourceDockGroupID) {
-    const panelID = draggedDockPanelID(event);
-    if (!panelID || !dockPanelMoveTargets(panelID).includes(groupID)) {
-      clearDockPanelDrag();
-      return;
-    }
-
-    event.preventDefault();
-    moveDockPanelToManagedGroup(panelID, groupID);
-    clearDockPanelDrag();
-  }
-
-  function dropDockPanelOnTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
-    const panelID = draggedDockPanelID(event);
-    const targetGroupID = dockGroupIDForPanel(dock.layout, targetPanelID);
-    if (
-      !panelID ||
-      panelID === targetPanelID ||
-      !targetGroupID ||
-      !dockPanelMoveTargets(panelID).includes(targetGroupID)
-    ) {
-      clearDockPanelDrag();
-      return;
-    }
-
-    event.preventDefault();
-    const targetPanelIDs = dockGroupPanelIDs(targetGroupID);
-    const targetIndex = targetPanelIDs.indexOf(targetPanelID);
-    const currentIndex = targetPanelIDs.indexOf(panelID);
-    const dropPlacement = dockPanelTabDropPlacement(event);
-    let insertionIndex = targetIndex + (dropPlacement === 'after' ? 1 : 0);
-    if (currentIndex >= 0 && currentIndex < insertionIndex) {
-      insertionIndex -= 1;
-    }
-    moveDockPanelToManagedGroup(panelID, targetGroupID, insertionIndex);
-    clearDockPanelDrag();
-  }
-
-  function clearDockPanelDrag() {
-    draggingDockPanelID = null;
-    dockDropTargetGroupID = null;
-    dockDropTargetPanelID = null;
-    dockDropTargetPanelPlacement = null;
-  }
-
-  function draggedDockPanelID(event: DragEvent): SourceDockPanelID | null {
-    const draggedPanelID =
-      event.dataTransfer?.getData(dockPanelDragDataType) ||
-      event.dataTransfer?.getData('text/plain') ||
-      draggingDockPanelID;
-
-    return managedDockPanelIDs.includes(draggedPanelID as SourceDockPanelID)
-      ? (draggedPanelID as SourceDockPanelID)
-      : null;
-  }
-
   function dockPanelMoveTargets(panelID: SourceDockPanelID): SourceDockGroupID[] {
     switch (panelID) {
       case 'activity':
@@ -11644,31 +11521,10 @@
     return 'Center';
   }
 
-  function dockGroupShortcutLabel(groupID: SourceDockGroupID, panelID?: SourceDockPanelID) {
-    if (panelID === 'context' && groupID === 'center') return 'T';
-    if (groupID === 'left') return 'L';
-    if (groupID === 'right') return 'R';
-    if (groupID === 'bottom') return 'B';
-    return 'C';
-  }
-
   function dockPanelPlacementSummary(panelID: SourceDockPanelID) {
     const groupID = dockGroupIDForPanel(dock.layout, panelID);
     if (groupID === null) return 'Hidden';
     return dockGroupLabel(groupID, panelID);
-  }
-
-  function selectDockPanel(panelID: SourceDockPanelID) {
-    markSourceLayoutCustom();
-    applySourceDockLayout(activateSourceDockPanel(dock.layout, panelID));
-    if (panelID === 'context') {
-      contextPanelCollapsed = false;
-      persistContextPanelCollapsed(contextPanelCollapsed);
-    }
-    if (panelID === 'insights') {
-      editorInsightCollapsed = false;
-      persistEditorInsightCollapsed(editorInsightCollapsed);
-    }
   }
 
   function applySourceDockLayout(layout: SourceDockLayout) {
@@ -12008,14 +11864,6 @@
 
   function dockGroupPanelIDs(groupID: SourceDockGroupID): SourceDockPanelID[] {
     return normalizeSourceDockLayout(dock.layout).groups.find((group) => group.id === groupID)?.panelIDs ?? [];
-  }
-
-  function dockGroupHasTabs(groupID: SourceDockGroupID) {
-    return dockGroupPanelIDs(groupID).length > 1;
-  }
-
-  function hasDockPanelTabs() {
-    return dockTabGroupIDs.some((groupID) => dockGroupHasTabs(groupID));
   }
 
   function activeDockPanelForGroup(groupID: SourceDockGroupID): SourceDockPanelID | null {
@@ -17132,29 +16980,6 @@
     </div>
   </aside>
   </SourceDockviewShell>
-
-  {#if !sourceDockviewWorkbenchEnabled}
-    <SourcePaneResizer
-      className="side-pane-resizer"
-      ariaLabel="Resize side pane"
-      title="Drag to resize. Press Enter or double-click to collapse or expand."
-      orientation="vertical"
-      onpointerdown={beginSidePaneResize}
-      ondblclick={toggleActivityPaneRail}
-      onkeydown={handleSidePaneResizerKeydown}
-    />
-  {/if}
-  {:else if !sourceDockviewWorkbenchEnabled && !activityPaneViewportCollapsed()}
-    <button
-      class="activity-restore-button"
-      type="button"
-      aria-label="Show Activity panel"
-      title="Show Activity panel"
-      onclick={() => showDockPanel('activity')}
-    >
-      <PanelLeftOpen size={15} strokeWidth={2} />
-      <span>Activity</span>
-    </button>
   {/if}
 
   <section
@@ -17260,132 +17085,6 @@
         <strong class="context-identity-value">{sourceContextIdentity.runtime}</strong>
       </span>
     </div>
-
-      {#if !sourceDockviewWorkbenchEnabled}
-      <div
-        class="dock-panel-tabs"
-        class:empty={!hasDockPanelTabs()}
-        aria-label="Stacked dock panels"
-      >
-        {#each dockTabGroupIDs as groupID (groupID)}
-          {#if dockGroupHasTabs(groupID)}
-            <div class="dock-panel-tab-group" role="tablist" aria-label={`${groupID} dock panels`}>
-              {#each dockGroupPanelIDs(groupID) as panelID (panelID)}
-                <div
-                  class="dock-panel-tab"
-                  class:active={activeDockPanelForGroup(groupID) === panelID}
-                  class:drop-target={dockDropTargetPanelID === panelID}
-                  class:drop-after={dockDropTargetPanelID === panelID && dockDropTargetPanelPlacement === 'after'}
-                  role="presentation"
-                  draggable={dockPanelMoveTargets(panelID).length > 1}
-                  ondragstart={(event) => beginDockPanelDrag(panelID, event)}
-                  ondragenter={(event) => dragOverDockPanelTab(event, panelID)}
-                  ondragover={(event) => dragOverDockPanelTab(event, panelID)}
-                  ondragleave={() => {
-                    if (dockDropTargetPanelID === panelID) dockDropTargetPanelID = null;
-                  }}
-                  ondrop={(event) => dropDockPanelOnTab(event, panelID)}
-                  ondragend={clearDockPanelDrag}
-                >
-                  <button
-                    class="dock-panel-tab-label"
-                    type="button"
-                    role="tab"
-                    aria-selected={activeDockPanelForGroup(groupID) === panelID}
-                    aria-label={`Show ${dockPanelLabel(panelID)} panel`}
-                    onclick={() => selectDockPanel(panelID)}
-                  >
-                    {dockPanelLabel(panelID)}
-                  </button>
-                  {#if dockPanelMoveTargets(panelID).length > 1}
-                    <select
-                      class="dock-panel-tab-move"
-                      aria-label={`Move ${dockPanelLabel(panelID)} panel from tab`}
-                      title={`Move ${dockPanelLabel(panelID)}`}
-                      value={dockGroupIDForPanel(dock.layout, panelID) ?? ''}
-                      onchange={(event) => moveDockPanelFromTab(panelID, event)}
-                    >
-                      {#each dockPanelMoveTargets(panelID) as targetGroupID (targetGroupID)}
-                        <option
-                          value={targetGroupID}
-                          disabled={dockGroupIDForPanel(dock.layout, panelID) === targetGroupID}
-                        >
-                          {dockGroupShortcutLabel(targetGroupID, panelID)}
-                        </option>
-                      {/each}
-                    </select>
-                  {/if}
-                  {#if dockPanelCanHide(panelID)}
-                    <button
-                      class="dock-panel-tab-close"
-                      type="button"
-                      aria-label={`Hide ${dockPanelLabel(panelID)} panel from tab`}
-                      title={`Hide ${dockPanelLabel(panelID)}`}
-                      onclick={() => hideDockPanel(panelID)}
-                    >
-                      <X size={10} strokeWidth={2} />
-                    </button>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/each}
-      </div>
-
-      {#if hiddenDockPanelIDs().length > 0}
-        <div class="hidden-dock-panel-rail" aria-label="Hidden dock panels">
-          {#each hiddenDockPanelIDs() as panelID (panelID)}
-            <button
-              class="hidden-dock-panel-button"
-              type="button"
-              aria-label={`Restore ${dockPanelLabel(panelID)} panel`}
-              title={`Restore ${dockPanelLabel(panelID)} panel`}
-              onclick={() => restoreHiddenDockPanel(panelID)}
-            >
-              {#if panelID === 'activity'}
-                <FolderGit2 size={13} strokeWidth={1.9} />
-              {:else if panelID === 'context'}
-                <Network size={13} strokeWidth={1.9} />
-              {:else if panelID === 'insights'}
-                <Search size={13} strokeWidth={1.9} />
-              {:else if panelID === 'terminal'}
-                <Terminal size={13} strokeWidth={1.9} />
-              {:else}
-                <ExternalLink size={13} strokeWidth={1.9} />
-              {/if}
-              <span>{dockPanelLabel(panelID)}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      {#if draggingDockPanelID}
-        <div
-          class="dock-drop-zones"
-          aria-label={`Dock targets for ${dockPanelLabel(draggingDockPanelID)}`}
-        >
-          {#each dockPanelMoveTargets(draggingDockPanelID) as groupID (groupID)}
-            <button
-              class="dock-drop-zone"
-              class:active={dockDropTargetGroupID === groupID}
-              type="button"
-              ondragenter={(event) => dragOverDockDropZone(event, groupID)}
-              ondragover={(event) => dragOverDockDropZone(event, groupID)}
-              ondragleave={() => (dockDropTargetGroupID = null)}
-              ondrop={(event) => dropDockPanelOnGroup(event, groupID)}
-              onclick={() => {
-                if (!draggingDockPanelID) return;
-                moveDockPanelToManagedGroup(draggingDockPanelID, groupID);
-                clearDockPanelDrag();
-              }}
-            >
-              {dockGroupLabel(groupID, draggingDockPanelID)}
-            </button>
-          {/each}
-        </div>
-      {/if}
-      {/if}
 
       <div
       class="workspace-arrangement"
@@ -20985,192 +20684,6 @@
     color: #f0f4f3;
     font-size: 9px;
     font-weight: 760;
-  }
-
-  .dock-panel-tabs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    min-height: 22px;
-    margin: 0 0 5px;
-    overflow: hidden;
-  }
-
-  .workspace.chrome-compact .dock-panel-tabs {
-    min-height: 19px;
-    margin-bottom: 3px;
-  }
-
-  .dock-panel-tabs.empty {
-    height: 0;
-    min-height: 0;
-    margin: 0;
-  }
-
-  .workspace.chrome-compact .dock-panel-tabs.empty {
-    height: 0;
-    min-height: 0;
-    margin: 0;
-  }
-
-  .dock-drop-zones {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    min-height: 22px;
-    margin: -2px 0 5px;
-    overflow: hidden;
-  }
-
-  .dock-drop-zone {
-    display: inline-grid;
-    place-items: center;
-    min-width: 54px;
-    height: 22px;
-    padding: 0 8px;
-    color: #aab6b2;
-    border: 1px dashed rgba(92, 226, 207, 0.28);
-    border-radius: 6px;
-    background: rgba(92, 226, 207, 0.055);
-    font-size: 9px;
-    font-weight: 860;
-    cursor: pointer;
-  }
-
-  .dock-drop-zone.active,
-  .dock-drop-zone:hover,
-  .dock-drop-zone:focus-visible {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.58);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.14);
-  }
-
-  .dock-panel-tab-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
-    max-width: 100%;
-    padding: 2px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .dock-panel-tab {
-    display: inline-flex;
-    align-items: center;
-    min-width: 0;
-    height: 18px;
-    overflow: hidden;
-    border-radius: 4px;
-    background: transparent;
-  }
-
-  .workspace.chrome-compact .dock-panel-tab {
-    height: 16px;
-  }
-
-  .dock-panel-tab-label {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    height: 18px;
-    padding: 0 6px;
-    color: #9facaa;
-    border: 0;
-    background: transparent;
-    font: inherit;
-    font-size: 9px;
-    font-weight: 820;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .workspace.chrome-compact .dock-panel-tab-label {
-    height: 16px;
-    padding: 0 5px;
-    font-size: 8.5px;
-  }
-
-  .dock-panel-tab-close {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    height: 18px;
-    width: 17px;
-    padding: 0;
-    color: #9facaa;
-    border: 0;
-    background: transparent;
-    font: inherit;
-    font-size: 9px;
-    font-weight: 820;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0.72;
-  }
-
-  .dock-panel-tab-move {
-    display: inline-block;
-    min-width: 0;
-    height: 18px;
-    width: 18px;
-    padding: 0;
-    color: #9facaa;
-    border: 0;
-    background: rgba(255, 255, 255, 0.03);
-    font: inherit;
-    font-size: 8px;
-    font-weight: 820;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0.72;
-    appearance: none;
-    text-align: center;
-  }
-
-  .dock-panel-tab-label:hover,
-  .dock-panel-tab-label:focus-visible,
-  .dock-panel-tab-move:hover,
-  .dock-panel-tab-move:focus-visible,
-  .dock-panel-tab-close:hover,
-  .dock-panel-tab-close:focus-visible {
-    color: #eef6f4;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.07);
-  }
-
-  .dock-panel-tab.active {
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  .dock-panel-tab.drop-target {
-    background: rgba(92, 226, 207, 0.09);
-  }
-
-  .dock-panel-tab.drop-target:not(.drop-after) {
-    box-shadow: inset 2px 0 0 #5ce2cf;
-  }
-
-  .dock-panel-tab.drop-target.drop-after {
-    box-shadow: inset -2px 0 0 #5ce2cf;
-  }
-
-  .dock-panel-tab.active .dock-panel-tab-label {
-    color: #dffdf8;
-  }
-
-  .dock-panel-tab.active .dock-panel-tab-close {
-    color: #c9f6ef;
-  }
-
-  .dock-panel-tab.active .dock-panel-tab-move {
-    color: #c9f6ef;
   }
 
   .workspace-arrangement {
