@@ -944,7 +944,6 @@
   let sidePaneExpandedWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let editorInsightCollapsed = $state(true);
-  let contextPaneWidth = $state(contextPaneDefaultWidth);
   let contextPaneExpandedWidth = $state(contextPaneDefaultWidth);
   let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
@@ -1291,7 +1290,7 @@
         {
           id: 'context',
           visible: contextPanelPlacement === 'side' && sourceDockPanelVisible('context'),
-          size: contextPaneWidth,
+          size: dock.contextPaneWidth,
           config: contextPaneWidthSizingConfig,
           collapsePriority: 1,
           previousExpandedSize: contextPaneExpandedWidth
@@ -1303,7 +1302,7 @@
   let effectiveContextPaneWidth = $derived(
     contextPanelPlacement === 'side'
       ? sourceWorkspacePlanItem('context')?.size ?? 0
-      : contextPaneWidth
+      : dock.contextPaneWidth
   );
   let gitStatusByRelativePath = $derived(
     new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
@@ -4699,7 +4698,7 @@
       `Activity filter: ${sourceActivityFilter.trim() || 'none'}`,
       `Side pane: ${sidePanePosition}, ${dock.sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
       `Context: ${contextPanelPlacement}, ${contextPanelMode}, ${contextPanelCollapsed ? 'hidden' : 'visible'}`,
-      `Context size: ${contextPaneWidth}px wide / ${contextPaneHeight}px tall`,
+      `Context size: ${dock.contextPaneWidth}px wide / ${contextPaneHeight}px tall`,
       `Active context card: ${contextCardLabels[activeContextCardID]}`,
       `Insights: ${editorInsightCollapsed ? 'hidden' : 'visible'}, ${sourceIntelligencePanel}, ${editorInsightWidth}px`,
       `Bottom dock: ${bottomDockPanelVisible() ? 'visible' : 'hidden'}, ${bottomDockHeight()}px`,
@@ -6771,7 +6770,7 @@
       editorInsightCollapsed,
       sidePanePosition,
       dock.sidePaneWidth,
-      contextPaneWidth,
+      dock.contextPaneWidth,
       contextPaneHeight,
       editorInsightWidth,
       sourceChromeCompact,
@@ -6789,7 +6788,7 @@
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
     dock.sidePaneWidth = clampSidePaneWidth(viewState.sidePaneWidth);
-    contextPaneWidth = clampContextPaneWidth(viewState.contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(viewState.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(viewState.contextPaneHeight);
     editorInsightWidth = clampEditorInsightWidth(viewState.editorInsightWidth);
     sourceChromeCompact = viewState.sourceChromeCompact;
@@ -6803,7 +6802,7 @@
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSidePanePosition(sidePanePosition);
     persistSidePaneWidth(dock.sidePaneWidth);
-    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistEditorInsightWidth(editorInsightWidth);
     persistSourceChromeCompact(sourceChromeCompact);
@@ -10974,7 +10973,7 @@
     sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(override?.editorInsightWidth ?? preset.editorInsightWidth);
     editorInsightCollapsed = override?.editorInsightCollapsed ?? preset.editorInsightCollapsed;
-    contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? preset.contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? preset.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(override?.contextPaneHeight ?? preset.contextPaneHeight);
     contextPanelCollapsed = override?.contextPanelCollapsed ?? preset.contextPanelCollapsed;
     contextPanelMode = override?.contextPanelMode ?? preset.contextPanelMode;
@@ -10990,7 +10989,7 @@
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
@@ -11021,7 +11020,7 @@
       sidePanePosition,
       editorInsightWidth: clampEditorInsightWidth(editorInsightWidth),
       editorInsightCollapsed,
-      contextPaneWidth: clampContextPaneWidth(contextPaneWidth),
+      contextPaneWidth: clampContextPaneWidth(dock.contextPaneWidth),
       contextPaneHeight: clampContextPaneHeight(contextPaneHeight),
       contextPanelCollapsed,
       contextPanelMode,
@@ -11050,7 +11049,7 @@
     sidePanePosition = snapshot.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(snapshot.editorInsightWidth);
     editorInsightCollapsed = snapshot.editorInsightCollapsed;
-    contextPaneWidth = clampContextPaneWidth(snapshot.contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(snapshot.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(snapshot.contextPaneHeight);
     contextPanelCollapsed = snapshot.contextPanelCollapsed;
     contextPanelMode = snapshot.contextPanelMode;
@@ -11067,7 +11066,7 @@
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
@@ -11669,15 +11668,15 @@
     if (panelID === 'context') {
       const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
       const nextContextPaneWidth =
-        contextPanelPlacement === 'side' && contextPaneWidth <= contextPaneRailOnlyThreshold
+        contextPanelPlacement === 'side' && dock.contextPaneWidth <= contextPaneRailOnlyThreshold
           ? contextPaneDefaultWidth
-          : contextPaneWidth;
-      contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
+          : dock.contextPaneWidth;
+      dock.contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
           moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
           contextGroupID,
-          contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
+          contextPanelPlacement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
         )
       );
       fileActionStatus = 'Context panel shown';
@@ -11869,18 +11868,18 @@
 
   function expandContextPaneFromRail() {
     if (contextPanelPlacement !== 'side') return;
-    contextPaneWidth = restoreSourcePaneExpandedSize(contextPaneWidth, contextPaneWidthSizingConfig, {
+    dock.contextPaneWidth = restoreSourcePaneExpandedSize(dock.contextPaneWidth, contextPaneWidthSizingConfig, {
       previousExpandedSize: contextPaneExpandedWidth
     });
-    persistContextPaneWidth(contextPaneWidth);
-    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
+    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
   }
 
   function snapContextPaneToRail(updateDockGroup = true) {
-    contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
-    persistContextPaneWidth(contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     if (updateDockGroup) {
-      persistDockGroupSize(dockGroupForContextPanelPlacement('side'), contextPaneWidth);
+      persistDockGroupSize(dockGroupForContextPanelPlacement('side'), dock.contextPaneWidth);
     }
   }
 
@@ -11893,11 +11892,11 @@
     applySourceDockLayout(resizeSourceDockGroup(
       moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
       contextGroupID,
-      contextPaneWidth
+      dock.contextPaneWidth
     ));
     persistContextPanelPlacement(contextPanelPlacement);
     persistContextPanelCollapsed(contextPanelCollapsed);
-    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     fileActionStatus = 'Context panel collapsed to rail';
   }
 
@@ -12306,8 +12305,8 @@
         contextPaneHeight = clampContextPaneHeight(contextGroupSize);
         persistContextPaneHeight(contextPaneHeight);
       } else if (contextGroupID === 'left' || contextGroupID === 'right') {
-        contextPaneWidth = clampContextPaneWidth(contextGroupSize);
-        persistContextPaneWidth(contextPaneWidth);
+        dock.contextPaneWidth = clampContextPaneWidth(contextGroupSize);
+        persistContextPaneWidth(dock.contextPaneWidth);
       }
       persistContextPanelPlacement(contextPanelPlacement);
     }
@@ -12338,7 +12337,7 @@
       nextLayout = resizeSourceDockGroup(
         nextLayout,
         dockGroupForContextPanelPlacement(contextPanelPlacement),
-        contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
+        contextPanelPlacement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
       );
     }
     const contextGroupID = dockGroupIDForPanel(nextLayout, 'context');
@@ -12402,7 +12401,7 @@
     if (contextGroupID === 'bottom') {
       sizesByGroupID[contextGroupID] = contextPaneHeight;
     } else if (contextGroupID === 'left' || contextGroupID === 'right') {
-      sizesByGroupID[contextGroupID] = contextPaneWidth;
+      sizesByGroupID[contextGroupID] = dock.contextPaneWidth;
     }
     if (insightsGroupID !== null && insightsGroupID !== contextGroupID) {
       sizesByGroupID[insightsGroupID] = editorInsightWidth;
@@ -14207,7 +14206,7 @@
       resizeSourceDockGroup(
         moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
         contextGroupID,
-        placement === 'bottom' ? contextPaneHeight : contextPaneWidth
+        placement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
       )
     );
   }
@@ -14453,7 +14452,7 @@
 
     const startX = event.clientX;
     const startY = event.clientY;
-    const startWidth = contextPaneWidth;
+    const startWidth = dock.contextPaneWidth;
     const startHeight = contextPaneHeight;
     let latestRawSize = contextPanelPlacement === 'bottom' ? startHeight : startWidth;
     event.preventDefault();
@@ -14471,7 +14470,7 @@
       }
 
       latestRawSize = startWidth - (moveEvent.clientX - startX);
-      contextPaneWidth = clampContextPaneWidth(latestRawSize);
+      dock.contextPaneWidth = clampContextPaneWidth(latestRawSize);
     };
     const finishResize = () => {
       const finishedSize = finishSourcePanePointerSize(
@@ -14494,18 +14493,18 @@
         hideDockPanel('context');
         fileActionStatus = 'Context pane hidden';
       } else if (contextPanelPlacement === 'side' && finishedSize.state === 'rail') {
-        contextPaneWidth = finishedSize.size;
-        persistContextPaneWidth(contextPaneWidth);
-        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+        dock.contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(dock.contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
         fileActionStatus = 'Context panel collapsed to rail';
       } else if (contextPanelPlacement === 'bottom') {
         contextPaneHeight = finishedSize.size;
         persistContextPaneHeight(contextPaneHeight);
         persistDockGroupSize('bottom', contextPaneHeight);
       } else {
-        contextPaneWidth = finishedSize.size;
-        persistContextPaneWidth(contextPaneWidth);
-        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+        dock.contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(dock.contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
       }
       window.document.body.classList.remove(resizingClass);
       window.removeEventListener('pointermove', handlePointerMove);
@@ -14556,12 +14555,12 @@
     }
 
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
-    if (contextPaneWidth <= contextPaneMinWidth && direction < 0) {
+    if (dock.contextPaneWidth <= contextPaneMinWidth && direction < 0) {
       hideDockPanel('context');
       fileActionStatus = 'Context pane hidden';
       return;
     }
-    const rawNextContextPaneWidth = contextPaneWidth + direction * 24;
+    const rawNextContextPaneWidth = dock.contextPaneWidth + direction * 24;
     if (direction < 0) {
       const finishedSize = finishSourcePanePointerSize(rawNextContextPaneWidth, contextPaneWidthSizingConfig, {
         previousExpandedSize: contextPaneExpandedWidth
@@ -14573,18 +14572,18 @@
         return;
       }
       if (finishedSize.state === 'rail') {
-        contextPaneWidth = finishedSize.size;
-        persistContextPaneWidth(contextPaneWidth);
-        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+        dock.contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(dock.contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
         fileActionStatus = 'Context panel collapsed to rail';
         return;
       }
     }
 
     const nextContextPaneWidth = clampContextPaneWidth(rawNextContextPaneWidth);
-    contextPaneWidth = nextContextPaneWidth;
-    persistContextPaneWidth(contextPaneWidth);
-    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+    dock.contextPaneWidth = nextContextPaneWidth;
+    persistContextPaneWidth(dock.contextPaneWidth);
+    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
   }
 
   function bottomDockPanelVisible() {
@@ -15623,7 +15622,7 @@
     sidePaneExpandedWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneExpandedWidth;
     editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
     editorInsightCollapsed = migrateSourceLayout ? compactPreset.editorInsightCollapsed : storedEditorInsightCollapsed;
-    contextPaneWidth = restoreLegacyPaneWidth(
+    dock.contextPaneWidth = restoreLegacyPaneWidth(
       storedContextPaneWidth,
       storedContextPaneExpandedWidth,
       contextPaneWidthSizingConfig
