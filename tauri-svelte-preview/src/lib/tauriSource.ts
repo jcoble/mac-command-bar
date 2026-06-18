@@ -846,6 +846,22 @@ export async function readSourceLspReadinessFromTauri(
   return invoke<SourceLspStatus[]>('list_source_lsp_statuses', { root });
 }
 
+/**
+ * Proactively re-point any already-running language server(s) at a freshly-selected
+ * project root so the cold re-index warms in the background on switch, rather than on the
+ * first file-open under the new project. No-op (returns null) outside the Tauri runtime,
+ * and a no-op in the backend when no server is running for that root's languages. Returns
+ * the count of running servers that were re-pointed.
+ */
+export async function warmSourceLspForRootFromTauri(root: string): Promise<number | null> {
+  if (!isTauriRuntime() || !root.trim()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<number>('warm_source_lsp_for_root', { root });
+}
+
 export async function findSourceLspDefinitionsFromTauri(
   preview: SourcePreview,
   request: SourceLspLookupRequest

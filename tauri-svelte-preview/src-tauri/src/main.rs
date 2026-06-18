@@ -680,6 +680,21 @@ async fn list_source_lsp_statuses(root: String) -> Result<Vec<lsp::SourceLspStat
     .map_err(|error| format!("Source LSP readiness task failed: {error}"))
 }
 
+/// Proactively re-point any already-running language server(s) at a freshly-selected
+/// project root so the cold re-index happens in the background on switch, not on the first
+/// file-open under the new project. No-op when no server is running for that root's
+/// languages (see `SourceLspRegistry::warm_running_servers_for_root`).
+#[tauri::command]
+async fn warm_source_lsp_for_root(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<usize, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.warm_running_servers_for_root(&root))
+        .await
+        .map_err(|error| format!("Source LSP warm task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn find_source_lsp_definitions(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
@@ -4189,6 +4204,7 @@ fn main() {
             find_source_references,
             read_source_lsp_status,
             list_source_lsp_statuses,
+            warm_source_lsp_for_root,
             find_source_lsp_definitions,
             find_source_lsp_completions,
             find_source_lsp_implementations,

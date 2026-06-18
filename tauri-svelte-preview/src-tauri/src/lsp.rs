@@ -811,6 +811,80 @@ impl SourceLspRegistry {
         Ok(())
     }
 
+    /// Proactively re-point every currently-running language server at `root`.
+    ///
+    /// This is the warm side of the lazy re-point in [`Self::session_for`]: rather than
+    /// waiting for the first file-open under a freshly-selected project to pay the cold
+    /// re-index, the frontend calls this (debounced) on project switch so the server is
+    /// already warming/warm by the time a file there is opened. It only touches servers
+    /// that are *already* running — it never spawns one for a language nobody has used yet,
+    /// so for a project whose languages have no live server this is a pure no-op. When a
+    /// server is already pointed at `root` the underlying [`SourceLspSession::reroot`] is
+    /// itself a no-op, so re-warming the active project costs nothing.
+    ///
+    /// A session whose re-point fails (e.g. its child died) is dropped from the registry so
+    /// the next real request spawns a fresh one, exactly as [`Self::session_for`] does.
+    /// Returns the number of live sessions that were re-pointed (warmed).
+    pub(crate) fn warm_running_servers_for_root(&self, root: &str) -> Result<usize, String> {
+        let Some(root) = normalized_lsp_root(root) else {
+            return Ok(0);
+        };
+        let root = PathBuf::from(root);
+
+        // Snapshot the running sessions under a brief registry lock, then release it before
+        // re-pointing: `reroot` re-spawns the server (slow), and holding the registry lock
+        // across that would block concurrent real LSP requests for other languages.
+        let snapshot: Vec<(SourceLspSessionKey, Arc<Mutex<SourceLspSession>>)> = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            sessions
+                .iter()
+                .map(|(key, session)| (key.clone(), Arc::clone(session)))
+                .collect()
+        };
+
+        let mut warmed = 0;
+        let mut dead_keys = Vec::new();
+        for (key, session) in snapshot {
+            let usable = {
+                let mut guard = lock_lsp_session(&session)?;
+                if guard.is_alive() {
+                    guard.reroot(&root).is_ok()
+                } else {
+                    false
+                }
+            };
+            if usable {
+                warmed += 1;
+            } else {
+                dead_keys.push(key);
+            }
+        }
+
+        if !dead_keys.is_empty() {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            for key in dead_keys {
+                // Only drop the slot if it still holds the same dead session — a concurrent
+                // request may have already replaced it with a fresh, live one.
+                if let Some(existing) = sessions.get(&key) {
+                    let still_dead = lock_lsp_session(existing)
+                        .map(|mut guard| !guard.is_alive())
+                        .unwrap_or(true);
+                    if still_dead {
+                        sessions.remove(&key);
+                    }
+                }
+            }
+        }
+
+        Ok(warmed)
+    }
+
     /// Number of live language-server sessions in the registry (test introspection only).
     #[cfg(test)]
     fn session_count(&self) -> Result<usize, String> {
@@ -4156,6 +4230,105 @@ mod tests {
             registry.session_count().unwrap(),
             1,
             "switching back must still hold exactly one session"
+        );
+
+        std::fs::remove_dir_all(root_a).unwrap();
+        std::fs::remove_dir_all(root_b).unwrap();
+    }
+
+    #[test]
+    fn warm_with_no_running_server_is_a_noop() {
+        // Warming a root before any server has spun up must NOT spawn one — proactive
+        // warming only re-points servers that are already running.
+        let registry = SourceLspRegistry::default();
+        let root = unique_lsp_temp_root("mcb-lsp-warm-noop");
+
+        let warmed = registry
+            .warm_running_servers_for_root(&root.display().to_string())
+            .expect("warm with empty registry");
+        assert_eq!(warmed, 0, "warming an empty registry must warm nothing");
+        assert_eq!(
+            registry.session_count().unwrap(),
+            0,
+            "warming must never spawn a server when none is running"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn warm_repoints_a_running_server_to_a_new_root() {
+        if resolve_server_for_language("typescript").is_none() {
+            eprintln!("skipping LSP warm smoke: typescript-language-server not found");
+            return;
+        }
+
+        let registry = SourceLspRegistry::default();
+        let make_root = |label: &str, symbol: &str| -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
+            let root = unique_lsp_temp_root(label);
+            std::fs::write(
+                root.join("tsconfig.json"),
+                r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
+            )
+            .unwrap();
+            let content = format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
+            let file_path = root.join("App.ts");
+            std::fs::write(&file_path, &content).unwrap();
+            let preview = SourceLspPreview {
+                path: file_path.display().to_string(),
+                relative_path: "App.ts".to_string(),
+                file_name: "App.ts".to_string(),
+                language: "typescript".to_string(),
+                byte_count: content.len() as u64,
+                content,
+                line_count: 3,
+            };
+            let request = SourceLspLookupRequest {
+                root: root.display().to_string(),
+                line: 1,
+                column: 17,
+                limit: Some(20),
+            };
+            (root, preview, request)
+        };
+
+        let (root_a, preview_a, request_a) = make_root("mcb-lsp-warm-a", "alpha");
+        let (root_b, _preview_b, _request_b) = make_root("mcb-lsp-warm-b", "beta");
+
+        // A real request spins the single warm server, pointed at root A.
+        registry
+            .find_symbols(preview_a, request_a)
+            .expect("root A symbols");
+        assert_eq!(registry.session_count().unwrap(), 1);
+        let pid_at_a = registry.session_pid_for("typescript").unwrap();
+
+        // Warming the SAME root re-points to where it already is — a no-op, so the child
+        // process must be unchanged (no needless re-index churn).
+        let warmed_same = registry
+            .warm_running_servers_for_root(&root_a.display().to_string())
+            .expect("warm same root");
+        assert_eq!(warmed_same, 1, "the running session is reported as warmed");
+        assert_eq!(
+            registry.session_pid_for("typescript").unwrap(),
+            pid_at_a,
+            "re-warming the active root must not replace the child process"
+        );
+
+        // Warming a DIFFERENT root proactively re-points the running server in place
+        // (one session, replaced child) — without any file request under root B.
+        let warmed_b = registry
+            .warm_running_servers_for_root(&root_b.display().to_string())
+            .expect("warm new root");
+        assert_eq!(warmed_b, 1, "the running session is re-pointed to root B");
+        assert_eq!(
+            registry.session_count().unwrap(),
+            1,
+            "warming a new root must reuse the single session, not add one"
+        );
+        let pid_at_b = registry.session_pid_for("typescript").unwrap();
+        assert_ne!(
+            pid_at_a, pid_at_b,
+            "proactively warming a new root should replace the child process in place"
         );
 
         std::fs::remove_dir_all(root_a).unwrap();

@@ -321,6 +321,7 @@
     startTerminalSessionFromTauri,
     unstageGitPathsFromTauri,
     validateProjectRootFromTauri,
+    warmSourceLspForRootFromTauri,
     writeTerminalSessionFromTauri,
     closeTerminalSessionFromTauri,
     killPlaywrightSessionsFromTauri,
@@ -961,6 +962,11 @@
   let selectedSourceGitDiffRequestID = 0;
   let sourceIntelligenceCommandId = 0;
   let sourceLspDiagnosticsTimer: number | null = null;
+  // Debounced, cancel-in-flight proactive LSP warm on project switch (B2.2). The timer
+  // collapses rapid project flipping to one warm call; the generation token discards the
+  // result of any warm whose project was superseded before the debounce fired.
+  let warmSourceLspTimer: number | null = null;
+  let warmSourceLspGeneration = 0;
   let sourceDockviewWorkbenchWorkspace: SourceDockviewWorkspace | null = null;
   let sourceDockviewWorkbenchResizeObserver: ResizeObserver | null = null;
   let sourceDockviewWorkbenchHostToken = 0;
@@ -10043,6 +10049,29 @@
     }, 650);
   }
 
+  // Proactively warm the running language server(s) for a freshly-selected project so the
+  // cold re-index happens in the background on switch, not on the first file-open there
+  // (master plan B2.2). Debounced so rapid project flipping collapses to one warm call, and
+  // cancel-in-flight via the generation token so a superseded switch's warm is discarded.
+  // No-op outside Tauri (the wrapper returns null) and a backend no-op when no server is
+  // running for that project's languages — so this never spawns a server speculatively.
+  function scheduleWarmSourceLspForRoot(root: string) {
+    if (!isNativeTauriRuntime() || !root.trim()) return;
+    if (warmSourceLspTimer !== null) {
+      window.clearTimeout(warmSourceLspTimer);
+    }
+    const generation = ++warmSourceLspGeneration;
+    warmSourceLspTimer = window.setTimeout(() => {
+      warmSourceLspTimer = null;
+      // Discard if a newer project switch superseded this one during the debounce window.
+      if (generation !== warmSourceLspGeneration) return;
+      void warmSourceLspForRootFromTauri(root).catch(() => {
+        // Warming is a best-effort latency optimization; a failure just means the next
+        // file-open pays the cold re-index, exactly as before B2.2.
+      });
+    }, 400);
+  }
+
   async function loadSourceLspDiagnostics(
     nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
@@ -14601,6 +14630,10 @@
     void loadProjectWorktrees(project);
     void loadAgentSessions();
     void loadOrchestrationRuns(projects);
+    // Proactively re-point any running language server at the now-active root (debounced,
+    // cancel-in-flight) so its cold re-index warms in the background here, not on the first
+    // file-open under this project (B2.2). The root is validated and non-nested by now.
+    scheduleWarmSourceLspForRoot(project.path);
 
     const sourceSignature = sourceScanCacheSignatureForProject(project);
     const cachedScan =
