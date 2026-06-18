@@ -49,6 +49,7 @@
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
   import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
+  import EditorPanel from '$lib/components/panels/EditorPanel.svelte';
   import ActivityClipboardPanel from '$lib/components/panels/ActivityClipboardPanel.svelte';
   import ActivityWorktreesPanel from '$lib/components/panels/ActivityWorktreesPanel.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
@@ -1144,6 +1145,40 @@
       ? files.markdownPreviewModeByPath[files.preview.path] ?? 'source'
       : 'source'
   );
+  // The 24 Monaco lookup/edit handlers, bundled into one object so EditorPanel
+  // can take them as a single grouped prop and spread them onto the editor.
+  // All are hoisted page `function` declarations (stable refs), so a plain
+  // const object is fine — no reactivity needed.
+  const editorMonacoCallbacks = {
+    onCodeActionLookup: handleEditorCodeActionLookup,
+    onContentChange: updateSelectedSourceDraft,
+    onCommandPaletteRequest: openCommandPalette,
+    onCompletionLookup: handleEditorCompletionLookup,
+    onDiagnosticsChange: handleEditorDiagnosticsChange,
+    onDefinitionLookup: handleEditorDefinitionLookup,
+    onDocumentHighlightLookup: handleEditorDocumentHighlightLookup,
+    onExternalNavigation: navigateEditorExternalSource,
+    onExternalPreviewLookup: loadEditorExternalSourcePreview,
+    onFormatDocument: handleEditorFormatDocument,
+    onGoToLineRequest: openCurrentFileGoToLine,
+    onHoverLookup: handleEditorHoverLookup,
+    onImplementationLookup: handleEditorImplementationLookup,
+    onInlayHintLookup: handleEditorInlayHintLookup,
+    onNavigateBackRequest: navigateSourceBack,
+    onNavigateForwardRequest: navigateSourceForward,
+    onNextProblemRequest: selectNextSourceDiagnostic,
+    onPreviousProblemRequest: selectPreviousSourceDiagnostic,
+    onQuickOpenRequest: openQuickOpen,
+    onReferenceCountLookup: handleEditorReferenceCountLookup,
+    onReferenceLookup: handleEditorReferenceLookup,
+    onRename: handleEditorRename,
+    onSaveRequest: saveSelectedSourceFile,
+    onSemanticTokensLookup: handleEditorSemanticTokensLookup,
+    onSignatureHelpLookup: handleEditorSignatureHelpLookup,
+    onSymbolsChange: handleEditorSymbolsChange,
+    onTypeDefinitionLookup: handleEditorTypeDefinitionLookup,
+    onWorkspaceEditAction: handleEditorWorkspaceEditAction
+  };
   let dirtyProjectSourceRecords = $derived(
     dirtySourceRecordsForProject(projectOpenSourceTabs, files.workspaceEditRecordsByPath, selectedProject)
   );
@@ -17648,403 +17683,7 @@
         error={sourceDockviewCenterError}
         hostAction={sourceDockviewCenterHostAction}
       >
-      <section class="source-editor-dock-panel" aria-label="Source editor" use:sourceDockviewPanelAction={'editor'}>
-
-    {#if projectOpenSourceTabs.length > 0}
-      <SourceDockviewShell
-        shellClass="source-dockview-editor-files-shell"
-        hostClass="source-dockview-editor-files-host"
-        errorClass="source-dockview-editor-files-error"
-        enabled={true}
-        ready={sourceEditorFileDockviewReady}
-        error={sourceEditorFileDockviewError}
-        hostAction={sourceEditorFileDockviewHostAction}
-      >
-        {#each projectOpenSourceTabs as tab (tab.path)}
-          {@const tabGitStatus = gitStatusForSourceRecord(tab)}
-          <section
-            class="source-editor-file-pane"
-            class:active={tab.path === files.selectedRecord?.path}
-            class:dirty={isSourcePathDirty(tab.path)}
-            aria-label={`Source editor for ${tab.fileName}`}
-            data-source-path={tab.path}
-            use:sourceEditorFileDockviewPanelAction={sourceEditorFilePanelID(tab)}
-          >
-            {#if tab.path === files.selectedRecord?.path}
-
-    {#if files.fileActionStatus}
-      <div class="file-action-feedback">{files.fileActionStatus}</div>
-    {/if}
-
-    {#if error}
-      <div class="inline-error">
-        <Activity size={15} strokeWidth={1.8} />
-        <span>{error}</span>
-      </div>
-    {/if}
-
-    {#if files.preview}
-      <div class="editor-frame" class:is-loading={files.scan.loading}>
-        <div class="editor-toolbar" aria-label="Editor controls">
-          <div class="editor-file-state" title={files.preview.relativePath}>
-            <span class="editor-file-glyph" aria-hidden="true">
-              <FileCode2 size={13} strokeWidth={1.8} />
-            </span>
-            <div class="editor-file-title">
-              <strong>{files.preview.fileName}</strong>
-              <small>
-                {selectedIndex} / {files.records.length}
-                {#if files.selectedSourceLine}
-                  · line {files.selectedSourceLine}
-                {/if}
-              </small>
-            </div>
-            {#if selectedSourceDirty}
-              <Chip size="xs" tone="attention">modified</Chip>
-            {/if}
-            {#if sourceIntelligenceAvailable}
-              <span class="editor-lsp-chip" title={sourceLspStatusTitle()}>
-                <Chip
-                  size="xs"
-                  tone={sourceLspStatus?.available ? 'good' : (!sourceLspStatusLoading ? 'attention' : 'muted')}
-                >
-                  {sourceLspStatusLabel()}
-                </Chip>
-              </span>
-            {/if}
-          </div>
-          {#if sourceIntelligenceAvailable}
-            <div class="editor-lsp-recovery-strip" aria-label="Language server recovery actions">
-              <button
-                class="editor-lsp-recovery-action"
-                type="button"
-                aria-label="Retry language server status"
-                title="Retry language server status"
-                disabled={sourceLspStatusLoading}
-                onclick={() => loadSourceLspStatus(files.preview, selectedProject)}
-              >
-                <RefreshCw size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="editor-lsp-recovery-action"
-                type="button"
-                aria-label="Copy language server status"
-                title="Copy language server status"
-                onclick={copySourceLspStatusReport}
-              >
-                <Copy size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="editor-lsp-recovery-action"
-                type="button"
-                aria-label="Copy language server install command"
-                title="Copy language server install command"
-                disabled={sourceLspStatus?.available || !sourceLspInstallCommand()}
-                onclick={copySourceLspInstallCommand}
-              >
-                <Terminal size={13} strokeWidth={2} />
-              </button>
-            </div>
-          {/if}
-          {#if selectedSourceMarkdownPreviewAvailable}
-            <div class="editor-mode-toggle" role="tablist" aria-label="Markdown editor mode">
-              <button
-                class:active={selectedSourceEditorDisplayMode === 'source'}
-                type="button"
-                role="tab"
-                aria-selected={selectedSourceEditorDisplayMode === 'source'}
-                title="Edit Markdown source"
-                onclick={() => setSelectedSourceEditorDisplayMode('source')}
-              >
-                <FileCode2 size={12} strokeWidth={2} />
-                <span>Source</span>
-              </button>
-              <button
-                class:active={selectedSourceEditorDisplayMode === 'preview'}
-                type="button"
-                role="tab"
-                aria-selected={selectedSourceEditorDisplayMode === 'preview'}
-                title="Preview Markdown"
-                onclick={() => setSelectedSourceEditorDisplayMode('preview')}
-              >
-                <BookOpen size={12} strokeWidth={2} />
-                <span>Preview</span>
-              </button>
-            </div>
-          {/if}
-          <div class="editor-menu-anchor">
-            <button
-              class="editor-icon-button"
-              class:active={!editorInsightCollapsed}
-              type="button"
-              aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
-              title={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
-              onclick={toggleEditorInsightCollapsed}
-            >
-              <SplitSquareHorizontal size={14} strokeWidth={2} />
-            </button>
-            <button
-              class="editor-icon-button"
-              type="button"
-              aria-label="Editor actions"
-              aria-haspopup="menu"
-              aria-expanded={editorActionMenuOpen}
-              title="Editor actions"
-              onclick={toggleEditorActionMenu}
-            >
-              <MoreHorizontal size={15} strokeWidth={2} />
-            </button>
-            {#if editorActionMenuOpen}
-              <div class="editor-action-menu" role="menu" aria-label="Editor actions">
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Save source file"
-                  disabled={!selectedSourceDirty || files.fileActionBusy === 'save'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void saveSelectedSourceFile();
-                  }}
-                >
-                  <Save size={13} strokeWidth={2} />
-                  <span>Save</span>
-                  <kbd>Cmd+S</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Save all source files"
-                  disabled={dirtyProjectSourceRecords.length === 0 || files.fileActionBusy === 'save-all'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void saveAllDirtySourceFiles();
-                  }}
-                >
-                  <Save size={13} strokeWidth={2} />
-                  <span>Save all</span>
-                  <kbd>{dirtyProjectSourceRecords.length}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Close current source tab"
-                  disabled={!files.selectedRecord}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void closeSelectedSourceTab();
-                  }}
-                >
-                  <X size={13} strokeWidth={2} />
-                  <span>Close tab</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Close other clean source tabs"
-                  disabled={!files.selectedRecord || otherCleanProjectOpenSourceTabCount === 0}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void closeOtherCleanSourceTabs();
-                  }}
-                >
-                  <X size={13} strokeWidth={2} />
-                  <span>Close other clean</span>
-                  <kbd>{otherCleanProjectOpenSourceTabCount}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Close all clean source tabs"
-                  disabled={cleanProjectOpenSourceTabCount === 0}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void closeAllCleanSourceTabs();
-                  }}
-                >
-                  <X size={13} strokeWidth={2} />
-                  <span>Close clean tabs</span>
-                  <kbd>{cleanProjectOpenSourceTabCount}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Format source file"
-                  disabled={!files.preview || files.scan.loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('format');
-                  }}
-                >
-                  <Braces size={13} strokeWidth={2} />
-                  <span>Format</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Rename symbol"
-                  disabled={!files.preview || files.scan.loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('rename');
-                  }}
-                >
-                  <Braces size={13} strokeWidth={2} />
-                  <span>Rename</span>
-                  <kbd>F2</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Quick fix"
-                  disabled={!files.preview || files.scan.loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('quick-fix');
-                  }}
-                >
-                  <Activity size={13} strokeWidth={2} />
-                  <span>Quick fix</span>
-                  <kbd>Alt+Enter</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Revert source file"
-                  disabled={!selectedSourceDirty || files.fileActionBusy === 'save'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    revertSelectedSourceFile();
-                  }}
-                >
-                  <RotateCcw size={13} strokeWidth={2} />
-                  <span>Revert</span>
-                </button>
-                <hr />
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    toggleEditorInsightCollapsed();
-                  }}
-                >
-                  <SplitSquareHorizontal size={13} strokeWidth={2} />
-                  <span>{editorInsightCollapsed ? 'Show insights' : 'Hide insights'}</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show Git panel"
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    showEditorInsightPanel('git');
-                  }}
-                >
-                  <FolderGit2 size={13} strokeWidth={2} />
-                  <span>Git</span>
-                  <kbd>{selectedSourceGitBadge()}</kbd>
-                </button>
-                <hr />
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={files.fileActionBusy === 'copy'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void copySelectedPath();
-                  }}
-                >
-                  {#if files.fileActionStatus === 'Path copied'}
-                    <Check size={13} strokeWidth={2} />
-                  {:else}
-                    <Copy size={13} strokeWidth={2} />
-                  {/if}
-                  <span>Copy path</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={files.fileActionBusy === 'open'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void openSelectedFile();
-                  }}
-                >
-                  <ExternalLink size={13} strokeWidth={2} />
-                  <span>Open in IDE</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={files.fileActionBusy === 'reveal'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void revealSelectedFile();
-                  }}
-                >
-                  <FolderSearch size={13} strokeWidth={2} />
-                  <span>Reveal file</span>
-                </button>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-        <div class="editor-body-grid">
-          <div class="editor-canvas">
-            {#if selectedSourceMarkdownPreviewAvailable && selectedSourceEditorDisplayMode === 'preview'}
-              <SourceMarkdownPreview
-                content={selectedSourceDraftContent}
-                fileName={files.preview.fileName}
-                relativePath={files.preview.relativePath}
-                dirty={selectedSourceDirty}
-              />
-            {:else}
-              {#key sourcePreviewAppearanceKey}
-                <MonacoSourceEditor
-                  preview={files.preview}
-                  content={selectedSourceDraftContent}
-                  editable={true}
-                  appearanceOverride={editorAppearanceOverride}
-                  externalDiagnostics={sourceLspDiagnostics}
-                  loading={files.scan.loading}
-                  targetLine={files.selectedSourceLine}
-                  targetLineRequestId={files.selectedSourceLineRequestId}
-                  intelligenceCommand={sourceIntelligenceCommand}
-                  onCodeActionLookup={handleEditorCodeActionLookup}
-                  onContentChange={updateSelectedSourceDraft}
-                  onCommandPaletteRequest={openCommandPalette}
-                  onCompletionLookup={handleEditorCompletionLookup}
-                  onDiagnosticsChange={handleEditorDiagnosticsChange}
-                  onDefinitionLookup={handleEditorDefinitionLookup}
-                  onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}
-                  onExternalNavigation={navigateEditorExternalSource}
-                  onExternalPreviewLookup={loadEditorExternalSourcePreview}
-                  onFormatDocument={handleEditorFormatDocument}
-                  onGoToLineRequest={openCurrentFileGoToLine}
-                  onHoverLookup={handleEditorHoverLookup}
-                  onImplementationLookup={handleEditorImplementationLookup}
-                  onInlayHintLookup={handleEditorInlayHintLookup}
-                  onNavigateBackRequest={navigateSourceBack}
-                  onNavigateForwardRequest={navigateSourceForward}
-                  onNextProblemRequest={selectNextSourceDiagnostic}
-                  onPreviousProblemRequest={selectPreviousSourceDiagnostic}
-                  onQuickOpenRequest={openQuickOpen}
-                  onReferenceCountLookup={handleEditorReferenceCountLookup}
-                  onReferenceLookup={handleEditorReferenceLookup}
-                  onRename={handleEditorRename}
-                  onSaveRequest={saveSelectedSourceFile}
-                  onSemanticTokensLookup={handleEditorSemanticTokensLookup}
-                  onSignatureHelpLookup={handleEditorSignatureHelpLookup}
-                  onSymbolsChange={handleEditorSymbolsChange}
-                  onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
-                  onWorkspaceEditAction={handleEditorWorkspaceEditAction}
-                />
-              {/key}
-            {/if}
-          </div>
-
+      {#snippet editorInsightsPanel()}
           {#if sourceIntelligencePanelMounted()}
             <SourceDockviewShell
               shellClass="source-dockview-insights-parking"
@@ -18467,58 +18106,70 @@
             </aside>
             </SourceDockviewShell>
           {/if}
-        </div>
-      </div>
-    {:else}
-      <div class="empty-preview">
-        <FileCode2 size={34} strokeWidth={1.55} />
-        <strong>No source file loaded</strong>
-        <span>Scan a project or choose a file from the tree.</span>
-      </div>
-    {/if}
-            {:else}
-              <button
-                class="editor-file-placeholder"
-                type="button"
-                title={tab.relativePath}
-                onclick={() => selectOpenTab(tab)}
-              >
-                <FileCode2 size={28} strokeWidth={1.55} />
-                <strong>{tab.fileName}</strong>
-                <span>{tab.relativePath}</span>
-                <small>
-                  {tab.language}
-                  {#if tabGitStatus}
-                    · {tabGitStatus.status}
-                  {/if}
-                  {#if isSourcePathDirty(tab.path)}
-                    · modified
-                  {/if}
-                </small>
-              </button>
-            {/if}
-          </section>
-        {/each}
-      </SourceDockviewShell>
-    {:else}
-      {#if files.fileActionStatus}
-        <div class="file-action-feedback">{files.fileActionStatus}</div>
-      {/if}
-
-      {#if error}
-        <div class="inline-error">
-          <Activity size={15} strokeWidth={1.8} />
-          <span>{error}</span>
-        </div>
-      {/if}
-
-      <div class="empty-preview">
-        <FileCode2 size={34} strokeWidth={1.55} />
-        <strong>No source file loaded</strong>
-        <span>Scan a project or choose a file from the tree.</span>
-      </div>
-    {/if}
-      </section>
+      {/snippet}
+      <EditorPanel
+        panelAction={sourceDockviewPanelAction}
+        filePanelAction={sourceEditorFileDockviewPanelAction}
+        filePanelID={sourceEditorFilePanelID}
+        fileDockviewReady={sourceEditorFileDockviewReady}
+        fileDockviewError={sourceEditorFileDockviewError}
+        fileDockviewHostAction={sourceEditorFileDockviewHostAction}
+        openTabs={projectOpenSourceTabs}
+        selectedPath={files.selectedRecord?.path}
+        preview={files.preview}
+        draftContent={selectedSourceDraftContent}
+        loading={files.scan.loading}
+        selectedSourceLine={files.selectedSourceLine}
+        selectedSourceLineRequestId={files.selectedSourceLineRequestId}
+        fileActionStatus={files.fileActionStatus}
+        fileActionBusy={files.fileActionBusy}
+        error={error}
+        selectedIndex={selectedIndex}
+        recordCount={files.records.length}
+        selectedProject={selectedProject}
+        isDirty={isSourcePathDirty}
+        selectedDirty={selectedSourceDirty}
+        dirtyCount={dirtyProjectSourceRecords.length}
+        cleanTabCount={cleanProjectOpenSourceTabCount}
+        otherCleanTabCount={otherCleanProjectOpenSourceTabCount}
+        markdownPreviewAvailable={selectedSourceMarkdownPreviewAvailable}
+        displayMode={selectedSourceEditorDisplayMode}
+        appearanceKey={sourcePreviewAppearanceKey}
+        appearanceOverride={editorAppearanceOverride}
+        intelligenceAvailable={sourceIntelligenceAvailable}
+        intelligenceCommand={sourceIntelligenceCommand}
+        lspDiagnostics={sourceLspDiagnostics}
+        lspStatus={sourceLspStatus}
+        lspStatusLoading={sourceLspStatusLoading}
+        lspStatusLabel={sourceLspStatusLabel}
+        lspStatusTitle={sourceLspStatusTitle}
+        lspInstallCommand={sourceLspInstallCommand}
+        gitBadge={selectedSourceGitBadge}
+        insightCollapsed={editorInsightCollapsed}
+        actionMenuOpen={editorActionMenuOpen}
+        monaco={editorMonacoCallbacks}
+        onSelectTab={selectOpenTab}
+        gitStatusForRecord={gitStatusForSourceRecord}
+        onSetDisplayMode={setSelectedSourceEditorDisplayMode}
+        onToggleInsightCollapsed={toggleEditorInsightCollapsed}
+        onToggleActionMenu={toggleEditorActionMenu}
+        onCloseActionMenu={closeEditorActionMenu}
+        onSave={() => void saveSelectedSourceFile()}
+        onSaveAll={() => void saveAllDirtySourceFiles()}
+        onCloseTab={() => void closeSelectedSourceTab()}
+        onCloseOtherClean={() => void closeOtherCleanSourceTabs()}
+        onCloseAllClean={() => void closeAllCleanSourceTabs()}
+        onIntelligenceAction={requestSourceIntelligenceAction}
+        onRevert={revertSelectedSourceFile}
+        onShowInsightPanel={showEditorInsightPanel}
+        onCopyPath={() => void copySelectedPath()}
+        onOpenInIDE={() => void openSelectedFile()}
+        onRevealFile={() => void revealSelectedFile()}
+        onLoadLspStatus={loadSourceLspStatus}
+        onCopyLspReport={copySourceLspStatusReport}
+        onCopyLspInstall={copySourceLspInstallCommand}
+        insights={editorInsightsPanel}
+      />
       </SourceDockviewShell>
 
       <div class="source-runtime-panel-stage" aria-hidden="true">
@@ -21799,24 +21450,6 @@
     font-weight: 700;
   }
 
-  .empty-preview {
-    flex: 1 1 auto;
-    min-height: 520px;
-    border: 1px dashed rgba(255, 255, 255, 0.13);
-    border-radius: 13px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .empty-preview strong {
-    color: #f3f6f5;
-    font-size: 16px;
-  }
-
-  .empty-preview span {
-    color: #9aa5a1;
-    font-weight: 650;
-  }
-
   .workspace {
     position: relative;
     display: flex;
@@ -22853,105 +22486,6 @@
     min-width: 0;
   }
 
-  .file-action-feedback {
-    margin: -4px 0 10px;
-    color: #7ce5d5;
-    font-size: 11px;
-    font-weight: 750;
-  }
-
-  .inline-error {
-    display: inline-grid;
-    grid-auto-flow: column;
-    align-items: center;
-    gap: 7px;
-    margin-bottom: 12px;
-    color: #f1b8a4;
-    font-size: 12px;
-    font-weight: 650;
-  }
-
-  .editor-frame {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    height: auto;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 8px;
-    background: #17191e;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.07),
-      0 18px 45px rgba(0, 0, 0, 0.2);
-  }
-
-  .source-editor-dock-panel {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .source-editor-file-pane {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .editor-file-placeholder {
-    display: grid;
-    place-items: center;
-    align-content: center;
-    gap: 5px;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    color: #8f9a96;
-    border: 0;
-    background: #17191e;
-    cursor: pointer;
-  }
-
-  .editor-file-placeholder strong,
-  .editor-file-placeholder span,
-  .editor-file-placeholder small {
-    max-width: min(520px, 86%);
-    overflow: hidden;
-    text-align: center;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-file-placeholder strong {
-    color: #f2f6f5;
-    font-size: 13px;
-    font-weight: 820;
-  }
-
-  .editor-file-placeholder span,
-  .editor-file-placeholder small {
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .editor-file-placeholder:hover,
-  .editor-file-placeholder:focus-visible {
-    color: #bff8ef;
-    outline: 0;
-  }
-
   :global(.source-dockview-workbench-shell .editor-frame),
   :global(.source-dockview-workbench-shell .empty-preview),
   :global(.source-dockview-workbench-shell .source-dockview-editor-files-shell),
@@ -23176,272 +22710,6 @@
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .editor-toolbar {
-    display: grid;
-    position: relative;
-    grid-template-columns: minmax(0, 1fr) repeat(3, auto);
-    align-items: center;
-    gap: var(--space-2);
-    height: 28px;
-    padding: 0 var(--space-2);
-    border-bottom: 1px solid var(--color-border);
-    background: transparent;
-  }
-
-  .editor-mode-toggle {
-    display: inline-grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: center;
-    width: 128px;
-    min-width: 0;
-    height: 22px;
-    padding: 2px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: var(--color-surface);
-  }
-
-  .editor-mode-toggle button {
-    display: inline-grid;
-    grid-template-columns: 12px minmax(0, 1fr);
-    align-items: center;
-    gap: var(--space-1);
-    min-width: 0;
-    height: 18px;
-    padding: 0 var(--space-1);
-    color: var(--color-text-2);
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    cursor: pointer;
-  }
-
-  .editor-mode-toggle button.active {
-    color: var(--color-live);
-    background: var(--color-live-bg);
-  }
-
-  .editor-mode-toggle button:hover,
-  .editor-mode-toggle button:focus-visible {
-    color: var(--color-text);
-    outline: 0;
-  }
-
-  .editor-mode-toggle span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-file-state {
-    display: inline-grid;
-    grid-template-columns: 14px minmax(0, 1fr) auto auto;
-    align-items: center;
-    justify-self: start;
-    gap: var(--space-2);
-    min-width: 0;
-    max-width: 100%;
-    height: 20px;
-    padding: 0 var(--space-1);
-    color: var(--color-text);
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-  }
-
-  .editor-file-glyph {
-    display: inline-flex;
-    align-items: center;
-    color: var(--color-text-3);
-  }
-
-  .editor-file-state strong,
-  .editor-file-state small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-file-title {
-    display: inline-flex;
-    align-items: baseline;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-
-  .editor-file-state strong {
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-  }
-
-  .editor-file-state small {
-    flex: 0 0 auto;
-    color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-  }
-
-  .editor-lsp-chip {
-    display: inline-flex;
-    align-items: center;
-    min-width: 0;
-  }
-
-  .editor-lsp-recovery-strip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    min-width: 0;
-    height: 22px;
-    padding: 0 var(--space-1);
-    border-radius: var(--radius-sm);
-    background: transparent;
-  }
-
-  .editor-lsp-recovery-action {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 20px;
-    padding: 0;
-    color: var(--color-text-2);
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-lsp-recovery-action:hover:not(:disabled),
-  .editor-lsp-recovery-action:focus-visible {
-    color: var(--color-text);
-    outline: 0;
-    background: var(--color-live-bg);
-  }
-
-  .editor-lsp-recovery-action:disabled {
-    cursor: default;
-    opacity: 0.38;
-  }
-
-  .editor-menu-anchor {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    min-width: 0;
-  }
-
-  .editor-icon-button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 22px;
-    color: var(--color-text-2);
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-icon-button:hover,
-  .editor-icon-button:focus-visible {
-    color: var(--color-text);
-    outline: 0;
-    background: var(--color-live-bg);
-  }
-
-  .editor-icon-button.active {
-    color: var(--color-live);
-    background: var(--color-live-bg);
-  }
-
-  .editor-action-menu {
-    position: absolute;
-    z-index: 8;
-    top: calc(100% + 3px);
-    right: 0;
-    display: grid;
-    width: 230px;
-    min-width: 0;
-    padding: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 8px;
-    background: rgba(22, 25, 25, 0.98);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
-  }
-
-  .editor-action-menu button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd3d1;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    font-size: 11px;
-    font-weight: 730;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .editor-action-menu button:hover:not(:disabled),
-  .editor-action-menu button:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .editor-action-menu button:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .editor-action-menu span,
-  .editor-action-menu kbd {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-action-menu kbd {
-    color: #8d9995;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .editor-action-menu hr {
-    width: 100%;
-    height: 1px;
-    margin: 4px 0;
-    border: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .editor-body-grid {
-    display: grid;
-    flex: 1 1 auto;
-    grid-template-columns: minmax(0, 1fr);
-    min-height: 0;
-  }
-
-  .editor-canvas {
-    position: relative;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
   }
 
   .source-intelligence-panel {
@@ -25357,10 +24625,6 @@
 
     .repo-dashboard-row {
       grid-template-columns: minmax(0, 1fr);
-    }
-
-    .editor-frame {
-      height: 520px;
     }
 
     .terminal-launchpad-header {
