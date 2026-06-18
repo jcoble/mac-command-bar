@@ -193,7 +193,6 @@
 		onNavigateBackRequest?: () => void;
 		onNavigateForwardRequest?: () => void;
 		onNextProblemRequest?: SourceEditorProblemNavigation;
-		onProblemsRequest?: () => void;
 		onPreviousProblemRequest?: SourceEditorProblemNavigation;
 		onQuickOpenRequest?: () => void;
 		onReferenceLookup?: SourceEditorReferenceLookup;
@@ -203,7 +202,6 @@
 		onInlayHintLookup?: SourceEditorInlayHintLookup;
 		onSemanticTokensLookup?: SourceEditorSemanticTokensLookup;
 		onSignatureHelpLookup?: SourceEditorSignatureHelpLookup;
-		onSymbolsRequest?: () => void;
 		onSymbolsChange?: (symbols: SourceSymbol[]) => void;
 		onTypeDefinitionLookup?: SourceEditorTypeDefinitionLookup;
 		onWorkspaceEditAction?: (action: SourceCodeAction) => void | Promise<void>;
@@ -235,7 +233,6 @@
 		onNavigateBackRequest,
 		onNavigateForwardRequest,
 		onNextProblemRequest,
-		onProblemsRequest,
 		onPreviousProblemRequest,
 		onQuickOpenRequest,
 		onReferenceLookup,
@@ -245,7 +242,6 @@
 		onInlayHintLookup,
 		onSemanticTokensLookup,
 		onSignatureHelpLookup,
-		onSymbolsRequest,
 		onSymbolsChange,
 		onTypeDefinitionLookup,
 		onWorkspaceEditAction,
@@ -1614,16 +1610,6 @@
 		void editor?.getAction("editor.action.showHover")?.run();
 	}
 
-	function requestSymbolsAtCursor() {
-		const quickOutlineAction = editor?.getAction("editor.action.quickOutline");
-		if (quickOutlineAction) {
-			void quickOutlineAction.run();
-			return;
-		}
-
-		onSymbolsRequest?.();
-	}
-
 	function requestProblemNavigationAtCursor(direction: 1 | -1) {
 		const position = editor?.getPosition();
 		if (!position) return;
@@ -1958,22 +1944,6 @@
 				contextMenuGroupId: "navigation",
 				contextMenuOrder: 0.22,
 				run: () => onNavigateForwardRequest?.(),
-			}),
-			editor.addAction({
-				id: "mcb.source.showSymbols",
-				label: "Show Symbols",
-				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyO],
-				contextMenuGroupId: "navigation",
-				contextMenuOrder: 0.3,
-				run: () => requestSymbolsAtCursor(),
-			}),
-			editor.addAction({
-				id: "mcb.source.showProblems",
-				label: "Show Problems",
-				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyM],
-				contextMenuGroupId: "navigation",
-				contextMenuOrder: 0.4,
-				run: () => onProblemsRequest?.(),
 			}),
 			editor.addAction({
 				id: "mcb.source.nextProblem",
