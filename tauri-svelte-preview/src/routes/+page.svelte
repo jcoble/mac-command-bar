@@ -962,12 +962,7 @@
   let activeAgentRowActionMenu = $state<string | null>(null);
   let activeWorktreeRowActionMenu = $state<string | null>(null);
   let activeGitRowActionMenu = $state<string | null>(null);
-  let loading = $state(true);
-  let scanning = $state(false);
-  let activeSourceScanId = $state('');
-  let sourceScanProgress = $state<NativeSourceScanProgress | null>(null);
-  let sourceScanStats = $state<SourceScanStats | null>(null);
-  let scanLimitReached = $state(false);
+  // Scan/index state moved to files.scan.* (Phase A4); runtime/error stay page-level (cross-cutting).
   let runtime = $state('pending source scan');
   let error = $state('');
   let fileActionStatus = $state('');
@@ -1179,19 +1174,19 @@
     files.preview ? sourceSupportsLanguageIntelligence(files.preview.language) : false
   );
   let sourceDiagnosticSummary = $derived(formatSourceDiagnosticSummary(sourceDiagnostics));
-  let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId));
+  let sourceIndexLoading = $derived(files.scan.scanning || Boolean(files.scan.activeScanId));
   let scanSummaryLabel = $derived(
-    formatSourceScanSummary(filteredRecords.length, files.records.length, scanLimitReached, files.query)
+    formatSourceScanSummary(filteredRecords.length, files.records.length, files.scan.limitReached, files.query)
   );
   let sourceScanHealth = $derived(
     formatSourceScanHealth({
       totalCount: files.records.length,
       filteredCount: filteredRecords.length,
-      truncated: scanLimitReached,
+      truncated: files.scan.limitReached,
       requestedLimit: expandedSourceScanLimit,
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
       query: files.query,
-      scanning,
+      scanning: files.scan.scanning,
       loading: sourceIndexLoading,
       error
     })
@@ -1218,7 +1213,7 @@
       mode: selectedProjectScanMode,
       entry: selectedProjectIndexEntry,
       requestedLimit: expandedSourceScanLimit,
-      scanning,
+      scanning: files.scan.scanning,
       loading: sourceIndexLoading,
       error
     })
@@ -1227,14 +1222,14 @@
     formatSourceScanRecovery({
       totalCount: files.records.length,
       filteredCount: filteredRecords.length,
-      truncated: scanLimitReached,
+      truncated: files.scan.limitReached,
       requestedLimit: expandedSourceScanLimit,
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
       query: files.query,
-      scanning,
+      scanning: files.scan.scanning,
       loading: sourceIndexLoading,
       error,
-      stats: sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null
+      stats: files.scan.stats ?? selectedProjectIndexEntry?.stats ?? null
     })
   );
   let selectedProjectIndexSummary = $derived(
@@ -1245,14 +1240,14 @@
     )
   );
   let sourceScanStatsLabel = $derived(
-    formatSourceScanStats(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
+    formatSourceScanStats(files.scan.stats ?? selectedProjectIndexEntry?.stats ?? null)
   );
   let sourceSidebarIndexStatusLabel = $derived(sourceSidebarIndexStatus());
   let sourceSidebarScanMetaLabel = $derived(sourceSidebarScanMeta());
   let sourceSidebarTreeCountLabel = $derived(sourceSidebarTreeCount());
   let sourceSidebarTreeStatusLabel = $derived(sourceSidebarTreeStatus());
   let sourceSidebarScanTelemetryLabel = $derived(
-    sourceSidebarScanTelemetry(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
+    sourceSidebarScanTelemetry(files.scan.stats ?? selectedProjectIndexEntry?.stats ?? null)
   );
   let sourceSidebarCompactStatusLabel = $derived(sourceSidebarCompactStatus());
   let sourceRuntimeNotice = $derived(sourceRuntimeNoticeText(runtime, error));
@@ -1808,21 +1803,21 @@
       id: 'scan-project',
       label: 'Scan current project',
       detail: selectedProject.name,
-      disabled: scanning,
+      disabled: files.scan.scanning,
       perform: () => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-project-expanded',
       label: `Scan current project up to ${expandedSourceScanLimit.toLocaleString()} files`,
       detail: selectedProject.name,
-      disabled: scanning,
+      disabled: files.scan.scanning,
       perform: () => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-reset-index',
       label: `Reset project index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`,
       detail: selectedProjectIndexSummary,
-      disabled: scanning,
+      disabled: files.scan.scanning,
       perform: () => resetProjectScanCache(selectedProject)
     },
     {
@@ -1843,8 +1838,8 @@
     {
       id: 'scan-stop',
       label: 'Stop source scan',
-      detail: sourceScanProgress?.status ?? 'Cancel the active scanner',
-      disabled: !scanning,
+      detail: files.scan.progress?.status ?? 'Cancel the active scanner',
+      disabled: !files.scan.scanning,
       perform: cancelSourceScan
     },
     {
@@ -1865,14 +1860,14 @@
       id: 'project-use-git-root',
       label: 'Use detected Git root',
       detail: selectedProjectGitRootSuggestion || selectedProjectRootValidationSummary,
-      disabled: !selectedProjectGitRootSuggestion || projectRootValidating || scanning,
+      disabled: !selectedProjectGitRootSuggestion || projectRootValidating || files.scan.scanning,
       perform: useValidatedGitRootForSelectedProject
     },
     {
       id: 'project-repair-onboarding',
       label: 'Repair project setup',
       detail: `${selectedProject.name} · validate, clear index, rescan`,
-      disabled: projectRootValidating || scanning,
+      disabled: projectRootValidating || files.scan.scanning,
       perform: repairSelectedProjectOnboarding
     },
     {
@@ -2095,35 +2090,35 @@
       id: 'format-document',
       label: 'Format document',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('format')
     },
     {
       id: 'rename-symbol',
       label: 'Rename symbol',
       detail: 'F2',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('rename')
     },
     {
       id: 'quick-fix',
       label: 'Quick fix',
       detail: 'Alt+Enter',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('quick-fix')
     },
     {
       id: 'trigger-completions',
       label: 'Trigger completions',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('completion')
     },
     {
       id: 'show-signature-help',
       label: 'Show signature help',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('signature-help')
     },
     {
@@ -2165,28 +2160,28 @@
       id: 'go-definition',
       label: 'Go to definition',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading,
+      disabled: !files.preview || files.scan.loading,
       perform: () => requestSourceIntelligenceAction('definition')
     },
     {
       id: 'find-references',
       label: 'Find references',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading,
+      disabled: !files.preview || files.scan.loading,
       perform: () => requestSourceIntelligenceAction('references')
     },
     {
       id: 'find-implementations',
       label: 'Find implementations',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('implementation')
     },
     {
       id: 'go-type-definition',
       label: 'Go to type definition',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('type-definition')
     },
     {
@@ -3348,10 +3343,10 @@
       setSourceScanMode(project.id, 'repair');
       fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
     } else if (cachedScan) {
-      activeSourceScanId = '';
-      sourceScanProgress = null;
-      scanning = false;
-      loading = true;
+      files.scan.activeScanId = '';
+      files.scan.progress = null;
+      files.scan.scanning = false;
+      files.scan.loading = true;
       error = '';
       runtime = 'cached source scan';
       setSourceScanMode(project.id, 'cache');
@@ -3368,17 +3363,17 @@
       if (nextSelection) {
         await loadRecord(nextSelection, generation);
       } else {
-        loading = false;
+        files.scan.loading = false;
       }
       return;
     }
 
-    scanning = true;
-    loading = true;
+    files.scan.scanning = true;
+    files.scan.loading = true;
     const scanId = createSourceScanId();
-    activeSourceScanId = scanId;
-    sourceScanProgress = null;
-    sourceScanStats = null;
+    files.scan.activeScanId = scanId;
+    files.scan.progress = null;
+    files.scan.stats = null;
     error = '';
     runtime = 'scanning source files';
     setSourceScanMode(project.id, 'native');
@@ -3458,46 +3453,46 @@
       if (nextSelection) {
         await loadRecord(nextSelection, generation);
       } else {
-        loading = false;
+        files.scan.loading = false;
       }
     } catch (scanError) {
       if (generation !== scanGeneration) return;
       files.records = [];
       files.selectedRecord = null;
       files.selectedSourceLine = null;
-      scanLimitReached = false;
-      sourceScanStats = null;
+      files.scan.limitReached = false;
+      files.scan.stats = null;
       files.preview = null;
       files.expandedFolderIds = new Set();
       syncSourcePreviewContent(null);
       runtime = 'source scan unavailable';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
       setSourceScanMode(project.id, 'failed');
-      loading = false;
+      files.scan.loading = false;
     } finally {
       if (generation === scanGeneration) {
-        scanning = false;
-        activeSourceScanId = '';
-        sourceScanProgress = null;
-        if (!files.selectedRecord) loading = false;
+        files.scan.scanning = false;
+        files.scan.activeScanId = '';
+        files.scan.progress = null;
+        if (!files.selectedRecord) files.scan.loading = false;
       }
     }
   }
 
   function cancelSourceScan() {
-    if (!scanning) return;
+    if (!files.scan.scanning) return;
 
-    if (activeSourceScanId) {
-      void cancelSourceScanFromTauri(activeSourceScanId).catch(() => {
+    if (files.scan.activeScanId) {
+      void cancelSourceScanFromTauri(files.scan.activeScanId).catch(() => {
         // Stop is optimistic; stale scan results are already ignored by generation.
       });
     }
     scanGeneration += 1;
-    scanning = false;
-    loading = false;
-    activeSourceScanId = '';
-    sourceScanProgress = null;
-    sourceScanStats = null;
+    files.scan.scanning = false;
+    files.scan.loading = false;
+    files.scan.activeScanId = '';
+    files.scan.progress = null;
+    files.scan.stats = null;
     runtime = 'source scan stopped';
     error = '';
     setSourceScanMode(selectedProject.id, 'stopped');
@@ -3521,8 +3516,8 @@
     files.selectedSourceLine = null;
     files.navBackStack = [];
     files.navForwardStack = [];
-    scanLimitReached = false;
-    sourceScanStats = null;
+    files.scan.limitReached = false;
+    files.scan.stats = null;
     files.preview = null;
     files.expandedFolderIds = new Set();
     syncSourcePreviewContent(null);
@@ -3590,8 +3585,8 @@
     const rootLabel = selectedProjectRootValidation
       ? projectRootValidationSummary(selectedProjectRootValidation)
       : 'Root not checked';
-    const scanLabel = scanning && sourceScanProgress
-      ? `Scanning ${sourceScanProgress.matchedFiles.toLocaleString()} files / ${sourceScanProgress.visitedEntries.toLocaleString()} entries`
+    const scanLabel = files.scan.scanning && files.scan.progress
+      ? `Scanning ${files.scan.progress.matchedFiles.toLocaleString()} files / ${files.scan.progress.visitedEntries.toLocaleString()} entries`
       : selectedProjectScanEvidence.label;
 
     return [rootLabel, scanLabel, scanCap].filter(Boolean).join(' · ');
@@ -3615,7 +3610,7 @@
 
     if (error.trim() || indexError) return 'Scan needs attention';
     if (sourceScanNeedsAttention) return sourceScanHealth.summary;
-    if (scanning) return 'Scanning source files';
+    if (files.scan.scanning) return 'Scanning source files';
     if (backgroundIndexingProjectIDs.has(selectedProject.id)) return 'Indexing in background';
     if (normalizedQuery.length > 0) return 'File filter active';
     if (selectedProjectIndexEntry) return selectedProjectIndexEntry.truncated ? 'Index ready · limited' : 'Index ready';
@@ -3631,7 +3626,7 @@
       parts.push(`Filter: ${normalizedQuery}`);
     }
 
-    if (scanning) {
+    if (files.scan.scanning) {
       parts.push('Native scan');
     } else {
       switch (selectedProjectScanMode) {
@@ -3667,7 +3662,7 @@
     }
 
     parts.push(
-      scanLimitReached || selectedProjectIndexEntry?.truncated
+      files.scan.limitReached || selectedProjectIndexEntry?.truncated
         ? `${expandedSourceScanLimit.toLocaleString()} cap reached`
         : `${expandedSourceScanLimit.toLocaleString()} cap`
     );
@@ -3714,7 +3709,7 @@
     return Boolean(
       sourceSidebarScanTelemetryLabel &&
         (sourceScanNeedsAttention ||
-          scanLimitReached ||
+          files.scan.limitReached ||
           selectedProjectScanEvidence.tone === 'warning' ||
           selectedProjectScanEvidence.tone === 'error')
     );
@@ -4712,7 +4707,7 @@
 
   function sourceScanDiagnosticBrief() {
     const indexEntry = selectedProjectIndexEntry;
-    const stats = sourceScanStats ?? indexEntry?.stats ?? null;
+    const stats = files.scan.stats ?? indexEntry?.stats ?? null;
     const returnedFiles = stats?.returnedFiles ?? stats?.returnedCount;
     const requestedLimit = stats?.requestedLimit ?? stats?.effectiveLimit;
     const collectionLimit = stats?.collectionLimit;
@@ -4721,9 +4716,9 @@
     const skippedDirectories = stats?.skippedDirectories ?? stats?.skippedDirectoryCount;
     const unsupportedFiles = stats?.unsupportedFiles ?? stats?.unsupportedFileCount;
     const unreadableEntries = stats?.unreadableEntries ?? stats?.unreadableEntryCount;
-    const activeScan = scanning
-      ? `running (${(sourceScanProgress?.matchedFiles ?? files.records.length).toLocaleString()} matched / ${(
-          sourceScanProgress?.visitedEntries ?? 0
+    const activeScan = files.scan.scanning
+      ? `running (${(files.scan.progress?.matchedFiles ?? files.records.length).toLocaleString()} matched / ${(
+          files.scan.progress?.visitedEntries ?? 0
         ).toLocaleString()} visited)`
       : 'idle';
     const cacheState = indexEntry
@@ -4773,7 +4768,7 @@
       `Indexed files: ${files.records.length.toLocaleString()}`,
       `Filtered files: ${filteredRecords.length.toLocaleString()}`,
       `Query: ${files.query.trim() || 'none'}`,
-      `Limit reached: ${scanLimitReached ? 'yes' : 'no'}`,
+      `Limit reached: ${files.scan.limitReached ? 'yes' : 'no'}`,
       `Needs attention: ${sourceScanNeedsAttention ? 'yes' : 'no'}`,
       `Health: ${sourceScanHealthNote || 'ok'}`,
       `Scan evidence: ${selectedProjectScanEvidence.label}`,
@@ -4783,7 +4778,7 @@
       `Scan summary: ${scanSummaryLabel}`,
       `Scan stats: ${sourceScanStatsLabel || 'none'}`,
       `Active scan: ${activeScan}`,
-      `Loading: ${loading ? 'yes' : 'no'}`,
+      `Loading: ${files.scan.loading ? 'yes' : 'no'}`,
       `Runtime: ${runtime}`,
       `Browser source bridge active: ${runtime === 'browser source bridge' ? 'yes' : 'no'}`,
       error ? `Error: ${error}` : 'Error: none',
@@ -9191,8 +9186,8 @@
   ): SourceRecord | null {
     files.records = nextRecords;
     runtime = nextRuntime;
-    scanLimitReached = truncated;
-    sourceScanStats = stats;
+    files.scan.limitReached = truncated;
+    files.scan.stats = stats;
 
     const nextSelection = selectPreferredSourceRecord(
       nextRecords,
@@ -9223,7 +9218,7 @@
   }
 
   async function loadRecord(record: SourceRecord, expectedScanGeneration: number | null = null) {
-    loading = true;
+    files.scan.loading = true;
     error = '';
     fileActionStatus = '';
     resetSourceIntelligence();
@@ -9257,7 +9252,7 @@
       void loadSourceLspSymbols(nextPreview);
     } finally {
       if (expectedScanGeneration === null || expectedScanGeneration === scanGeneration) {
-        loading = false;
+        files.scan.loading = false;
         void loadSelectedSourceGitDiff(record);
       }
     }
@@ -9876,11 +9871,11 @@
     files.selectedSourceLine = null;
     pendingTreeRevealPath = null;
     pendingTreeFocusRowIndex = null;
-    scanLimitReached = false;
+    files.scan.limitReached = false;
     files.preview = null;
     resetSourceIntelligence();
     clearSelectedSourceGitDiff();
-    loading = false;
+    files.scan.loading = false;
     error = '';
     fileActionStatus = '';
     persistSelectedSourcePaths(nextSelectedSourcePaths);
@@ -10810,7 +10805,7 @@
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
-    if (!files.preview || loading) return;
+    if (!files.preview || files.scan.loading) return;
     if (
       (action === 'hover' ||
         action === 'implementation' ||
@@ -11253,7 +11248,7 @@
   function sourceActivityRefreshing(mode: SourceActivityMode) {
     switch (mode) {
       case 'files':
-        return scanning;
+        return files.scan.scanning;
       case 'clipboard':
         return fileActionBusy === 'paste-read';
       case 'conversations':
@@ -15487,8 +15482,8 @@
     let unlistenSourceScanProgress: (() => void) | null = null;
     let unlistenTerminalOutput: (() => void) | null = null;
     void listenToSourceScanProgress((progress) => {
-      if (progress.scanId === activeSourceScanId) {
-        sourceScanProgress = progress;
+      if (progress.scanId === files.scan.activeScanId) {
+        files.scan.progress = progress;
       }
     })
       .then((unlisten) => {
@@ -15880,16 +15875,16 @@
         <button
           class="scan-button"
           type="button"
-          aria-label={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-          title={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-          onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
+          aria-label={files.scan.scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
+          title={files.scan.scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
+          onclick={files.scan.scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
         >
-          {#if scanning}
+          {#if files.scan.scanning}
             <X size={15} strokeWidth={2} />
           {:else}
             <RefreshCw size={15} strokeWidth={1.8} />
           {/if}
-          <span>{scanning ? 'Stop' : `Scan ${expandedSourceScanLimitShortLabel}`}</span>
+          <span>{files.scan.scanning ? 'Stop' : `Scan ${expandedSourceScanLimitShortLabel}`}</span>
         </button>
       </div>
 
@@ -15901,16 +15896,16 @@
           </button>
         {/if}
       </div>
-      <div class="project-setup-row" title={projectSetupNoticeTitle()} aria-live={scanning ? 'polite' : 'off'}>
+      <div class="project-setup-row" title={projectSetupNoticeTitle()} aria-live={files.scan.scanning ? 'polite' : 'off'}>
         {#each projectSetupNoticeText().split(' · ') as setupSegment, setupIndex (setupIndex)}
           <Chip size="xs" tone="muted">{setupSegment}</Chip>
         {/each}
       </div>
 
-      {#if scanning && sourceScanProgress}
+      {#if files.scan.scanning && files.scan.progress}
         <div class="scan-progress" aria-live="polite" data-progress-event={sourceScanProgressEventName}>
-          <span>{sourceScanProgress.matchedFiles.toLocaleString()} files</span>
-          <span>{sourceScanProgress.visitedEntries.toLocaleString()} entries checked</span>
+          <span>{files.scan.progress.matchedFiles.toLocaleString()} files</span>
+          <span>{files.scan.progress.visitedEntries.toLocaleString()} entries checked</span>
         </div>
       {/if}
 
@@ -16106,7 +16101,7 @@
                 type="button"
                 aria-label="Use detected Git root"
                 title={selectedProjectGitRootSuggestion}
-                disabled={projectRootValidating || scanning}
+                disabled={projectRootValidating || files.scan.scanning}
                 onclick={useValidatedGitRootForSelectedProject}
               >
                 Use root
@@ -16161,7 +16156,7 @@
               </div>
             </div>
           {/if}
-          {#if scanLimitReached && !scanning}
+          {#if files.scan.limitReached && !files.scan.scanning}
             <button
               class="scan-more-button"
               type="button"
@@ -16181,7 +16176,7 @@
           onscroll={handleFileTreeScroll}
           aria-label="Files in selected project"
         >
-          {#if scanning && files.records.length === 0}
+          {#if files.scan.scanning && files.records.length === 0}
             {#each Array.from({ length: 8 }) as _, index}
               <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
             {/each}
@@ -18240,7 +18235,7 @@
     {/if}
 
     {#if files.preview}
-      <div class="editor-frame" class:is-loading={loading}>
+      <div class="editor-frame" class:is-loading={files.scan.loading}>
         <div class="editor-toolbar" aria-label="Editor controls">
           <div class="editor-file-state" title={files.preview.relativePath}>
             <span class="editor-file-glyph" aria-hidden="true">
@@ -18425,7 +18420,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Format source file"
-                  disabled={!files.preview || loading || !sourceIntelligenceAvailable}
+                  disabled={!files.preview || files.scan.loading || !sourceIntelligenceAvailable}
                   onclick={() => {
                     closeEditorActionMenu();
                     requestSourceIntelligenceAction('format');
@@ -18438,7 +18433,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Rename symbol"
-                  disabled={!files.preview || loading || !sourceIntelligenceAvailable}
+                  disabled={!files.preview || files.scan.loading || !sourceIntelligenceAvailable}
                   onclick={() => {
                     closeEditorActionMenu();
                     requestSourceIntelligenceAction('rename');
@@ -18452,7 +18447,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Quick fix"
-                  disabled={!files.preview || loading || !sourceIntelligenceAvailable}
+                  disabled={!files.preview || files.scan.loading || !sourceIntelligenceAvailable}
                   onclick={() => {
                     closeEditorActionMenu();
                     requestSourceIntelligenceAction('quick-fix');
@@ -18590,7 +18585,7 @@
                   editable={true}
                   appearanceOverride={editorAppearanceOverride}
                   externalDiagnostics={sourceLspDiagnostics}
-                  {loading}
+                  loading={files.scan.loading}
                   targetLine={files.selectedSourceLine}
                   targetLineRequestId={files.selectedSourceLineRequestId}
                   intelligenceCommand={sourceIntelligenceCommand}
