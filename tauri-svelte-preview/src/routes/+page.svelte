@@ -134,7 +134,7 @@
     type SourceDockGroupID,
     type SourceDockLayout,
     type SourceDockPanelID
-  } from '$lib/sourceDockLayout';
+  } from '$lib/dock.layout';
   import {
     createSourcePaneviewStackWorkspace,
     createSourceDockviewTabStackWorkspace,
@@ -947,7 +947,6 @@
   let contextPaneExpandedWidth = $state(contextPaneDefaultWidth);
   let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
-  let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
   let sourceFocusRestoreLayout = $state<SourceLayoutSnapshot | null>(null);
   let sourceDockviewWorkbenchReady = $state(false);
   let sourceDockviewWorkbenchError = $state('');
@@ -2375,7 +2374,7 @@
         id: `dock-move-${panelID}-${groupID}`,
         label: `Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`,
         detail: dockPanelPlacementSummary(panelID),
-        disabled: dockGroupIDForPanel(sourceDockLayout, panelID) === groupID,
+        disabled: dockGroupIDForPanel(dock.layout, panelID) === groupID,
         perform: () => moveDockPanelToManagedGroup(panelID, groupID)
       }))
     ),
@@ -4655,7 +4654,7 @@
   }
 
   function sourceLayoutDiagnosticText() {
-    const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const normalizedLayout = normalizeSourceDockLayout(dock.layout);
     const currentFile = selectedRecord
       ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
       : 'none';
@@ -6082,7 +6081,7 @@
         sourceActivityFilter: ''
       },
       embeddedTerminal: null,
-      dockLayout: showSourceDockPanel(sourceDockLayout, 'terminal'),
+      dockLayout: showSourceDockPanel(dock.layout, 'terminal'),
       branch: null,
       capturedAt: Date.now()
     });
@@ -6145,7 +6144,7 @@
       browserUrl: activeBrowserUrl || null,
       viewState: workspaceSnapshotViewState(),
       embeddedTerminal: workspaceSnapshotEmbeddedTerminal(),
-      dockLayout: sourceDockLayout,
+      dockLayout: dock.layout,
       capturedAt: Date.now()
     });
     const snapshot = plan.snapshot;
@@ -6732,9 +6731,9 @@
     persistSourceTerminalApp(sourceTerminalApp);
     setBrowserDockUrl(restored.browserUrl ?? '');
     applyWorkspaceSnapshotViewState(restored.viewState);
-    sourceDockLayout = ensureWorkbenchRightPanels(sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState));
-    syncSourceDockLayoutToWorkspace(sourceDockLayout);
-    persistSourceDockLayout(sourceDockLayout);
+    dock.layout = ensureWorkbenchRightPanels(sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState));
+    syncSourceDockLayoutToWorkspace(dock.layout);
+    persistSourceDockLayout(dock.layout);
     activeWorkspaceSessionKey = snapshot.id;
     persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
     fileActionStatus = `Workspace restored: ${snapshot.title}`;
@@ -11027,7 +11026,7 @@
       contextPanelPlacement,
       chromeCompact: sourceChromeCompact,
       intelligencePanel: sourceIntelligencePanel,
-      dockLayout: normalizeSourceDockLayout(sourceDockLayout),
+      dockLayout: normalizeSourceDockLayout(dock.layout),
       hiddenContextCardIDs: [...hiddenContextCardIDs],
       activeContextCardID
     };
@@ -11638,11 +11637,11 @@
   }
 
   function moveDockPanelToGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID, targetIndex?: number) {
-    applySourceDockLayout(moveSourceDockPanel(sourceDockLayout, panelID, groupID, targetIndex));
+    applySourceDockLayout(moveSourceDockPanel(dock.layout, panelID, groupID, targetIndex));
   }
 
   function hideDockPanel(panelID: SourceDockPanelID) {
-    applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+    applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
   }
 
   function showDockPanel(panelID: SourceDockPanelID) {
@@ -11653,7 +11652,7 @@
       dock.sidePaneWidth = clampSidePaneWidth(nextSidePaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
-          moveSourceDockPanel(sourceDockLayout, 'activity', sidePanePosition),
+          moveSourceDockPanel(dock.layout, 'activity', sidePanePosition),
           sidePanePosition,
           dock.sidePaneWidth
         )
@@ -11674,7 +11673,7 @@
       dock.contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
-          moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+          moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
           contextGroupID,
           contextPanelPlacement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
         )
@@ -11683,7 +11682,7 @@
       return;
     }
 
-    applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));
+    applySourceDockLayout(showSourceDockPanel(dock.layout, panelID));
     if (panelID === 'terminal') {
       fileActionStatus = 'Terminal dock shown';
       scheduleEmbeddedTerminalFit();
@@ -11726,7 +11725,7 @@
     persistSourceChromeCompact(sourceChromeCompact);
 
     const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
-    let nextLayout = sourceDockLayout;
+    let nextLayout = dock.layout;
     for (const panelID of editorFocusHiddenPanelIDs) {
       nextLayout = hideSourceDockPanel(nextLayout, panelID);
     }
@@ -11823,7 +11822,7 @@
     markSourceLayoutCustom();
     snapActivityPaneToRail();
     applySourceDockLayout(resizeSourceDockGroup(
-      showSourceDockPanel(sourceDockLayout, 'activity'),
+      showSourceDockPanel(dock.layout, 'activity'),
       sidePanePosition,
       dock.sidePaneWidth
     ));
@@ -11890,7 +11889,7 @@
     snapContextPaneToRail(false);
     const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
     applySourceDockLayout(resizeSourceDockGroup(
-      moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+      moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
       contextGroupID,
       dock.contextPaneWidth
     ));
@@ -11961,7 +11960,7 @@
     const panelID = draggedDockPanelID(event);
     if (!panelID || panelID === targetPanelID) return;
 
-    const targetGroupID = dockGroupIDForPanel(sourceDockLayout, targetPanelID);
+    const targetGroupID = dockGroupIDForPanel(dock.layout, targetPanelID);
     if (!targetGroupID || !dockPanelMoveTargets(panelID).includes(targetGroupID)) return;
 
     event.preventDefault();
@@ -11995,7 +11994,7 @@
 
   function dropDockPanelOnTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
     const panelID = draggedDockPanelID(event);
-    const targetGroupID = dockGroupIDForPanel(sourceDockLayout, targetPanelID);
+    const targetGroupID = dockGroupIDForPanel(dock.layout, targetPanelID);
     if (
       !panelID ||
       panelID === targetPanelID ||
@@ -12077,14 +12076,14 @@
   }
 
   function dockPanelPlacementSummary(panelID: SourceDockPanelID) {
-    const groupID = dockGroupIDForPanel(sourceDockLayout, panelID);
+    const groupID = dockGroupIDForPanel(dock.layout, panelID);
     if (groupID === null) return 'Hidden';
     return dockGroupLabel(groupID, panelID);
   }
 
   function selectDockPanel(panelID: SourceDockPanelID) {
     markSourceLayoutCustom();
-    applySourceDockLayout(activateSourceDockPanel(sourceDockLayout, panelID));
+    applySourceDockLayout(activateSourceDockPanel(dock.layout, panelID));
     if (panelID === 'context') {
       contextPanelCollapsed = false;
       persistContextPanelCollapsed(contextPanelCollapsed);
@@ -12097,7 +12096,7 @@
 
   function applySourceDockLayout(layout: SourceDockLayout) {
     const normalizedLayout = normalizeSourceDockLayout(layout);
-    sourceDockLayout = normalizedLayout;
+    dock.layout = normalizedLayout;
     syncSourceDockLayoutToWorkspace(normalizedLayout);
     syncSourceDockviewWorkbenchLayout(normalizedLayout);
     syncSourceDockviewActivityLayout(normalizedLayout);
@@ -12125,7 +12124,7 @@
     const nextLayout = sourceDockLayoutFromDockviewGroups(workspace.api, activePanelID);
     if (!nextLayout) return;
 
-    sourceDockLayout = nextLayout;
+    dock.layout = nextLayout;
     syncSourceDockLayoutToWorkspace(nextLayout);
     persistSourceDockLayout(nextLayout);
     if (activePanelID === 'terminal' || sourceDockviewWorkbenchOwnsPanel('terminal')) {
@@ -12137,7 +12136,7 @@
     api: SourceDockviewWorkspace['api'],
     activePanelID: SourceDockPanelID | null
   ): SourceDockLayout | null {
-    const currentLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const currentLayout = normalizeSourceDockLayout(dock.layout);
     const entries = api.groups
       .map((group) => sourceDockviewGroupEntry(group))
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
@@ -12431,7 +12430,7 @@
   }
 
   function dockGroupPanelIDs(groupID: SourceDockGroupID): SourceDockPanelID[] {
-    return normalizeSourceDockLayout(sourceDockLayout).groups.find((group) => group.id === groupID)?.panelIDs ?? [];
+    return normalizeSourceDockLayout(dock.layout).groups.find((group) => group.id === groupID)?.panelIDs ?? [];
   }
 
   function dockGroupHasTabs(groupID: SourceDockGroupID) {
@@ -12443,7 +12442,7 @@
   }
 
   function activeDockPanelForGroup(groupID: SourceDockGroupID): SourceDockPanelID | null {
-    const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const normalizedLayout = normalizeSourceDockLayout(dock.layout);
     const group = normalizedLayout.groups.find((candidateGroup) => candidateGroup.id === groupID);
     if (!group || group.panelIDs.length === 0) return null;
     const activePanelID = normalizedLayout.activePanelByGroup[groupID];
@@ -12468,7 +12467,7 @@
   }
 
   function shouldRenderDockPanel(panelID: SourceDockPanelID) {
-    const groupID = dockGroupIDForPanel(sourceDockLayout, panelID);
+    const groupID = dockGroupIDForPanel(dock.layout, panelID);
     if (groupID === null) return false;
     if (panelID === 'editor') return true;
     if (groupID === 'center') return true;
@@ -12477,7 +12476,7 @@
   }
 
   function sourceDockPanelVisible(panelID: SourceDockPanelID) {
-    return dockGroupIDForPanel(sourceDockLayout, panelID) !== null;
+    return dockGroupIDForPanel(dock.layout, panelID) !== null;
   }
 
   function editorInsightsDockColumnVisible() {
@@ -12504,7 +12503,7 @@
   }
 
   function hiddenDockPanelIDs() {
-    return normalizeSourceDockLayout(sourceDockLayout).hiddenPanelIDs.filter((panelID) =>
+    return normalizeSourceDockLayout(dock.layout).hiddenPanelIDs.filter((panelID) =>
       hideableDockPanelIDs.includes(panelID)
     );
   }
@@ -12889,7 +12888,7 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         storedLayout: loadStoredSourceDockviewLayout(sourceDockviewWorkbenchStorageKey),
         onDidLayoutChange: (layout) => {
           persistSourceDockviewLayout(sourceDockviewWorkbenchStorageKey, layout);
@@ -12898,25 +12897,25 @@
         },
         onDidPanelClose: (panelID) => {
           if (panelID === 'editor') {
-            syncSourceDockviewWorkbenchLayout(sourceDockLayout);
+            syncSourceDockviewWorkbenchLayout(dock.layout);
             fileActionStatus = 'Editor tab restored';
             return;
           }
           if (panelID === 'context') {
             contextPanelCollapsed = true;
             persistContextPanelCollapsed(contextPanelCollapsed);
-            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'context'));
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'context'));
             fileActionStatus = 'Context panel hidden';
             return;
           }
           if (panelID === 'insights') {
             editorInsightCollapsed = true;
             persistEditorInsightCollapsed(editorInsightCollapsed);
-            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
             fileActionStatus = 'Insights panel hidden';
             return;
           }
-          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
           fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
         },
         onDidActivePanelChange: (panelID) => {
@@ -12929,8 +12928,8 @@
             editorInsightCollapsed = false;
             persistEditorInsightCollapsed(editorInsightCollapsed);
           }
-          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
-          persistSourceDockLayout(sourceDockLayout);
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
           if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
         },
         onDidPanelMove: (panelID, layout) => {
@@ -12975,20 +12974,20 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         ...sourceDockviewActivityPlanOptions,
         storedLayout: loadStoredSourceDockviewLayout(sourceDockviewActivityStorageKey),
         onDidLayoutChange: (layout) =>
           persistSourceDockviewLayout(sourceDockviewActivityStorageKey, layout),
         onDidPanelClose: (panelID) => {
           if (panelID !== 'activity') return;
-          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'activity'));
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, 'activity'));
           fileActionStatus = 'Activity panel hidden';
         },
         onDidActivePanelChange: (panelID) => {
           if (panelID !== 'activity') return;
-          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
-          persistSourceDockLayout(sourceDockLayout);
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
         }
       });
 
@@ -13222,7 +13221,7 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         ...sourceDockviewContextPlanOptions,
         storedLayout: loadStoredSourceDockviewLayout(sourceDockviewContextStorageKey),
         onDidLayoutChange: (layout) =>
@@ -13231,14 +13230,14 @@
           if (panelID === 'context') {
             contextPanelCollapsed = true;
             persistContextPanelCollapsed(contextPanelCollapsed);
-            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'context'));
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'context'));
             fileActionStatus = 'Context panel hidden';
             return;
           }
           if (panelID === 'insights') {
             editorInsightCollapsed = true;
             persistEditorInsightCollapsed(editorInsightCollapsed);
-            applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
             fileActionStatus = 'Insights panel hidden';
           }
         },
@@ -13252,8 +13251,8 @@
             editorInsightCollapsed = false;
             persistEditorInsightCollapsed(editorInsightCollapsed);
           }
-          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
-          persistSourceDockLayout(sourceDockLayout);
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
         }
       });
 
@@ -13293,7 +13292,7 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         ...sourceDockviewInsightsPlanOptions,
         storedLayout: loadStoredSourceDockviewLayout(sourceDockviewInsightsStorageKey),
         onDidLayoutChange: (layout) =>
@@ -13302,7 +13301,7 @@
           if (panelID !== 'insights') return;
           editorInsightCollapsed = true;
           persistEditorInsightCollapsed(editorInsightCollapsed);
-          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
           fileActionStatus = 'Insights panel hidden';
         }
       });
@@ -13343,7 +13342,7 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         ...sourceDockviewCenterPlanOptions,
         storedLayout: null,
         restoreStoredLayout: false,
@@ -13353,18 +13352,18 @@
         },
         onDidPanelClose: (panelID) => {
           if (panelID === 'editor') {
-            syncSourceDockviewCenterLayout(sourceDockLayout);
+            syncSourceDockviewCenterLayout(dock.layout);
             fileActionStatus = 'Editor tab restored';
             return;
           }
           if (panelID !== 'terminal' && panelID !== 'browser') return;
-          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
           fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
         },
         onDidActivePanelChange: (panelID) => {
           if (panelID !== 'editor' && panelID !== 'terminal' && panelID !== 'browser') return;
-          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
-          persistSourceDockLayout(sourceDockLayout);
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
           if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
         }
       });
@@ -13405,7 +13404,7 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         ...sourceDockviewBottomPlanOptions,
         storedLayout: loadStoredSourceDockviewLayout(sourceDockviewBottomStorageKey),
         onDidLayoutChange: (layout) => {
@@ -13414,13 +13413,13 @@
         },
         onDidPanelClose: (panelID) => {
           if (panelID !== 'terminal' && panelID !== 'browser') return;
-          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
           fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
         },
         onDidActivePanelChange: (panelID) => {
           if (panelID !== 'terminal' && panelID !== 'browser') return;
-          sourceDockLayout = activateSourceDockPanel(sourceDockLayout, panelID);
-          persistSourceDockLayout(sourceDockLayout);
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
           if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
         }
       });
@@ -13643,8 +13642,8 @@
     if (panelID === 'context') return sourceDockPanelVisible('context');
     if (panelID !== 'insights') return false;
 
-    const contextGroupID = dockGroupIDForPanel(sourceDockLayout, 'context');
-    const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+    const contextGroupID = dockGroupIDForPanel(dock.layout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
     return contextGroupID !== null && insightsGroupID === contextGroupID;
   }
 
@@ -13840,7 +13839,7 @@
   });
 
   function persistDockGroupSize(groupID: SourceDockGroupID, size: number) {
-    applySourceDockLayout(resizeSourceDockGroup(sourceDockLayout, groupID, size));
+    applySourceDockLayout(resizeSourceDockGroup(dock.layout, groupID, size));
   }
 
   function loadStoredSidePanePosition(): SourceSidePanePosition {
@@ -13860,7 +13859,7 @@
     persistSidePanePosition(position);
     applySourceDockLayout(
       resizeSourceDockGroup(
-        moveSourceDockPanel(sourceDockLayout, 'activity', position),
+        moveSourceDockPanel(dock.layout, 'activity', position),
         position,
         dock.sidePaneWidth
       )
@@ -14022,9 +14021,9 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
     const nextLayout = contextPanelCollapsed
-      ? hideSourceDockPanel(sourceDockLayout, 'context')
+      ? hideSourceDockPanel(dock.layout, 'context')
       : activateSourceDockPanel(
-          moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+          moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
           'context'
         );
     applySourceDockLayout(nextLayout);
@@ -14035,8 +14034,8 @@
     editorInsightCollapsed = !editorInsightCollapsed;
     persistEditorInsightCollapsed(editorInsightCollapsed);
     const nextLayout = editorInsightCollapsed
-      ? hideSourceDockPanel(sourceDockLayout, 'insights')
-      : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
+      ? hideSourceDockPanel(dock.layout, 'insights')
+      : activateSourceDockPanel(showSourceDockPanel(dock.layout, 'insights'), 'insights');
     applySourceDockLayout(nextLayout);
   }
 
@@ -14046,7 +14045,7 @@
     editorInsightCollapsed = false;
     persistEditorInsightCollapsed(editorInsightCollapsed);
     applySourceDockLayout(
-      activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights')
+      activateSourceDockPanel(showSourceDockPanel(dock.layout, 'insights'), 'insights')
     );
   }
 
@@ -14155,7 +14154,7 @@
     applySourceDockLayout(
       activateSourceDockPanel(
         moveSourceDockPanel(
-          showSourceDockPanel(sourceDockLayout, 'context'),
+          showSourceDockPanel(dock.layout, 'context'),
           'context',
           dockGroupForContextPanelPlacement(contextPanelPlacement)
         ),
@@ -14180,7 +14179,7 @@
     applySourceDockLayout(
       activateSourceDockPanel(
         moveSourceDockPanel(
-          showSourceDockPanel(sourceDockLayout, 'context'),
+          showSourceDockPanel(dock.layout, 'context'),
           'context',
           dockGroupForContextPanelPlacement(contextPanelPlacement)
         ),
@@ -14204,7 +14203,7 @@
     const contextGroupID = dockGroupForContextPanelPlacement(placement);
     applySourceDockLayout(
       resizeSourceDockGroup(
-        moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+        moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
         contextGroupID,
         placement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
       )
@@ -14346,7 +14345,7 @@
         fileActionStatus = 'Insights pane hidden';
       } else {
         persistEditorInsightWidth(editorInsightWidth);
-        const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+        const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
         if (insightsGroupID !== null) {
           persistDockGroupSize(insightsGroupID, editorInsightWidth);
         }
@@ -14377,7 +14376,7 @@
     }
     editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
     persistEditorInsightWidth(editorInsightWidth);
-    const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
+    const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
     if (insightsGroupID !== null) {
       persistDockGroupSize(insightsGroupID, editorInsightWidth);
     }
@@ -14591,7 +14590,7 @@
   }
 
   function bottomDockHeight() {
-    return clampBottomDockHeight(sourceDockGroupSize(sourceDockLayout, 'bottom'));
+    return clampBottomDockHeight(sourceDockGroupSize(dock.layout, 'bottom'));
   }
 
   function bottomDockSizingConfig(): SourcePaneSizingConfig {
@@ -14639,7 +14638,7 @@
         previousExpandedSize: startHeight
       });
       if (finishedSize.state === 'collapsed') {
-        let nextLayout = sourceDockLayout;
+        let nextLayout = dock.layout;
         if (sourceDockPanelVisible('terminal')) {
           nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
         }
@@ -14669,7 +14668,7 @@
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowUp' ? 1 : -1;
     if (bottomDockHeight() <= bottomDockMinHeight && direction < 0) {
-      let nextLayout = sourceDockLayout;
+      let nextLayout = dock.layout;
       if (sourceDockPanelVisible('terminal')) {
         nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
       }
@@ -14686,7 +14685,7 @@
         previousExpandedSize: bottomDockHeight()
       });
       if (finishedSize.state === 'collapsed') {
-        let nextLayout = sourceDockLayout;
+        let nextLayout = dock.layout;
         if (sourceDockPanelVisible('terminal')) {
           nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
         }
@@ -15638,9 +15637,9 @@
       !migrateSourceLayout && storedSourceDockLayout
         ? sourceDockLayoutWithStoredPaneSizes(storedSourceDockLayout)
         : null;
-    sourceDockLayout = ensureWorkbenchRightPanels(restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace());
+    dock.layout = ensureWorkbenchRightPanels(restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace());
     if (!migrateSourceLayout && storedSourceDockLayout) {
-      syncSourceDockLayoutToWorkspace(sourceDockLayout);
+      syncSourceDockLayoutToWorkspace(dock.layout);
     }
     persistSelectedProjectID(startupProject.id);
     if (migrateSourceLayout) {
@@ -15657,7 +15656,7 @@
       persistSourceChromeCompact(sourceChromeCompact);
       persistSourceFocusRestoreLayout(sourceFocusRestoreLayout);
     }
-    persistSourceDockLayout(sourceDockLayout);
+    persistSourceDockLayout(dock.layout);
     persistSourceLayoutVersion();
     window.setTimeout(measureFileTreeViewport, 0);
     void loadEmbeddedTerminalSessions();
@@ -17985,11 +17984,11 @@
                         {/if}
                         {#each dockPanelMoveTargets(panelID) as groupID (groupID)}
                           <button
-                            class:active={dockGroupIDForPanel(sourceDockLayout, panelID) === groupID}
+                            class:active={dockGroupIDForPanel(dock.layout, panelID) === groupID}
                             type="button"
                             role="menuitem"
                             aria-label={`Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`}
-                            disabled={dockGroupIDForPanel(sourceDockLayout, panelID) === groupID}
+                            disabled={dockGroupIDForPanel(dock.layout, panelID) === groupID}
                             onclick={() => moveDockPanelToManagedGroup(panelID, groupID)}
                           >
                             {dockGroupLabel(groupID, panelID)}
@@ -18090,13 +18089,13 @@
                       class="dock-panel-tab-move"
                       aria-label={`Move ${dockPanelLabel(panelID)} panel from tab`}
                       title={`Move ${dockPanelLabel(panelID)}`}
-                      value={dockGroupIDForPanel(sourceDockLayout, panelID) ?? ''}
+                      value={dockGroupIDForPanel(dock.layout, panelID) ?? ''}
                       onchange={(event) => moveDockPanelFromTab(panelID, event)}
                     >
                       {#each dockPanelMoveTargets(panelID) as targetGroupID (targetGroupID)}
                         <option
                           value={targetGroupID}
-                          disabled={dockGroupIDForPanel(sourceDockLayout, panelID) === targetGroupID}
+                          disabled={dockGroupIDForPanel(dock.layout, panelID) === targetGroupID}
                         >
                           {dockGroupShortcutLabel(targetGroupID, panelID)}
                         </option>
@@ -19489,7 +19488,7 @@
 
   {#if useUnifiedWorkbench}
     <SourceWorkbench
-      layout={sourceDockLayout}
+      layout={dock.layout}
       bind:setPanelElement={unifiedWorkbenchSetPanelElement}
       bind:ready={unifiedWorkbenchReady}
       bind:error={unifiedWorkbenchError}
