@@ -8,6 +8,7 @@
 	import "monaco-editor/min/vs/editor/editor.main.css";
 	import { onDestroy, onMount } from "svelte";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
+	import { isNativeTauriRuntime } from "./tauriSource";
 	import {
 		extractSourceSemanticTokens,
 		extractSourceSymbols,
@@ -343,10 +344,17 @@
 			strict: true,
 			target: typeScriptLanguage.ScriptTarget.ESNext,
 		};
+		// When the Rust LSP backend is available (native Tauri), it owns TS/JS
+		// diagnostics — they arrive as `mcb-lsp` markers via `externalDiagnostics`.
+		// Suppress the bundled worker's diagnostics so it doesn't double up. In the
+		// web preview / offline (no Tauri → no Rust path), keep the worker's
+		// diagnostics so squiggles still appear. The worker stays loaded either way,
+		// so completions/folding/outline/quick-info remain available.
+		const suppressWorkerDiagnostics = isNativeTauriRuntime();
 		const diagnosticsOptions = {
-			noSemanticValidation: false,
-			noSyntaxValidation: false,
-			noSuggestionDiagnostics: false,
+			noSemanticValidation: suppressWorkerDiagnostics,
+			noSyntaxValidation: suppressWorkerDiagnostics,
+			noSuggestionDiagnostics: suppressWorkerDiagnostics,
 		};
 
 		typeScriptLanguage.typescriptDefaults.setEagerModelSync(true);
