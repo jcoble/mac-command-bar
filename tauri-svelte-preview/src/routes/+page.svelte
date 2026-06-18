@@ -23729,34 +23729,6 @@
     min-width: 0;
   }
 
-  .file-action-button {
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 28px;
-    color: #b9c5c1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.045);
-    cursor: pointer;
-  }
-
-  .file-action-button:hover {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .file-action-button:focus-visible {
-    border-color: rgba(92, 226, 207, 0.58);
-    outline: 0;
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .file-action-button:disabled {
-    cursor: default;
-    opacity: 0.58;
-  }
-
   .file-action-feedback {
     margin: -4px 0 10px;
     color: #7ce5d5;

@@ -431,3 +431,44 @@ canvas {
   outline: 0;
   background: rgba(92, 226, 207, 0.1);
 }
+
+/* ------------------------------------------------------------------
+ * .file-action-button — shared icon/text action button chrome.
+ *
+ * Used across multiple surfaces: the editor toolbar + terminal launchpad
+ * (rendered by `+page.svelte`), the Browser dock (`BrowserPanel.svelte`), and
+ * the clipboard activity panel (`ActivityClipboardPanel.svelte`). The base rule
+ * was previously copied verbatim into each of those scopes; it lives here once
+ * as `:global` so every surface shares it. Compound overrides that qualify the
+ * button with a component-rendered ancestor (e.g. `.browser-dock-actions
+ * .file-action-button`, `.terminal-launchpad-actions .file-action-button`) stay
+ * scoped in their component — they are more specific and still layer on top.
+ * Moved verbatim from the `+page.svelte` `<style>` block.
+ * ------------------------------------------------------------------ */
+.file-action-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 28px;
+  color: #b9c5c1;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+}
+
+.file-action-button:hover {
+  color: #f2f6f5;
+  background: rgba(92, 226, 207, 0.1);
+}
+
+.file-action-button:focus-visible {
+  border-color: rgba(92, 226, 207, 0.58);
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
+}
+
+.file-action-button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}

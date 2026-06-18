@@ -153,39 +153,12 @@
 
 <style>
   /*
-   * Base `.file-action-button` chrome. These rules live in `+page.svelte`'s
-   * `<style>` too (shared by many page buttons); they are copied here so the
-   * dock's own buttons render identically now that they are rendered by this
-   * component's scope rather than the page's.
+   * Base `.file-action-button` chrome lives once in `src/app.css` as a `:global`
+   * rule shared across every surface. The compound overrides below
+   * (`.browser-dock-actions .file-action-button`, `.browser-url-form
+   * .file-action-button`) stay scoped here — they qualify the button with this
+   * component's own ancestors and layer on top of the global base.
    */
-  .file-action-button {
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 28px;
-    color: #b9c5c1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.045);
-    cursor: pointer;
-  }
-
-  .file-action-button:hover {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .file-action-button:focus-visible {
-    border-color: rgba(92, 226, 207, 0.58);
-    outline: 0;
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .file-action-button:disabled {
-    cursor: default;
-    opacity: 0.58;
-  }
-
   .browser-dock {
     display: grid;
     grid-template-rows: auto auto auto minmax(0, 1fr);
