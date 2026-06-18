@@ -298,14 +298,21 @@ pub(crate) struct SourceLspRegistry {
     sessions: Arc<Mutex<HashMap<SourceLspSessionKey, Arc<Mutex<SourceLspSession>>>>>,
 }
 
+/// Servers are deduped **per language** (not per-root): one warm process serves every
+/// worktree/project of that language. When a request targets a different root than the
+/// one the server is currently pointed at, the session re-points in place (see
+/// `SourceLspSession::reroot`) so we never spawn a second server for the same repo opened
+/// under two worktrees. Spec: 2026-06-17-live-agent-sessions-design.md §5.5.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SourceLspSessionKey {
-    root: String,
     language: String,
 }
 
 struct SourceLspSession {
     server: ResolvedLspServer,
+    /// The root this server is currently pointed at. A request for a different root
+    /// re-points the session in place rather than spawning a second server.
+    root: PathBuf,
     stdin: ChildStdin,
     child: Child,
     receiver: mpsc::Receiver<LspReaderMessage>,
@@ -753,17 +760,27 @@ impl SourceLspRegistry {
         let Some(key) = SourceLspSessionKey::from_preview(preview, request) else {
             return Ok(None);
         };
+        let Some(root) = normalized_lsp_root(&request.root) else {
+            return Ok(None);
+        };
+        let root = PathBuf::from(root);
 
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| "Language server registry lock poisoned".to_string())?;
         if let Some(session) = sessions.get(&key).cloned() {
-            let alive = {
-                let mut session = lock_lsp_session(&session)?;
-                session.is_alive()
+            // The one warm server for this language is reused across roots: if it is
+            // pointed at a different worktree, re-point it in place (never spawn a second).
+            let usable = {
+                let mut guard = lock_lsp_session(&session)?;
+                if guard.is_alive() {
+                    guard.reroot(&root).is_ok()
+                } else {
+                    false
+                }
             };
-            if alive {
+            if usable {
                 return Ok(Some(session));
             }
             sessions.remove(&key);
@@ -772,7 +789,7 @@ impl SourceLspRegistry {
         let Some(server) = resolve_server_for_language(&preview.language) else {
             return Ok(None);
         };
-        let session = SourceLspSession::start(PathBuf::from(&request.root), server)?;
+        let session = SourceLspSession::start(root, server)?;
         let session = Arc::new(Mutex::new(session));
         sessions.insert(key, Arc::clone(&session));
         Ok(Some(session))
@@ -793,99 +810,115 @@ impl SourceLspRegistry {
         sessions.remove(&key);
         Ok(())
     }
+
+    /// Number of live language-server sessions in the registry (test introspection only).
+    #[cfg(test)]
+    fn session_count(&self) -> Result<usize, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Language server registry lock poisoned".to_string())?;
+        Ok(sessions.len())
+    }
+
+    /// OS pid of the warm server for `language`, if present (test introspection only).
+    #[cfg(test)]
+    fn session_pid_for(&self, language: &str) -> Option<u32> {
+        let key = SourceLspSessionKey {
+            language: server_spec_for_language(language)?.language_id.to_string(),
+        };
+        let session = self.sessions.lock().ok()?.get(&key).cloned()?;
+        let pid = lock_lsp_session(&session).ok()?.child.id();
+        Some(pid)
+    }
 }
 
 impl SourceLspSessionKey {
     fn from_preview(
         preview: &SourceLspPreview,
-        request: &SourceLspLookupRequest,
+        _request: &SourceLspLookupRequest,
     ) -> Option<SourceLspSessionKey> {
-        let root = normalized_lsp_root(&request.root)?;
         let spec = server_spec_for_language(&preview.language)?;
         Some(SourceLspSessionKey {
-            root,
             language: spec.language_id.to_string(),
         })
     }
 }
 
+/// The spawned child plus its initialized I/O. Produced by `spawn_lsp_child` and consumed
+/// when (re)building a `SourceLspSession`, so spawn/initialize lives in one place shared by
+/// initial start and re-point.
+struct SpawnedLspChild {
+    child: Child,
+    stdin: ChildStdin,
+    receiver: mpsc::Receiver<LspReaderMessage>,
+    semantic_token_types: Vec<String>,
+}
+
 impl SourceLspSession {
     fn start(root: PathBuf, server: ResolvedLspServer) -> Result<SourceLspSession, String> {
-        if !root.is_dir() {
-            return Err("Project root is not a directory".to_string());
-        }
-
-        let mut child = Command::new(&server.command)
-            .args(server.spec.args)
-            .current_dir(&root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("Could not start {}: {error}", server.spec.server_name))?;
-
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Language server stdin unavailable".to_string())?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Language server stdout unavailable".to_string())?;
-
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || loop {
-            match read_lsp_message(&mut stdout) {
-                Ok(message) => {
-                    if sender.send(LspReaderMessage::Message(message)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ = sender.send(LspReaderMessage::Error(error.to_string()));
-                    break;
-                }
-            }
-        });
-
-        let root_uri = path_to_file_uri(&root);
-        write_lsp_message(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "processId": null,
-                    "rootUri": root_uri,
-                    "capabilities": lsp_client_capabilities()
-                }
-            }),
-        )?;
-        let response = wait_for_lsp_response(&receiver, 1, Instant::now() + LSP_REQUEST_TIMEOUT)?;
-        if let Some(error) = response.get("error") {
-            return Err(format!("Language server initialize failed: {error}"));
-        }
-        let semantic_token_types = lsp_semantic_token_types_from_initialize(&response);
-        write_lsp_message(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "initialized",
-                "params": {}
-            }),
-        )?;
-
+        let spawned = spawn_lsp_child(&server, &root)?;
         Ok(SourceLspSession {
             server,
-            stdin,
-            child,
-            receiver,
+            root,
+            stdin: spawned.stdin,
+            child: spawned.child,
+            receiver: spawned.receiver,
             next_id: 2,
             open_documents: HashMap::new(),
             diagnostics_by_uri: HashMap::new(),
-            semantic_token_types,
+            semantic_token_types: spawned.semantic_token_types,
         })
+    }
+
+    /// Re-point this warm server at `root` if it is currently serving a different one.
+    ///
+    /// The backend servers (rust-analyzer, csharp-ls) resolve project structure from their
+    /// init root / CWD, so a request for a different worktree cannot be served correctly by
+    /// re-using the same process as-is. Re-pointing therefore tears down the old child and
+    /// re-spawns under the new root **in place** — the registry slot (one per language) is
+    /// reused and the old process is killed before the new one is recorded, so we never hold
+    /// two servers for the same language. When the root is unchanged this is a no-op.
+    fn reroot(&mut self, root: &Path) -> Result<(), String> {
+        if self.root == root {
+            return Ok(());
+        }
+
+        let spawned = spawn_lsp_child(&self.server, root)?;
+        // Only after the replacement is initialized do we drop the old child, so a failed
+        // re-spawn leaves the existing session intact (the caller falls back to a fresh start).
+        self.shutdown_child();
+        self.root = root.to_path_buf();
+        self.stdin = spawned.stdin;
+        self.child = spawned.child;
+        self.receiver = spawned.receiver;
+        self.next_id = 2;
+        self.open_documents.clear();
+        self.diagnostics_by_uri.clear();
+        self.semantic_token_types = spawned.semantic_token_types;
+        Ok(())
+    }
+
+    /// Gracefully shut the language server child down (shutdown/exit, then kill+reap).
+    fn shutdown_child(&mut self) {
+        let shutdown_id = self.next_request_id();
+        let _ = write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": shutdown_id,
+                "method": "shutdown"
+            }),
+        );
+        let _ = write_lsp_message(
+            &mut self.stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "exit"
+            }),
+        );
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     fn request(
@@ -1226,25 +1259,87 @@ impl SourceLspSession {
 
 impl Drop for SourceLspSession {
     fn drop(&mut self) {
-        let shutdown_id = self.next_request_id();
-        let _ = write_lsp_message(
-            &mut self.stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": shutdown_id,
-                "method": "shutdown"
-            }),
-        );
-        let _ = write_lsp_message(
-            &mut self.stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "exit"
-            }),
-        );
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.shutdown_child();
     }
+}
+
+/// Spawn a language server child under `root`, attach a stdout reader thread, and run the
+/// LSP `initialize`/`initialized` handshake. Shared by initial session start and re-point.
+fn spawn_lsp_child(
+    server: &ResolvedLspServer,
+    root: &Path,
+) -> Result<SpawnedLspChild, String> {
+    if !root.is_dir() {
+        return Err("Project root is not a directory".to_string());
+    }
+
+    let mut child = Command::new(&server.command)
+        .args(server.spec.args)
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Could not start {}: {error}", server.spec.server_name))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Language server stdin unavailable".to_string())?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Language server stdout unavailable".to_string())?;
+
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || loop {
+        match read_lsp_message(&mut stdout) {
+            Ok(message) => {
+                if sender.send(LspReaderMessage::Message(message)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(LspReaderMessage::Error(error.to_string()));
+                break;
+            }
+        }
+    });
+
+    let root_uri = path_to_file_uri(root);
+    write_lsp_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "rootUri": root_uri,
+                "capabilities": lsp_client_capabilities()
+            }
+        }),
+    )?;
+    let response = wait_for_lsp_response(&receiver, 1, Instant::now() + LSP_REQUEST_TIMEOUT)?;
+    if let Some(error) = response.get("error") {
+        return Err(format!("Language server initialize failed: {error}"));
+    }
+    let semantic_token_types = lsp_semantic_token_types_from_initialize(&response);
+    write_lsp_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    )?;
+
+    Ok(SpawnedLspChild {
+        child,
+        stdin,
+        receiver,
+        semantic_token_types,
+    })
 }
 
 fn lock_lsp_session(
@@ -3435,7 +3530,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_session_key_from_root_and_language() {
+    fn builds_session_key_from_language_only() {
         let root = env::temp_dir();
         let preview = SourceLspPreview {
             path: root.join("App.ts").display().to_string(),
@@ -3455,10 +3550,49 @@ mod tests {
 
         let key = SourceLspSessionKey::from_preview(&preview, &request).expect("session key");
         assert_eq!(key.language, "typescript");
+    }
+
+    #[test]
+    fn session_key_is_independent_of_root_so_servers_dedupe_per_language() {
+        // Two distinct worktree roots of the same language must map to the SAME session key,
+        // so the registry keeps a single warm server instead of one per root. Spec §5.5.
+        let preview = SourceLspPreview {
+            path: "/tmp/whatever/App.ts".to_string(),
+            relative_path: "App.ts".to_string(),
+            file_name: "App.ts".to_string(),
+            language: "typescript".to_string(),
+            byte_count: 16,
+            content: "export {};".to_string(),
+            line_count: 1,
+        };
+        let request_root_a = SourceLspLookupRequest {
+            root: "/tmp/worktree-a".to_string(),
+            line: 1,
+            column: 1,
+            limit: None,
+        };
+        let request_root_b = SourceLspLookupRequest {
+            root: "/tmp/worktree-b".to_string(),
+            line: 1,
+            column: 1,
+            limit: None,
+        };
+
+        let key_a =
+            SourceLspSessionKey::from_preview(&preview, &request_root_a).expect("session key a");
+        let key_b =
+            SourceLspSessionKey::from_preview(&preview, &request_root_b).expect("session key b");
         assert_eq!(
-            key.root,
-            std::fs::canonicalize(root).unwrap().display().to_string()
+            key_a, key_b,
+            "different roots, same language must share one session key"
         );
+
+        // Aliases that resolve to the same language id collapse to one key too (ts/tsx).
+        let mut tsx_preview = preview.clone();
+        tsx_preview.language = "tsx".to_string();
+        let key_tsx =
+            SourceLspSessionKey::from_preview(&tsx_preview, &request_root_a).expect("tsx key");
+        assert_eq!(key_a, key_tsx, "ts and tsx must share the typescript server");
     }
 
     #[test]
@@ -3824,6 +3958,100 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reuses_one_server_across_roots_and_repoints_per_language() {
+        if resolve_server_for_language("typescript").is_none() {
+            eprintln!(
+                "skipping LSP dedupe smoke: typescript-language-server not found"
+            );
+            return;
+        }
+
+        let registry = SourceLspRegistry::default();
+        let make_root = |label: &str, symbol: &str| -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
+            let root = unique_lsp_temp_root(label);
+            std::fs::write(
+                root.join("tsconfig.json"),
+                r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
+            )
+            .unwrap();
+            let content = format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
+            let file_path = root.join("App.ts");
+            std::fs::write(&file_path, &content).unwrap();
+            let preview = SourceLspPreview {
+                path: file_path.display().to_string(),
+                relative_path: "App.ts".to_string(),
+                file_name: "App.ts".to_string(),
+                language: "typescript".to_string(),
+                byte_count: content.len() as u64,
+                content,
+                line_count: 3,
+            };
+            let request = SourceLspLookupRequest {
+                root: root.display().to_string(),
+                line: 1,
+                column: 17,
+                limit: Some(20),
+            };
+            (root, preview, request)
+        };
+
+        let (root_a, preview_a, request_a) = make_root("mcb-lsp-dedupe-a", "alpha");
+        let (root_b, preview_b, request_b) = make_root("mcb-lsp-dedupe-b", "beta");
+
+        // First root spins the single warm server.
+        let symbols_a = registry
+            .find_symbols(preview_a.clone(), request_a.clone())
+            .expect("root A symbols");
+        assert!(
+            symbols_a.iter().any(|symbol| symbol.name == "alpha"),
+            "expected root A document symbols to include alpha; got {symbols_a:?}"
+        );
+        assert_eq!(
+            registry.session_count().unwrap(),
+            1,
+            "first root must create exactly one typescript session"
+        );
+        let pid_after_a = registry.session_pid_for("typescript").unwrap();
+
+        // A different root must REUSE the same registry slot (one server per language),
+        // re-pointed at root B — not spawn a second server.
+        let symbols_b = registry
+            .find_symbols(preview_b.clone(), request_b.clone())
+            .expect("root B symbols");
+        assert!(
+            symbols_b.iter().any(|symbol| symbol.name == "beta"),
+            "expected root B document symbols to include beta after re-point; got {symbols_b:?}"
+        );
+        assert_eq!(
+            registry.session_count().unwrap(),
+            1,
+            "a second root must reuse the single per-language session, not add a new one"
+        );
+        let pid_after_b = registry.session_pid_for("typescript").unwrap();
+        assert_ne!(
+            pid_after_a, pid_after_b,
+            "re-pointing to a new root should have replaced the child process in place"
+        );
+
+        // Returning to root A re-points back and still serves correct results.
+        let symbols_a_again = registry
+            .find_symbols(preview_a, request_a)
+            .expect("root A symbols again");
+        assert!(
+            symbols_a_again.iter().any(|symbol| symbol.name == "alpha"),
+            "expected re-point back to root A to serve alpha; got {symbols_a_again:?}"
+        );
+        assert_eq!(
+            registry.session_count().unwrap(),
+            1,
+            "switching back must still hold exactly one session"
+        );
+
+        std::fs::remove_dir_all(root_a).unwrap();
+        std::fs::remove_dir_all(root_b).unwrap();
     }
 
     #[test]
