@@ -428,12 +428,7 @@
     background: rgba(92, 226, 207, 0.06);
   }
 
-  .activity-row-main {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-  }
-
+  /* .activity-row-main base lives in src/app.css (:global). */
   .worktree-row-main {
     gap: 2px;
   }
@@ -737,15 +732,11 @@
     background: rgba(255, 255, 255, 0.035);
   }
 
-  /* Shared row-action chrome (copied from page scope; dedup later). */
-  .activity-row-actions {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-  }
-
+  /*
+   * Row-action chrome. The .activity-row-actions / .row-action-menu /
+   * .row-action-menu-anchor bases live in src/app.css (:global); the
+   * worktree-specific descendants below stay scoped to this component.
+   */
   .activity-row-actions button {
     display: grid;
     place-items: center;
@@ -782,26 +773,6 @@
     border-color: rgba(92, 226, 207, 0.36);
     outline: 0;
     background: rgba(92, 226, 207, 0.12);
-  }
-
-  .row-action-menu-anchor {
-    position: relative;
-    overflow: visible;
-  }
-
-  .row-action-menu {
-    position: absolute;
-    z-index: 14;
-    top: calc(100% + 4px);
-    right: 0;
-    display: grid;
-    width: 196px;
-    min-width: 0;
-    padding: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 8px;
-    background: rgba(21, 24, 24, 0.98);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
   }
 
   .row-action-menu button {
@@ -844,20 +815,5 @@
    * (same `:global` pattern Task 1 used for the BrowserPanel dock shells).
    */
 
-  /* Shared task link (copied from page scope; dedup later). */
-  .git-task-link {
-    display: inline-flex;
-    align-items: center;
-    max-width: 100%;
-    min-height: 19px;
-    padding: 0 6px;
-    color: #071b18;
-    border-radius: 999px;
-    background: #6fdfcf;
-    font-size: 8.5px;
-    font-weight: 900;
-    line-height: 1;
-    text-decoration: none;
-    white-space: nowrap;
-  }
+  /* .git-task-link base lives in src/app.css (:global). */
 </style>

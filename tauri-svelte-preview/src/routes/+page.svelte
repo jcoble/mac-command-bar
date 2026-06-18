@@ -21227,12 +21227,7 @@
     background: rgba(255, 255, 255, 0.12);
   }
 
-  .activity-row-main {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-  }
-
+  /* .activity-row-main base lives in src/app.css (:global). */
   .activity-row-main strong,
   .activity-row-main small,
   .activity-repo-row small {
@@ -21360,34 +21355,11 @@
     min-width: 0;
   }
 
-  .activity-row-actions {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-  }
-
-  .row-action-menu-anchor {
-    position: relative;
-    overflow: visible;
-  }
-
-  .row-action-menu {
-    position: absolute;
-    z-index: 14;
-    top: calc(100% + 4px);
-    right: 0;
-    display: grid;
-    width: 196px;
-    min-width: 0;
-    padding: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 8px;
-    background: rgba(21, 24, 24, 0.98);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
-  }
-
+  /*
+   * .activity-row-actions / .row-action-menu / .row-action-menu-anchor bases
+   * live in src/app.css (:global). The descendant rules below + the
+   * .activity-panel-list reflow/override rules stay scoped here.
+   */
   .activity-row-actions button,
   .activity-icon-link {
     display: grid;
@@ -25506,22 +25478,7 @@
     font-weight: 760;
   }
 
-  .git-task-link {
-    display: inline-flex;
-    align-items: center;
-    max-width: 100%;
-    min-height: 19px;
-    padding: 0 6px;
-    color: #071b18;
-    border-radius: 999px;
-    background: #6fdfcf;
-    font-size: 8.5px;
-    font-weight: 900;
-    line-height: 1;
-    text-decoration: none;
-    white-space: nowrap;
-  }
-
+  /* .git-task-link base lives in src/app.css (:global). */
   .git-diff-block {
     flex: 1 1 auto;
     min-height: 0;

@@ -472,3 +472,70 @@ canvas {
   cursor: default;
   opacity: 0.58;
 }
+
+/* ------------------------------------------------------------------
+ * Shared activity-row chrome — base rules used by BOTH the activity
+ * panels in `+page.svelte` (sessions / agents / runs / repos / commits /
+ * task-ledger rows) AND `ActivityWorktreesPanel.svelte`. The page `<style>`
+ * is scoped, so its copies could not reach the worktree rows the panel now
+ * authors; the panel had copied each rule verbatim. These BARE bases live
+ * here once as `:global`.
+ *
+ * Only the bare bases are globalized. Descendant/compound rules that qualify
+ * these classes (`.activity-row-main strong`, `.activity-row-actions button`,
+ * `.row-action-menu button`, the `.activity-panel-list .X:has(.row-action-menu)`
+ * reflow rules, the `.activity-panel-list .row-action-menu { position: static }`
+ * override, and the `.git-task-link` ancestor combos) stay scoped where they
+ * are — they layer on top of these globals and several are grouped with
+ * surface-only sibling classes. Moved verbatim from the respective `<style>`
+ * blocks (page + ActivityWorktreesPanel; identical bodies).
+ * ------------------------------------------------------------------ */
+.activity-row-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.activity-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  min-width: 0;
+}
+
+.row-action-menu-anchor {
+  position: relative;
+  overflow: visible;
+}
+
+.row-action-menu {
+  position: absolute;
+  z-index: 14;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  width: 196px;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(21, 24, 24, 0.98);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
+}
+
+.git-task-link {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 19px;
+  padding: 0 6px;
+  color: #071b18;
+  border-radius: 999px;
+  background: #6fdfcf;
+  font-size: 8.5px;
+  font-weight: 900;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
