@@ -194,3 +194,43 @@ canvas {
   white-space: nowrap;
   border: 0;
 }
+
+/* ------------------------------------------------------------------
+ * BrowserPanel — Dockview shell ancestor combos.
+ *
+ * These select on `.source-dockview-*-shell` hosts that BrowserPanel does NOT
+ * render, so they cannot be scoped inside the component (a child can't scope an
+ * ancestor it doesn't own). They live here as `:global` instead. Extracted from
+ * `+page.svelte` with the BrowserPanel markup. The matching terminal-launchpad
+ * shell rules stay in `+page.svelte` (the terminal is not extracted in 0b).
+ * ------------------------------------------------------------------ */
+.source-dockview-workbench-shell .source-dockview-attached-panel.browser-dock,
+.source-dockview-center-shell .source-dockview-attached-panel.browser-dock {
+  flex: 1 1 0;
+  align-self: stretch;
+  width: 100%;
+  height: 100% !important;
+  min-height: 0;
+  max-height: none;
+  margin-top: 0;
+}
+
+.source-dockview-workbench-shell .source-dockview-attached-panel.browser-dock,
+.source-dockview-center-shell .source-dockview-attached-panel.browser-dock {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.source-dockview-workbench-shell .browser-frame-wrap,
+.source-dockview-workbench-shell .browser-frame,
+.source-dockview-center-shell .browser-frame-wrap,
+.source-dockview-center-shell .browser-frame {
+  height: 100% !important;
+  min-height: 0;
+}
+
+.source-dockview-bottom-shell .browser-dock {
+  flex: 0 0 auto;
+  height: var(--bottom-dock-height);
+  min-height: 96px;
+  margin-top: 6px;
+}

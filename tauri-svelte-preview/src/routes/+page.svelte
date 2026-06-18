@@ -46,6 +46,7 @@
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
+  import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -20097,101 +20098,20 @@
       {/if}
 
       {#if sourceDockPanelVisible('browser')}
-        <section class="browser-dock" aria-label="Browser dock" use:sourceDockviewPanelAction={'browser'}>
-          <header class="browser-dock-header">
-            <div class="browser-dock-title">
-              <Network size={14} strokeWidth={2} />
-              <strong>Browser</strong>
-              <span>{activeBrowserUrl || 'No runtime URL'}</span>
-            </div>
-            <div class="browser-dock-actions">
-              <button
-                class="file-action-button icon-only"
-                type="button"
-                aria-label="Reload browser dock"
-                title="Reload browser dock"
-                disabled={!activeBrowserUrl}
-                onclick={reloadBrowserFrame}
-              >
-                <RefreshCw size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="file-action-button icon-only"
-                type="button"
-                aria-label="Open browser URL externally"
-                title="Open browser URL externally"
-                disabled={!activeBrowserUrl}
-                onclick={openBrowserUrlExternal}
-              >
-                <ExternalLink size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="file-action-button icon-only"
-                type="button"
-                aria-label="Hide browser dock"
-                title="Hide browser dock"
-                onclick={() => hideDockPanel('browser')}
-              >
-                <X size={13} strokeWidth={2} />
-              </button>
-            </div>
-          </header>
-
-          <form class="browser-url-form" onsubmit={submitBrowserUrl}>
-            <input
-              bind:value={browserInputUrl}
-              aria-label="Browser dock URL"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="localhost:5177"
-            />
-            <button
-              class="file-action-button"
-              type="submit"
-              disabled={!browserInputUrl.trim()}
-            >
-              <Network size={13} strokeWidth={2} />
-              <span>Open</span>
-            </button>
-          </form>
-
-          {#if selectedProjectRuntimeContexts.length > 0}
-            <div class="browser-runtime-list" aria-label="Browser runtime shortcuts">
-              {#each selectedProjectRuntimeContexts as context (`browser:${context.pid}:${context.port}:${context.cwd}`)}
-                <button
-                  type="button"
-                  class:active={activeBrowserUrl === runtimeContextUrl(context)}
-                  title={runtimeContextUrl(context)}
-                  onclick={() => openRuntimeContextInBrowserDock(context)}
-                >
-                  <span>:{context.port}</span>
-                  <strong>{context.command}</strong>
-                  <small>{context.rootLabel}</small>
-                </button>
-              {/each}
-            </div>
-          {/if}
-
-          {#if browserError}
-            <div class="browser-error">{browserError}</div>
-          {/if}
-
-          {#if activeBrowserUrl}
-            <div class="browser-frame-wrap">
-              {#key `${browserFrameKey}:${activeBrowserUrl}`}
-                <iframe
-                  class="browser-frame"
-                  title="Browser dock preview"
-                  src={activeBrowserUrl}
-                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-                  referrerpolicy="no-referrer"
-                ></iframe>
-              {/key}
-            </div>
-          {:else}
-            <div class="browser-empty">Start a runtime or enter a localhost URL.</div>
-          {/if}
-        </section>
+        <BrowserPanel
+          url={activeBrowserUrl}
+          bind:inputUrl={browserInputUrl}
+          frameKey={browserFrameKey}
+          error={browserError}
+          runtimeContexts={selectedProjectRuntimeContexts}
+          {runtimeContextUrl}
+          panelAction={sourceDockviewPanelAction}
+          onSubmit={submitBrowserUrl}
+          onReload={reloadBrowserFrame}
+          onOpenExternal={openBrowserUrlExternal}
+          onHide={() => hideDockPanel('browser')}
+          onOpenRuntimeContext={openRuntimeContextInBrowserDock}
+        />
       {/if}
       </div>
       </div>
@@ -25604,9 +25524,7 @@
   }
 
   :global(.source-dockview-workbench-shell .source-dockview-attached-panel.terminal-launchpad),
-  :global(.source-dockview-workbench-shell .source-dockview-attached-panel.browser-dock),
-  :global(.source-dockview-center-shell .source-dockview-attached-panel.terminal-launchpad),
-  :global(.source-dockview-center-shell .source-dockview-attached-panel.browser-dock) {
+  :global(.source-dockview-center-shell .source-dockview-attached-panel.terminal-launchpad) {
     flex: 1 1 0;
     align-self: stretch;
     width: 100%;
@@ -25620,19 +25538,6 @@
   :global(.source-dockview-workbench-shell .embedded-terminal-host),
   :global(.source-dockview-center-shell .embedded-terminal-panel),
   :global(.source-dockview-center-shell .embedded-terminal-host) {
-    height: 100% !important;
-    min-height: 0;
-  }
-
-  :global(.source-dockview-workbench-shell .source-dockview-attached-panel.browser-dock),
-  :global(.source-dockview-center-shell .source-dockview-attached-panel.browser-dock) {
-    grid-template-rows: auto auto auto minmax(0, 1fr);
-  }
-
-  :global(.source-dockview-workbench-shell .browser-frame-wrap),
-  :global(.source-dockview-workbench-shell .browser-frame),
-  :global(.source-dockview-center-shell .browser-frame-wrap),
-  :global(.source-dockview-center-shell .browser-frame) {
     height: 100% !important;
     min-height: 0;
   }
@@ -25833,216 +25738,6 @@
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .browser-dock {
-    display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr);
-    flex: 1 1 auto;
-    gap: 6px;
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    max-height: none;
-    margin-top: 0;
-    overflow: hidden;
-    padding: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.105);
-    border-radius: 8px;
-    background: rgba(15, 18, 18, 0.92);
-  }
-
-  :global(.source-dockview-bottom-shell .browser-dock) {
-    flex: 0 0 auto;
-    height: var(--bottom-dock-height);
-    min-height: 96px;
-    margin-top: 6px;
-  }
-
-  .browser-dock-header,
-  .browser-url-form {
-    display: grid;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .browser-dock-header {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .browser-dock-title,
-  .browser-dock-actions {
-    display: inline-flex;
-    align-items: center;
-    min-width: 0;
-  }
-
-  .browser-dock-title {
-    gap: 6px;
-    color: #dce4e2;
-  }
-
-  .browser-dock-title strong,
-  .browser-dock-title span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .browser-dock-title strong {
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .browser-dock-title span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .browser-dock-actions {
-    justify-content: end;
-    gap: 5px;
-  }
-
-  .browser-dock-actions .file-action-button {
-    display: inline-grid;
-    place-items: center;
-    width: 28px;
-    height: 24px;
-    min-width: 28px;
-    padding: 0;
-    border-radius: 6px;
-  }
-
-  .browser-url-form {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .browser-url-form input {
-    width: 100%;
-    height: 28px;
-    min-width: 0;
-    padding: 0 9px;
-    color: #e6efec;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.045);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 720;
-  }
-
-  .browser-url-form input:focus-visible {
-    outline: 1px solid rgba(92, 226, 207, 0.52);
-    outline-offset: 1px;
-  }
-
-  .browser-url-form .file-action-button {
-    display: inline-flex;
-    width: auto;
-    height: 28px;
-    gap: 5px;
-    padding: 0 9px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .browser-runtime-list {
-    display: flex;
-    gap: 5px;
-    min-width: 0;
-    overflow-x: auto;
-    padding-bottom: 2px;
-    scrollbar-width: thin;
-  }
-
-  .browser-runtime-list button {
-    display: inline-grid;
-    grid-template-columns: auto minmax(0, auto) auto;
-    align-items: center;
-    flex: 0 0 auto;
-    gap: 6px;
-    max-width: 220px;
-    height: 26px;
-    min-width: 0;
-    padding: 0 8px;
-    color: #b7c3bf;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .browser-runtime-list button.active {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.28);
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .browser-runtime-list span,
-  .browser-runtime-list small {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .browser-runtime-list strong,
-  .browser-runtime-list small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .browser-runtime-list strong {
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .browser-runtime-list small {
-    max-width: 82px;
-    color: #8d9995;
-  }
-
-  .browser-frame-wrap {
-    min-height: 128px;
-    min-width: 0;
-    height: 100%;
-    overflow: hidden;
-    border: 1px solid rgba(92, 226, 207, 0.11);
-    border-radius: 7px;
-    background: rgba(8, 11, 11, 0.72);
-  }
-
-  .browser-frame {
-    display: block;
-    width: 100%;
-    height: 100%;
-    min-height: 128px;
-    border: 0;
-    background: #101414;
-  }
-
-  .browser-empty,
-  .browser-error {
-    display: grid;
-    place-items: center;
-    min-height: 54px;
-    color: #798481;
-    border: 1px dashed rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .browser-error {
-    min-height: 28px;
-    color: #d8aa55;
   }
 
   .editor-toolbar {
