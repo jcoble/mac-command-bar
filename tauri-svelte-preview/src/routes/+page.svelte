@@ -51,6 +51,8 @@
   import ActivityWorktreesPanel from '$lib/components/panels/ActivityWorktreesPanel.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
+  import HiddenDockRail from '$lib/components/chrome/HiddenDockRail.svelte';
+  import WorkbenchControls from '$lib/components/chrome/WorkbenchControls.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -19497,84 +19499,23 @@
   {/if}
 
   {#if sourceDockviewWorkbenchEnabled && hiddenDockPanelIDs().length > 0}
-    <div class="hidden-dock-panel-rail workbench-hidden-dock-panel-rail" aria-label="Hidden dock panels">
-      {#each hiddenDockPanelIDs() as panelID (panelID)}
-        <button
-          class="hidden-dock-panel-button"
-          type="button"
-          aria-label={`Restore ${dockPanelLabel(panelID)} panel`}
-          title={`Restore ${dockPanelLabel(panelID)} panel`}
-          onclick={() => restoreHiddenDockPanel(panelID)}
-        >
-          {#if panelID === 'activity'}
-            <FolderGit2 size={13} strokeWidth={1.9} />
-          {:else if panelID === 'context'}
-            <Network size={13} strokeWidth={1.9} />
-          {:else if panelID === 'insights'}
-            <Search size={13} strokeWidth={1.9} />
-          {:else if panelID === 'terminal'}
-            <Terminal size={13} strokeWidth={1.9} />
-          {:else}
-            <ExternalLink size={13} strokeWidth={1.9} />
-          {/if}
-          <span>{dockPanelLabel(panelID)}</span>
-        </button>
-      {/each}
-    </div>
+    <HiddenDockRail
+      panelIDs={hiddenDockPanelIDs()}
+      {dockPanelLabel}
+      onRestore={restoreHiddenDockPanel}
+    />
   {/if}
 
   {#if sourceDockviewWorkbenchEnabled}
-    <div class="workbench-global-controls">
-      <button
-        class="topbar-command-button view-menu-button"
-        type="button"
-        aria-label="View menu"
-        aria-haspopup="menu"
-        aria-expanded={viewMenuOpen}
-        title="View menu"
-        onclick={toggleViewMenu}
-      >
-        <MoreHorizontal size={15} strokeWidth={2} />
-        <span>View</span>
-      </button>
-
-      {#if viewMenuOpen}
-        <div class="view-menu workbench-view-menu" role="menu" aria-label="View options">
-          <section class="view-menu-section" aria-label="Workspace layout presets">
-            <span>Layout</span>
-            <div class="view-menu-button-grid">
-              {#each sourceLayoutPresets as preset (preset.id)}
-                <button
-                  class:active={dock.layoutPreset === preset.id}
-                  type="button"
-                  role="menuitem"
-                  aria-label={`Use ${preset.label} layout`}
-                  title={preset.title}
-                  onclick={() => {
-                    applySourceLayoutPreset(preset.id);
-                    closeViewMenu();
-                  }}
-                >
-                  {preset.label}
-                </button>
-              {/each}
-            </div>
-            <button
-              class="view-menu-wide-button"
-              type="button"
-              role="menuitem"
-              onclick={() => {
-                resetSourceDockLayout();
-                closeViewMenu();
-              }}
-            >
-              Reset dock layout
-            </button>
-          </section>
-
-        </div>
-      {/if}
-    </div>
+    <WorkbenchControls
+      presets={sourceLayoutPresets}
+      activePreset={dock.layoutPreset}
+      bind:viewMenuOpen
+      onToggleMenu={toggleViewMenu}
+      onApplyPreset={applySourceLayoutPreset}
+      onResetLayout={resetSourceDockLayout}
+      onCloseMenu={closeViewMenu}
+    />
   {/if}
 </main>
 
@@ -22864,95 +22805,6 @@
     white-space: nowrap;
   }
 
-  .view-menu-anchor {
-    position: relative;
-    display: inline-grid;
-    place-items: center;
-  }
-
-  .view-menu {
-    position: absolute;
-    z-index: 9;
-    top: calc(100% + 6px);
-    right: 0;
-    display: grid;
-    gap: 8px;
-    width: 270px;
-    min-width: 0;
-    max-height: min(680px, calc(100vh - 104px));
-    overflow-y: auto;
-    padding: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 9px;
-    background: rgba(22, 25, 25, 0.98);
-    box-shadow: 0 20px 54px rgba(0, 0, 0, 0.36);
-    scrollbar-color: rgba(174, 184, 181, 0.52) rgba(255, 255, 255, 0.04);
-    scrollbar-width: thin;
-  }
-
-  .view-menu-section {
-    display: grid;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .view-menu-section > span,
-  .view-terminal-picker > span {
-    color: #7f8b88;
-    font-size: 9px;
-    font-weight: 850;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-  }
-
-  .view-menu-button-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .view-menu-button-grid.two {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .view-menu-button-grid button,
-  .view-menu-wide-button {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    height: 25px;
-    padding: 0 7px;
-    color: #aab6b2;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 10px;
-    font-weight: 820;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .view-menu-button-grid button:hover,
-  .view-menu-button-grid button:focus-visible,
-  .view-menu-wide-button:hover,
-  .view-menu-wide-button:focus-visible {
-    color: #edf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .view-menu-button-grid button.active,
-  .view-menu-wide-button.active {
-    color: #dffdf8;
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  .view-menu-wide-button {
-    width: 100%;
-    justify-content: start;
-  }
-
   .dock-panel-manager-list {
     display: grid;
     gap: 4px;
@@ -23130,90 +22982,6 @@
     height: 0;
     min-height: 0;
     margin: 0;
-  }
-
-  .hidden-dock-panel-rail {
-    position: absolute;
-    top: 38px;
-    right: 7px;
-    z-index: 18;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    max-height: calc(100% - 76px);
-    padding: 3px;
-    overflow: auto;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 9px;
-    background: rgba(12, 16, 16, 0.86);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
-    backdrop-filter: blur(14px);
-  }
-
-  .hidden-dock-panel-button {
-    display: inline-grid;
-    place-items: center;
-    grid-template-columns: 20px;
-    min-width: 0;
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    overflow: hidden;
-    color: #aeb8b5;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.04);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .hidden-dock-panel-button span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .hidden-dock-panel-button:hover,
-  .hidden-dock-panel-button:focus-visible {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.32);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .workbench-global-controls {
-    position: absolute;
-    top: 7px;
-    right: 8px;
-    z-index: 36;
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-  }
-
-  .workbench-global-controls > .topbar-command-button {
-    height: 25px;
-    min-width: 32px;
-    background: rgba(18, 20, 21, 0.9);
-    backdrop-filter: blur(14px);
-  }
-
-  .workbench-view-menu {
-    z-index: 37;
-  }
-
-  .workbench-hidden-dock-panel-rail {
-    top: 40px;
-    right: 8px;
-    z-index: 35;
   }
 
   .dock-drop-zones {
