@@ -134,7 +134,7 @@
     type SourceDockGroupID,
     type SourceDockLayout,
     type SourceDockPanelID
-  } from '$lib/dock.layout';
+  } from '$lib/sourceDockLayout';
   import {
     createSourcePaneviewStackWorkspace,
     createSourceDockviewTabStackWorkspace,
@@ -6139,7 +6139,7 @@
       openSourceTabs: projectOpenSourceTabs,
       branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
       selectedLine: selectedSourceLine,
-      dock.activityMode,
+      sourceActivityMode: dock.activityMode,
       sourceTerminalApp,
       browserUrl: activeBrowserUrl || null,
       viewState: workspaceSnapshotViewState(),
@@ -6768,8 +6768,8 @@
       contextPanelCollapsed,
       editorInsightCollapsed,
       sidePanePosition,
-      dock.sidePaneWidth,
-      dock.contextPaneWidth,
+      sidePaneWidth: dock.sidePaneWidth,
+      contextPaneWidth: dock.contextPaneWidth,
       contextPaneHeight,
       editorInsightWidth,
       sourceChromeCompact,
