@@ -961,8 +961,7 @@
   // Scan/index state moved to files.scan.* (Phase A4); runtime/error stay page-level (cross-cutting).
   let runtime = $state('pending source scan');
   let error = $state('');
-  let fileActionStatus = $state('');
-  let fileActionBusy = $state('');
+  // file-action status moved to files.fileActionStatus / files.fileActionBusy (Phase A6).
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
   let projectRootValidating = $state(false);
@@ -1869,28 +1868,28 @@
       id: 'project-open-folder',
       label: 'Open project folder',
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-open:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-open:${selectedProject.path}`,
       perform: () => openActivityPath(selectedProject.path)
     },
     {
       id: 'project-reveal-folder',
       label: 'Reveal project folder',
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-reveal:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-reveal:${selectedProject.path}`,
       perform: () => revealActivityPath(selectedProject.path)
     },
     {
       id: 'project-open-terminal',
       label: `Open project in ${sourceTerminalApp}`,
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-terminal:${selectedProject.path}`,
       perform: () => openActivityTerminalPath(selectedProject.path)
     },
     {
       id: 'terminal-open-project',
       label: `Open project shell in ${sourceTerminalApp}`,
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-terminal:${selectedProject.path}`,
       perform: () => openActivityTerminalPath(selectedProject.path)
     },
     {
@@ -2030,14 +2029,14 @@
       id: 'save-file',
       label: 'Save file',
       detail: 'Cmd+S',
-      disabled: !selectedSourceDirty || fileActionBusy === 'save',
+      disabled: !selectedSourceDirty || files.fileActionBusy === 'save',
       perform: saveSelectedSourceFile
     },
     {
       id: 'save-all-files',
       label: 'Save all dirty files',
       detail: `${dirtyProjectSourceRecords.length} dirty`,
-      disabled: dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all',
+      disabled: dirtyProjectSourceRecords.length === 0 || files.fileActionBusy === 'save-all',
       perform: saveAllDirtySourceFiles
     },
     {
@@ -2120,14 +2119,14 @@
       id: 'revert-file',
       label: 'Revert file',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !selectedSourceDirty || fileActionBusy === 'save',
+      disabled: !selectedSourceDirty || files.fileActionBusy === 'save',
       perform: revertSelectedSourceFile
     },
     {
       id: 'copy-path',
       label: 'Copy file path',
       detail: files.preview?.relativePath ?? 'No file',
-      disabled: !files.preview || fileActionBusy === 'copy',
+      disabled: !files.preview || files.fileActionBusy === 'copy',
       perform: copySelectedPath
     },
     {
@@ -2141,14 +2140,14 @@
       id: 'open-file-native',
       label: 'Open file in IDE',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || fileActionBusy === 'open',
+      disabled: !files.preview || files.fileActionBusy === 'open',
       perform: openSelectedFile
     },
     {
       id: 'reveal-file',
       label: 'Reveal file in Finder',
       detail: files.preview?.fileName ?? 'No file',
-      disabled: !files.preview || fileActionBusy === 'reveal',
+      disabled: !files.preview || files.fileActionBusy === 'reveal',
       perform: revealSelectedFile
     },
     {
@@ -2609,21 +2608,21 @@
       id: 'paste-read-clipboard',
       label: 'Read clipboard for cleanup',
       detail: pasteCleanupMode,
-      disabled: fileActionBusy === 'paste-read',
+      disabled: files.fileActionBusy === 'paste-read',
       perform: readPasteCleanupClipboard
     },
     {
       id: 'paste-copy-cleaned',
       label: 'Copy cleaned paste',
       detail: pasteCleanupStats,
-      disabled: pasteCleanupOutput.trim().length === 0 || fileActionBusy === 'paste-copy',
+      disabled: pasteCleanupOutput.trim().length === 0 || files.fileActionBusy === 'paste-copy',
       perform: copyPasteCleanupOutput
     },
     {
       id: 'paste-copy-reply-draft',
       label: 'Copy paste reply draft',
       detail: pasteCleanupReplyStats,
-      disabled: pasteCleanupReplyOutput.trim().length === 0 || fileActionBusy === 'paste-reply-copy',
+      disabled: pasteCleanupReplyOutput.trim().length === 0 || files.fileActionBusy === 'paste-reply-copy',
       perform: copyPasteCleanupReplyDraft
     },
     {
@@ -2657,7 +2656,7 @@
       id: `paste-copy-history-${item.id}`,
       label: `Copy ${pasteCleanupHistoryKindLabel(item.kind)} history`,
       detail: item.summary,
-      disabled: fileActionBusy === 'activity-copy',
+      disabled: files.fileActionBusy === 'activity-copy',
       perform: () => copyPasteCleanupHistoryItem(item)
     })),
     ...pasteCleanupModes.map((mode) => ({
@@ -3336,7 +3335,7 @@
       projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
       persistSourceScanCache(projectStore.scan.cache);
       setSourceScanMode(project.id, 'repair');
-      fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
+      files.fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
     } else if (cachedScan) {
       files.scan.activeScanId = '';
       files.scan.progress = null;
@@ -3400,7 +3399,7 @@
         projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
         persistSourceScanCache(projectStore.scan.cache);
         setSourceScanMode(project.id, 'repair');
-        fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
+        files.fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
         await scanProject(project, preferredPath, {
           force: true,
           limit: Math.max(scanLimit, expandedSourceScanLimit),
@@ -3433,7 +3432,7 @@
 
       if (options.skipTinyIndexRepair && suspiciousScanResult) {
         setSourceScanMode(project.id, 'tiny');
-        fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Check the project root or reset the index.`;
+        files.fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Check the project root or reset the index.`;
       }
 
       const nextSelection = applySourceRecords(
@@ -3491,7 +3490,7 @@
     runtime = 'source scan stopped';
     error = '';
     setSourceScanMode(selectedProject.id, 'stopped');
-    fileActionStatus = 'Scan stopped';
+    files.fileActionStatus = 'Scan stopped';
   }
 
   function clearSourceRecordsForIncomingProject(project: ProjectRoot, force = false) {
@@ -3545,7 +3544,7 @@
   function resetProjectScanCache(project: ProjectRoot = selectedProject, limit = expandedSourceScanLimit) {
     projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
     persistSourceScanCache(projectStore.scan.cache);
-    fileActionStatus = `Index reset for ${project.name}`;
+    files.fileActionStatus = `Index reset for ${project.name}`;
     return scanProject(project, projectStore.selectedSourcePaths[project.id], { force: true, limit });
   }
 
@@ -5170,7 +5169,7 @@
     if (!url || typeof window === 'undefined') return;
 
     window.open(url, '_blank', 'noopener,noreferrer');
-    fileActionStatus = `Opened ${taskID}`;
+    files.fileActionStatus = `Opened ${taskID}`;
   }
 
   async function focusGitTaskLedger(taskID: string | null) {
@@ -5482,7 +5481,7 @@
     if (artifact.path?.trim()) {
       if (isProjectLocalTextArtifactPath(artifact.path)) {
         await selectRecord(sourceRecordFromRestoredPath(selectedProject, artifact.path));
-        fileActionStatus = `Opened artifact: ${artifact.title}`;
+        files.fileActionStatus = `Opened artifact: ${artifact.title}`;
         return;
       }
 
@@ -5492,7 +5491,7 @@
 
     if (artifact.url && typeof window !== 'undefined') {
       window.open(artifact.url, '_blank', 'noopener,noreferrer');
-      fileActionStatus = `Opened artifact: ${artifact.title}`;
+      files.fileActionStatus = `Opened artifact: ${artifact.title}`;
     }
   }
 
@@ -5623,7 +5622,7 @@
 
       orchestrationEventFilePath = nextPath;
       orchestrationEventImportStatus = 'Event file selected';
-      fileActionStatus = 'Orchestration event file selected';
+      files.fileActionStatus = 'Orchestration event file selected';
     } catch (chooseError) {
       orchestrationEventImportStatus =
         chooseError instanceof Error ? chooseError.message : 'Could not choose event file';
@@ -5758,7 +5757,7 @@
       orchestrationRuns = [run, ...orchestrationRuns.filter((entry) => entry.id !== run.id)];
       orchestrationRunSource = 'native event store';
       orchestrationEventImportStatus = `${label} recorded`;
-      fileActionStatus = `${label} recorded`;
+      files.fileActionStatus = `${label} recorded`;
       focusOrchestrationRun(run);
       void loadOrchestrationRuns(projectOptions, { background: true });
     } catch (recordError) {
@@ -6134,14 +6133,14 @@
 
     workspaceSnapshots = nextSnapshots;
     persistWorkspaceSnapshots(nextSnapshots);
-    fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
+    files.fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
     return snapshot;
   }
 
   async function restoreAgentSessionWorkspaceSnapshot(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
-      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      files.fileActionStatus = `No workspace snapshot saved for ${session.title}`;
       return;
     }
 
@@ -6165,7 +6164,7 @@
     markAgentSessionWorkspaceActive(session);
 
     if (!readiness.canResumeEmbedded) {
-      fileActionStatus =
+      files.fileActionStatus =
         readiness.kind === 'missing-worktree'
           ? 'Conversation restored; repair worktree before terminal resume'
           : `Conversation restored: ${session.title}`;
@@ -6227,8 +6226,8 @@
 
     await restoreConversationWorkspaceSnapshot(snapshot);
 
-    fileActionBusy = `workspace-terminal-command:${snapshot.id}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `workspace-terminal-command:${snapshot.id}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
@@ -6239,7 +6238,7 @@
           snapshot.sourceTerminalApp
         );
         if (openedCommand.opened) {
-          fileActionStatus = terminalOpenStatus(
+          files.fileActionStatus = terminalOpenStatus(
             openedCommand,
             'Opened workspace resume command',
             'opened workspace resume command in Terminal'
@@ -6252,7 +6251,7 @@
         ? await openTerminalPathWithFallback(path, snapshot.sourceTerminalApp)
         : { opened: false, app: snapshot.sourceTerminalApp, usedFallback: false };
       if (command) await navigator.clipboard.writeText(command);
-      fileActionStatus = command
+      files.fileActionStatus = command
         ? openedPath.opened
           ? 'Opened workspace terminal and copied resume command'
           : 'Workspace resume command copied'
@@ -6265,7 +6264,7 @@
           ? await openTerminalPathWithFallback(path, snapshot.sourceTerminalApp)
           : { opened: false, app: snapshot.sourceTerminalApp, usedFallback: false };
         if (command) await navigator.clipboard.writeText(command);
-        fileActionStatus = command
+        files.fileActionStatus = command
           ? openedPath.opened
             ? 'Opened workspace terminal and copied resume command'
             : 'Workspace resume command copied'
@@ -6274,7 +6273,7 @@
         error = terminalError instanceof Error ? terminalError.message : 'Could not open workspace terminal';
       }
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -6303,8 +6302,8 @@
     showDockPanel('terminal');
     await tick();
 
-    fileActionBusy = `workspace-embedded-terminal-command:${snapshot.id}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `workspace-embedded-terminal-command:${snapshot.id}`;
+    files.fileActionStatus = '';
     error = '';
     embeddedTerminalError = '';
 
@@ -6312,7 +6311,7 @@
       const savedSession = embeddedTerminalSessionForSnapshot(snapshot);
       if (savedSession) {
         await attachEmbeddedTerminalSession(savedSession);
-        fileActionStatus = `Attached conversation terminal: ${snapshot.title}`;
+        files.fileActionStatus = `Attached conversation terminal: ${snapshot.title}`;
         return;
       }
 
@@ -6322,11 +6321,11 @@
         if (session) {
           bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
           // Keep the cwd-fallback notice if one was raised; otherwise confirm resume.
-          fileActionStatus = fileActionStatus.startsWith('Working directory ‹')
-            ? fileActionStatus
+          files.fileActionStatus = files.fileActionStatus.startsWith('Working directory ‹')
+            ? files.fileActionStatus
             : `Started conversation terminal: ${snapshot.title}`;
         } else {
-          fileActionStatus = 'Embedded terminal unavailable';
+          files.fileActionStatus = 'Embedded terminal unavailable';
         }
         return;
       }
@@ -6334,11 +6333,11 @@
       const session = await startEmbeddedTerminalSession(path, '', snapshotFallbackRoots);
       if (session) {
         bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
-        fileActionStatus = fileActionStatus.startsWith('Working directory ‹')
-          ? fileActionStatus
+        files.fileActionStatus = files.fileActionStatus.startsWith('Working directory ‹')
+          ? files.fileActionStatus
           : `Started conversation shell: ${snapshot.title}`;
       } else {
-        fileActionStatus = 'Embedded terminal unavailable';
+        files.fileActionStatus = 'Embedded terminal unavailable';
       }
     } catch (terminalError) {
       error =
@@ -6347,7 +6346,7 @@
           : 'Could not resume workspace in embedded terminal';
       embeddedTerminalStatus = 'Embedded workspace resume failed';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -6359,7 +6358,7 @@
       activeWorkspaceSessionKey = null;
       persistActiveWorkspaceSessionKey(null);
     }
-    fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
+    files.fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
   }
 
   function workspaceSnapshotRepairPlan(snapshot: WorkspaceSnapshot) {
@@ -6634,7 +6633,7 @@
       showDockPanel('terminal');
       await tick();
       await attachEmbeddedTerminalSession(session);
-      fileActionStatus = 'Attached embedded terminal; no saved workspace found';
+      files.fileActionStatus = 'Attached embedded terminal; no saved workspace found';
       return;
     }
 
@@ -6651,13 +6650,13 @@
     showDockPanel('terminal');
     await tick();
     await attachEmbeddedTerminalSession(session);
-    fileActionStatus = `Restored terminal workspace: ${snapshot.title}`;
+    files.fileActionStatus = `Restored terminal workspace: ${snapshot.title}`;
   }
 
   async function copyAgentSessionWorkspaceRestorePlan(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
-      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      files.fileActionStatus = `No workspace snapshot saved for ${session.title}`;
       return;
     }
 
@@ -6667,7 +6666,7 @@
   async function copyAgentSessionWorkspaceRepairPlan(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
-      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      files.fileActionStatus = `No workspace snapshot saved for ${session.title}`;
       return;
     }
 
@@ -6714,7 +6713,7 @@
     persistSourceDockLayout(dock.layout);
     activeWorkspaceSessionKey = snapshot.id;
     persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
-    fileActionStatus = `Workspace restored: ${snapshot.title}`;
+    files.fileActionStatus = `Workspace restored: ${snapshot.title}`;
 
     await activateWorkspaceSnapshotProject(project, restored.selectedPath);
 
@@ -7517,7 +7516,7 @@
     dock.activityMode = 'files';
     setSourceActivityFilter('');
     persistSourceActivityMode(dock.activityMode);
-    fileActionStatus = `Opening ${worktree.branch} source tree`;
+    files.fileActionStatus = `Opening ${worktree.branch} source tree`;
     void addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
     return true;
   }
@@ -7585,13 +7584,13 @@
       return;
     }
     if (!confirmWorktreePrimaryAction(worktree, action)) {
-      fileActionStatus = 'Worktree cleanup cancelled';
+      files.fileActionStatus = 'Worktree cleanup cancelled';
       return;
     }
 
     const busyKey = `worktree-primary:${worktree.path}`;
-    fileActionBusy = busyKey;
-    fileActionStatus = '';
+    files.fileActionBusy = busyKey;
+    files.fileActionStatus = '';
     error = '';
 
     try {
@@ -7603,7 +7602,7 @@
         }
 
         projectWorktrees = result.worktrees;
-        fileActionStatus = `${result.message}: ${result.archivePath}`;
+        files.fileActionStatus = `${result.message}: ${result.archivePath}`;
         void loadGitRepositorySummaries(projects);
         return;
       }
@@ -7615,12 +7614,12 @@
       }
 
       projectWorktrees = result.worktrees;
-      fileActionStatus = result.message;
+      files.fileActionStatus = result.message;
       void loadGitRepositorySummaries(projects);
     } catch (removeError) {
       error = removeError instanceof Error ? removeError.message : 'Could not remove worktree';
     } finally {
-      if (fileActionBusy === busyKey) fileActionBusy = '';
+      if (files.fileActionBusy === busyKey) files.fileActionBusy = '';
     }
   }
 
@@ -7850,13 +7849,13 @@
       const result = await killPlaywrightSessionsFromTauri();
       if (!result) {
         playwrightSessionError = 'Playwright cleanup runs in the Tauri app.';
-        fileActionStatus = 'Open the Tauri app to stop Playwright sessions';
+        files.fileActionStatus = 'Open the Tauri app to stop Playwright sessions';
         return;
       }
 
       const stoppedCount = result.terminatedPids.length;
       const failedCount = result.failedPgids.length;
-      fileActionStatus = failedCount
+      files.fileActionStatus = failedCount
         ? `Stopped ${stoppedCount} Playwright processes; ${failedCount} failed`
         : stoppedCount
           ? `Stopped ${stoppedCount} Playwright processes`
@@ -7865,7 +7864,7 @@
     } catch (cleanupError) {
       playwrightSessionError =
         cleanupError instanceof Error ? cleanupError.message : 'Could not stop Playwright sessions';
-      fileActionStatus = 'Playwright cleanup failed';
+      files.fileActionStatus = 'Playwright cleanup failed';
     } finally {
       playwrightSessionsKilling = false;
     }
@@ -8120,7 +8119,7 @@
       let root = resolvedRoot || (home ? home : requestedRoot);
       const usedFallback = normalizeProjectPath(root) !== normalizeProjectPath(requestedRoot);
       if (usedFallback) {
-        fileActionStatus = `Working directory ‹${requestedRoot}› is unavailable — opened terminal in ‹${root}›.`;
+        files.fileActionStatus = `Working directory ‹${requestedRoot}› is unavailable — opened terminal in ‹${root}›.`;
       }
 
       fitEmbeddedTerminal();
@@ -8145,7 +8144,7 @@
           rows: embeddedTerminal.rows || 24
         });
         if (session) {
-          fileActionStatus = `Working directory ‹${retryRoot}› is unavailable — opened terminal in ‹${root}›.`;
+          files.fileActionStatus = `Working directory ‹${retryRoot}› is unavailable — opened terminal in ‹${root}›.`;
         }
       }
 
@@ -8625,12 +8624,12 @@
 
     if (!normalizedSymbolName) {
       sourceDefinitionTargets = [];
-      fileActionStatus = 'No symbol under cursor';
+      files.fileActionStatus = 'No symbol under cursor';
       return [];
     }
 
     sourceDefinitionLoading = true;
-    fileActionStatus = `Looking up ${normalizedSymbolName}`;
+    files.fileActionStatus = `Looking up ${normalizedSymbolName}`;
     try {
       const lspTargets = files.preview
         ? await findSourceLspDefinitionsFromTauri(
@@ -8666,11 +8665,11 @@
           : 'Browser preview definitions';
 
       if (nextTargets.length === 0) {
-        fileActionStatus = `No definition for ${normalizedSymbolName}`;
+        files.fileActionStatus = `No definition for ${normalizedSymbolName}`;
         return nextTargets;
       }
 
-      fileActionStatus = `${nextTargets.length} ${nextTargets.length === 1 ? 'definition' : 'definitions'} for ${normalizedSymbolName}`;
+      files.fileActionStatus = `${nextTargets.length} ${nextTargets.length === 1 ? 'definition' : 'definitions'} for ${normalizedSymbolName}`;
       return nextTargets;
     } catch (definitionError) {
       sourceDefinitionTargets = findSourceDefinitionTargets(
@@ -8758,12 +8757,12 @@
 
     if (!normalizedSymbolName) {
       sourceReferenceTargets = [];
-      fileActionStatus = 'No symbol under cursor';
+      files.fileActionStatus = 'No symbol under cursor';
       return [];
     }
 
     sourceReferenceLoading = true;
-    fileActionStatus = `Finding references for ${normalizedSymbolName}`;
+    files.fileActionStatus = `Finding references for ${normalizedSymbolName}`;
     try {
       const lspTargets = files.preview
         ? await findSourceLspReferencesFromTauri(
@@ -8797,7 +8796,7 @@
         : nativeTargets
           ? ''
           : 'Browser preview references';
-      fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
+      files.fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
       return sourceReferenceTargets;
     } catch (referenceError) {
       sourceReferenceTargets = findSourceReferenceTargets(
@@ -8954,19 +8953,19 @@
 
     if (!normalizedSymbolName) {
       sourceImplementationTargets = [];
-      fileActionStatus = 'No symbol under cursor';
+      files.fileActionStatus = 'No symbol under cursor';
       return [];
     }
 
     if (!files.preview || !sourceIntelligenceAvailable) {
       sourceImplementationTargets = [];
       sourceImplementationError = 'Language server unavailable';
-      fileActionStatus = `No implementation lookup for ${normalizedSymbolName}`;
+      files.fileActionStatus = `No implementation lookup for ${normalizedSymbolName}`;
       return [];
     }
 
     sourceImplementationLoading = true;
-    fileActionStatus = `Finding implementations for ${normalizedSymbolName}`;
+    files.fileActionStatus = `Finding implementations for ${normalizedSymbolName}`;
     try {
       const lspTargets =
         (await findSourceLspImplementationsFromTauri(
@@ -8981,7 +8980,7 @@
 
       sourceImplementationTargets = lspTargets;
       sourceImplementationError = '';
-      fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
+      files.fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
       return lspTargets;
     } catch (implementationError) {
       sourceImplementationTargets = [];
@@ -9047,19 +9046,19 @@
 
     if (!normalizedSymbolName) {
       sourceTypeDefinitionTargets = [];
-      fileActionStatus = 'No symbol under cursor';
+      files.fileActionStatus = 'No symbol under cursor';
       return [];
     }
 
     if (!files.preview || !sourceIntelligenceAvailable) {
       sourceTypeDefinitionTargets = [];
       sourceTypeDefinitionError = 'Language server unavailable';
-      fileActionStatus = `No type definition lookup for ${normalizedSymbolName}`;
+      files.fileActionStatus = `No type definition lookup for ${normalizedSymbolName}`;
       return [];
     }
 
     sourceTypeDefinitionLoading = true;
-    fileActionStatus = `Finding type definition for ${normalizedSymbolName}`;
+    files.fileActionStatus = `Finding type definition for ${normalizedSymbolName}`;
     try {
       const lspTargets =
         (await findSourceLspTypeDefinitionsFromTauri(
@@ -9074,7 +9073,7 @@
 
       sourceTypeDefinitionTargets = lspTargets;
       sourceTypeDefinitionError = '';
-      fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
+      files.fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
       return lspTargets;
     } catch (typeDefinitionError) {
       sourceTypeDefinitionTargets = [];
@@ -9215,7 +9214,7 @@
   async function loadRecord(record: SourceRecord, expectedScanGeneration: number | null = null) {
     files.scan.loading = true;
     error = '';
-    fileActionStatus = '';
+    files.fileActionStatus = '';
     resetSourceIntelligence();
     clearSelectedSourceGitDiff();
 
@@ -9332,7 +9331,7 @@
   async function selectAdjacentDirtySourceFile(direction: 1 | -1) {
     const dirtyRecords = dirtyProjectSourceRecords;
     if (dirtyRecords.length === 0) {
-      fileActionStatus = 'No dirty files';
+      files.fileActionStatus = 'No dirty files';
       return;
     }
 
@@ -9346,7 +9345,7 @@
         : (currentIndex + direction + dirtyRecords.length) % dirtyRecords.length;
     const nextRecord = dirtyRecords[nextIndex];
     await selectRecord(nextRecord);
-    fileActionStatus = `Dirty file ${nextIndex + 1} of ${dirtyRecords.length}`;
+    files.fileActionStatus = `Dirty file ${nextIndex + 1} of ${dirtyRecords.length}`;
   }
 
   function handleWindowKeydown(event: KeyboardEvent) {
@@ -9388,7 +9387,7 @@
 
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      if (selectedSourceDirty && fileActionBusy !== 'save') {
+      if (selectedSourceDirty && files.fileActionBusy !== 'save') {
         void saveSelectedSourceFile();
       }
       return;
@@ -9799,7 +9798,7 @@
     persistOpenSourceTabs(nextOpenSourceTabs);
 
     if (closeResult.nextActivePath === files.selectedRecord?.path) {
-      fileActionStatus = status;
+      files.fileActionStatus = status;
       return;
     }
 
@@ -9808,12 +9807,12 @@
       if (nextTab) {
         await selectOpenTab(nextTab);
       }
-      fileActionStatus = status;
+      files.fileActionStatus = status;
       return;
     }
 
     clearSelectedSourceRecordForProject(selectedProject.id);
-    fileActionStatus = status;
+    files.fileActionStatus = status;
   }
 
   function trackSelectedSourceRecord(record: SourceRecord, project: ProjectRoot) {
@@ -9872,7 +9871,7 @@
     clearSelectedSourceGitDiff();
     files.scan.loading = false;
     error = '';
-    fileActionStatus = '';
+    files.fileActionStatus = '';
     persistSelectedSourcePaths(nextSelectedSourcePaths);
   }
 
@@ -9887,50 +9886,50 @@
   async function copySelectedPath() {
     if (!files.preview) return;
 
-    fileActionBusy = 'copy';
+    files.fileActionBusy = 'copy';
 
     try {
       await copyTextToClipboard(files.preview.path, 'Path copied');
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy source path';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function copyTextToClipboard(text: string, successStatus: string) {
-    fileActionStatus = '';
+    files.fileActionStatus = '';
     error = '';
 
     await navigator.clipboard.writeText(text);
-    fileActionStatus = successStatus;
+    files.fileActionStatus = successStatus;
   }
 
   async function copyActivityCommand(text: string, successStatus = 'Copied') {
     if (!text.trim()) return;
 
-    fileActionBusy = 'activity-copy';
+    files.fileActionBusy = 'activity-copy';
 
     try {
       await copyTextToClipboard(text, successStatus);
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy activity text';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function readPasteCleanupClipboard() {
-    fileActionBusy = 'paste-read';
+    files.fileActionBusy = 'paste-read';
 
     try {
       pasteCleanupInput = await navigator.clipboard.readText();
-      fileActionStatus = 'Clipboard loaded';
+      files.fileActionStatus = 'Clipboard loaded';
       error = '';
     } catch (clipboardError) {
       error = clipboardError instanceof Error ? clipboardError.message : 'Could not read clipboard';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -9952,7 +9951,7 @@
   async function copyPasteCleanupOutput() {
     if (!pasteCleanupOutput.trim()) return;
 
-    fileActionBusy = 'paste-copy';
+    files.fileActionBusy = 'paste-copy';
 
     try {
       await copyTextToClipboard(pasteCleanupOutput, 'Cleaned text copied');
@@ -9960,14 +9959,14 @@
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy cleaned text';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function copyPasteCleanupReplyDraft() {
     if (!pasteCleanupReplyOutput.trim()) return;
 
-    fileActionBusy = 'paste-reply-copy';
+    files.fileActionBusy = 'paste-reply-copy';
 
     try {
       await copyTextToClipboard(pasteCleanupReplyOutput, 'Reply draft copied');
@@ -9975,7 +9974,7 @@
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy reply draft';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -9992,14 +9991,14 @@
       setPasteCleanupMode(item.mode);
     }
 
-    fileActionStatus = `${pasteCleanupHistoryKindLabel(item.kind)} restored`;
+    files.fileActionStatus = `${pasteCleanupHistoryKindLabel(item.kind)} restored`;
     error = '';
   }
 
   function clearPasteCleanupHistory() {
     pasteCleanupHistory = [];
     persistPasteCleanupHistory([]);
-    fileActionStatus = 'Paste cleanup history cleared';
+    files.fileActionStatus = 'Paste cleanup history cleared';
     error = '';
   }
 
@@ -10025,13 +10024,13 @@
 
   function clearPasteCleanupInput() {
     pasteCleanupInput = '';
-    fileActionStatus = 'Paste cleanup cleared';
+    files.fileActionStatus = 'Paste cleanup cleared';
     error = '';
   }
 
   function clearPasteCleanupReplyDraft() {
     pasteCleanupReplyDraft = '';
-    fileActionStatus = 'Reply draft cleared';
+    files.fileActionStatus = 'Reply draft cleared';
     error = '';
   }
 
@@ -10042,53 +10041,53 @@
   async function openActivityPath(path: string) {
     if (!path.trim()) return;
 
-    fileActionBusy = `activity-open:${path}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-open:${path}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const opened = await openPathFromTauri(path);
-      fileActionStatus = opened ? 'Opened path' : 'Native action unavailable';
+      files.fileActionStatus = opened ? 'Opened path' : 'Native action unavailable';
     } catch (openError) {
       error = openError instanceof Error ? openError.message : 'Could not open path';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function revealActivityPath(path: string) {
     if (!path.trim()) return;
 
-    fileActionBusy = `activity-reveal:${path}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-reveal:${path}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const revealed = await revealPathFromTauri(path);
-      fileActionStatus = revealed ? 'Revealed path' : 'Native action unavailable';
+      files.fileActionStatus = revealed ? 'Revealed path' : 'Native action unavailable';
     } catch (revealError) {
       error = revealError instanceof Error ? revealError.message : 'Could not reveal path';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function openActivityTerminalPath(path: string) {
     if (!path.trim()) return;
 
-    fileActionBusy = `activity-terminal:${path}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-terminal:${path}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const opened = await openTerminalPathWithFallback(path, sourceTerminalApp);
-      fileActionStatus = opened.opened
+      files.fileActionStatus = opened.opened
         ? terminalOpenStatus(opened, 'Opened terminal', 'opened terminal')
         : 'Native action unavailable';
     } catch (terminalError) {
       error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -10112,14 +10111,14 @@
     captureAgentSessionWorkspaceSnapshot(session);
     markAgentSessionWorkspaceActive(session);
     const path = session.projectPath ?? selectedProject.path;
-    fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const openedCommand = await openTerminalCommandWithFallback(path, command, sourceTerminalApp);
       if (openedCommand.opened) {
-        fileActionStatus = terminalOpenStatus(
+        files.fileActionStatus = terminalOpenStatus(
           openedCommand,
           'Opened terminal resume command',
           'opened terminal resume command'
@@ -10131,7 +10130,7 @@
         ? await openTerminalPathWithFallback(path, sourceTerminalApp)
         : { opened: false, app: sourceTerminalApp, usedFallback: false };
       await navigator.clipboard.writeText(command);
-      fileActionStatus = openedPath.opened
+      files.fileActionStatus = openedPath.opened
         ? 'Opened terminal and copied resume command'
         : 'Resume command copied';
     } catch (terminalError) {
@@ -10140,48 +10139,48 @@
           ? await openTerminalPathWithFallback(path, sourceTerminalApp)
           : { opened: false, app: sourceTerminalApp, usedFallback: false };
         await navigator.clipboard.writeText(command);
-        fileActionStatus = openedPath.opened
+        files.fileActionStatus = openedPath.opened
           ? 'Opened terminal and copied resume command'
           : 'Resume command copied';
       } catch {
         error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal command';
       }
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function openSelectedFile() {
     if (!files.preview) return;
 
-    fileActionBusy = 'open';
-    fileActionStatus = '';
+    files.fileActionBusy = 'open';
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const opened = await openSourceFileFromTauri(files.preview.path);
-      fileActionStatus = opened ? 'Opened file' : 'Native action unavailable';
+      files.fileActionStatus = opened ? 'Opened file' : 'Native action unavailable';
     } catch (openError) {
       error = openError instanceof Error ? openError.message : 'Could not open source file';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function revealSelectedFile() {
     if (!files.preview) return;
 
-    fileActionBusy = 'reveal';
-    fileActionStatus = '';
+    files.fileActionBusy = 'reveal';
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const revealed = await revealSourceFileFromTauri(files.preview.path);
-      fileActionStatus = revealed ? 'Revealed in Finder' : 'Native action unavailable';
+      files.fileActionStatus = revealed ? 'Revealed in Finder' : 'Native action unavailable';
     } catch (revealError) {
       error = revealError instanceof Error ? revealError.message : 'Could not reveal source file';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -10190,14 +10189,14 @@
 
     const record = files.selectedRecord;
     const content = selectedSourceDraftContent;
-    fileActionBusy = 'save';
-    fileActionStatus = '';
+    files.fileActionBusy = 'save';
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const savedPreview = await writeSourceToTauri(record, content);
       if (!savedPreview) {
-        fileActionStatus = 'Native save unavailable';
+        files.fileActionStatus = 'Native save unavailable';
         return;
       }
 
@@ -10208,11 +10207,11 @@
       }
       void loadProjectGitStatus(selectedProject);
       void loadSelectedSourceGitDiff(record);
-      fileActionStatus = 'Saved file';
+      files.fileActionStatus = 'Saved file';
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save source file';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -10220,8 +10219,8 @@
     const dirtyRecords = dirtyProjectSourceRecords;
     if (dirtyRecords.length === 0) return;
 
-    fileActionBusy = 'save-all';
-    fileActionStatus = '';
+    files.fileActionBusy = 'save-all';
+    files.fileActionStatus = '';
     error = '';
 
     let savedCount = 0;
@@ -10233,7 +10232,7 @@
 
         const savedPreview = await writeSourceToTauri(record, content);
         if (!savedPreview) {
-          fileActionStatus = `Native save unavailable for ${record.fileName}`;
+          files.fileActionStatus = `Native save unavailable for ${record.fileName}`;
           return;
         }
 
@@ -10247,11 +10246,11 @@
       runtime = 'tauri file write';
       void loadProjectGitStatus(selectedProject);
       if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
-      fileActionStatus = `Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`;
+      files.fileActionStatus = `Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`;
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save all source files';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -10263,7 +10262,7 @@
       ...files.draftByPath,
       [files.preview.path]: savedContent
     };
-    fileActionStatus = 'Reverted edits';
+    files.fileActionStatus = 'Reverted edits';
     error = '';
   }
 
@@ -10683,7 +10682,7 @@
       const staged = await stageExternalWorkspaceEditDrafts(action.files);
       if (staged.editCount === 0) return;
 
-      fileActionStatus = `${action.title}: ${staged.editCount.toLocaleString()} external ${staged.editCount === 1 ? 'edit' : 'edits'} staged in ${staged.fileCount.toLocaleString()} ${staged.fileCount === 1 ? 'file' : 'files'}`;
+      files.fileActionStatus = `${action.title}: ${staged.editCount.toLocaleString()} external ${staged.editCount === 1 ? 'edit' : 'edits'} staged in ${staged.fileCount.toLocaleString()} ${staged.fileCount === 1 ? 'file' : 'files'}`;
     } catch (workspaceEditError) {
       error =
         workspaceEditError instanceof Error
@@ -10695,7 +10694,7 @@
   async function handleEditorFormatDocument(): Promise<SourceTextEdit[]> {
     if (!files.preview || !sourceIntelligenceAvailable) return [];
 
-    fileActionStatus = 'Formatting source file';
+    files.fileActionStatus = 'Formatting source file';
     try {
       const edits =
         (await formatSourceWithLspFromTauri(
@@ -10706,13 +10705,13 @@
             column: 1
           }
         )) ?? [];
-      fileActionStatus =
+      files.fileActionStatus =
         edits.length === 0
           ? 'No formatting edits'
           : `${edits.length} formatting ${edits.length === 1 ? 'edit' : 'edits'} applied to draft`;
       return edits;
     } catch (formatError) {
-      fileActionStatus =
+      files.fileActionStatus =
         formatError instanceof Error ? formatError.message : 'Formatting unavailable';
       return [];
     }
@@ -10725,7 +10724,7 @@
   }): Promise<SourceRenameResult | null> {
     if (!files.preview || !sourceIntelligenceAvailable) return null;
 
-    fileActionStatus = 'Renaming symbol';
+    files.fileActionStatus = 'Renaming symbol';
     try {
       const result = await renameSourceWithLspFromTauri(
         { ...files.preview, content: selectedSourceDraftContent },
@@ -10752,13 +10751,13 @@
           ? `${externalDrafts.missingCount.toLocaleString()} external ${externalDrafts.missingCount === 1 ? 'file' : 'files'} could not be read`
           : ''
       ].filter(Boolean);
-      fileActionStatus =
+      files.fileActionStatus =
         totalEditCount === 0
           ? 'No rename edits'
           : `Rename staged: ${renameParts.join(' · ')}`;
       return result;
     } catch (renameError) {
-      fileActionStatus = renameError instanceof Error ? renameError.message : 'Rename unavailable';
+      files.fileActionStatus = renameError instanceof Error ? renameError.message : 'Rename unavailable';
       return null;
     }
   }
@@ -10849,7 +10848,7 @@
     );
 
     if (!diagnostic) {
-      fileActionStatus = 'No problems';
+      files.fileActionStatus = 'No problems';
       return;
     }
 
@@ -11046,7 +11045,7 @@
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
     applySourceDockLayout(nextDockLayout);
-    fileActionStatus = status;
+    files.fileActionStatus = status;
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -11064,7 +11063,7 @@
     dock.layoutPreset = presetID;
     persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
-    fileActionStatus = `${preset.label} layout saved`;
+    files.fileActionStatus = `${preset.label} layout saved`;
   }
 
   function resetSourceLayoutPresetOverride(presetID: ConcreteSourceLayoutPresetID) {
@@ -11075,7 +11074,7 @@
     delete nextOverrides[presetID];
     sourceLayoutPresetOverrides = nextOverrides;
     persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
-    fileActionStatus = `${preset.label} layout reset`;
+    files.fileActionStatus = `${preset.label} layout reset`;
     if (dock.layoutPreset === presetID) {
       applySourceLayoutPreset(presetID);
     }
@@ -11245,7 +11244,7 @@
       case 'files':
         return files.scan.scanning;
       case 'clipboard':
-        return fileActionBusy === 'paste-read';
+        return files.fileActionBusy === 'paste-read';
       case 'conversations':
       case 'agents':
         return agentSessionsLoading;
@@ -11405,7 +11404,7 @@
     markSourceLayoutCustom();
     sourceChromeCompact = compact;
     persistSourceChromeCompact(compact);
-    fileActionStatus = compact ? 'Compact editor chrome enabled' : 'Comfortable editor chrome enabled';
+    files.fileActionStatus = compact ? 'Compact editor chrome enabled' : 'Comfortable editor chrome enabled';
   }
 
   function toggleSourceChromeCompact() {
@@ -11629,7 +11628,7 @@
           dock.sidePaneWidth
         )
       );
-      fileActionStatus = 'Activity panel shown';
+      files.fileActionStatus = 'Activity panel shown';
       if (typeof window !== 'undefined') {
         window.setTimeout(measureFileTreeViewport, 0);
       }
@@ -11650,20 +11649,20 @@
           contextPanelPlacement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
         )
       );
-      fileActionStatus = 'Context panel shown';
+      files.fileActionStatus = 'Context panel shown';
       return;
     }
 
     applySourceDockLayout(showSourceDockPanel(dock.layout, panelID));
     if (panelID === 'terminal') {
-      fileActionStatus = 'Terminal dock shown';
+      files.fileActionStatus = 'Terminal dock shown';
       scheduleEmbeddedTerminalFit();
     }
     if (panelID === 'browser') {
       if (!browserUrl && defaultBrowserUrl) {
         setBrowserDockUrl(defaultBrowserUrl);
       }
-      fileActionStatus = 'Browser dock shown';
+      files.fileActionStatus = 'Browser dock shown';
     }
   }
 
@@ -11675,7 +11674,7 @@
       persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
     }
     applySourceLayoutPreset('review');
-    fileActionStatus = 'Dock layout reset';
+    files.fileActionStatus = 'Dock layout reset';
   }
 
   function focusSourceEditorLayout() {
@@ -11703,7 +11702,7 @@
     }
 
     applySourceDockLayout(activateSourceDockPanel(nextLayout, 'editor'));
-    fileActionStatus = 'Editor canvas focused';
+    files.fileActionStatus = 'Editor canvas focused';
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
@@ -11802,7 +11801,7 @@
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
-    fileActionStatus = 'Activity panel collapsed to rail';
+    files.fileActionStatus = 'Activity panel collapsed to rail';
   }
 
   function activityRailToggleLabel() {
@@ -11827,7 +11826,7 @@
 
     if (activityPaneRailOnly()) {
       expandActivityPaneFromRail();
-      fileActionStatus = 'Activity panel expanded';
+      files.fileActionStatus = 'Activity panel expanded';
       if (typeof window !== 'undefined') {
         window.setTimeout(measureFileTreeViewport, 0);
       }
@@ -11868,7 +11867,7 @@
     persistContextPanelPlacement(contextPanelPlacement);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPaneWidth(dock.contextPaneWidth);
-    fileActionStatus = 'Context panel collapsed to rail';
+    files.fileActionStatus = 'Context panel collapsed to rail';
   }
 
   function toggleDockPanelVisibility(panelID: SourceDockPanelID) {
@@ -12484,7 +12483,7 @@
     if (!hideableDockPanelIDs.includes(panelID)) return;
 
     showDockPanel(panelID);
-    fileActionStatus = `${dockPanelLabel(panelID)} panel restored`;
+    files.fileActionStatus = `${dockPanelLabel(panelID)} panel restored`;
   }
 
   function dockGroupForContextPanelPlacement(placement: SourceContextPanelPlacement): SourceDockGroupID {
@@ -12870,25 +12869,25 @@
         onDidPanelClose: (panelID) => {
           if (panelID === 'editor') {
             syncSourceDockviewWorkbenchLayout(dock.layout);
-            fileActionStatus = 'Editor tab restored';
+            files.fileActionStatus = 'Editor tab restored';
             return;
           }
           if (panelID === 'context') {
             contextPanelCollapsed = true;
             persistContextPanelCollapsed(contextPanelCollapsed);
             applySourceDockLayout(hideSourceDockPanel(dock.layout, 'context'));
-            fileActionStatus = 'Context panel hidden';
+            files.fileActionStatus = 'Context panel hidden';
             return;
           }
           if (panelID === 'insights') {
             editorInsightCollapsed = true;
             persistEditorInsightCollapsed(editorInsightCollapsed);
             applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
-            fileActionStatus = 'Insights panel hidden';
+            files.fileActionStatus = 'Insights panel hidden';
             return;
           }
           applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
-          fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+          files.fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
         },
         onDidActivePanelChange: (panelID) => {
           if (!panelID) return;
@@ -12954,7 +12953,7 @@
         onDidPanelClose: (panelID) => {
           if (panelID !== 'activity') return;
           applySourceDockLayout(hideSourceDockPanel(dock.layout, 'activity'));
-          fileActionStatus = 'Activity panel hidden';
+          files.fileActionStatus = 'Activity panel hidden';
         },
         onDidActivePanelChange: (panelID) => {
           if (panelID !== 'activity') return;
@@ -13203,14 +13202,14 @@
             contextPanelCollapsed = true;
             persistContextPanelCollapsed(contextPanelCollapsed);
             applySourceDockLayout(hideSourceDockPanel(dock.layout, 'context'));
-            fileActionStatus = 'Context panel hidden';
+            files.fileActionStatus = 'Context panel hidden';
             return;
           }
           if (panelID === 'insights') {
             editorInsightCollapsed = true;
             persistEditorInsightCollapsed(editorInsightCollapsed);
             applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
-            fileActionStatus = 'Insights panel hidden';
+            files.fileActionStatus = 'Insights panel hidden';
           }
         },
         onDidActivePanelChange: (panelID) => {
@@ -13274,7 +13273,7 @@
           editorInsightCollapsed = true;
           persistEditorInsightCollapsed(editorInsightCollapsed);
           applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
-          fileActionStatus = 'Insights panel hidden';
+          files.fileActionStatus = 'Insights panel hidden';
         }
       });
 
@@ -13325,12 +13324,12 @@
         onDidPanelClose: (panelID) => {
           if (panelID === 'editor') {
             syncSourceDockviewCenterLayout(dock.layout);
-            fileActionStatus = 'Editor tab restored';
+            files.fileActionStatus = 'Editor tab restored';
             return;
           }
           if (panelID !== 'terminal' && panelID !== 'browser') return;
           applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
-          fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+          files.fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
         },
         onDidActivePanelChange: (panelID) => {
           if (panelID !== 'editor' && panelID !== 'terminal' && panelID !== 'browser') return;
@@ -13386,7 +13385,7 @@
         onDidPanelClose: (panelID) => {
           if (panelID !== 'terminal' && panelID !== 'browser') return;
           applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
-          fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+          files.fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
         },
         onDidActivePanelChange: (panelID) => {
           if (panelID !== 'terminal' && panelID !== 'browser') return;
@@ -13919,12 +13918,12 @@
       if (finishedSize.state === 'collapsed') {
         persistSidePaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('activity');
-        fileActionStatus = 'Activity pane hidden';
+        files.fileActionStatus = 'Activity pane hidden';
       } else if (finishedSize.state === 'rail') {
         dock.sidePaneWidth = finishedSize.size;
         persistSidePaneWidth(dock.sidePaneWidth);
         persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
-        fileActionStatus = 'Activity panel collapsed to rail';
+        files.fileActionStatus = 'Activity panel collapsed to rail';
       } else {
         dock.sidePaneWidth = finishedSize.size;
         persistSidePaneWidth(dock.sidePaneWidth);
@@ -13956,7 +13955,7 @@
     const signedDirection = sidePanePosition === 'left' ? direction : -direction;
     if (dock.sidePaneWidth <= sidePaneMinWidth && signedDirection < 0) {
       hideDockPanel('activity');
-      fileActionStatus = 'Activity pane hidden';
+      files.fileActionStatus = 'Activity pane hidden';
       return;
     }
     const rawNextSidePaneWidth = dock.sidePaneWidth + signedDirection * 24;
@@ -13967,14 +13966,14 @@
       if (finishedSize.state === 'collapsed') {
         persistSidePaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('activity');
-        fileActionStatus = 'Activity pane hidden';
+        files.fileActionStatus = 'Activity pane hidden';
         return;
       }
       if (finishedSize.state === 'rail') {
         dock.sidePaneWidth = finishedSize.size;
         persistSidePaneWidth(dock.sidePaneWidth);
         persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
-        fileActionStatus = 'Activity panel collapsed to rail';
+        files.fileActionStatus = 'Activity panel collapsed to rail';
         window.setTimeout(measureFileTreeViewport, 0);
         return;
       }
@@ -14314,7 +14313,7 @@
     const finishResize = () => {
       if (latestRawWidth <= editorInsightCollapseThreshold) {
         hideDockPanel('insights');
-        fileActionStatus = 'Insights pane hidden';
+        files.fileActionStatus = 'Insights pane hidden';
       } else {
         persistEditorInsightWidth(editorInsightWidth);
         const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
@@ -14343,7 +14342,7 @@
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     if (editorInsightWidth <= editorInsightMinWidth && direction < 0) {
       hideDockPanel('insights');
-      fileActionStatus = 'Insights pane hidden';
+      files.fileActionStatus = 'Insights pane hidden';
       return;
     }
     editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
@@ -14462,12 +14461,12 @@
           persistContextPaneExpandedWidth(finishedSize.persistedSize);
         }
         hideDockPanel('context');
-        fileActionStatus = 'Context pane hidden';
+        files.fileActionStatus = 'Context pane hidden';
       } else if (contextPanelPlacement === 'side' && finishedSize.state === 'rail') {
         dock.contextPaneWidth = finishedSize.size;
         persistContextPaneWidth(dock.contextPaneWidth);
         persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
-        fileActionStatus = 'Context panel collapsed to rail';
+        files.fileActionStatus = 'Context panel collapsed to rail';
       } else if (contextPanelPlacement === 'bottom') {
         contextPaneHeight = finishedSize.size;
         persistContextPaneHeight(contextPaneHeight);
@@ -14503,7 +14502,7 @@
       if (direction === 0) return;
       if (contextPaneHeight <= contextPaneMinHeight && direction < 0) {
         hideDockPanel('context');
-        fileActionStatus = 'Context pane hidden';
+        files.fileActionStatus = 'Context pane hidden';
         return;
       }
       const rawNextContextPaneHeight = contextPaneHeight + direction * 24;
@@ -14513,7 +14512,7 @@
         });
         if (finishedSize.state === 'collapsed') {
           hideDockPanel('context');
-          fileActionStatus = 'Context pane hidden';
+          files.fileActionStatus = 'Context pane hidden';
           return;
         }
         contextPaneHeight = finishedSize.size;
@@ -14528,7 +14527,7 @@
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
     if (dock.contextPaneWidth <= contextPaneMinWidth && direction < 0) {
       hideDockPanel('context');
-      fileActionStatus = 'Context pane hidden';
+      files.fileActionStatus = 'Context pane hidden';
       return;
     }
     const rawNextContextPaneWidth = dock.contextPaneWidth + direction * 24;
@@ -14539,14 +14538,14 @@
       if (finishedSize.state === 'collapsed') {
         persistContextPaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('context');
-        fileActionStatus = 'Context pane hidden';
+        files.fileActionStatus = 'Context pane hidden';
         return;
       }
       if (finishedSize.state === 'rail') {
         dock.contextPaneWidth = finishedSize.size;
         persistContextPaneWidth(dock.contextPaneWidth);
         persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
-        fileActionStatus = 'Context panel collapsed to rail';
+        files.fileActionStatus = 'Context panel collapsed to rail';
         return;
       }
     }
@@ -14618,7 +14617,7 @@
           nextLayout = hideSourceDockPanel(nextLayout, 'browser');
         }
         applySourceDockLayout(nextLayout);
-        fileActionStatus = 'Bottom dock hidden';
+        files.fileActionStatus = 'Bottom dock hidden';
       } else {
         persistDockGroupSize('bottom', finishedSize.size);
       }
@@ -14648,7 +14647,7 @@
         nextLayout = hideSourceDockPanel(nextLayout, 'browser');
       }
       applySourceDockLayout(nextLayout);
-      fileActionStatus = 'Bottom dock hidden';
+      files.fileActionStatus = 'Bottom dock hidden';
       return;
     }
     const rawNextBottomDockHeight = bottomDockHeight() + direction * 24;
@@ -14665,7 +14664,7 @@
           nextLayout = hideSourceDockPanel(nextLayout, 'browser');
         }
         applySourceDockLayout(nextLayout);
-        fileActionStatus = 'Bottom dock hidden';
+        files.fileActionStatus = 'Bottom dock hidden';
         return;
       }
       persistDockGroupSize('bottom', finishedSize.size);
@@ -14983,7 +14982,7 @@
       const validation = await validateProjectRootFromTauri(project.path);
       if (!validation) {
         if (report) {
-          fileActionStatus = 'Project root validation unavailable in this runtime';
+          files.fileActionStatus = 'Project root validation unavailable in this runtime';
         }
         return null;
       }
@@ -14991,18 +14990,18 @@
       rememberProjectRootValidation(validation);
 
       if (!validation.exists || !validation.isDirectory) {
-        fileActionStatus = validation.message;
+        files.fileActionStatus = validation.message;
         return false;
       }
 
       if (report || !validation.isGitRepository) {
-        fileActionStatus = validation.message;
+        files.fileActionStatus = validation.message;
       }
 
       return validation;
     } catch (validationError) {
       if (report) {
-        fileActionStatus =
+        files.fileActionStatus =
           validationError instanceof Error ? validationError.message : 'Could not validate project root';
       }
       return false;
@@ -15014,7 +15013,7 @@
   async function validateProjectRootBeforeAdd(project: ProjectRoot): Promise<ProjectRootValidationResult | null | false> {
     const validation = await validateProjectRootForProject(project, true);
     if (validation === false) {
-      projectFormError = fileActionStatus || 'Could not validate project root';
+      projectFormError = files.fileActionStatus || 'Could not validate project root';
     }
     return validation;
   }
@@ -15051,16 +15050,16 @@
     persistCustomProjectRoots(nextCustomProjectRoots);
     addingProject = false;
     projectFormError = '';
-    fileActionStatus = sourceOnboardingScanStatus(nextProject);
+    files.fileActionStatus = sourceOnboardingScanStatus(nextProject);
     if (
       validation &&
       !validation.isGitRepository &&
       validation.gitRoot &&
       normalizeProjectPath(validation.gitRoot) === nextProject.path
     ) {
-      fileActionStatus = `Using Git root ${validation.gitRoot}. ${fileActionStatus}`;
+      files.fileActionStatus = `Using Git root ${validation.gitRoot}. ${files.fileActionStatus}`;
     } else if (validation && !validation.isGitRepository) {
-      fileActionStatus = `${validation.message} ${fileActionStatus}`;
+      files.fileActionStatus = `${validation.message} ${files.fileActionStatus}`;
     }
     void activateProject(nextProject, {
       forceScan: true,
@@ -15136,7 +15135,7 @@
     persistSelectedSourcePaths(nextSelectedSourcePaths);
     projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
     persistSourceScanCache(projectStore.scan.cache);
-    fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
+    files.fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
 
     await activateProject(repairedProject, {
       forceScan: true,
@@ -15157,7 +15156,7 @@
 
     const gitRoot = projectRootGitRootSuggestion(selectedProject, validation);
     if (!gitRoot) {
-      fileActionStatus = `${selectedProject.name} is already using the repository root.`;
+      files.fileActionStatus = `${selectedProject.name} is already using the repository root.`;
       return false;
     }
 
@@ -15181,7 +15180,7 @@
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
     projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
-    fileActionStatus = `Switched ${selectedProject.name} to Git root ${nextProject.path}.`;
+    files.fileActionStatus = `Switched ${selectedProject.name} to Git root ${nextProject.path}.`;
     void activateProject(nextProject, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
@@ -15193,7 +15192,7 @@
 
   async function repairSelectedProjectOnboarding() {
     const project = selectedProject;
-    fileActionStatus = `Checking ${project.name} project setup`;
+    files.fileActionStatus = `Checking ${project.name} project setup`;
 
     const validation = await validateProjectRootForProject(project, true);
     if (selectedProject.id !== project.id || validation === false) return false;
@@ -15214,7 +15213,7 @@
     addingProject = false;
     projectFormError = '';
     const scanStatus = sourceOnboardingScanStatus(project);
-    fileActionStatus = message ? `${message} ${scanStatus}` : scanStatus;
+    files.fileActionStatus = message ? `${message} ${scanStatus}` : scanStatus;
     void activateProject(project, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
@@ -15276,7 +15275,7 @@
       suspiciousThreshold: suspiciousSourceIndexFileThreshold
     });
     if (activationScanPlan.shouldScan) {
-      fileActionStatus = activationScanPlan.status;
+      files.fileActionStatus = activationScanPlan.status;
     }
     const activationScanForcesRefresh = activationScanPlan.shouldScan;
 
@@ -15291,7 +15290,7 @@
       })
       .catch((activationError) => {
         if (activationGeneration !== projectActivationGeneration) return;
-        fileActionStatus =
+        files.fileActionStatus =
           activationError instanceof Error ? activationError.message : `Could not activate ${project.name}`;
       });
 
@@ -15634,7 +15633,7 @@
     void loadEmbeddedTerminalSessions();
     void loadPlaywrightSessions();
     if (startupWorkspaceSnapshot) {
-      fileActionStatus = `Restoring workspace snapshot: ${startupWorkspaceSnapshot.title}`;
+      files.fileActionStatus = `Restoring workspace snapshot: ${startupWorkspaceSnapshot.title}`;
       void restoreConversationWorkspaceSnapshot(startupWorkspaceSnapshot).then(() =>
         indexProjectsInBackground(startupProjectOptions)
       );
@@ -16271,7 +16270,7 @@
             replyOutput={pasteCleanupReplyOutput}
             replyStats={pasteCleanupReplyStats}
             history={visiblePasteCleanupHistory}
-            fileActionBusy={fileActionBusy}
+            fileActionBusy={files.fileActionBusy}
             historyKindLabel={pasteCleanupHistoryKindLabel}
             historyItemTitle={pasteCleanupHistoryItemTitle}
             onModeChange={selectPasteCleanupMode}
@@ -17064,7 +17063,7 @@
               <ActivityWorktreesPanel
                 worktrees={filteredProjectWorktrees}
                 cleanupRunbook={projectWorktreeCleanupRunbook}
-                fileActionBusy={fileActionBusy}
+                fileActionBusy={files.fileActionBusy}
                 worktreeSafety={projectWorktreeSafety}
                 cleanupPlan={projectWorktreeCleanupPlan}
                 decisionLane={worktreeDecisionLane}
@@ -17486,7 +17485,7 @@
                           role="menuitem"
                           aria-label={`Run worktree action for ${row.taskID}`}
                           title={ledgerAction?.title ?? 'No worktree action'}
-                          disabled={!ledgerWorktree || (ledgerWorktree ? fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
+                          disabled={!ledgerWorktree || (ledgerWorktree ? files.fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
                           onclick={() => {
                             closeGitRowActionMenu();
                             if (ledgerWorktree) runWorktreePrimaryAction(ledgerWorktree);
@@ -18218,8 +18217,8 @@
           >
             {#if tab.path === files.selectedRecord?.path}
 
-    {#if fileActionStatus}
-      <div class="file-action-feedback">{fileActionStatus}</div>
+    {#if files.fileActionStatus}
+      <div class="file-action-feedback">{files.fileActionStatus}</div>
     {/if}
 
     {#if error}
@@ -18346,7 +18345,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Save source file"
-                  disabled={!selectedSourceDirty || fileActionBusy === 'save'}
+                  disabled={!selectedSourceDirty || files.fileActionBusy === 'save'}
                   onclick={() => {
                     closeEditorActionMenu();
                     void saveSelectedSourceFile();
@@ -18360,7 +18359,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Save all source files"
-                  disabled={dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all'}
+                  disabled={dirtyProjectSourceRecords.length === 0 || files.fileActionBusy === 'save-all'}
                   onclick={() => {
                     closeEditorActionMenu();
                     void saveAllDirtySourceFiles();
@@ -18456,7 +18455,7 @@
                   type="button"
                   role="menuitem"
                   aria-label="Revert source file"
-                  disabled={!selectedSourceDirty || fileActionBusy === 'save'}
+                  disabled={!selectedSourceDirty || files.fileActionBusy === 'save'}
                   onclick={() => {
                     closeEditorActionMenu();
                     revertSelectedSourceFile();
@@ -18521,13 +18520,13 @@
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={fileActionBusy === 'copy'}
+                  disabled={files.fileActionBusy === 'copy'}
                   onclick={() => {
                     closeEditorActionMenu();
                     void copySelectedPath();
                   }}
                 >
-                  {#if fileActionStatus === 'Path copied'}
+                  {#if files.fileActionStatus === 'Path copied'}
                     <Check size={13} strokeWidth={2} />
                   {:else}
                     <Copy size={13} strokeWidth={2} />
@@ -18537,7 +18536,7 @@
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={fileActionBusy === 'open'}
+                  disabled={files.fileActionBusy === 'open'}
                   onclick={() => {
                     closeEditorActionMenu();
                     void openSelectedFile();
@@ -18549,7 +18548,7 @@
                 <button
                   type="button"
                   role="menuitem"
-                  disabled={fileActionBusy === 'reveal'}
+                  disabled={files.fileActionBusy === 'reveal'}
                   onclick={() => {
                     closeEditorActionMenu();
                     void revealSelectedFile();
@@ -19319,8 +19318,8 @@
         {/each}
       </SourceDockviewShell>
     {:else}
-      {#if fileActionStatus}
-        <div class="file-action-feedback">{fileActionStatus}</div>
+      {#if files.fileActionStatus}
+        <div class="file-action-feedback">{files.fileActionStatus}</div>
       {/if}
 
       {#if error}
@@ -19371,7 +19370,7 @@
                 type="button"
                 aria-label="Open project shell"
                 title={selectedProject.path}
-                disabled={!selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`}
+                disabled={!selectedProject.path || files.fileActionBusy === `activity-terminal:${selectedProject.path}`}
                 onclick={() => openActivityTerminalPath(selectedProject.path)}
               >
                 <Terminal size={13} strokeWidth={2} />
