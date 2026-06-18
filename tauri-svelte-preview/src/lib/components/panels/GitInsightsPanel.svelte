@@ -575,13 +575,16 @@
    * Git insights panel styling — the readability/aesthetic pass (TSK-346),
    * relocated here from `+page.svelte` when this panel was extracted (Phase B).
    *
-   * These rules were authored as `.source-intelligence-panel <descendant>`
-   * overrides of the SHARED base `.git-*` / `.intelligence-*` rules (which serve
-   * the Activity-bar source-control view too and therefore STAY page-side). The
-   * ancestor prefix is stripped here because the component root IS
-   * `.source-intelligence-panel`; Svelte scopes each rule to this component, so
-   * they keep their higher specificity over the page-side base and apply only to
-   * this panel (the teleported `<aside>`), exactly as before.
+   * These are the SOLE styles for this panel. They were originally authored as
+   * `.source-intelligence-panel <descendant>` rules layered over a page-side base
+   * copy, but that page base was scoped to `+page.svelte` and — because this
+   * component's `<aside>` is teleported into a Dockview host (its own scope, no
+   * page hash) — never actually reached this panel; it was dead and has been
+   * deleted from the page. So these scoped rules stand alone: the ancestor prefix
+   * is dropped (the component root IS `.source-intelligence-panel`), and the
+   * shell/list/row layout intentionally rides default block flow with token-based
+   * spacing/borders layered on top. ActivityGitPanel.svelte styles the Activity
+   * source-control view separately from its own scoped copy (different classes).
    *
    * Aesthetic: modern, minimal, spacious, borderless (VS Code), driven entirely
    * by design tokens.
