@@ -287,7 +287,8 @@
 	let monacoCancellationSuppressionDepth = 0;
 	let monacoCancellationSuppressionTimer = 0;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
-	const codeLensReferenceCountCache = new Map<string, number>();
+	const inFlightTargetModels = new Map<string, Promise<Monaco.editor.ITextModel | null>>();
+	const codeLensReferenceCountCache = new Map<string, number | null>();
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 	const sourceLspMonacoLanguageIDs = [
@@ -495,6 +496,9 @@
 
 					const count = await sourceCodeLensReferenceCount(model, request);
 					if (token.isCancellationRequested) return codeLens;
+					// Unknown count (no LSP) ⇒ leave the lens without a command so
+					// Monaco renders no "N references" text instead of a wrong "0".
+					if (count === null) return codeLens;
 
 					return {
 						...codeLens,
@@ -765,16 +769,32 @@
 		const existing = monaco.editor.getModel(uri);
 		if (existing) return existing;
 
-		const externalPreview = await onExternalPreviewLookup?.(target);
-		if (!externalPreview) return null;
+		// Dedupe concurrent requests for the same path. `ensureSourceTargetModels`
+		// runs every target through Promise.all, so without this several callers
+		// race past the getModel() check above and each read the same file before
+		// any createModel() lands — the duplicate read_source_file reads.
+		const pending = inFlightTargetModels.get(target.path);
+		if (pending) return pending;
 
-		const model = monaco.editor.createModel(
-			externalPreview.content,
-			monacoLanguageForSource(externalPreview.language),
-			uri
-		);
-		ownedModels.add(model);
-		return model;
+		const load = (async () => {
+			const externalPreview = await onExternalPreviewLookup?.(target);
+			if (!externalPreview) return null;
+			// A peer request may have created the model while we awaited the read.
+			const raced = monaco.editor.getModel(uri);
+			if (raced) return raced;
+			const model = monaco.editor.createModel(
+				externalPreview.content,
+				monacoLanguageForSource(externalPreview.language),
+				uri
+			);
+			ownedModels.add(model);
+			return model;
+		})().finally(() => {
+			inFlightTargetModels.delete(target.path);
+		});
+
+		inFlightTargetModels.set(target.path, load);
+		return load;
 	}
 
 	async function ensureSourceTargetModels(monaco: typeof Monaco, targets: SourceRecord[]) {
@@ -1154,7 +1174,10 @@
 		const cachedCount = codeLensReferenceCountCache.get(cacheKey);
 		if (cachedCount !== undefined) return cachedCount;
 
-		const nextCount = Math.max(0, (await onReferenceCountLookup?.(request)) ?? 0);
+		const lookup = await onReferenceCountLookup?.(request);
+		// null/undefined ⇒ the count is unknown (LSP unavailable). Cache and
+		// return null so the lens renders without a count rather than "0".
+		const nextCount = typeof lookup === "number" ? Math.max(0, lookup) : null;
 		codeLensReferenceCountCache.set(cacheKey, nextCount);
 		return nextCount;
 	}

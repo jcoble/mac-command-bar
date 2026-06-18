@@ -8640,39 +8640,33 @@
     }
   }
 
-  async function countSourceReferencesForCodeLens(request: SourceEditorLookupRequest) {
+  async function countSourceReferencesForCodeLens(
+    request: SourceEditorLookupRequest
+  ): Promise<number | null> {
     const normalizedSymbolName = request.symbolName.trim();
-    if (!normalizedSymbolName) return 0;
+    if (!normalizedSymbolName) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
     try {
-      const lspTargets =
-        files.preview && sourceIntelligenceAvailable
-          ? await findSourceLspReferencesFromTauri(
-              { ...files.preview, content: selectedSourceDraftContent },
-              {
-                root: selectedProject.path,
-                line: request.line,
-                column: request.column,
-                limit: maxSourceSearchResults
-              }
-            ).catch(() => null)
-          : null;
-      if (lspTargets?.length) return lspTargets.length;
-
-      const nativeTargets = await findSourceReferencesFromTauri(
-        files.records,
-        normalizedSymbolName,
-        maxSourceSearchResults
+      // Reference COUNTS come from the indexed LSP only. The previous native
+      // fallback grepped every file in the project — `find_source_references`
+      // reads each record (up to ~thousands of files for a rare symbol) and
+      // ran once PER code-lens symbol (≤120) on every file open: the codelens
+      // freeze. When the LSP can't answer, return null so the lens renders no
+      // count rather than scan the whole project (a 0 would falsely read as
+      // "0 references" on every symbol).
+      const lspTargets = await findSourceLspReferencesFromTauri(
+        { ...files.preview, content: selectedSourceDraftContent },
+        {
+          root: selectedProject.path,
+          line: request.line,
+          column: request.column,
+          limit: maxSourceSearchResults
+        }
       ).catch(() => null);
-      if (nativeTargets) return nativeTargets.length;
-
-      return findSourceReferenceTargets(
-        files.records.map((record) => demoPreviewFor(record)),
-        normalizedSymbolName,
-        maxSourceSearchResults
-      ).length;
+      return lspTargets ? lspTargets.length : null;
     } catch {
-      return 0;
+      return null;
     }
   }
 
