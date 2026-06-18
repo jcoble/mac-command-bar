@@ -338,7 +338,26 @@
   }
 
   :global(.source-dockview-editor-files-shell.dockview-ready .source-dockview-editor-files-host) {
-    visibility: visible;
+    /*
+     * `inherit`, not `visible`: this editor-files dockview is nested INSIDE the editor
+     * panel, which is itself a tab in the center dockview. When the editor is the inactive
+     * center tab, dockview hides its render-overlay via `visibility: hidden`. A blanket
+     * `visibility: visible` here would escape that hidden ancestor and bleed the file-tab
+     * strip + Monaco over the active terminal/browser panel. `inherit` keeps the anti-flash
+     * hide (the host starts hidden during mount) while still respecting a hidden ancestor.
+     */
+    visibility: inherit;
+  }
+
+  /*
+   * dockview-core force-shows the active tab's close button with an own
+   * `.dv-tab.dv-active-tab … .dv-default-tab-action { visibility: visible }` rule. Inside the
+   * nested editor-files dockview that escapes a hidden editor panel just like the host above,
+   * leaving a stray ✕ painted over the active terminal/browser. Re-inherit so the close button
+   * follows the editor-files host's (and thus the editor panel's) visibility.
+   */
+  :global(.source-dockview-editor-files-host .dv-tab.dv-active-tab .dv-default-tab .dv-default-tab-action) {
+    visibility: inherit;
   }
 
   :global(.source-dockview-editor-files-shell.dockview-ready > .source-editor-file-pane) {
