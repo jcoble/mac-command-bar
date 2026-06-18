@@ -923,7 +923,6 @@
   let pasteCleanupReplyDraft = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let pasteCleanupHistory = $state<PasteCleanupHistoryItem[]>([]);
-  let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceLayoutPresetOverrides = $state<SourceLayoutPresetOverrides>({});
   let sourceChromeCompact = $state(true);
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
@@ -2351,7 +2350,7 @@
     {
       id: 'layout-copy-diagnostic',
       label: 'Copy layout diagnostic',
-      detail: `${sourceLayoutPreset} layout · ${sourceActivityLabel(dock.activityMode)}`,
+      detail: `${dock.layoutPreset} layout · ${sourceActivityLabel(dock.activityMode)}`,
       perform: copySourceLayoutDiagnostic
     },
     {
@@ -4662,7 +4661,7 @@
     const currentFile = selectedRecord
       ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
       : 'none';
-    const activePreset = sourceLayoutPresets.find((preset) => preset.id === sourceLayoutPreset);
+    const activePreset = sourceLayoutPresets.find((preset) => preset.id === dock.layoutPreset);
     const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
       const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
       return `${dirtyPrefix}${tab.relativePath}`;
@@ -4695,7 +4694,7 @@
       `Project: ${selectedProject.name}`,
       `Root: ${selectedProject.path}`,
       `Current file: ${currentFile}`,
-      `Preset: ${sourceLayoutPreset}${activePreset ? ` (${activePreset.label})` : ''}`,
+      `Preset: ${dock.layoutPreset}${activePreset ? ` (${activePreset.label})` : ''}`,
       `Chrome: ${sourceChromeCompact ? 'compact' : 'comfortable'}`,
       `Activity: ${sourceActivityLabel(dock.activityMode)} (${dock.activityMode})`,
       `Activity filter: ${sourceActivityFilter.trim() || 'none'}`,
@@ -10968,7 +10967,7 @@
     const override = sourceLayoutPresetOverrides[preset.id];
     const nextActivityMode = override?.activityMode ?? preset.activityMode;
 
-    sourceLayoutPreset = preset.id;
+    dock.layoutPreset = preset.id;
     rememberSourceActivityFilter();
     dock.activityMode = nextActivityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[nextActivityMode] ?? '';
@@ -10986,7 +10985,7 @@
     hiddenContextCardIDs = new Set(override?.hiddenContextCardIDs ?? []);
     activeContextCardID = override?.activeContextCardID ?? activeContextCardID;
 
-    persistSourceLayoutPreset(sourceLayoutPreset);
+    persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceActivityMode(dock.activityMode);
     persistSidePaneWidth(sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
@@ -11011,7 +11010,7 @@
   }
 
   function currentSaveableSourceLayoutPreset(): SourceLayoutPresetDefinition {
-    const activePreset = sourceLayoutPresets.find((preset) => preset.id === sourceLayoutPreset);
+    const activePreset = sourceLayoutPresets.find((preset) => preset.id === dock.layoutPreset);
     if (activePreset) return activePreset;
     return sourceLayoutPresets.find((preset) => preset.id === 'code') ?? sourceLayoutPresets[0]!;
   }
@@ -11038,13 +11037,13 @@
 
   function captureSourceLayoutSnapshot(): SourceLayoutSnapshot {
     return {
-      preset: sourceLayoutPreset,
+      preset: dock.layoutPreset,
       ...captureSourceLayoutPresetOverride()
     };
   }
 
   function applySourceLayoutSnapshot(snapshot: SourceLayoutSnapshot, status: string) {
-    sourceLayoutPreset = snapshot.preset;
+    dock.layoutPreset = snapshot.preset;
     rememberSourceActivityFilter();
     dock.activityMode = snapshot.activityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[snapshot.activityMode] ?? '';
@@ -11063,7 +11062,7 @@
     activeContextCardID = snapshot.activeContextCardID;
     const nextDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
 
-    persistSourceLayoutPreset(sourceLayoutPreset);
+    persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceActivityMode(dock.activityMode);
     persistSidePaneWidth(sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
@@ -11093,8 +11092,8 @@
       ...sourceLayoutPresetOverrides,
       [presetID]: captureSourceLayoutPresetOverride()
     };
-    sourceLayoutPreset = presetID;
-    persistSourceLayoutPreset(sourceLayoutPreset);
+    dock.layoutPreset = presetID;
+    persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
     fileActionStatus = `${preset.label} layout saved`;
   }
@@ -11108,7 +11107,7 @@
     sourceLayoutPresetOverrides = nextOverrides;
     persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
     fileActionStatus = `${preset.label} layout reset`;
-    if (sourceLayoutPreset === presetID) {
+    if (dock.layoutPreset === presetID) {
       applySourceLayoutPreset(presetID);
     }
   }
@@ -11398,9 +11397,9 @@
   }
 
   function markSourceLayoutCustom() {
-    if (sourceLayoutPreset === 'custom') return;
-    sourceLayoutPreset = 'custom';
-    persistSourceLayoutPreset(sourceLayoutPreset);
+    if (dock.layoutPreset === 'custom') return;
+    dock.layoutPreset = 'custom';
+    persistSourceLayoutPreset(dock.layoutPreset);
   }
 
   function loadStoredSourceLayoutPreset(): SourceLayoutPresetID {
@@ -12353,7 +12352,7 @@
     }
     return normalizeSourceDockLayout({
       ...nextLayout,
-      preset: sourceLayoutPreset
+      preset: dock.layoutPreset
     });
   }
 
@@ -15611,7 +15610,7 @@
     dock.activityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
     pasteCleanupHistory = storedPasteCleanupHistory;
-    sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
+    dock.layoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceLayoutPresetOverrides = storedSourceLayoutPresetOverrides;
     sourceFocusRestoreLayout = migrateSourceLayout ? null : storedSourceFocusRestoreLayout;
     sourceChromeCompact = migrateSourceLayout ? compactPreset.chromeCompact : storedSourceChromeCompact;
@@ -15648,7 +15647,7 @@
     persistSelectedProjectID(startupProject.id);
     if (migrateSourceLayout) {
       clearMigratedSourceDockviewLayouts();
-      persistSourceLayoutPreset(sourceLayoutPreset);
+      persistSourceLayoutPreset(dock.layoutPreset);
       persistSourceActivityMode(dock.activityMode);
       persistSidePanePosition(sidePanePosition);
       persistSidePaneWidth(sidePaneWidth);
@@ -17732,7 +17731,7 @@
                 <div class="view-menu-button-grid">
                   {#each sourceLayoutPresets as preset (preset.id)}
                     <button
-                      class:active={sourceLayoutPreset === preset.id}
+                      class:active={dock.layoutPreset === preset.id}
                       type="button"
                       role="menuitem"
                       aria-label={`Use ${preset.label} layout`}
@@ -19549,7 +19548,7 @@
             <div class="view-menu-button-grid">
               {#each sourceLayoutPresets as preset (preset.id)}
                 <button
-                  class:active={sourceLayoutPreset === preset.id}
+                  class:active={dock.layoutPreset === preset.id}
                   type="button"
                   role="menuitem"
                   aria-label={`Use ${preset.label} layout`}
