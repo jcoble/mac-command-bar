@@ -14,14 +14,14 @@
    * open tab's pane keeps `use:filePanelAction={…}`. The actions stay in the
    * page (they wire the nested Dockview workspaces) and are supplied as props.
    *
-   * Insights seam: the git/intelligence aside is a SEPARATE Dockview panel
-   * (`use:sourceDockviewPanelAction={'insights'}`) that physically nests inside
-   * `.editor-body-grid`. To keep its teleport registration + all git state and
-   * git CSS in the page, the page passes that whole subtree as the `insights`
-   * snippet, which we `{@render}` inside the body grid.
+   * The git/intelligence aside is a SEPARATE Dockview panel (`GitInsightsPanel`,
+   * `use:panelAction={'insights'}`) that the page authors as a sibling of this
+   * one; it teleports to the right rail on its own, so it is no longer nested
+   * here. The editor toolbar still toggles it via `insightCollapsed` /
+   * `onToggleInsightCollapsed` / `onShowInsightPanel`.
    */
   import type { Action } from 'svelte/action';
-  import type { ComponentProps, Snippet } from 'svelte';
+  import type { ComponentProps } from 'svelte';
   import {
     Activity,
     BookOpen,
@@ -179,9 +179,6 @@
     onLoadLspStatus: (preview: SourcePreview | null, project: ProjectRoot) => void;
     onCopyLspReport: () => void;
     onCopyLspInstall: () => void;
-
-    /** Insights/git panel subtree (a SEPARATE teleport panel; page owns it). */
-    insights: Snippet;
   }
 
   let {
@@ -244,8 +241,7 @@
     onRevealFile,
     onLoadLspStatus,
     onCopyLspReport,
-    onCopyLspInstall,
-    insights
+    onCopyLspInstall
   }: Props = $props();
 </script>
 
@@ -618,8 +614,6 @@
             {/key}
           {/if}
         </div>
-
-        {@render insights()}
       </div>
     </div>
   {:else}
