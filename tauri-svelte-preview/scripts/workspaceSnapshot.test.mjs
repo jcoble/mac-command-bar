@@ -368,9 +368,9 @@ assert.deepEqual(
     sourceActivityFilter: 'task trail',
     hiddenContextCardIDs: ['runtime', 'repo'],
     activeContextCardID: 'worktrees',
-    sourceIntelligencePanel: 'symbols'
+    sourceIntelligencePanel: 'git'
   },
-  'stored snapshots should preserve normalized workspace view state'
+  'stored snapshots should preserve normalized workspace view state (legacy intelligence panel coerces to git)'
 );
 assert.deepEqual(
   storedSnapshot?.embeddedTerminal,

@@ -638,7 +638,7 @@
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
       chromeCompact: true,
-      intelligencePanel: 'symbols'
+      intelligencePanel: 'git'
     },
     {
       id: 'code',
@@ -655,7 +655,7 @@
       contextPanelMode: 'grid',
       contextPanelPlacement: 'top',
       chromeCompact: true,
-      intelligencePanel: 'symbols'
+      intelligencePanel: 'git'
     },
     {
       id: 'git',
@@ -689,7 +689,7 @@
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
       chromeCompact: true,
-      intelligencePanel: 'problems'
+      intelligencePanel: 'git'
     },
     {
       id: 'sessions',
@@ -706,7 +706,7 @@
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
       chromeCompact: true,
-      intelligencePanel: 'problems'
+      intelligencePanel: 'git'
     }
   ];
   const sourceTerminalApps: SourceTerminalApp[] = [
@@ -870,7 +870,7 @@
   let gitActionStatus = $state('');
   let gitActionError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
-  let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
+  let sourceIntelligencePanel = $state<SourceIntelligencePanel>('git');
   let sourceSearchQuery = $state('');
   let sourceSearchResults = $state<SourceSearchMatch[]>([]);
   let sourceSearchLoading = $state(false);
@@ -23465,45 +23465,38 @@
   }
 
   .intelligence-tabs {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    display: flex;
     gap: 4px;
     padding: 6px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   }
 
-  .intelligence-tabs button {
+  .intelligence-tab-static {
     display: grid;
     grid-template-columns: 14px minmax(0, 1fr) auto;
     align-items: center;
     gap: 5px;
+    flex: 1 1 auto;
     height: 24px;
     min-width: 0;
     padding: 0 5px;
-    color: #9fa9a6;
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    color: #f2f6f5;
+    border: 1px solid rgba(92, 226, 207, 0.36);
     border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
+    background: rgba(92, 226, 207, 0.11);
     font-size: 9px;
     font-weight: 800;
-    cursor: pointer;
   }
 
-  .intelligence-tabs button.active {
-    color: #f2f6f5;
-    border-color: rgba(92, 226, 207, 0.36);
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .intelligence-tabs span,
-  .intelligence-tabs strong {
+  .intelligence-tab-static span,
+  .intelligence-tab-static strong {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .intelligence-tabs strong {
+  .intelligence-tab-static strong {
     color: #7ce5d5;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
   }
@@ -23518,32 +23511,6 @@
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .intelligence-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 8px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .intelligence-list::-webkit-scrollbar {
-    width: 10px;
-  }
-
-  .intelligence-list::-webkit-scrollbar-track {
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .intelligence-list::-webkit-scrollbar-thumb {
-    border: 2px solid rgba(20, 23, 24, 0.86);
-    border-radius: 999px;
-    background: rgba(174, 184, 181, 0.54);
   }
 
   .git-diff-panel {
@@ -24580,133 +24547,6 @@
     font-size: 10px;
   }
 
-  .definition-results,
-  .implementation-results,
-  .type-definition-results,
-  .reference-results {
-    flex: 0 0 auto;
-    max-height: 164px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .definition-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .reference-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .implementation-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .type-definition-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .definition-summary,
-  .implementation-summary,
-  .type-definition-summary,
-  .reference-summary {
-    margin-bottom: 6px;
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 780;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .intelligence-row,
-  .definition-row,
-  .reference-row {
-    display: grid;
-    grid-template-columns: minmax(68px, auto) minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    width: 100%;
-    min-height: 31px;
-    padding: 5px 7px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    border-radius: 7px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .intelligence-row:hover,
-  .intelligence-row:focus-visible,
-  .definition-row:hover,
-  .definition-row:focus-visible,
-  .reference-row:hover,
-  .reference-row:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .intelligence-row strong,
-  .intelligence-row span,
-  .intelligence-row small,
-  .definition-row strong,
-  .definition-row span,
-  .definition-row small,
-  .reference-row strong,
-  .reference-row span,
-  .reference-row small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .intelligence-row strong,
-  .definition-row strong,
-  .reference-row strong {
-    color: #8fd8cf;
-    font-size: 10px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .intelligence-row span,
-  .definition-row span,
-  .reference-row span {
-    font-size: 12px;
-    font-weight: 760;
-  }
-
-  .intelligence-row small,
-  .definition-row small,
-  .reference-row small {
-    color: #7f8b87;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 750;
-  }
-
-  .intelligence-row.diagnostic.error strong {
-    color: #f1a9a0;
-  }
-
-  .intelligence-row.diagnostic.warning strong {
-    color: #d8aa55;
-  }
-
   /* ============================================================
    * Insights panel readability pass (TSK-346) — scoped overrides.
    * All rules are scoped under .source-intelligence-panel so the
@@ -24723,52 +24563,31 @@
     color: var(--color-text);
   }
 
-  /* ── Tab switcher — borderless segmented, active = accent ────── */
+  /* ── Panel header — static Git label (lists removed) ─────────── */
   .source-intelligence-panel .intelligence-tabs {
     gap: var(--space-1);
     padding: var(--space-2);
     border-bottom: 1px solid var(--color-border);
   }
 
-  .source-intelligence-panel .intelligence-tabs button {
+  .source-intelligence-panel .intelligence-tab-static {
     height: 28px;
     gap: var(--space-1);
     padding: 0 var(--space-2);
-    color: var(--color-text-3);
+    color: var(--color-on-accent);
     border: none;
     border-radius: var(--radius-sm);
-    background: transparent;
+    background: var(--color-accent);
     font-size: var(--text-xs);
     font-weight: var(--weight-semibold);
     letter-spacing: 0.02em;
-    transition: background 130ms ease, color 130ms ease;
   }
 
-  .source-intelligence-panel .intelligence-tabs button:hover {
-    color: var(--color-text);
-    background: var(--color-surface);
-  }
-
-  .source-intelligence-panel .intelligence-tabs button:focus-visible {
-    outline: none;
-    box-shadow: var(--focus-ring);
-  }
-
-  .source-intelligence-panel .intelligence-tabs button.active {
+  .source-intelligence-panel .intelligence-tab-static strong {
     color: var(--color-on-accent);
-    border-color: transparent;
-    background: var(--color-accent);
-  }
-
-  .source-intelligence-panel .intelligence-tabs strong {
-    color: var(--color-text-3);
     font-family: inherit;
     font-variant-numeric: tabular-nums;
     font-weight: var(--weight-semibold);
-  }
-
-  .source-intelligence-panel .intelligence-tabs button.active strong {
-    color: var(--color-on-accent);
     opacity: 0.78;
   }
 
@@ -24786,10 +24605,6 @@
     color: var(--color-text-3);
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
-  }
-
-  .source-intelligence-panel .intelligence-list {
-    padding: var(--space-2);
   }
 
   /* ── Shared section heading (Changes / History / Tasks) ──────── */
@@ -24843,57 +24658,6 @@
     text-align: right;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  /* ── Intelligence rows (Problems / Symbols) ─────────────────── */
-  .source-intelligence-panel .intelligence-row {
-    grid-template-columns: minmax(56px, auto) minmax(0, 1fr) auto;
-    gap: var(--space-2);
-    min-height: 34px;
-    padding: var(--space-2);
-    color: var(--color-text);
-    border-radius: var(--radius-sm);
-    transition: background 120ms ease;
-  }
-
-  .source-intelligence-panel .intelligence-row:hover,
-  .source-intelligence-panel .intelligence-row:focus-visible {
-    color: var(--color-text);
-    background: var(--color-surface);
-  }
-
-  .source-intelligence-panel .intelligence-row:focus-visible {
-    outline: none;
-    box-shadow: var(--focus-ring);
-  }
-
-  .source-intelligence-panel .intelligence-row strong {
-    color: var(--color-text-3);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-  }
-
-  .source-intelligence-panel .intelligence-row span {
-    color: var(--color-text);
-    font-size: var(--text-sm);
-    font-weight: var(--weight-normal);
-  }
-
-  .source-intelligence-panel .intelligence-row small {
-    color: var(--color-text-3);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-  }
-
-  /* Problems: tone-code severity via tokens */
-  .source-intelligence-panel .intelligence-row.diagnostic.error strong {
-    color: var(--color-bad);
-  }
-
-  .source-intelligence-panel .intelligence-row.diagnostic.warning strong {
-    color: var(--color-attention);
   }
 
   /* ── Git container ──────────────────────────────────────────── */

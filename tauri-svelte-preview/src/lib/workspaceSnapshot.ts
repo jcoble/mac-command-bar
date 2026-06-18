@@ -441,10 +441,6 @@ function isWorkspaceSnapshotContextCardID(value: unknown): value is WorkspaceSna
   );
 }
 
-function isWorkspaceSnapshotIntelligencePanel(value: unknown): value is WorkspaceSnapshotIntelligencePanel {
-  return value === 'problems' || value === 'symbols' || value === 'git';
-}
-
 function normalizeWorkspaceSnapshotViewState(
   value: Partial<WorkspaceSnapshotViewState> | null | undefined
 ): WorkspaceSnapshotViewState {
@@ -487,9 +483,11 @@ function normalizeWorkspaceSnapshotViewState(
     activeContextCardID: isWorkspaceSnapshotContextCardID(candidate.activeContextCardID)
       ? candidate.activeContextCardID
       : 'orchestration',
-    sourceIntelligencePanel: isWorkspaceSnapshotIntelligencePanel(candidate.sourceIntelligencePanel)
-      ? candidate.sourceIntelligencePanel
-      : 'symbols'
+    // The Insights panel now only renders the Git body, so any persisted value
+    // (including legacy 'problems'/'symbols') normalizes to 'git' on read — restore
+    // lands on the surviving tab. The field + its union type stay for byte-compatible
+    // parsing; old snapshots still parse without error.
+    sourceIntelligencePanel: 'git'
   };
 }
 
