@@ -117,3 +117,19 @@ export const files = $state({
 		limitReached: false
 	}
 });
+
+// ── Derived predicates ─────────────────────────────────────────────────────────
+
+/**
+ * Whether the file at `path` has unsaved edits — i.e. an in-editor draft that
+ * differs from the last-saved-on-disk content. Reads `files.draftByPath` /
+ * `files.savedByPath` at call time, so callers in the page's `$derived`/`$effect`
+ * graph stay reactive (the tracked read happens when the deriving runs).
+ *
+ * Relocated from `+page.svelte` (Phase A3); there is no single dirty map.
+ */
+export function isSourcePathDirty(path: string): boolean {
+	const draft = files.draftByPath[path];
+	const saved = files.savedByPath[path];
+	return draft !== undefined && saved !== undefined && draft !== saved;
+}

@@ -43,7 +43,7 @@
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import { settings, defaultSettings } from '$lib/settingsStore.svelte';
   import { dock } from '$lib/stores/dockLayoutStore.svelte';
-  import { files } from '$lib/stores/filesStore.svelte';
+  import { files, isSourcePathDirty } from '$lib/stores/filesStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
@@ -815,8 +815,6 @@
 
   let customProjectRoots = $state<ProjectRoot[]>([]);
   let selectedSourcePaths = $state<Record<string, string>>({});
-  let recentSourceRecords = $state<SourceRecentRecord[]>([]);
-  let openSourceTabs = $state<SourceOpenTab[]>([]);
   let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
   let activeWorkspaceSessionKey = $state<string | null>(null);
   let sourceScanCache = $state<SourceScanCache>({});
@@ -863,10 +861,6 @@
   let agentSessionError = $state('');
   let agentSessionSource = $state('browser preview');
   let selectedProjectID = $state(initialProject.id);
-  let sourceDraftContentByPath = $state<Record<string, string>>({});
-  let savedSourceContentByPath = $state<Record<string, string>>({});
-  let sourceMarkdownPreviewModeByPath = $state<Record<string, SourceEditorDisplayMode>>({});
-  let workspaceEditSourceRecordsByPath = $state<Record<string, SourceRecord>>({});
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
@@ -1127,12 +1121,12 @@
     )
   );
   let projectRecentRecords = $derived(
-    recentSourceRecords
+    files.recentRecords
       .filter((record) => record.projectID === selectedProject.id)
       .slice(0, maxProjectRecentRecords)
   );
   let projectOpenSourceTabs = $derived(
-    openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
+    files.openTabs.filter((tab) => tab.projectID === selectedProject.id)
   );
   let sourceEditorFileDockviewPanels = $derived(
     projectOpenSourceTabs.map((tab) => ({
@@ -1163,17 +1157,17 @@
     files.selectedRecord ? files.records.findIndex((record) => record.path === files.selectedRecord?.path) + 1 : 0
   );
   let selectedSourceDraftContent = $derived(
-    files.preview ? sourceDraftContentByPath[files.preview.path] ?? files.preview.content : ''
+    files.preview ? files.draftByPath[files.preview.path] ?? files.preview.content : ''
   );
   let selectedSourceDirty = $derived(files.preview ? isSourcePathDirty(files.preview.path) : false);
   let selectedSourceMarkdownPreviewAvailable = $derived(sourceMarkdownPreviewAvailable(files.preview));
   let selectedSourceEditorDisplayMode = $derived(
     files.preview && selectedSourceMarkdownPreviewAvailable
-      ? sourceMarkdownPreviewModeByPath[files.preview.path] ?? 'source'
+      ? files.markdownPreviewModeByPath[files.preview.path] ?? 'source'
       : 'source'
   );
   let dirtyProjectSourceRecords = $derived(
-    dirtySourceRecordsForProject(projectOpenSourceTabs, workspaceEditSourceRecordsByPath, selectedProject)
+    dirtySourceRecordsForProject(projectOpenSourceTabs, files.workspaceEditRecordsByPath, selectedProject)
   );
   let cleanProjectOpenSourceTabCount = $derived(
     projectOpenSourceTabs.filter((tab) => !isSourcePathDirty(tab.path)).length
@@ -6914,8 +6908,8 @@
       }));
     if (restoredTabs.length === 0) return;
 
-    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, restoredTabs);
-    openSourceTabs = nextOpenSourceTabs;
+    const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, project.id, restoredTabs);
+    files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
   }
 
@@ -8915,8 +8909,8 @@
       );
     }
 
-    const draft = sourceDraftContentByPath[sourceRecord.path];
-    const saved = savedSourceContentByPath[sourceRecord.path];
+    const draft = files.draftByPath[sourceRecord.path];
+    const saved = files.savedByPath[sourceRecord.path];
     if (draft !== undefined && saved !== undefined) {
       return previewFromContent(
         { ...sourceRecord, byteCount: new TextEncoder().encode(draft).length },
@@ -9810,8 +9804,8 @@
     closeResult: { tabs: SourceOpenTab[]; nextActivePath: string | null },
     status: string
   ) {
-    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, closeResult.tabs);
-    openSourceTabs = nextOpenSourceTabs;
+    const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, selectedProject.id, closeResult.tabs);
+    files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
     if (closeResult.nextActivePath === files.selectedRecord?.path) {
@@ -9839,7 +9833,7 @@
       [project.id]: record.path
     };
     const nextRecentSourceRecords = upsertRecentSourceRecord(
-      recentSourceRecords,
+      files.recentRecords,
       record,
       project,
       openedAt,
@@ -9852,11 +9846,11 @@
       openedAt,
       maxProjectOpenSourceTabs
     );
-    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, nextProjectOpenTabs);
+    const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, project.id, nextProjectOpenTabs);
 
     selectedSourcePaths = nextSelectedSourcePaths;
-    recentSourceRecords = nextRecentSourceRecords;
-    openSourceTabs = nextOpenSourceTabs;
+    files.recentRecords = nextRecentSourceRecords;
+    files.openTabs = nextOpenSourceTabs;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
     persistRecentSourceRecords(nextRecentSourceRecords);
     persistOpenSourceTabs(nextOpenSourceTabs);
@@ -10244,7 +10238,7 @@
 
     try {
       for (const record of dirtyRecords) {
-        const content = sourceDraftContentByPath[record.path];
+        const content = files.draftByPath[record.path];
         if (content === undefined || !isSourcePathDirty(record.path)) continue;
 
         const savedPreview = await writeSourceToTauri(record, content);
@@ -10274,9 +10268,9 @@
   function revertSelectedSourceFile() {
     if (!files.preview || !selectedSourceDirty) return;
 
-    const savedContent = savedSourceContentByPath[files.preview.path] ?? files.preview.content;
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
+    const savedContent = files.savedByPath[files.preview.path] ?? files.preview.content;
+    files.draftByPath = {
+      ...files.draftByPath,
       [files.preview.path]: savedContent
     };
     fileActionStatus = 'Reverted edits';
@@ -10286,8 +10280,8 @@
   function updateSelectedSourceDraft(content: string) {
     if (!files.preview) return;
 
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
+    files.draftByPath = {
+      ...files.draftByPath,
       [files.preview.path]: content
     };
     scheduleSourceLspDiagnostics();
@@ -10296,42 +10290,36 @@
   function syncSourcePreviewContent(nextPreview: SourcePreview | null) {
     if (!nextPreview) return;
 
-    const existingDraft = sourceDraftContentByPath[nextPreview.path];
-    const existingSaved = savedSourceContentByPath[nextPreview.path];
+    const existingDraft = files.draftByPath[nextPreview.path];
+    const existingSaved = files.savedByPath[nextPreview.path];
     const hasUnsavedDraft =
       existingDraft !== undefined &&
       existingSaved !== undefined &&
       existingDraft !== existingSaved;
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
+    files.draftByPath = {
+      ...files.draftByPath,
       [nextPreview.path]: hasUnsavedDraft ? existingDraft : nextPreview.content
     };
-    savedSourceContentByPath = {
-      ...savedSourceContentByPath,
+    files.savedByPath = {
+      ...files.savedByPath,
       [nextPreview.path]: nextPreview.content
     };
   }
 
   function commitSourcePreviewContent(nextPreview: SourcePreview) {
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
+    files.draftByPath = {
+      ...files.draftByPath,
       [nextPreview.path]: nextPreview.content
     };
-    savedSourceContentByPath = {
-      ...savedSourceContentByPath,
+    files.savedByPath = {
+      ...files.savedByPath,
       [nextPreview.path]: nextPreview.content
     };
-    if (workspaceEditSourceRecordsByPath[nextPreview.path]) {
-      const nextWorkspaceEditRecordsByPath = { ...workspaceEditSourceRecordsByPath };
+    if (files.workspaceEditRecordsByPath[nextPreview.path]) {
+      const nextWorkspaceEditRecordsByPath = { ...files.workspaceEditRecordsByPath };
       delete nextWorkspaceEditRecordsByPath[nextPreview.path];
-      workspaceEditSourceRecordsByPath = nextWorkspaceEditRecordsByPath;
+      files.workspaceEditRecordsByPath = nextWorkspaceEditRecordsByPath;
     }
-  }
-
-  function isSourcePathDirty(path: string) {
-    const draftContent = sourceDraftContentByPath[path];
-    const savedContent = savedSourceContentByPath[path];
-    return draftContent !== undefined && savedContent !== undefined && draftContent !== savedContent;
   }
 
   function sourceMarkdownPreviewAvailable(nextPreview: SourcePreview | null) {
@@ -10343,8 +10331,8 @@
   function setSelectedSourceEditorDisplayMode(mode: SourceEditorDisplayMode) {
     if (!files.preview || !sourceMarkdownPreviewAvailable(files.preview)) return;
 
-    sourceMarkdownPreviewModeByPath = {
-      ...sourceMarkdownPreviewModeByPath,
+    files.markdownPreviewModeByPath = {
+      ...files.markdownPreviewModeByPath,
       [files.preview.path]: mode
     };
   }
@@ -10356,9 +10344,9 @@
       return { fileCount: 0, editCount: 0, missingCount: 0 };
     }
 
-    const nextDraftContentByPath = { ...sourceDraftContentByPath };
-    const nextSavedContentByPath = { ...savedSourceContentByPath };
-    const nextWorkspaceEditRecordsByPath = { ...workspaceEditSourceRecordsByPath };
+    const nextDraftContentByPath = { ...files.draftByPath };
+    const nextSavedContentByPath = { ...files.savedByPath };
+    const nextWorkspaceEditRecordsByPath = { ...files.workspaceEditRecordsByPath };
     let nextProjectOpenTabs = projectOpenSourceTabs;
     let fileCount = 0;
     let editCount = 0;
@@ -10399,13 +10387,13 @@
       editCount += file.edits.length;
     }
 
-    sourceDraftContentByPath = nextDraftContentByPath;
-    savedSourceContentByPath = nextSavedContentByPath;
-    workspaceEditSourceRecordsByPath = nextWorkspaceEditRecordsByPath;
+    files.draftByPath = nextDraftContentByPath;
+    files.savedByPath = nextSavedContentByPath;
+    files.workspaceEditRecordsByPath = nextWorkspaceEditRecordsByPath;
 
     if (fileCount > 0) {
-      const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, nextProjectOpenTabs);
-      openSourceTabs = nextOpenSourceTabs;
+      const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, selectedProject.id, nextProjectOpenTabs);
+      files.openTabs = nextOpenSourceTabs;
       persistOpenSourceTabs(nextOpenSourceTabs);
     }
 
@@ -10416,7 +10404,7 @@
     const existingRecord =
       files.records.find((record) => record.path === file.path) ??
       projectOpenSourceTabs.find((record) => record.path === file.path) ??
-      workspaceEditSourceRecordsByPath[file.path];
+      files.workspaceEditRecordsByPath[file.path];
     if (existingRecord) return existingRecord;
 
     const relativePath = file.relativePath || sourceRelativePathForPath(file.path);
@@ -10480,7 +10468,7 @@
 
     const expectedPath = nextPreview.path;
     const expectedProjectPath = project.path;
-    const draftContent = sourceDraftContentByPath[nextPreview.path] ?? nextPreview.content;
+    const draftContent = files.draftByPath[nextPreview.path] ?? nextPreview.content;
 
     try {
       const diagnostics = await readSourceLspDiagnosticsFromTauri(
@@ -10508,7 +10496,7 @@
 
     const expectedPath = nextPreview.path;
     const expectedProjectPath = project.path;
-    const draftContent = sourceDraftContentByPath[nextPreview.path] ?? nextPreview.content;
+    const draftContent = files.draftByPath[nextPreview.path] ?? nextPreview.content;
 
     try {
       const symbols = await findSourceLspSymbolsFromTauri(
@@ -15337,16 +15325,16 @@
     selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
 
-    const nextRecentSourceRecords = recentSourceRecords.filter(
+    const nextRecentSourceRecords = files.recentRecords.filter(
       (record) => record.projectID !== removedProjectID
     );
-    recentSourceRecords = nextRecentSourceRecords;
+    files.recentRecords = nextRecentSourceRecords;
     persistRecentSourceRecords(nextRecentSourceRecords);
 
-    const nextOpenSourceTabs = openSourceTabs.filter(
+    const nextOpenSourceTabs = files.openTabs.filter(
       (tab) => tab.projectID !== removedProjectID
     );
-    openSourceTabs = nextOpenSourceTabs;
+    files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
     if (selectedProjectID === removedProjectID) {
@@ -15593,8 +15581,8 @@
     }
     selectedSourcePaths = storedSelectedSourcePaths;
     sourceScanCache = storedSourceScanCache;
-    recentSourceRecords = storedRecentSourceRecords;
-    openSourceTabs = storedOpenSourceTabs;
+    files.recentRecords = storedRecentSourceRecords;
+    files.openTabs = storedOpenSourceTabs;
     workspaceSnapshots = storedWorkspaceSnapshots;
     activeWorkspaceSessionKey = startupWorkspaceSnapshot?.id ?? storedActiveWorkspaceSessionKey;
     selectedProjectID = startupProject.id;
