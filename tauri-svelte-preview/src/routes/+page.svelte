@@ -862,22 +862,6 @@
   let sourceLspStatus = $state<SourceLspStatus | null>(null);
   let sourceLspStatusLoading = $state(false);
   let sourceLspStatusError = $state('');
-  let sourceDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
-  let sourceDefinitionQuery = $state('');
-  let sourceDefinitionLoading = $state(false);
-  let sourceDefinitionError = $state('');
-  let sourceReferenceTargets = $state<SourceReferenceTarget[]>([]);
-  let sourceReferenceQuery = $state('');
-  let sourceReferenceLoading = $state(false);
-  let sourceReferenceError = $state('');
-  let sourceImplementationTargets = $state<SourceDefinitionTarget[]>([]);
-  let sourceImplementationQuery = $state('');
-  let sourceImplementationLoading = $state(false);
-  let sourceImplementationError = $state('');
-  let sourceTypeDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
-  let sourceTypeDefinitionQuery = $state('');
-  let sourceTypeDefinitionLoading = $state(false);
-  let sourceTypeDefinitionError = $state('');
   let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
   let selectedSourceGitDiffLoading = $state(false);
   let selectedSourceGitDiffError = $state('');
@@ -1708,48 +1692,6 @@
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
   );
-  let sourceDefinitionSummary = $derived(
-    formatSourceDefinitionSummary(
-      sourceDefinitionTargets.length,
-      sourceDefinitionLoading,
-      sourceDefinitionError,
-      sourceDefinitionQuery
-    )
-  );
-  let sourceReferenceSummary = $derived(
-    formatSourceReferenceSummary(
-      sourceReferenceTargets.length,
-      sourceReferenceLoading,
-      sourceReferenceError,
-      sourceReferenceQuery
-    )
-  );
-  let sourceImplementationSummary = $derived(
-    formatSourceImplementationSummary(
-      sourceImplementationTargets.length,
-      sourceImplementationLoading,
-      sourceImplementationError,
-      sourceImplementationQuery
-    )
-  );
-  let sourceTypeDefinitionSummary = $derived(
-    formatSourceTypeDefinitionSummary(
-      sourceTypeDefinitionTargets.length,
-      sourceTypeDefinitionLoading,
-      sourceTypeDefinitionError,
-      sourceTypeDefinitionQuery
-    )
-  );
-  let sourceDefinitionNavCount = $derived(
-    sourceDefinitionTargets.length + sourceImplementationTargets.length + sourceTypeDefinitionTargets.length
-  );
-  let sourceLookupLoading = $derived(
-    sourceDefinitionLoading ||
-      sourceReferenceLoading ||
-      sourceImplementationLoading ||
-      sourceTypeDefinitionLoading
-  );
-  let sourceLookupSummary = $derived(formatSourceLookupSummary());
   let sourceActivityPanelLabel = $derived(sourceActivityLabel(dock.activityMode));
   let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
     {
@@ -2185,19 +2127,6 @@
       perform: () => requestSourceIntelligenceAction('hover')
     },
     {
-      id: 'clear-source-lookups',
-      label: 'Clear source lookup results',
-      detail: sourceLookupSummary,
-      disabled:
-        sourceDefinitionNavCount === 0 &&
-        sourceReferenceTargets.length === 0 &&
-        !sourceDefinitionQuery &&
-        !sourceReferenceQuery &&
-        !sourceImplementationQuery &&
-        !sourceTypeDefinitionQuery,
-      perform: clearSourceLookupResults
-    },
-    {
       id: 'source-copy-intelligence-brief',
       label: 'Copy source intelligence brief',
       detail: files.preview?.fileName ?? selectedProject.name,
@@ -2234,14 +2163,8 @@
     {
       id: 'insights-toggle',
       label: editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights',
-      detail: 'Problems, symbols, Git',
+      detail: 'Selected-file Git',
       perform: toggleEditorInsightCollapsed
-    },
-    {
-      id: 'insights-problems',
-      label: 'Show problems',
-      detail: sourceDiagnosticSummary,
-      perform: () => showEditorInsightPanel('problems')
     },
     {
       id: 'next-problem',
@@ -2256,12 +2179,6 @@
       detail: 'Shift+F8',
       disabled: sourceDiagnostics.length === 0,
       perform: () => selectPreviousSourceDiagnostic()
-    },
-    {
-      id: 'insights-symbols',
-      label: 'Show symbols',
-      detail: `${sourceSymbols.length} symbols`,
-      perform: () => showEditorInsightPanel('symbols')
     },
     {
       id: 'insights-git',
@@ -4588,18 +4505,6 @@
     const currentFile = files.selectedRecord
       ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
-    const definitionLines = sourceDefinitionTargets.slice(0, 8).map((target) => {
-      return `- ${target.symbolName} (${target.kind}) ${target.relativePath}:${target.line}`;
-    });
-    const implementationLines = sourceImplementationTargets.slice(0, 6).map((target) => {
-      return `- implementation ${target.symbolName} ${target.relativePath}:${target.line}`;
-    });
-    const typeDefinitionLines = sourceTypeDefinitionTargets.slice(0, 6).map((target) => {
-      return `- type ${target.symbolName} ${target.relativePath}:${target.line}`;
-    });
-    const referenceLines = sourceReferenceTargets.slice(0, 8).map((target) => {
-      return `- ${target.fileName}:${target.line}:${target.column} ${target.excerpt}`;
-    });
     const problemLines = sourceDiagnostics.slice(0, 8).map((diagnostic) => {
       return `- ${diagnostic.severity} ${diagnostic.line}:${diagnostic.column} ${diagnostic.message}`;
     });
@@ -4617,15 +4522,7 @@
       `Problems: ${sourceDiagnosticSummary}`,
       problemLines.length > 0 ? problemLines.join('\n') : '- none',
       `Symbols: ${sourceSymbols.length}`,
-      symbolLines.length > 0 ? symbolLines.join('\n') : '- none',
-      `Definitions: ${sourceDefinitionSummary || 'none'}`,
-      definitionLines.length > 0 ? definitionLines.join('\n') : '- none',
-      `Implementations: ${sourceImplementationSummary || 'none'}`,
-      implementationLines.length > 0 ? implementationLines.join('\n') : '- none',
-      `Type definitions: ${sourceTypeDefinitionSummary || 'none'}`,
-      typeDefinitionLines.length > 0 ? typeDefinitionLines.join('\n') : '- none',
-      `References: ${sourceReferenceSummary || 'none'}`,
-      referenceLines.length > 0 ? referenceLines.join('\n') : '- none'
+      symbolLines.length > 0 ? symbolLines.join('\n') : '- none'
     ].join('\n');
   }
 
@@ -8616,75 +8513,6 @@
     sourceSearchLoading = false;
   }
 
-  async function runSourceDefinitionLookup(request: SourceEditorLookupRequest) {
-    const normalizedSymbolName = request.symbolName.trim();
-    sourceDefinitionQuery = normalizedSymbolName;
-    sourceDefinitionError = '';
-
-    if (!normalizedSymbolName) {
-      sourceDefinitionTargets = [];
-      files.fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    sourceDefinitionLoading = true;
-    files.fileActionStatus = `Looking up ${normalizedSymbolName}`;
-    try {
-      const lspTargets = files.preview
-        ? await findSourceLspDefinitionsFromTauri(
-            { ...files.preview, content: selectedSourceDraftContent },
-            {
-              root: selectedProject.path,
-              line: request.line,
-              column: request.column,
-              limit: maxSourceDefinitionResults
-            }
-          ).catch(() => null)
-        : null;
-      const nativeTargets = lspTargets?.length
-        ? lspTargets
-        : await findSourceDefinitionsFromTauri(
-            files.records,
-            normalizedSymbolName,
-            maxSourceDefinitionResults
-          );
-      const nextTargets =
-        nativeTargets ??
-        findSourceDefinitionTargets(
-          files.records.map((record) => demoPreviewFor(record)),
-          normalizedSymbolName,
-          maxSourceDefinitionResults
-        );
-
-      sourceDefinitionTargets = nextTargets;
-      sourceDefinitionError = lspTargets?.length
-        ? ''
-        : nativeTargets
-          ? ''
-          : 'Browser preview definitions';
-
-      if (nextTargets.length === 0) {
-        files.fileActionStatus = `No definition for ${normalizedSymbolName}`;
-        return nextTargets;
-      }
-
-      files.fileActionStatus = `${nextTargets.length} ${nextTargets.length === 1 ? 'definition' : 'definitions'} for ${normalizedSymbolName}`;
-      return nextTargets;
-    } catch (definitionError) {
-      sourceDefinitionTargets = findSourceDefinitionTargets(
-        files.records.map((record) => demoPreviewFor(record)),
-        normalizedSymbolName,
-        maxSourceDefinitionResults
-      );
-      sourceDefinitionError =
-        definitionError instanceof Error ? definitionError.message : 'Could not find definition';
-
-      return sourceDefinitionTargets;
-    } finally {
-      sourceDefinitionLoading = false;
-    }
-  }
-
   async function findSourceDefinitionTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
     if (!normalizedSymbolName) return [];
@@ -8722,92 +8550,6 @@
         normalizedSymbolName,
         maxSourceDefinitionResults
       );
-    }
-  }
-
-  function formatSourceDefinitionSummary(
-    targetCount: number,
-    loadingDefinitions: boolean,
-    definitionError: string,
-    symbolName: string
-  ) {
-    if (loadingDefinitions) return 'Finding definition';
-    if (definitionError) return definitionError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'definition' : 'definitions'} for ${symbolName}`;
-  }
-
-  async function selectSourceDefinitionTarget(target: SourceDefinitionTarget) {
-    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceDefinitionTargets() {
-    sourceDefinitionTargets = [];
-    sourceDefinitionError = '';
-    sourceDefinitionLoading = false;
-    sourceDefinitionQuery = '';
-  }
-
-  async function runSourceReferenceLookup(request: SourceEditorLookupRequest) {
-    const normalizedSymbolName = request.symbolName.trim();
-    sourceReferenceQuery = normalizedSymbolName;
-    sourceReferenceError = '';
-
-    if (!normalizedSymbolName) {
-      sourceReferenceTargets = [];
-      files.fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    sourceReferenceLoading = true;
-    files.fileActionStatus = `Finding references for ${normalizedSymbolName}`;
-    try {
-      const lspTargets = files.preview
-        ? await findSourceLspReferencesFromTauri(
-            { ...files.preview, content: selectedSourceDraftContent },
-            {
-              root: selectedProject.path,
-              line: request.line,
-              column: request.column,
-              limit: maxSourceSearchResults
-            }
-          ).catch(() => null)
-        : null;
-      const nativeTargets = lspTargets?.length
-        ? lspTargets
-        : await findSourceReferencesFromTauri(
-            files.records,
-            normalizedSymbolName,
-            maxSourceSearchResults
-          );
-      sourceReferenceTargets =
-        lspTargets?.length
-          ? lspTargets
-          : nativeTargets ??
-            findSourceReferenceTargets(
-              files.records.map((record) => demoPreviewFor(record)),
-              normalizedSymbolName,
-              maxSourceSearchResults
-            );
-      sourceReferenceError = lspTargets?.length
-        ? ''
-        : nativeTargets
-          ? ''
-          : 'Browser preview references';
-      files.fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
-      return sourceReferenceTargets;
-    } catch (referenceError) {
-      sourceReferenceTargets = findSourceReferenceTargets(
-        files.records.map((record) => demoPreviewFor(record)),
-        normalizedSymbolName,
-        maxSourceSearchResults
-      );
-      sourceReferenceError =
-        referenceError instanceof Error ? referenceError.message : 'Could not find references';
-      return sourceReferenceTargets;
-    } finally {
-      sourceReferenceLoading = false;
     }
   }
 
@@ -8921,78 +8663,6 @@
     await selectRecord(record, request.line);
   }
 
-  function formatSourceReferenceSummary(
-    targetCount: number,
-    loadingReferences: boolean,
-    referenceError: string,
-    symbolName: string
-  ) {
-    if (loadingReferences) return 'Finding references';
-    if (referenceError) return referenceError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'reference' : 'references'} for ${symbolName}`;
-  }
-
-  async function selectSourceReferenceTarget(target: SourceReferenceTarget) {
-    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceReferenceTargets() {
-    sourceReferenceTargets = [];
-    sourceReferenceError = '';
-    sourceReferenceLoading = false;
-    sourceReferenceQuery = '';
-  }
-
-  async function runSourceImplementationLookup(request: SourceEditorLookupRequest) {
-    const normalizedSymbolName = request.symbolName.trim();
-    sourceImplementationQuery = normalizedSymbolName;
-    sourceImplementationError = '';
-
-    if (!normalizedSymbolName) {
-      sourceImplementationTargets = [];
-      files.fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    if (!files.preview || !sourceIntelligenceAvailable) {
-      sourceImplementationTargets = [];
-      sourceImplementationError = 'Language server unavailable';
-      files.fileActionStatus = `No implementation lookup for ${normalizedSymbolName}`;
-      return [];
-    }
-
-    sourceImplementationLoading = true;
-    files.fileActionStatus = `Finding implementations for ${normalizedSymbolName}`;
-    try {
-      const lspTargets =
-        (await findSourceLspImplementationsFromTauri(
-          { ...files.preview, content: selectedSourceDraftContent },
-          {
-            root: selectedProject.path,
-            line: request.line,
-            column: request.column,
-            limit: maxSourceDefinitionResults
-          }
-        )) ?? [];
-
-      sourceImplementationTargets = lspTargets;
-      sourceImplementationError = '';
-      files.fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
-      return lspTargets;
-    } catch (implementationError) {
-      sourceImplementationTargets = [];
-      sourceImplementationError =
-        implementationError instanceof Error
-          ? implementationError.message
-          : 'Could not find implementations';
-      return sourceImplementationTargets;
-    } finally {
-      sourceImplementationLoading = false;
-    }
-  }
-
   async function findSourceImplementationTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
     if (!normalizedSymbolName || !files.preview || !sourceIntelligenceAvailable) return [];
@@ -9011,78 +8681,6 @@
       );
     } catch {
       return [];
-    }
-  }
-
-  function formatSourceImplementationSummary(
-    targetCount: number,
-    loadingImplementations: boolean,
-    implementationError: string,
-    symbolName: string
-  ) {
-    if (loadingImplementations) return 'Finding implementations';
-    if (implementationError) return implementationError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'implementation' : 'implementations'} for ${symbolName}`;
-  }
-
-  async function selectSourceImplementationTarget(target: SourceDefinitionTarget) {
-    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceImplementationTargets() {
-    sourceImplementationTargets = [];
-    sourceImplementationError = '';
-    sourceImplementationLoading = false;
-    sourceImplementationQuery = '';
-  }
-
-  async function runSourceTypeDefinitionLookup(request: SourceEditorLookupRequest) {
-    const normalizedSymbolName = request.symbolName.trim();
-    sourceTypeDefinitionQuery = normalizedSymbolName;
-    sourceTypeDefinitionError = '';
-
-    if (!normalizedSymbolName) {
-      sourceTypeDefinitionTargets = [];
-      files.fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    if (!files.preview || !sourceIntelligenceAvailable) {
-      sourceTypeDefinitionTargets = [];
-      sourceTypeDefinitionError = 'Language server unavailable';
-      files.fileActionStatus = `No type definition lookup for ${normalizedSymbolName}`;
-      return [];
-    }
-
-    sourceTypeDefinitionLoading = true;
-    files.fileActionStatus = `Finding type definition for ${normalizedSymbolName}`;
-    try {
-      const lspTargets =
-        (await findSourceLspTypeDefinitionsFromTauri(
-          { ...files.preview, content: selectedSourceDraftContent },
-          {
-            root: selectedProject.path,
-            line: request.line,
-            column: request.column,
-            limit: maxSourceDefinitionResults
-          }
-        )) ?? [];
-
-      sourceTypeDefinitionTargets = lspTargets;
-      sourceTypeDefinitionError = '';
-      files.fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
-      return lspTargets;
-    } catch (typeDefinitionError) {
-      sourceTypeDefinitionTargets = [];
-      sourceTypeDefinitionError =
-        typeDefinitionError instanceof Error
-          ? typeDefinitionError.message
-          : 'Could not find type definition';
-      return sourceTypeDefinitionTargets;
-    } finally {
-      sourceTypeDefinitionLoading = false;
     }
   }
 
@@ -9105,46 +8703,6 @@
     } catch {
       return [];
     }
-  }
-
-  function formatSourceTypeDefinitionSummary(
-    targetCount: number,
-    loadingTypeDefinitions: boolean,
-    typeDefinitionError: string,
-    symbolName: string
-  ) {
-    if (loadingTypeDefinitions) return 'Finding type definition';
-    if (typeDefinitionError) return typeDefinitionError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'type definition' : 'type definitions'} for ${symbolName}`;
-  }
-
-  function formatSourceLookupSummary() {
-    if (sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading) {
-      return sourceReferenceSummary || 'References';
-    }
-    if (sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading) {
-      return sourceImplementationSummary || 'Implementations';
-    }
-    if (sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading) {
-      return sourceTypeDefinitionSummary || 'Type definitions';
-    }
-    if (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading) {
-      return sourceDefinitionSummary || 'Definitions';
-    }
-    return 'No lookups yet';
-  }
-
-  async function selectSourceTypeDefinitionTarget(target: SourceDefinitionTarget) {
-    const record = files.records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceTypeDefinitionTargets() {
-    sourceTypeDefinitionTargets = [];
-    sourceTypeDefinitionError = '';
-    sourceTypeDefinitionLoading = false;
-    sourceTypeDefinitionQuery = '';
   }
 
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
@@ -9202,10 +8760,6 @@
     files.preview = nextSelection ? previewFromContent(nextSelection, '') : null;
     files.expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
     clearSourceSearchResults();
-    clearSourceDefinitionTargets();
-    clearSourceReferenceTargets();
-    clearSourceImplementationTargets();
-    clearSourceTypeDefinitionTargets();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
@@ -10427,7 +9981,6 @@
       window.clearTimeout(sourceLspDiagnosticsTimer);
       sourceLspDiagnosticsTimer = null;
     }
-    clearSourceLookupResults();
   }
 
   function handleEditorDiagnosticsChange(diagnostics: SourceDiagnostic[]) {
@@ -14008,25 +13561,6 @@
     applySourceDockLayout(
       activateSourceDockPanel(showSourceDockPanel(dock.layout, 'insights'), 'insights')
     );
-  }
-
-  function clearSourceLookupResults() {
-    sourceDefinitionTargets = [];
-    sourceDefinitionQuery = '';
-    sourceDefinitionError = '';
-    sourceDefinitionLoading = false;
-    sourceReferenceTargets = [];
-    sourceReferenceQuery = '';
-    sourceReferenceError = '';
-    sourceReferenceLoading = false;
-    sourceImplementationTargets = [];
-    sourceImplementationQuery = '';
-    sourceImplementationError = '';
-    sourceImplementationLoading = false;
-    sourceTypeDefinitionTargets = [];
-    sourceTypeDefinitionQuery = '';
-    sourceTypeDefinitionError = '';
-    sourceTypeDefinitionLoading = false;
   }
 
   function isContextCardVisible(cardID: SourceContextCardID) {
@@ -18411,32 +17945,6 @@
                 <button
                   type="button"
                   role="menuitem"
-                  aria-label="Show problems panel"
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    showEditorInsightPanel('problems');
-                  }}
-                >
-                  <Activity size={13} strokeWidth={2} />
-                  <span>Problems</span>
-                  <kbd>{sourceDiagnostics.length}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show symbols panel"
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    showEditorInsightPanel('symbols');
-                  }}
-                >
-                  <FileCode2 size={13} strokeWidth={2} />
-                  <span>Symbols</span>
-                  <kbd>{sourceSymbols.length}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
                   aria-label="Show Git panel"
                   onclick={() => {
                     closeEditorActionMenu();
@@ -18562,153 +18070,14 @@
                 aria-label="Language intelligence"
                 use:sourceDockviewPanelAction={'insights'}
               >
-            <div class="intelligence-tabs" role="tablist" aria-label="Source insights">
-              <button
-                class:active={sourceIntelligencePanel === 'problems'}
-                type="button"
-                role="tab"
-                aria-selected={sourceIntelligencePanel === 'problems'}
-                onclick={() => sourceIntelligencePanel = 'problems'}
-              >
-                <Activity size={13} strokeWidth={1.9} />
-                <span>Problems</span>
-                <strong>{sourceDiagnostics.length}</strong>
-              </button>
-              <button
-                class:active={sourceIntelligencePanel === 'symbols'}
-                type="button"
-                role="tab"
-                aria-selected={sourceIntelligencePanel === 'symbols'}
-                onclick={() => sourceIntelligencePanel = 'symbols'}
-              >
-                <FileCode2 size={13} strokeWidth={1.9} />
-                <span>Symbols</span>
-                <strong>{sourceSymbols.length}</strong>
-              </button>
-              <button
-                class:active={sourceIntelligencePanel === 'git'}
-                type="button"
-                role="tab"
-                aria-selected={sourceIntelligencePanel === 'git'}
-                onclick={() => sourceIntelligencePanel = 'git'}
-              >
+            <div class="intelligence-tabs" aria-label="Source insights">
+              <span class="intelligence-tab-static">
                 <FolderGit2 size={13} strokeWidth={1.9} />
                 <span>Git</span>
                 <strong>{selectedSourceGitBadge()}</strong>
-              </button>
+              </span>
             </div>
 
-            {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
-              <div class="definition-results" aria-label="Definition lookup results">
-                <div class="definition-summary">{sourceDefinitionSummary}</div>
-                {#if sourceDefinitionTargets.length === 0 && !sourceDefinitionLoading}
-                  <div class="intelligence-empty">No definition</div>
-                {:else}
-                  {#each sourceDefinitionTargets as target (`${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading}
-              <div class="reference-results" aria-label="Reference lookup results">
-                <div class="reference-summary">{sourceReferenceSummary}</div>
-                {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
-                  <div class="intelligence-empty">No references</div>
-                {:else}
-                  {#each sourceReferenceTargets as target (`${target.path}:${target.line}:${target.column}`)}
-                    <button
-                      class="reference-row"
-                      type="button"
-                      title={target.excerpt}
-                      onclick={() => selectSourceReferenceTarget(target)}
-                    >
-                      <strong>{target.line}:{target.column}</strong>
-                      <span>{target.fileName}</span>
-                      <small>{target.excerpt}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading}
-              <div class="implementation-results" aria-label="Implementation lookup results">
-                <div class="implementation-summary">{sourceImplementationSummary}</div>
-                {#if sourceImplementationTargets.length === 0 && !sourceImplementationLoading}
-                  <div class="intelligence-empty">No implementations</div>
-                {:else}
-                  {#each sourceImplementationTargets as target (`${target.path}:${target.line}:${target.symbolName}:implementation`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceImplementationTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading}
-              <div class="type-definition-results" aria-label="Type definition lookup results">
-                <div class="type-definition-summary">{sourceTypeDefinitionSummary}</div>
-                {#if sourceTypeDefinitionTargets.length === 0 && !sourceTypeDefinitionLoading}
-                  <div class="intelligence-empty">No type definition</div>
-                {:else}
-                  {#each sourceTypeDefinitionTargets as target (`${target.path}:${target.line}:${target.symbolName}:type-definition`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceTypeDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceIntelligencePanel === 'problems'}
-              <div class="intelligence-summary">{sourceDiagnosticSummary}</div>
-              <div class="intelligence-list">
-                {#if sourceDiagnostics.length === 0}
-                  <div class="intelligence-empty">No problems</div>
-                {:else}
-                  {#each sourceDiagnostics as diagnostic, index (`${diagnostic.line}:${diagnostic.column}:${index}`)}
-                    <button
-                      class="intelligence-row diagnostic"
-                      class:error={diagnostic.severity === 'error'}
-                      class:warning={diagnostic.severity === 'warning'}
-                      type="button"
-                      title={diagnostic.message}
-                      onclick={() => selectSourceDiagnostic(diagnostic)}
-                    >
-                      <strong>{diagnostic.severity}</strong>
-                      <span>{diagnostic.message}</span>
-                      <small>{diagnostic.line}:{diagnostic.column}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {:else if sourceIntelligencePanel === 'git'}
               <div class="git-diff-panel" aria-label="Selected file Git diff">
                 <details class="git-command-drawer">
                   <summary>
@@ -19105,27 +18474,6 @@
                   <div class="intelligence-empty">No diff for selected file</div>
                 {/if}
               </div>
-            {:else}
-              <div class="intelligence-summary">{sourceSymbols.length} symbols</div>
-              <div class="intelligence-list">
-                {#if sourceSymbols.length === 0}
-                  <div class="intelligence-empty">No symbols</div>
-                {:else}
-                  {#each sourceSymbols as symbol (`${symbol.kind}:${symbol.name}:${symbol.line}`)}
-                    <button
-                      class="intelligence-row"
-                      type="button"
-                      title={symbol.detail}
-                      onclick={() => selectSourceSymbol(symbol)}
-                    >
-                      <strong>{symbol.kind}</strong>
-                      <span>{symbol.name}</span>
-                      <small>{symbol.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
             </aside>
             </SourceDockviewShell>
           {/if}
