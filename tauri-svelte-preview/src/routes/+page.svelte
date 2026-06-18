@@ -1,9 +1,7 @@
 <script lang="ts">
   import {
     Activity,
-    BookOpen,
     Braces,
-    ChevronDown,
     ChevronLeft,
     ChevronRight,
     Copy,
@@ -16,8 +14,6 @@
     History,
     MoreHorizontal,
     Network,
-    PanelLeftOpen,
-    Plus,
     RefreshCw,
     RotateCcw,
     Save,
