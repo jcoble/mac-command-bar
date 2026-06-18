@@ -47,6 +47,7 @@
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
   import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
+  import ActivityClipboardPanel from '$lib/components/panels/ActivityClipboardPanel.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
@@ -16335,136 +16336,28 @@
         </div>
 
         {#if sourceActivityMode === 'clipboard'}
-          <div class="paste-cleanup-panel">
-            <div class="paste-cleanup-top">
-              <div class="paste-cleanup-toolbar">
-                <label>
-                  <span>Mode</span>
-                  <select bind:value={pasteCleanupMode} onchange={selectPasteCleanupMode} aria-label="Paste cleanup mode">
-                    {#each pasteCleanupModes as mode (mode)}
-                      <option value={mode}>{mode}</option>
-                    {/each}
-                  </select>
-                </label>
-                <button
-                  class="file-action-button"
-                  type="button"
-                  aria-label="Read clipboard"
-                  title="Read clipboard"
-                  disabled={fileActionBusy === 'paste-read'}
-                  onclick={readPasteCleanupClipboard}
-                >
-                  <Copy size={13} strokeWidth={1.9} />
-                  <span>{fileActionBusy === 'paste-read' ? 'Reading' : 'Paste'}</span>
-                </button>
-                <button
-                  class="file-action-button"
-                  type="button"
-                  aria-label="Clear paste cleanup text"
-                  title="Clear paste cleanup text"
-                  disabled={pasteCleanupInput.length === 0}
-                  onclick={clearPasteCleanupInput}
-                >
-                  <X size={13} strokeWidth={1.9} />
-                  <span>Clear</span>
-                </button>
-              </div>
-              {#if visiblePasteCleanupHistory.length > 0}
-                <div class="paste-cleanup-history" aria-label="Paste cleanup history">
-                  {#each visiblePasteCleanupHistory as item (item.id)}
-                    <div class="paste-history-chip" class:reply={item.kind === 'reply'}>
-                      <button
-                        class="paste-history-restore"
-                        type="button"
-                        aria-label={`Restore paste cleanup ${pasteCleanupHistoryKindLabel(item.kind)}`}
-                        title={pasteCleanupHistoryItemTitle(item)}
-                        onclick={() => restorePasteCleanupHistoryItem(item)}
-                      >
-                        <History size={11} strokeWidth={2} />
-                        <span>{pasteCleanupHistoryKindLabel(item.kind)}</span>
-                        <strong>{item.summary}</strong>
-                      </button>
-                      <button
-                        class="paste-history-copy"
-                        type="button"
-                        aria-label={`Copy paste cleanup ${pasteCleanupHistoryKindLabel(item.kind)}`}
-                        title="Copy history item"
-                        onclick={() => copyPasteCleanupHistoryItem(item)}
-                      >
-                        <Copy size={11} strokeWidth={2} />
-                      </button>
-                    </div>
-                  {/each}
-                  <button
-                    class="paste-history-clear"
-                    type="button"
-                    aria-label="Clear paste cleanup history"
-                    title="Clear paste cleanup history"
-                    onclick={clearPasteCleanupHistory}
-                  >
-                    <X size={11} strokeWidth={2} />
-                  </button>
-                </div>
-              {/if}
-            </div>
-            <div class="paste-cleanup-grid">
-              <label>
-                <span>Input</span>
-                <textarea
-                  class="paste-cleanup-textarea"
-                  bind:value={pasteCleanupInput}
-                  aria-label="Paste cleanup input"
-                  spellcheck="true"
-                  placeholder="Paste text to clean"
-                ></textarea>
-              </label>
-              <label>
-                <span>Output</span>
-                <textarea
-                  class="paste-cleanup-textarea"
-                  value={pasteCleanupOutput}
-                  aria-label="Cleaned paste output"
-                  readonly
-                  spellcheck="false"
-                ></textarea>
-              </label>
-              <label>
-                <span>Reply</span>
-                <textarea
-                  class="paste-cleanup-textarea"
-                  bind:value={pasteCleanupReplyDraft}
-                  aria-label="Paste cleanup reply draft"
-                  spellcheck="true"
-                  placeholder="Draft the reply to copy back"
-                ></textarea>
-              </label>
-            </div>
-            <div class="paste-cleanup-footer">
-              <span>Cleaned {pasteCleanupStats} · Reply {pasteCleanupReplyStats}</span>
-              <button
-                class="file-action-button"
-                type="button"
-                aria-label="Copy cleaned paste output"
-                title="Copy cleaned paste output"
-                disabled={pasteCleanupOutput.trim().length === 0 || fileActionBusy === 'paste-copy'}
-                onclick={copyPasteCleanupOutput}
-              >
-                <Copy size={13} strokeWidth={1.9} />
-                <span>{fileActionBusy === 'paste-copy' ? 'Copying' : 'Copy'}</span>
-              </button>
-              <button
-                class="file-action-button"
-                type="button"
-                aria-label="Copy paste reply draft"
-                title="Copy paste reply draft"
-                disabled={pasteCleanupReplyOutput.trim().length === 0 || fileActionBusy === 'paste-reply-copy'}
-                onclick={copyPasteCleanupReplyDraft}
-              >
-                <Copy size={13} strokeWidth={1.9} />
-                <span>{fileActionBusy === 'paste-reply-copy' ? 'Copying' : 'Copy Reply'}</span>
-              </button>
-            </div>
-          </div>
+          <ActivityClipboardPanel
+            bind:input={pasteCleanupInput}
+            bind:replyDraft={pasteCleanupReplyDraft}
+            bind:mode={pasteCleanupMode}
+            modes={pasteCleanupModes}
+            output={pasteCleanupOutput}
+            stats={pasteCleanupStats}
+            replyOutput={pasteCleanupReplyOutput}
+            replyStats={pasteCleanupReplyStats}
+            history={visiblePasteCleanupHistory}
+            fileActionBusy={fileActionBusy}
+            historyKindLabel={pasteCleanupHistoryKindLabel}
+            historyItemTitle={pasteCleanupHistoryItemTitle}
+            onModeChange={selectPasteCleanupMode}
+            onPaste={readPasteCleanupClipboard}
+            onClearInput={clearPasteCleanupInput}
+            onRestoreHistoryItem={restorePasteCleanupHistoryItem}
+            onCopyHistoryItem={copyPasteCleanupHistoryItem}
+            onClearHistory={clearPasteCleanupHistory}
+            onCopyOutput={copyPasteCleanupOutput}
+            onCopyReplyDraft={copyPasteCleanupReplyDraft}
+          />
         {:else}
           <label class="activity-filter-box">
             <Search size={14} strokeWidth={1.9} />
@@ -20793,193 +20686,6 @@
 
   .activity-filter-box input::placeholder {
     color: #7f8a86;
-  }
-
-  .paste-cleanup-panel {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 10px;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .paste-cleanup-top {
-    display: grid;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .paste-cleanup-toolbar,
-  .paste-cleanup-footer {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .paste-cleanup-toolbar label {
-    display: inline-grid;
-    grid-template-columns: auto minmax(74px, auto);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 30px;
-    padding: 0 8px;
-    color: #9facaa;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .paste-cleanup-toolbar select {
-    min-width: 0;
-    color: #dffdf8;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    font: inherit;
-  }
-
-  .paste-cleanup-history {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .paste-history-chip {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 24px;
-    flex: 1 1 132px;
-    align-items: center;
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid rgba(92, 226, 207, 0.12);
-    border-radius: 7px;
-    background: rgba(92, 226, 207, 0.045);
-  }
-
-  .paste-history-chip.reply {
-    border-color: rgba(216, 170, 85, 0.13);
-    background: rgba(216, 170, 85, 0.045);
-  }
-
-  .paste-history-restore {
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd8d5;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .paste-history-restore span {
-    color: #8fd8cf;
-    font-size: 8px;
-    font-weight: 900;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .paste-history-chip.reply .paste-history-restore span {
-    color: #d8c385;
-  }
-
-  .paste-history-restore strong {
-    min-width: 0;
-    overflow: hidden;
-    color: #dfe8e5;
-    font-size: 10px;
-    font-weight: 780;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .paste-history-copy,
-  .paste-history-clear {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    color: #96a39f;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .paste-history-clear {
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .paste-history-restore:hover,
-  .paste-history-restore:focus-visible,
-  .paste-history-copy:hover,
-  .paste-history-copy:focus-visible,
-  .paste-history-clear:hover,
-  .paste-history-clear:focus-visible {
-    color: #e8f6f2;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .paste-cleanup-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(150px, 1fr) minmax(150px, 1fr);
-    gap: 9px;
-    min-height: 0;
-  }
-
-  .paste-cleanup-grid label {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 5px;
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .paste-cleanup-grid label > span,
-  .paste-cleanup-footer span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 800;
-    text-transform: uppercase;
-  }
-
-  .paste-cleanup-textarea {
-    width: 100%;
-    min-width: 0;
-    min-height: 0;
-    padding: 10px;
-    resize: none;
-    color: #e7ecea;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 8px;
-    outline: 0;
-    background: rgba(0, 0, 0, 0.18);
-    font: 12px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-  }
-
-  .paste-cleanup-textarea:focus {
-    border-color: rgba(92, 226, 207, 0.42);
-    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.08);
-  }
-
-  .paste-cleanup-footer {
-    justify-content: space-between;
   }
 
   .run-ingest-strip {
