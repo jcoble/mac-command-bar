@@ -539,3 +539,57 @@ canvas {
   text-decoration: none;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------------
+ * .icon-button — shared square icon-button chrome for the activity
+ * sidebar's project header (the +/search/remove controls now rendered by
+ * `ActivityProjectControls.svelte`). The base previously lived in the
+ * `+page.svelte` `<style>`, split across the grouped `select, .scan-button,
+ * .icon-button, .form-button` base/focus rules; it lives here once as a global
+ * so the extracted component shares it without duplication. The page keeps its
+ * own `select` base (still used by the terminal-app picker). The narrow
+ * `@container` arm queries the page-owned `.sidebar` (container-type:
+ * inline-size). Moved verbatim from the `+page.svelte` `<style>` block.
+ * ------------------------------------------------------------------ */
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-width: 0;
+  padding: 0;
+  color: var(--color-text-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: var(--color-text);
+  background: var(--color-live-bg);
+}
+
+.icon-button:focus-visible {
+  border-color: var(--color-focus);
+  box-shadow: var(--focus-ring);
+}
+
+.icon-button.danger {
+  width: 28px;
+  height: 28px;
+  color: var(--color-bad);
+  border-radius: var(--radius-md);
+}
+
+.icon-button.danger:hover {
+  background: var(--color-bad-bg);
+}
+
+@container (max-width: 330px) {
+  .icon-button {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+  }
+}

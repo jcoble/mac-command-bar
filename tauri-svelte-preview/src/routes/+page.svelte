@@ -54,6 +54,7 @@
   import ActivityClipboardPanel from '$lib/components/panels/ActivityClipboardPanel.svelte';
   import ActivityWorktreesPanel from '$lib/components/panels/ActivityWorktreesPanel.svelte';
   import ActivityGitPanel from '$lib/components/panels/ActivityGitPanel.svelte';
+  import ActivityProjectControls from '$lib/components/panels/ActivityProjectControls.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import HiddenDockRail from '$lib/components/chrome/HiddenDockRail.svelte';
@@ -14287,11 +14288,6 @@
     projectFormError = '';
   }
 
-  function saveProject(event: SubmitEvent) {
-    event.preventDefault();
-    void addCustomProjectRoot(projectNameInput, projectPathInput, true);
-  }
-
   function projectRootValidationKey(path: string) {
     return normalizeProjectPath(path);
   }
@@ -15204,82 +15200,35 @@
       </div>
     </div>
 
-    <div class="project-controls">
-      <div class="project-row">
-        <select bind:value={projectStore.selectedID} onchange={handleProjectChange} aria-label="Project">
-          {#each projectOptions as project}
-            <option value={project.id}>{project.name}</option>
-          {/each}
-        </select>
-        <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot || projectRootValidating} onclick={chooseProjectRoot}>
-          <Plus size={16} strokeWidth={2} />
-        </button>
-        <button class="icon-button quick-open-trigger" type="button" aria-label="Open source file" title="Open source file" onclick={openQuickOpen}>
-          <Search size={16} strokeWidth={1.9} />
-        </button>
-        <button
-          class="scan-button"
-          type="button"
-          aria-label={files.scan.scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-          title={files.scan.scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-          onclick={files.scan.scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
-        >
-          {#if files.scan.scanning}
-            <X size={15} strokeWidth={2} />
-          {:else}
-            <RefreshCw size={15} strokeWidth={1.8} />
-          {/if}
-          <span>{files.scan.scanning ? 'Stop' : `Scan ${expandedSourceScanLimitShortLabel}`}</span>
-        </button>
-      </div>
-
-      <div class="project-path-row">
-        <span class="project-path" title={selectedProject.path}>{selectedProject.path}</span>
-        {#if selectedProjectIsCustom}
-          <button class="icon-button danger" type="button" aria-label="Remove project root" title="Remove project root" onclick={removeSelectedProject}>
-            <Trash2 size={14} strokeWidth={1.9} />
-          </button>
-        {/if}
-      </div>
-      <div class="project-setup-row" title={projectSetupNoticeTitle()} aria-live={files.scan.scanning ? 'polite' : 'off'}>
-        {#each projectSetupNoticeText().split(' · ') as setupSegment, setupIndex (setupIndex)}
-          <Chip size="xs" tone="muted">{setupSegment}</Chip>
-        {/each}
-      </div>
-
-      {#if files.scan.scanning && files.scan.progress}
-        <div class="scan-progress" aria-live="polite" data-progress-event={sourceScanProgressEventName}>
-          <span>{files.scan.progress.matchedFiles.toLocaleString()} files</span>
-          <span>{files.scan.progress.visitedEntries.toLocaleString()} entries checked</span>
-        </div>
-      {/if}
-
-      {#if addingProject}
-        <form class="project-form" onsubmit={saveProject}>
-          <label>
-            <span>Name</span>
-            <input bind:value={projectNameInput} autocomplete="off" />
-          </label>
-          <label>
-            <span>Path</span>
-            <input bind:value={projectPathInput} autocomplete="off" placeholder="/Users/blackcolours/dev/work/project" />
-          </label>
-          {#if projectFormError}
-            <p class="project-form-error">{projectFormError}</p>
-          {/if}
-          <div class="form-actions">
-            <button class="form-button" type="button" disabled={projectRootValidating} onclick={cancelAddingProject}>
-              <X size={14} strokeWidth={2} />
-              <span>Cancel</span>
-            </button>
-            <button class="form-button primary" type="submit" disabled={projectRootValidating}>
-              <Save size={14} strokeWidth={2} />
-              <span>{projectRootValidating ? 'Checking' : 'Save'}</span>
-            </button>
-          </div>
-        </form>
-      {/if}
-    </div>
+    <ActivityProjectControls
+      bind:selectedID={projectStore.selectedID}
+      {projectOptions}
+      {selectedProject}
+      {selectedProjectIsCustom}
+      scanning={files.scan.scanning}
+      scanProgress={files.scan.progress}
+      {expandedSourceScanLimit}
+      {expandedSourceScanLimitShortLabel}
+      {sourceScanProgressEventName}
+      setupNoticeText={projectSetupNoticeText()}
+      setupNoticeTitle={projectSetupNoticeTitle()}
+      {addingProject}
+      {projectFormError}
+      {projectRootValidating}
+      {choosingProjectRoot}
+      bind:nameInput={projectNameInput}
+      bind:pathInput={projectPathInput}
+      onSelectProject={handleProjectChange}
+      onRemoveProject={removeSelectedProject}
+      onChooseProjectRoot={chooseProjectRoot}
+      onOpenQuickOpen={openQuickOpen}
+      onToggleScan={() =>
+        files.scan.scanning
+          ? cancelSourceScan()
+          : scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
+      onSubmitProject={(name, path) => void addCustomProjectRoot(name, path, true)}
+      onCancelAddingProject={cancelAddingProject}
+    />
 
     {#if dock.activityMode === 'files'}
       <div class="source-browser-stack">
@@ -17396,13 +17345,6 @@
     font-size: 22px;
   }
 
-  .project-controls {
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    margin-bottom: 12px;
-  }
-
   .source-browser-stack {
     display: flex;
     flex-direction: column;
@@ -18685,211 +18627,21 @@
     font-size: 10px;
   }
 
-  .project-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 36px 36px 96px;
-    align-items: center;
-    gap: var(--space-2);
-    min-width: 0;
-    max-width: 100%;
-    margin-bottom: var(--space-3);
-  }
-
-  select,
-  .scan-button,
-  .icon-button,
-  .form-button {
+  select {
     height: 36px;
+    width: 100%;
     min-width: 0;
+    padding: 0 var(--space-3);
     color: var(--color-text);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
+    outline: 0;
     background: var(--color-surface);
   }
 
-  select {
-    width: 100%;
-    padding: 0 var(--space-3);
-    outline: 0;
-  }
-
-  select:focus,
-  .scan-button:focus-visible,
-  .icon-button:focus-visible,
-  .form-button:focus-visible {
+  select:focus {
     border-color: var(--color-focus);
     box-shadow: var(--focus-ring);
-  }
-
-  .scan-button {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr);
-    align-items: center;
-    gap: var(--space-2);
-    padding: 0 var(--space-3);
-    color: var(--color-text-2);
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-    cursor: pointer;
-  }
-
-  .scan-button:disabled {
-    cursor: default;
-    opacity: 0.58;
-  }
-
-  .scan-button span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .icon-button {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    padding: 0;
-    color: var(--color-text-2);
-    cursor: pointer;
-  }
-
-  .icon-button:hover {
-    color: var(--color-text);
-    background: var(--color-live-bg);
-  }
-
-  .icon-button.danger {
-    width: 28px;
-    height: 28px;
-    color: var(--color-bad);
-    border-radius: var(--radius-md);
-  }
-
-  .icon-button.danger:hover {
-    background: var(--color-bad-bg);
-  }
-
-  .project-path-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: var(--space-2);
-    min-height: 28px;
-    margin-bottom: var(--space-1);
-    color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-  }
-
-  .project-path {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .project-setup-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-1);
-    min-height: 18px;
-    margin: var(--space-1) 0 var(--space-2);
-    line-height: 1.25;
-  }
-
-  .scan-progress {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1) var(--space-3);
-    min-height: 18px;
-    margin: var(--space-1) 0;
-    color: var(--color-live);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-  }
-
-  .scan-progress span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .project-form {
-    display: grid;
-    gap: 8px;
-    padding: 10px;
-    margin-top: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .project-form label {
-    display: grid;
-    gap: 5px;
-  }
-
-  .project-form label span {
-    color: #9aa5a1;
-    font-size: 11px;
-    font-weight: 760;
-  }
-
-  .project-form input {
-    height: 32px;
-    padding: 0 9px;
-    color: #f3f5f4;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    outline: 0;
-    background: rgba(0, 0, 0, 0.18);
-  }
-
-  .project-form input:focus {
-    border-color: rgba(92, 226, 207, 0.58);
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .project-form-error {
-    margin: 0;
-    color: #f1a9a0;
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .form-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-
-  .form-button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr);
-    align-items: center;
-    gap: 6px;
-    padding: 0 9px;
-    color: #cbd3d1;
-    font-size: 12px;
-    font-weight: 760;
-    cursor: pointer;
-  }
-
-  .form-button.primary {
-    color: #071b18;
-    border-color: rgba(111, 223, 207, 0.72);
-    background: #6fdfcf;
-  }
-
-  .form-button span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .search-box {
@@ -18981,54 +18733,10 @@
       font-size: 14px;
     }
 
-    .project-controls {
-      margin-bottom: 8px;
-    }
-
-    .project-row {
-      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;
-      gap: 5px;
-      margin-bottom: 6px;
-    }
-
-    select,
-    .scan-button,
-    .icon-button,
-    .form-button {
-      height: 30px;
-      border-radius: 8px;
-    }
-
     select {
+      height: 30px;
       padding: 0 8px;
-    }
-
-    .icon-button {
-      width: 30px;
-    }
-
-    .scan-button {
-      grid-template-columns: 1fr;
-      place-items: center;
-      gap: 0;
-      padding: 0;
-    }
-
-    .scan-button span {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
-    }
-
-    .project-path-row,
-    .project-setup-row {
-      font-size: 9px;
+      border-radius: 8px;
     }
 
     .search-box {
