@@ -2,8 +2,7 @@
   /**
    * EditorTopbarViewMenu.svelte — the editor-topbar "View" dropdown.
    *
-   * The richer twin of WorkbenchControls.svelte (workbench mode): same
-   * `.view-menu*` chrome, but four sections — (1) workspace layout presets +
+   * The single View affordance for the workbench. Four sections — (1) workspace layout presets +
    * save/reset override + focus/restore/compact, (2) side-pane position +
    * collapse-to-rail, (3) context-card placement/mode + collapse/hide, and
    * (4) the dock-panel manager (per-panel visibility + move-to-group rows) plus
@@ -22,10 +21,11 @@
    *
    * The shared menu chrome (`.view-menu`, `.view-menu-anchor`, `.view-menu-section`,
    * `.view-menu-button-grid(.two)`, `.view-menu-wide-button`, grid-button states,
-   * and `.view-terminal-picker > span`) is GLOBAL in `src/app.css` because it is
-   * shared with WorkbenchControls — a scoped copy here would hash its selectors and
-   * break both surfaces. Only the dock-panel-manager rules and the terminal-picker
-   * layout (which were page-scoped) move into the scoped `<style>` below.
+   * and `.view-terminal-picker > span`) is GLOBAL in `src/app.css` because the
+   * `.view-menu-anchor`/`.view-menu-button` toggle stays inline in `+page.svelte`
+   * — a scoped copy here would hash its selectors and not reach that inline markup.
+   * Only the dock-panel-manager rules and the terminal-picker layout (which were
+   * page-scoped) move into the scoped `<style>` below.
    *
    * The dock-panel-manager rows call `dockGroupIDForPanel(dockLayout, panelID)` and
    * `dockPanelMoveTargets(panelID)` as fn props; passing `dockLayout` (= the rune
@@ -41,8 +41,7 @@
 
   /**
    * Minimal shapes the menu reads. The page's full definitions live inline in
-   * `+page.svelte` (not exported), so — like WorkbenchControls' own
-   * `WorkbenchLayoutPreset` — this component restates the fields it renders.
+   * `+page.svelte` (not exported), so this component restates the fields it renders.
    */
   interface ViewMenuLayoutPreset {
     id: string;
@@ -455,10 +454,10 @@
   /*
    * Page-scoped CSS moved verbatim from `+page.svelte`'s `<style>` (the only
    * View-menu CSS that was NOT already global). The shared `.view-menu*` chrome
-   * and `.view-terminal-picker > span` stay GLOBAL in `src/app.css` (they are
-   * shared with WorkbenchControls); only this component renders the
-   * dock-panel-manager rows and the terminal-picker layout, so these are safe
-   * to scope here.
+   * and `.view-terminal-picker > span` stay GLOBAL in `src/app.css` (the
+   * editor-topbar's `.view-menu-anchor`/`.view-menu-button` toggle stays inline
+   * in the page); only this component renders the dock-panel-manager rows and the
+   * terminal-picker layout, so these are safe to scope here.
    */
   .dock-panel-manager-list {
     display: grid;

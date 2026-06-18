@@ -274,16 +274,15 @@ canvas {
 }
 
 /* ------------------------------------------------------------------
- * View-menu + hidden-dock-rail base chrome — shared across two surfaces.
+ * View-menu + hidden-dock-rail base chrome — shared across components.
  *
- * These rules are used by BOTH the workbench controls (extracted into
- * `WorkbenchControls.svelte` / `HiddenDockRail.svelte`) AND the editor-topbar
- * View menu + hidden-dock rail, whose markup stays inline in `+page.svelte`.
- * A scoped copy in either component would hash its selectors and so would not
- * reach the other surface's elements, so the shared base lives here as global
- * rules. The workbench-only modifiers (`.workbench-global-controls`,
- * `.workbench-view-menu`, `.workbench-hidden-dock-panel-rail`) scope into the
- * components; the editor-topbar markup keeps its own inline placement.
+ * These rules are used by the editor-topbar View menu (`EditorTopbarViewMenu`,
+ * the single View affordance) and the hidden-dock rail (`HiddenDockRail`); the
+ * editor-topbar's `.view-menu-anchor`/`.view-menu-button` markup stays inline
+ * in `+page.svelte`. A scoped copy in a component would hash its selectors and
+ * so would not reach the inline-page elements, so the shared base lives here as
+ * global rules. The only workbench-specific modifier still in use is
+ * `.workbench-hidden-dock-panel-rail`, scoped inside `HiddenDockRail`.
  * Moved verbatim from the `+page.svelte` `<style>` block.
  * ------------------------------------------------------------------ */
 .view-menu-anchor {

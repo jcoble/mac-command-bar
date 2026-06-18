@@ -59,7 +59,6 @@
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import HiddenDockRail from '$lib/components/chrome/HiddenDockRail.svelte';
-  import WorkbenchControls from '$lib/components/chrome/WorkbenchControls.svelte';
   import EditorTopbarViewMenu from '$lib/components/chrome/EditorTopbarViewMenu.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
@@ -16614,18 +16613,6 @@
       panelIDs={hiddenDockPanelIDs()}
       {dockPanelLabel}
       onRestore={restoreHiddenDockPanel}
-    />
-  {/if}
-
-  {#if sourceDockviewWorkbenchEnabled}
-    <WorkbenchControls
-      presets={sourceLayoutPresets}
-      activePreset={dock.layoutPreset}
-      bind:viewMenuOpen
-      onToggleMenu={toggleViewMenu}
-      onApplyPreset={applySourceLayoutPreset}
-      onResetLayout={resetSourceDockLayout}
-      onCloseMenu={closeViewMenu}
     />
   {/if}
 </main>
