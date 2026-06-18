@@ -11553,6 +11553,26 @@
     return dockGroupLabel(groupID, panelID);
   }
 
+  // Dockview emits a trailing onDidLayoutChange AFTER an authored syncLayout
+  // settles. Re-deriving dock.layout from the live group rects at that moment
+  // (syncSourceDockLayoutFromWorkbenchGroups) transiently misclassifies the
+  // freshly-split context+insights group as the center group and folds it into
+  // the editor/terminal group — surfacing the terminal and dropping insights
+  // when the user toggles "Show editor insights". An authored apply already
+  // sets dock.layout, so the read-back is both redundant and harmful while one
+  // is in flight; suppress it briefly (the window covers the trailing emit).
+  let applyingAuthoredDockLayout = false;
+  let applyingAuthoredDockLayoutTimer = 0;
+
+  function suppressDockReadbackDuringAuthoredApply() {
+    applyingAuthoredDockLayout = true;
+    if (applyingAuthoredDockLayoutTimer) window.clearTimeout(applyingAuthoredDockLayoutTimer);
+    applyingAuthoredDockLayoutTimer = window.setTimeout(() => {
+      applyingAuthoredDockLayout = false;
+      applyingAuthoredDockLayoutTimer = 0;
+    }, 160);
+  }
+
   function applySourceDockLayout(layout: SourceDockLayout) {
     const normalizedLayout = normalizeSourceDockLayout(layout);
     dock.layout = normalizedLayout;
@@ -11569,6 +11589,7 @@
   function syncSourceDockviewWorkbenchLayout(layout: SourceDockLayout) {
     if (!sourceDockviewWorkbenchWorkspace) return;
 
+    suppressDockReadbackDuringAuthoredApply();
     sourceDockviewWorkbenchWorkspace.syncLayout(layout);
     scheduleSourceDockviewPanelElementSync();
     if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
@@ -12318,7 +12339,7 @@
         storedLayout: loadStoredSourceDockviewLayout(sourceDockviewWorkbenchStorageKey),
         onDidLayoutChange: (layout) => {
           persistSourceDockviewLayout(sourceDockviewWorkbenchStorageKey, layout);
-          syncSourceDockLayoutFromWorkbenchGroups();
+          if (!applyingAuthoredDockLayout) syncSourceDockLayoutFromWorkbenchGroups();
           if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
         },
         onDidPanelClose: (panelID) => {

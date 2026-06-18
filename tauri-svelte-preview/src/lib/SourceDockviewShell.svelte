@@ -137,8 +137,11 @@
     --dv-tab-divider-color: transparent;
     --dv-paneview-header-border-color: transparent;
     --dv-paneview-active-outline-color: var(--color-accent);
-    --dv-drag-over-background-color: var(--color-live-bg);
-    --dv-drag-over-border-color: var(--color-accent);
+    /* subtle neutral drop wash — the teal accent/live-bg here painted a
+       loud green flash across the editor on sash resize (pointer dnd
+       momentarily registers a drag-over during a splitter drag) */
+    --dv-drag-over-background-color: color-mix(in srgb, var(--color-focus) 10%, transparent);
+    --dv-drag-over-border-color: var(--color-focus);
     --dv-floating-box-shadow: var(--shadow-lg);
 
     /* spacious, comfortable tabs */

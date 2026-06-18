@@ -591,10 +591,136 @@
    */
   /* ── Panel shell ────────────────────────────────────────────── */
   .source-intelligence-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     border-left: 1px solid var(--color-border);
     background: var(--color-bg);
     color: var(--color-text);
   }
+
+  /* ── Establishing `display` restoration ────────────────────────
+   * Every structural container below carries gap / grid-template /
+   * place-items, but its establishing `display` (+ base grid-template /
+   * align-items) lived in a page-scoped BASE block. When this panel was
+   * extracted (17a9d4a) only the `.source-intelligence-panel <desc>`
+   * OVERRIDE layer moved here; the base never did, and because the
+   * `<aside>` is teleported into Dockview (its own scope) the page copy
+   * could not reach it. With no `display` the containers fell back to
+   * block flow and their rows stacked on top of each other (the broken
+   * insights render). Restored verbatim from the pre-extraction page CSS
+   * (the override-layer props — the 16px/14px templates, flex-wrap — are
+   * already declared on these selectors below, so this block is purely
+   * additive: no property is declared twice). */
+  .intelligence-tabs { display: flex; }
+  .intelligence-tab-static {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    align-items: center;
+    flex: 1 1 auto;
+  }
+  .git-diff-panel {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .git-command-drawer summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+  .git-command-drawer summary::-webkit-details-marker,
+  .git-commit-detail-drawer summary::-webkit-details-marker {
+    display: none;
+  }
+  .git-controls { display: grid; flex: 0 0 auto; }
+  .git-action-row,
+  .git-remote-row,
+  .git-commit-row {
+    display: grid;
+  }
+  .git-action-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .git-remote-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .git-commit-row { grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; }
+  .git-action-button {
+    display: grid;
+    grid-template-columns: 13px minmax(0, auto);
+    align-items: center;
+    justify-content: center;
+  }
+  .git-status-list {
+    display: grid;
+    grid-auto-rows: min-content;
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .git-status-group { display: grid; }
+  .git-status-group-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+  }
+  .git-status-row { display: grid; align-items: center; }
+  .git-history-panel { display: grid; flex: 0 0 auto; min-height: 0; }
+  .git-graph-summary-strip { display: flex; align-items: center; }
+  .git-branch-health-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  }
+  .git-branch-health-chip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+  .git-task-trail { display: flex; align-items: center; }
+  .git-task-source-map { display: grid; }
+  .git-task-source-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+  }
+  .git-task-source-row button { display: grid; place-items: center; }
+  .git-commit-detail-drawer { display: grid; }
+  .git-commit-detail-summary {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) minmax(0, 86px);
+    align-items: center;
+  }
+  .git-commit-detail-summary-main { display: grid; }
+  .git-commit-detail-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+  .git-commit-detail-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+  }
+  .git-commit-detail-facts span { display: grid; }
+  .git-commit-detail-actions { display: inline-flex; justify-content: flex-end; }
+  .git-history-list {
+    display: grid;
+    grid-auto-rows: min-content;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .git-history-row { display: grid; align-items: center; }
+  .git-history-main { display: grid; }
+  .git-history-meta { display: grid; justify-items: end; }
+  .git-history-badges { display: inline-flex; justify-content: flex-end; }
+  .git-history-actions { display: inline-flex; justify-content: flex-end; }
+  .git-history-actions button,
+  .git-commit-detail-actions button {
+    display: grid;
+    place-items: center;
+  }
+  .intelligence-empty { display: grid; place-items: center; }
 
   /* ── Panel header — static Git label (lists removed) ─────────── */
   .intelligence-tabs {
