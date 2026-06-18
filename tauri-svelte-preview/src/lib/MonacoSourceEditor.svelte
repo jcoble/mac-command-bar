@@ -1816,7 +1816,7 @@
 			},
 			codeLens: true,
 			smoothScrolling: true,
-			stickyScroll: { enabled: false },
+			stickyScroll: { enabled: true },
 			tabSize: 4,
 			theme: sourcePreviewAppearance.theme.id,
 			wordWrap: "off",
