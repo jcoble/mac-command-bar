@@ -17,7 +17,6 @@
     History,
     MoreHorizontal,
     Network,
-    PanelBottom,
     PanelLeftOpen,
     Plus,
     RefreshCw,
@@ -48,6 +47,7 @@
   import Chip from '$lib/components/Chip.svelte';
   import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
   import ActivityClipboardPanel from '$lib/components/panels/ActivityClipboardPanel.svelte';
+  import ActivityWorktreesPanel from '$lib/components/panels/ActivityWorktreesPanel.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
@@ -17093,241 +17093,38 @@
             {#if filteredProjectWorktrees.length === 0}
               <div class="activity-empty">No worktrees</div>
             {:else}
-              <div class="activity-worktree-runbook" aria-label="Worktree cleanup runbook controls">
-                <div
-                  class="worktree-runbook-strip"
-                  aria-label="Worktree cleanup runbook summary"
-                  title={projectWorktreeCleanupRunbook.headline}
-                >
-                  <span class="worktree-runbook-chip safe">
-                    <strong>{projectWorktreeCleanupRunbook.counts.safeRemovable}</strong>
-                    <span>safe</span>
-                  </span>
-                  <span class="worktree-runbook-chip backup">
-                    <strong>{projectWorktreeCleanupRunbook.counts.backupRequired}</strong>
-                    <span>backup</span>
-                  </span>
-                  <span class="worktree-runbook-chip blocked">
-                    <strong>{projectWorktreeCleanupRunbook.counts.blocked}</strong>
-                    <span>blocked</span>
-                  </span>
-                  <span class="worktree-runbook-chip saved">
-                    <strong>{projectWorktreeCleanupRunbook.counts.savedWorkspaceReview}</strong>
-                    <span>saved</span>
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  aria-label="Copy worktree cleanup runbook"
-                  title="Copy cleanup runbook"
-                  onclick={copyProjectWorktreeCleanupRunbook}
-                >
-                  <Braces size={12} strokeWidth={2} />
-                </button>
-              </div>
-              {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
-                {@const safety = projectWorktreeSafety(worktree)}
-                {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
-                {@const decisionLane = worktreeDecisionLane(safety)}
-                {@const primaryAction = projectWorktreePrimaryAction(worktree)}
-                {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
-                {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
-                {@const ownerChips = worktreeOwnerChips(worktree, safety)}
-                <div
-                  class="activity-worktree-row"
-                  class:blocked={eligibilityKind === 'blocked'}
-                  class:protected={eligibilityKind === 'protected'}
-                  class:ready={eligibilityKind === 'ready'}
-                  title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
-                  oncontextmenu={(event) => {
-                    event.preventDefault();
-                    openWorktreeRowActionMenu(worktree, 'activity');
-                  }}
-                >
-                  <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
-                  <div class="activity-row-main worktree-row-main">
-                    <strong>
-                      <span>{worktree.branch}</span>
-                      {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
-                        <a
-                          class="git-task-link"
-                          href={gitTaskUrl(worktree.taskID) ?? ''}
-                          target="_blank"
-                          rel="noreferrer"
-                          aria-label="Open worktree task"
-                        >
-                          {worktree.taskID}
-                        </a>
-                      {/if}
-                    </strong>
-                    <small class="worktree-safety-line">
-                      <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
-                        {decisionLane.label}
-                      </span>
-                      <span>{safety.reason}</span>
-                      {#if safety.activeSessionCount > 0}
-                        <span>
-                          {safety.activeSessionCount}
-                          {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
-                        </span>
-                      {/if}
-                      <span>{projectWorktreeActivityLabel(worktree)}</span>
-                    </small>
-                    <div class="worktree-owner-strip" aria-label="Worktree session ownership">
-                      {#each ownerChips as chip (chip.id)}
-                        <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
-                      {/each}
-                    </div>
-                    <small class="worktree-plan-line" title={cleanupPlan.explanation}>
-                      <span class={`worktree-plan-lane ${cleanupPlan.lane}`}>
-                        {worktreeCleanupPlanLabel(cleanupPlan)}
-                      </span>
-                      <span>{cleanupPlan.explanation}</span>
-                    </small>
-                    <small class="worktree-recommendation">{safety.recommendation}</small>
-                    {#if latestSnapshot}
-                      <button
-                        class="worktree-snapshot-chip"
-                        type="button"
-                        aria-label="Restore latest saved workspace for worktree"
-                        title={worktreeWorkspaceSnapshotTitle(worktree)}
-                        onclick={() => restoreConversationWorkspaceSnapshot(latestSnapshot)}
-                      >
-                        <History size={11} strokeWidth={2} />
-                        <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
-                      </button>
-                    {/if}
-                  </div>
-                  <div class="activity-row-actions worktree-activity-actions row-action-menu-anchor" aria-label="Worktree actions">
-                    <button
-                      type="button"
-                      aria-label="Worktree actions"
-                      aria-haspopup="menu"
-                      aria-expanded={worktreeRowActionMenuOpen(worktree, 'activity')}
-                      title="Worktree actions"
-                      onclick={() => toggleWorktreeRowActionMenu(worktree, 'activity')}
-                    >
-                      <MoreHorizontal size={13} strokeWidth={2} />
-                    </button>
-                    {#if worktreeRowActionMenuOpen(worktree, 'activity')}
-                      <div class="row-action-menu" role="menu" aria-label="Worktree actions">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Copy worktree cleanup plan"
-                          title="Copy cleanup plan"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            copyWorktreeCleanupPlan(worktree);
-                          }}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                          <span>Copy cleanup plan</span>
-                        </button>
-                        <button
-                          class={`worktree-primary-action ${primaryAction.kind}`}
-                          type="button"
-                          role="menuitem"
-                          aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
-                          title={primaryAction.title}
-                          disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            runWorktreePrimaryAction(worktree);
-                          }}
-                        >
-                          {#if primaryAction.kind === 'cleanup'}
-                            <Trash2 size={12} strokeWidth={2} />
-                          {:else if primaryAction.kind === 'backup'}
-                            <Save size={12} strokeWidth={2} />
-                          {:else}
-                            <History size={12} strokeWidth={2} />
-                          {/if}
-                          <span>{primaryAction.label}</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Open worktree in source browser"
-                          title="Open worktree in source browser"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            openWorktreeInSourceBrowser(worktree);
-                          }}
-                        >
-                          <FolderOpen size={12} strokeWidth={2} />
-                          <span>Open in source browser</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Copy worktree path"
-                          title="Copy worktree path"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            copyActivityCommand(worktree.path, 'Worktree path copied');
-                          }}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                          <span>Copy path</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Open worktree path"
-                          title="Open worktree path"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            openActivityPath(worktree.path);
-                          }}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                          <span>Open path</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Open worktree in terminal"
-                          title="Open worktree in terminal"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            openActivityTerminalPath(worktree.path);
-                          }}
-                        >
-                          <Terminal size={12} strokeWidth={2} />
-                          <span>Open terminal</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Open worktree in embedded terminal"
-                          title="Open worktree in embedded terminal"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            openPathEmbeddedTerminal(worktree.path);
-                          }}
-                        >
-                          <PanelBottom size={12} strokeWidth={2} />
-                          <span>Open embedded terminal</span>
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-label="Reveal worktree path"
-                          title="Reveal worktree path"
-                          onclick={() => {
-                            closeWorktreeRowActionMenu();
-                            revealActivityPath(worktree.path);
-                          }}
-                        >
-                          <FolderSearch size={12} strokeWidth={2} />
-                          <span>Reveal path</span>
-                        </button>
-                      </div>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
+              <ActivityWorktreesPanel
+                worktrees={filteredProjectWorktrees}
+                cleanupRunbook={projectWorktreeCleanupRunbook}
+                fileActionBusy={fileActionBusy}
+                worktreeSafety={projectWorktreeSafety}
+                cleanupPlan={projectWorktreeCleanupPlan}
+                decisionLane={worktreeDecisionLane}
+                primaryAction={projectWorktreePrimaryAction}
+                eligibilityKind={projectWorktreeEligibilityKind}
+                latestSnapshot={latestWorktreeWorkspaceSnapshot}
+                ownerChips={worktreeOwnerChips}
+                gitTaskUrl={gitTaskUrl}
+                activityLabel={projectWorktreeActivityLabel}
+                cleanupPlanLabel={worktreeCleanupPlanLabel}
+                cleanupPlanReport={formatWorktreeCleanupPlanReport}
+                snapshotTitle={worktreeWorkspaceSnapshotTitle}
+                snapshotLabel={worktreeWorkspaceSnapshotLabel}
+                rowActionMenuOpen={(worktree) => worktreeRowActionMenuOpen(worktree, 'activity')}
+                onCopyRunbook={copyProjectWorktreeCleanupRunbook}
+                onRowContextMenu={(worktree) => openWorktreeRowActionMenu(worktree, 'activity')}
+                onToggleRowActionMenu={(worktree) => toggleWorktreeRowActionMenu(worktree, 'activity')}
+                onCloseRowActionMenu={closeWorktreeRowActionMenu}
+                onCopyCleanupPlan={copyWorktreeCleanupPlan}
+                onRunPrimaryAction={runWorktreePrimaryAction}
+                onOpenInSourceBrowser={openWorktreeInSourceBrowser}
+                onCopyPath={(worktree) => copyActivityCommand(worktree.path, 'Worktree path copied')}
+                onOpenPath={(worktree) => openActivityPath(worktree.path)}
+                onOpenTerminal={(worktree) => openActivityTerminalPath(worktree.path)}
+                onOpenEmbeddedTerminal={(worktree) => openPathEmbeddedTerminal(worktree.path)}
+                onRevealPath={(worktree) => revealActivityPath(worktree.path)}
+                onRestoreSnapshot={restoreConversationWorkspaceSnapshot}
+              />
             {/if}
           </div>
         {:else if sourceActivityMode === 'git'}
@@ -20779,7 +20576,6 @@
 
   .activity-session-row,
   .activity-runtime-row,
-  .activity-worktree-row,
   .activity-repo-row,
   .activity-run-row,
   .activity-commit-row {
@@ -20797,10 +20593,6 @@
 
   .activity-session-row,
   .activity-runtime-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .activity-worktree-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
@@ -20867,20 +20659,6 @@
     flex: 0 0 auto;
   }
 
-  .activity-worktree-row {
-    align-items: start;
-    min-height: 58px;
-    padding: 7px;
-  }
-
-  .activity-worktree-row .activity-row-actions {
-    grid-column: 3;
-    align-self: start;
-    justify-content: flex-end;
-    max-width: 28px;
-    overflow: visible;
-  }
-
   .activity-commit-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
@@ -20894,18 +20672,9 @@
     gap: 7px;
   }
 
-  .activity-worktree-row.blocked,
   .activity-run-row.bad,
   .activity-repo-row.dirty {
     background: rgba(216, 170, 85, 0.09);
-  }
-
-  .activity-worktree-row.protected {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .activity-worktree-row.ready {
-    background: rgba(92, 226, 207, 0.06);
   }
 
   .activity-run-row.attention {
@@ -21527,10 +21296,6 @@
     min-width: 0;
   }
 
-  .worktree-row-main {
-    gap: 2px;
-  }
-
   .activity-row-main strong,
   .activity-row-main small,
   .activity-repo-row small {
@@ -21546,199 +21311,11 @@
     font-weight: 790;
   }
 
-  .worktree-row-main strong {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .worktree-row-main strong > span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .activity-row-main small,
   .activity-repo-row small {
     color: #8d9995;
     font-size: 10px;
     font-weight: 720;
-  }
-
-  .worktree-safety-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px 7px;
-    line-height: 1.25;
-  }
-
-  .worktree-safety-line span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-
-  .worktree-owner-chip {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    max-width: 96px;
-    height: 17px;
-    padding: 0 6px;
-    overflow: hidden;
-    color: #aeb9b6;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 8px;
-    font-weight: 850;
-    line-height: 17px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-owner-chip.live {
-    color: #071b18;
-    border-color: rgba(92, 226, 207, 0.42);
-    background: #67dfd1;
-  }
-
-  .worktree-owner-chip.saved {
-    color: #8fe7dc;
-    border-color: rgba(92, 226, 207, 0.18);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .worktree-owner-chip.warning {
-    color: #e8c47d;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-owner-chip.muted {
-    color: #8d9995;
-  }
-
-
-  .activity-worktree-runbook {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 26px;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    padding: 5px 6px;
-    border: 1px solid rgba(92, 226, 207, 0.14);
-    border-radius: 9px;
-    background: rgba(92, 226, 207, 0.045);
-  }
-
-  .activity-worktree-runbook button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    color: #9feadf;
-    border: 1px solid rgba(92, 226, 207, 0.18);
-    border-radius: 7px;
-    background: rgba(8, 12, 11, 0.44);
-    cursor: pointer;
-  }
-
-  .activity-worktree-runbook button:hover {
-    color: #071b18;
-    border-color: rgba(92, 226, 207, 0.55);
-    background: #67dfd1;
-  }
-
-
-  .worktree-snapshot-chip {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 4px;
-    justify-self: start;
-    max-width: 126px;
-    height: 18px;
-    min-width: 0;
-    padding: 0 6px;
-    color: #8fe7dc;
-    border: 1px solid rgba(92, 226, 207, 0.18);
-    border-radius: 999px;
-    background: rgba(92, 226, 207, 0.08);
-    font-size: 8px;
-    font-weight: 820;
-    cursor: pointer;
-  }
-
-  .worktree-snapshot-chip span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-snapshot-chip:hover,
-  .worktree-snapshot-chip:focus-visible {
-    color: #eafaf7;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.14);
-  }
-
-
-  .worktree-plan-lane {
-    display: inline-grid;
-    flex: 0 0 auto;
-    place-items: center;
-    height: 17px;
-    min-width: 42px;
-    padding: 0 6px;
-    border: 1px solid rgba(255, 255, 255, 0.085);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 8px;
-    font-weight: 880;
-    letter-spacing: 0;
-    line-height: 17px;
-    text-transform: uppercase;
-  }
-
-  .worktree-plan-lane.safe-remove {
-    color: #071b18;
-    border-color: rgba(92, 226, 207, 0.42);
-    background: #67dfd1;
-  }
-
-  .worktree-plan-lane.backup-first,
-  .worktree-plan-lane.review-first,
-  .worktree-plan-lane.review-prunable,
-  .worktree-plan-lane.review-saved-workspace,
-  .worktree-plan-lane.review-confirmation {
-    color: #e8c47d;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-plan-lane.blocked-active-session,
-  .worktree-plan-lane.blocked-locked {
-    color: #ffbd9f;
-    border-color: rgba(255, 142, 96, 0.24);
-    background: rgba(255, 142, 96, 0.09);
-  }
-
-  .worktree-plan-lane.blocked-protected,
-  .worktree-plan-lane.keep {
-    color: #aeb9b6;
-  }
-
-  .worktree-recommendation {
-    color: #78837f;
   }
 
   .activity-repo-row > small {
@@ -21944,7 +21521,6 @@
   .activity-panel-list .agent-activity-row:has(.row-action-menu),
   .activity-panel-list .workspace-snapshot-row:has(.row-action-menu),
   .activity-panel-list .activity-runtime-row:has(.row-action-menu),
-  .activity-panel-list .activity-worktree-row:has(.row-action-menu),
   .activity-panel-list .activity-repo-row:has(.row-action-menu),
   .activity-panel-list .activity-task-ledger-row:has(.row-action-menu),
   .activity-panel-list .activity-commit-row:has(.row-action-menu) {
@@ -21956,7 +21532,6 @@
   .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu),
   .activity-panel-list .runtime-activity-actions:has(.row-action-menu),
   .activity-panel-list .agent-activity-actions:has(.row-action-menu),
-  .activity-panel-list .worktree-activity-actions:has(.row-action-menu),
   .activity-panel-list .repository-activity-actions:has(.row-action-menu),
   .activity-panel-list .task-ledger-actions:has(.row-action-menu),
   .activity-panel-list .activity-commit-meta:has(.row-action-menu),
@@ -21968,7 +21543,6 @@
   .activity-panel-list .run-activity-actions:has(.row-action-menu) > button,
   .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
   .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button,
-  .activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button,
   .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button,
   .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button,
   .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
@@ -21996,7 +21570,6 @@
     grid-column: 2;
   }
 
-  .activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button,
   .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button {
     grid-column: 3;
     grid-row: 1;
@@ -24412,9 +23985,6 @@
   .orchestration-context-row span,
   .orchestration-context-row small,
   .agent-provider-badge,
-  .worktree-status-badge,
-  .worktree-decision-lane,
-  .worktree-plan-lane,
   .repo-branch-badge,
   .runtime-context-row strong,
   .runtime-context-row span,
@@ -24467,86 +24037,6 @@
     text-transform: capitalize;
     white-space: nowrap;
   }
-
-  .worktree-status-badge {
-    display: inline-grid;
-    place-items: center;
-    height: 20px;
-    padding: 0 7px;
-    color: #071b18;
-    border-radius: 999px;
-    background: #6fdfcf;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .worktree-status-badge.review {
-    color: #dce5e2;
-    background: rgba(255, 255, 255, 0.14);
-  }
-
-  .worktree-status-badge.protected {
-    color: #dce5e2;
-    background: rgba(255, 255, 255, 0.16);
-  }
-
-  .worktree-status-badge.ready {
-    color: #071b18;
-    background: #6fdfcf;
-  }
-
-  .worktree-status-badge.blocked {
-    color: #211606;
-    background: #d8aa55;
-  }
-
-  .worktree-decision-lane {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    min-height: 18px;
-    max-width: 92px;
-    padding: 0 6px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 8px;
-    font-weight: 900;
-    line-height: 1;
-    text-transform: uppercase;
-  }
-
-  .worktree-decision-lane.blocked {
-    color: #ffd8a8;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.1);
-  }
-
-  .worktree-decision-lane.backup {
-    color: #f0c979;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-decision-lane.cleanup {
-    color: #7ce5d5;
-    border-color: rgba(92, 226, 207, 0.25);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .worktree-decision-lane.review {
-    color: #cbd3d1;
-    border-color: rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .worktree-decision-lane.protected {
-    color: #9fa9a6;
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.035);
-  }
-
 
   .repo-branch-badge {
     color: #6fdfcf;

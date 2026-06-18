@@ -234,3 +234,41 @@ canvas {
   min-height: 96px;
   margin-top: 6px;
 }
+
+/* ------------------------------------------------------------------
+ * ActivityWorktreesPanel — .activity-panel-list ancestor combos.
+ *
+ * Open-menu reflow rules whose selectors include `.activity-panel-list` — the
+ * container is rendered by `+page.svelte` (it stays in the page; the panel
+ * renders its body inline), so a child can't scope an ancestor it doesn't own.
+ * They live here as global rules (same pattern as the BrowserPanel dock shells
+ * above). Extracted from `+page.svelte` with the ActivityWorktreesPanel markup;
+ * the worktree arms were the only ones removed from the page's shared multi-panel
+ * `:has(.row-action-menu)` groups — the other panels' arms stay in `+page.svelte`.
+ * ------------------------------------------------------------------ */
+.activity-panel-list .activity-worktree-row:has(.row-action-menu) {
+  align-items: start;
+}
+
+.activity-panel-list .worktree-activity-actions:has(.row-action-menu) {
+  display: contents;
+}
+
+.activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+}
+
+/*
+ * The shared `.activity-panel-list .row-action-menu` rule stays scoped in
+ * `+page.svelte` (it serves every activity panel). Scoped there, it can't reach
+ * this component's menu, so the same positioning is restated globally, narrowed
+ * to the worktree row so it does not broaden the shared rule.
+ */
+.activity-panel-list .activity-worktree-row .row-action-menu {
+  position: static;
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-top: -1px;
+}
