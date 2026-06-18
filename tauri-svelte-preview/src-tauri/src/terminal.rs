@@ -70,6 +70,20 @@ pub fn start_terminal_session<R: Runtime>(
         .openpty(size)
         .map_err(|error| format!("Could not open terminal pty: {error}"))?;
     let mut command = CommandBuilder::new(&shell);
+    // Spawn as a LOGIN shell so the embedded terminal loads the user's full
+    // environment (PATH from ~/.zprofile, /etc/zprofile path_helper, and
+    // Homebrew/pnpm/nvm/cargo shims) exactly like Terminal.app / iTerm / Warp.
+    // A plain PTY shell is interactive but NOT a login shell, so login-only
+    // PATH entries are missing and agent CLIs (codex/claude/gemini) fail with
+    // "command not found" when a conversation tries to resume.
+    if let Some(shell_name) = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+    {
+        if matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish") {
+            command.arg("-l");
+        }
+    }
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
