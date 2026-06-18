@@ -48,6 +48,7 @@
   import Chip from '$lib/components/Chip.svelte';
   import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
   import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
+  import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -995,7 +996,10 @@
   let quickOpenVisible = $state(false);
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
-  let quickOpenInput = $state<HTMLInputElement | null>(null);
+  // The search input lives in QuickOpenOverlay; the page focuses it via this ref's
+  // exported `focusInput()` handle (see openQuickOpen / openWorkspaceSymbolQuickOpen /
+  // openCurrentFileGoToLine).
+  let quickOpenOverlayRef = $state<{ focusInput: () => void } | null>(null);
   let workspaceSymbolResults = $state<SourceWorkspaceSymbol[]>([]);
   let workspaceSymbolLoading = $state(false);
   let workspaceSymbolError = $state('');
@@ -9703,7 +9707,7 @@
     quickOpenQuery = '';
     quickOpenIndex = 0;
     closeRowActionMenus();
-    window.setTimeout(() => quickOpenInput?.focus(), 0);
+    window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
 
   function openWorkspaceSymbolQuickOpen() {
@@ -9714,11 +9718,7 @@
     closeViewMenu();
     closeEditorActionMenu();
     closeRowActionMenus();
-    window.setTimeout(() => {
-      quickOpenInput?.focus();
-      const cursor = quickOpenQuery.length;
-      quickOpenInput?.setSelectionRange(cursor, cursor);
-    }, 0);
+    window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
 
   function openCurrentFileGoToLine() {
@@ -9727,11 +9727,7 @@
     quickOpenVisible = true;
     quickOpenQuery = `${selectedRecord.relativePath}:`;
     quickOpenIndex = 0;
-    window.setTimeout(() => {
-      quickOpenInput?.focus();
-      const cursor = quickOpenQuery.length;
-      quickOpenInput?.setSelectionRange(cursor, cursor);
-    }, 0);
+    window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
 
   function focusGlobalSourceSearch() {
@@ -20214,95 +20210,24 @@
 <SettingsPanel bind:open={settingsOpen} />
 
 {#if quickOpenVisible}
-  <div class="quick-open-layer">
-    <button
-      class="quick-open-backdrop"
-      type="button"
-      aria-label="Close quick open"
-      onclick={closeQuickOpen}
-    ></button>
-    <div
-      class="quick-open-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Open source file"
-    >
-      <label class="quick-open-search">
-        <span class="quick-open-icon">
-          <Search size={17} strokeWidth={1.8} />
-        </span>
-        <input
-          bind:this={quickOpenInput}
-          bind:value={quickOpenQuery}
-          onkeydown={handleQuickOpenKeydown}
-          placeholder={quickOpenWorkspaceSymbolMode ? 'Search workspace symbols' : 'Open source file'}
-          autocomplete="off"
-        />
-      </label>
-
-      <div
-        class="quick-open-results"
-        role="listbox"
-        aria-label={quickOpenWorkspaceSymbolMode ? 'Matching workspace symbols' : 'Matching source files'}
-      >
-        {#if quickOpenWorkspaceSymbolMode}
-          {#if !preview || !sourceIntelligenceAvailable}
-            <div class="quick-open-empty">Open a C# or TypeScript file first</div>
-          {:else if !quickOpenWorkspaceSymbolQuery}
-            <div class="quick-open-empty">Type a symbol name after #</div>
-          {:else if workspaceSymbolLoading}
-            <div class="quick-open-empty">Searching workspace symbols</div>
-          {:else if workspaceSymbolError}
-            <div class="quick-open-empty">{workspaceSymbolError}</div>
-          {:else if workspaceSymbolResults.length === 0}
-            <div class="quick-open-empty">No matching workspace symbols</div>
-          {:else}
-            {#each workspaceSymbolResults as symbol, index (`${symbol.path}:${symbol.line}:${symbol.column}:${symbol.symbolName}`)}
-              <button
-                class:active={index === quickOpenIndex}
-                type="button"
-                role="option"
-                aria-selected={index === quickOpenIndex}
-                title={symbol.detail}
-                onclick={() => chooseQuickOpenWorkspaceSymbol(symbol)}
-              >
-                <span class="quick-open-result-icon">
-                  <FileCode2 size={15} strokeWidth={1.8} />
-                </span>
-                <span>
-                  <strong>{symbol.symbolName}</strong>
-                  <small>{symbol.detail}</small>
-                </span>
-                <em>{symbol.kind}</em>
-              </button>
-            {/each}
-          {/if}
-        {:else if quickOpenResults.length === 0}
-          <div class="quick-open-empty">No matching source files</div>
-        {:else}
-          {#each quickOpenResults as record, index (record.path)}
-            <button
-              class:active={index === quickOpenIndex}
-              type="button"
-              role="option"
-              aria-selected={index === quickOpenIndex}
-              title={record.relativePath}
-              onclick={() => chooseQuickOpenRecord(record)}
-            >
-              <span class="quick-open-result-icon">
-                <FileCode2 size={15} strokeWidth={1.8} />
-              </span>
-              <span>
-                <strong>{record.fileName}</strong>
-                <small>{record.relativePath}</small>
-              </span>
-              <em>{parsedQuickOpenQuery.targetLine ? `line ${parsedQuickOpenQuery.targetLine}` : record.language}</em>
-            </button>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  </div>
+  <QuickOpenOverlay
+    bind:this={quickOpenOverlayRef}
+    visible={quickOpenVisible}
+    bind:query={quickOpenQuery}
+    bind:index={quickOpenIndex}
+    fileResults={quickOpenResults}
+    symbolResults={workspaceSymbolResults}
+    symbolMode={quickOpenWorkspaceSymbolMode}
+    symbolQuery={quickOpenWorkspaceSymbolQuery}
+    symbolLoading={workspaceSymbolLoading}
+    symbolError={workspaceSymbolError}
+    symbolsAvailable={!!preview && sourceIntelligenceAvailable}
+    targetLine={parsedQuickOpenQuery.targetLine}
+    onKeydown={handleQuickOpenKeydown}
+    onSelectFile={chooseQuickOpenRecord}
+    onSelectSymbol={chooseQuickOpenWorkspaceSymbol}
+    onClose={closeQuickOpen}
+  />
 {/if}
 
 {#if commandPaletteVisible}
@@ -28227,140 +28152,6 @@
     background: var(--color-bg);
     font-size: var(--text-sm);
     line-height: 1.5;
-  }
-
-  .quick-open-layer {
-    position: fixed;
-    inset: 0;
-    z-index: 40;
-    display: grid;
-    place-items: start center;
-    padding: 72px 16px 16px;
-  }
-
-  .quick-open-backdrop {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    border: 0;
-    background: rgba(7, 9, 10, 0.56);
-    backdrop-filter: blur(10px);
-    cursor: default;
-  }
-
-  .quick-open-panel {
-    position: relative;
-    z-index: 1;
-    width: min(720px, calc(100vw - 32px));
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.13);
-    border-radius: 12px;
-    background: rgba(22, 24, 24, 0.98);
-    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.44);
-  }
-
-  .quick-open-search {
-    display: grid;
-    grid-template-columns: 22px minmax(0, 1fr);
-    align-items: center;
-    gap: 10px;
-    height: 50px;
-    padding: 0 14px;
-    color: #9aa5a1;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .quick-open-icon,
-  .quick-open-result-icon {
-    display: grid;
-    place-items: center;
-    min-width: 0;
-  }
-
-  .quick-open-icon {
-    color: #6fdfcf;
-  }
-
-  .quick-open-search input {
-    height: 100%;
-    font-size: 15px;
-    font-weight: 700;
-  }
-
-  .quick-open-results {
-    display: grid;
-    gap: 3px;
-    max-height: 368px;
-    padding: 7px;
-    overflow: auto;
-  }
-
-  .quick-open-results button {
-    display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    min-width: 0;
-    height: 44px;
-    padding: 0 9px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .quick-open-results button:hover,
-  .quick-open-results button.active {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .quick-open-result-icon {
-    color: #8d9995;
-  }
-
-  .quick-open-results button.active .quick-open-result-icon {
-    color: #6fdfcf;
-  }
-
-  .quick-open-results button span {
-    display: grid;
-    min-width: 0;
-  }
-
-  .quick-open-results strong,
-  .quick-open-results small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .quick-open-results strong {
-    font-size: 13px;
-    line-height: 1.15;
-  }
-
-  .quick-open-results small,
-  .quick-open-results em {
-    color: #7f8b87;
-    font-size: 10px;
-    font-style: normal;
-    font-weight: 760;
-  }
-
-  .quick-open-empty {
-    display: grid;
-    place-items: center;
-    min-height: 112px;
-    color: #9aa5a1;
-    font-size: 13px;
-    font-weight: 700;
   }
 
   @keyframes shimmer {
