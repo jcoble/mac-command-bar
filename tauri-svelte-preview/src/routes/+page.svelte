@@ -42,6 +42,7 @@
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import { settings, defaultSettings } from '$lib/settingsStore.svelte';
+  import { dock } from '$lib/stores/dockLayoutStore.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
@@ -906,7 +907,6 @@
   let sourceSearchLoading = $state(false);
   let sourceSearchError = $state('');
   let sourceSearchInput = $state<HTMLInputElement | null>(null);
-  let sourceActivityMode = $state<SourceActivityMode>('files');
   let sourceEditorFileDockviewReady = $state(false);
   let sourceEditorFileDockviewError = $state('');
   let sourceFilesPane = $state<SourceFilesPaneID>('files');
@@ -1778,7 +1778,7 @@
       sourceTypeDefinitionLoading
   );
   let sourceLookupSummary = $derived(formatSourceLookupSummary());
-  let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
+  let sourceActivityPanelLabel = $derived(sourceActivityLabel(dock.activityMode));
   let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
     {
       id: 'quick-open',
@@ -2351,7 +2351,7 @@
     {
       id: 'layout-copy-diagnostic',
       label: 'Copy layout diagnostic',
-      detail: `${sourceLayoutPreset} layout · ${sourceActivityLabel(sourceActivityMode)}`,
+      detail: `${sourceLayoutPreset} layout · ${sourceActivityLabel(dock.activityMode)}`,
       perform: copySourceLayoutDiagnostic
     },
     {
@@ -2621,14 +2621,14 @@
       id: 'activity-files',
       label: 'Show files',
       detail: sourceActivitySummary('files'),
-      disabled: sourceActivityMode === 'files',
+      disabled: dock.activityMode === 'files',
       perform: () => selectSourceActivityMode('files')
     },
     {
       id: 'activity-clipboard',
       label: 'Show clipboard cleanup',
       detail: sourceActivitySummary('clipboard'),
-      disabled: sourceActivityMode === 'clipboard',
+      disabled: dock.activityMode === 'clipboard',
       perform: () => selectSourceActivityMode('clipboard')
     },
     {
@@ -2697,14 +2697,14 @@
       id: 'activity-conversations',
       label: 'Show conversations',
       detail: sourceActivitySummary('conversations'),
-      disabled: sourceActivityMode === 'conversations',
+      disabled: dock.activityMode === 'conversations',
       perform: () => selectSourceActivityMode('conversations')
     },
     {
       id: 'activity-runs',
       label: 'Show orchestration runs',
       detail: sourceActivitySummary('runs'),
-      disabled: sourceActivityMode === 'runs',
+      disabled: dock.activityMode === 'runs',
       perform: () => selectSourceActivityMode('runs')
     },
     {
@@ -2835,21 +2835,21 @@
       id: 'activity-sessions',
       label: 'Show active sessions',
       detail: sourceActivitySummary('sessions'),
-      disabled: sourceActivityMode === 'sessions',
+      disabled: dock.activityMode === 'sessions',
       perform: () => selectSourceActivityMode('sessions')
     },
     {
       id: 'activity-agents',
       label: 'Show agents',
       detail: sourceActivitySummary('agents'),
-      disabled: sourceActivityMode === 'agents',
+      disabled: dock.activityMode === 'agents',
       perform: () => selectSourceActivityMode('agents')
     },
     {
       id: 'activity-worktrees',
       label: 'Show worktrees',
       detail: sourceActivitySummary('worktrees'),
-      disabled: sourceActivityMode === 'worktrees',
+      disabled: dock.activityMode === 'worktrees',
       perform: () => selectSourceActivityMode('worktrees')
     },
     {
@@ -2877,7 +2877,7 @@
       id: 'activity-git',
       label: 'Show Git and tasks',
       detail: sourceActivitySummary('git'),
-      disabled: sourceActivityMode === 'git',
+      disabled: dock.activityMode === 'git',
       perform: () => selectSourceActivityMode('git')
     },
     {
@@ -2973,9 +2973,9 @@
     {
       id: 'activity-refresh',
       label: `Refresh ${sourceActivityPanelLabel}`,
-      detail: sourceActivitySummary(sourceActivityMode),
-      disabled: sourceActivityRefreshing(sourceActivityMode),
-      perform: () => refreshSourceActivityMode(sourceActivityMode)
+      detail: sourceActivitySummary(dock.activityMode),
+      disabled: sourceActivityRefreshing(dock.activityMode),
+      perform: () => refreshSourceActivityMode(dock.activityMode)
     },
     ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => {
       const action = projectWorktreePrimaryAction(worktree);
@@ -4697,7 +4697,7 @@
       `Current file: ${currentFile}`,
       `Preset: ${sourceLayoutPreset}${activePreset ? ` (${activePreset.label})` : ''}`,
       `Chrome: ${sourceChromeCompact ? 'compact' : 'comfortable'}`,
-      `Activity: ${sourceActivityLabel(sourceActivityMode)} (${sourceActivityMode})`,
+      `Activity: ${sourceActivityLabel(dock.activityMode)} (${dock.activityMode})`,
       `Activity filter: ${sourceActivityFilter.trim() || 'none'}`,
       `Side pane: ${sidePanePosition}, ${sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
       `Context: ${contextPanelPlacement}, ${contextPanelMode}, ${contextPanelCollapsed ? 'hidden' : 'visible'}`,
@@ -6143,7 +6143,7 @@
       openSourceTabs: projectOpenSourceTabs,
       branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
       selectedLine: selectedSourceLine,
-      sourceActivityMode,
+      dock.activityMode,
       sourceTerminalApp,
       browserUrl: activeBrowserUrl || null,
       viewState: workspaceSnapshotViewState(),
@@ -6729,8 +6729,8 @@
 
     selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
-    sourceActivityMode = restored.sourceActivityMode;
-    persistSourceActivityMode(sourceActivityMode);
+    dock.activityMode = restored.sourceActivityMode;
+    persistSourceActivityMode(dock.activityMode);
     sourceTerminalApp = restored.sourceTerminalApp;
     persistSourceTerminalApp(sourceTerminalApp);
     setBrowserDockUrl(restored.browserUrl ?? '');
@@ -7540,9 +7540,9 @@
     if (!worktree.path.trim()) return false;
 
     rememberSourceActivityFilter();
-    sourceActivityMode = 'files';
+    dock.activityMode = 'files';
     setSourceActivityFilter('');
-    persistSourceActivityMode(sourceActivityMode);
+    persistSourceActivityMode(dock.activityMode);
     fileActionStatus = `Opening ${worktree.branch} source tree`;
     void addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
     return true;
@@ -10936,7 +10936,7 @@
     };
   }
 
-  function rememberSourceActivityFilter(mode: SourceActivityMode = sourceActivityMode, filter = sourceActivityFilter) {
+  function rememberSourceActivityFilter(mode: SourceActivityMode = dock.activityMode, filter = sourceActivityFilter) {
     sourceActivityFiltersByMode = {
       ...sourceActivityFiltersByMode,
       [mode]: filter
@@ -10945,7 +10945,7 @@
 
   function setSourceActivityFilter(filter: string) {
     sourceActivityFilter = filter;
-    rememberSourceActivityFilter(sourceActivityMode, filter);
+    rememberSourceActivityFilter(dock.activityMode, filter);
   }
 
   function selectSourceActivityMode(mode: SourceActivityMode) {
@@ -10956,7 +10956,7 @@
       expandActivityPaneFromRail();
     }
     rememberSourceActivityFilter();
-    sourceActivityMode = mode;
+    dock.activityMode = mode;
     sourceActivityFilter = sourceActivityFiltersByMode[mode] ?? '';
     persistSourceActivityMode(mode);
     window.setTimeout(measureFileTreeViewport, 0);
@@ -10970,7 +10970,7 @@
 
     sourceLayoutPreset = preset.id;
     rememberSourceActivityFilter();
-    sourceActivityMode = nextActivityMode;
+    dock.activityMode = nextActivityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[nextActivityMode] ?? '';
     sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
     sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
@@ -10987,7 +10987,7 @@
     activeContextCardID = override?.activeContextCardID ?? activeContextCardID;
 
     persistSourceLayoutPreset(sourceLayoutPreset);
-    persistSourceActivityMode(sourceActivityMode);
+    persistSourceActivityMode(dock.activityMode);
     persistSidePaneWidth(sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
@@ -11018,7 +11018,7 @@
 
   function captureSourceLayoutPresetOverride(): SourceLayoutPresetOverride {
     return {
-      activityMode: sourceActivityMode,
+      activityMode: dock.activityMode,
       sidePaneWidth: clampSidePaneWidth(sidePaneWidth),
       sidePanePosition,
       editorInsightWidth: clampEditorInsightWidth(editorInsightWidth),
@@ -11046,7 +11046,7 @@
   function applySourceLayoutSnapshot(snapshot: SourceLayoutSnapshot, status: string) {
     sourceLayoutPreset = snapshot.preset;
     rememberSourceActivityFilter();
-    sourceActivityMode = snapshot.activityMode;
+    dock.activityMode = snapshot.activityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[snapshot.activityMode] ?? '';
     sidePaneWidth = clampSidePaneWidth(snapshot.sidePaneWidth);
     sidePanePosition = snapshot.sidePanePosition;
@@ -11064,7 +11064,7 @@
     const nextDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
 
     persistSourceLayoutPreset(sourceLayoutPreset);
-    persistSourceActivityMode(sourceActivityMode);
+    persistSourceActivityMode(dock.activityMode);
     persistSidePaneWidth(sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
@@ -11166,7 +11166,7 @@
   }
 
   function sourceActivityBadgeVisible(mode: SourceActivityMode) {
-    return sourceActivityMode === mode && sourceActivityCount(mode) > 0;
+    return dock.activityMode === mode && sourceActivityCount(mode) > 0;
   }
 
   function compactCountValue(value: number | null | undefined) {
@@ -11245,7 +11245,7 @@
     return 'Browser preview is using the local filesystem bridge for source files. Run the Tauri app for native Git, LSP, and terminal actions.';
   }
 
-  function refreshSourceActivityMode(mode: SourceActivityMode = sourceActivityMode) {
+  function refreshSourceActivityMode(mode: SourceActivityMode = dock.activityMode) {
     switch (mode) {
       case 'files':
         void scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit });
@@ -11718,12 +11718,12 @@
 
     markSourceLayoutCustom();
     rememberSourceActivityFilter();
-    sourceActivityMode = 'files';
+    dock.activityMode = 'files';
     sourceActivityFilter = sourceActivityFiltersByMode.files ?? '';
     contextPanelCollapsed = true;
     editorInsightCollapsed = true;
     sourceChromeCompact = true;
-    persistSourceActivityMode(sourceActivityMode);
+    persistSourceActivityMode(dock.activityMode);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSourceChromeCompact(sourceChromeCompact);
@@ -15608,7 +15608,7 @@
     workspaceSnapshots = storedWorkspaceSnapshots;
     activeWorkspaceSessionKey = startupWorkspaceSnapshot?.id ?? storedActiveWorkspaceSessionKey;
     selectedProjectID = startupProject.id;
-    sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
+    dock.activityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
     pasteCleanupHistory = storedPasteCleanupHistory;
     sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
@@ -15649,7 +15649,7 @@
     if (migrateSourceLayout) {
       clearMigratedSourceDockviewLayouts();
       persistSourceLayoutPreset(sourceLayoutPreset);
-      persistSourceActivityMode(sourceActivityMode);
+      persistSourceActivityMode(dock.activityMode);
       persistSidePanePosition(sidePanePosition);
       persistSidePaneWidth(sidePaneWidth);
       persistEditorInsightWidth(editorInsightWidth);
@@ -15744,7 +15744,7 @@
   <aside class="activity-shell" aria-label="Workspace browser" use:sourceDockviewPanelAction={'activity'}>
     <nav class="activity-rail" aria-label="Workspace views">
       <button
-        class:active={sourceActivityMode === 'files'}
+        class:active={dock.activityMode === 'files'}
         type="button"
         aria-label="Files"
         title={sourceActivityButtonTitle('files')}
@@ -15757,7 +15757,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'clipboard'}
+        class:active={dock.activityMode === 'clipboard'}
         type="button"
         aria-label="Clipboard"
         title={sourceActivityButtonTitle('clipboard')}
@@ -15770,7 +15770,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'conversations'}
+        class:active={dock.activityMode === 'conversations'}
         type="button"
         aria-label="Conversations"
         title={sourceActivityButtonTitle('conversations')}
@@ -15783,7 +15783,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'runs'}
+        class:active={dock.activityMode === 'runs'}
         type="button"
         aria-label="Runs"
         title={sourceActivityButtonTitle('runs')}
@@ -15796,7 +15796,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'sessions'}
+        class:active={dock.activityMode === 'sessions'}
         type="button"
         aria-label="Active sessions"
         title={sourceActivityButtonTitle('sessions')}
@@ -15809,7 +15809,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'agents'}
+        class:active={dock.activityMode === 'agents'}
         type="button"
         aria-label="Agents"
         title={sourceActivityButtonTitle('agents')}
@@ -15822,7 +15822,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'worktrees'}
+        class:active={dock.activityMode === 'worktrees'}
         type="button"
         aria-label="Worktrees"
         title={sourceActivityButtonTitle('worktrees')}
@@ -15835,7 +15835,7 @@
         {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'git'}
+        class:active={dock.activityMode === 'git'}
         type="button"
         aria-label="Git and tasks"
         title={sourceActivityButtonTitle('git')}
@@ -15963,7 +15963,7 @@
       {/if}
     </div>
 
-    {#if sourceActivityMode === 'files'}
+    {#if dock.activityMode === 'files'}
       <div class="source-browser-stack">
       <SourceDockviewShell
         shellClass="source-dockview-files-shell"
@@ -16278,21 +16278,21 @@
         <div class="activity-panel-header">
           <div>
             <strong>{sourceActivityPanelLabel}</strong>
-            <span>{sourceActivitySummary(sourceActivityMode)}</span>
+            <span>{sourceActivitySummary(dock.activityMode)}</span>
           </div>
           <button
             class="file-action-button"
             type="button"
             aria-label={`Refresh ${sourceActivityPanelLabel}`}
             title={`Refresh ${sourceActivityPanelLabel}`}
-            disabled={sourceActivityRefreshing(sourceActivityMode)}
-            onclick={() => refreshSourceActivityMode(sourceActivityMode)}
+            disabled={sourceActivityRefreshing(dock.activityMode)}
+            onclick={() => refreshSourceActivityMode(dock.activityMode)}
           >
             <RefreshCw size={14} strokeWidth={1.9} />
           </button>
         </div>
 
-        {#if sourceActivityMode === 'clipboard'}
+        {#if dock.activityMode === 'clipboard'}
           <ActivityClipboardPanel
             bind:input={pasteCleanupInput}
             bind:replyDraft={pasteCleanupReplyDraft}
@@ -16324,11 +16324,11 @@
               autocomplete="off"
               spellcheck="false"
               aria-label="Filter workspace activity"
-              placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}
+              placeholder={sourceActivityFilterPlaceholder(dock.activityMode)}
             />
           </label>
 
-          {#if sourceActivityMode === 'runs'}
+          {#if dock.activityMode === 'runs'}
           <div class="run-ingest-strip" aria-label="Orchestration ingest">
             <input
               bind:value={orchestrationEventFilePath}
@@ -16648,7 +16648,7 @@
               {/each}
             {/if}
           </div>
-        {:else if sourceActivityMode === 'conversations'}
+        {:else if dock.activityMode === 'conversations'}
           <div class="activity-panel-list conversation-activity-list" aria-label="Conversation list">
             <SourceDockviewShell
               shellClass="source-dockview-conversation-shell"
@@ -16858,7 +16858,7 @@
             </div>
             </SourceDockviewShell>
           </div>
-        {:else if sourceActivityMode === 'sessions'}
+        {:else if dock.activityMode === 'sessions'}
           <div class="activity-panel-list" aria-label="Active session list">
             {#if filteredProjectRuntimeContexts.length === 0}
               <div class="activity-empty">No active sessions</div>
@@ -16949,7 +16949,7 @@
               {/each}
             {/if}
           </div>
-        {:else if sourceActivityMode === 'agents'}
+        {:else if dock.activityMode === 'agents'}
           <div class="activity-panel-list" aria-label="Agent session list">
             {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No agents</div>
@@ -17088,7 +17088,7 @@
               {/each}
             {/if}
           </div>
-        {:else if sourceActivityMode === 'worktrees'}
+        {:else if dock.activityMode === 'worktrees'}
           <div class="activity-panel-list" aria-label="Worktree list">
             {#if filteredProjectWorktrees.length === 0}
               <div class="activity-empty">No worktrees</div>
@@ -17127,7 +17127,7 @@
               />
             {/if}
           </div>
-        {:else if sourceActivityMode === 'git'}
+        {:else if dock.activityMode === 'git'}
           <div class="activity-panel-list activity-git-panel" data-testid="git-activity-panel" aria-label="Source Control">
             <section class="activity-git-source-control" aria-label="Source Control changes">
               <div class="activity-git-heading">
