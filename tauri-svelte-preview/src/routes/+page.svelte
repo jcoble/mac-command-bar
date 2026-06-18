@@ -58,6 +58,7 @@
   import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
   import HiddenDockRail from '$lib/components/chrome/HiddenDockRail.svelte';
   import WorkbenchControls from '$lib/components/chrome/WorkbenchControls.svelte';
+  import EditorTopbarViewMenu from '$lib/components/chrome/EditorTopbarViewMenu.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -17194,310 +17195,49 @@
             <span>View</span>
           </button>
 
-          {#if viewMenuOpen}
-            <div class="view-menu" role="menu" aria-label="View options">
-              <section class="view-menu-section" aria-label="Workspace layout presets">
-                <span>Layout</span>
-                <div class="view-menu-button-grid">
-                  {#each sourceLayoutPresets as preset (preset.id)}
-                    <button
-                      class:active={dock.layoutPreset === preset.id}
-                      type="button"
-                      role="menuitem"
-                      aria-label={`Use ${preset.label} layout`}
-                      title={preset.title}
-                      onclick={() => {
-                        applySourceLayoutPreset(preset.id);
-                        closeViewMenu();
-                      }}
-                    >
-                      {preset.label}
-                    </button>
-                  {/each}
-                </div>
-                <div class="view-menu-button-grid two">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-label="Save current layout preset"
-                    title={`Save current arrangement as ${currentSaveableSourceLayoutPreset().label}`}
-                    onclick={() => {
-                      saveSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id);
-                      closeViewMenu();
-                    }}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-label="Reset saved layout preset"
-                    title={`Reset saved ${currentSaveableSourceLayoutPreset().label} layout`}
-                    disabled={!sourceLayoutPresetOverrides[currentSaveableSourceLayoutPreset().id]}
-                    onclick={() => {
-                      resetSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id);
-                      closeViewMenu();
-                    }}
-                  >
-                    Reset
-                  </button>
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  aria-label="Focus editor canvas"
-                  title="Hide context, insights, terminal, and browser"
-                  onclick={() => {
-                    focusSourceEditorLayout();
-                    closeViewMenu();
-                  }}
-                >
-                  Focus editor
-                </button>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  aria-label="Restore layout before focus"
-                  title="Restore the pane arrangement saved before Focus editor"
-                  disabled={!sourceFocusRestoreLayout}
-                  onclick={() => {
-                    restoreSourceLayoutBeforeFocus();
-                    closeViewMenu();
-                  }}
-                >
-                  Restore previous
-                </button>
-                <div class="view-menu-button-grid two">
-                  <button
-                    class:active={sourceChromeCompact}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use compact editor chrome"
-                    onclick={() => {
-                      selectSourceChromeCompact(true);
-                      closeViewMenu();
-                    }}
-                  >
-                    Compact
-                  </button>
-                  <button
-                    class:active={!sourceChromeCompact}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use comfortable editor chrome"
-                    onclick={() => {
-                      selectSourceChromeCompact(false);
-                      closeViewMenu();
-                    }}
-                  >
-                    Comfort
-                  </button>
-                </div>
-              </section>
-
-              <section class="view-menu-section" aria-label="Side pane position">
-                <span>Explorer</span>
-                <div class="view-menu-button-grid two">
-                  <button
-                    class:active={sidePanePosition === 'left'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put side pane on the left"
-                    onclick={() => {
-                      selectSidePanePosition('left');
-                      closeViewMenu();
-                    }}
-                  >
-                    Left
-                  </button>
-                  <button
-                    class:active={sidePanePosition === 'right'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put side pane on the right"
-                    onclick={() => {
-                      selectSidePanePosition('right');
-                      closeViewMenu();
-                    }}
-                  >
-                    Right
-                  </button>
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  class:active={activityPaneRailOnly()}
-                  type="button"
-                  role="menuitem"
-                  aria-label="Collapse explorer to icon rail"
-                  title="Shrink the source browser to the activity icon rail"
-                  disabled={activityPaneRailOnly()}
-                  onclick={() => {
-                    collapseActivityPaneToRail();
-                    closeViewMenu();
-                  }}
-                >
-                  Collapse to icon rail
-                </button>
-              </section>
-
-              <section class="view-menu-section" aria-label="Context card layout">
-                <span>Context</span>
-                <div class="view-menu-button-grid two">
-                  <button
-                    class:active={contextPanelPlacement === 'top'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put context above editor"
-                    onclick={() => {
-                      selectContextPanelPlacement('top');
-                      closeViewMenu();
-                    }}
-                  >
-                    Top
-                  </button>
-                  <button
-                    class:active={contextPanelPlacement === 'side'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put context beside editor"
-                    onclick={() => {
-                      selectContextPanelPlacement('side');
-                      closeViewMenu();
-                    }}
-                  >
-                    Side
-                  </button>
-                  <button
-                    class:active={contextPanelPlacement === 'bottom'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put context below editor"
-                    onclick={() => {
-                      moveDockPanelToGroup('context', 'bottom');
-                      closeViewMenu();
-                    }}
-                  >
-                    Bottom
-                  </button>
-                  <button
-                    class:active={contextPanelMode === 'grid'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use grid context cards"
-                    onclick={() => {
-                      selectContextPanelMode('grid');
-                      closeViewMenu();
-                    }}
-                  >
-                    Grid
-                  </button>
-                  <button
-                    class:active={contextPanelMode === 'stack'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use stacked context cards"
-                    onclick={() => {
-                      selectContextPanelMode('stack');
-                      closeViewMenu();
-                    }}
-                  >
-                    Stack
-                  </button>
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  class:active={contextPaneRailOnly()}
-                  type="button"
-                  role="menuitem"
-                  aria-label="Collapse context to icon rail"
-                  title="Shrink the context cards to the icon rail"
-                  disabled={contextPaneRailOnly()}
-                  onclick={() => {
-                    collapseContextPaneToRail();
-                    closeViewMenu();
-                  }}
-                >
-                  Collapse to icon rail
-                </button>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    toggleContextPanelCollapsed();
-                    closeViewMenu();
-                  }}
-                >
-                  {contextPanelCollapsed ? 'Show context cards' : 'Hide context cards'}
-                </button>
-              </section>
-
-              <section class="view-menu-section dock-panel-manager" aria-label="Dock panels">
-                <span>Panels</span>
-                <div class="dock-panel-manager-list">
-                  {#each managedDockPanelIDs as panelID (panelID)}
-                    <div class="dock-panel-manager-row">
-                      <div>
-                        <strong>{dockPanelLabel(panelID)}</strong>
-                        <small>{dockPanelPlacementSummary(panelID)}</small>
-                      </div>
-                      <div class="dock-panel-manager-actions">
-                        {#if dockPanelCanHide(panelID)}
-                          <button
-                            class:active={sourceDockPanelVisible(panelID)}
-                            type="button"
-                            role="menuitem"
-                            aria-label={`${sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'} ${dockPanelLabel(panelID)} panel`}
-                            onclick={() => toggleDockPanelVisibility(panelID)}
-                          >
-                            {sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'}
-                          </button>
-                        {/if}
-                        {#each dockPanelMoveTargets(panelID) as groupID (groupID)}
-                          <button
-                            class:active={dockGroupIDForPanel(dock.layout, panelID) === groupID}
-                            type="button"
-                            role="menuitem"
-                            aria-label={`Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`}
-                            disabled={dockGroupIDForPanel(dock.layout, panelID) === groupID}
-                            onclick={() => moveDockPanelToManagedGroup(panelID, groupID)}
-                          >
-                            {dockGroupLabel(groupID, panelID)}
-                          </button>
-                        {/each}
-                      </div>
-                    </div>
-                  {/each}
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    resetSourceDockLayout();
-                    closeViewMenu();
-                  }}
-                >
-                  Reset dock layout
-                </button>
-              </section>
-
-              <label class="view-terminal-picker" title={`Open directories in ${sourceTerminalApp}`}>
-                <span>Terminal</span>
-                <select
-                  bind:value={sourceTerminalApp}
-                  aria-label="Terminal app"
-                  onchange={selectSourceTerminalApp}
-                >
-                  {#each sourceTerminalApps as app (app)}
-                    <option value={app}>{app}</option>
-                  {/each}
-                </select>
-              </label>
-            </div>
-          {/if}
+          <EditorTopbarViewMenu
+            bind:viewMenuOpen
+            bind:terminalApp={sourceTerminalApp}
+            layoutPresets={sourceLayoutPresets}
+            activeLayoutPreset={dock.layoutPreset}
+            layoutPresetOverrides={sourceLayoutPresetOverrides}
+            currentSaveablePreset={currentSaveableSourceLayoutPreset()}
+            focusRestoreLayout={sourceFocusRestoreLayout}
+            chromeCompact={sourceChromeCompact}
+            {sidePanePosition}
+            activityRailOnly={activityPaneRailOnly()}
+            {contextPanelPlacement}
+            {contextPanelMode}
+            contextRailOnly={contextPaneRailOnly()}
+            {contextPanelCollapsed}
+            {managedDockPanelIDs}
+            dockLayout={dock.layout}
+            {dockPanelLabel}
+            {dockPanelPlacementSummary}
+            {dockPanelCanHide}
+            dockPanelVisible={sourceDockPanelVisible}
+            {dockGroupIDForPanel}
+            {dockPanelMoveTargets}
+            {dockGroupLabel}
+            terminalApps={sourceTerminalApps}
+            onApplyPreset={(presetID) => { applySourceLayoutPreset(presetID); closeViewMenu(); }}
+            onSavePresetOverride={() => { saveSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id); closeViewMenu(); }}
+            onResetPresetOverride={() => { resetSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id); closeViewMenu(); }}
+            onFocusEditorLayout={() => { focusSourceEditorLayout(); closeViewMenu(); }}
+            onRestoreLayoutBeforeFocus={() => { restoreSourceLayoutBeforeFocus(); closeViewMenu(); }}
+            onResetDockLayout={() => { resetSourceDockLayout(); closeViewMenu(); }}
+            onSelectChromeCompact={(compact) => { selectSourceChromeCompact(compact); closeViewMenu(); }}
+            onSelectSidePanePosition={(position) => { selectSidePanePosition(position); closeViewMenu(); }}
+            onCollapseActivityRail={() => { collapseActivityPaneToRail(); closeViewMenu(); }}
+            onSelectContextPlacement={(placement) => { selectContextPanelPlacement(placement); closeViewMenu(); }}
+            onMoveContextToBottom={() => { moveDockPanelToGroup('context', 'bottom'); closeViewMenu(); }}
+            onSelectContextMode={(mode) => { selectContextPanelMode(mode); closeViewMenu(); }}
+            onCollapseContextRail={() => { collapseContextPaneToRail(); closeViewMenu(); }}
+            onToggleContextCollapsed={() => { toggleContextPanelCollapsed(); closeViewMenu(); }}
+            onToggleDockPanelVisibility={(panelID) => toggleDockPanelVisibility(panelID)}
+            onMoveDockPanelToManagedGroup={(panelID, groupID) => moveDockPanelToManagedGroup(panelID, groupID)}
+            onSelectTerminalApp={selectSourceTerminalApp}
+          />
         </div>
       </div>
     </header>
@@ -21197,110 +20937,6 @@
   .topbar-command-button span {
     min-width: 0;
     white-space: nowrap;
-  }
-
-  .dock-panel-manager-list {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .dock-panel-manager-row {
-    display: grid;
-    grid-template-columns: minmax(0, 74px) minmax(0, 1fr);
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .dock-panel-manager-row > div:first-child {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .dock-panel-manager-row strong,
-  .dock-panel-manager-row small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .dock-panel-manager-row strong {
-    color: #e8eeec;
-    font-size: 9.5px;
-    font-weight: 850;
-  }
-
-  .dock-panel-manager-row small {
-    color: #7f8b88;
-    font-size: 8.5px;
-    font-weight: 760;
-  }
-
-  .dock-panel-manager-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .dock-panel-manager-actions button {
-    flex: 0 1 auto;
-    min-width: 0;
-    height: 22px;
-    padding: 0 6px;
-    color: #aab6b2;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    font: inherit;
-    font-size: 8.5px;
-    font-weight: 820;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .dock-panel-manager-actions button:hover,
-  .dock-panel-manager-actions button:focus-visible {
-    color: #edf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .dock-panel-manager-actions button.active,
-  .dock-panel-manager-actions button:disabled {
-    color: #dffdf8;
-    background: rgba(92, 226, 207, 0.16);
-    cursor: default;
-  }
-
-  .view-terminal-picker {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding-top: 2px;
-  }
-
-  .view-terminal-picker select {
-    width: 100%;
-    height: 26px;
-    min-width: 0;
-    color: #dffdf8;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 10px;
-    font-weight: 820;
   }
 
   .context-identity-strip {
