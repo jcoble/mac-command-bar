@@ -941,7 +941,6 @@
   let contextPanelMode = $state<SourceContextPanelMode>('grid');
   let contextPanelPlacement = $state<SourceContextPanelPlacement>('top');
   let sidePanePosition = $state<SourceSidePanePosition>('left');
-  let sidePaneWidth = $state(sidePaneDefaultWidth);
   let sidePaneExpandedWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let editorInsightCollapsed = $state(true);
@@ -1284,7 +1283,7 @@
         {
           id: 'activity',
           visible: shouldRenderDockPanel('activity'),
-          size: sidePaneWidth,
+          size: dock.sidePaneWidth,
           config: activityPaneSizingConfig,
           collapsePriority: 2,
           previousExpandedSize: sidePaneExpandedWidth
@@ -4698,7 +4697,7 @@
       `Chrome: ${sourceChromeCompact ? 'compact' : 'comfortable'}`,
       `Activity: ${sourceActivityLabel(dock.activityMode)} (${dock.activityMode})`,
       `Activity filter: ${sourceActivityFilter.trim() || 'none'}`,
-      `Side pane: ${sidePanePosition}, ${sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
+      `Side pane: ${sidePanePosition}, ${dock.sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
       `Context: ${contextPanelPlacement}, ${contextPanelMode}, ${contextPanelCollapsed ? 'hidden' : 'visible'}`,
       `Context size: ${contextPaneWidth}px wide / ${contextPaneHeight}px tall`,
       `Active context card: ${contextCardLabels[activeContextCardID]}`,
@@ -6771,7 +6770,7 @@
       contextPanelCollapsed,
       editorInsightCollapsed,
       sidePanePosition,
-      sidePaneWidth,
+      dock.sidePaneWidth,
       contextPaneWidth,
       contextPaneHeight,
       editorInsightWidth,
@@ -6789,7 +6788,7 @@
     contextPanelCollapsed = viewState.contextPanelCollapsed;
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
-    sidePaneWidth = clampSidePaneWidth(viewState.sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(viewState.sidePaneWidth);
     contextPaneWidth = clampContextPaneWidth(viewState.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(viewState.contextPaneHeight);
     editorInsightWidth = clampEditorInsightWidth(viewState.editorInsightWidth);
@@ -6803,7 +6802,7 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSidePanePosition(sidePanePosition);
-    persistSidePaneWidth(sidePaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
     persistContextPaneWidth(contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistEditorInsightWidth(editorInsightWidth);
@@ -10971,7 +10970,7 @@
     rememberSourceActivityFilter();
     dock.activityMode = nextActivityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[nextActivityMode] ?? '';
-    sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
     sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(override?.editorInsightWidth ?? preset.editorInsightWidth);
     editorInsightCollapsed = override?.editorInsightCollapsed ?? preset.editorInsightCollapsed;
@@ -10987,7 +10986,7 @@
 
     persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceActivityMode(dock.activityMode);
-    persistSidePaneWidth(sidePaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
@@ -11018,7 +11017,7 @@
   function captureSourceLayoutPresetOverride(): SourceLayoutPresetOverride {
     return {
       activityMode: dock.activityMode,
-      sidePaneWidth: clampSidePaneWidth(sidePaneWidth),
+      sidePaneWidth: clampSidePaneWidth(dock.sidePaneWidth),
       sidePanePosition,
       editorInsightWidth: clampEditorInsightWidth(editorInsightWidth),
       editorInsightCollapsed,
@@ -11047,7 +11046,7 @@
     rememberSourceActivityFilter();
     dock.activityMode = snapshot.activityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[snapshot.activityMode] ?? '';
-    sidePaneWidth = clampSidePaneWidth(snapshot.sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(snapshot.sidePaneWidth);
     sidePanePosition = snapshot.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(snapshot.editorInsightWidth);
     editorInsightCollapsed = snapshot.editorInsightCollapsed;
@@ -11064,7 +11063,7 @@
 
     persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceActivityMode(dock.activityMode);
-    persistSidePaneWidth(sidePaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
@@ -11649,15 +11648,15 @@
 
   function showDockPanel(panelID: SourceDockPanelID) {
     if (panelID === 'activity') {
-      const nextSidePaneWidth = sidePaneWidth <= sidePaneRailOnlyThreshold
+      const nextSidePaneWidth = dock.sidePaneWidth <= sidePaneRailOnlyThreshold
         ? sidePaneDefaultWidth
-        : sidePaneWidth;
-      sidePaneWidth = clampSidePaneWidth(nextSidePaneWidth);
+        : dock.sidePaneWidth;
+      dock.sidePaneWidth = clampSidePaneWidth(nextSidePaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
           moveSourceDockPanel(sourceDockLayout, 'activity', sidePanePosition),
           sidePanePosition,
-          sidePaneWidth
+          dock.sidePaneWidth
         )
       );
       fileActionStatus = 'Activity panel shown';
@@ -11808,17 +11807,17 @@
   }
 
   function expandActivityPaneFromRail() {
-    sidePaneWidth = restoreSourcePaneExpandedSize(sidePaneWidth, activityPaneSizingConfig, {
+    dock.sidePaneWidth = restoreSourcePaneExpandedSize(dock.sidePaneWidth, activityPaneSizingConfig, {
       previousExpandedSize: sidePaneExpandedWidth
     });
-    persistSidePaneWidth(sidePaneWidth);
-    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
   }
 
   function snapActivityPaneToRail() {
-    sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
-    persistSidePaneWidth(sidePaneWidth);
-    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
   }
 
   function collapseActivityPaneToRail() {
@@ -11827,9 +11826,9 @@
     applySourceDockLayout(resizeSourceDockGroup(
       showSourceDockPanel(sourceDockLayout, 'activity'),
       sidePanePosition,
-      sidePaneWidth
+      dock.sidePaneWidth
     ));
-    persistSidePaneWidth(sidePaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
@@ -12293,9 +12292,9 @@
 
     if (activityGroupID === 'left' || activityGroupID === 'right') {
       sidePanePosition = activityGroupID;
-      sidePaneWidth = clampSidePaneWidth(sourceDockGroupSize(normalizedLayout, activityGroupID));
+      dock.sidePaneWidth = clampSidePaneWidth(sourceDockGroupSize(normalizedLayout, activityGroupID));
       persistSidePanePosition(sidePanePosition);
-      persistSidePaneWidth(sidePaneWidth);
+      persistSidePaneWidth(dock.sidePaneWidth);
     }
 
     contextPanelCollapsed = contextGroupID === null;
@@ -12334,7 +12333,7 @@
     nextLayout = editorInsightCollapsed
       ? hideSourceDockPanel(nextLayout, 'insights')
       : moveSourceDockPanel(nextLayout, 'insights', 'right');
-    nextLayout = resizeSourceDockGroup(nextLayout, sidePanePosition, sidePaneWidth);
+    nextLayout = resizeSourceDockGroup(nextLayout, sidePanePosition, dock.sidePaneWidth);
     if (!contextPanelCollapsed) {
       nextLayout = resizeSourceDockGroup(
         nextLayout,
@@ -12398,7 +12397,7 @@
     const sizesByGroupID: Partial<Record<SourceDockGroupID, number>> = {};
 
     if (activityGroupID === 'left' || activityGroupID === 'right') {
-      sizesByGroupID[activityGroupID] = sidePaneWidth;
+      sizesByGroupID[activityGroupID] = dock.sidePaneWidth;
     }
     if (contextGroupID === 'bottom') {
       sizesByGroupID[contextGroupID] = contextPaneHeight;
@@ -13864,7 +13863,7 @@
       resizeSourceDockGroup(
         moveSourceDockPanel(sourceDockLayout, 'activity', position),
         position,
-        sidePaneWidth
+        dock.sidePaneWidth
       )
     );
     window.setTimeout(measureFileTreeViewport, 0);
@@ -13926,7 +13925,7 @@
     if (event.button !== 0 || typeof window === 'undefined') return;
 
     const startX = event.clientX;
-    const startWidth = sidePaneWidth;
+    const startWidth = dock.sidePaneWidth;
     let latestRawWidth = startWidth;
     event.preventDefault();
     markSourceLayoutCustom();
@@ -13937,7 +13936,7 @@
         ? moveEvent.clientX - startX
         : startX - moveEvent.clientX;
       latestRawWidth = startWidth + delta;
-      sidePaneWidth = clampSidePaneWidth(latestRawWidth);
+      dock.sidePaneWidth = clampSidePaneWidth(latestRawWidth);
       window.setTimeout(measureFileTreeViewport, 0);
     };
     const finishResize = () => {
@@ -13952,14 +13951,14 @@
         hideDockPanel('activity');
         fileActionStatus = 'Activity pane hidden';
       } else if (finishedSize.state === 'rail') {
-        sidePaneWidth = finishedSize.size;
-        persistSidePaneWidth(sidePaneWidth);
-        persistDockGroupSize(sidePanePosition, sidePaneWidth);
+        dock.sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(dock.sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
         fileActionStatus = 'Activity panel collapsed to rail';
       } else {
-        sidePaneWidth = finishedSize.size;
-        persistSidePaneWidth(sidePaneWidth);
-        persistDockGroupSize(sidePanePosition, sidePaneWidth);
+        dock.sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(dock.sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
       }
       window.document.body.classList.remove('resizing-source-pane');
       window.removeEventListener('pointermove', handlePointerMove);
@@ -13985,12 +13984,12 @@
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
     const signedDirection = sidePanePosition === 'left' ? direction : -direction;
-    if (sidePaneWidth <= sidePaneMinWidth && signedDirection < 0) {
+    if (dock.sidePaneWidth <= sidePaneMinWidth && signedDirection < 0) {
       hideDockPanel('activity');
       fileActionStatus = 'Activity pane hidden';
       return;
     }
-    const rawNextSidePaneWidth = sidePaneWidth + signedDirection * 24;
+    const rawNextSidePaneWidth = dock.sidePaneWidth + signedDirection * 24;
     if (signedDirection < 0) {
       const finishedSize = finishSourcePanePointerSize(rawNextSidePaneWidth, activityPaneSizingConfig, {
         previousExpandedSize: sidePaneExpandedWidth
@@ -14002,9 +14001,9 @@
         return;
       }
       if (finishedSize.state === 'rail') {
-        sidePaneWidth = finishedSize.size;
-        persistSidePaneWidth(sidePaneWidth);
-        persistDockGroupSize(sidePanePosition, sidePaneWidth);
+        dock.sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(dock.sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
         fileActionStatus = 'Activity panel collapsed to rail';
         window.setTimeout(measureFileTreeViewport, 0);
         return;
@@ -14012,9 +14011,9 @@
     }
 
     const nextSidePaneWidth = clampSidePaneWidth(rawNextSidePaneWidth);
-    sidePaneWidth = nextSidePaneWidth;
-    persistSidePaneWidth(sidePaneWidth);
-    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+    dock.sidePaneWidth = nextSidePaneWidth;
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
@@ -15618,7 +15617,7 @@
     browserUrl = storedBrowserDockUrl;
     browserInputUrl = storedBrowserDockUrl;
     sidePanePosition = migrateSourceLayout ? compactPreset.sidePanePosition : storedSidePanePosition;
-    sidePaneWidth = migrateSourceLayout
+    dock.sidePaneWidth = migrateSourceLayout
       ? compactPreset.sidePaneWidth
       : restoreLegacyPaneWidth(storedSidePaneWidth, storedSidePaneExpandedWidth, activityPaneSizingConfig);
     sidePaneExpandedWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneExpandedWidth;
@@ -15650,7 +15649,7 @@
       persistSourceLayoutPreset(dock.layoutPreset);
       persistSourceActivityMode(dock.activityMode);
       persistSidePanePosition(sidePanePosition);
-      persistSidePaneWidth(sidePaneWidth);
+      persistSidePaneWidth(dock.sidePaneWidth);
       persistEditorInsightWidth(editorInsightWidth);
       persistEditorInsightCollapsed(editorInsightCollapsed);
       persistContextPanelCollapsed(contextPanelCollapsed);
