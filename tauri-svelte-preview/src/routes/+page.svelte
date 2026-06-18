@@ -140,6 +140,13 @@
     type SourceDockPanelID
   } from '$lib/sourceDockLayout';
   import {
+    sourceEditorFilePanelID,
+    sourceEditorFilePanelIDFromPath,
+    sourceEditorFilePathFromPanelID,
+    sourceEditorFileDockviewTitle,
+    type SourceEditorFilePanelID
+  } from '$lib/sourceEditorPanels';
+  import {
     createSourcePaneviewStackWorkspace,
     createSourceDockviewTabStackWorkspace,
     createSourceDockviewWorkspace,
@@ -528,7 +535,6 @@
     | 'agents'
     | 'worktrees'
     | 'git';
-  type SourceEditorFilePanelID = `file:${string}`;
   type SourceFilesPaneID = 'files' | 'search' | 'recent';
   type SourceConversationPaneID = 'active' | 'saved';
   type SourceContextCardDockviewPanelID = SourceContextCardID;
@@ -1103,7 +1109,7 @@
   let sourceEditorFileDockviewPanels = $derived(
     projectOpenSourceTabs.map((tab) => ({
       id: sourceEditorFilePanelID(tab),
-      title: sourceEditorFileDockviewTitle(tab)
+      title: sourceEditorFileDockviewTitle(tab, isSourcePathDirty(tab.path))
     }))
   );
   let sourceEditorFileDockviewPanelIDs = $derived(
@@ -12140,25 +12146,9 @@
     window.localStorage.setItem(storageKey, JSON.stringify(layout));
   }
 
-  function sourceEditorFilePanelID(tab: Pick<SourceOpenTab, 'path'>): SourceEditorFilePanelID {
-    return sourceEditorFilePanelIDFromPath(tab.path);
-  }
-
-  function sourceEditorFilePanelIDFromPath(path: string): SourceEditorFilePanelID {
-    return `file:${path}` as SourceEditorFilePanelID;
-  }
-
-  function sourceEditorFilePathFromPanelID(panelID: SourceEditorFilePanelID): string {
-    return panelID.slice('file:'.length);
-  }
-
   function sourceEditorFileTabForPanelID(panelID: SourceEditorFilePanelID): SourceOpenTab | null {
     const path = sourceEditorFilePathFromPanelID(panelID);
     return projectOpenSourceTabs.find((tab) => tab.path === path) ?? null;
-  }
-
-  function sourceEditorFileDockviewTitle(tab: SourceOpenTab): string {
-    return `${isSourcePathDirty(tab.path) ? '* ' : ''}${tab.fileName}`;
   }
 
   function sourceDockviewWorkbenchHostAction(node: HTMLElement) {
