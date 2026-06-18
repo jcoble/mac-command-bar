@@ -47,6 +47,7 @@
   import ConversationList from '$lib/components/ConversationList.svelte';
   import Chip from '$lib/components/Chip.svelte';
   import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
+  import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
   import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
   import SourceWorkbench from '$lib/SourceWorkbench.svelte';
   import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
@@ -1002,7 +1003,6 @@
   let commandPaletteVisible = $state(false);
   let commandPaletteQuery = $state('');
   let commandPaletteIndex = $state(0);
-  let commandPaletteInput = $state<HTMLInputElement | null>(null);
   let sourceWorkspaceElement = $state<HTMLElement | null>(null);
   let sourceWorkspaceWidth = $state(0);
   let sourceWorkspaceHeight = $state(0);
@@ -9647,7 +9647,7 @@
     closeViewMenu();
     closeEditorActionMenu();
     closeRowActionMenus();
-    window.setTimeout(() => commandPaletteInput?.focus(), 0);
+    // Focus now happens in CommandPaletteOverlay's $effect on `visible`.
   }
 
   function closeCommandPalette() {
@@ -20306,61 +20306,15 @@
 {/if}
 
 {#if commandPaletteVisible}
-  <div class="command-palette-layer">
-    <button
-      class="command-palette-backdrop"
-      type="button"
-      aria-label="Close command palette"
-      onclick={closeCommandPalette}
-    ></button>
-    <div
-      class="command-palette-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Command palette"
-    >
-      <label class="command-palette-search">
-        <span class="command-palette-icon">
-          <Search size={17} strokeWidth={1.8} />
-        </span>
-        <input
-          bind:this={commandPaletteInput}
-          bind:value={commandPaletteQuery}
-          onkeydown={handleCommandPaletteKeydown}
-          placeholder="Run command"
-          autocomplete="off"
-        />
-        <kbd>Cmd+K</kbd>
-      </label>
-
-      <div class="command-palette-results" role="listbox" aria-label="Matching commands">
-        {#if commandPaletteResults.length === 0}
-          <div class="quick-open-empty">No matching commands</div>
-        {:else}
-          {#each commandPaletteResults as item, index (item.id)}
-            <button
-              class:active={index === commandPaletteIndex}
-              class:disabled={item.disabled}
-              type="button"
-              role="option"
-              aria-selected={index === commandPaletteIndex}
-              disabled={item.disabled}
-              title={item.detail}
-              onclick={() => void runCommandPaletteItem(item)}
-            >
-              <span class="command-palette-result-icon">
-                <MoreHorizontal size={15} strokeWidth={1.8} />
-              </span>
-              <span>
-                <strong>{item.label}</strong>
-                <small>{item.detail}</small>
-              </span>
-            </button>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  </div>
+  <CommandPaletteOverlay
+    visible={commandPaletteVisible}
+    bind:query={commandPaletteQuery}
+    bind:index={commandPaletteIndex}
+    commands={commandPaletteResults}
+    onKeydown={handleCommandPaletteKeydown}
+    onSelect={runCommandPaletteItem}
+    onClose={closeCommandPalette}
+  />
 {/if}
 
 <style>
@@ -28275,8 +28229,7 @@
     line-height: 1.5;
   }
 
-  .quick-open-layer,
-  .command-palette-layer {
+  .quick-open-layer {
     position: fixed;
     inset: 0;
     z-index: 40;
@@ -28285,8 +28238,7 @@
     padding: 72px 16px 16px;
   }
 
-  .quick-open-backdrop,
-  .command-palette-backdrop {
+  .quick-open-backdrop {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -28297,8 +28249,7 @@
     cursor: default;
   }
 
-  .quick-open-panel,
-  .command-palette-panel {
+  .quick-open-panel {
     position: relative;
     z-index: 1;
     width: min(720px, calc(100vw - 32px));
@@ -28309,8 +28260,7 @@
     box-shadow: 0 28px 80px rgba(0, 0, 0, 0.44);
   }
 
-  .quick-open-search,
-  .command-palette-search {
+  .quick-open-search {
     display: grid;
     grid-template-columns: 22px minmax(0, 1fr);
     align-items: center;
@@ -28322,41 +28272,24 @@
     background: rgba(255, 255, 255, 0.045);
   }
 
-  .command-palette-search {
-    grid-template-columns: 22px minmax(0, 1fr) auto;
-    height: 46px;
-  }
-
   .quick-open-icon,
-  .quick-open-result-icon,
-  .command-palette-icon,
-  .command-palette-result-icon {
+  .quick-open-result-icon {
     display: grid;
     place-items: center;
     min-width: 0;
   }
 
-  .quick-open-icon,
-  .command-palette-icon {
+  .quick-open-icon {
     color: #6fdfcf;
   }
 
-  .quick-open-search input,
-  .command-palette-search input {
+  .quick-open-search input {
     height: 100%;
     font-size: 15px;
     font-weight: 700;
   }
 
-  .command-palette-search kbd {
-    color: #7f8b87;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 800;
-  }
-
-  .quick-open-results,
-  .command-palette-results {
+  .quick-open-results {
     display: grid;
     gap: 3px;
     max-height: 368px;
@@ -28364,8 +28297,7 @@
     overflow: auto;
   }
 
-  .quick-open-results button,
-  .command-palette-results button {
+  .quick-open-results button {
     display: grid;
     grid-template-columns: 22px minmax(0, 1fr) auto;
     align-items: center;
@@ -28382,63 +28314,40 @@
     cursor: pointer;
   }
 
-  .command-palette-results button {
-    grid-template-columns: 22px minmax(0, 1fr);
-    height: 38px;
-  }
-
   .quick-open-results button:hover,
-  .quick-open-results button.active,
-  .command-palette-results button:hover:not(:disabled),
-  .command-palette-results button.active {
+  .quick-open-results button.active {
     color: #f2f6f5;
     background: rgba(92, 226, 207, 0.12);
   }
 
-  .command-palette-results button:disabled {
-    cursor: default;
-    opacity: 0.44;
-  }
-
-  .quick-open-result-icon,
-  .command-palette-result-icon {
+  .quick-open-result-icon {
     color: #8d9995;
   }
 
-  .quick-open-results button.active .quick-open-result-icon,
-  .command-palette-results button.active .command-palette-result-icon {
+  .quick-open-results button.active .quick-open-result-icon {
     color: #6fdfcf;
   }
 
-  .quick-open-results button span,
-  .command-palette-results button span {
+  .quick-open-results button span {
     display: grid;
     min-width: 0;
   }
 
   .quick-open-results strong,
-  .quick-open-results small,
-  .command-palette-results strong,
-  .command-palette-results small {
+  .quick-open-results small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .quick-open-results strong,
-  .command-palette-results strong {
+  .quick-open-results strong {
     font-size: 13px;
     line-height: 1.15;
   }
 
-  .command-palette-results strong {
-    font-size: 12px;
-  }
-
   .quick-open-results small,
-  .quick-open-results em,
-  .command-palette-results small {
+  .quick-open-results em {
     color: #7f8b87;
     font-size: 10px;
     font-style: normal;
