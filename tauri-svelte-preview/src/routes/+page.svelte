@@ -14163,39 +14163,58 @@
     return parsedRoot.path ? parsedRoot : null;
   }
 
+  // localStorage writes can throw QuotaExceededError: large repos / many cached
+  // projects overflow the browser's ~5-10 MB quota. A persistence failure must
+  // NEVER propagate out of a caller — an unguarded quota throw in the scan path
+  // (persistSourceScanCache) failed the whole scan and sent it into a retry loop
+  // ("Scan failed: The quota has been exceeded."). Swallow + report instead.
+  function safeSetLocalStorageItem(key: string, value: string): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+      window.localStorage.setItem(key, value);
+      return true;
+    } catch (error) {
+      console.warn(`Source browser: skipped localStorage write for "${key}" (quota exceeded?)`, error);
+      return false;
+    }
+  }
+
   function persistCustomProjectRoots(roots: ProjectRoot[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(customProjectRootsStorageKey, JSON.stringify(roots));
+    safeSetLocalStorageItem(customProjectRootsStorageKey, JSON.stringify(roots));
   }
 
   function persistSelectedProjectID(projectID: string) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(selectedProjectStorageKey, projectID);
+    safeSetLocalStorageItem(selectedProjectStorageKey, projectID);
   }
 
   function persistSelectedSourcePaths(paths: Record<string, string>) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(selectedSourcePathStorageKey, JSON.stringify(paths));
+    safeSetLocalStorageItem(selectedSourcePathStorageKey, JSON.stringify(paths));
   }
 
   function persistSourceScanCache(cache: SourceScanCache) {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem(sourceScanCacheStorageKey, JSON.stringify(cache));
+    if (safeSetLocalStorageItem(sourceScanCacheStorageKey, JSON.stringify(cache))) return;
+    // The scan cache (file records for up to maxSourceScanCacheEntries projects) is
+    // the largest persisted payload and the one that overflows on big repos. If the
+    // write failed, drop any stale persisted cache so a full quota can never fail or
+    // retry-loop the scan — the index just rebuilds from a fresh scan next load.
+    try {
+      window.localStorage.removeItem(sourceScanCacheStorageKey);
+    } catch {
+      /* best-effort: nothing more we can do if even removeItem fails */
+    }
   }
 
   function persistRecentSourceRecords(recentRecords: SourceRecentRecord[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
+    safeSetLocalStorageItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
   }
 
   function persistOpenSourceTabs(tabs: SourceOpenTab[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(openSourceTabsStorageKey, JSON.stringify(tabs));
+    safeSetLocalStorageItem(openSourceTabsStorageKey, JSON.stringify(tabs));
   }
 
   function persistWorkspaceSnapshots(snapshots: WorkspaceSnapshot[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(snapshotStorageKey, JSON.stringify(snapshots));
+    safeSetLocalStorageItem(snapshotStorageKey, JSON.stringify(snapshots));
   }
 
   function loadStoredActiveWorkspaceSessionKey(): string | null {
