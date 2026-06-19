@@ -319,6 +319,11 @@
 		| null = null;
 	const codeLensReferenceCountCache = new Map<string, number | null>();
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
+	// Hot-path deadline for the four navigation providers (design-monaco.md §2.3).
+	// A nav lookup (definition/references/implementation/type-definition) must settle
+	// within this budget with the best answer available now; a cold/slow/empty backend
+	// returns fast (empty peek that can re-populate) instead of freezing the gesture.
+	const NAV_LOOKUP_DEADLINE_MS = 200;
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
 	const sourceLspMonacoLanguageIDs = [
 		"typescript",
@@ -463,20 +468,72 @@
 		);
 	}
 
+	// Race a hot-path lookup against a fixed deadline AND Monaco's CancellationToken
+	// (design-monaco.md §2.3). Resolves to the real value when the promise wins first;
+	// resolves to `null` when the deadline elapses, when the token is cancelled, or when
+	// the underlying promise rejects (a slow/flaky backend must never throw or hang the
+	// gesture). The sleep timer and the cancellation listener are always torn down once a
+	// racer wins, so neither a timer nor an event subscription leaks.
+	function withDeadline<T>(
+		p: Promise<T>,
+		ms: number,
+		token: Monaco.CancellationToken
+	): Promise<T | null> {
+		return new Promise<T | null>((resolve) => {
+			let settled = false;
+			let timer = 0;
+			let cancelSubscription: Monaco.IDisposable | null = null;
+
+			const finish = (value: T | null) => {
+				if (settled) return;
+				settled = true;
+				if (timer) {
+					window.clearTimeout(timer);
+					timer = 0;
+				}
+				cancelSubscription?.dispose();
+				cancelSubscription = null;
+				resolve(value);
+			};
+
+			// Already-cancelled tokens short-circuit immediately (no work, no timer).
+			if (token.isCancellationRequested) {
+				finish(null);
+				return;
+			}
+
+			timer = window.setTimeout(() => finish(null), ms);
+			cancelSubscription = token.onCancellationRequested(() => finish(null));
+			p.then(
+				(value) => finish(value),
+				() => finish(null)
+			);
+		});
+	}
+
 	function registerSourceDefinitionProvider(monaco: typeof Monaco) {
 		definitionProviderDisposable?.dispose();
 		definitionProviderDisposable = monaco.languages.registerDefinitionProvider(
 			sourceLspMonacoLanguageIDs,
 			{
-				provideDefinition: async (model, position) => {
+				provideDefinition: async (model, position, token) => {
 					const request = lookupRequestForModelPosition(model, position);
 					if (!request) return null;
 
-					const targets = await onDefinitionLookup?.(request);
+					// A3: never block the gesture — race the lookup against a short deadline
+					// and Monaco's cancellation token. Cancelled ⇒ null (Monaco discards, so a
+					// superseded request can't paint a stale jump/peek); deadline/empty ⇒ [].
+					const result = await withDeadline(
+						Promise.resolve(onDefinitionLookup?.(request)),
+						NAV_LOOKUP_DEADLINE_MS,
+						token
+					);
+					if (token.isCancellationRequested) return null;
+					if (!result) return [];
 					// A2: return locations only — no eager fan-out read. Target models are
 					// materialized lazily (peek group on expand via the resolver shim, or the
 					// single navigated model in the editor opener on a jump).
-					return (targets ?? []).map((target) => sourceDefinitionTargetToLocation(monaco, target));
+					return result.map((target) => sourceDefinitionTargetToLocation(monaco, target));
 				},
 			}
 		);
@@ -487,14 +544,24 @@
 		referenceProviderDisposable = monaco.languages.registerReferenceProvider(
 			sourceLspMonacoLanguageIDs,
 			{
-				provideReferences: async (model, position) => {
+				provideReferences: async (model, position, _context, token) => {
 					const request = lookupRequestForModelPosition(model, position);
 					if (!request) return null;
 
-					const targets = await onReferenceLookup?.(request);
+					// A3: never block the gesture — race the lookup against a short deadline
+					// and Monaco's cancellation token. Cancelled ⇒ null (so a rapid re-trigger
+					// can't paint a stale peek); deadline/empty ⇒ [] (an empty peek that can
+					// re-populate beats a 30s spinner hang).
+					const result = await withDeadline(
+						Promise.resolve(onReferenceLookup?.(request)),
+						NAV_LOOKUP_DEADLINE_MS,
+						token
+					);
+					if (token.isCancellationRequested) return null;
+					if (!result) return [];
 					// A2: locations only — Monaco reads each file group lazily on expand via
 					// the lazy text-model resolver (createModelReference shim). No read storm.
-					return (targets ?? []).map((target) => sourceReferenceTargetToLocation(monaco, target));
+					return result.map((target) => sourceReferenceTargetToLocation(monaco, target));
 				},
 			}
 		);
@@ -568,13 +635,21 @@
 		implementationProviderDisposable = monaco.languages.registerImplementationProvider(
 			sourceLspMonacoLanguageIDs,
 			{
-				provideImplementation: async (model, position) => {
+				provideImplementation: async (model, position, token) => {
 					const request = lookupRequestForModelPosition(model, position);
 					if (!request) return null;
 
-					const targets = await onImplementationLookup?.(request);
+					// A3: never block the gesture — race the lookup against a short deadline
+					// and Monaco's cancellation token. Cancelled ⇒ null; deadline/empty ⇒ [].
+					const result = await withDeadline(
+						Promise.resolve(onImplementationLookup?.(request)),
+						NAV_LOOKUP_DEADLINE_MS,
+						token
+					);
+					if (token.isCancellationRequested) return null;
+					if (!result) return [];
 					// A2: locations only; lazy resolver materializes peek previews on expand.
-					return (targets ?? []).map((target) =>
+					return result.map((target) =>
 						sourceImplementationTargetToLocation(monaco, target)
 					);
 				},
@@ -587,13 +662,21 @@
 		typeDefinitionProviderDisposable = monaco.languages.registerTypeDefinitionProvider(
 			sourceLspMonacoLanguageIDs,
 			{
-				provideTypeDefinition: async (model, position) => {
+				provideTypeDefinition: async (model, position, token) => {
 					const request = lookupRequestForModelPosition(model, position);
 					if (!request) return null;
 
-					const targets = await onTypeDefinitionLookup?.(request);
+					// A3: never block the gesture — race the lookup against a short deadline
+					// and Monaco's cancellation token. Cancelled ⇒ null; deadline/empty ⇒ [].
+					const result = await withDeadline(
+						Promise.resolve(onTypeDefinitionLookup?.(request)),
+						NAV_LOOKUP_DEADLINE_MS,
+						token
+					);
+					if (token.isCancellationRequested) return null;
+					if (!result) return [];
 					// A2: locations only; lazy resolver materializes peek previews on expand.
-					return (targets ?? []).map((target) =>
+					return result.map((target) =>
 						sourceTypeDefinitionTargetToLocation(monaco, target)
 					);
 				},
