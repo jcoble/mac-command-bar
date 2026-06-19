@@ -3,6 +3,15 @@
 	import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 	import "monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/goToCommands";
 	import "monaco-editor/esm/vs/editor/standalone/browser/referenceSearch/standaloneReferenceSearch";
+	// Deep imports for the lazy target-model resolver (Task A2, design-monaco.md §4.2,
+	// Route 1). The standalone `ITextModelService` is a global eager singleton
+	// (standaloneServices.js: registerSingleton(ITextModelService, …, Eager)) and is
+	// the exact instance the reference-peek tree resolves preview models through
+	// (referencesWidget.js __param(4, ITextModelService) → DataSource →
+	// FileReferences.resolve → createModelReference). Overriding its on-miss behaviour
+	// makes peek read each file group lazily on expand instead of eagerly up front.
+	import { StandaloneServices } from "monaco-editor/esm/vs/editor/standalone/browser/standaloneServices";
+	import { ITextModelService } from "monaco-editor/esm/vs/editor/common/services/resolverService";
 	import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 	import TypeScriptWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 	import "monaco-editor/min/vs/editor/editor.main.css";
@@ -288,6 +297,26 @@
 	let monacoCancellationSuppressionTimer = 0;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const inFlightTargetModels = new Map<string, Promise<Monaco.editor.ITextModel | null>>();
+	// Bounded LRU of lazily-materialized EXTERNAL target models (design-monaco.md
+	// §4.4). Most-recent path last. Only models created on-demand by the lazy
+	// resolver / opener live here — never the currently-edited model. We cap growth
+	// so a long find-refs session can't accumulate unbounded models, but we never
+	// dispose on a benign model switch (re-opening a peek for the same symbol reuses
+	// live models = zero re-reads). `onDestroy` still disposes everything in
+	// `ownedModels`.
+	const EXTERNAL_TARGET_MODEL_LRU_CAP = 24;
+	const externalTargetModelLru = new Map<string, Monaco.editor.ITextModel>();
+	// The standalone text-model resolver we shim for lazy materialization. Saved so
+	// we can restore the original on destroy and delegate the wrap-as-reference work.
+	type StandaloneTextModelResolver = {
+		createModelReference: (
+			resource: Monaco.Uri
+		) => Promise<Monaco.editor.IReference<{ object: Monaco.editor.ITextModel }>>;
+	};
+	let textModelResolverService: StandaloneTextModelResolver | null = null;
+	let originalCreateModelReference:
+		| StandaloneTextModelResolver["createModelReference"]
+		| null = null;
 	const codeLensReferenceCountCache = new Map<string, number | null>();
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
 	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
@@ -444,7 +473,9 @@
 					if (!request) return null;
 
 					const targets = await onDefinitionLookup?.(request);
-					await ensureSourceTargetModels(monaco, targets ?? []);
+					// A2: return locations only — no eager fan-out read. Target models are
+					// materialized lazily (peek group on expand via the resolver shim, or the
+					// single navigated model in the editor opener on a jump).
 					return (targets ?? []).map((target) => sourceDefinitionTargetToLocation(monaco, target));
 				},
 			}
@@ -461,7 +492,8 @@
 					if (!request) return null;
 
 					const targets = await onReferenceLookup?.(request);
-					await ensureSourceTargetModels(monaco, targets ?? []);
+					// A2: locations only — Monaco reads each file group lazily on expand via
+					// the lazy text-model resolver (createModelReference shim). No read storm.
 					return (targets ?? []).map((target) => sourceReferenceTargetToLocation(monaco, target));
 				},
 			}
@@ -541,7 +573,7 @@
 					if (!request) return null;
 
 					const targets = await onImplementationLookup?.(request);
-					await ensureSourceTargetModels(monaco, targets ?? []);
+					// A2: locations only; lazy resolver materializes peek previews on expand.
 					return (targets ?? []).map((target) =>
 						sourceImplementationTargetToLocation(monaco, target)
 					);
@@ -560,7 +592,7 @@
 					if (!request) return null;
 
 					const targets = await onTypeDefinitionLookup?.(request);
-					await ensureSourceTargetModels(monaco, targets ?? []);
+					// A2: locations only; lazy resolver materializes peek previews on expand.
 					return (targets ?? []).map((target) =>
 						sourceTypeDefinitionTargetToLocation(monaco, target)
 					);
@@ -764,15 +796,46 @@
 		return { line: Math.max(1, line), column: Math.max(1, column) };
 	}
 
+	// Mark an external target model as most-recently-used and evict beyond the cap
+	// (design-monaco.md §4.4). Never evicts the model the editor is currently showing
+	// (the currently-edited model is never an external target, but a peeked target can
+	// momentarily be the active model during a jump — guard anyway). Evicted models are
+	// disposed and dropped from `ownedModels`.
+	function touchExternalTargetModel(path: string, model: Monaco.editor.ITextModel) {
+		// Re-insert to move to the most-recent (last) position.
+		externalTargetModelLru.delete(path);
+		externalTargetModelLru.set(path, model);
+		if (externalTargetModelLru.size <= EXTERNAL_TARGET_MODEL_LRU_CAP) return;
+
+		const activeUri = editor?.getModel()?.uri.toString();
+		for (const [lruPath, lruModel] of externalTargetModelLru) {
+			if (externalTargetModelLru.size <= EXTERNAL_TARGET_MODEL_LRU_CAP) break;
+			// Skip the live/active model and any already-disposed entry's owner.
+			if (lruModel.uri.toString() === activeUri) continue;
+			externalTargetModelLru.delete(lruPath);
+			if (!lruModel.isDisposed()) {
+				ownedModels.delete(lruModel);
+				lruModel.dispose();
+			}
+		}
+	}
+
+	// On-miss body for the lazy resolver (Task A2): create exactly one external target
+	// model on demand from A1's memoized `onExternalPreviewLookup`. Kept single (NOT a
+	// bulk fan-out) and de-duped in-flight so def+ref providers firing together share
+	// one read. This is invoked lazily — per navigated jump target and per expanded
+	// peek file group — never eagerly across a whole result set.
 	async function ensureSourceTargetModel(monaco: typeof Monaco, target: SourceRecord) {
 		const uri = monaco.Uri.file(target.path);
 		const existing = monaco.editor.getModel(uri);
-		if (existing) return existing;
+		if (existing) {
+			if (ownedModels.has(existing)) touchExternalTargetModel(target.path, existing);
+			return existing;
+		}
 
-		// Dedupe concurrent requests for the same path. `ensureSourceTargetModels`
-		// runs every target through Promise.all, so without this several callers
-		// race past the getModel() check above and each read the same file before
-		// any createModel() lands — the duplicate read_source_file reads.
+		// Dedupe concurrent requests for the same path so two callers (e.g. the peek
+		// resolver and a parallel jump) don't each read the same file before any
+		// createModel() lands — the duplicate read_source_file reads.
 		const pending = inFlightTargetModels.get(target.path);
 		if (pending) return pending;
 
@@ -781,13 +844,17 @@
 			if (!externalPreview) return null;
 			// A peer request may have created the model while we awaited the read.
 			const raced = monaco.editor.getModel(uri);
-			if (raced) return raced;
+			if (raced) {
+				if (ownedModels.has(raced)) touchExternalTargetModel(target.path, raced);
+				return raced;
+			}
 			const model = monaco.editor.createModel(
 				externalPreview.content,
 				monacoLanguageForSource(externalPreview.language),
 				uri
 			);
 			ownedModels.add(model);
+			touchExternalTargetModel(target.path, model);
 			return model;
 		})().finally(() => {
 			inFlightTargetModels.delete(target.path);
@@ -797,10 +864,62 @@
 		return load;
 	}
 
-	async function ensureSourceTargetModels(monaco: typeof Monaco, targets: SourceRecord[]) {
-		await Promise.all(
-			targets.map((target) => ensureSourceTargetModel(monaco, target).catch(() => null))
-		);
+	// Route 1 (design-monaco.md §4.2): override the standalone text-model resolver so
+	// the reference-peek tree materializes a file's model lazily, on expand, instead of
+	// rejecting with "Model not found" (standaloneServices.js:128). On a miss we read
+	// just that one file via `ensureSourceTargetModel`, then delegate to the original
+	// `createModelReference`, which now finds the model and wraps it as the immortal
+	// reference Monaco expects. Returning a `Location[]` from a provider therefore reads
+	// ZERO files; only an expanded peek group (or a followed jump) triggers a read.
+	function installLazyTargetModelResolver(monaco: typeof Monaco) {
+		if (textModelResolverService) return;
+		let service: StandaloneTextModelResolver | null = null;
+		try {
+			service = StandaloneServices.get(
+				ITextModelService
+			) as unknown as StandaloneTextModelResolver;
+		} catch (error) {
+			console.warn("Lazy target-model resolver unavailable; peek previews may be empty", error);
+			return;
+		}
+		if (!service || typeof service.createModelReference !== "function") return;
+		if (originalCreateModelReference) return; // already shimmed
+
+		textModelResolverService = service;
+		originalCreateModelReference = service.createModelReference.bind(service);
+		const delegate = originalCreateModelReference;
+
+		service.createModelReference = async (resource: Monaco.Uri) => {
+			// Fast path: model already exists (currently-edited file, a prior peek
+			// target, or any model Monaco created). Delegate straight through; keep the
+			// LRU warm so reusing it survives eviction pressure.
+			if (monaco.editor.getModel(resource)) {
+				const path = sourcePathFromMonacoUri(resource);
+				const known = path ? externalTargetModelLru.get(path) : undefined;
+				if (path && known) touchExternalTargetModel(path, known);
+				return delegate(resource);
+			}
+
+			const path = sourcePathFromMonacoUri(resource);
+			if (path) {
+				// `onExternalPreviewLookup` (page side) only reads `record.path`; it
+				// reconstructs the full SourceRecord from the project itself. So a
+				// path-only record is sufficient and correct here.
+				await ensureSourceTargetModel(monaco, { path } as SourceRecord);
+			}
+			// Delegate regardless: if we materialized the model the original now wraps
+			// it; if we couldn't (no preview), the original rejects exactly as before and
+			// FileReferences.resolve swallows it per-child (empty preview, not a crash).
+			return delegate(resource);
+		};
+	}
+
+	function uninstallLazyTargetModelResolver() {
+		if (textModelResolverService && originalCreateModelReference) {
+			textModelResolverService.createModelReference = originalCreateModelReference;
+		}
+		textModelResolverService = null;
+		originalCreateModelReference = null;
 	}
 
 	function sourceDefinitionTargetToLocation(
@@ -1522,7 +1641,9 @@
 		editor.focus();
 
 		const targets = (await onReferenceLookup?.(request)) ?? [];
-		await ensureSourceTargetModels(monaco, targets);
+		// A2: no bulk pre-read. peekLocations carries only {uri, range}; the peek tree
+		// pulls each file group's preview model lazily on expand through our lazy
+		// resolver shim (installLazyTargetModelResolver).
 		const locations = targets.map((target) => sourceReferenceTargetToLocation(monaco, target));
 		if (locations.length === 0 || !model) {
 			requestReferencesAtPosition(position);
@@ -1567,24 +1688,33 @@
 	function installExternalEditorOpener(monaco: typeof Monaco) {
 		editorOpenerDisposable?.dispose();
 		editorOpenerDisposable = monaco.editor.registerEditorOpener({
-			openCodeEditor: (source, resource, selectionOrPosition) => {
+			openCodeEditor: async (source, resource, selectionOrPosition) => {
 				if (!editor || source !== editor || !onExternalNavigation) return false;
 
 				const path = sourcePathFromMonacoUri(resource);
 				if (!path || path === currentPath) return false;
 
-				const targetModel = monaco.editor.getModel(resource);
-				if (!targetModel) return false;
+				// A2 / design §4.3: a single go-to-definition jump needs exactly ONE
+				// model — the navigated target. The provider returned locations only (no
+				// fan-out), so materialize just this one on demand now (cached/deduped via
+				// ensureSourceTargetModel). If the read fails we still return true and let
+				// onExternalNavigation drive the load — the jump must never silently fail.
+				let targetModel = monaco.editor.getModel(resource);
+				if (!targetModel) {
+					targetModel = await ensureSourceTargetModel(monaco, { path } as SourceRecord);
+				}
 
 				const location = locationFromMonacoSelection(selectionOrPosition);
 				const position = {
 					lineNumber: location.line,
 					column: location.column
 				};
-				editor.setModel(targetModel);
-				editor.setPosition(position);
-				editor.revealPositionInCenterIfOutsideViewport(position);
-				editor.focus();
+				if (targetModel) {
+					editor.setModel(targetModel);
+					editor.setPosition(position);
+					editor.revealPositionInCenterIfOutsideViewport(position);
+					editor.focus();
+				}
 
 				const releaseCancellationSuppression = suppressMonacoCancellationErrorsBriefly();
 				queueMicrotask(() => {
@@ -1846,6 +1976,7 @@
 		registerSourceCodeLensReferenceCommand(monaco);
 		registerSourceCodeLensProvider(monaco);
 		installExternalEditorOpener(monaco);
+		installLazyTargetModelResolver(monaco);
 
 		editorActionDisposables = [
 			editor.addAction({
@@ -2093,6 +2224,7 @@
 		documentSymbolProviderDisposable?.dispose();
 		codeLensReferenceCommandDisposable?.dispose();
 		editorOpenerDisposable?.dispose();
+		uninstallLazyTargetModelResolver();
 		codeLensReferenceCommandDisposable = null;
 		editorOpenerDisposable = null;
 		for (const disposable of editorActionDisposables) {
@@ -2112,6 +2244,8 @@
 			model.dispose();
 		}
 		ownedModels.clear();
+		externalTargetModelLru.clear();
+		inFlightTargetModels.clear();
 	});
 </script>
 
