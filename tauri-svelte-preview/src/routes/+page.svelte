@@ -3331,6 +3331,15 @@
     files.scan.scanning = true;
     files.scan.loading = true;
     const scanId = createSourceScanId();
+    // Supersede any previous in-flight scan: cancel its backend walk so it does
+    // not run to completion after we've moved on. The generation counter above
+    // already discards a superseded scan's *result*, but without this the Rust
+    // walk kept running anyway — a wasted "ghost" scan executing in parallel that
+    // doubled native load time (each walk of a large tree is multiple seconds).
+    const supersededScanId = files.scan.activeScanId;
+    if (supersededScanId && supersededScanId !== scanId) {
+      void cancelSourceScanFromTauri(supersededScanId).catch(() => {});
+    }
     files.scan.activeScanId = scanId;
     files.scan.progress = null;
     files.scan.stats = null;
