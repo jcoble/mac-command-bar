@@ -138,6 +138,26 @@ canvas {
 }
 
 /* ------------------------------------------------------------------
+ * No text-selection while a Dockview drag is in progress.
+ * macOS WKWebView (the native Tauri webview) IGNORES the unprefixed
+ * `user-select` property, so dragging a splitter / tab swept a native
+ * text selection across the whole chrome — painted in the teal
+ * `::selection` color above (the "green flash" the editor + tree turned
+ * during a drag). Web (Chrome) honors the unprefixed rules, so it never
+ * reproduced there. Scope the suppression to ACTIVE drags only, via
+ * dockview's drag-state classes, so ordinary text selection elsewhere is
+ * untouched — and include the -webkit- prefix so WKWebView applies it.
+ * Surfaced after the +page.svelte extraction.
+ * ------------------------------------------------------------------ */
+body:has(.dv-resize-container-dragging),
+body:has(.dv-tab--dragging),
+body:has(.dv-tab-dragging),
+body:has(.dv-tab-ghost-drag) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------
  * Focus — single, visible, token-driven ring.
  * Drop the UA outline only where our ring already shows focus,
  * so keyboard users always keep a clear indicator.
