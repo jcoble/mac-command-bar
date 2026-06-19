@@ -138,23 +138,32 @@ canvas {
 }
 
 /* ------------------------------------------------------------------
- * No text-selection while a Dockview drag is in progress.
- * macOS WKWebView (the native Tauri webview) IGNORES the unprefixed
- * `user-select` property, so dragging a splitter / tab swept a native
- * text selection across the whole chrome — painted in the teal
- * `::selection` color above (the "green flash" the editor + tree turned
- * during a drag). Web (Chrome) honors the unprefixed rules, so it never
- * reproduced there. Scope the suppression to ACTIVE drags only, via
- * dockview's drag-state classes, so ordinary text selection elsewhere is
- * untouched — and include the -webkit- prefix so WKWebView applies it.
+ * App chrome is NOT text-selectable (standard IDE-shell behavior).
+ * A pointer drag on the chrome — splitter resize, panel/tab drag, even a
+ * stray click-drag — must never sweep a native TEXT SELECTION across the
+ * UI. On the native macOS WKWebView that selection renders in the teal
+ * `::selection` color above = the "green flash". WKWebView also IGNORES
+ * unprefixed `user-select`, so the `-webkit-` prefix is required (Chrome
+ * honored the unprefixed form, which is why it never reproduced on web).
+ * A drag-only scope via dockview drag classes missed because not every
+ * splitter carries one — this blanket chrome rule is the robust fix.
+ * Content surfaces opt back in below so copying from them still works.
  * Surfaced after the +page.svelte extraction.
  * ------------------------------------------------------------------ */
-body:has(.dv-resize-container-dragging),
-body:has(.dv-tab--dragging),
-body:has(.dv-tab-dragging),
-body:has(.dv-tab-ghost-drag) {
+body {
   -webkit-user-select: none;
   user-select: none;
+}
+
+.monaco-editor,
+.xterm,
+input,
+textarea,
+[contenteditable='true'],
+.selectable,
+[data-selectable='true'] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* ------------------------------------------------------------------
