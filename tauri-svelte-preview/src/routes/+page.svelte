@@ -3276,6 +3276,9 @@
     options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
+    // A new scan may surface a different tree / changed files on disk; drop all
+    // memoized external previews so none survive into the rescanned project.
+    externalPreviewCache.clear();
     const scanLimit = options.limit ?? expandedSourceScanLimit;
     const sourceSignature = sourceScanCacheSignatureForProject(project);
     const cachedScan =
@@ -8715,6 +8718,14 @@
     }
   }
 
+  // Per-path memo for external source previews. A repeated lookup of the same
+  // path is a map hit, so the lazy target-model resolver / def+ref providers
+  // never re-read the same file via `read_source_file`. Invalidated on a
+  // successful save of that path (commitSourcePreviewContent) and cleared
+  // wholesale when a new project scan starts (scanProject) — a stale preview
+  // after an edit would be a correctness bug.
+  const externalPreviewCache = new Map<string, SourcePreview>();
+
   async function loadEditorExternalSourcePreview(record: SourceRecord) {
     const sourceRecord = sourceRecordFromRestoredPath(selectedProject, record.path);
 
@@ -8734,8 +8745,12 @@
       );
     }
 
+    const cached = externalPreviewCache.get(sourceRecord.path);
+    if (cached) return cached;
+
     const sourcePreview = await readSourceFromTauri(sourceRecord);
     if (sourcePreview) {
+      externalPreviewCache.set(sourceRecord.path, sourcePreview);
       syncSourcePreviewContent(sourcePreview);
       return sourcePreview;
     }
@@ -9935,6 +9950,9 @@
   }
 
   function commitSourcePreviewContent(nextPreview: SourcePreview) {
+    // A successful save just changed this path on disk; drop its memoized
+    // preview so the next external lookup re-reads the saved content.
+    externalPreviewCache.delete(nextPreview.path);
     files.draftByPath = {
       ...files.draftByPath,
       [nextPreview.path]: nextPreview.content
