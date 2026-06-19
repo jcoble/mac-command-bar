@@ -140,8 +140,12 @@
     /* subtle neutral drop wash — the teal accent/live-bg here painted a
        loud green flash across the editor on sash resize (pointer dnd
        momentarily registers a drag-over during a splitter drag) */
-    --dv-drag-over-background-color: color-mix(in srgb, var(--color-focus) 10%, transparent);
-    --dv-drag-over-border-color: var(--color-focus);
+    /* Neutral, subtle drop affordance — NOT the teal accent. The accent
+       (`--color-focus`) flooded the editor green on every pane drag and the
+       0.13s fade read as a flicker; a faint white wash + soft border still
+       reads as "drop here" without the green flash. */
+    --dv-drag-over-background-color: rgba(255, 255, 255, 0.05);
+    --dv-drag-over-border-color: rgba(255, 255, 255, 0.28);
     --dv-floating-box-shadow: var(--shadow-lg);
 
     /* spacious, comfortable tabs */
