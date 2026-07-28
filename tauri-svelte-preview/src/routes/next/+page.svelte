@@ -237,7 +237,11 @@
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
     // Save the session being left BEFORE anything points the panels elsewhere.
-    if (switching && previous !== null) snapshotWorkspace(previous);
+    // Gated the same way as the restore below: during start-up the panels are
+    // still empty, and saving that emptiness would overwrite the tabs the
+    // session actually had (rows are clickable for seconds while the first
+    // scan runs — including the close button, which switches sessions too).
+    if (switching && previous !== null && shellPanels.loadsAllowed()) snapshotWorkspace(previous);
     setActiveOwned(ownedId);
     service?.show(ownedId);
     // Point the file tree, the context cards and any tab the user has already
