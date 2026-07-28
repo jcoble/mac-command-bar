@@ -250,6 +250,10 @@
         // context cards would never load again. From here, a session being
         // selected is the user's doing and those panels may follow it.
         if (!disposed) shellPanels.allowSessionLoads();
+        // A session re-attached during start-up was "picked" before the gate was
+        // open, so its pick was ignored. Repeat it now that loads are allowed, or
+        // a reload comes back with empty panes until the user clicks a session.
+        if (!disposed && rail.activeOwnedId !== null) shellPanels.sessionPicked();
       }
     })();
 
