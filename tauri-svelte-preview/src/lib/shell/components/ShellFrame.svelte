@@ -168,6 +168,13 @@
     /* NEUTRAL wash only — the teal accent here caused the green drag-flash. */
     --dv-drag-over-background-color: rgba(255, 255, 255, 0.05);
     --dv-drag-over-border-color: transparent;
+    /* VS Code-style resize feedback: the divider lights up teal on hover/drag.
+       Safe to color, unlike the drag-over wash above — this paints only the
+       sash line itself, never the panel content. Delay 0 so it appears the
+       moment you grab it, not half a second in. */
+    --dv-active-sash-color: #4bf3c8;
+    --dv-active-sash-transition-delay: 0.1s;
+    --dv-active-sash-transition-duration: 0.05s;
   }
 
   /* seam flattening */
