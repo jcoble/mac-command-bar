@@ -68,7 +68,93 @@ export function onOpenFile(listener: Listener): () => void {
 
 (Filled per-lane from recon: deliverable, files, backend surface with exact command/wrapper names, quarry pointers with poison notes, test script scope, acceptance.)
 
-<!-- LANE SPECS INSERTED BELOW BY CONTROLLER AFTER RECON -->
+### Lane E — Editor / code reading (Monaco + LSP) — the big lane
+
+**Deliverable:** a working code-reading panel: open file → Monaco renders it read-only(+editable later), go-to-definition, peek references, hover, code lens with reference counts, document symbols. Subscribes to the open-file bus.
+
+**Reuse decision (recon-verified):** `src/lib/MonacoSourceEditor.svelte` is REUSED AS-IS (imported from its current location — it passed the poison audit: no backend IO, two trivial `$effect`s, thorough disposal, all language intelligence arrives via callback props). Do NOT copy or fork it. The lane builds the service that feeds its callbacks.
+
+**New files only:**
+- `src/lib/shell/editor/sourceIntelligence.ts` — the service owning `{projectRoot, activePreview, draftContent}` and exporting the callback set for MonacoSourceEditor. Port from the old page (READ `src/routes/+page.svelte`, never import): `findSourceDefinitionTargetsForEditor` (:8446), `findSourceReferenceTargetsForEditor` (:8486), `countSourceReferencesForCodeLens` (:8548 — port VERBATIM including `codeLensReferenceCountTimeoutMs = 700`, `maxCodeLensNativeReferenceScanRecords = 1500`, and the isNativeTauriRuntime size-cap guard; this function encodes regressions cad76d3 + 52ad343/0593c20), `loadEditorExternalSourcePreview` (:8607) with its `externalPreviewCache` (invalidated on save; expose `invalidatePreview(path)` for future lanes), plus the simple hover/completion/highlight/semantic-token handlers (:10104-10214). Three-tier pattern per lookup: LSP → native text scan (`findSourceDefinitionsFromTauri`/`findSourceReferencesFromTauri`) → give up (NO demo-data tier in /next). `countInvoke` before every backend call.
+- `src/lib/shell/editor/sourceRecordFromPath.ts` + `scripts/sourceRecordFromPath.test.mjs` — PURE: port `sourceRecordFromRestoredPath` (old page :6769, ~30 lines): path + projectRoot → synthesized `SourceRecord {path, relativePath, fileName, language, byteCount}`. This is the "open file by path" bridge; the lane does NOT need the project scan.
+- `src/lib/shell/editor/editorStore.svelte.ts` — open files (ordered), active path, per-file {preview, targetLine, targetLineRequestId, loading}.
+- `src/lib/shell/components/EditorPanel.svelte` — thin: open-file strip (simple buttons this slice, not dockview tabs), MonacoSourceEditor with the service's callbacks, empty state "Open a file from the explorer or palette". Subscribes `onOpenFile` from `$lib/shell/openFileBus`: request → `sourceRecordFromPath` → `readSourceFromTauri(record)` (NOTE: the wrapper re-overlays relativePath/language/byteCount from the record — always build the record first) → store → render. `warm_source_lsp_for_root`: call `warmSourceLspForRootFromTauri(root)` once per root on first file-open of that root (idempotent, no-op if nothing running).
+- `scripts/editorStore.test.mjs`.
+
+**Hard constraints:** ONE MonacoSourceEditor instance ever (Monaco providers are registered process-globally; two instances = the last one wins all lookups — recon-verified hazard). Model switching, not editor duplication. LSP spawns only from user file-open (constitution). No `$effect` calling the service; UI events call it imperatively.
+
+### Lane G — Git panel (source control)
+
+**Deliverable:** a VS Code-style source-control panel component + a diff viewer, live against the active session's project root.
+
+**New files only:**
+- `src/lib/shell/git/gitService.ts` — imperative loaders + actions. Wraps the EXISTING `tauriSource.ts` functions (`readProjectGitStatusFromTauri(root)`, `readSourceGitDiffFromTauri(root, path)`, `stageGitPathsFromTauri`, `unstageGitPathsFromTauri`, `commitGitRepositoryFromTauri`, `fetchGitRepositoryFromTauri`, `pullGitRepositoryFromTauri`, `pushGitRepositoryFromTauri`, `readGitCommitHistoryFromTauri(root, limit≤80)`). Every call: `countInvoke('<command>')` first. Copy the request-guard shape from the old shell (`+page.svelte:3776-3801` monotonic request id + superseded-bail) — imperative only, no `$effect`. `null` return = not-Tauri: render an inert "native only" state, DO NOT fake demo data.
+- `src/lib/shell/git/gitPanelStore.svelte.ts` — rune store; start from old `src/lib/stores/gitStore.svelte.ts` (105 lines, audited clean — pure value bag, reusable nearly verbatim; keep its no-effects rule).
+- `src/lib/shell/git/parseUnifiedDiff.ts` + `scripts/parseUnifiedDiff.test.mjs` — PURE: parse unified-diff text (`SourceGitDiff.diff`) into `{ before: string, after: string, hunks: [...] }` for Monaco's diff editor; handle new/deleted/binary (`isBinary`) files. This is the lane's real test surface.
+- `src/lib/shell/components/GitPanel.svelte` — changes list (staged/unstaged groups, per-file badge strings from the backend — `GitFileStatus.status/.badge` are pre-computed, never parse porcelain), stage/unstage/commit (commit message input), fetch/pull/push row, commit-history list (limit 24). Quarry: `ActivityGitPanel.svelte` props contract (`GitPanelData`/`GitPanelFormatters`/`GitPanelActions` at :94-170) — copy the grouping idea, NOT the 1777-line chrome.
+- `src/lib/shell/components/GitDiffView.svelte` — renders a selected file's diff. Phase 1: readable unified text with syntax-neutral +/− coloring; Phase 2 (same lane, if time): Monaco `createDiffEditor` fed by `parseUnifiedDiff`. Lazy-import monaco ONLY when a diff is first shown.
+- `scripts/gitPanelStore.test.mjs` — store mutations + guard logic.
+
+**Constraints:** project root comes from the active owned session (`rail.owned` active entry's `projectPath`/`cwd`) — passed IN by the integrator via `activate(root)`; the lane must not import sessionRailStore. No branch-list/checkout UI (no backend command exists — do not add one). After every mutating action, re-read status (the backend returns fresh status in the action result — use it).
+
+### Lane X — Right context cards
+
+**Deliverable:** the Runs / Runtime / Agents / Worktrees / Git-summaries card stack for the context region.
+
+**New files only:**
+- `src/lib/shell/context/contextService.ts` — imperative loaders wrapping `listRuntimeContextsFromTauri(projects)`, `listProjectWorktreesFromTauri(root)`, `listOrchestrationRunsFromTauri(projects)`, `listGitRepositorySummariesFromTauri(projects)`, `listAgentSessionsFromTauri()` (+ local-bridge fallback, reuse the pattern in `routes/next/+page.svelte` scanRail — read it, do not import the page). `countInvoke` on every call. NO polling this slice — refresh happens on `activate()` and an explicit refresh button only.
+- `src/lib/shell/context/contextStore.svelte.ts` — rune store for the five card states (the old shell kept 4 of 5 in page-locals — this store is their new home).
+- `src/lib/shell/components/ContextPanel.svelte` — quarry HARD from `src/lib/WorkbenchContextPanel.svelte` (568 lines, audited CLEAN: props-only, no effects, no IO; its prop types are minimal structural shapes that accept raw backend types). Copy it nearly verbatim, restyle to the /next palette, keep `ROW_LIMIT = 6` + "+N more".
+- `scripts/contextStore.test.mjs`.
+
+**Constraints:** `projects` arrays come in via `activate(input: { projects, activeRoot })` from the integrator. Worktree cards are read-only this slice (no remove/archive buttons — the safety flow is its own future lane; `worktreeSafety.ts` etc. stay untouched).
+
+### Lane F — File explorer
+
+**Deliverable:** a file-tree panel for the active session's project, click-to-open via the open-file bus.
+
+**New files only:**
+- `src/lib/shell/explorer/explorerService.ts` — one scan path: `listSourceFilesFromTauri(root, query, limit, scanId)` with `createSourceScanId()` (`tauriSource.ts:321`), and on supersede `cancelSourceScanFromTauri(scanId)` — cancel the BACKEND walk, not just discard results (regression cd2f525). `countInvoke` per call. NO scan cache this wave (the old localStorage cache is uncapped and silently dies on big repos — recorded deferred; scan happens on `activate(root)` and on an explicit refresh only).
+- `src/lib/shell/explorer/explorerStore.svelte.ts` — records, tree expansion set, scroll state, scanning/error.
+- `src/lib/shell/components/ExplorerPanel.svelte` — REBUILD the UI (do NOT reuse `ActivityFilesPanel.svelte` — 45 props, old-store coupling). Tree building/flattening/virtualization: reuse VERBATIM the pure helpers `buildSourceTree` / `flattenSourceTree` / `virtualizeSourceTreeRows` / `scrollTopForSourceTreeReveal` / `folderIdsForSourceRecord` from `$lib/sourceData` (:2688-2782 — import, don't copy). Click on a file → `requestOpenFile({path})` from `$lib/shell/openFileBus` (this lane is the bus's first producer).
+- `scripts/explorerStore.test.mjs` — expansion/virtualization interplay on a synthetic tree.
+
+**Known scope limits (state them in UI copy where visible):** the backend lists ~70 source-file extensions only (images/lockfiles/unknown never appear) and skips `worktrees/`, `node_modules/` etc. — it is a code index, not a general file manager. No file watcher exists; refresh is manual.
+
+### Lane B — Browser panel
+
+**Deliverable:** the iframe browser panel with URL bar, reload, and per-`/next` URL persistence.
+
+**New files only:**
+- `src/lib/shell/browser/browserStore.svelte.ts` — url, inputUrl, frameKey, error; persists url to `mac-command-bar.next.browser.url` (quota-safe).
+- `src/lib/shell/browser/normalizeBrowserUrl.ts` + `scripts/normalizeBrowserUrl.test.mjs` — PURE: lift `normalizeBrowserDockUrl` VERBATIM from old page :7136-7155 (accepts `:5177`, `localhost:5177`, full URLs; rejects non-http(s)).
+- `src/lib/shell/components/BrowserPanel.svelte` — start from the old `src/lib/components/panels/BrowserPanel.svelte` (audited CLEAN, pure presentational): keep the `{#key frameKey:url}` iframe remount + sandbox attrs verbatim; drop the `panelAction` prop (the new dock has its own teleport); inline the `.file-action-button` styles it needs (they live in old `app.css` — copy the rules into the component, do not touch app.css).
+
+**Constraint:** the iframe's page state survives tab switches for free because the dock keeps panels attached (`defaultRenderer:'always'`); nothing may remount the iframe except the explicit reload button (frameKey bump).
+
+### Lane P — Command palette
+
+**Deliverable:** Cmd+K/Cmd+Shift+P palette over a proper action registry (the old shell's 131 inline page-closured commands are NOT liftable — greenfield registry, seeded small).
+
+**New files only:**
+- `src/lib/shell/palette/commandRegistry.ts` + `scripts/commandRegistry.test.mjs` — PURE: `PaletteCommand { id, label, detail, disabled?(): boolean, perform(): void | Promise<void> }`, `registerCommands(source: string, commands: PaletteCommand[])` (idempotent per source), `allCommands()`, `filterCommands(query, limit = 12)` (copy the old text-match: label+detail substring, slice 12).
+- `src/lib/shell/components/PalettePanel.svelte` — a thin host that mounts the OLD `src/lib/components/overlays/CommandPaletteOverlay.svelte` REUSED AS-IS (audited clean: 7 props, self-contained `CommandItem` type, zero old-shell deps) + a `<svelte:window>` keydown handler for Cmd/Ctrl+K and Cmd/Ctrl+Shift+P (copy the chord checks from old page :8905-8912; Escape closes).
+- Seed registry (in the component, not the page): `reset-layout`, `rescan-sessions`, `open-settings` — wired via callbacks passed from the integrator; everything else registers in later waves.
+
+**Constraint:** the palette executes registered commands only — it must not import any other lane's module (commands arrive via `registerCommands` at integration).
+
+### Lane S — Settings & /next theming
+
+**Deliverable:** the Settings dialog live on `/next` + a `/next`-scoped design-token stylesheet.
+
+**Facts (recon-verified):** `src/lib/settingsStore.svelte.ts` is complete and REUSED VERBATIM (module `$state` + `$effect.root` auto-persist to `mac-command-bar.settings`; safe merge). `src/lib/SettingsPanel.svelte` (Bits UI Dialog+Tabs) is droppable as-is but styled in `--color-*` tokens. `src/lib/styles/tokens.css` EXISTS, is globally loaded, and carries a DIFFERENT palette than /next — it is shared with the old shell and is FROZEN for this wave.
+
+**New files only:**
+- `src/lib/shell/styles/nextTokens.css` — the /next palette as `--color-*` values under a `.next-shell` scope (so SettingsPanel and future Bits components render correctly INSIDE /next without recoloring the old shell): bg `#101014`, surface `#17171d`, border `#22222c`, text `#d8d8e0`, text-2 `#6d6d7d`, text-3 `#4c4c5a`, plus the status tones copied from tokens.css. Document each mapping.
+- `src/lib/shell/components/SettingsHost.svelte` — mounts the reused `SettingsPanel` with `bind:open`, exposes `open()`; nothing else.
+- `scripts/nextTokens.test.mjs` — sanity: the css file parses (regex-level) and defines every token name SettingsPanel consumes (grep the list from SettingsPanel.svelte first).
+
+**Explicit non-goals this wave (recorded deferred):** live-applying settings to running xterm instances (construction-time application already works via `xtermFactory.terminalAppearance()`); Monaco theme switching (the appearanceOverride prop has no theme field); the five decorative knobs in SettingsPanel stay decorative — add `(not wired yet)` to their labels IF that is a ≤5-line edit to a COPY; otherwise leave and record.
 
 ## Integration task (serialized, after all lanes)
 
