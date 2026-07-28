@@ -9,6 +9,7 @@
    */
   import { onMount, tick } from 'svelte';
 
+  import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import PanelPlaceholder from '$lib/shell/components/PanelPlaceholder.svelte';
   import SessionRail from '$lib/shell/components/SessionRail.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
@@ -250,10 +251,7 @@
   <PanelPlaceholder name="Context" hint="Runs, agents, worktrees and git will live here." />
 {/snippet}
 {#snippet dockArea()}
-  <div class="dock-slot">
-    <PanelPlaceholder name="Dock" hint="Secondary terminals and logs will live here." />
-    <button class="reset-layout" onclick={() => frameControls?.resetLayout()}>Reset layout</button>
-  </div>
+  <DockPanel onReset={() => frameControls?.resetLayout()} />
 {/snippet}
 {#snippet sessionArea()}
   <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
@@ -293,30 +291,6 @@
     overflow: hidden;
     background: #101014;
     color: #d8d8e0;
-  }
-
-  .dock-slot {
-    position: relative;
-    height: 100%;
-  }
-
-  .reset-layout {
-    position: absolute;
-    top: 6px;
-    right: 8px;
-    background: transparent;
-    border: 1px solid #22222c;
-    border-radius: 5px;
-    color: #6d6d7d;
-    font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
-    padding: 2px 7px;
-    cursor: pointer;
-  }
-
-  .reset-layout:hover {
-    color: #d8d8e0;
-    border-color: #3a3a48;
   }
 
   .next-error,
