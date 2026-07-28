@@ -26,6 +26,7 @@
    * refuses the write costs only the arrangement on the next launch.
    */
   import type { OwnedSession, OwnedSessionState } from '$lib/shell/ownedSessions';
+  import { exactLocalTime, formatLastActivity } from '$lib/shell/relativeTime';
   import {
     groupSessions,
     groupToggleKey,
@@ -149,6 +150,13 @@
     const provider = session.provider.toLowerCase();
     return provider.startsWith('cmux-') ? `cmux · ${provider.slice('cmux-'.length)}` : provider;
   }
+
+  /** The clock is read per row rather than held in state on purpose: the rail
+   * redraws on every scan, adopt and keystroke, so the stamps stay honest with
+   * no timer running behind them. */
+  function stamp(lastActivity: string | null | undefined): string {
+    return formatLastActivity(lastActivity, new Date());
+  }
 </script>
 
 <!-- One heading per project, drawn the same way for both lists. Clicking it
@@ -192,40 +200,40 @@
         <div class="project">
           {@render projectHead('owned', group.name, group.path, group.items.length)}
           {#if expanded('owned', group.path)}
-          <ul class="rows">
-            {#each group.items as session (session.ownedId)}
-              <li class="row" class:active={session.ownedId === activeOwnedId}>
-                <button
-                  type="button"
-                  class="row-main"
-                  onclick={() => onSelect(session.ownedId)}
-                  title={session.cwd || session.title}
-                >
-                  <span class="dot" data-state={session.state} aria-hidden="true"></span>
-                  <span class="row-text">
-                    <span class="row-title">{session.title || session.ownedId.slice(0, 8)}</span>
-                    <span class="row-meta">
-                      <span class="badge">{agentLabel(session)}</span>
-                      {#if session.state === 'exited'}
-                        <span class="finished">{stateLabel(session.state)}</span>
-                      {/if}
+            <ul class="rows">
+              {#each group.items as session (session.ownedId)}
+                <li class="row" class:active={session.ownedId === activeOwnedId}>
+                  <button
+                    type="button"
+                    class="row-main"
+                    onclick={() => onSelect(session.ownedId)}
+                    title={session.cwd || session.title}
+                  >
+                    <span class="dot" data-state={session.state} aria-hidden="true"></span>
+                    <span class="row-text">
+                      <span class="row-title">{session.title || session.ownedId.slice(0, 8)}</span>
+                      <span class="row-meta">
+                        <span class="badge">{agentLabel(session)}</span>
+                        {#if session.state === 'exited'}
+                          <span class="finished">{stateLabel(session.state)}</span>
+                        {/if}
+                      </span>
                     </span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="row-close"
-                  aria-label={session.state === 'exited'
-                    ? `dismiss ${session.title}`
-                    : `close ${session.title}`}
-                  title={session.state === 'exited' ? 'dismiss' : 'close'}
-                  onclick={() => onClose(session.ownedId)}
-                >
-                  ✕
-                </button>
-              </li>
-            {/each}
-          </ul>
+                  </button>
+                  <button
+                    type="button"
+                    class="row-close"
+                    aria-label={session.state === 'exited'
+                      ? `dismiss ${session.title}`
+                      : `close ${session.title}`}
+                    title={session.state === 'exited' ? 'dismiss' : 'close'}
+                    onclick={() => onClose(session.ownedId)}
+                  >
+                    ✕
+                  </button>
+                </li>
+              {/each}
+            </ul>
           {/if}
         </div>
       {/each}
@@ -254,40 +262,43 @@
         <div class="project">
           {@render projectHead('resume', group.name, group.path, group.items.length)}
           {#if expanded('resume', group.path)}
-          <ul class="rows">
-            {#each visible.shown as session (`${session.provider}:${session.id}`)}
-              <li class="row">
-                <button
-                  type="button"
-                  class="row-main"
-                  onclick={() => onAdopt(session)}
-                  title={session.projectPath ?? session.title}
-                >
-                  <span class="dot" data-state="available" aria-hidden="true"></span>
-                  <span class="row-text">
-                    <span class="row-title">{session.title || session.id}</span>
-                    <span class="row-meta">
-                      <span class="badge">{providerLabel(session)}</span>
-                      {#if session.lastActivity}
-                        <span class="stamp">{session.lastActivity}</span>
-                      {/if}
+            <ul class="rows">
+              {#each visible.shown as session (`${session.provider}:${session.id}`)}
+                {@const when = stamp(session.lastActivity)}
+                <li class="row">
+                  <button
+                    type="button"
+                    class="row-main"
+                    onclick={() => onAdopt(session)}
+                    title={session.projectPath ?? session.title}
+                  >
+                    <span class="dot" data-state="available" aria-hidden="true"></span>
+                    <span class="row-text">
+                      <span class="row-title">{session.title || session.id}</span>
+                      <span class="row-meta">
+                        <span class="badge">{providerLabel(session)}</span>
+                        {#if when}
+                          <span class="stamp" title={exactLocalTime(session.lastActivity)}>
+                            {when}
+                          </span>
+                        {/if}
+                      </span>
                     </span>
-                  </span>
-                </button>
-              </li>
-            {/each}
-            {#if visible.hiddenCount > 0}
-              <li class="row more">
-                <button
-                  type="button"
-                  class="row-main more-main"
-                  onclick={() => (expandedRows = { ...expandedRows, [group.path]: true })}
-                >
-                  Show {visible.hiddenCount} more
-                </button>
-              </li>
-            {/if}
-          </ul>
+                  </button>
+                </li>
+              {/each}
+              {#if visible.hiddenCount > 0}
+                <li class="row more">
+                  <button
+                    type="button"
+                    class="row-main more-main"
+                    onclick={() => (expandedRows = { ...expandedRows, [group.path]: true })}
+                  >
+                    Show {visible.hiddenCount} more
+                  </button>
+                </li>
+              {/if}
+            </ul>
           {/if}
         </div>
       {/each}
