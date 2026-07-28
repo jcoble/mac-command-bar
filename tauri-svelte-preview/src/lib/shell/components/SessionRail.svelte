@@ -161,7 +161,13 @@
 
 <!-- One heading per project, drawn the same way for both lists. Clicking it
      opens or closes the rows underneath. -->
-{#snippet projectHead(list: SessionList, name: string, path: string, count: number)}
+{#snippet projectHead(
+  list: SessionList,
+  name: string,
+  parentProject: string | null,
+  path: string,
+  count: number
+)}
   <button
     type="button"
     class="project-head"
@@ -171,6 +177,9 @@
   >
     <span class="chevron" aria-hidden="true">{expanded(list, path) ? '▾' : '▸'}</span>
     <span class="project-name">{name}</span>
+    {#if parentProject}
+      <span class="project-parent">· {parentProject}</span>
+    {/if}
     <span class="project-count">{count}</span>
   </button>
 {/snippet}
@@ -198,7 +207,13 @@
     {:else}
       {#each grouped.owned as group (group.path)}
         <div class="project">
-          {@render projectHead('owned', group.name, group.path, group.items.length)}
+          {@render projectHead(
+            'owned',
+            group.name,
+            group.parentProject,
+            group.path,
+            group.items.length
+          )}
           {#if expanded('owned', group.path)}
             <ul class="rows">
               {#each group.items as session (session.ownedId)}
@@ -260,7 +275,13 @@
           expandedRows[group.path] === true
         )}
         <div class="project">
-          {@render projectHead('resume', group.name, group.path, group.items.length)}
+          {@render projectHead(
+            'resume',
+            group.name,
+            group.parentProject,
+            group.path,
+            group.items.length
+          )}
           {#if expanded('resume', group.path)}
             <ul class="rows">
               {#each visible.shown as session (`${session.provider}:${session.id}`)}
@@ -397,16 +418,33 @@
   }
 
   .project-name {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  /* A worktree is named for its task, so the repository it belongs to is said
+     here — quieter than the name, and the first thing to be dropped when the
+     rail is narrow. */
+  .project-parent {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #4c4c5a;
+  }
+
+  /* Was 10px and unreadable. This is the size of the section count above it,
+     which is what it is really a smaller version of. */
   .project-count {
     flex: 0 0 auto;
-    color: #4c4c5a;
+    margin-left: auto;
+    padding-left: 8px;
+    color: #5d5d6b;
+    font-size: 11px;
   }
 
   /* The row that offers the rest of a long project. Reads as a row so it lands
@@ -431,7 +469,7 @@
   }
 
   .count {
-    font-size: 10px;
+    font-size: 11px;
     color: #5d5d6b;
   }
 

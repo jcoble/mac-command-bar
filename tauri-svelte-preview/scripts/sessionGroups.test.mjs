@@ -10,6 +10,7 @@ import {
   RESUME_GROUP_ROW_CAP,
   sessionGroupPath,
   visibleGroupItems,
+  worktreeParentProject,
   writeGroupExpansion
 } from '../src/lib/shell/sessionGroups.ts';
 
@@ -195,6 +196,70 @@ function shapeOf(groups) {
 {
   const result = groupSessions([], [], '');
   assert.deepEqual(result, { owned: [], available: [] });
+}
+
+// A worktree is named for the task, not the project, so the header says which
+// repository it is a checkout of when the path shape reveals it.
+{
+  assert.equal(
+    worktreeParentProject('/Users/me/dev/work/worktrees/EdiPlatform/tsk-670-role-experience'),
+    'EdiPlatform'
+  );
+  assert.equal(
+    worktreeParentProject('/Users/me/dev/work/worktrees/rental-management/tsk-754-year-sim'),
+    'rental-management'
+  );
+
+  // Checkouts sitting directly inside a "worktrees" folder name no project, and
+  // guessing one would be worse than staying quiet.
+  assert.equal(worktreeParentProject('/Users/me/dev/worktrees/fix-a'), null);
+  assert.equal(worktreeParentProject('/Users/me/dev/worktrees'), null);
+
+  // An ordinary project folder is not a worktree.
+  assert.equal(worktreeParentProject('/Users/me/dev/work/mac-command-bar'), null);
+  assert.equal(worktreeParentProject(''), null);
+  assert.equal(worktreeParentProject(null), null);
+
+  // A nested layout takes the innermost "worktrees" as the marker.
+  assert.equal(
+    worktreeParentProject('/Users/me/worktrees/outer/dev/worktrees/EdiPlatform/tsk-9'),
+    'EdiPlatform'
+  );
+}
+
+// The suffix reaches the rail on the group itself, and only for worktrees.
+{
+  const { owned: groups } = groupSessions(
+    [
+      owned('wt', { projectPath: '/Users/me/dev/work/worktrees/EdiPlatform/tsk-670-role' }),
+      owned('plain', { projectPath: '/Users/me/dev/work/mac-command-bar' }),
+      owned('nameless')
+    ],
+    [],
+    ''
+  );
+  assert.deepEqual(
+    groups.map((group) => [group.name, group.parentProject]),
+    [
+      ['tsk-670-role', 'EdiPlatform'],
+      ['mac-command-bar', null],
+      ['Other', null]
+    ]
+  );
+}
+
+// A worktree whose folder repeats the project name gets no suffix: "foo · foo"
+// is noise, not context.
+{
+  const { owned: groups } = groupSessions(
+    [owned('same', { projectPath: '/Users/me/dev/worktrees/EdiPlatform/EdiPlatform' })],
+    [],
+    ''
+  );
+  assert.deepEqual(
+    groups.map((group) => [group.name, group.parentProject]),
+    [['EdiPlatform', null]]
+  );
 }
 
 // The group key a session lands under is the same one the expansion rules take.

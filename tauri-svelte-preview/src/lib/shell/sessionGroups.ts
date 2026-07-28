@@ -22,16 +22,49 @@ import type { AgentSession } from '$lib/tauriSource';
 export interface SessionGroup<T> {
   /** Project folder name, e.g. "mac-command-bar"; "Other" when no path is known. */
   name: string;
+  /** The repository a worktree belongs to, when the path says so. Null for an
+   * ordinary folder. Drawn after the name, dimmed. */
+  parentProject: string | null;
   /** Full path used as the stable group key ('' for Other). */
   path: string;
   items: T[];
 }
 
-function projectOf(path: string | null | undefined): { name: string; path: string } {
+/**
+ * The repository a worktree checkout belongs to.
+ *
+ * A worktree is named for the task, not the project — `tsk-670-role-experience`
+ * says nothing about which repository it is a checkout of, and the rail can end
+ * up showing several of them from different projects with no way to tell. The
+ * layout convention `.../worktrees/<project>/<worktree>` carries the answer, so
+ * where a path has that shape the project name is pulled out of it.
+ *
+ * Null whenever the path does not say — a folder literally called `worktrees`
+ * with checkouts directly inside it names no project, and guessing one would be
+ * worse than staying quiet.
+ */
+export function worktreeParentProject(path: string | null | undefined): string | null {
+  const parts = (path ?? '').trim().split('/').filter(Boolean);
+  const marker = parts.lastIndexOf('worktrees');
+  // A project folder AND a worktree folder have to follow the marker.
+  if (marker < 0 || parts.length - marker < 3) return null;
+
+  return parts[marker + 1] ?? null;
+}
+
+function projectOf(path: string | null | undefined): {
+  name: string;
+  parentProject: string | null;
+  path: string;
+} {
   const trimmed = (path ?? '').trim();
-  if (!trimmed) return { name: 'Other', path: '' };
+  if (!trimmed) return { name: 'Other', parentProject: null, path: '' };
+
   const parts = trimmed.split('/').filter(Boolean);
-  return { name: parts[parts.length - 1] ?? trimmed, path: trimmed };
+  const name = parts[parts.length - 1] ?? trimmed;
+  const parent = worktreeParentProject(trimmed);
+  // "foo · foo" is noise, not context.
+  return { name, parentProject: parent === name ? null : parent, path: trimmed };
 }
 
 function matches(query: string, ...fields: Array<string | null | undefined>): boolean {
@@ -55,8 +88,8 @@ export function groupSessions(
     const groups = new Map<string, SessionGroup<T>>();
     for (const item of items) {
       if (!hit(item)) continue;
-      const { name, path } = projectOf(pathOf(item));
-      const existing = groups.get(path) ?? { name, path, items: [] };
+      const { name, parentProject, path } = projectOf(pathOf(item));
+      const existing = groups.get(path) ?? { name, parentProject, path, items: [] };
       existing.items.push(item);
       groups.set(path, existing);
     }
