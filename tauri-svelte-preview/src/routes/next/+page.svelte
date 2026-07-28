@@ -1,13 +1,11 @@
 <script lang="ts">
   /**
-   * /next — the Slice 1 shell orchestrator.
-   *
-   * Thin by construction: NO terminal state (that is `terminalService`), NO rail
-   * state (`sessionRailStore`); IO **only in explicit functions**, no `$effect`.
-   * Launch IO is deliberately tiny (the constitution's rule): list surviving
-   * PTYs, reconcile them against the stored owned sessions, re-attach them
-   * (live ones AND tombstones), scan for resumable agents. No LSP, no git, no
-   * source scan. Ordering: `hydrateOwned` runs AFTER `reconcileOwnedSessions`.
+   * /next — the Slice 1 shell orchestrator. Thin by construction: NO terminal
+   * state (`terminalService`), NO rail state (`sessionRailStore`); IO **only in
+   * explicit functions**, no `$effect`. Launch IO is tiny by rule: list surviving
+   * PTYs, reconcile them against the stored owned sessions, re-attach them (live
+   * AND tombstones), scan for resumable agents. No LSP, no git, no source scan.
+   * `hydrateOwned` runs AFTER `reconcileOwnedSessions`.
    */
   import { onMount, tick } from 'svelte';
 
@@ -37,11 +35,9 @@
   const pendingHosts = new Map<string, HTMLElement>();
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
   const awaitingReattach = new Set<string>();
-  /**
-   * ptySessionId -> the PTY's REAL grid, from the launch `backend.list()`, fed
-   * to `adoptExisting`: a survivor re-attached into a HIDDEN host cannot be
-   * measured, so without it the view keeps 80x24 and the replay wraps wrong.
-   */
+  /** ptySessionId -> the PTY's REAL grid (launch `backend.list()`), fed to
+   * `adoptExisting`: a HIDDEN host cannot be measured, so without it a survivor's
+   * view keeps 80x24 and wraps its replay wrong. */
   const livePtySizes = new Map<string, { cols: number; rows: number }>();
 
   let service: ReturnType<typeof createTerminalService> | null = null;
@@ -51,10 +47,8 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  /**
-   * EXPLICIT IO: scan for resumable agent sessions (Tauri first, bridge second).
-   * ONE counted call per rescan, named for the transport that actually ran.
-   */
+  /** EXPLICIT IO: scan for resumable agent sessions (Tauri first, bridge second).
+   * ONE counted call per rescan, named for the transport that actually ran. */
   async function scanRail(): Promise<void> {
     if (rail.scanning) return;
     rail.scanning = true;
@@ -84,7 +78,10 @@
   /** Park a freshly mounted host, and re-attach immediately if one is owed. */
   function registerHost(ownedId: string, host: HTMLElement): void {
     pendingHosts.set(ownedId, host);
-    void reattachIfPending(ownedId);
+    // Fire-and-forget, but never unhandled: this path has no awaiting caller.
+    void reattachIfPending(ownedId).catch((error) => {
+      if (!disposed) rail.error = `re-attach failed: ${describeError(error)}`;
+    });
   }
 
   /** Wait for TerminalSurface to mount the host for `ownedId`. */
@@ -114,7 +111,6 @@
     if (rail.activeOwnedId === null) await selectOwned(ownedId);
   }
 
-  /** Focus an owned session and let the manager make its terminal the visible one. */
   async function selectOwned(ownedId: string): Promise<void> {
     setActiveOwned(ownedId);
     service?.show(ownedId);
@@ -141,13 +137,9 @@
     await selectOwned(owned.ownedId);
   }
 
-  /**
-   * EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
-   * rejects — it reports `{ successor, error }` — so even a failed close hands
-   * back the terminal the manager left visible instead of blanking the surface
-   * behind the empty-state overlay. The row is dropped either way (view + PTY
-   * mapping are already gone; keeping it would only make it undismissable).
-   */
+  /** EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
+   * rejects — it reports `{ successor, error }` — so a failed close still hands
+   * back the terminal the manager left visible. The row is dropped either way. */
   async function closeOwned(ownedId: string): Promise<void> {
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
     pendingHosts.delete(ownedId);
@@ -157,8 +149,7 @@
       rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(result.error)}`;
     }
     removeOwnedSession(ownedId);
-    // The successor was picked BEFORE the await; an overlapping close may have
-    // removed it since. Adopt it only while it still exists.
+    // Picked BEFORE the await: adopt it only while it still exists.
     const successor = result?.successor ?? null;
     if (successor !== null && rail.owned.some((entry) => entry.ownedId === successor)) {
       setActiveOwned(successor);
@@ -186,9 +177,7 @@
         if (disposed) return;
         for (const i of live) livePtySizes.set(i.sessionId, { cols: i.cols, rows: i.rows });
         const { owned, reattachable } = reconcileOwnedSessions(loadStoredOwned(), live);
-        // Tombstones (exited, backend record still there) are re-attached too:
-        // that renders their final scrollback AND registers the PTY id, so the
-        // row reaps it on dismiss. Live survivors first, so one wins focus.
+        // Tombstones re-attach too (final scrollback + a reapable PTY id); live first.
         const attachable = [
           ...reattachable,
           ...owned.filter((entry) => entry.state === 'exited' && entry.ptySessionId)
@@ -196,12 +185,23 @@
         // Claim them BEFORE the hosts mount, or `registerHost` races past.
         for (const session of attachable) awaitingReattach.add(session.ownedId);
         hydrateOwned(owned);
+        // One survivor's failure must cost neither the others their re-attach nor
+        // the Resume group its scan: collect, keep going, report once.
+        const failed: string[] = [];
         for (const session of attachable) {
           await hostFor(session.ownedId);
-          await reattachIfPending(session.ownedId);
+          try {
+            await reattachIfPending(session.ownedId);
+          } catch (error) {
+            failed.push(`"${session.title}" (${describeError(error)})`);
+          }
         }
-
+        // scanRail CLEARS rail.error, so the re-attach report goes after it.
         await scanRail();
+        if (failed.length > 0 && !disposed) {
+          const prefix = rail.error ? `${rail.error}; ` : '';
+          rail.error = `${prefix}could not re-attach ${failed.join(', ')}`;
+        }
       } catch (error) {
         if (!disposed) rail.error = `shell start-up failed: ${describeError(error)}`;
       }

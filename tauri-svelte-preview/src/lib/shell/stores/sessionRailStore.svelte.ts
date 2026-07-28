@@ -18,7 +18,8 @@
  *    `ptySessionId` reaches storage for reload re-attach.
  *
  * Quota/unavailable-storage errors are swallowed (matching `settingsStore`'s
- * `persist()`): a full disk must never break the rail's in-memory state.
+ * `persist()`): a full disk must never break the rail's in-memory state. They
+ * are NOT silent, though — see `persist()`.
  */
 // NOTE: explicit `.ts` specifiers, matching `terminalService.ts` and the rest of
 // `src/lib/shell`.
@@ -61,20 +62,30 @@ export const rail = $state<{
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
+/** What the user is told when the rail could not be written to localStorage. */
+export const STORAGE_WRITE_FAILED_MESSAGE =
+  'Session list could not be saved — browser storage is full; a reload may lose the session links';
+
 /**
- * Write the current `owned` list to localStorage. No-op when storage is
- * unavailable (SSR / private mode); quota errors are swallowed so a full store
- * never breaks the in-memory rail.
+ * Write the current `owned` list to localStorage; `true` when it landed.
+ *
+ * No-op when storage is unavailable (SSR / private mode). A quota error is
+ * still swallowed — a full store must never break the in-memory rail — but it
+ * is NOT silent: the dropped write loses `ptySessionId`, which is exactly what
+ * reload re-attach reads back, so the failure is surfaced on `rail.error`.
+ * Nothing is evicted to make room: the other keys on this origin are not ours.
  */
-function persist(): void {
-  if (typeof localStorage === 'undefined') return;
+function persist(): boolean {
+  if (typeof localStorage === 'undefined') return false;
   try {
     localStorage.setItem(
       OWNED_SESSIONS_STORAGE_KEY,
       serializeOwnedSessions($state.snapshot(rail.owned) as OwnedSession[])
     );
+    return true;
   } catch {
-    /* storage full / unavailable — non-fatal, keep in-memory state */
+    rail.error = STORAGE_WRITE_FAILED_MESSAGE;
+    return false;
   }
 }
 

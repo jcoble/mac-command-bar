@@ -742,4 +742,78 @@ const ownedA = {
   svc2.dispose();
 }
 
+{
+  // I1: dispose() DURING an in-flight attach must still retire the subscription.
+  // `dispose` can only call the unlisten it can SEE, and while `backend.listen`
+  // is still pending there is none — so the stop function used to land AFTER
+  // teardown, be stored, and pin the disposed manager (and every view it holds)
+  // for the lifetime of the page. It is now stopped on arrival instead.
+  const log = [];
+  const { backend: base } = makeBackend(log);
+  let releaseListen = null;
+  let stopped = 0;
+  const backend = {
+    ...base,
+    listen: async () => {
+      log.push(['listen']);
+      await new Promise((resolve) => {
+        releaseListen = resolve;
+      });
+      return () => {
+        stopped += 1;
+      };
+    }
+  };
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'late') });
+  const attaching = svc.attach();
+  assert.equal(stopped, 0, 'nothing to stop yet — the subscription is still in flight');
+
+  svc.dispose();
+  releaseListen();
+  await attaching;
+  assert.equal(stopped, 1, 'the late subscription is stopped the moment it lands');
+
+  // It was never STORED, so teardown has nothing left to call...
+  svc.dispose();
+  assert.equal(stopped, 1, 'no stored subscription: a second dispose cannot double-stop it');
+  // ...and a disposed service never opens a new one either.
+  await svc.attach();
+  assert.equal(
+    log.filter((e) => e[0] === 'listen').length,
+    1,
+    'a disposed service does not re-subscribe'
+  );
+}
+
+{
+  // I2 (service seam): a rejecting adopt must leave NOTHING half-built, so the
+  // page's per-session catch can keep re-attaching the remaining survivors
+  // instead of losing the whole start-up (and the rail scan) to one failure.
+  const log = [];
+  const { backend: base } = makeBackend(log);
+  const backend = {
+    ...base,
+    readScrollback: async (id) => {
+      log.push(['readScrollback', id]);
+      if (id === 'pty-bad') throw new Error('scrollback read failed');
+      return 'OLD OUTPUT';
+    }
+  };
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'after') });
+  await svc.attach();
+  await assert.rejects(
+    () => svc.adoptExisting({ ...ownedA, ownedId: 'bad', ptySessionId: 'pty-bad' }, {}),
+    /scrollback read failed/,
+    'the failure reaches the caller rather than being swallowed'
+  );
+  assert.ok(!log.some((e) => e[0] === 'after'), 'and no view was built for the failed session');
+
+  const ok = await svc.adoptExisting({ ...ownedA, ownedId: 'good', ptySessionId: 'pty-good' }, {});
+  assert.equal(ok, true, 'the NEXT survivor still re-attaches');
+  assert.ok(
+    log.some((e) => e[0] === 'after' && e[1] === 'write' && e[2] === 'OLD OUTPUT'),
+    'and is hydrated normally — one bad adopt does not poison the service'
+  );
+}
+
 console.log('terminalService tests passed');

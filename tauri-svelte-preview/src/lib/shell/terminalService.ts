@@ -266,6 +266,15 @@ export function createTerminalService(opts: {
   let creatingSize: { cols: number; rows: number } | null = null;
   let unlisten: (() => void) | null = null;
   let attaching: Promise<void> | null = null;
+  /**
+   * `dispose()` has run. Load-bearing for the in-flight-attach case: `dispose`
+   * can only call the unlisten it can SEE, and while `backend.listen` is still
+   * pending there is none — so without this flag the subscription lands AFTER
+   * teardown, is never removed, and pins the disposed manager (and every view
+   * it holds) for the lifetime of the page. A disposed service is terminal: it
+   * is never re-attached, the next mount builds a new one.
+   */
+  let disposed = false;
 
   /**
    * Point `ownedId` at `ptyId`, evicting any stale claim on either side so the
@@ -447,7 +456,7 @@ export function createTerminalService(opts: {
   }
 
   async function attach(): Promise<void> {
-    if (unlisten) {
+    if (unlisten || disposed) {
       return;
     }
     if (attaching) {
@@ -486,6 +495,13 @@ export function createTerminalService(opts: {
         // the store's job (this service only reports the exit).
         onExit?.(ownedId, payload);
       });
+      if (disposed) {
+        // Teardown happened while this listen was in flight, so `dispose` had
+        // no stop function to call. Retire it HERE instead of storing a
+        // subscription nothing will ever remove.
+        stop?.();
+        return;
+      }
       unlisten = stop ?? null;
     })();
     try {
@@ -624,6 +640,7 @@ export function createTerminalService(opts: {
   function dispose(): void {
     // NO backend.close — ever. A reload/unmount must leave every agent running;
     // `adoptExisting` picks them back up on the next mount.
+    disposed = true;
     unlisten?.();
     unlisten = null;
     // A nudge scheduled by a view this teardown is about to destroy has no
