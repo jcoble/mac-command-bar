@@ -40,7 +40,8 @@
     "tauri:dev": "tauri dev",
     "tauri:dev:attach": "tauri dev --config src-tauri/tauri.dev.attach.conf.json",
     "tauri:dev:next": "tauri dev --config src-tauri/tauri.dev.next.conf.json",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "test:open-file-bus": "node --experimental-strip-types scripts/openFileBus.test.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",
