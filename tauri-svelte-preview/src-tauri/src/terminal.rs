@@ -29,6 +29,9 @@ pub struct TerminalSessionInfo {
     pub rows: u16,
     pub pid: Option<u32>,
     pub started_at: u128,
+    pub exited: bool,
+    pub exit_code: Option<u32>,
+    pub signal: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +122,9 @@ pub fn start_terminal_session<R: Runtime>(
         rows: size.rows,
         pid,
         started_at,
+        exited: false,
+        exit_code: None,
+        signal: None,
     };
 
     registry.insert(
@@ -238,16 +244,18 @@ pub fn close_terminal_session(
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(false);
     };
-    let Some(session) = registry.remove(session_id)? else {
+    let Some(handle) = registry.remove(session_id)? else {
         return Ok(false);
     };
-    let mut killer = session
-        .killer
-        .lock()
-        .map_err(|_| "Terminal process killer is unavailable".to_string())?;
-    killer
-        .kill()
-        .map_err(|error| format!("Could not close terminal process: {error}"))?;
+    if !handle.info.exited {
+        let mut killer = handle
+            .killer
+            .lock()
+            .map_err(|_| "Terminal killer lock poisoned".to_string())?;
+        if let Err(error) = killer.kill() {
+            return Err(format!("Failed to kill terminal session: {error}"));
+        }
+    }
     Ok(true)
 }
 
@@ -267,6 +275,27 @@ impl TerminalRegistry {
             .lock()
             .map_err(|_| "Terminal session registry is unavailable".to_string())?;
         Ok(sessions.remove(session_id))
+    }
+
+    fn mark_exited(
+        &self,
+        session_id: &str,
+        exit_code: Option<u32>,
+        signal: Option<String>,
+    ) -> Result<bool, String> {
+        let mut sessions = self
+            .inner
+            .lock()
+            .map_err(|_| "Terminal registry lock poisoned".to_string())?;
+        match sessions.get_mut(session_id) {
+            Some(handle) => {
+                handle.info.exited = true;
+                handle.info.exit_code = exit_code;
+                handle.info.signal = signal;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 }
 
@@ -330,17 +359,21 @@ fn spawn_terminal_waiter<R: Runtime>(
 ) {
     std::thread::spawn(move || {
         let status = child.wait().ok();
-        let _ = registry.remove(&session_id);
+        let exit_code = status.as_ref().map(|value| value.exit_code());
+        let signal = status
+            .as_ref()
+            .and_then(|value| value.signal().map(ToString::to_string));
+        // Keep the session as a tombstone: the rail shows "finished — read final
+        // output", and the scrollback stays readable. Only an explicit close purges it.
+        let _ = registry.mark_exited(&session_id, exit_code, signal.clone());
         let _ = app.emit(
             TERMINAL_OUTPUT_EVENT,
             TerminalOutputEvent {
                 session_id,
                 data: String::new(),
                 terminated: true,
-                exit_code: status.as_ref().map(|value| value.exit_code()),
-                signal: status
-                    .as_ref()
-                    .and_then(|value| value.signal().map(ToString::to_string)),
+                exit_code,
+                signal,
             },
         );
     });

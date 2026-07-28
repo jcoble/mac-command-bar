@@ -51,6 +51,9 @@ export type TerminalSessionInfo = {
   rows: number;
   pid: number | null;
   startedAt: number;
+  exited: boolean;
+  exitCode: number | null;
+  signal: string | null;
 };
 
 export type TerminalOutputPayload = {
