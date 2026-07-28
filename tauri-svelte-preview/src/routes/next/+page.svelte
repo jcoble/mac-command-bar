@@ -9,7 +9,9 @@
    */
   import { onMount, tick } from 'svelte';
 
+  import PanelPlaceholder from '$lib/shell/components/PanelPlaceholder.svelte';
   import SessionRail from '$lib/shell/components/SessionRail.svelte';
+  import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import TerminalSurface from '$lib/shell/components/TerminalSurface.svelte';
   import { countInvoke, invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
   import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
@@ -42,6 +44,18 @@
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
+  let frameControls: { resetLayout: () => void } | null = null;
+  let refitScheduled = false;
+
+  /** Coalesce dockview's layout bursts into one refit per frame. */
+  function scheduleRefit(): void {
+    if (refitScheduled) return;
+    refitScheduled = true;
+    requestAnimationFrame(() => {
+      refitScheduled = false;
+      service?.refit();
+    });
+  }
 
   function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -223,23 +237,42 @@
   <title>CommandBar · next</title>
 </svelte:head>
 
-<main class="next-shell">
-  <aside class="next-rail">
-    <SessionRail
-      owned={rail.owned}
-      available={rail.available}
-      activeOwnedId={rail.activeOwnedId}
-      scanning={rail.scanning}
-      onSelect={selectOwned}
-      onAdopt={adopt}
-      onClose={closeOwned}
-      onRescan={scanRail}
-    />
-  </aside>
+<!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
+     shadow the imported `rail` store and break every `rail.owned` read. -->
+{#snippet railArea()}
+  <SessionRail
+    owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
+    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeOwned}
+    onRescan={scanRail}
+  />
+{/snippet}
+{#snippet contextArea()}
+  <PanelPlaceholder name="Context" hint="Runs, agents, worktrees and git will live here." />
+{/snippet}
+{#snippet dockArea()}
+  <div class="dock-slot">
+    <PanelPlaceholder name="Dock" hint="Secondary terminals and logs will live here." />
+    <button class="reset-layout" onclick={() => frameControls?.resetLayout()}>Reset layout</button>
+  </div>
+{/snippet}
+{#snippet sessionArea()}
+  <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
+{/snippet}
+{#snippet editorArea()}
+  <PanelPlaceholder name="Editor" hint="Code reading with go-to-definition is coming next." />
+{/snippet}
+{#snippet browserArea()}
+  <PanelPlaceholder name="Browser" />
+{/snippet}
 
-  <section class="next-main">
-    <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
-  </section>
+<main class="next-shell">
+  <ShellFrame
+    rail={railArea} context={contextArea} dock={dockArea}
+    center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
+    onSessionPanelLayout={scheduleRefit}
+    onReady={(controls) => (frameControls = controls)}
+    onError={(message) => (rail.error = `layout failed: ${message}`)}
+  />
 
   {#if rail.error}
     <footer class="next-error">{rail.error}</footer>
@@ -251,10 +284,10 @@
 </main>
 
 <style>
+  /* ShellFrame owns the geometry now, but it still needs a definite height to
+     measure against — at 0x0 the grid mounts and renders nothing. */
   .next-shell {
     position: relative;
-    display: grid;
-    grid-template-columns: 264px 1fr;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
@@ -262,16 +295,28 @@
     color: #d8d8e0;
   }
 
-  .next-rail {
-    min-width: 0;
-    border-right: 1px solid #22222c;
-    overflow: hidden;
+  .dock-slot {
+    position: relative;
+    height: 100%;
   }
 
-  .next-main {
-    min-width: 0;
-    height: 100%;
-    overflow: hidden;
+  .reset-layout {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    background: transparent;
+    border: 1px solid #22222c;
+    border-radius: 5px;
+    color: #6d6d7d;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    padding: 2px 7px;
+    cursor: pointer;
+  }
+
+  .reset-layout:hover {
+    color: #d8d8e0;
+    border-color: #3a3a48;
   }
 
   .next-error,

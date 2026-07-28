@@ -4,7 +4,7 @@
     name: string;
     hint?: string;
   }
-  let { name, hint = 'Coming in the parallel wave.' }: Props = $props();
+  let { name, hint = 'Coming soon.' }: Props = $props();
 </script>
 
 <div class="placeholder">
