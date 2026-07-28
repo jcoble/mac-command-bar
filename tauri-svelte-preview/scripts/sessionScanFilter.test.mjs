@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   claudeTranscriptHeadIsAgentLaunched,
   codexRolloutHeadIsSubagentThread,
+  codexRolloutHeadThreadMarker,
+  dropCodexSubagentSessions,
   isAgentLaunchEntrypoint,
   mergeCodexSessionMetadata,
   parseClaudeJsonl,
@@ -254,5 +256,48 @@ assert.equal(
   )[0].title,
   'Please plan out an entire year of scans and entries for the...'
 );
+
+// The index file names sub-agent threads as plausibly as it names the user's
+// own — "Audit inventory gaps", "Review mobile steppers" — so the name is no
+// help at all and the rollout files have to answer.
+{
+  // The id travels with the verdict, so an archived helper thread can be
+  // recognised from its rollout file and struck off the index.
+  assert.deepEqual(codexRolloutHeadThreadMarker(codexSubagentRolloutJsonl), {
+    id: '019fa9c1',
+    spawnedByCodex: true
+  });
+  assert.deepEqual(codexRolloutHeadThreadMarker(codexTopLevelRolloutJsonl), {
+    id: '019fa964',
+    spawnedByCodex: false
+  });
+
+  // A metadata record with no id still answers the question it can.
+  assert.deepEqual(
+    codexRolloutHeadThreadMarker('{"type":"session_meta","payload":{"thread_source":"subagent"}}'),
+    { id: null, spawnedByCodex: true }
+  );
+
+  // Nothing readable: no verdict either way.
+  assert.equal(codexRolloutHeadThreadMarker('{"type":"sessi'), null);
+  assert.equal(codexRolloutHeadThreadMarker(''), null);
+
+  const index = parseCodexIndexJsonl(
+    [
+      '{"id":"019fa9c1","thread_name":"Audit inventory gaps","updated_at":"2026-07-28T17:24:00.000000Z"}',
+      '{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-28T16:42:00.000000Z"}',
+      '{"id":"019c230d","thread_name":"Document EDI flow review","updated_at":"2026-03-13T21:48:02.611673Z"}'
+    ].join('\n')
+  );
+  assert.equal(index.length, 3);
+
+  // The helper thread goes. The session the user started stays, and so does the
+  // one whose rollout file is gone from disk entirely — no evidence is not
+  // evidence.
+  assert.deepEqual(
+    dropCodexSubagentSessions(index, new Set(['019fa9c1'])).map((record) => record.id),
+    ['019fa964', '019c230d']
+  );
+}
 
 console.log('session scan filter tests passed');

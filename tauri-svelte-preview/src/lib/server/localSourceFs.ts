@@ -132,21 +132,38 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
   if (!homePath) return [];
 
   const records: LocalAgentSessionRecord[] = [];
-  const codexRecords: LocalAgentSessionRecord[] = [];
-  const codexIndex = path.join(homePath, '.codex', 'session_index.jsonl');
-  const codexIndexContents = await readFile(codexIndex, 'utf8').catch(() => '');
-  if (codexIndexContents) {
-    codexRecords.push(...parseCodexIndexJsonl(codexIndexContents));
+
+  // Sort the rollout files into "the user started this" and "Codex spawned this
+  // for itself" in one pass, keeping the ids of the second kind. Dropping
+  // sub-agent threads here, BEFORE the file budget, is for the same reason the
+  // Claude path drops its subagents first: they outnumber the user's own
+  // sessions nine to one, so a budget applied first would evict the sessions the
+  // rail exists to show.
+  const codexRollouts: string[] = [];
+  const codexSubagentIds = new Set<string>();
+  for (const filePath of await jsonlFiles(path.join(homePath, '.codex', 'sessions'))) {
+    const marker = await codexRolloutFileThreadMarker(filePath);
+    // No marker, or nothing readable: keep the file. Older Codex builds predate
+    // the field, and losing a session is the worse mistake.
+    if (!marker?.spawnedByCodex) codexRollouts.push(filePath);
+    else if (marker.id) codexSubagentIds.add(marker.id);
   }
 
-  // Drop sub-agent threads BEFORE the file budget, for the same reason the
-  // Claude path drops its subagents first: they outnumber the user's own
-  // sessions nine to one here, so a budget applied first would evict the
-  // sessions the rail exists to show.
-  const codexRollouts: string[] = [];
-  for (const filePath of await jsonlFiles(path.join(homePath, '.codex', 'sessions'))) {
-    if (!(await codexRolloutFileIsSubagentThread(filePath))) codexRollouts.push(filePath);
+  // Codex eventually moves a thread's rollout file into `archived_sessions` but
+  // leaves its index row behind, so for those threads the archive is the only
+  // evidence left of what kind of thread it was.
+  for (const filePath of await jsonlFiles(path.join(homePath, '.codex', 'archived_sessions'))) {
+    const marker = await codexRolloutFileThreadMarker(filePath);
+    if (marker?.spawnedByCodex && marker.id) codexSubagentIds.add(marker.id);
   }
+
+  const codexIndex = path.join(homePath, '.codex', 'session_index.jsonl');
+  const codexIndexContents = await readFile(codexIndex, 'utf8').catch(() => '');
+  const codexRecords = dropCodexSubagentSessions(
+    codexIndexContents ? parseCodexIndexJsonl(codexIndexContents) : [],
+    codexSubagentIds
+  );
+
   const codexFiles = await sortFilesByModifiedDesc(codexRollouts);
   const codexMetadata: LocalAgentSessionRecord[] = [];
   for (const filePath of codexFiles.slice(0, codexSessionFileLimit)) {
@@ -302,22 +319,59 @@ function isCodexSubagentMeta(payload: Record<string, unknown>) {
 }
 
 /**
- * Same question asked of a file instead of a parsed record, so the scan can skip
- * helper threads before it spends its read budget on them. The opening line is
- * the metadata record; anything we cannot read or parse is kept.
+ * What a rollout file's opening metadata record says about its thread. The id
+ * can be missing while the verdict is still known, so the two are separate.
  */
-async function codexRolloutFileIsSubagentThread(filePath: string) {
+export type CodexThreadMarker = { id: string | null; spawnedByCodex: boolean };
+
+/**
+ * Read from a bounded head, so the scan can sort the files before it spends its
+ * read budget on them.
+ */
+async function codexRolloutFileThreadMarker(filePath: string): Promise<CodexThreadMarker | null> {
   const head = await readHeadUtf8(filePath, codexSessionMetaProbeBytes).catch(() => '');
-  return codexRolloutHeadIsSubagentThread(head);
+  return codexRolloutHeadThreadMarker(head);
+}
+
+/**
+ * Null when the head holds no readable metadata record — a truncated line, a
+ * file that opens with something else, an empty file. The caller keeps those.
+ */
+export function codexRolloutHeadThreadMarker(head: string): CodexThreadMarker | null {
+  const line = head.split(/\r?\n/, 1)[0];
+  const value = parseJsonObject(line ?? '');
+  if (!value || optionalString(value.type) !== 'session_meta') return null;
+
+  const payload = objectValue(value.payload);
+  if (!payload) return null;
+
+  return { id: optionalString(payload.id), spawnedByCodex: isCodexSubagentMeta(payload) };
 }
 
 export function codexRolloutHeadIsSubagentThread(head: string) {
-  const line = head.split(/\r?\n/, 1)[0];
-  const value = parseJsonObject(line ?? '');
-  if (!value || optionalString(value.type) !== 'session_meta') return false;
+  return codexRolloutHeadThreadMarker(head)?.spawnedByCodex ?? false;
+}
 
-  const payload = objectValue(value.payload);
-  return payload ? isCodexSubagentMeta(payload) : false;
+/**
+ * Index rows naming threads Codex spawned for itself.
+ *
+ * `~/.codex/session_index.jsonl` is a flat list of id, name and timestamp with
+ * nothing in it saying what kind of thread a row describes, so the rollout files
+ * are the only evidence — and the index is read whole, with none of the
+ * filtering the rollout files get. On this machine 119 of its 330 rows are
+ * sub-agent threads, 117 of them already archived, and every one of those was
+ * reaching the rail under a plausible name ("Audit inventory gaps", "Review
+ * mobile steppers") that gave the user no way to tell it apart from their own
+ * work.
+ *
+ * A row whose thread has no rollout file left anywhere is kept: 150 of them
+ * here, all genuinely the user's, and absence of evidence is not evidence.
+ */
+export function dropCodexSubagentSessions(
+  records: LocalAgentSessionRecord[],
+  subagentIds: Set<string>
+): LocalAgentSessionRecord[] {
+  return records.filter((record) => !subagentIds.has(record.id));
 }
 
 /**

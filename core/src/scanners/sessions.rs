@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -68,19 +68,42 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     };
 
     let mut records = Vec::new();
+
+    // Sort the rollout files into "the user started this" and "Codex spawned
+    // this for itself" in one pass, keeping the ids of the second kind. Dropping
+    // sub-agent threads here, BEFORE the file budget, is for the same reason the
+    // Claude path drops its subagents first: they outnumber the user's own
+    // sessions nine to one, so a budget applied first would evict the sessions
+    // the rail exists to show.
+    let mut codex_files = Vec::new();
+    let mut codex_subagent_ids = HashSet::new();
+    for file in jsonl_files(&home.join(".codex/sessions")) {
+        match codex_rollout_thread_marker(&file) {
+            Some(marker) if marker.spawned_by_codex => codex_subagent_ids.extend(marker.id),
+            // No marker, or nothing readable: keep the file. Older Codex builds
+            // predate the field, and losing a session is the worse mistake.
+            _ => codex_files.push(file),
+        }
+    }
+
+    // Codex eventually moves a thread's rollout file into `archived_sessions`
+    // but leaves its index row behind, so for those threads the archive is the
+    // only evidence left of what kind of thread it was.
+    for file in jsonl_files(&home.join(".codex/archived_sessions")) {
+        if let Some(marker) = codex_rollout_thread_marker(&file) {
+            if marker.spawned_by_codex {
+                codex_subagent_ids.extend(marker.id);
+            }
+        }
+    }
+
     let mut codex_records = Vec::new();
     let codex_index = home.join(".codex/session_index.jsonl");
     if let Ok(contents) = fs::read_to_string(codex_index) {
         codex_records.extend(parse_codex_index_jsonl(&contents));
     }
+    codex_records = drop_codex_subagent_sessions(codex_records, &codex_subagent_ids);
 
-    let codex_sessions = home.join(".codex/sessions");
-    let mut codex_files = jsonl_files(&codex_sessions);
-    // Drop sub-agent threads BEFORE the file budget, for the same reason the
-    // Claude path drops its subagents first: they outnumber the user's own
-    // sessions nine to one here, so a budget applied first would evict the
-    // sessions the rail exists to show.
-    codex_files.retain(|file| !codex_rollout_file_is_subagent_thread(file));
     codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     let mut codex_metadata = Vec::new();
     for file in codex_files.into_iter().take(CODEX_SESSION_FILE_LIMIT) {
@@ -301,29 +324,65 @@ fn is_codex_subagent_meta(payload: &Value) -> bool {
         .is_some_and(|source| source.contains_key("subagent"))
 }
 
-/// Same question asked of a file instead of a parsed record, so the scan can
-/// skip helper threads before it spends its read budget on them. The opening
-/// line is the metadata record; anything we cannot read or parse is kept.
-fn codex_rollout_file_is_subagent_thread(path: &Path) -> bool {
-    let Ok(head) = read_head_utf8(path, CODEX_SESSION_META_PROBE_BYTES) else {
-        return false;
-    };
+/// What a rollout file's opening metadata record says about its thread. The id
+/// can be missing while the verdict is still known, so the two are separate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadMarker {
+    pub id: Option<String>,
+    pub spawned_by_codex: bool,
+}
 
-    codex_rollout_head_is_subagent_thread(&head)
+/// Read from a bounded head, so the scan can sort the files before it spends
+/// its read budget on them.
+fn codex_rollout_thread_marker(path: &Path) -> Option<CodexThreadMarker> {
+    let head = read_head_utf8(path, CODEX_SESSION_META_PROBE_BYTES).ok()?;
+    codex_rollout_head_thread_marker(&head)
+}
+
+/// `None` when the head holds no readable metadata record — a truncated line, a
+/// file that opens with something else, an empty file. The caller keeps those.
+pub fn codex_rollout_head_thread_marker(head: &str) -> Option<CodexThreadMarker> {
+    let line = head.lines().next()?;
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+
+    let payload = value.get("payload")?;
+    Some(CodexThreadMarker {
+        id: payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        spawned_by_codex: is_codex_subagent_meta(payload),
+    })
 }
 
 pub fn codex_rollout_head_is_subagent_thread(head: &str) -> bool {
-    let Some(line) = head.lines().next() else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return false;
-    };
-    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-        return false;
-    }
+    codex_rollout_head_thread_marker(head).is_some_and(|marker| marker.spawned_by_codex)
+}
 
-    value.get("payload").is_some_and(is_codex_subagent_meta)
+/// Index rows naming threads Codex spawned for itself.
+///
+/// `~/.codex/session_index.jsonl` is a flat list of id, name and timestamp with
+/// nothing in it saying what kind of thread a row describes, so the rollout
+/// files are the only evidence — and the index is read whole, with none of the
+/// filtering the rollout files get. On this machine 119 of its 330 rows are
+/// sub-agent threads, 117 of them already archived, and every one of those was
+/// reaching the rail under a plausible name ("Audit inventory gaps", "Review
+/// mobile steppers") that gave the user no way to tell it apart from their own
+/// work.
+///
+/// A row whose thread has no rollout file left anywhere is kept: 150 of them
+/// here, all genuinely the user's, and absence of evidence is not evidence.
+pub fn drop_codex_subagent_sessions(
+    records: Vec<AgentSessionRecord>,
+    subagent_ids: &HashSet<String>,
+) -> Vec<AgentSessionRecord> {
+    records
+        .into_iter()
+        .filter(|record| !subagent_ids.contains(&record.id))
+        .collect()
 }
 
 /// The first thing the user actually typed. Codex opens every session with
@@ -1535,6 +1594,54 @@ mod tests {
         let records = parse_codex_rollout_jsonl(CODEX_UNMARKED_ROLLOUT_JSONL);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "019d8d20");
+    }
+
+    /// The index file names sub-agent threads as plausibly as it names the
+    /// user's own — "Audit inventory gaps", "Review mobile steppers" — so the
+    /// name is no help at all and the rollout files have to answer.
+    #[test]
+    fn codex_index_rows_are_dropped_when_a_rollout_proves_them_helper_threads() {
+        // The id travels with the verdict, so an archived helper thread can be
+        // recognised from its rollout file and struck off the index.
+        let marker = codex_rollout_head_thread_marker(CODEX_SUBAGENT_ROLLOUT_JSONL).unwrap();
+        assert_eq!(marker.id.as_deref(), Some("019fa9c1"));
+        assert!(marker.spawned_by_codex);
+
+        let marker = codex_rollout_head_thread_marker(CODEX_TOP_LEVEL_ROLLOUT_JSONL).unwrap();
+        assert_eq!(marker.id.as_deref(), Some("019fa964"));
+        assert!(!marker.spawned_by_codex);
+
+        // A metadata record with no id still answers the question it can.
+        let marker = codex_rollout_head_thread_marker(
+            r#"{"type":"session_meta","payload":{"thread_source":"subagent"}}"#,
+        )
+        .unwrap();
+        assert_eq!(marker.id, None);
+        assert!(marker.spawned_by_codex);
+
+        // Nothing readable: no verdict either way.
+        assert_eq!(codex_rollout_head_thread_marker("{\"type\":\"sessi"), None);
+        assert_eq!(codex_rollout_head_thread_marker(""), None);
+
+        let index = parse_codex_index_jsonl(concat!(
+            r#"{"id":"019fa9c1","thread_name":"Audit inventory gaps","updated_at":"2026-07-28T17:24:00.000000Z"}"#,
+            "\n",
+            r#"{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-28T16:42:00.000000Z"}"#,
+            "\n",
+            r#"{"id":"019c230d","thread_name":"Document EDI flow review","updated_at":"2026-03-13T21:48:02.611673Z"}"#,
+        ));
+        assert_eq!(index.len(), 3);
+
+        let helper_threads = HashSet::from(["019fa9c1".to_string()]);
+        let kept = drop_codex_subagent_sessions(index, &helper_threads);
+
+        // The helper thread goes. The session the user started stays, and so
+        // does the one whose rollout file is gone from disk entirely — no
+        // evidence is not evidence.
+        assert_eq!(
+            kept.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+            vec!["019fa964", "019c230d"]
+        );
     }
 
     #[test]
