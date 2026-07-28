@@ -24,6 +24,13 @@ const maxSkippedDirectorySamples = 16;
 const claudeGenericSessionTitle = 'Claude session';
 const claudeSessionFileLimit = 512;
 const claudeSessionTailBytes = 256 * 1024;
+/**
+ * How far into a transcript to look for the entrypoint that launched it. The
+ * field rides on every `user`, `assistant` and `attachment` record, so it turns
+ * up early; across 1091 transcripts here 64 KB reaches it in 1050 of them, and
+ * the rest are kept and settled when the file is parsed in full.
+ */
+const claudeSessionLaunchProbeBytes = 64 * 1024;
 const codexGenericSessionTitle = 'Codex session';
 const codexUntitledIndexTitle = 'Untitled Codex session';
 const codexSessionFileLimit = 512;
@@ -158,12 +165,16 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
     if (contents) records.push(...parseCmuxHookSessionsJson(agent, contents));
   }
 
-  // Drop subagent transcripts BEFORE the file budget is applied: they outnumber
-  // real sessions on a busy machine and would otherwise evict them.
-  const claudeFiles = await sortFilesByModifiedDesc(
-    (await jsonlFiles(path.join(homePath, '.claude', 'projects')))
-      .filter((filePath) => !isClaudeSubagentTranscriptPath(filePath))
-  );
+  // Drop subagent transcripts and helper runs BEFORE the file budget is
+  // applied: they outnumber real sessions on a busy machine and would otherwise
+  // evict them.
+  const claudeTranscripts: string[] = [];
+  for (const filePath of await jsonlFiles(path.join(homePath, '.claude', 'projects'))) {
+    if (isClaudeSubagentTranscriptPath(filePath)) continue;
+    if (await claudeTranscriptFileIsAgentLaunched(filePath)) continue;
+    claudeTranscripts.push(filePath);
+  }
+  const claudeFiles = await sortFilesByModifiedDesc(claudeTranscripts);
   for (const filePath of claudeFiles.slice(0, claudeSessionFileLimit)) {
     const projectPath = decodeClaudeProjectDir(path.basename(path.dirname(filePath))) ?? '';
     const contents = await readTailUtf8(filePath, claudeSessionTailBytes).catch(() => '');
@@ -583,6 +594,37 @@ export function isAgentLaunchEntrypoint(entrypoint: string) {
 function isClaudeAgentLaunchedEntry(value: Record<string, unknown>) {
   const entrypoint = optionalString(value.entrypoint);
   return entrypoint ? isAgentLaunchEntrypoint(entrypoint) : false;
+}
+
+/**
+ * The same question asked of a file instead of a parsed record, so the scan can
+ * skip helper runs before it spends its read budget on them.
+ *
+ * Excluding them at parse time was never enough. A batch of API work can write
+ * hundreds of transcripts in an afternoon — 880 of the 1091 here came from one
+ * document-extraction job, all in a temporary directory — and the scan reads
+ * only the newest 512 files. Sorted by modification time, that batch pushed the
+ * user's own sessions out of the scan entirely: 6 of 24 survived. Nothing was
+ * wrong with the rule; it just ran too late to matter.
+ *
+ * Reads a bounded head rather than the whole file. Anything unreadable, or whose
+ * entrypoint sits past the probe, is kept and settled when the file is parsed in
+ * full — the same direction to fail as every other check here.
+ */
+async function claudeTranscriptFileIsAgentLaunched(filePath: string) {
+  const head = await readHeadUtf8(filePath, claudeSessionLaunchProbeBytes).catch(() => '');
+  return claudeTranscriptHeadIsAgentLaunched(head);
+}
+
+export function claudeTranscriptHeadIsAgentLaunched(head: string) {
+  // Stops at the first record that answers, rather than parsing the whole
+  // window: this runs once per transcript on every scan.
+  for (const line of head.split(/\r?\n/)) {
+    const value = parseJsonObject(line);
+    if (value && isClaudeAgentLaunchedEntry(value)) return true;
+  }
+
+  return false;
 }
 
 /**

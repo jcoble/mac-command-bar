@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  claudeTranscriptHeadIsAgentLaunched,
   codexRolloutHeadIsSubagentThread,
   isAgentLaunchEntrypoint,
   mergeCodexSessionMetadata,
@@ -74,6 +75,42 @@ assert.equal(noEntrypoint.length, 1);
 assert.equal(noEntrypoint[0].id, 'S1');
 
 assert.deepEqual(parseClaudeJsonl(subagentJsonl, projectPath), []);
+
+/**
+ * The shape that flooded the rail: an API job's transcripts, hundreds of them,
+ * written into a temporary directory. Every record carries the launch
+ * entrypoint — but the opening records do not, so the probe has to read past
+ * them.
+ */
+const apiBatchJobJsonl = [
+  '{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-27T15:25:58.319Z","sessionId":"S6","content":"Extract the fields below from the following document text."}',
+  '{"type":"queue-operation","operation":"dequeue","timestamp":"2026-07-27T15:25:58.319Z","sessionId":"S6"}',
+  '{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","promptSource":"sdk","sessionId":"S6","cwd":"/private/var/folders/rp/T","timestamp":"2026-07-27T15:25:59.000Z","message":{"role":"user","content":"You are a friendly assistant for extracting rental documents."}}'
+].join('\n');
+
+// Reading past the opening records is the whole point: the launch entrypoint
+// appears only once the first real turn is written.
+assert.equal(claudeTranscriptHeadIsAgentLaunched(apiBatchJobJsonl), true);
+assert.equal(claudeTranscriptHeadIsAgentLaunched(helperAgentJsonl), true);
+
+// A session the user typed into, and one old enough to carry no entrypoint at
+// all, both stay in the scan.
+assert.equal(claudeTranscriptHeadIsAgentLaunched(realSessionStartingWithAPastedLogJsonl), false);
+assert.equal(claudeTranscriptHeadIsAgentLaunched(transcriptWithoutAnEntrypointJsonl), false);
+
+// A head cut mid-line, and one holding nothing but the opening records, are
+// both kept — the parse of the full file settles them.
+assert.equal(claudeTranscriptHeadIsAgentLaunched('{"type":"user","entrypoint":"sdk-c'), false);
+assert.equal(
+  claudeTranscriptHeadIsAgentLaunched(
+    '{"type":"queue-operation","operation":"enqueue","sessionId":"S6"}'
+  ),
+  false
+);
+assert.equal(claudeTranscriptHeadIsAgentLaunched(''), false);
+
+// And the rule the probe applies is the one the parse applies.
+assert.deepEqual(parseClaudeJsonl(apiBatchJobJsonl, '/private/var/folders/rp/T'), []);
 
 /**
  * A thread Codex spawned for itself. Both markers are present, as they are on

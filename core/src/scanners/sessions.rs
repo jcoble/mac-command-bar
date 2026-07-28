@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 const CLAUDE_GENERIC_SESSION_TITLE: &str = "Claude session";
 const CLAUDE_SESSION_FILE_LIMIT: usize = 512;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
+/// How far into a transcript to look for the entrypoint that launched it. The
+/// field rides on every `user`, `assistant` and `attachment` record, so it turns
+/// up early; across 1091 transcripts here 64 KB reaches it in 1050 of them, and
+/// the rest are kept and settled when the file is parsed in full.
+const CLAUDE_SESSION_LAUNCH_PROBE_BYTES: usize = 64 * 1024;
 const CODEX_GENERIC_SESSION_TITLE: &str = "Codex session";
 const CODEX_UNTITLED_INDEX_TITLE: &str = "Untitled Codex session";
 const CODEX_SESSION_FILE_LIMIT: usize = 512;
@@ -96,9 +101,11 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     let claude_projects = home.join(".claude/projects");
     let mut files = jsonl_files(&claude_projects);
-    // Drop subagent transcripts BEFORE the file budget is applied: they
-    // outnumber real sessions on a busy machine and would otherwise evict them.
+    // Drop subagent transcripts and helper runs BEFORE the file budget is
+    // applied: they outnumber real sessions on a busy machine and would
+    // otherwise evict them.
     files.retain(|file| !is_claude_subagent_transcript_path(file));
+    files.retain(|file| !claude_transcript_file_is_agent_launched(file));
     files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     for file in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
         let project_path = file
@@ -663,6 +670,33 @@ fn is_claude_agent_launched_entry(value: &Value) -> bool {
         .get("entrypoint")
         .and_then(Value::as_str)
         .is_some_and(is_agent_launch_entrypoint)
+}
+
+/// The same question asked of a file instead of a parsed record, so the scan can
+/// skip helper runs before it spends its read budget on them.
+///
+/// Excluding them at parse time was never enough. A batch of API work can write
+/// hundreds of transcripts in an afternoon — 880 of the 1091 here came from one
+/// document-extraction job, all in a temporary directory — and the scan reads
+/// only the newest 512 files. Sorted by modification time, that batch pushed the
+/// user's own sessions out of the scan entirely: 6 of 24 survived. Nothing was
+/// wrong with the rule; it just ran too late to matter.
+///
+/// Reads a bounded head rather than the whole file. Anything unreadable, or
+/// whose entrypoint sits past the probe, is kept and settled when the file is
+/// parsed in full — the same direction to fail as every other check here.
+fn claude_transcript_file_is_agent_launched(path: &Path) -> bool {
+    let Ok(head) = read_head_utf8(path, CLAUDE_SESSION_LAUNCH_PROBE_BYTES) else {
+        return false;
+    };
+
+    claude_transcript_head_is_agent_launched(&head)
+}
+
+pub fn claude_transcript_head_is_agent_launched(head: &str) -> bool {
+    head.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|value| is_claude_agent_launched_entry(&value))
 }
 
 /// Claude Code records its own generated session title on a `type: "ai-title"`
@@ -1558,6 +1592,49 @@ mod tests {
         let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "S1");
+    }
+
+    /// The shape that flooded the rail: an API job's transcripts, hundreds of
+    /// them, written into a temporary directory. Every record carries the
+    /// launch entrypoint — but the opening records do not, so the probe has to
+    /// read past them.
+    const API_BATCH_JOB_JSONL: &str = concat!(
+        r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-27T15:25:58.319Z","sessionId":"S6","content":"Extract the fields below from the following document text."}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-07-27T15:25:58.319Z","sessionId":"S6"}"#,
+        "\n",
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","promptSource":"sdk","sessionId":"S6","cwd":"/private/var/folders/rp/T","timestamp":"2026-07-27T15:25:59.000Z","message":{"role":"user","content":"You are a friendly assistant for extracting rental documents."}}"#,
+    );
+
+    #[test]
+    fn claude_scan_skips_helper_runs_before_the_file_budget() {
+        // Reading past the opening records is the whole point: the launch
+        // entrypoint appears only once the first real turn is written.
+        assert!(claude_transcript_head_is_agent_launched(API_BATCH_JOB_JSONL));
+        assert!(claude_transcript_head_is_agent_launched(HELPER_AGENT_JSONL));
+
+        // A session the user typed into, and one old enough to carry no
+        // entrypoint at all, both stay in the scan.
+        assert!(!claude_transcript_head_is_agent_launched(
+            REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL
+        ));
+        assert!(!claude_transcript_head_is_agent_launched(REAL_SESSION_JSONL));
+
+        // A head cut mid-line, and one holding nothing but the opening records,
+        // are both kept — the parse of the full file settles them.
+        assert!(!claude_transcript_head_is_agent_launched(
+            r#"{"type":"user","entrypoint":"sdk-c"#
+        ));
+        assert!(!claude_transcript_head_is_agent_launched(
+            r#"{"type":"queue-operation","operation":"enqueue","sessionId":"S6"}"#
+        ));
+        assert!(!claude_transcript_head_is_agent_launched(""));
+
+        // And the rule the probe applies is the one the parse applies.
+        assert_eq!(
+            parse_claude_jsonl(API_BATCH_JOB_JSONL, "/private/var/folders/rp/T"),
+            Vec::new()
+        );
     }
 
     #[test]
