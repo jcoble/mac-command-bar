@@ -113,6 +113,45 @@ assert.equal(claudeTranscriptHeadIsAgentLaunched(''), false);
 assert.deepEqual(parseClaudeJsonl(apiBatchJobJsonl, '/private/var/folders/rp/T'), []);
 
 /**
+ * A hook-spawned security reviewer, the exact text Claude Code writes: "Review
+ * this change for security vulnerabilities" followed by the file list and the
+ * diff. 186 of these exist here and every one is `sdk-py`.
+ */
+const securityReviewAgentJsonl = [
+  '{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-py","promptSource":"sdk","sessionId":"S7","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T13:00:00Z","message":{"role":"user","content":"Review this change for security vulnerabilities.\\n\\nChanged files (you may Read these and any other file in the repo):\\n  - tauri-svelte-preview/src/lib/shell/terminalService.ts\\n\\nUnified diff (only + lines are new):"}}',
+  '{"type":"assistant","isSidechain":false,"entrypoint":"sdk-py","sessionId":"S7","timestamp":"2026-07-28T13:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"No vulnerabilities found."}]}}'
+].join('\n');
+
+/**
+ * A REAL session resumed after running out of context. Claude Code opens it
+ * with a machine-written summary, so it reads exactly like a dispatch prompt —
+ * and this one is 22770 lines of the user's own work.
+ */
+const realSessionResumedFromASummaryJsonl = [
+  '{"type":"user","isSidechain":false,"userType":"external","entrypoint":"cli","sessionId":"S8","cwd":"/Users/dev/work/EdiPlatform","timestamp":"2026-07-28T14:00:00Z","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\\n\\nSummary:\\n1. Primary Request and Intent:\\n   Make the rule-extraction pipeline leaner and faster."}}',
+  '{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S8","timestamp":"2026-07-28T14:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Picking up where that left off."}]}}'
+].join('\n');
+
+// Locks in why there is no "does this read like a dispatch prompt?" rule. The
+// security reviewers that fill the rail are launched programmatically like
+// every other helper, so the entrypoint already answers for them. Guessing from
+// the text instead would cost real sessions: the second fixture opens with a
+// machine-written summary and IS the user's own work, and the third opens with
+// the words "Review this change" typed by the user.
+assert.equal(claudeTranscriptHeadIsAgentLaunched(securityReviewAgentJsonl), true);
+assert.deepEqual(parseClaudeJsonl(securityReviewAgentJsonl, '/Users/dev/work/mac-command-bar'), []);
+
+for (const [fixture, id] of [
+  [realSessionResumedFromASummaryJsonl, 'S8'],
+  [realSessionStartingWithAPastedLogJsonl, 'S5']
+]) {
+  assert.equal(claudeTranscriptHeadIsAgentLaunched(fixture), false);
+  const kept = parseClaudeJsonl(fixture, '/Users/dev/work/EdiPlatform');
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].id, id);
+}
+
+/**
  * A thread Codex spawned for itself. Both markers are present, as they are on
  * 618 of the 619 helper threads on this machine.
  */

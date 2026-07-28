@@ -1454,6 +1454,24 @@ mod tests {
         r#"{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S5","timestamp":"2026-07-28T12:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"That mount is running before the store exists."}]}}"#,
     );
 
+    /// A hook-spawned security reviewer, the exact text Claude Code writes:
+    /// "Review this change for security vulnerabilities" followed by the file
+    /// list and the diff. 186 of these exist here and every one is `sdk-py`.
+    const SECURITY_REVIEW_AGENT_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-py","promptSource":"sdk","sessionId":"S7","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T13:00:00Z","message":{"role":"user","content":"Review this change for security vulnerabilities.\n\nChanged files (you may Read these and any other file in the repo):\n  - tauri-svelte-preview/src/lib/shell/terminalService.ts\n\nUnified diff (only + lines are new):"}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"entrypoint":"sdk-py","sessionId":"S7","timestamp":"2026-07-28T13:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"No vulnerabilities found."}]}}"#,
+    );
+
+    /// A REAL session resumed after running out of context. Claude Code opens it
+    /// with a machine-written summary, so it reads exactly like a dispatch
+    /// prompt — and this one is 22770 lines of the user's own work.
+    const REAL_SESSION_RESUMED_FROM_A_SUMMARY_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"cli","sessionId":"S8","cwd":"/Users/dev/work/EdiPlatform","timestamp":"2026-07-28T14:00:00Z","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Primary Request and Intent:\n   Make the rule-extraction pipeline leaner and faster."}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S8","timestamp":"2026-07-28T14:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Picking up where that left off."}]}}"#,
+    );
+
     /// A thread Codex spawned for itself. Both markers are present, as they are
     /// on 618 of the 619 helper threads on this machine.
     const CODEX_SUBAGENT_ROLLOUT_JSONL: &str = concat!(
@@ -1605,6 +1623,35 @@ mod tests {
         "\n",
         r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","promptSource":"sdk","sessionId":"S6","cwd":"/private/var/folders/rp/T","timestamp":"2026-07-27T15:25:59.000Z","message":{"role":"user","content":"You are a friendly assistant for extracting rental documents."}}"#,
     );
+
+    /// Locks in why there is no "does this read like a dispatch prompt?" rule.
+    ///
+    /// The security reviewers that fill the rail are launched programmatically
+    /// like every other helper, so the entrypoint already answers for them —
+    /// checked here at both the probe and the parse. Guessing from the text
+    /// instead would cost real sessions: the second fixture opens with a
+    /// machine-written summary and IS the user's own work, and the third opens
+    /// with the words "Review this change" typed by the user.
+    #[test]
+    fn claude_scan_reads_how_a_run_was_launched_not_what_it_says() {
+        assert!(claude_transcript_head_is_agent_launched(
+            SECURITY_REVIEW_AGENT_JSONL
+        ));
+        assert_eq!(
+            parse_claude_jsonl(SECURITY_REVIEW_AGENT_JSONL, "/Users/dev/work/mac-command-bar"),
+            Vec::new()
+        );
+
+        for (fixture, id) in [
+            (REAL_SESSION_RESUMED_FROM_A_SUMMARY_JSONL, "S8"),
+            (REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL, "S5"),
+        ] {
+            assert!(!claude_transcript_head_is_agent_launched(fixture));
+            let records = parse_claude_jsonl(fixture, "/Users/dev/work/EdiPlatform");
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].id, id);
+        }
+    }
 
     #[test]
     fn claude_scan_skips_helper_runs_before_the_file_budget() {
