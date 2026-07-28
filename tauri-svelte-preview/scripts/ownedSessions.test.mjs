@@ -28,12 +28,15 @@ const scanRecord = {
   assert.equal(owned.resumeCommand, 'claude --resume native-9');
   assert.equal(owned.state, 'background');
   assert.equal(owned.ptySessionId, null);
+  // Adopting is not completing: only the user's "Mark done" sets this.
+  assert.equal(owned.completedAt, null);
 }
 { // createFreshSession defaults
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
   assert.equal(fresh.title, 'proj');
   assert.equal(fresh.source, 'fresh');
   assert.equal(fresh.resumeCommand, null);
+  assert.equal(fresh.completedAt, null);
 }
 { // persistence round-trip + tolerance
   const owned = adoptAgentSession(scanRecord, mint);
@@ -44,6 +47,19 @@ const scanRecord = {
   assert.deepEqual(parseStoredOwnedSessions(JSON.stringify([{ ownedId: '', cwd: '/x' }])), []);
   const weird = { ...owned, state: 'zombie' };
   assert.equal(parseStoredOwnedSessions(JSON.stringify([weird]))[0].state, 'exited');
+}
+{ // when the user marked a session done survives a save and a reload
+  const done = { ...adoptAgentSession(scanRecord, mint), completedAt: '2026-07-28T10:00:00.000Z' };
+  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([done]));
+  assert.deepEqual(parsed, [done]);
+  // Sessions saved before this field existed come back as "not done".
+  const { completedAt, ...older } = done;
+  assert.equal(parseStoredOwnedSessions(JSON.stringify([older]))[0].completedAt, null);
+  // Anything that is not a stamp is not a stamp.
+  for (const junk of [123, true, {}, [], '']) {
+    const record = { ...done, completedAt: junk };
+    assert.equal(parseStoredOwnedSessions(JSON.stringify([record]))[0].completedAt, null);
+  }
 }
 { // reconcile after reload
   const a = { ...adoptAgentSession(scanRecord, () => 'a'), ptySessionId: 'term-1' };
@@ -59,5 +75,22 @@ const scanRecord = {
   assert.equal(owned[2].state, 'exited');
   assert.equal(owned[2].ptySessionId, null);
   assert.deepEqual(reattachable.map((s) => s.ownedId), ['a']);
+}
+{ // a reload never marks a session done and never un-marks one
+  const stamp = '2026-07-28T10:00:00.000Z';
+  const mark = (id, ptySessionId) => ({
+    ...adoptAgentSession(scanRecord, () => id), ptySessionId, completedAt: stamp,
+  });
+  const { owned } = reconcileOwnedSessions(
+    [mark('a', 'term-1'), mark('b', 'term-2'), mark('c', 'term-3')],
+    [{ sessionId: 'term-1', exited: false }, { sessionId: 'term-2', exited: true }]
+  );
+  // still running / its terminal died / its terminal is gone entirely
+  assert.deepEqual(owned.map((s) => s.completedAt), [stamp, stamp, stamp]);
+  const notDone = reconcileOwnedSessions(
+    [{ ...mark('d', 'term-4'), completedAt: null }],
+    [{ sessionId: 'term-4', exited: false }]
+  );
+  assert.equal(notDone.owned[0].completedAt, null);
 }
 console.log('ownedSessions tests passed');

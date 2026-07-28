@@ -28,10 +28,12 @@
   import { shellPanels } from '$lib/shell/shellPanels';
   import {
     addOwnedSession,
+    completeOwnedSession,
     hydrateOwned,
     loadStoredOwned,
     rail,
     removeOwnedSession,
+    reopenOwnedSession,
     setActiveOwned,
     setAvailable,
     updateOwnedSession
@@ -188,23 +190,49 @@
     await selectOwned(owned.ownedId);
   }
 
-  /** EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
+  /**
+   * EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
    * rejects — it reports `{ successor, error }` — so a failed close still hands
-   * back the terminal the manager left visible. The row is dropped either way. */
-  async function closeOwned(ownedId: string): Promise<void> {
+   * back the terminal the manager left visible.
+   *
+   * The SESSION survives this. Closing a terminal ends the process and its
+   * screen; it does not end the piece of work, which stays on the list as a
+   * finished row until the user marks it done and removes it. `removeSession`
+   * is the only thing that takes a row off the list.
+   */
+  async function closeTerminal(ownedId: string): Promise<void> {
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
-    pendingHosts.delete(ownedId);
+    // The row is staying, so its host stays mounted and stays claimed; only the
+    // re-attach that is now pointless is dropped.
     awaitingReattach.delete(ownedId);
     const result = await service?.closeOwned(ownedId, session?.ptySessionId ?? null);
     if (result?.error) {
       rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(result.error)}`;
     }
-    removeOwnedSession(ownedId);
+    // The PTY id is cleared with the state: it names a process that is gone, and
+    // leaving it stored would have the next launch try to re-attach to it.
+    updateOwnedSession(ownedId, { state: 'exited', ptySessionId: null });
     // Picked BEFORE the await: adopt it only while it still exists.
     const successor = result?.successor ?? null;
     if (successor !== null && rail.owned.some((entry) => entry.ownedId === successor)) {
       setActiveOwned(successor);
     }
+  }
+
+  /**
+   * EXPLICIT IO: take a session off the list for good. The transcript on disk is
+   * untouched; only CommandBar's record of it goes.
+   *
+   * The close runs every time, not just for a session that is still running. A
+   * session whose process ended on its own keeps both its terminal on screen and
+   * its record in the backend, and dropping the row is the last chance to clear
+   * either — the row is what the ids were reachable through.
+   */
+  async function removeSession(ownedId: string): Promise<void> {
+    await closeTerminal(ownedId);
+    pendingHosts.delete(ownedId);
+    awaitingReattach.delete(ownedId);
+    removeOwnedSession(ownedId);
   }
 
   onMount(() => {
@@ -288,7 +316,9 @@
 {#snippet railArea()}
   <ShellSidebar
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
-    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeOwned}
+    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
+    onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
+    onReopen={reopenOwnedSession} onRemove={removeSession}
     onRescan={scanRail} onReady={(controls) => (sidebarControls = controls)}
     onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
     onOpenSettings={() => overlays?.openSettings()}
