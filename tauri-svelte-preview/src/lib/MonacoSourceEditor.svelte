@@ -16,6 +16,12 @@
 	import TypeScriptWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 	import "monaco-editor/min/vs/editor/editor.main.css";
 	import { onDestroy, onMount } from "svelte";
+	import {
+		sourceCodeLensCountKey,
+		sourceCodeLensCountMemoryMs,
+		sourceCodeLensId,
+		sourceCodeLensSpotFromId,
+	} from "./sourceCodeLensKeys";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
 	import { isNativeTauriRuntime } from "./tauriSource";
 	import {
@@ -288,6 +294,12 @@
 	let handledIntelligenceCommandId = -1;
 	let applyingContent = false;
 	let isReady = $state(false);
+	// One short line in the corner of the editor, for work the user started that
+	// takes long enough to look broken — today only the reference lookup behind
+	// the "N references" margin numbers. Empty means nothing is shown.
+	let editorNotice = $state("");
+	let editorNoticeTimer = 0;
+	let editorNoticeDelayTimer = 0;
 	let layoutObserver: ResizeObserver | null = null;
 	let layoutFrame = 0;
 	let targetLineRevealFrame = 0;
@@ -317,7 +329,13 @@
 	let originalCreateModelReference:
 		| StandaloneTextModelResolver["createModelReference"]
 		| null = null;
-	const codeLensReferenceCountCache = new Map<string, number | null>();
+	// Numbers already given to us for the "N references" margin, kept for
+	// `sourceCodeLensCountMemoryMs` so that editing the file does not re-ask for
+	// every one of them. See `sourceCodeLensKeys.ts` for how they are named.
+	const codeLensReferenceCountCache = new Map<
+		string,
+		{ count: number | null; countedAt: number }
+	>();
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
 	// Hot-path deadline for the four navigation providers (design-monaco.md §2.3).
 	// A nav lookup (definition/references/implementation/type-definition) must settle
@@ -582,7 +600,7 @@
 						lenses: symbols.map((symbol) => {
 							const request = sourceSymbolToLookupRequest(symbol);
 							return {
-								id: sourceCodeLensIdForRequest(model, request),
+								id: sourceCodeLensId(request),
 								range: new monaco.Range(symbol.line, 1, symbol.line, 1),
 							};
 						}),
@@ -1328,59 +1346,25 @@
 			return request;
 		}
 
-		return parseSourceCodeLensID(codeLens.id);
-	}
-
-	function sourceCodeLensIdForRequest(
-		model: Monaco.editor.ITextModel,
-		request: SourceEditorLookupRequest
-	) {
-		return [
-			"mcb-ref-count",
-			model.getVersionId(),
-			request.line,
-			request.column,
-			encodeURIComponent(request.symbolName),
-		].join(":");
-	}
-
-	function parseSourceCodeLensID(id: string | undefined): SourceEditorLookupRequest | null {
-		if (!id?.startsWith("mcb-ref-count:")) return null;
-		const [, , line, column, encodedSymbolName] = id.split(":");
-		const parsedLine = Number(line);
-		const parsedColumn = Number(column);
-		const symbolName = encodedSymbolName ? decodeURIComponent(encodedSymbolName) : "";
-		if (!symbolName || !Number.isFinite(parsedLine) || !Number.isFinite(parsedColumn)) {
-			return null;
-		}
-
-		return {
-			symbolName,
-			line: parsedLine,
-			column: parsedColumn,
-		};
-	}
-
-	function codeLensReferenceCacheKey(
-		model: Monaco.editor.ITextModel,
-		request: SourceEditorLookupRequest
-	) {
-		return `${model.uri.toString()}::${model.getVersionId()}::${request.line}:${request.column}:${request.symbolName}`;
+		return sourceCodeLensSpotFromId(codeLens.id);
 	}
 
 	async function sourceCodeLensReferenceCount(
 		model: Monaco.editor.ITextModel,
 		request: SourceEditorLookupRequest
 	) {
-		const cacheKey = codeLensReferenceCacheKey(model, request);
-		const cachedCount = codeLensReferenceCountCache.get(cacheKey);
-		if (cachedCount !== undefined) return cachedCount;
+		const cacheKey = sourceCodeLensCountKey(model.uri.toString(), request);
+		const remembered = codeLensReferenceCountCache.get(cacheKey);
+		if (remembered && Date.now() - remembered.countedAt < sourceCodeLensCountMemoryMs) {
+			return remembered.count;
+		}
 
 		const lookup = await onReferenceCountLookup?.(request);
-		// null/undefined ⇒ the count is unknown (no LSP / skipped scan). Cache and
-		// return null so the lens renders without a count rather than "0".
+		// null/undefined ⇒ the count is unknown (no scan yet, or the scan ran out
+		// of time). Cache and return null so the lens renders without a count
+		// rather than "0".
 		const nextCount = typeof lookup === "number" ? Math.max(0, lookup) : null;
-		codeLensReferenceCountCache.set(cacheKey, nextCount);
+		codeLensReferenceCountCache.set(cacheKey, { count: nextCount, countedAt: Date.now() });
 		return nextCount;
 	}
 
@@ -1520,7 +1504,9 @@
 
 	function handleEditorContentChange() {
 		if (applyingContent || !editor) return;
-		codeLensReferenceCountCache.clear();
+		// The counted numbers are NOT dropped here. They count the name across the
+		// project's saved files, which typing in this buffer does not change, and
+		// dropping them on every keystroke re-asked for all of them at once.
 		const nextContent = editor.getValue();
 		onContentChange?.(nextContent);
 		publishSymbols(nextContent);
@@ -1711,6 +1697,41 @@
 		event.stopImmediatePropagation();
 	}
 
+	function clearEditorNoticeTimers() {
+		if (editorNoticeTimer) window.clearTimeout(editorNoticeTimer);
+		if (editorNoticeDelayTimer) window.clearTimeout(editorNoticeDelayTimer);
+		editorNoticeTimer = 0;
+		editorNoticeDelayTimer = 0;
+	}
+
+	/**
+	 * Show `text` in the corner of the editor. `clearAfterMs` of 0 leaves it up
+	 * until the next call; pass a few seconds for a message the user only needs
+	 * to read once. An empty `text` takes the notice away.
+	 */
+	function showEditorNotice(text: string, clearAfterMs = 0) {
+		clearEditorNoticeTimers();
+		editorNotice = text;
+		if (!text || clearAfterMs <= 0) return;
+		editorNoticeTimer = window.setTimeout(() => {
+			editorNoticeTimer = 0;
+			editorNotice = "";
+		}, clearAfterMs);
+	}
+
+	/**
+	 * Show `text` only if whatever is running is still running `delayMs` from
+	 * now. Work that answers straight away should not make a message flash on
+	 * screen; `showEditorNotice("")` cancels a message that never appeared.
+	 */
+	function showEditorNoticeAfter(delayMs: number, text: string) {
+		clearEditorNoticeTimers();
+		editorNoticeDelayTimer = window.setTimeout(() => {
+			editorNoticeDelayTimer = 0;
+			editorNotice = text;
+		}, delayMs);
+	}
+
 	async function showCodeLensReferences(monaco: typeof Monaco, request: SourceEditorLookupRequest) {
 		if (!editor) return;
 
@@ -1723,7 +1744,21 @@
 		editor.revealPositionInCenterIfOutsideViewport(position);
 		editor.focus();
 
-		const targets = (await onReferenceLookup?.(request)) ?? [];
+		// The lookup below can take seconds when the language server is busy, and
+		// the only other thing that happens on click is the cursor moving — which
+		// reads as "the link did nothing". Say what we are doing instead, once it
+		// has taken long enough to be worth saying.
+		showEditorNoticeAfter(250, "Finding references…");
+		let targets: SourceReferenceTarget[] = [];
+		try {
+			targets = (await onReferenceLookup?.(request)) ?? [];
+		} catch (error) {
+			console.warn("Code lens reference lookup failed", error);
+			showEditorNotice("Could not find references. Try again in a moment.", 5000);
+			requestReferencesAtPosition(position);
+			return;
+		}
+		showEditorNotice("");
 		// A2: no bulk pre-read. peekLocations carries only {uri, range}; the peek tree
 		// pulls each file group's preview model lazily on expand through our lazy
 		// resolver shim (installLazyTargetModelResolver).
@@ -2284,6 +2319,8 @@
 			monacoCancellationSuppressionTimer = 0;
 		}
 		monacoCancellationSuppressionDepth = 0;
+		clearEditorNoticeTimers();
+		editorNotice = "";
 		layoutObserver?.disconnect();
 		layoutObserver = null;
 		contentChangeDisposable?.dispose();
@@ -2348,6 +2385,10 @@
 			{/each}
 		</div>
 	{/if}
+
+	{#if editorNotice}
+		<div class="editor-notice" aria-live="polite">{editorNotice}</div>
+	{/if}
 </div>
 
 <style>
@@ -2372,6 +2413,26 @@
 
 	.monaco-host :global(.monaco-editor .margin) {
 		background: var(--source-editor-background, #17191e);
+	}
+
+	.editor-notice {
+		position: absolute;
+		right: 18px;
+		bottom: 14px;
+		z-index: 6;
+		max-width: 60%;
+		padding: 6px 12px;
+		border: 1px solid #343841;
+		border-radius: 999px;
+		background: #23262d;
+		color: #cfd3dc;
+		font-size: 12px;
+		line-height: 1.4;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+		pointer-events: none;
 	}
 
 	.skeleton-code {

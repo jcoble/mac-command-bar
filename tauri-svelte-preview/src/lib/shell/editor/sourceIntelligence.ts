@@ -13,7 +13,10 @@
  *
  *  - **Two tiers, then give up.** Language server first, then the backend's
  *    plain-text scan, then an empty answer. The old shell had a third tier
- *    that answered from bundled demo files; /next never invents results.
+ *    that answered from bundled demo files; /next never invents results. The
+ *    one exception is the "N references" margin count, which uses the backend
+ *    scan alone and never asks the language server — see
+ *    `countReferencesForCodeLens` for why.
  *  - **Every backend call is counted** with `countInvoke('<command name>')`
  *    immediately before it, so the dev counter tells the truth.
  *  - **Nothing runs on import.** The first backend call of any kind happens
@@ -55,7 +58,7 @@ import {
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { activateEditor } from './editorStore.svelte.ts';
-import { createCountMemory, createReferenceCountBatcher } from './referenceCountBatcher.ts';
+import { createReferenceCountBatcher } from './referenceCountBatcher.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
@@ -66,13 +69,6 @@ export const maxSourceDefinitionResults = 20;
 export const maxSourceReferenceResults = 50;
 /** Most completion items one lookup will return. */
 export const maxSourceCompletionResults = 50;
-/**
- * A reference COUNT in the margin is a low-priority annotation, so it gets a
- * short budget. A cold language server can block for its full 6-second
- * timeout, and roughly fifteen visible margin counts all waiting that long is
- * what used to freeze the editor for half a minute.
- */
-export const codeLensReferenceCountTimeoutMs = 700;
 /**
  * Monaco resolves margin counts one symbol at a time, as each one scrolls into
  * view. Instead of asking the backend per symbol, the first request opens a
@@ -145,28 +141,6 @@ export interface SourceIntelligence {
   readonly projectRoot: string | null;
   /** The callbacks to spread onto `MonacoSourceEditor`. */
   readonly callbacks: SourceIntelligenceCallbacks;
-}
-
-/**
- * Resolve `promise`, but give up after `ms` and answer "unknown" instead of
- * waiting. Used only where a slow answer is worse than no answer.
- */
-function raceCountTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(null);
-    }, ms);
-    const finish = (value: T | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    promise.then(finish, () => finish(null));
-  });
 }
 
 /**
@@ -279,13 +253,6 @@ export function createSourceIntelligence(): SourceIntelligence {
 
   // ── Margin counts: one project pass for every symbol on screen ─────────────
 
-  /**
-   * The two tiers remember their counts separately, because they count
-   * different things: the language server answers about the one symbol at that
-   * one spot, while the project pass answers about a name wherever it appears.
-   * Under one key a number would change as the reader typed.
-   */
-  const lensReferenceCounts = createCountMemory({ cacheMs: codeLensReferenceCountCacheMs });
   const referenceCountBatcher = createReferenceCountBatcher({
     windowMs: codeLensReferenceCountBatchWindowMs,
     cacheMs: codeLensReferenceCountCacheMs,
@@ -301,18 +268,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
   });
 
-  /**
-   * A count from the language server belongs to one spot in one file, so it is
-   * remembered by that spot. Line and column shift as text is inserted above,
-   * which costs a re-count for the symbols below the edit — the project pass
-   * covers those in the meantime.
-   */
-  function lensCountKey(request: SourceLookupRequest): string {
-    return `${activePreview?.path ?? ''}::${request.line}:${request.column}:${request.symbolName}`;
-  }
-
   function forgetReferenceCounts(): void {
-    lensReferenceCounts.forget();
     referenceCountBatcher.forget();
   }
 
@@ -320,36 +276,30 @@ export function createSourceIntelligence(): SourceIntelligence {
    * The "N references" number drawn above a symbol. Returns `null` for
    * "unknown", which draws nothing at all — better than a wrong number.
    *
-   * The project pass is started first and the language server is given its
-   * turn while that runs, so the number that appears is the language server's
-   * when it is quick enough and the project pass's otherwise. Before this, a
-   * big project got no number at all: the language server was usually cold,
-   * and the only other tier was barred from projects this size because it read
-   * the whole project once per symbol.
+   * **The number always comes from the fast project pass** — one backend scan
+   * that counts the symbol's NAME wherever it appears in the project, shared by
+   * every count on screen. It never asks the language server.
+   *
+   * Until 2026-07-28 each visible count also fired its own language-server
+   * lookup and used that answer whenever it came back inside 700ms, because the
+   * language server counts that one symbol at that one spot rather than the
+   * bare name. The user chose the name-based count instead — the same number
+   * the web preview shows — because those per-symbol lookups were the whole
+   * problem: ten or fifteen of them go out at once as the counts scroll into
+   * view, the 700ms wait gives up without stopping the work, and the backend
+   * runs them one at a time behind a single lock. Nothing cancels them, so
+   * clicking a count could sit for twenty seconds waiting for that queue to
+   * drain.
+   *
+   * The language server is untouched everywhere else: it still answers a click
+   * on the count, hover, and go-to-definition.
    */
   async function countReferencesForCodeLens(
     request: SourceLookupRequest
   ): Promise<number | null> {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return null;
-
-    const remembered = lensReferenceCounts.get(lensCountKey(request));
-    if (remembered !== undefined) return remembered;
-
-    const projectCount = referenceCountBatcher.count(symbolName);
-
-    if (activePreview && languageIntelligenceAvailable()) {
-      const lspTargets = await raceCountTimeout(
-        lspReferences(request),
-        codeLensReferenceCountTimeoutMs
-      );
-      if (lspTargets) {
-        lensReferenceCounts.remember(lensCountKey(request), lspTargets.length);
-        return lspTargets.length;
-      }
-    }
-
-    return projectCount;
+    return referenceCountBatcher.count(symbolName);
   }
 
   /**
