@@ -1,0 +1,86 @@
+/**
+ * layoutStorage.ts — pure persistence helpers for the /next shell layout.
+ *
+ * No DOM, no dockview import, no IO of its own: callers hand in a Storage-like
+ * object so node tests can run without a browser. Every function is total —
+ * corrupt JSON, quota errors, and malformed trees come back as null / false /
+ * empty, never as a throw into the shell.
+ */
+
+/** The subset of `Storage` the shell needs (injectable for tests). */
+export interface LayoutStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout';
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout';
+
+export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** Quota-safe write. Returns false instead of throwing (layout loss is benign). */
+export function saveLayout(storage: LayoutStorage, key: string, layout: unknown): boolean {
+  try {
+    storage.setItem(key, JSON.stringify(layout));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearLayout(storage: LayoutStorage, key: string): void {
+  try {
+    storage.removeItem(key);
+  } catch {
+    // A storage that cannot even remove is a storage we ignore.
+  }
+}
+
+/**
+ * Panel ids inside a `SerializedGridviewComponent` (dockview-core 6.6.1 shape:
+ * `{ grid: { root: <branch|leaf tree> } }`, leaves carry `data.id`). Malformed
+ * input yields an empty set — the caller then rebuilds from defaults.
+ */
+export function gridPanelIds(serialized: unknown): Set<string> {
+  const ids = new Set<string>();
+  const root = (serialized as { grid?: { root?: unknown } } | null)?.grid?.root;
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    const { type, data } = node as { type?: string; data?: unknown };
+    if (type === 'branch' && Array.isArray(data)) {
+      for (const child of data) walk(child);
+      return;
+    }
+    if (type === 'leaf' && data && typeof data === 'object') {
+      const id = (data as { id?: unknown }).id;
+      if (typeof id === 'string') ids.add(id);
+    }
+  };
+  walk(root);
+  return ids;
+}
+
+/** Panel ids inside a `SerializedDockview` (`{ panels: Record<id, …> }`). */
+export function dockPanelIds(serialized: unknown): Set<string> {
+  const panels = (serialized as { panels?: unknown } | null)?.panels;
+  if (!panels || typeof panels !== 'object') return new Set();
+  return new Set(Object.keys(panels));
+}
+
+/** True when `ids` is EXACTLY `expected` (both directions, order-free). */
+export function panelSetMatches(ids: Iterable<string>, expected: Iterable<string>): boolean {
+  const a = new Set(ids);
+  const b = new Set(expected);
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
