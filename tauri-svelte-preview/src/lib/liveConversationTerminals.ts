@@ -91,17 +91,15 @@ export function createLiveConversationTerminals(
     );
   }
 
-  const { createTerminal, writeSession, resizeSession, readScrollback } = deps;
+  // `writeSession` stays on the deps TYPE (callers pass it) but this module has
+  // no write path of its own — the service owns every backend write.
+  const { createTerminal, resizeSession, readScrollback } = deps;
 
   /** key -> record. Insertion order is preserved (used to pick a fallback active key). */
   const records = new Map<string, LiveConversationTerminalRecord>();
   /** sessionId -> key, the inverse of record.sessionId. */
   const sessionToKey = new Map<string, string>();
   let active: string | null = null;
-
-  function getRecord(key: string): LiveConversationTerminalRecord | null {
-    return records.get(key) ?? null;
-  }
 
   /**
    * Detach any session->key mapping that points at `key`. Defensive: a record

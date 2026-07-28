@@ -203,7 +203,7 @@ const ownedA = {
   let hooks = null;
   const svc = createTerminalService({
     backend,
-    createView: (host, viewHooks) => {
+    createView: (_host, viewHooks) => {
       hooks = viewHooks;
       return makeView(log, 'viewD');
     }
@@ -428,7 +428,7 @@ const ownedA = {
   const pane = { cols: 120, rows: 40 };
   const svc = createTerminalService({
     backend,
-    createView: (host, hooks) => {
+    createView: (_host, hooks) => {
       const name = `g${views.size + 1}`;
       const view = makeView(log, name, { hooks, fitTo: pane });
       views.set(name, view);
@@ -485,7 +485,7 @@ const ownedA = {
   const { backend } = makeBackend(log);
   const svc = createTerminalService({
     backend,
-    createView: (host, hooks) => makeView(log, 'hidden', { hooks })
+    createView: (_host, hooks) => makeView(log, 'hidden', { hooks })
   });
   await svc.attach();
   await svc.adoptExisting(

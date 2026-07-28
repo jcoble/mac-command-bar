@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 
 import {
   readLocalSourceFile,
+  scanLocalAgentSessions,
   scanLocalSourceFiles,
   searchLocalSourceFiles,
   validateLocalProjectRoot,
@@ -12,6 +13,7 @@ import {
 } from '../src/lib/server/localSourceFs.ts';
 
 const root = await mkdtemp(join(tmpdir(), 'mcb-local-source-'));
+const homeRoot = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
 
 try {
   await mkdir(join(root, 'src', 'Services'), { recursive: true });
@@ -254,6 +256,130 @@ try {
   const matches = await searchLocalSourceFiles(scan.records, 'FormatResolver', 10);
   assert.equal(matches.length, 1);
   assert.equal(matches[0].relativePath, 'src/Services/FormatResolver.cs');
+
+  // --- Agent session scan: subagent transcripts, and titles ------------------
+  const cwd = '/Users/dev/work/mac-command-bar';
+  const projectDir = join(homeRoot, '.claude', 'projects', '-Users-dev-work-mac-command-bar');
+  await mkdir(join(projectDir, 'S1', 'subagents'), { recursive: true });
+
+  const jsonl = (...lines) => `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`;
+  /** A subagent transcript: every entry is a sidechain, and it carries a sessionId. */
+  const subagent = (sessionId) =>
+    jsonl(
+      {
+        parentUuid: null,
+        isSidechain: true,
+        agentId: 'a0a5',
+        type: 'user',
+        sessionId,
+        cwd,
+        timestamp: '2026-07-28T10:00:00Z',
+        message: { role: 'user', content: 'You are implementing Task 6 of the Slice 1 plan.' }
+      },
+      {
+        isSidechain: true,
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-07-28T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Structured output provided successfully' }]
+        }
+      }
+    );
+
+  /**
+   * A real session: a user prompt, a tool_result (also `type: "user"`), then an
+   * assistant turn that is nothing but a tool_use. The tool_use line is NEWEST,
+   * so the merge takes its empty title — which is why real rails filled up with
+   * "Claude session".
+   */
+  const realSession = (sessionId, prompt) =>
+    jsonl(
+      {
+        type: 'user',
+        isSidechain: false,
+        sessionId,
+        cwd,
+        timestamp: '2026-07-28T09:00:00Z',
+        message: { role: 'user', content: prompt }
+      },
+      {
+        type: 'user',
+        isSidechain: false,
+        sessionId,
+        cwd,
+        timestamp: '2026-07-28T09:01:00Z',
+        message: { role: 'user', content: [{ type: 'tool_result', content: 'File does not exist.' }] }
+      },
+      {
+        type: 'assistant',
+        isSidechain: false,
+        sessionId,
+        cwd,
+        timestamp: '2026-07-28T09:02:00Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] }
+      }
+    );
+
+  await writeFile(join(projectDir, 'S1.jsonl'), realSession('S1', 'Fix the resume rail'), 'utf8');
+  await writeFile(
+    join(projectDir, 'S4.jsonl'),
+    realSession('S4', 'Review the terminal service')
+      + jsonl({ type: 'ai-title', sessionId: 'S4', aiTitle: 'Review terminal service security' }),
+    'utf8'
+  );
+  // Excluded by path (today's layout) …
+  await writeFile(join(projectDir, 'S1', 'subagents', 'agent-a0a5.jsonl'), subagent('S2'), 'utf8');
+  // … and by content, for a subagent transcript written flat into the project dir.
+  await writeFile(join(projectDir, 'S3.jsonl'), subagent('S3'), 'utf8');
+
+  const sessions = await scanLocalAgentSessions(homeRoot);
+  assert.deepEqual(
+    sessions.map((session) => session.id).sort(),
+    ['S1', 'S4'],
+    'Subagent transcripts must never reach the rail'
+  );
+  assert.equal(
+    sessions.find((session) => session.id === 'S1').title,
+    'mac-command-bar — Fix the resume rail',
+    'A session with no derivable title falls back to project folder + first prompt'
+  );
+  assert.equal(
+    sessions.find((session) => session.id === 'S4').title,
+    'Review terminal service security',
+    "Claude Code's own ai-title wins outright"
+  );
+
+  const longPrompt = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
+  try {
+    const longDir = join(longPrompt, '.claude', 'projects', '-Users-dev-work-mac-command-bar');
+    await mkdir(longDir, { recursive: true });
+    await writeFile(
+      join(longDir, 'S5.jsonl'),
+      realSession(
+        'S5',
+        'Fix the resume rail so it stops listing subagent transcripts and generic titles'
+      ),
+      'utf8'
+    );
+    // Nothing usable anywhere: the generic label is still the last resort.
+    await writeFile(
+      join(longDir, 'S6.jsonl'),
+      jsonl({ type: 'file-history-snapshot', sessionId: 'S6', timestamp: '2026-07-28T08:00:00Z' }),
+      'utf8'
+    );
+
+    const fallbacks = await scanLocalAgentSessions(longPrompt);
+    const truncated = fallbacks.find((session) => session.id === 'S5').title;
+    assert.ok(truncated.startsWith('mac-command-bar — Fix the resume rail'));
+    assert.ok(truncated.endsWith('...'));
+    assert.equal(truncated.length, 62);
+    assert.equal(fallbacks.find((session) => session.id === 'S6').title, 'Claude session');
+  } finally {
+    await rm(longPrompt, { recursive: true, force: true });
+  }
 } finally {
   await rm(root, { recursive: true, force: true });
+  await rm(homeRoot, { recursive: true, force: true });
 }

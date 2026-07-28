@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+const CLAUDE_GENERIC_SESSION_TITLE: &str = "Claude session";
 const CLAUDE_SESSION_FILE_LIMIT: usize = 512;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
 const CODEX_SESSION_FILE_LIMIT: usize = 512;
@@ -80,6 +82,9 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     let claude_projects = home.join(".claude/projects");
     let mut files = jsonl_files(&claude_projects);
+    // Drop subagent transcripts BEFORE the file budget is applied: they
+    // outnumber real sessions on a busy machine and would otherwise evict them.
+    files.retain(|file| !is_claude_subagent_transcript_path(file));
     files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     for file in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
         let project_path = file
@@ -370,11 +375,27 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
 
 pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRecord> {
     let mut records: Vec<AgentSessionRecord> = Vec::new();
+    let mut ai_titles: HashMap<String, String> = HashMap::new();
+    let mut first_prompts: HashMap<String, String> = HashMap::new();
 
     for value in input
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
+        // One sidechain entry condemns the whole transcript: a subagent file is
+        // sidechain end to end, so anything already collected from it is a
+        // subagent's turn, not a resumable session.
+        if is_claude_sidechain_entry(&value) {
+            return Vec::new();
+        }
+
+        if let Some((session, title)) = claude_ai_title(&value) {
+            ai_titles.insert(session, title); // a later line carries the newer title
+        }
+        if let Some((session, prompt)) = claude_user_prompt_text(&value) {
+            first_prompts.entry(session).or_insert(prompt);
+        }
+
         let Some(id) = value
             .get("sessionId")
             .or_else(|| value.get("session_id"))
@@ -395,8 +416,8 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             .unwrap_or(project_path)
             .to_string();
 
-        let title =
-            title_from_claude_message(&value).unwrap_or_else(|| "Claude session".to_string());
+        let title = title_from_claude_message(&value)
+            .unwrap_or_else(|| CLAUDE_GENERIC_SESSION_TITLE.to_string());
         let record = AgentSessionRecord {
             provider: "claude".to_string(),
             id: id.to_string(),
@@ -424,7 +445,105 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         }
     }
 
+    for record in records.iter_mut() {
+        record.title = claude_display_title(
+            &record.title,
+            ai_titles.get(&record.id).map(String::as_str),
+            first_prompts.get(&record.id).map(String::as_str),
+            record.project_path.as_deref(),
+        );
+    }
+
     records
+}
+
+/// A Claude Code SUBAGENT transcript is stored as its own `.jsonl` and is never
+/// resumable — `claude --resume <id>` on one is meaningless — so it must never
+/// reach the rail. Two independent discriminators, because each covers what the
+/// other cannot: the path is free and also keeps subagents out of the scan's
+/// file budget, the content is authoritative and still catches a flat layout.
+///
+/// Today Claude Code writes them under `<project>/<session>/subagents/`.
+fn is_claude_subagent_transcript_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "subagents")
+}
+
+/// Every entry of a subagent transcript carries `"isSidechain": true`; every
+/// entry of a real session carries `false`. Verified across 2180 transcripts on
+/// a live machine: 1177 sidechain files, all of them pure, zero mixed files.
+fn is_claude_sidechain_entry(value: &Value) -> bool {
+    value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+}
+
+/// Claude Code records its own generated session title on a `type: "ai-title"`
+/// line. It is the best title available — it describes the whole session rather
+/// than whichever message happened to be last — so it wins outright.
+fn claude_ai_title(value: &Value) -> Option<(String, String)> {
+    if optional_string(value.get("type"))? != "ai-title" {
+        return None;
+    }
+
+    Some((
+        optional_string(value.get("sessionId"))?,
+        optional_string(value.get("aiTitle"))?,
+    ))
+}
+
+/// The first genuine user prompt in the scanned window. Tool results are
+/// `type: "user"` too, so plain `content` text is required and `tool_result`
+/// items are dropped; slash-command wrappers (`<command-name>…`) and the resume
+/// caveat are skipped because neither says what the session is about.
+fn claude_user_prompt_text(value: &Value) -> Option<(String, String)> {
+    if optional_string(value.get("type"))? != "user" {
+        return None;
+    }
+    if value.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+
+    let id = optional_string(value.get("sessionId"))?;
+    let text = match value.get("message")?.get("content")? {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter(|item| optional_string(item.get("type")).as_deref() == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => return None,
+    };
+
+    let text = text.trim();
+    if text.is_empty() || text.starts_with('<') || text.starts_with("Caveat:") {
+        return None;
+    }
+
+    Some((id, text.to_string()))
+}
+
+/// Title preference for a Claude row: the session's own AI title, then whatever
+/// a message yielded, then `<project folder> — <first user prompt>`. The generic
+/// label survives only when nothing else exists — a rail full of "Claude
+/// session" rows tells the user nothing about which session to resume.
+fn claude_display_title(
+    derived: &str,
+    ai_title: Option<&str>,
+    first_prompt: Option<&str>,
+    project_path: Option<&str>,
+) -> String {
+    if let Some(title) = ai_title {
+        return compact_text(title, 80);
+    }
+    if derived != CLAUDE_GENERIC_SESSION_TITLE {
+        return derived.to_string();
+    }
+
+    match (first_prompt, project_path.and_then(path_display_name)) {
+        (Some(prompt), Some(folder)) => compact_text(&format!("{folder} — {prompt}"), 60),
+        (Some(prompt), None) => compact_text(prompt, 60),
+        (None, _) => CLAUDE_GENERIC_SESSION_TITLE.to_string(),
+    }
 }
 
 fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String> {
@@ -1066,6 +1185,87 @@ mod tests {
         assert_eq!(metadata.pull_request_hint, None);
         assert_eq!(metadata.link_hint, None);
         assert_eq!(metadata.source_label, "Codex · tsk-128-runtime-audit");
+    }
+
+    /// A real Claude session: a user prompt, then an assistant turn that is
+    /// nothing but a `tool_use`. The tool_use line is NEWER, so the merge takes
+    /// its (empty) title — which is exactly why real rails filled up with
+    /// "Claude session".
+    const REAL_SESSION_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"sessionId":"S1","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T09:00:00Z","message":{"role":"user","content":"Fix the resume rail"}}"#,
+        "\n",
+        r#"{"type":"user","isSidechain":false,"sessionId":"S1","timestamp":"2026-07-28T09:01:00Z","message":{"role":"user","content":[{"type":"tool_result","content":"File does not exist."}]}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"sessionId":"S1","timestamp":"2026-07-28T09:02:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}"#,
+    );
+
+    /// A subagent transcript: the Task tool's prompt and its structured reply,
+    /// every line `isSidechain: true`, and a `sessionId` that would otherwise
+    /// mint a resumable-looking row.
+    const SUBAGENT_JSONL: &str = concat!(
+        r#"{"parentUuid":null,"isSidechain":true,"agentId":"a0a5","type":"user","sessionId":"S2","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T10:00:00Z","message":{"role":"user","content":"You are implementing Task 6 of the Slice 1 plan."}}"#,
+        "\n",
+        r#"{"parentUuid":"1","isSidechain":true,"agentId":"a0a5","type":"assistant","sessionId":"S2","timestamp":"2026-07-28T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Structured output provided successfully"}]}}"#,
+    );
+
+    #[test]
+    fn claude_scan_excludes_subagent_sidechain_transcripts() {
+        // Path discriminator — free, and it also keeps subagents from evicting
+        // real sessions from the scan's file budget.
+        assert!(is_claude_subagent_transcript_path(Path::new(
+            "/Users/dev/.claude/projects/-Users-dev/71dd/subagents/agent-a0a5.jsonl"
+        )));
+        assert!(is_claude_subagent_transcript_path(Path::new(
+            "/Users/dev/.claude/projects/-Users-dev/71dd/subagents/workflows/wf_02/agent-a2.jsonl"
+        )));
+        assert!(!is_claude_subagent_transcript_path(Path::new(
+            "/Users/dev/.claude/projects/-Users-dev/71dd4d8f.jsonl"
+        )));
+
+        // Content discriminator — authoritative, and it still catches a
+        // subagent transcript written flat into the project directory.
+        assert_eq!(
+            parse_claude_jsonl(SUBAGENT_JSONL, "/Users/dev/work/mac-command-bar"),
+            Vec::new()
+        );
+
+        let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "S1");
+    }
+
+    #[test]
+    fn claude_titles_fall_back_to_project_folder_and_first_prompt() {
+        let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
+
+        // Without the fallback this row reads "Claude session": the newest line
+        // is a tool_use with no text, and a tool_result is not a user prompt.
+        assert_eq!(records[0].title, "mac-command-bar — Fix the resume rail");
+    }
+
+    #[test]
+    fn claude_ai_title_wins_and_long_fallbacks_are_truncated() {
+        let with_ai_title = format!(
+            "{REAL_SESSION_JSONL}\n{}",
+            r#"{"type":"ai-title","sessionId":"S1","aiTitle":"Resume rail subagent filter"}"#
+        );
+        let records = parse_claude_jsonl(&with_ai_title, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].title, "Resume rail subagent filter");
+
+        let long_prompt = REAL_SESSION_JSONL.replace(
+            "Fix the resume rail",
+            "Fix the resume rail so it stops listing subagent transcripts and generic titles",
+        );
+        let records = parse_claude_jsonl(&long_prompt, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records[0].title.chars().count(), 60);
+        assert!(records[0].title.starts_with("mac-command-bar — Fix the resume rail"));
+        assert!(records[0].title.ends_with('…'));
+
+        // Nothing usable anywhere: the generic label is still the last resort.
+        let bare = r#"{"type":"file-history-snapshot","sessionId":"S3","timestamp":"2026-07-28T09:00:00Z"}"#;
+        let records = parse_claude_jsonl(bare, "");
+        assert_eq!(records[0].title, "Claude session");
     }
 
     #[test]

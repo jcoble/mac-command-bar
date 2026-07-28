@@ -53,7 +53,7 @@
 
   /**
    * EXPLICIT IO: scan for resumable agent sessions (Tauri first, bridge second).
-   * The native scan THROWS outside Tauri — `??` alone loses the bridge fallback.
+   * ONE counted call per rescan, named for the transport that actually ran.
    */
   async function scanRail(): Promise<void> {
     if (rail.scanning) return;
@@ -61,13 +61,14 @@
     rail.error = null;
     let nativeError: string | null = null;
     try {
-      countInvoke('list_agent_sessions');
       let sessions: AgentSession[] | null = null;
       try {
         sessions = await listAgentSessionsFromTauri();
       } catch (error) {
         nativeError = describeError(error);
       }
+      // A `null` native result with no error = not under Tauri: nothing invoked.
+      countInvoke((sessions ?? nativeError) ? 'list_agent_sessions' : 'bridge:agent-sessions');
       sessions ??= await listAgentSessionsFromLocalBridge();
       if (disposed) return;
       setAvailable(sessions ?? []);
@@ -156,9 +157,8 @@
       rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(result.error)}`;
     }
     removeOwnedSession(ownedId);
-    // The successor was picked BEFORE the await: a close that overlapped this
-    // one may have removed it since. Adopt it only while it still exists —
-    // otherwise whatever is active now already is the manager's truth.
+    // The successor was picked BEFORE the await; an overlapping close may have
+    // removed it since. Adopt it only while it still exists.
     const successor = result?.successor ?? null;
     if (successor !== null && rail.owned.some((entry) => entry.ownedId === successor)) {
       setActiveOwned(successor);

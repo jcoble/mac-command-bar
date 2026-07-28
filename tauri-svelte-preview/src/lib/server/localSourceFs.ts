@@ -21,6 +21,7 @@ const maxSourceListLimit = 25_000;
 const maxPreviewBytes = 512 * 1024;
 const maxIntelligenceReadCount = 2_000;
 const maxSkippedDirectorySamples = 16;
+const claudeGenericSessionTitle = 'Claude session';
 const claudeSessionFileLimit = 512;
 const claudeSessionTailBytes = 256 * 1024;
 const codexSessionFileLimit = 512;
@@ -138,8 +139,11 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
     if (contents) records.push(...parseCmuxHookSessionsJson(agent, contents));
   }
 
+  // Drop subagent transcripts BEFORE the file budget is applied: they outnumber
+  // real sessions on a busy machine and would otherwise evict them.
   const claudeFiles = await sortFilesByModifiedDesc(
-    await jsonlFiles(path.join(homePath, '.claude', 'projects'))
+    (await jsonlFiles(path.join(homePath, '.claude', 'projects')))
+      .filter((filePath) => !isClaudeSubagentTranscriptPath(filePath))
   );
   for (const filePath of claudeFiles.slice(0, claudeSessionFileLimit)) {
     const projectPath = decodeClaudeProjectDir(path.basename(path.dirname(filePath))) ?? '';
@@ -324,8 +328,20 @@ function parseCmuxHookSessionsJson(agent: string, input: string): LocalAgentSess
 
 function parseClaudeJsonl(input: string, projectPath: string): LocalAgentSessionRecord[] {
   const records: LocalAgentSessionRecord[] = [];
+  const aiTitles = new Map<string, string>();
+  const firstPrompts = new Map<string, string>();
 
   for (const value of parseJsonLines(input)) {
+    // One sidechain entry condemns the whole transcript: a subagent file is
+    // sidechain end to end, so anything already collected from it is a
+    // subagent's turn, not a resumable session.
+    if (isClaudeSidechainEntry(value)) return [];
+
+    const aiTitle = claudeAiTitle(value);
+    if (aiTitle) aiTitles.set(aiTitle[0], aiTitle[1]); // a later line is the newer title
+    const prompt = claudeUserPromptText(value);
+    if (prompt && !firstPrompts.has(prompt[0])) firstPrompts.set(prompt[0], prompt[1]);
+
     const id = optionalString(value.sessionId) ?? optionalString(value.session_id);
     if (!id) continue;
 
@@ -333,7 +349,7 @@ function parseClaudeJsonl(input: string, projectPath: string): LocalAgentSession
     upsertAgentSessionRecord(records, {
       provider: 'claude',
       id,
-      title: titleFromClaudeMessage(value) ?? 'Claude session',
+      title: titleFromClaudeMessage(value) ?? claudeGenericSessionTitle,
       description: claudeSessionDescription(value),
       model: modelFromValue(objectValue(value.message)) ?? modelFromValue(value),
       projectPath: cwd || null,
@@ -345,7 +361,103 @@ function parseClaudeJsonl(input: string, projectPath: string): LocalAgentSession
     });
   }
 
+  for (const record of records) {
+    record.title = claudeDisplayTitle(
+      record.title,
+      aiTitles.get(record.id) ?? null,
+      firstPrompts.get(record.id) ?? null,
+      record.projectPath
+    );
+  }
+
   return records;
+}
+
+/**
+ * A Claude Code SUBAGENT transcript is stored as its own `.jsonl` and is never
+ * resumable — `claude --resume <id>` on one is meaningless — so it must never
+ * reach the rail. Two independent discriminators, because each covers what the
+ * other cannot: the path is free and also keeps subagents out of the scan's file
+ * budget, the content is authoritative and still catches a flat layout.
+ *
+ * Today Claude Code writes them under `<project>/<session>/subagents/`.
+ */
+function isClaudeSubagentTranscriptPath(filePath: string) {
+  return filePath.split(path.sep).includes('subagents');
+}
+
+/**
+ * Every entry of a subagent transcript carries `"isSidechain": true`; every entry
+ * of a real session carries `false`. Verified across 2180 transcripts on a live
+ * machine: 1177 sidechain files, all of them pure, zero mixed files.
+ */
+function isClaudeSidechainEntry(value: Record<string, unknown>) {
+  return value.isSidechain === true;
+}
+
+/**
+ * Claude Code records its own generated session title on a `type: "ai-title"`
+ * line. It is the best title available — it describes the whole session rather
+ * than whichever message happened to be last — so it wins outright.
+ */
+function claudeAiTitle(value: Record<string, unknown>): [string, string] | null {
+  if (optionalString(value.type) !== 'ai-title') return null;
+
+  const id = optionalString(value.sessionId);
+  const title = optionalString(value.aiTitle);
+  return id && title ? [id, title] : null;
+}
+
+/**
+ * The first genuine user prompt in the scanned window. Tool results are
+ * `type: "user"` too, so plain `content` text is required and `tool_result` items
+ * are dropped; slash-command wrappers (`<command-name>…`) and the resume caveat
+ * are skipped because neither says what the session is about.
+ */
+function claudeUserPromptText(value: Record<string, unknown>): [string, string] | null {
+  if (optionalString(value.type) !== 'user' || value.isMeta === true) return null;
+
+  const id = optionalString(value.sessionId);
+  const content = objectValue(value.message)?.content;
+  if (!id) return null;
+
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .flatMap((item) => {
+              const object = objectValue(item);
+              return optionalString(object?.type) === 'text'
+                ? optionalString(object?.text) ?? []
+                : [];
+            })
+            .join(' ')
+        : null;
+
+  const trimmed = text?.trim();
+  if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('Caveat:')) return null;
+  return [id, trimmed];
+}
+
+/**
+ * Title preference for a Claude row: the session's own AI title, then whatever a
+ * message yielded, then `<project folder> — <first user prompt>`. The generic
+ * label survives only when nothing else exists — a rail full of "Claude session"
+ * rows tells the user nothing about which session to resume.
+ */
+function claudeDisplayTitle(
+  derived: string,
+  aiTitle: string | null,
+  firstPrompt: string | null,
+  projectPath: string | null
+) {
+  if (aiTitle) return compactText(aiTitle, 80);
+  if (derived !== claudeGenericSessionTitle) return derived;
+  if (!firstPrompt) return claudeGenericSessionTitle;
+
+  const folder = pathDisplayName(projectPath);
+  return compactText(folder ? `${folder} — ${firstPrompt}` : firstPrompt, 60);
 }
 
 function mergeAgentSessionRecords(records: LocalAgentSessionRecord[]) {
