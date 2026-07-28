@@ -25,6 +25,7 @@ const {
   gitStatusGroupActionLabel,
   hasStagedChanges,
   isGitFileDeleted,
+  isNotARepositoryError,
   repositoryLabel,
   resetGitPanelState
 } = store;
@@ -513,6 +514,35 @@ function makeBackend(overrides = {}) {
     Array(9).fill(null),
     'outside the desktop app every command answers "nothing here"'
   );
+}
+
+// A folder with no repository in it is an ordinary thing to be looking at, and
+// the panel says so in a sentence instead of showing git's raw stderr. Every
+// other failure stays an error with its own message — matching too eagerly here
+// would hide real breakage behind a calm empty state.
+{
+  const notRepos = [
+    'fatal: not a git repository (or any of the parent directories): .git',
+    'fatal: Not a Git repository',
+    'Could not read the repository status.\nfatal: not a git repository',
+    'NOT A GIT REPOSITORY'
+  ];
+  for (const message of notRepos) {
+    assert.equal(isNotARepositoryError(message), true, `"${message}" means no repository`);
+  }
+
+  const realFailures = [
+    '',
+    'Could not read the repository status.',
+    'fatal: unable to read config file',
+    "error: pathspec 'nope' did not match any file(s) known to git",
+    'fatal: could not read Username for https://github.com: terminal prompts disabled',
+    'Permission denied (publickey).',
+    'fatal: your current branch appears to be broken'
+  ];
+  for (const message of realFailures) {
+    assert.equal(isNotARepositoryError(message), false, `"${message}" is a real failure`);
+  }
 }
 
 console.log('gitPanelStore: all tests passed');

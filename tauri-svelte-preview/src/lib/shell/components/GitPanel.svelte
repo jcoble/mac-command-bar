@@ -26,6 +26,7 @@
     gitPanel,
     gitStatusGroupActionLabel,
     hasStagedChanges,
+    isNotARepositoryError,
     repositoryLabel,
     type GitStatusFileGroup
   } from '$lib/shell/git/gitPanelStore.svelte';
@@ -46,6 +47,12 @@
   const groupSummary = $derived(describeGitStatusGroups(groups));
   const branchLine = $derived(describeGitBranch(gitPanel.status));
   const busy = $derived(gitPanel.actionBusy !== '');
+  /** A folder with no repository in it is an ordinary thing to be looking at,
+   * not a fault — so it gets a plain sentence instead of git's `fatal:` stderr.
+   * Any other failure keeps its own message. */
+  const notARepository = $derived(
+    isNotARepositoryError(gitPanel.statusError) || isNotARepositoryError(gitPanel.historyError)
+  );
   const canCommit = $derived(
     !busy && gitPanel.commitMessage.trim() !== '' && hasStagedChanges(gitPanel.status)
   );
@@ -97,6 +104,8 @@
     <p class="notice">
       Source control runs in the desktop app only. Nothing is loaded here.
     </p>
+  {:else if notARepository}
+    <p class="notice">This folder is not a git repository.</p>
   {:else}
     <div class="scroll">
       <section class="block">

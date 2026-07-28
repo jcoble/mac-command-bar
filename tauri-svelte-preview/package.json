@@ -54,7 +54,8 @@
     "test:command-registry": "node --experimental-strip-types scripts/commandRegistry.test.mjs",
     "test:next-tokens": "node --experimental-strip-types scripts/nextTokens.test.mjs",
     "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs",
-    "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs"
+    "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
+    "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",

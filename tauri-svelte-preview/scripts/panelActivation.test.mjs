@@ -80,8 +80,8 @@ function selection(root, projects = []) {
   ]);
 }
 
-// Picking a session loads the panels that are on screen with it. The Source
-// control section starts folded away, so it is NOT one of them.
+// Picking a session loads the panels that come with it. The shell does not open
+// on the Source control view, so source control is NOT one of them.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
@@ -93,13 +93,13 @@ function selection(root, projects = []) {
       ['explorer', '/repo/one'],
       ['context', '/repo/one']
     ],
-    'a folded Source control section costs nothing on a pick'
+    'source control out of view costs nothing on a pick'
   );
   assert.deepEqual(panels.loadedPanels(), ['explorer', 'context']);
 }
 
-// Opening the Source control section after a session is picked loads it once,
-// for the folder that session is in. Folding and re-opening does not read the
+// Bringing source control into view after a session is picked loads it once, for
+// the folder that session is in. Looking away and back does not read the
 // repository again.
 {
   const { calls, activators } = recorder();
@@ -108,23 +108,23 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   calls.length = 0;
 
-  panels.sourceControlExpanded(true);
-  assert.deepEqual(calls, [['git', '/repo/one']], 'opening the section loads it');
+  panels.sourceControlVisible(true);
+  assert.deepEqual(calls, [['git', '/repo/one']], 'bringing it into view loads it');
   assert.deepEqual(panels.loadedPanels(), ['explorer', 'context', 'git']);
 
-  panels.sourceControlExpanded(false);
-  panels.sourceControlExpanded(true);
-  assert.equal(calls.length, 1, 're-opening the same folder reads nothing again');
+  panels.sourceControlVisible(false);
+  panels.sourceControlVisible(true);
+  assert.equal(calls.length, 1, 'coming back to the same folder reads nothing again');
 }
 
-// Opening the section BEFORE any session is picked loads nothing — there is no
+// Bringing it into view BEFORE any session is picked loads nothing — there is no
 // folder to read yet. The pick that follows is what loads it.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
   panels.allowSessionLoads();
-  panels.sourceControlExpanded(true);
-  assert.deepEqual(calls, [], 'an open section with no session picked loads nothing');
+  panels.sourceControlVisible(true);
+  assert.deepEqual(calls, [], 'source control in view with no session picked loads nothing');
   assert.deepEqual(panels.loadedPanels(), []);
 
   panels.sessionPicked();
@@ -135,26 +135,26 @@ function selection(root, projects = []) {
   ]);
 }
 
-// Nothing about the section can load anything before launch is over, however it
-// is opened and whatever order the two arrive in.
+// Nothing about the view can load anything before launch is over, whatever order
+// the two arrive in.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
-  panels.sourceControlExpanded(true);
+  panels.sourceControlVisible(true);
   panels.sessionPicked();
-  panels.sourceControlExpanded(true);
-  assert.deepEqual(calls, [], 'launch loads nothing, section open or not');
+  panels.sourceControlVisible(true);
+  assert.deepEqual(calls, [], 'launch loads nothing, in view or not');
 }
 
-// With the section open, changing session re-points it along with the file tree
-// and the context cards.
+// With source control in view, changing session re-points it along with the file
+// tree and the context cards.
 {
   let root = '/repo/one';
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection(root));
   panels.allowSessionLoads();
   panels.sessionPicked();
-  panels.sourceControlExpanded(true);
+  panels.sourceControlVisible(true);
   calls.length = 0;
 
   root = '/repo/two';
@@ -166,9 +166,33 @@ function selection(root, projects = []) {
   ]);
 }
 
+// Looking away, changing session, then coming back: the session change costs
+// nothing while source control is out of view, and coming back reads the new
+// folder rather than showing the old one.
+{
+  let root = '/repo/one';
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(root));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  panels.sourceControlVisible(true);
+  panels.sourceControlVisible(false);
+  calls.length = 0;
+
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.ok(
+    !calls.some(([name]) => name === 'git'),
+    'a session change while it is out of view reads no repository'
+  );
+
+  panels.sourceControlVisible(true);
+  assert.deepEqual(calls.at(-1), ['git', '/repo/two'], 'coming back reads the new folder');
+}
+
 // A session with no project folder still loads the context cards, which are
-// machine-wide, but has no folder to list files from. With the section open it
-// still tells source control there is no repository to show.
+// machine-wide, but has no folder to list files from. In view it still tells
+// source control there is no repository to show.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection(''));
@@ -176,7 +200,7 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls, [['context', '']], 'no folder means no file listing');
 
-  panels.sourceControlExpanded(true);
+  panels.sourceControlVisible(true);
   assert.deepEqual(calls.at(-1), ['git', null], 'and no repository either');
 }
 

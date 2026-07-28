@@ -220,3 +220,19 @@ export function repositoryLabel(root: string | null): string {
 export function hasStagedChanges(status: ProjectGitStatus | null): boolean {
   return (status?.files ?? []).some(isGitFileStaged);
 }
+
+/**
+ * Is this failure just "there is no repository in this folder"?
+ *
+ * That is an ordinary thing for a folder to be, not a fault, and git reports it
+ * the same way it reports real breakage — on stderr, starting with `fatal:`. So
+ * the panel has to tell the two apart to avoid showing a plain folder a red
+ * error it can do nothing about. Everything this does NOT match stays an error
+ * and keeps its own message, which is what a genuine failure needs.
+ */
+export function isNotARepositoryError(message: string): boolean {
+  // Deliberately narrow. A phrase matched too eagerly here would HIDE a real
+  // failure behind a calm empty state, which is worse than showing a message
+  // that is hard to read — so only git's own wording for this counts.
+  return /not a git repository/i.test(message);
+}

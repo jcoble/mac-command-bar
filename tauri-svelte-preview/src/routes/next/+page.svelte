@@ -58,6 +58,8 @@
   let frameControls: { resetLayout(): void; showCenterPanel(id: string): void } | null = null;
   /** The left column's own controls; it builds after the frame does. */
   let sidebarControls: { resetLayout(): void; expandSourceControl(): void } | null = null;
+  /** The overlay layer, for opening the settings dialog it owns. */
+  let overlays: { openSettings(): void } | null = null;
   let refitScheduled = false;
   /** Its own state, NOT `rail.error`: ShellFrame mounts before this page's
    * start-up, and `scanRail` clears `rail.error` — which would erase a mount
@@ -288,7 +290,8 @@
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
     scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeOwned}
     onRescan={scanRail} onReady={(controls) => (sidebarControls = controls)}
-    onSourceControlExpanded={(expanded) => shellPanels.sourceControlExpanded(expanded)}
+    onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
+    onOpenSettings={() => overlays?.openSettings()}
   />
 {/snippet}
 {#snippet contextArea()}<ContextPanel />{/snippet}
@@ -319,6 +322,7 @@
   />
 
   <ShellOverlays
+    bind:this={overlays}
     onResetLayout={resetLayout}
     onRescanSessions={scanRail}
     message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
