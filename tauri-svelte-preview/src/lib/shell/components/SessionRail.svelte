@@ -193,6 +193,18 @@
     onRemove(session.ownedId);
   }
 
+  /** The branch, task and pull request the scanner worked out for a row, in the
+   * order they answer "where is this work?": which branch, which task, which
+   * pull request. Anything the scanner did not find is left out rather than
+   * drawn empty — a chip is only worth its space when it says something. */
+  function chips(
+    values: { branch?: string | null; taskId?: string | null; pullRequest?: string | null }
+  ): string[] {
+    return [values.branch, values.taskId, values.pullRequest].filter(
+      (value): value is string => typeof value === 'string' && value.length > 0
+    );
+  }
+
   function providerLabel(session: AgentSession): string {
     const provider = session.provider.toLowerCase();
     return provider.startsWith('cmux-') ? `cmux · ${provider.slice('cmux-'.length)}` : provider;
@@ -229,6 +241,19 @@
     {/if}
     <span class="project-count">{count}</span>
   </button>
+{/snippet}
+
+<!-- The branch, task and pull request behind a row, drawn the same way for both
+     lists. A long branch name is cut short on screen and kept whole in the
+     tooltip, so a row stays one line however it was named. -->
+{#snippet metaChips(values: {
+  branch?: string | null;
+  taskId?: string | null;
+  pullRequest?: string | null;
+})}
+  {#each chips(values) as chip (chip)}
+    <span class="badge chip" title={chip}>{chip}</span>
+  {/each}
 {/snippet}
 
 <!-- "Working" / "Done". Reads like the section heading above it, set in from the
@@ -268,6 +293,7 @@
                   <span class="row-title">{rowName(session)}</span>
                   <span class="row-meta">
                     <span class="badge">{agentLabel(session)}</span>
+                    {@render metaChips(session)}
                     {#if session.state === 'exited'}
                       <span class="finished">{stateLabel(session.state)}</span>
                     {/if}
@@ -401,6 +427,11 @@
                       <span class="row-title">{session.title || session.id}</span>
                       <span class="row-meta">
                         <span class="badge">{providerLabel(session)}</span>
+                        {@render metaChips({
+                          branch: session.branchHint,
+                          taskId: session.taskId,
+                          pullRequest: session.pullRequestHint
+                        })}
                         {#if when}
                           <span class="stamp" title={exactLocalTime(session.lastActivity)}>
                             {when}
@@ -683,6 +714,9 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
+    /* More detail than a narrow rail can hold is cut off at the row's edge
+       rather than widening it. */
+    overflow: hidden;
   }
 
   .badge {
@@ -693,6 +727,22 @@
     letter-spacing: 0.04em;
     padding: 1px 5px;
     white-space: nowrap;
+  }
+
+  /* The branch, task and pull request. Same size and shape as the agent badge
+     beside them — these are the things the user scans a rail for, so they are
+     not allowed to shrink — and outlined rather than filled so the row still
+     reads as one badge followed by its details. A long branch name gives way
+     first and is cut with an ellipsis; the tooltip still has all of it. */
+  .chip {
+    flex: 0 1 auto;
+    min-width: 0;
+    border: 1px solid #33333f;
+    background: transparent;
+    color: #8a8a9c;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 24ch;
   }
 
   .finished,

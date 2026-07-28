@@ -41,6 +41,19 @@ pub struct AgentSessionRecord {
     pub project_path: Option<String>,
     pub last_activity: Option<String>,
     pub resume_commands: Vec<String>,
+    /// What the scan worked out about the session from its own title, folder and
+    /// resume command — the branch it is on, the task it belongs to, the pull
+    /// request it opened, and a short "who and where" label. Filled in once, at
+    /// the end of the scan, so everything that builds a record along the way can
+    /// leave them empty; a row draws a chip only for the ones that are there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pull_request_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +73,27 @@ pub fn derive_agent_session_metadata(record: &AgentSessionRecord) -> AgentSessio
         link_hint: first_agent_session_hint(record, link_hint_from_text),
         source_label: agent_session_source_label(record),
     }
+}
+
+/// Writes the derived branch, task, pull request and source label onto every
+/// record, so the shell reads them off the row it already has instead of parsing
+/// titles again on the other side of the bridge.
+///
+/// Run once over the finished list rather than at each construction site: a
+/// session is described by several files, and only the merged record has the
+/// title, folder and resume command the hints are read from.
+pub fn with_derived_agent_session_metadata(
+    mut records: Vec<AgentSessionRecord>,
+) -> Vec<AgentSessionRecord> {
+    for record in records.iter_mut() {
+        let metadata = derive_agent_session_metadata(record);
+        record.branch_hint = metadata.branch_hint;
+        record.task_id = metadata.task_id;
+        record.pull_request_hint = metadata.pull_request_hint;
+        record.source_label = Some(metadata.source_label);
+    }
+
+    records
 }
 
 pub fn scan_sessions() -> Vec<AgentSessionRecord> {
@@ -145,7 +179,7 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     records = merge_agent_session_records(records);
     records.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     records.truncate(AGENT_SESSION_RESULT_LIMIT);
-    records
+    with_derived_agent_session_metadata(records)
 }
 
 pub fn merge_agent_session_records(records: Vec<AgentSessionRecord>) -> Vec<AgentSessionRecord> {
@@ -190,6 +224,10 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 project_path: None,
                 last_activity,
                 resume_commands: vec![format!("codex resume {id}")],
+                branch_hint: None,
+                task_id: None,
+                pull_request_hint: None,
+                source_label: None,
             })
         })
         .collect()
@@ -235,6 +273,10 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     project_path: cwd,
                     last_activity,
                     resume_commands: vec![format!("codex resume {id}")],
+                    branch_hint: None,
+                    task_id: None,
+                    pull_request_hint: None,
+                    source_label: None,
                 };
 
                 if let Some(existing) = records.iter_mut().find(|candidate| {
@@ -474,6 +516,10 @@ fn update_latest_codex_record(
         project_path: cwd,
         last_activity,
         resume_commands: vec![format!("codex resume {id}")],
+        branch_hint: None,
+        task_id: None,
+        pull_request_hint: None,
+        source_label: None,
     };
     merge_codex_record(record, update);
 }
@@ -583,6 +629,10 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 project_path: cwd.clone(),
                 last_activity,
                 resume_commands: cmux_resume_commands(&agent, id, cwd.as_deref()),
+                branch_hint: None,
+                task_id: None,
+                pull_request_hint: None,
+                source_label: None,
             })
         })
         .collect()
@@ -650,6 +700,10 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
                 format!("claude --resume {id}"),
                 format!("cd {} && claude --resume {id}", shell_quote(&cwd)),
             ],
+            branch_hint: None,
+            task_id: None,
+            pull_request_hint: None,
+            source_label: None,
         };
 
         if let Some(existing) = records
@@ -1431,6 +1485,10 @@ mod tests {
             project_path: project_path.map(ToOwned::to_owned),
             last_activity: None,
             resume_commands: vec!["codex resume 019e".to_string()],
+            branch_hint: None,
+            task_id: None,
+            pull_request_hint: None,
+            source_label: None,
         }
     }
 
@@ -1851,8 +1909,12 @@ mod tests {
         assert_eq!(records[0].title, "Claude session");
     }
 
+    /// A row can only show what the record carries. The scan fills these in at
+    /// the end of its pass, so a record built anywhere else has them empty, and
+    /// an empty one must not put a blank chip on the row — it is left out of the
+    /// JSON entirely.
     #[test]
-    fn agent_session_record_json_shape_stays_unchanged() {
+    fn agent_session_record_json_carries_the_hints_the_scan_derived() {
         let record = session("TSK-127 metadata", Some("/repo"));
 
         let value = serde_json::to_value(&record).unwrap();
@@ -1860,11 +1922,71 @@ mod tests {
         assert_eq!(value.get("taskId"), None);
         assert_eq!(value.get("branchHint"), None);
         assert_eq!(value.get("pullRequestHint"), None);
-        assert_eq!(value.get("linkHint"), None);
         assert_eq!(value.get("sourceLabel"), None);
         assert_eq!(
             value.get("projectPath").and_then(Value::as_str),
             Some("/repo")
+        );
+
+        let mut record = session(
+            "TSK-127 branch cdx/tsk-127-agent-session-metadata PR #42",
+            Some("/repo"),
+        );
+        let metadata = derive_agent_session_metadata(&record);
+        record.branch_hint = metadata.branch_hint;
+        record.task_id = metadata.task_id;
+        record.pull_request_hint = metadata.pull_request_hint;
+        record.source_label = Some(metadata.source_label);
+
+        let value = serde_json::to_value(&record).unwrap();
+
+        assert_eq!(value.get("taskId").and_then(Value::as_str), Some("TSK-127"));
+        assert_eq!(
+            value.get("branchHint").and_then(Value::as_str),
+            Some("cdx/tsk-127-agent-session-metadata")
+        );
+        assert_eq!(
+            value.get("pullRequestHint").and_then(Value::as_str),
+            Some("PR #42")
+        );
+        assert_eq!(
+            value.get("sourceLabel").and_then(Value::as_str),
+            Some("Codex · repo")
+        );
+        // Nothing renders the link yet, so it is not sent.
+        assert_eq!(value.get("linkHint"), None);
+    }
+
+    /// The whole point of the fields: the scan hands the shell the branch, task
+    /// and pull request it already worked out, on the same record the row draws.
+    #[test]
+    fn finished_records_carry_the_metadata_the_scan_derived() {
+        let records = with_derived_agent_session_metadata(vec![
+            session(
+                "TSK-127 branch cdx/tsk-127-agent-session-metadata PR #42",
+                Some("/Users/blackcolours/dev/work/mac-command-bar"),
+            ),
+            session("Claude session", None),
+        ]);
+
+        assert_eq!(records[0].task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(
+            records[0].branch_hint.as_deref(),
+            Some("cdx/tsk-127-agent-session-metadata")
+        );
+        assert_eq!(records[0].pull_request_hint.as_deref(), Some("PR #42"));
+        assert_eq!(
+            records[0].source_label.as_deref(),
+            Some("Codex · mac-command-bar")
+        );
+
+        // Nothing to say is said as nothing, not as an empty chip.
+        assert_eq!(records[1].task_id, None);
+        assert_eq!(records[1].branch_hint, None);
+        assert_eq!(records[1].pull_request_hint, None);
+        assert_eq!(
+            records[1].source_label.as_deref(),
+            Some("Codex · Claude session")
         );
     }
 }

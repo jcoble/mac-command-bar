@@ -9,6 +9,8 @@ const scanRecord = {
   provider: 'cmux-claude', id: 'native-9', title: 'Fix rail', description: null,
   model: null, projectPath: '/tmp/proj', lastActivity: null,
   resumeCommands: ['claude --resume native-9'],
+  branchHint: 'tsk-788-session-workspaces', taskId: 'TSK-788', pullRequestHint: 'PR #12',
+  sourceLabel: 'CMUX Claude · proj',
 };
 
 { // normalizeProvider
@@ -30,6 +32,24 @@ const scanRecord = {
   assert.equal(owned.ptySessionId, null);
   // Adopting is not completing: only the user's "Mark done" sets this.
   assert.equal(owned.completedAt, null);
+  // What the scanner worked out travels with the session, so a row keeps its
+  // branch, task and pull request after it has been adopted.
+  assert.equal(owned.branch, 'tsk-788-session-workspaces');
+  assert.equal(owned.taskId, 'TSK-788');
+  assert.equal(owned.pullRequest, 'PR #12');
+}
+{ // a scan that found none of it leaves the fields empty rather than blank chips
+  const { branchHint, taskId, pullRequestHint, ...bare } = scanRecord;
+  const owned = adoptAgentSession(bare, mint);
+  assert.equal(owned.branch, null);
+  assert.equal(owned.taskId, null);
+  assert.equal(owned.pullRequest, null);
+}
+{ // a session started here has nothing scanned about it yet
+  const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
+  assert.equal(fresh.branch, null);
+  assert.equal(fresh.taskId, null);
+  assert.equal(fresh.pullRequest, null);
 }
 { // createFreshSession defaults
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
@@ -59,6 +79,24 @@ const scanRecord = {
   for (const junk of [123, true, {}, [], '']) {
     const record = { ...done, completedAt: junk };
     assert.equal(parseStoredOwnedSessions(JSON.stringify([record]))[0].completedAt, null);
+  }
+}
+{ // the branch, task and pull request survive a save and a reload
+  const owned = adoptAgentSession(scanRecord, mint);
+  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  assert.deepEqual(parsed, [owned]);
+  // Sessions saved before these fields existed come back with nothing to show.
+  const { branch, taskId, pullRequest, ...older } = owned;
+  const restored = parseStoredOwnedSessions(JSON.stringify([older]))[0];
+  assert.equal(restored.branch, null);
+  assert.equal(restored.taskId, null);
+  assert.equal(restored.pullRequest, null);
+  // Anything that is not text is not a branch name.
+  for (const junk of [123, true, {}, [], '']) {
+    const record = parseStoredOwnedSessions(
+      JSON.stringify([{ ...owned, branch: junk, taskId: junk, pullRequest: junk }])
+    )[0];
+    assert.deepEqual([record.branch, record.taskId, record.pullRequest], [null, null, null]);
   }
 }
 { // reconcile after reload

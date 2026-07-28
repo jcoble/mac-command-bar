@@ -83,7 +83,67 @@ export type LocalAgentSessionRecord = {
   projectPath: string | null;
   lastActivity: string | null;
   resumeCommands: string[];
+  /**
+   * What the scan worked out about the session from its own title, folder and
+   * resume command — the branch it is on, the task it belongs to, the pull
+   * request it opened, and a short "who and where" label. Filled in once, at the
+   * end of the scan, so everything that builds a record along the way leaves
+   * them empty; a row draws a chip only for the ones that are there.
+   */
+  branchHint?: string | null;
+  taskId?: string | null;
+  pullRequestHint?: string | null;
+  sourceLabel?: string | null;
 };
+
+export type LocalAgentSessionDerivedMetadata = {
+  branchHint: string | null;
+  taskId: string | null;
+  pullRequestHint: string | null;
+  linkHint: string | null;
+  sourceLabel: string;
+};
+
+/**
+ * The same hints the Rust scanner derives, from the same three places in the
+ * same order: the session's title, then its folder, then its resume command.
+ *
+ * Kept deliberately in step with `derive_agent_session_metadata` in
+ * `core/src/scanners/sessions.rs` — both scanners fill the same rail, so a row
+ * has to read the same whichever one produced it. The test file pins this with
+ * the fixture strings the Rust tests use.
+ */
+export function deriveAgentSessionMetadata(
+  record: LocalAgentSessionRecord
+): LocalAgentSessionDerivedMetadata {
+  return {
+    branchHint: firstAgentSessionHint(record, branchHintFromText),
+    taskId: firstAgentSessionHint(record, taskIdFromText),
+    pullRequestHint: firstAgentSessionHint(record, pullRequestHintFromText),
+    linkHint: firstAgentSessionHint(record, linkHintFromText),
+    sourceLabel: agentSessionSourceLabel(record)
+  };
+}
+
+/**
+ * Writes those hints onto every record, so the shell reads them off the row it
+ * already has instead of parsing titles again on the other side of the bridge.
+ *
+ * Run once over the finished list rather than at each construction site: a
+ * session is described by several files, and only the merged record has the
+ * title, folder and resume command the hints are read from.
+ */
+function withDerivedAgentSessionMetadata(records: LocalAgentSessionRecord[]) {
+  for (const record of records) {
+    const metadata = deriveAgentSessionMetadata(record);
+    record.branchHint = metadata.branchHint;
+    record.taskId = metadata.taskId;
+    record.pullRequestHint = metadata.pullRequestHint;
+    record.sourceLabel = metadata.sourceLabel;
+  }
+
+  return records;
+}
 
 export async function validateLocalProjectRoot(root: string): Promise<LocalProjectRootValidationResult> {
   const normalizedRoot = normalizeRootPath(root);
@@ -199,9 +259,11 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
     if (contents) records.push(...parseClaudeJsonl(contents, projectPath));
   }
 
-  return mergeAgentSessionRecords(records)
-    .sort((left, right) => compareNullableStringsDescending(left.lastActivity, right.lastActivity))
-    .slice(0, agentSessionResultLimit);
+  return withDerivedAgentSessionMetadata(
+    mergeAgentSessionRecords(records)
+      .sort((left, right) => compareNullableStringsDescending(left.lastActivity, right.lastActivity))
+      .slice(0, agentSessionResultLimit)
+  );
 }
 
 async function findGitRoot(root: string): Promise<string | null> {
@@ -1666,6 +1728,196 @@ function claudeSessionDescription(value: Record<string, unknown>) {
   const message = objectValue(value.message);
   const text = valueToText(message?.content) ?? valueToText(value.summary);
   return text ? compactText(text, 140) : null;
+}
+
+/**
+ * The three places a hint can come from, tried in that order: the title, then
+ * the folder, then the resume command.
+ */
+function firstAgentSessionHint(
+  record: LocalAgentSessionRecord,
+  derive: (text: string) => string | null
+) {
+  const fromRecord = derive(record.title) ?? (record.projectPath ? derive(record.projectPath) : null);
+  if (fromRecord) return fromRecord;
+
+  for (const command of record.resumeCommands) {
+    const found = derive(command);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function agentSessionSourceLabel(record: LocalAgentSessionRecord) {
+  const provider = agentSessionProviderLabel(record.provider);
+  const title = record.title.trim();
+  const detail = pathDisplayName(record.projectPath) ?? (title ? compactText(title, 48) : null);
+  return detail ? `${provider} · ${detail}` : provider;
+}
+
+function agentSessionProviderLabel(provider: string) {
+  const trimmed = provider.trim();
+  return trimmed.startsWith('cmux-')
+    ? `CMUX ${agentDisplayLabel(trimmed.slice('cmux-'.length))}`
+    : agentDisplayLabel(trimmed);
+}
+
+/**
+ * The name after the word "branch", however it was written — `branch:`,
+ * `branch=`, or the bare word. The word has to stand on its own: `rebranch` is
+ * not a branch marker.
+ */
+function branchHintFromText(text: string): string | null {
+  const lowerText = asciiLowerCase(text);
+  for (const marker of ['branch:', 'branch=', 'branch ']) {
+    let searchStart = 0;
+    for (;;) {
+      const index = lowerText.indexOf(marker, searchStart);
+      if (index < 0) break;
+      if (index > 0 && isAsciiAlphanumeric(lowerText[index - 1])) {
+        searchStart = index + marker.length;
+        continue;
+      }
+
+      const branch = gitRefTokenFromText(text.slice(index + marker.length));
+      if (branch) return branch;
+      searchStart = index + marker.length;
+    }
+  }
+
+  return null;
+}
+
+/** A branch name, with whatever quoting it was written inside taken off. */
+function gitRefTokenFromText(text: string): string | null {
+  let start = 0;
+  while (start < text.length && (isWhitespace(text[start]) || '`"\''.includes(text[start]))) {
+    start += 1;
+  }
+
+  let end = start;
+  while (
+    end < text.length
+    && (isAsciiAlphanumeric(text[end]) || '._-/'.includes(text[end]))
+  ) {
+    end += 1;
+  }
+
+  const token = text.slice(start, end);
+  if (!token || [...token].every((character) => '._-/'.includes(character))) return null;
+  return token;
+}
+
+/** `tsk` plus digits, in any of the shapes people write it. Digits are what
+ * makes it an id, so `tsk-abc` is not one. */
+function taskIdFromText(text: string): string | null {
+  const lowerText = asciiLowerCase(text);
+  let searchStart = 0;
+  for (;;) {
+    const index = lowerText.indexOf('tsk', searchStart);
+    if (index < 0) break;
+    searchStart = index + 3;
+    if (index > 0 && isAsciiAlphanumeric(lowerText[index - 1])) continue;
+
+    const digits = leadingDigits(trimStartOf(lowerText.slice(index + 3), '-_/#[ :'));
+    if (digits) return `TSK-${digits}`;
+  }
+
+  return null;
+}
+
+/** A pull request number, from the words or from a GitHub link. */
+function pullRequestHintFromText(text: string): string | null {
+  const number =
+    pullRequestNumberAfterMarker(text, 'pull request')
+    ?? pullRequestNumberAfterMarker(text, 'pr')
+    ?? githubPullRequestNumberFromUrl(linkHintFromText(text));
+  return number ? `PR #${number}` : null;
+}
+
+function pullRequestNumberAfterMarker(text: string, marker: string): string | null {
+  const lowerText = asciiLowerCase(text);
+  let searchStart = 0;
+  for (;;) {
+    const index = lowerText.indexOf(marker, searchStart);
+    if (index < 0) break;
+    searchStart = index + marker.length;
+    if (index > 0 && isAsciiAlphanumeric(lowerText[index - 1])) continue;
+
+    const digits = leadingDigits(trimStartOf(text.slice(index + marker.length), ' #-:'));
+    if (digits) return digits;
+  }
+
+  return null;
+}
+
+/** The first link in the text, with the sentence punctuation around it left off. */
+function linkHintFromText(text: string): string | null {
+  for (const scheme of ['https://', 'http://']) {
+    let searchStart = 0;
+    for (;;) {
+      const index = text.indexOf(scheme, searchStart);
+      if (index < 0) break;
+
+      const suffix = text.slice(index);
+      const whitespace = suffix.search(/\s/);
+      const link = trimEndOf(
+        suffix.slice(0, whitespace < 0 ? suffix.length : whitespace),
+        '.,;:)]}"'
+      );
+      if (link) return link;
+
+      searchStart = index + scheme.length;
+    }
+  }
+
+  return null;
+}
+
+function githubPullRequestNumberFromUrl(url: string | null): string | null {
+  if (!url) return null;
+  const lowerUrl = asciiLowerCase(url);
+  if (!lowerUrl.includes('github.com/')) return null;
+
+  const index = lowerUrl.indexOf('/pull/');
+  if (index < 0) return null;
+  return leadingDigits(url.slice(index + '/pull/'.length));
+}
+
+/**
+ * ASCII-only, because the Rust side lowercases ASCII only. A general
+ * `toLowerCase` can change a string's length on some letters, and every one of
+ * these helpers indexes back into the original text with an offset found in the
+ * lowercased copy.
+ */
+function asciiLowerCase(value: string) {
+  return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
+}
+
+function isAsciiAlphanumeric(character: string) {
+  return /^[0-9A-Za-z]$/.test(character);
+}
+
+function isWhitespace(character: string) {
+  return /^\s$/.test(character);
+}
+
+function leadingDigits(value: string) {
+  const digits = /^[0-9]+/.exec(value);
+  return digits ? digits[0] : null;
+}
+
+function trimStartOf(value: string, characters: string) {
+  let start = 0;
+  while (start < value.length && characters.includes(value[start])) start += 1;
+  return value.slice(start);
+}
+
+function trimEndOf(value: string, characters: string) {
+  let end = value.length;
+  while (end > 0 && characters.includes(value[end - 1])) end -= 1;
+  return value.slice(0, end);
 }
 
 function agentDisplayLabel(agent: string) {

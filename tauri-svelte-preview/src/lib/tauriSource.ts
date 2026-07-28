@@ -165,6 +165,16 @@ export type AgentSession = {
   projectPath: string | null;
   lastActivity: string | null;
   resumeCommands: string[];
+  /**
+   * What the scanner worked out about the session from its title, folder and
+   * resume command. All optional: the scanner leaves a field out entirely when
+   * it found nothing, and older records predate them, so a row must treat a
+   * missing field and an empty one the same way — draw no chip.
+   */
+  branchHint?: string | null;
+  taskId?: string | null;
+  pullRequestHint?: string | null;
+  sourceLabel?: string | null;
 };
 
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
