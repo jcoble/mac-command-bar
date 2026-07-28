@@ -63,9 +63,9 @@
     worktrees: { id: 'worktrees', title: 'Worktrees' }
   };
 
-  /** Height a pane opens at when nothing is remembered. A lone pane fills its
-   * view whatever this says; it only decides proportions once a view has two. */
-  const DEFAULT_PANE_SIZE = 400;
+  /** Height a pane opens at when the view has not been measured yet. Normally
+   * the view's own height is used instead — see `buildView`. */
+  const FALLBACK_PANE_SIZE = 400;
 
   interface Props extends ComponentProps<typeof SessionRail> {
     /** The column's controls, handed over as soon as it is mounted. They work
@@ -130,21 +130,36 @@
     reportSourceControl();
   }
 
-  /** Build one view's pane stack. Safe to call again; it only ever builds once. */
+  /**
+   * Build one view's pane stack. Safe to call again; it only ever builds once.
+   *
+   * The stack is asked for at the view's real height and then laid out again
+   * straight away, and BOTH are load-bearing. `createPaneStack` sizes the empty
+   * stack before its panes exist and never lays out afterwards, so the pane it
+   * adds keeps the height it was ASKED for rather than the height it HAS — and
+   * nothing arrives later to correct it, because the resize that triggered this
+   * build has already been delivered and dockview only re-lays-out when the
+   * size CHANGES. A pane left taller than its view hangs its content below the
+   * bottom edge, which is invisible on a panel that scrolls from the top and
+   * very visible on one that centres itself.
+   */
   function buildView(id: SidebarViewId): void {
     const host = hosts[id];
     const element = bodies[id];
     if (stacks.has(id) || !host || !element) return;
     const pane = PANES[id];
+    const width = host.clientWidth;
+    const height = host.clientHeight;
     try {
-      stacks.set(
-        id,
-        createPaneStack(host, {
-          storage: window.localStorage,
-          storageKey: viewPanesKey(id),
-          panes: [{ id: pane.id, title: pane.title, element, size: DEFAULT_PANE_SIZE }]
-        })
-      );
+      const stack = createPaneStack(host, {
+        storage: window.localStorage,
+        storageKey: viewPanesKey(id),
+        panes: [
+          { id: pane.id, title: pane.title, element, size: height || FALLBACK_PANE_SIZE }
+        ]
+      });
+      stacks.set(id, stack);
+      if (width > 0 && height > 0) stack.layout(width, height);
     } catch (error) {
       stackError = error instanceof Error ? error.message : String(error);
       return;
@@ -261,13 +276,21 @@
     background: #101014;
   }
 
-  /* Every view stacks in the same space; only the open one is displayed. */
+  /* Every view stacks in the same space; only the open one is displayed.
+     `position: relative` is what the view containers below are absolutely
+     positioned against, and `contain: paint` is the belt to `overflow`'s
+     braces: it makes this box a containing block for EVERY positioned
+     descendant and clips their painting to it. Without it, one positioned
+     element inside a view that finds a different ancestor to anchor to gets
+     drawn at that ancestor's size — which is how a strip of one view ends up
+     painted outside the column, over the middle of the shell. */
   .views {
     position: relative;
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    contain: paint;
   }
 
   .view-host {
@@ -296,9 +319,21 @@
     display: none;
   }
 
-  /* A teleported body fills the pane it lands in. */
-  .slot,
+  /* A teleported body fills the pane it lands in.
+     The host is positioned rather than sized at `height: 100%` on purpose.
+     dockview gives the pane body its height from `flex-grow: 1` and never
+     writes a height on it (`.dv-pane-container .dv-pane .dv-pane-body` in
+     dockview.css: `overflow-y: auto; flex-grow: 1; position: relative`), so a
+     percentage height here is threaded through a flex-grow chain to resolve —
+     the fragile case. That same rule makes the body `position: relative`, so
+     `inset: 0` gives us the body's exact box with nothing to resolve. */
   .view-host :global(.pane-body-host) {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  .slot {
     height: 100%;
     width: 100%;
     min-width: 0;
