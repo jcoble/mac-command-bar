@@ -5,11 +5,10 @@
    * Thin by construction: it owns NO terminal state (that is `terminalService`)
    * and NO rail state (that is `sessionRailStore`). It wires the two together
    * and performs IO **only inside explicit functions** — never in an `$effect`.
-   *
-   * Launch IO is deliberately tiny (the constitution's rule): list the surviving
-   * PTYs, reconcile them against the stored owned sessions, re-attach them (live
-   * ones AND tombstones), and scan for resumable agent sessions. No LSP, no git,
-   * no source scan. Two easy-to-miss ordering obligations: `hydrateOwned` runs
+   * Launch IO is deliberately tiny (the constitution's rule): list surviving
+   * PTYs, reconcile them against the stored owned sessions, re-attach them
+   * (live ones AND tombstones), scan for resumable agents. No LSP, no git, no
+   * source scan. Two easy-to-miss ordering obligations: `hydrateOwned` runs
    * AFTER `reconcileOwnedSessions` (it persists exactly what it is given), and
    * `startOwned`'s returned PTY id is written back with `updateOwnedSession` —
    * reload re-attach reads it out of localStorage.
@@ -39,9 +38,8 @@
   } from '$lib/tauriSource';
 
   /**
-   * Hosts land before the service is ready (TerminalSurface mounts them from
-   * the store, the service finishes async init later), so they are parked here
-   * and drained by whichever path needs one.
+   * Hosts land before the service is ready (TerminalSurface mounts them from the
+   * store, the service finishes async init later): parked here, drained later.
    */
   const pendingHosts = new Map<string, HTMLElement>();
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
@@ -100,10 +98,7 @@
     return pendingHosts.get(ownedId) ?? null;
   }
 
-  /**
-   * Re-attach one reload survivor. Guarded by `awaitingReattach` so the init
-   * drain and `registerHost` can both call it without double-adopting.
-   */
+  /** Re-attach one reload survivor; `awaitingReattach` guards double-adopting. */
   async function reattachIfPending(ownedId: string): Promise<void> {
     if (!service || disposed || !awaitingReattach.has(ownedId)) return;
     awaitingReattach.delete(ownedId);
@@ -146,25 +141,30 @@
   }
 
   /**
-   * EXPLICIT IO: the ONLY path that kills a PTY. The row is dropped even when
-   * the backend close rejects (the view and PTY mapping are already gone, so
-   * keeping the row would only make it undismissable) and the error goes to
-   * `rail.error`. The successor comes FROM the service — the view the manager
-   * already showed — so the store never picks a different one and shows twice.
+   * EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
+   * rejects — it reports `{ successor, error }` — so even a failed backend
+   * close hands back the terminal the manager left visible instead of blanking
+   * the surface behind the opaque empty-state overlay. The row is dropped
+   * either way (view + PTY mapping are already gone; keeping it would only make
+   * it undismissable), and `removeOwnedSession` clears `activeOwnedId` when it
+   * was this row — so the overlay is truthful if no successor is adopted.
    */
   async function closeOwned(ownedId: string): Promise<void> {
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
     pendingHosts.delete(ownedId);
     awaitingReattach.delete(ownedId);
-    let successor: string | null = null;
-    try {
-      successor = (await service?.closeOwned(ownedId, session?.ptySessionId ?? null)) ?? null;
-    } catch (error) {
-      rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(error)}`;
+    const result = await service?.closeOwned(ownedId, session?.ptySessionId ?? null);
+    if (result?.error) {
+      rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(result.error)}`;
     }
     removeOwnedSession(ownedId);
-    // `null` = no view left visible, so the empty-state overlay tells the truth.
-    setActiveOwned(successor);
+    // The successor was picked BEFORE the await: a close that overlapped this
+    // one may have removed it since. Adopt it only while it still exists —
+    // otherwise whatever is active now already is the manager's truth.
+    const successor = result?.successor ?? null;
+    if (successor !== null && rail.owned.some((entry) => entry.ownedId === successor)) {
+      setActiveOwned(successor);
+    }
   }
 
   onMount(() => {

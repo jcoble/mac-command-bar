@@ -52,6 +52,19 @@ export type TerminalBackend = {
   listen(handler: (payload: TerminalOutputPayload) => void): Promise<(() => void) | null>;
 };
 
+/**
+ * What a close actually did. `closeOwned` NEVER rejects: a backend failure is
+ * reported HERE, alongside the successor, because the caller needs both — the
+ * view and the PTY mapping are gone regardless, so a thrown error would strand
+ * the caller with no idea which terminal the manager left on screen.
+ */
+export type CloseOwnedResult = {
+  /** The `ownedId` the manager left VISIBLE, or `null` when no view remains. */
+  successor: string | null;
+  /** The backend rejection, or `null` when the PTY was closed cleanly. */
+  error: unknown;
+};
+
 /** Side effects a view reports back to the service (mirrors `xtermFactory`). */
 export type TerminalViewHooks = {
   onData(data: string): void;
@@ -79,11 +92,13 @@ export type TerminalService = {
    * this service has no mapping for `ownedId` (a session whose view was never
    * built — dismissing it must still reap the backend tombstone).
    *
-   * Returns the `ownedId` the manager left VISIBLE afterwards, or `null` when
-   * no view remains, so the caller's active-session state can agree with the
-   * manager instead of picking a different successor and showing it twice.
+   * Resolves — NEVER rejects — with `{ successor, error }`: the `ownedId` the
+   * manager left VISIBLE (or `null` when no view remains) so the caller's
+   * active-session state agrees with the manager instead of picking a different
+   * successor and showing it twice, plus any backend failure for the caller to
+   * report. Both are needed on the failure path, hence the result object.
    */
-  closeOwned(ownedId: string, ptySessionIdHint?: string | null): Promise<string | null>;
+  closeOwned(ownedId: string, ptySessionIdHint?: string | null): Promise<CloseOwnedResult>;
   /** Unlisten + drop all views. NEVER closes a PTY. */
   dispose(): void;
 };
@@ -326,7 +341,7 @@ export function createTerminalService(opts: {
   async function closeOwned(
     ownedId: string,
     ptySessionIdHint?: string | null
-  ): Promise<string | null> {
+  ): Promise<CloseOwnedResult> {
     // No mapping means no view was ever built for this session (e.g. an exited
     // one that was dismissed before its host mounted). Fall back to the
     // caller's stored id so the backend record is still reaped — but only if no
@@ -345,13 +360,19 @@ export function createTerminalService(opts: {
     // and showed it inside `closeView`, and the caller must adopt that choice
     // rather than show a different one.
     const successor = manager.activeKey();
+    let error: unknown = null;
     if (ptyId) {
       scrollbackCache.delete(ptyId);
-      // A rejection propagates (the caller reports it); the view and the
-      // mapping are already gone, so the service stays consistent either way.
-      await backend.close(ptyId);
+      try {
+        await backend.close(ptyId);
+      } catch (caught) {
+        // NEVER rethrow: the view and the mapping are already gone, and the
+        // successor is the only thing that keeps a terminal on screen — losing
+        // it to a throw would hide the survivor behind the empty-state overlay.
+        error = caught;
+      }
     }
-    return successor;
+    return { successor, error };
   }
 
   function dispose(): void {

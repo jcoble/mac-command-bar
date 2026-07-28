@@ -24,6 +24,9 @@ function makeBackend(log) {
   // Each start mints a FRESH id (pty-1, pty-2, ...) so a test can hold several
   // sessions at once without them colliding in the service's 1:1 map.
   let minted = 0;
+  // When set, backend.close REJECTS with it (a dead IPC channel, a PTY the OS
+  // already reaped, ...) — the case that used to lose the successor.
+  let closeError = null;
   return {
     backend: {
       start: async (req) => {
@@ -52,6 +55,7 @@ function makeBackend(log) {
       },
       close: async (id) => {
         log.push(['close', id]);
+        if (closeError) throw closeError;
         return true;
       },
       readScrollback: async (id) => {
@@ -69,7 +73,10 @@ function makeBackend(log) {
       }
     },
     emit: (p) => listener?.(p),
-    listening: () => listener !== null
+    listening: () => listener !== null,
+    failClose: (error) => {
+      closeError = error;
+    }
   };
 }
 
@@ -265,12 +272,13 @@ const ownedA = {
     log.some((e) => e[0] === 'tomb' && e[1] === 'write' && e[2] === 'OLD OUTPUT'),
     'the tombstone view is hydrated from the surviving scrollback'
   );
-  const successor = await svc.closeOwned('t');
+  const closed = await svc.closeOwned('t');
   assert.ok(
     log.some((e) => e[0] === 'close' && e[1] === 'pty-dead'),
     'dismissing a tombstone closes the backend session'
   );
-  assert.equal(successor, null, 'nothing is left to show');
+  assert.equal(closed.successor, null, 'nothing is left to show');
+  assert.equal(closed.error, null, 'a clean close reports no error');
 }
 
 {
@@ -312,13 +320,49 @@ const ownedA = {
   }
   svc.show('a');
   const first = await svc.closeOwned('a');
-  assert.equal(first, 'c', 'the successor is the most-recently-inserted survivor');
+  assert.equal(first.successor, 'c', 'the successor is the most-recently-inserted survivor');
   assert.ok(
     log.some((e) => e[0] === 's3' && e[1] === 'visible' && e[2] === true),
     'and it is the view the manager actually showed'
   );
-  assert.equal(await svc.closeOwned('c'), 'b', 'the next close reports the next survivor');
-  assert.equal(await svc.closeOwned('b'), null, 'no views left = no successor');
+  assert.equal((await svc.closeOwned('c')).successor, 'b', 'the next close reports the next one');
+  assert.equal((await svc.closeOwned('b')).successor, null, 'no views left = no successor');
+}
+
+{
+  // R1: a REJECTING backend close must still report the successor. Losing it to
+  // a throw left the caller with `null`, i.e. the opaque empty-state overlay
+  // painted over the terminal the manager had just shown.
+  const log = [];
+  const { backend, failClose } = makeBackend(log);
+  let created = 0;
+  const svc = createTerminalService({
+    backend,
+    createView: () => makeView(log, `f${(created += 1)}`)
+  });
+  await svc.attach();
+  for (const ownedId of ['a', 'b']) {
+    await svc.startOwned({ ...ownedA, ownedId, resumeCommand: null }, {});
+  }
+  svc.show('a');
+  const boom = new Error('ipc channel closed');
+  failClose(boom);
+  const result = await svc.closeOwned('a');
+  assert.equal(result.successor, 'b', 'a failed close still reports the surviving view');
+  assert.equal(result.error, boom, 'and hands the rejection back instead of throwing it');
+  assert.ok(
+    log.some((e) => e[0] === 'f2' && e[1] === 'visible' && e[2] === true),
+    'the survivor is the view the manager actually showed'
+  );
+  assert.ok(
+    log.some((e) => e[0] === 'f1' && e[1] === 'dispose'),
+    'the closed view is dropped even though the backend rejected'
+  );
+  // The mapping went with it: a second dismiss must not re-issue the close.
+  const before = log.filter((e) => e[0] === 'close').length;
+  const again = await svc.closeOwned('a');
+  assert.equal(log.filter((e) => e[0] === 'close').length, before, 'no retry, no double-kill');
+  assert.equal(again.error, null, 'and a no-op close reports no error');
 }
 
 console.log('terminalService tests passed');
