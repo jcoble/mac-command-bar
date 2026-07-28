@@ -41,12 +41,9 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       detail: 'Bring the code you have open to the front',
       perform: () => hooks.showPanel('editor')
     },
-    {
-      id: 'show-git',
-      label: 'Show source control',
-      detail: 'Bring the changed files and recent commits to the front',
-      perform: () => hooks.showPanel('git')
-    },
+    // 'show-git' was removed when source control moved into the left column —
+    // there is no center tab for it to surface any more. It returns as
+    // "expand the Source control section" once the sidebar exposes that control.
     {
       id: 'show-browser',
       label: 'Show the browser',
