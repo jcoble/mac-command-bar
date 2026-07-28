@@ -148,8 +148,9 @@ assert.deepEqual(
 
 const comfortableWorkspacePlan = resolveSourcePaneWorkspacePlan({
   viewportSize: 1500,
-  minEditorSize: 720,
-  gapSize: 6,
+  minEditorSize: 620,
+  gapSize: 0,
+  chromeSize: 8,
   items: [
     {
       id: 'activity',
@@ -179,9 +180,10 @@ assert.deepEqual(
 );
 assert.equal(
   comfortableWorkspacePlan.editorSize,
-  751,
-  'comfortable workspace plan should report remaining editor canvas width'
+  747,
+  'comfortable workspace plan should report remaining rendered editor canvas width'
 );
+assert.equal(comfortableWorkspacePlan.chromeSize, 8);
 assert.equal(
   comfortableWorkspacePlan.overflowSize,
   0,
@@ -190,8 +192,9 @@ assert.equal(
 
 const narrowWorkspacePlan = resolveSourcePaneWorkspacePlan({
   viewportSize: 1180,
-  minEditorSize: 720,
-  gapSize: 6,
+  minEditorSize: 620,
+  gapSize: 0,
+  chromeSize: 8,
   items: [
     {
       id: 'activity',
@@ -228,8 +231,8 @@ assert.deepEqual(
 );
 assert.equal(
   narrowWorkspacePlan.editorSize,
-  727,
-  'railing a context pane should free canvas width while preserving the visible activity pane'
+  723,
+  'railing a context pane should free rendered canvas width while preserving the visible activity pane'
 );
 assert.equal(
   narrowWorkspacePlan.overflowSize,
@@ -239,8 +242,9 @@ assert.equal(
 
 const tighterWorkspacePlan = resolveSourcePaneWorkspacePlan({
   viewportSize: 820,
-  minEditorSize: 720,
-  gapSize: 6,
+  minEditorSize: 620,
+  gapSize: 0,
+  chromeSize: 8,
   items: [
     {
       id: 'activity',
@@ -270,15 +274,16 @@ assert.deepEqual(
 );
 assert.equal(
   tighterWorkspacePlan.editorSize,
-  734,
-  'railing activity and context should recover the target editor canvas on tighter widths'
+  730,
+  'railing activity and context should recover the target rendered editor canvas on tighter widths'
 );
 assert.equal(tighterWorkspacePlan.overflowSize, 0);
 
 const impossiblyNarrowWorkspacePlan = resolveSourcePaneWorkspacePlan({
-  viewportSize: 640,
-  minEditorSize: 720,
-  gapSize: 6,
+  viewportSize: 560,
+  minEditorSize: 620,
+  gapSize: 0,
+  chromeSize: 8,
   items: [
     {
       id: 'activity',
@@ -306,9 +311,9 @@ assert.deepEqual(
   ],
   'impossibly narrow workspaces should collapse all optional panes instead of leaving hidden overflow'
 );
-assert.equal(impossiblyNarrowWorkspacePlan.editorSize, 640);
+assert.equal(impossiblyNarrowWorkspacePlan.editorSize, 560);
 assert.equal(
   impossiblyNarrowWorkspacePlan.overflowSize,
-  80,
+  60,
   'workspace plans should expose remaining pressure when even the bare editor is below target'
 );

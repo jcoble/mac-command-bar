@@ -14,16 +14,27 @@ import {
   sourceDockviewMigrationSlicePlanOptions,
   sourceDockviewMigrationSlices,
   sourceDockviewMigrationSliceStorageKey,
+  syncSourceDockviewTabStackPanels,
+  sourceDockviewStoredLayoutMatchesPanelPlans,
   sourceDockviewPanelDescriptors,
   sourceDockviewStorageKey
 } from '../src/lib/sourceDockviewWorkspace.ts';
 
 const pageSource = await readFile(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
+const workspaceSource = await readFile(new URL('../src/lib/sourceDockviewWorkspace.ts', import.meta.url), 'utf8');
 
 assert.equal(
   sourceDockviewStorageKey,
   'mac-command-bar.source-browser.dockview-layout',
   'Dockview layouts should use a dedicated storage key separate from the legacy custom dock JSON'
+);
+
+assert.ok(
+  workspaceSource.includes('hideBorders: true') &&
+    workspaceSource.includes('theme: { ...themeDracula, gap: 0 }') &&
+    workspaceSource.includes('dockview-theme-dracula') &&
+    workspaceSource.includes('source-dockview-attached-panel'),
+  'Dockview workspaces should hide borders, use Dracula with zero gap, and mark attached panels for full-tab layout'
 );
 
 assert.deepEqual(
@@ -60,24 +71,6 @@ assert.equal(
   'Hidden bottom panels should not be added to Dockview until restored'
 );
 
-const terminalBottomLayout = moveSourceDockPanel(
-  showSourceDockPanel(createDefaultSourceDockLayout(), 'terminal'),
-  'context',
-  'bottom'
-);
-const bottomPlans = createSourceDockviewPanelPlans(terminalBottomLayout);
-
-assert.deepEqual(
-  bottomPlans
-    .filter((plan) => plan.id === 'context' || plan.id === 'terminal')
-    .map((plan) => [plan.id, plan.position, plan.initialHeight]),
-  [
-    ['terminal', { referencePanel: 'editor', direction: 'below' }, 260],
-    ['context', { referencePanel: 'terminal', direction: 'within' }, undefined]
-  ],
-  'Bottom dock panels should preserve layout order while becoming a below-editor Dockview tab stack'
-);
-
 const contextTopPlans = createSourceDockviewPanelPlans(
   moveSourceDockPanel(createDefaultSourceDockLayout(), 'context', 'center')
 );
@@ -85,6 +78,20 @@ assert.deepEqual(
   contextTopPlans.find((plan) => plan.id === 'context')?.position,
   { referencePanel: 'editor', direction: 'above' },
   'A center-group context panel should map to Dockview above-editor placement'
+);
+
+const centerRuntimePlans = createSourceDockviewPanelPlans(
+  showSourceDockPanel(showSourceDockPanel(createDefaultSourceDockLayout(), 'terminal'), 'browser')
+);
+assert.deepEqual(
+  centerRuntimePlans
+    .filter((plan) => plan.id === 'terminal' || plan.id === 'browser')
+    .map((plan) => [plan.id, plan.position]),
+  [
+    ['terminal', { referencePanel: 'editor', direction: 'within' }],
+    ['browser', { referencePanel: 'terminal', direction: 'within' }]
+  ],
+  'Center runtime panels should stack as editor tabs instead of splitting the editor group'
 );
 
 assert.deepEqual(
@@ -120,22 +127,38 @@ assert.deepEqual(
 assert.deepEqual(
   sourceDockviewMigrationSlices,
   [
+    { id: 'activity-only', rootPanelID: 'activity', panelIDs: ['activity'] },
     { id: 'insights-only', rootPanelID: 'insights', panelIDs: ['insights'] },
     { id: 'context-insights', rootPanelID: 'context', panelIDs: ['context', 'insights'] },
-    { id: 'bottom-runtime', rootPanelID: 'terminal', panelIDs: ['terminal', 'browser'] }
+    {
+      id: 'center-runtime',
+      rootPanelID: 'editor',
+      panelIDs: ['editor', 'terminal', 'browser'],
+      groupID: 'center'
+    },
+    {
+      id: 'bottom-runtime',
+      rootPanelID: 'terminal',
+      panelIDs: ['terminal', 'browser'],
+      groupID: 'bottom'
+    }
   ],
   'Dockview migration slices should expose stable roots and panel membership'
 );
 
 assert.deepEqual(
   [
+    sourceDockviewMigrationSliceStorageKey('activity-only'),
     sourceDockviewMigrationSliceStorageKey('insights-only'),
     sourceDockviewMigrationSliceStorageKey('context-insights'),
+    sourceDockviewMigrationSliceStorageKey('center-runtime'),
     sourceDockviewMigrationSliceStorageKey('bottom-runtime')
   ],
   [
+    'mac-command-bar.source-browser.dockview-layout.activity-only',
     'mac-command-bar.source-browser.dockview-layout.insights-only',
     'mac-command-bar.source-browser.dockview-layout.context-insights',
+    'mac-command-bar.source-browser.dockview-layout.center-runtime',
     'mac-command-bar.source-browser.dockview-layout.bottom-runtime'
   ],
   'Dockview migration slices should use stable layout storage keys'
@@ -143,14 +166,18 @@ assert.deepEqual(
 
 assert.deepEqual(
   [
+    sourceDockviewMigrationSlicePlanOptions('activity-only'),
     sourceDockviewMigrationSlicePlanOptions('insights-only'),
     sourceDockviewMigrationSlicePlanOptions('context-insights'),
+    sourceDockviewMigrationSlicePlanOptions('center-runtime'),
     sourceDockviewMigrationSlicePlanOptions('bottom-runtime')
   ],
   [
+    { panelIDs: ['activity'], rootPanelID: 'activity' },
     { panelIDs: ['insights'], rootPanelID: 'insights' },
     { panelIDs: ['context', 'insights'], rootPanelID: 'context' },
-    { panelIDs: ['terminal', 'browser'], rootPanelID: 'terminal' }
+    { panelIDs: ['editor', 'terminal', 'browser'], rootPanelID: 'editor', groupID: 'center' },
+    { panelIDs: ['terminal', 'browser'], rootPanelID: 'terminal', groupID: 'bottom' }
   ],
   'Dockview migration slices should expose reusable panel plan options'
 );
@@ -202,6 +229,15 @@ assert.throws(
 assert.deepEqual(
   createSourceDockviewPanelPlans(
     createDefaultSourceDockLayout(),
+    sourceDockviewMigrationSlicePlanOptions('activity-only')
+  ).map((plan) => [plan.id, plan.position]),
+  [['activity', undefined]],
+  'The activity-only migration slice should create only the activity panel plan'
+);
+
+assert.deepEqual(
+  createSourceDockviewPanelPlans(
+    createDefaultSourceDockLayout(),
     sourceDockviewMigrationSlicePlanOptions('insights-only')
   ).map((plan) => [plan.id, plan.position]),
   [['insights', undefined]],
@@ -236,13 +272,22 @@ const runtimeBottomLayout = showSourceDockPanel(
 assert.deepEqual(
   createSourceDockviewPanelPlans(
     runtimeBottomLayout,
-    sourceDockviewMigrationSlicePlanOptions('bottom-runtime')
+    sourceDockviewMigrationSlicePlanOptions('center-runtime')
   ).map((plan) => [plan.id, plan.position]),
   [
-    ['terminal', undefined],
+    ['editor', undefined],
+    ['terminal', { referencePanel: 'editor', direction: 'within' }],
     ['browser', { referencePanel: 'terminal', direction: 'within' }]
   ],
-  'The bottom-runtime migration slice should create only terminal and browser panel plans'
+  'The center-runtime migration slice should stack editor, terminal, and browser as center tabs'
+);
+assert.deepEqual(
+  createSourceDockviewPanelPlans(
+    runtimeBottomLayout,
+    sourceDockviewMigrationSlicePlanOptions('bottom-runtime')
+  ),
+  [],
+  'The retired bottom-runtime migration slice should not create visible runtime panels'
 );
 
 const closedContextLayout = applySourceDockviewPanelClose(createDefaultSourceDockLayout(), 'context');
@@ -283,7 +328,6 @@ assert.ok(
   'Source page should import the Dockview workspace bridge'
 );
 
-const workspaceSource = await readFile(new URL('../src/lib/sourceDockviewWorkspace.ts', import.meta.url), 'utf8');
 assert.ok(
   workspaceSource.includes('api.onDidRemovePanel'),
   'Dockview workspace should observe tab close events before visible pane wiring'
@@ -301,6 +345,86 @@ assert.ok(
   'Dockview workspace should suppress callback churn during app-driven sync'
 );
 assert.ok(
-  workspaceSource.includes('storedLayout && restorePlans.length > 0'),
-  'Dockview workspace should not restore stored JSON when the current app layout hides the migrated root panel'
+  workspaceSource.includes('queueMicrotask(() => dispatchSourceDockviewLayout(element))') &&
+    workspaceSource.includes('function dispatchSourceDockviewLayout(element: HTMLElement)') &&
+    workspaceSource.includes('element.firstElementChild'),
+  'Dockview workspace should forward layout events to attached Svelte panel elements after reparenting'
+);
+assert.ok(
+  workspaceSource.includes('sourceDockviewStoredLayoutMatchesPanelPlans(storedLayout, restorePlans)'),
+  'Dockview workspace should restore stored JSON only when it matches the current visible panel plans'
+);
+
+const fakeDockviewPanels = [
+  {
+    id: 'file:a.cs',
+    title: 'A.cs',
+    api: {
+      setTitle(title) {
+        fakeDockviewPanels[0].title = title;
+      }
+    }
+  },
+  {
+    id: 'file:old.cs',
+    title: 'Old.cs',
+    api: {
+      setTitle() {}
+    }
+  }
+];
+const fakeAddedPanelPlans = [];
+const fakeDockviewApi = {
+  get panels() {
+    return fakeDockviewPanels;
+  },
+  getPanel(id) {
+    return fakeDockviewPanels.find((panel) => panel.id === id);
+  },
+  removePanel(panel) {
+    const index = fakeDockviewPanels.indexOf(panel);
+    if (index !== -1) fakeDockviewPanels.splice(index, 1);
+  },
+  addPanel(plan) {
+    fakeAddedPanelPlans.push(plan);
+    const panel = {
+      id: plan.id,
+      title: plan.title,
+      api: {
+        setTitle(title) {
+          panel.title = title;
+        }
+      }
+    };
+    fakeDockviewPanels.push(panel);
+    return panel;
+  }
+};
+const validFilePanelIDs = new Set(['file:a.cs', 'file:old.cs']);
+syncSourceDockviewTabStackPanels(
+  fakeDockviewApi,
+  [
+    { id: 'file:a.cs', title: 'A.cs *' },
+    { id: 'file:b.cs', title: 'B.cs' }
+  ],
+  validFilePanelIDs,
+  'file:a.cs'
+);
+assert.deepEqual(
+  fakeDockviewPanels.map((panel) => [panel.id, panel.title]),
+  [
+    ['file:a.cs', 'A.cs *'],
+    ['file:b.cs', 'B.cs']
+  ],
+  'Dynamic Dockview tab stacks should remove closed panels, add new panels, and update titles without clearing existing panels'
+);
+assert.deepEqual(
+  [...validFilePanelIDs],
+  ['file:a.cs', 'file:b.cs'],
+  'Dynamic Dockview tab stacks should refresh the valid panel ID set used by content renderers'
+);
+assert.deepEqual(
+  fakeAddedPanelPlans.map((plan) => [plan.id, plan.position]),
+  [['file:b.cs', { referencePanel: 'file:a.cs', direction: 'within' }]],
+  'Dynamic Dockview tab stacks should add new file tabs into the existing active tab group'
 );

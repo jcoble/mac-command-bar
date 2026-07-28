@@ -3,10 +3,40 @@ use mcb_core::scanners::processes::parse_lsof_listeners;
 use mcb_core::scanners::sessions::{
     decode_claude_project_dir_with_users_root, merge_agent_session_records,
     merge_codex_session_metadata, parse_claude_jsonl, parse_cmux_hook_sessions_json,
-    parse_codex_index_jsonl, parse_codex_rollout_jsonl, read_tail_utf8, AgentSessionRecord,
+    parse_codex_index_jsonl, parse_codex_rollout_jsonl, read_tail_utf8, scan_sessions,
+    AgentSessionRecord,
 };
 use mcb_core::scanners::worktrees::parse_worktree_porcelain;
 use mcb_core::scanners::worktrees::WorktreeScanOptions;
+use serde_json::json;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
+fn home_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct HomeEnvGuard {
+    previous: Option<String>,
+}
+
+impl HomeEnvGuard {
+    fn set(path: &Path) -> Self {
+        let previous = std::env::var("HOME").ok();
+        std::env::set_var("HOME", path);
+        Self { previous }
+    }
+}
+
+impl Drop for HomeEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
 
 #[test]
 fn parses_git_worktree_porcelain() {
@@ -211,12 +241,100 @@ fn parses_cmux_numeric_activity_and_status_titles() {
 }
 
 #[test]
+fn scans_enough_agent_sessions_for_all_conversations_switcher() {
+    let _lock = home_env_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = HomeEnvGuard::set(temp.path());
+
+    let codex_root = temp.path().join(".codex/sessions/2026/06/09");
+    let claude_root = temp.path().join(".claude/projects/test-project");
+    let cmux_root = temp.path().join(".cmuxterm");
+    std::fs::create_dir_all(&codex_root).unwrap();
+    std::fs::create_dir_all(&claude_root).unwrap();
+    std::fs::create_dir_all(&cmux_root).unwrap();
+
+    for index in 0..220 {
+        let id = format!("codex-{index:03}");
+        let timestamp = fixture_timestamp(index);
+        std::fs::write(
+            codex_root.join(format!("{id}.jsonl")),
+            format!(
+                "{{\"timestamp\":\"{timestamp}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/repo/{id}\",\"model_slug\":\"gpt-5.5-codex\"}}}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    for index in 0..180 {
+        let id = format!("claude-{index:03}");
+        let timestamp = fixture_timestamp(300 + index);
+        std::fs::write(
+            claude_root.join(format!("{id}.jsonl")),
+            format!(
+                "{{\"sessionId\":\"{id}\",\"cwd\":\"/repo/{id}\",\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"user\",\"model\":\"claude-opus-4-8\",\"content\":\"Claude {index}\"}}}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let mut cmux_sessions = serde_json::Map::new();
+    for index in 0..80 {
+        let id = format!("cmux-{index:03}");
+        cmux_sessions.insert(
+            id.clone(),
+            json!({
+                "sessionId": id,
+                "cwd": format!("/repo/cmux-{index:03}"),
+                "updatedAt": fixture_timestamp(600 + index),
+                "runtimeStatus": "running",
+                "modelId": "gpt-5.5-codex",
+                "lastSubtitle": format!("cmux {index}"),
+            }),
+        );
+    }
+    std::fs::write(
+        cmux_root.join("codex-hook-sessions.json"),
+        json!({ "version": 1, "sessions": cmux_sessions }).to_string(),
+    )
+    .unwrap();
+
+    let records = scan_sessions();
+    let codex_count = records
+        .iter()
+        .filter(|record| record.provider == "codex")
+        .count();
+    let claude_count = records
+        .iter()
+        .filter(|record| record.provider == "claude")
+        .count();
+    let cmux_count = records
+        .iter()
+        .filter(|record| record.provider == "cmux-codex")
+        .count();
+
+    assert_eq!(codex_count, 220);
+    assert_eq!(claude_count, 180);
+    assert_eq!(cmux_count, 80);
+    assert_eq!(records.len(), 480);
+}
+
+fn fixture_timestamp(index: usize) -> String {
+    format!(
+        "2026-06-{:02}T{:02}:{:02}:00Z",
+        1 + index / 1_440,
+        (index / 60) % 24,
+        index % 60
+    )
+}
+
+#[test]
 fn merges_duplicate_agent_session_records_by_provider_and_id() {
     let records = merge_agent_session_records(vec![
         AgentSessionRecord {
             provider: "claude".to_string(),
             id: "abc".to_string(),
             title: "Older title".to_string(),
+            description: None,
             model: Some("claude-sonnet-4-5".to_string()),
             project_path: Some("/repo".to_string()),
             last_activity: Some("2026-06-09T01:00:00Z".to_string()),
@@ -226,6 +344,7 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             provider: "claude".to_string(),
             id: "abc".to_string(),
             title: "Newer title".to_string(),
+            description: None,
             model: Some("claude-opus-4-8".to_string()),
             project_path: Some("/repo/worktree".to_string()),
             last_activity: Some("2026-06-09T02:00:00Z".to_string()),

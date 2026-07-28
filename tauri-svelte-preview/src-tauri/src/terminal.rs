@@ -3,12 +3,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Runtime};
 
 pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
-const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 256 * 1024;
+/// Per-session scrollback ring held by the backend. 16 MB is enough to survive a
+/// genuinely long agent run (256 KB was ~2 minutes of a chatty build), and it is
+/// the backend that has to hold it: a hidden view holds nothing, so a re-attach
+/// can only replay what lives here.
+const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Hysteresis floor. Once the cap is exceeded, ONE drain takes the buffer down to
+/// this — 75% of the cap — instead of shaving off exactly the overflow. Trimming
+/// to the cap would make every subsequent 8 KB read memmove the whole 16 MB; this
+/// way the O(n) drain amortizes over ~4 MB of output.
+const TERMINAL_SCROLLBACK_TRIM_TO_BYTES: usize = TERMINAL_SCROLLBACK_MAX_BYTES / 4 * 3;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +27,7 @@ pub struct TerminalStartRequest {
     pub shell: Option<String>,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    pub owned_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,6 +40,9 @@ pub struct TerminalSessionInfo {
     pub rows: u16,
     pub pid: Option<u32>,
     pub started_at: u128,
+    pub exited: bool,
+    pub exit_code: Option<u32>,
+    pub signal: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,9 +84,39 @@ pub fn start_terminal_session<R: Runtime>(
         .openpty(size)
         .map_err(|error| format!("Could not open terminal pty: {error}"))?;
     let mut command = CommandBuilder::new(&shell);
+    // Spawn as a LOGIN shell so the embedded terminal loads the user's full
+    // environment (PATH from ~/.zprofile, /etc/zprofile path_helper, and
+    // Homebrew/pnpm/nvm/cargo shims) exactly like Terminal.app / iTerm / Warp.
+    // A plain PTY shell is interactive but NOT a login shell, so login-only
+    // PATH entries are missing and agent CLIs (codex/claude/gemini) fail with
+    // "command not found" when a conversation tries to resume.
+    if let Some(shell_name) = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+    {
+        if matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish") {
+            command.arg("-l");
+        }
+    }
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
+    command.env("TERM_PROGRAM", "MacCommandBar");
+    command.env("CLICOLOR", "1");
+    command.env("CLICOLOR_FORCE", "1");
+    command.env("FORCE_COLOR", "3");
+    command.env("COLORFGBG", "15;0");
+    command.env_remove("NO_COLOR");
+    // Correlates the spawned agent process (and any hook files it writes) back to
+    // the CommandBar-owned session. Borrowed from CMUX's CMUX_WORKSPACE_ID.
+    if let Some(owned_id) = request
+        .owned_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.env("COMMANDBAR_SESSION_ID", owned_id);
+    }
 
     let child = pair
         .slave
@@ -99,6 +143,9 @@ pub fn start_terminal_session<R: Runtime>(
         rows: size.rows,
         pid,
         started_at,
+        exited: false,
+        exit_code: None,
+        signal: None,
     };
 
     registry.insert(
@@ -194,17 +241,20 @@ pub fn resize_terminal_session(
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(false);
     };
-    let sessions = registry
+    let mut sessions = registry
         .inner
         .lock()
         .map_err(|_| "Terminal session registry is unavailable".to_string())?;
-    let Some(session) = sessions.get(session_id) else {
+    let Some(session) = sessions.get_mut(session_id) else {
         return Ok(false);
     };
+    let size = terminal_size_from_request(cols, rows);
     session
         .master
-        .resize(terminal_size_from_request(cols, rows))
+        .resize(size)
         .map_err(|error| format!("Could not resize terminal: {error}"))?;
+    session.info.cols = size.cols;
+    session.info.rows = size.rows;
     Ok(true)
 }
 
@@ -215,17 +265,7 @@ pub fn close_terminal_session(
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(false);
     };
-    let Some(session) = registry.remove(session_id)? else {
-        return Ok(false);
-    };
-    let mut killer = session
-        .killer
-        .lock()
-        .map_err(|_| "Terminal process killer is unavailable".to_string())?;
-    killer
-        .kill()
-        .map_err(|error| format!("Could not close terminal process: {error}"))?;
-    Ok(true)
+    registry.kill_and_remove(session_id)
 }
 
 impl TerminalRegistry {
@@ -238,12 +278,55 @@ impl TerminalRegistry {
         Ok(())
     }
 
-    fn remove(&self, session_id: &str) -> Result<Option<TerminalSessionHandle>, String> {
+    /// Kill the child, THEN unregister it — both under one registry lock.
+    ///
+    /// The ordering is the point. Removing first and killing after meant a failed
+    /// kill returned `Err` on a session that no longer existed: the child was
+    /// still running but its id was gone, so nothing could list it, close it
+    /// again, or reap it. Killing first means the only way a handle leaves the
+    /// registry is a kill that actually succeeded (or a tombstone, which has no
+    /// child left to kill — see `spawn_terminal_waiter`). On failure the caller
+    /// gets the `Err` AND the session stays closable.
+    fn kill_and_remove(&self, session_id: &str) -> Result<bool, String> {
         let mut sessions = self
             .inner
             .lock()
             .map_err(|_| "Terminal session registry is unavailable".to_string())?;
-        Ok(sessions.remove(session_id))
+        let Some(handle) = sessions.get(session_id) else {
+            return Ok(false);
+        };
+        if !handle.info.exited {
+            let mut killer = handle
+                .killer
+                .lock()
+                .map_err(|_| "Terminal killer lock poisoned".to_string())?;
+            if let Err(error) = killer.kill() {
+                return Err(format!("Failed to kill terminal session: {error}"));
+            }
+        }
+        sessions.remove(session_id);
+        Ok(true)
+    }
+
+    fn mark_exited(
+        &self,
+        session_id: &str,
+        exit_code: Option<u32>,
+        signal: Option<String>,
+    ) -> Result<bool, String> {
+        let mut sessions = self
+            .inner
+            .lock()
+            .map_err(|_| "Terminal registry lock poisoned".to_string())?;
+        match sessions.get_mut(session_id) {
+            Some(handle) => {
+                handle.info.exited = true;
+                handle.info.exit_code = exit_code;
+                handle.info.signal = signal;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 }
 
@@ -290,13 +373,17 @@ fn append_terminal_scrollback(scrollback: &mut String, data: &str) {
         return;
     }
 
-    let excess_bytes = scrollback.len() - TERMINAL_SCROLLBACK_MAX_BYTES;
-    let trim_index = scrollback
-        .char_indices()
-        .map(|(index, _)| index)
-        .find(|index| *index >= excess_bytes)
-        .unwrap_or(scrollback.len());
-    scrollback.drain(..trim_index);
+    // Jump STRAIGHT to the target byte index and nudge forward at most 3 bytes
+    // onto a UTF-8 char boundary. The old code walked `char_indices()` from the
+    // front of the whole buffer on every over-cap append — O(cap) per 8 KB read,
+    // which at a 16 MB cap is not survivable. `is_char_boundary` is O(1), and
+    // nudging forward can only ever shorten the result, so the post-trim length
+    // is always <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES.
+    let mut drain_end = scrollback.len() - TERMINAL_SCROLLBACK_TRIM_TO_BYTES;
+    while !scrollback.is_char_boundary(drain_end) {
+        drain_end += 1;
+    }
+    scrollback.drain(..drain_end);
 }
 
 fn spawn_terminal_waiter<R: Runtime>(
@@ -307,17 +394,21 @@ fn spawn_terminal_waiter<R: Runtime>(
 ) {
     std::thread::spawn(move || {
         let status = child.wait().ok();
-        let _ = registry.remove(&session_id);
+        let exit_code = status.as_ref().map(|value| value.exit_code());
+        let signal = status
+            .as_ref()
+            .and_then(|value| value.signal().map(ToString::to_string));
+        // Keep the session as a tombstone: the rail shows "finished — read final
+        // output", and the scrollback stays readable. Only an explicit close purges it.
+        let _ = registry.mark_exited(&session_id, exit_code, signal.clone());
         let _ = app.emit(
             TERMINAL_OUTPUT_EVENT,
             TerminalOutputEvent {
                 session_id,
                 data: String::new(),
                 terminated: true,
-                exit_code: status.as_ref().map(|value| value.exit_code()),
-                signal: status
-                    .as_ref()
-                    .and_then(|value| value.signal().map(ToString::to_string)),
+                exit_code,
+                signal,
             },
         );
     });
@@ -382,8 +473,11 @@ fn default_terminal_shell() -> String {
         })
 }
 
+static TERMINAL_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn new_terminal_session_id() -> String {
-    format!("term-{}-{}", std::process::id(), timestamp_millis())
+    let seq = TERMINAL_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("term-{}-{}-{seq}", std::process::id(), timestamp_millis())
 }
 
 fn timestamp_millis() -> u128 {
@@ -426,17 +520,54 @@ mod tests {
         append_terminal_scrollback(&mut scrollback, "hello");
         append_terminal_scrollback(&mut scrollback, " 世界");
 
-        assert!(scrollback.ends_with(" 世界"));
-        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
+        assert_eq!(scrollback, "hello 世界", "nothing is trimmed below the cap");
 
         append_terminal_scrollback(
             &mut scrollback,
             &"x".repeat(TERMINAL_SCROLLBACK_MAX_BYTES + 1024),
         );
 
-        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
+        // Hysteresis: one over-cap append drains all the way down to the 75%
+        // floor, so the next few MB of output cost no drain at all.
+        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
         assert!(scrollback.is_char_boundary(0));
         assert!(scrollback.ends_with('x'));
+    }
+
+    #[test]
+    fn terminal_scrollback_never_trims_below_the_cap() {
+        let mut scrollback = String::new();
+        append_terminal_scrollback(
+            &mut scrollback,
+            &"y".repeat(TERMINAL_SCROLLBACK_MAX_BYTES - 8),
+        );
+        append_terminal_scrollback(&mut scrollback, "12345678");
+        assert_eq!(
+            scrollback.len(),
+            TERMINAL_SCROLLBACK_MAX_BYTES,
+            "landing exactly ON the cap is not an over-cap append"
+        );
+
+        append_terminal_scrollback(&mut scrollback, "9");
+        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
+        assert!(scrollback.ends_with("123456789"), "the TAIL is what survives");
+    }
+
+    #[test]
+    fn terminal_scrollback_trim_lands_on_a_char_boundary() {
+        // Every byte of the buffer is inside a 3-byte char, and the 1..=3 byte
+        // tail shifts the raw drain index through all three residues mod 3 — so
+        // one of these iterations targets a byte that is NOT a char boundary.
+        // `String::drain` panics on a non-boundary, and `starts_with('世')`
+        // catches a boundary that is merely valid but wrong.
+        for tail_bytes in 1..=3 {
+            let mut scrollback = "世".repeat(TERMINAL_SCROLLBACK_MAX_BYTES / 3 + 16);
+            append_terminal_scrollback(&mut scrollback, &"a".repeat(tail_bytes));
+
+            assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
+            assert!(scrollback.starts_with('世'), "trim split a multibyte char");
+            assert!(scrollback.ends_with('a'));
+        }
     }
 
     #[test]
@@ -501,6 +632,7 @@ mod tests {
                 shell: Some("/bin/sh".to_string()),
                 cols: Some(80),
                 rows: Some(20),
+                owned_id: None,
             },
         )
         .expect("terminal session should start");
@@ -527,6 +659,13 @@ mod tests {
                 resize_terminal_session(&registry, &copied_session_id, Some(100), Some(32))
                     .expect("terminal session should resize")
             );
+            let resized_session = list_terminal_sessions(&registry)
+                .expect("terminal sessions should list after resize")
+                .into_iter()
+                .find(|listed| listed.session_id == session.session_id)
+                .expect("resized terminal session should still be listed");
+            assert_eq!(resized_session.cols, 100);
+            assert_eq!(resized_session.rows, 32);
 
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {

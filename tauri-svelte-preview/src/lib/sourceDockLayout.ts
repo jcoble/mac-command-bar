@@ -4,7 +4,8 @@ export type SourceDockPanelID =
   | 'context'
   | 'insights'
   | 'terminal'
-  | 'browser';
+  | 'browser'
+  | 'markdown';
 
 export type SourceDockGroupID = 'left' | 'center' | 'right' | 'bottom';
 export type SourceDockPresetID = 'review' | 'code' | 'git' | 'runs' | 'sessions' | 'custom';
@@ -34,11 +35,13 @@ export const sourceDockPanelDescriptors: SourceDockPanelDescriptor[] = [
   { id: 'editor', label: 'Editor', defaultGroupID: 'center', canHide: false },
   { id: 'context', label: 'Context', defaultGroupID: 'right', canHide: true },
   { id: 'insights', label: 'Insights', defaultGroupID: 'right', canHide: true },
-  { id: 'terminal', label: 'Terminal', defaultGroupID: 'bottom', canHide: true },
-  { id: 'browser', label: 'Browser', defaultGroupID: 'bottom', canHide: true }
+  { id: 'terminal', label: 'Terminal', defaultGroupID: 'center', canHide: true },
+  { id: 'browser', label: 'Browser', defaultGroupID: 'center', canHide: true },
+  { id: 'markdown', label: 'Markdown', defaultGroupID: 'center', canHide: true }
 ];
 
 const dockGroupIDs: SourceDockGroupID[] = ['left', 'center', 'right', 'bottom'];
+const centerRuntimePanelIDs: SourceDockPanelID[] = ['terminal', 'browser', 'markdown'];
 const dockPanelIDs = sourceDockPanelDescriptors.map((panel) => panel.id);
 const panelDescriptorByID = new Map(sourceDockPanelDescriptors.map((panel) => [panel.id, panel]));
 
@@ -51,7 +54,7 @@ export function createDefaultSourceDockLayout(): SourceDockLayout {
       { id: 'right', panelIDs: ['context', 'insights'], size: 330 },
       { id: 'bottom', panelIDs: [], size: 260 }
     ],
-    hiddenPanelIDs: ['terminal', 'browser'],
+    hiddenPanelIDs: ['terminal', 'browser', 'markdown'],
     activePanelByGroup: {
       left: 'activity',
       center: 'editor',
@@ -89,7 +92,15 @@ export function normalizeSourceDockLayout(value: unknown): SourceDockLayout {
   });
 
   const centerGroup = groupByID(groups, 'center');
-  centerGroup.panelIDs = ['editor', ...centerGroup.panelIDs.filter((panelID) => panelID !== 'editor')];
+  const bottomGroup = groupByID(groups, 'bottom');
+  const bottomRuntimePanelIDs = bottomGroup.panelIDs.filter(isCenterRuntimePanelID);
+
+  bottomGroup.panelIDs = bottomGroup.panelIDs.filter((panelID) => !isCenterRuntimePanelID(panelID));
+  centerGroup.panelIDs = [
+    'editor',
+    ...centerGroup.panelIDs.filter((panelID) => panelID !== 'editor'),
+    ...bottomRuntimePanelIDs.filter((panelID) => !centerGroup.panelIDs.includes(panelID))
+  ];
   seenPanelIDs.add('editor');
 
   const activePanelByGroup = normalizeActivePanels(candidate.activePanelByGroup, groups);
@@ -108,14 +119,17 @@ export function moveSourceDockPanel(
   targetGroupID: SourceDockGroupID,
   targetIndex?: number
 ): SourceDockLayout {
-  if (panelID === 'editor' && targetGroupID !== 'center') return normalizeSourceDockLayout(layout);
+  const normalizedTargetGroupID =
+    isCenterRuntimePanelID(panelID) && targetGroupID === 'bottom' ? 'center' : targetGroupID;
+
+  if (panelID === 'editor' && normalizedTargetGroupID !== 'center') return normalizeSourceDockLayout(layout);
 
   const normalized = normalizeSourceDockLayout(layout);
   const groups = normalized.groups.map((group) => ({
     ...group,
     panelIDs: group.panelIDs.filter((candidatePanelID) => candidatePanelID !== panelID)
   }));
-  const targetGroup = groupByID(groups, targetGroupID);
+  const targetGroup = groupByID(groups, normalizedTargetGroupID);
   const insertIndex = clampInsertIndex(targetIndex, targetGroup.panelIDs.length);
   targetGroup.panelIDs = [
     ...targetGroup.panelIDs.slice(0, insertIndex),
@@ -130,7 +144,7 @@ export function moveSourceDockPanel(
     hiddenPanelIDs: normalized.hiddenPanelIDs.filter((candidatePanelID) => candidatePanelID !== panelID),
     activePanelByGroup: {
       ...normalized.activePanelByGroup,
-      [targetGroupID]: panelID
+      [normalizedTargetGroupID]: panelID
     }
   });
 }
@@ -268,6 +282,10 @@ function parsePanelIDList(value: unknown): SourceDockPanelID[] {
 
 function isSourceDockPanelID(value: unknown): value is SourceDockPanelID {
   return typeof value === 'string' && dockPanelIDs.includes(value as SourceDockPanelID);
+}
+
+function isCenterRuntimePanelID(value: SourceDockPanelID) {
+  return centerRuntimePanelIDs.includes(value);
 }
 
 function isSourceDockPresetID(value: unknown): value is SourceDockPresetID {

@@ -12,3 +12,6 @@ tauri-svelte-preview/src-tauri/gen/
 tauri-svelte-preview/src-tauri/target/
 *.xcuserstate
 .DS_Store
+
+# playwright-cli verification artifacts (regenerable)
+.playwright-cli/

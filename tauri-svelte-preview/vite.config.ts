@@ -6,6 +6,7 @@ import {
   findLocalSourceDefinitions,
   findLocalSourceReferences,
   readLocalSourceFile,
+  scanLocalAgentSessions,
   scanLocalSourceFiles,
   searchLocalSourceFiles,
   validateLocalProjectRoot,
@@ -57,6 +58,9 @@ function createLocalSourceBridgeMiddleware() {
           break;
         case '/__mcb/source/read':
           sendJSON(response, 200, await readLocalSourceFile(String(body.path ?? '')));
+          break;
+        case '/__mcb/source/agent-sessions':
+          sendJSON(response, 200, await scanLocalAgentSessions());
           break;
         case '/__mcb/source/write':
           sendJSON(

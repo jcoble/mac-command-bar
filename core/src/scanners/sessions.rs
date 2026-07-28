@@ -1,15 +1,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-const CLAUDE_SESSION_FILE_LIMIT: usize = 120;
+const CLAUDE_GENERIC_SESSION_TITLE: &str = "Claude session";
+const CLAUDE_SESSION_FILE_LIMIT: usize = 512;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
-const CODEX_SESSION_FILE_LIMIT: usize = 160;
+const CODEX_SESSION_FILE_LIMIT: usize = 512;
 const CODEX_SESSION_HEAD_BYTES: usize = 64 * 1024;
 const CODEX_SESSION_TAIL_BYTES: usize = 256 * 1024;
-const AGENT_SESSION_RESULT_LIMIT: usize = 240;
+const CMUX_SESSION_RESULT_HEADROOM: usize = 256;
+const AGENT_SESSION_RESULT_LIMIT: usize =
+    CODEX_SESSION_FILE_LIMIT + CLAUDE_SESSION_FILE_LIMIT + CMUX_SESSION_RESULT_HEADROOM;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -17,10 +21,31 @@ pub struct AgentSessionRecord {
     pub provider: String,
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub model: Option<String>,
     pub project_path: Option<String>,
     pub last_activity: Option<String>,
     pub resume_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSessionDerivedMetadata {
+    pub branch_hint: Option<String>,
+    pub task_id: Option<String>,
+    pub pull_request_hint: Option<String>,
+    pub link_hint: Option<String>,
+    pub source_label: String,
+}
+
+pub fn derive_agent_session_metadata(record: &AgentSessionRecord) -> AgentSessionDerivedMetadata {
+    AgentSessionDerivedMetadata {
+        branch_hint: first_agent_session_hint(record, branch_hint_from_text),
+        task_id: first_agent_session_hint(record, task_id_from_text),
+        pull_request_hint: first_agent_session_hint(record, pull_request_hint_from_text),
+        link_hint: first_agent_session_hint(record, link_hint_from_text),
+        source_label: agent_session_source_label(record),
+    }
 }
 
 pub fn scan_sessions() -> Vec<AgentSessionRecord> {
@@ -57,6 +82,9 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     let claude_projects = home.join(".claude/projects");
     let mut files = jsonl_files(&claude_projects);
+    // Drop subagent transcripts BEFORE the file budget is applied: they
+    // outnumber real sessions on a busy machine and would otherwise evict them.
+    files.retain(|file| !is_claude_subagent_transcript_path(file));
     files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     for file in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
         let project_path = file
@@ -113,6 +141,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 provider: "codex".to_string(),
                 id: id.clone(),
                 title,
+                description: None,
                 model: model_from_value(&value),
                 project_path: None,
                 last_activity,
@@ -153,6 +182,7 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     provider: "codex".to_string(),
                     id: id.to_string(),
                     title: "Codex session".to_string(),
+                    description: None,
                     model: model_from_value(payload),
                     project_path: cwd,
                     last_activity,
@@ -184,19 +214,22 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 update_latest_codex_record(
                     &mut records,
                     cwd,
+                    None,
                     model_from_value(payload),
                     last_activity,
                 );
             }
             Some("response_item") => {
-                let Some(cwd) = codex_response_item_workdir(&value) else {
+                let cwd = codex_response_item_workdir(&value);
+                let description = codex_response_item_description(&value);
+                if cwd.is_none() && description.is_none() {
                     continue;
                 };
                 let last_activity = value
                     .get("timestamp")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned);
-                update_latest_codex_record(&mut records, Some(cwd), None, last_activity);
+                update_latest_codex_record(&mut records, cwd, description, None, last_activity);
             }
             _ => {}
         }
@@ -208,6 +241,7 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
 fn update_latest_codex_record(
     records: &mut [AgentSessionRecord],
     cwd: Option<String>,
+    description: Option<String>,
     model: Option<String>,
     last_activity: Option<String>,
 ) {
@@ -220,6 +254,7 @@ fn update_latest_codex_record(
         provider: "codex".to_string(),
         id: id.clone(),
         title: record.title.clone(),
+        description,
         model,
         project_path: cwd,
         last_activity,
@@ -237,6 +272,21 @@ fn codex_response_item_workdir(value: &Value) -> Option<String> {
     let arguments = payload.get("arguments").and_then(Value::as_str)?;
     let arguments = serde_json::from_str::<Value>(arguments).ok()?;
     optional_string(arguments.get("workdir"))
+}
+
+fn codex_response_item_description(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    if payload.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+
+    payload
+        .get("content")
+        .and_then(value_to_text)
+        .map(|text| compact_text(&text, 140))
 }
 
 pub fn merge_codex_session_metadata(
@@ -313,6 +363,7 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 provider: format!("cmux-{agent}"),
                 id: id.to_string(),
                 title,
+                description: cmux_session_description(value),
                 model: model_from_value(value),
                 project_path: cwd.clone(),
                 last_activity,
@@ -323,12 +374,28 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
 }
 
 pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRecord> {
-    let mut latest: Option<AgentSessionRecord> = None;
+    let mut records: Vec<AgentSessionRecord> = Vec::new();
+    let mut ai_titles: HashMap<String, String> = HashMap::new();
+    let mut first_prompts: HashMap<String, String> = HashMap::new();
 
     for value in input
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
+        // One sidechain entry condemns the whole transcript: a subagent file is
+        // sidechain end to end, so anything already collected from it is a
+        // subagent's turn, not a resumable session.
+        if is_claude_sidechain_entry(&value) {
+            return Vec::new();
+        }
+
+        if let Some((session, title)) = claude_ai_title(&value) {
+            ai_titles.insert(session, title); // a later line carries the newer title
+        }
+        if let Some((session, prompt)) = claude_user_prompt_text(&value) {
+            first_prompts.entry(session).or_insert(prompt);
+        }
+
         let Some(id) = value
             .get("sessionId")
             .or_else(|| value.get("session_id"))
@@ -349,12 +416,13 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             .unwrap_or(project_path)
             .to_string();
 
-        let title =
-            title_from_claude_message(&value).unwrap_or_else(|| "Claude session".to_string());
-        latest = Some(AgentSessionRecord {
+        let title = title_from_claude_message(&value)
+            .unwrap_or_else(|| CLAUDE_GENERIC_SESSION_TITLE.to_string());
+        let record = AgentSessionRecord {
             provider: "claude".to_string(),
             id: id.to_string(),
             title,
+            description: claude_session_description(&value),
             model: value
                 .get("message")
                 .and_then(model_from_value)
@@ -365,10 +433,117 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
                 format!("claude --resume {id}"),
                 format!("cd {} && claude --resume {id}", shell_quote(&cwd)),
             ],
-        });
+        };
+
+        if let Some(existing) = records
+            .iter_mut()
+            .find(|candidate| candidate.provider == record.provider && candidate.id == record.id)
+        {
+            merge_agent_session_record(existing, record);
+        } else {
+            records.push(record);
+        }
     }
 
-    latest.into_iter().collect()
+    for record in records.iter_mut() {
+        record.title = claude_display_title(
+            &record.title,
+            ai_titles.get(&record.id).map(String::as_str),
+            first_prompts.get(&record.id).map(String::as_str),
+            record.project_path.as_deref(),
+        );
+    }
+
+    records
+}
+
+/// A Claude Code SUBAGENT transcript is stored as its own `.jsonl` and is never
+/// resumable — `claude --resume <id>` on one is meaningless — so it must never
+/// reach the rail. Two independent discriminators, because each covers what the
+/// other cannot: the path is free and also keeps subagents out of the scan's
+/// file budget, the content is authoritative and still catches a flat layout.
+///
+/// Today Claude Code writes them under `<project>/<session>/subagents/`.
+fn is_claude_subagent_transcript_path(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "subagents")
+}
+
+/// Every entry of a subagent transcript carries `"isSidechain": true`; every
+/// entry of a real session carries `false`. Verified across 2180 transcripts on
+/// a live machine: 1177 sidechain files, all of them pure, zero mixed files.
+fn is_claude_sidechain_entry(value: &Value) -> bool {
+    value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+}
+
+/// Claude Code records its own generated session title on a `type: "ai-title"`
+/// line. It is the best title available — it describes the whole session rather
+/// than whichever message happened to be last — so it wins outright.
+fn claude_ai_title(value: &Value) -> Option<(String, String)> {
+    if optional_string(value.get("type"))? != "ai-title" {
+        return None;
+    }
+
+    Some((
+        optional_string(value.get("sessionId"))?,
+        optional_string(value.get("aiTitle"))?,
+    ))
+}
+
+/// The first genuine user prompt in the scanned window. Tool results are
+/// `type: "user"` too, so plain `content` text is required and `tool_result`
+/// items are dropped; slash-command wrappers (`<command-name>…`) and the resume
+/// caveat are skipped because neither says what the session is about.
+fn claude_user_prompt_text(value: &Value) -> Option<(String, String)> {
+    if optional_string(value.get("type"))? != "user" {
+        return None;
+    }
+    if value.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+
+    let id = optional_string(value.get("sessionId"))?;
+    let text = match value.get("message")?.get("content")? {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter(|item| optional_string(item.get("type")).as_deref() == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => return None,
+    };
+
+    let text = text.trim();
+    if text.is_empty() || text.starts_with('<') || text.starts_with("Caveat:") {
+        return None;
+    }
+
+    Some((id, text.to_string()))
+}
+
+/// Title preference for a Claude row: the session's own AI title, then whatever
+/// a message yielded, then `<project folder> — <first user prompt>`. The generic
+/// label survives only when nothing else exists — a rail full of "Claude
+/// session" rows tells the user nothing about which session to resume.
+fn claude_display_title(
+    derived: &str,
+    ai_title: Option<&str>,
+    first_prompt: Option<&str>,
+    project_path: Option<&str>,
+) -> String {
+    if let Some(title) = ai_title {
+        return compact_text(title, 80);
+    }
+    if derived != CLAUDE_GENERIC_SESSION_TITLE {
+        return derived.to_string();
+    }
+
+    match (first_prompt, project_path.and_then(path_display_name)) {
+        (Some(prompt), Some(folder)) => compact_text(&format!("{folder} — {prompt}"), 60),
+        (Some(prompt), None) => compact_text(prompt, 60),
+        (None, _) => CLAUDE_GENERIC_SESSION_TITLE.to_string(),
+    }
 }
 
 fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String> {
@@ -399,6 +574,10 @@ fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSession
 }
 
 fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
+    if existing.description.is_none() {
+        existing.description = candidate.description.clone();
+    }
+
     if existing.model.is_none() {
         existing.model = candidate.model.clone();
     }
@@ -421,6 +600,7 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
 
     if candidate_is_newer {
         existing.title = candidate.title;
+        existing.description = candidate.description.or(existing.description.take());
         existing.model = candidate.model.or(existing.model.take());
         existing.project_path = candidate.project_path.or(existing.project_path.take());
         existing.last_activity = candidate.last_activity;
@@ -470,6 +650,22 @@ fn cmux_session_title(
     }
 }
 
+fn cmux_session_description(value: &Value) -> Option<String> {
+    optional_string(value.get("lastBody"))
+        .or_else(|| optional_string(value.get("lastMessage")))
+        .or_else(|| optional_string(value.get("summary")))
+        .map(|text| compact_text(&text, 140))
+}
+
+fn claude_session_description(value: &Value) -> Option<String> {
+    value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(value_to_text)
+        .or_else(|| value.get("summary").and_then(value_to_text))
+        .map(|text| compact_text(&text, 140))
+}
+
 fn agent_display_label(agent: &str) -> String {
     match agent {
         "codex" => "Codex".to_string(),
@@ -510,6 +706,189 @@ fn path_display_name(path: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn first_agent_session_hint(
+    record: &AgentSessionRecord,
+    mut derive: impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    derive(&record.title)
+        .or_else(|| record.project_path.as_deref().and_then(&mut derive))
+        .or_else(|| {
+            record
+                .resume_commands
+                .iter()
+                .find_map(|command| derive(command))
+        })
+}
+
+fn agent_session_source_label(record: &AgentSessionRecord) -> String {
+    let provider = agent_session_provider_label(&record.provider);
+    match record
+        .project_path
+        .as_deref()
+        .and_then(path_display_name)
+        .or_else(|| {
+            let title = record.title.trim();
+            (!title.is_empty()).then(|| compact_text(title, 48))
+        }) {
+        Some(detail) => format!("{provider} · {detail}"),
+        None => provider,
+    }
+}
+
+fn agent_session_provider_label(provider: &str) -> String {
+    let provider = provider.trim();
+    if let Some(agent) = provider.strip_prefix("cmux-") {
+        return format!("CMUX {}", agent_display_label(agent));
+    }
+    agent_display_label(provider)
+}
+
+fn branch_hint_from_text(text: &str) -> Option<String> {
+    let lower_text = text.to_ascii_lowercase();
+    for marker in ["branch:", "branch=", "branch "] {
+        let mut search_start = 0;
+        while let Some(offset) = lower_text[search_start..].find(marker) {
+            let index = search_start + offset;
+            if index > 0 {
+                let previous = lower_text.as_bytes()[index - 1] as char;
+                if previous.is_ascii_alphanumeric() {
+                    search_start = index + marker.len();
+                    continue;
+                }
+            }
+
+            let suffix = &text[index + marker.len()..];
+            if let Some(branch) = git_ref_token_from_text(suffix) {
+                return Some(branch);
+            }
+            search_start = index + marker.len();
+        }
+    }
+
+    None
+}
+
+fn git_ref_token_from_text(text: &str) -> Option<String> {
+    let token: String = text
+        .trim_start_matches(|character: char| {
+            character.is_whitespace() || matches!(character, '`' | '"' | '\'')
+        })
+        .chars()
+        .take_while(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '/')
+        })
+        .collect();
+    if token.is_empty()
+        || token
+            .chars()
+            .all(|character| matches!(character, '.' | '_' | '-' | '/'))
+    {
+        return None;
+    }
+
+    Some(token)
+}
+
+fn task_id_from_text(text: &str) -> Option<String> {
+    let lower_text = text.to_ascii_lowercase();
+    for (index, _) in lower_text.match_indices("tsk") {
+        if index > 0 {
+            let previous = lower_text.as_bytes()[index - 1] as char;
+            if previous.is_ascii_alphanumeric() {
+                continue;
+            }
+        }
+
+        let suffix =
+            lower_text[index + 3..].trim_start_matches(['-', '_', '/', '#', '[', ' ', ':']);
+        let digits: String = suffix
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return Some(format!("TSK-{digits}"));
+        }
+    }
+
+    None
+}
+
+fn pull_request_hint_from_text(text: &str) -> Option<String> {
+    pull_request_number_after_marker(text, "pull request")
+        .or_else(|| pull_request_number_after_marker(text, "pr"))
+        .or_else(|| {
+            link_hint_from_text(text)
+                .as_deref()
+                .and_then(github_pull_request_number_from_url)
+        })
+        .map(|number| format!("PR #{number}"))
+}
+
+fn pull_request_number_after_marker(text: &str, marker: &str) -> Option<String> {
+    let lower_text = text.to_ascii_lowercase();
+    let mut search_start = 0;
+    while let Some(offset) = lower_text[search_start..].find(marker) {
+        let index = search_start + offset;
+        if index > 0 {
+            let previous = lower_text.as_bytes()[index - 1] as char;
+            if previous.is_ascii_alphanumeric() {
+                search_start = index + marker.len();
+                continue;
+            }
+        }
+
+        let suffix = &text[index + marker.len()..];
+        let suffix = suffix.trim_start_matches([' ', '#', '-', ':']);
+        let digits: String = suffix
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+        if !digits.is_empty() {
+            return Some(digits);
+        }
+
+        search_start = index + marker.len();
+    }
+
+    None
+}
+
+fn link_hint_from_text(text: &str) -> Option<String> {
+    for scheme in ["https://", "http://"] {
+        let mut search_start = 0;
+        while let Some(offset) = text[search_start..].find(scheme) {
+            let index = search_start + offset;
+            let suffix = &text[index..];
+            let end = suffix
+                .char_indices()
+                .find_map(|(index, character)| character.is_whitespace().then_some(index))
+                .unwrap_or(suffix.len());
+            let link = suffix[..end].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '"']);
+            if !link.is_empty() {
+                return Some(link.to_string());
+            }
+
+            search_start = index + scheme.len();
+        }
+    }
+
+    None
+}
+
+fn github_pull_request_number_from_url(url: &str) -> Option<String> {
+    if !url.to_ascii_lowercase().contains("github.com/") {
+        return None;
+    }
+
+    let lower_url = url.to_ascii_lowercase();
+    let index = lower_url.find("/pull/")? + "/pull/".len();
+    let digits: String = url[index..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    (!digits.is_empty()).then_some(digits)
 }
 
 fn optional_string(value: Option<&Value>) -> Option<String> {
@@ -751,4 +1130,158 @@ fn shell_quote(value: &str) -> String {
         return "''".to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(title: &str, project_path: Option<&str>) -> AgentSessionRecord {
+        AgentSessionRecord {
+            provider: "codex".to_string(),
+            id: "019e".to_string(),
+            title: title.to_string(),
+            description: None,
+            model: None,
+            project_path: project_path.map(ToOwned::to_owned),
+            last_activity: None,
+            resume_commands: vec!["codex resume 019e".to_string()],
+        }
+    }
+
+    #[test]
+    fn derived_metadata_extracts_explicit_agent_session_hints() {
+        let record = session(
+            "TSK-127 branch cdx/tsk-127-agent-session-metadata PR #42 https://github.com/acme/mac-command-bar/pull/42",
+            Some("/Users/blackcolours/dev/work/mac-command-bar"),
+        );
+
+        let metadata = derive_agent_session_metadata(&record);
+
+        assert_eq!(metadata.task_id.as_deref(), Some("TSK-127"));
+        assert_eq!(
+            metadata.branch_hint.as_deref(),
+            Some("cdx/tsk-127-agent-session-metadata")
+        );
+        assert_eq!(metadata.pull_request_hint.as_deref(), Some("PR #42"));
+        assert_eq!(
+            metadata.link_hint.as_deref(),
+            Some("https://github.com/acme/mac-command-bar/pull/42")
+        );
+        assert_eq!(metadata.source_label, "Codex · mac-command-bar");
+    }
+
+    #[test]
+    fn derived_metadata_uses_path_task_ids_and_keeps_unclear_hints_empty() {
+        let record = session(
+            "Claude session",
+            Some("/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-128-runtime-audit"),
+        );
+
+        let metadata = derive_agent_session_metadata(&record);
+
+        assert_eq!(metadata.task_id.as_deref(), Some("TSK-128"));
+        assert_eq!(metadata.branch_hint, None);
+        assert_eq!(metadata.pull_request_hint, None);
+        assert_eq!(metadata.link_hint, None);
+        assert_eq!(metadata.source_label, "Codex · tsk-128-runtime-audit");
+    }
+
+    /// A real Claude session: a user prompt, then an assistant turn that is
+    /// nothing but a `tool_use`. The tool_use line is NEWER, so the merge takes
+    /// its (empty) title — which is exactly why real rails filled up with
+    /// "Claude session".
+    const REAL_SESSION_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"sessionId":"S1","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T09:00:00Z","message":{"role":"user","content":"Fix the resume rail"}}"#,
+        "\n",
+        r#"{"type":"user","isSidechain":false,"sessionId":"S1","timestamp":"2026-07-28T09:01:00Z","message":{"role":"user","content":[{"type":"tool_result","content":"File does not exist."}]}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"sessionId":"S1","timestamp":"2026-07-28T09:02:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}"#,
+    );
+
+    /// A subagent transcript: the Task tool's prompt and its structured reply,
+    /// every line `isSidechain: true`, and a `sessionId` that would otherwise
+    /// mint a resumable-looking row.
+    const SUBAGENT_JSONL: &str = concat!(
+        r#"{"parentUuid":null,"isSidechain":true,"agentId":"a0a5","type":"user","sessionId":"S2","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T10:00:00Z","message":{"role":"user","content":"You are implementing Task 6 of the Slice 1 plan."}}"#,
+        "\n",
+        r#"{"parentUuid":"1","isSidechain":true,"agentId":"a0a5","type":"assistant","sessionId":"S2","timestamp":"2026-07-28T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Structured output provided successfully"}]}}"#,
+    );
+
+    #[test]
+    fn claude_scan_excludes_subagent_sidechain_transcripts() {
+        // Path discriminator — free, and it also keeps subagents from evicting
+        // real sessions from the scan's file budget.
+        assert!(is_claude_subagent_transcript_path(Path::new(
+            "/Users/dev/.claude/projects/-Users-dev/71dd/subagents/agent-a0a5.jsonl"
+        )));
+        assert!(is_claude_subagent_transcript_path(Path::new(
+            "/Users/dev/.claude/projects/-Users-dev/71dd/subagents/workflows/wf_02/agent-a2.jsonl"
+        )));
+        assert!(!is_claude_subagent_transcript_path(Path::new(
+            "/Users/dev/.claude/projects/-Users-dev/71dd4d8f.jsonl"
+        )));
+
+        // Content discriminator — authoritative, and it still catches a
+        // subagent transcript written flat into the project directory.
+        assert_eq!(
+            parse_claude_jsonl(SUBAGENT_JSONL, "/Users/dev/work/mac-command-bar"),
+            Vec::new()
+        );
+
+        let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "S1");
+    }
+
+    #[test]
+    fn claude_titles_fall_back_to_project_folder_and_first_prompt() {
+        let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
+
+        // Without the fallback this row reads "Claude session": the newest line
+        // is a tool_use with no text, and a tool_result is not a user prompt.
+        assert_eq!(records[0].title, "mac-command-bar — Fix the resume rail");
+    }
+
+    #[test]
+    fn claude_ai_title_wins_and_long_fallbacks_are_truncated() {
+        let with_ai_title = format!(
+            "{REAL_SESSION_JSONL}\n{}",
+            r#"{"type":"ai-title","sessionId":"S1","aiTitle":"Resume rail subagent filter"}"#
+        );
+        let records = parse_claude_jsonl(&with_ai_title, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].title, "Resume rail subagent filter");
+
+        let long_prompt = REAL_SESSION_JSONL.replace(
+            "Fix the resume rail",
+            "Fix the resume rail so it stops listing subagent transcripts and generic titles",
+        );
+        let records = parse_claude_jsonl(&long_prompt, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records[0].title.chars().count(), 60);
+        assert!(records[0].title.starts_with("mac-command-bar — Fix the resume rail"));
+        assert!(records[0].title.ends_with('…'));
+
+        // Nothing usable anywhere: the generic label is still the last resort.
+        let bare = r#"{"type":"file-history-snapshot","sessionId":"S3","timestamp":"2026-07-28T09:00:00Z"}"#;
+        let records = parse_claude_jsonl(bare, "");
+        assert_eq!(records[0].title, "Claude session");
+    }
+
+    #[test]
+    fn agent_session_record_json_shape_stays_unchanged() {
+        let record = session("TSK-127 metadata", Some("/repo"));
+
+        let value = serde_json::to_value(&record).unwrap();
+
+        assert_eq!(value.get("taskId"), None);
+        assert_eq!(value.get("branchHint"), None);
+        assert_eq!(value.get("pullRequestHint"), None);
+        assert_eq!(value.get("linkHint"), None);
+        assert_eq!(value.get("sourceLabel"), None);
+        assert_eq!(
+            value.get("projectPath").and_then(Value::as_str),
+            Some("/repo")
+        );
+    }
 }

@@ -6,6 +6,18 @@ const editorSource = await readFile(
   new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
   'utf8'
 );
+const dockviewShellSource = await readFile(
+  new URL('../src/lib/SourceDockviewShell.svelte', import.meta.url),
+  'utf8'
+);
+const dockviewWorkspaceSource = await readFile(
+  new URL('../src/lib/sourceDockviewWorkspace.ts', import.meta.url),
+  'utf8'
+);
+const sourcePaneResizerSource = await readFile(
+  new URL('../src/lib/SourcePaneResizer.svelte', import.meta.url),
+  'utf8'
+);
 const appearanceSource = await readFile(
   new URL('../src/lib/sourcePreviewAppearance.ts', import.meta.url),
   'utf8'
@@ -20,15 +32,15 @@ const workspaceSnapshotPlanSource = await readFile(
   'utf8'
 );
 
-function blockFor(selector) {
+function blockFor(selector, source = pageSource) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`, 'm').exec(pageSource);
+  const match = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`, 'm').exec(source);
   assert.ok(match?.groups?.body, `Missing style block for ${selector}`);
   return match.groups.body;
 }
 
-function assertDeclaration(selector, declaration) {
-  assert.match(blockFor(selector), new RegExp(`(^|\\n)\\s*${declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`), `${selector} should include ${declaration}`);
+function assertDeclaration(selector, declaration, source = pageSource) {
+  assert.match(blockFor(selector, source), new RegExp(`(^|\\n)\\s*${declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`), `${selector} should include ${declaration}`);
 }
 
 function constStringArray(source, constName) {
@@ -45,8 +57,27 @@ function constNumber(source, constName) {
   return Number(match.groups.value);
 }
 
+function sourceFunctionBlock(source, functionName) {
+  const start = source.indexOf(`function ${functionName}`);
+  assert.notEqual(start, -1, `Missing function ${functionName}`);
+  const bodyStart = source.indexOf('{', start);
+  assert.notEqual(bodyStart, -1, `Missing body for function ${functionName}`);
+
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+
+  assert.fail(`Missing closing brace for function ${functionName}`);
+}
+
 function sideContextResponsiveRailWidth() {
-  const match = /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*6px\s*(?<width>\d+)px\s*;/m.exec(
+  const match = /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*(?<width>\d+)px\s*;/m.exec(
     blockFor('.workspace-arrangement.context-side:not(.context-rail-only)')
   );
   assert.ok(match?.groups?.width, 'Split-window side context rule should use a compact pixel rail');
@@ -67,10 +98,11 @@ assert.ok(
 assert.ok(
   pageSource.includes('let sourceWorkspaceElement = $state<HTMLElement | null>(null);') &&
     pageSource.includes('let sourceWorkspaceWidth = $state(0);') &&
+    pageSource.includes('let sourceWorkspaceHeight = $state(0);') &&
     pageSource.includes('bind:this={sourceWorkspaceElement}') &&
-    pageSource.includes('function measureSourceWorkspaceWidth()') &&
-    pageSource.includes('measureSourceWorkspaceWidth();'),
-  'The source browser route should observe the rendered shell width before planning effective pane sizes'
+    pageSource.includes('function measureSourceWorkspaceSize()') &&
+    pageSource.includes('measureSourceWorkspaceSize();'),
+  'The source browser route should observe the rendered shell size before planning effective pane sizes'
 );
 assert.ok(
   pageSource.includes('let effectiveSidePaneWidth = $derived(') &&
@@ -78,6 +110,10 @@ assert.ok(
     pageSource.includes('--side-pane-width: ${effectiveSidePaneWidth}px') &&
     pageSource.includes('--context-pane-width: ${effectiveContextPaneWidth}px'),
   'Viewport-forced pane sizes should flow through effective CSS variables instead of overwriting user sizes'
+);
+assert.ok(
+  pageSource.includes("visible: contextPanelPlacement === 'side' && sourceDockPanelVisible('context')"),
+  'Right pane width planning should stay visible while another right Dockview tab, such as Insights, is active'
 );
 assert.ok(
   pageSource.includes('class:activity-force-collapsed={activityPaneViewportCollapsed()}') &&
@@ -94,15 +130,23 @@ assert.ok(
   pageSource.includes('const activityPaneSizingConfig: SourcePaneSizingConfig') &&
     pageSource.includes('const contextPaneWidthSizingConfig: SourcePaneSizingConfig') &&
     pageSource.includes('const contextPaneHeightSizingConfig: SourcePaneSizingConfig') &&
-    pageSource.includes('const bottomDockSizingConfig: SourcePaneSizingConfig'),
+    pageSource.includes('function bottomDockSizingConfig(): SourcePaneSizingConfig'),
   'Pane resize thresholds should be declared as shared sizing configs'
 );
 assert.ok(
   pageSource.includes('return clampSourcePaneSize(width, activityPaneSizingConfig);') &&
     pageSource.includes('return clampSourcePaneSize(width, contextPaneWidthSizingConfig);') &&
     pageSource.includes('return clampSourcePaneSize(height, contextPaneHeightSizingConfig);') &&
-    pageSource.includes('return clampSourcePaneSize(height, bottomDockSizingConfig);'),
+    pageSource.includes('return clampSourcePaneSize(height, bottomDockSizingConfig());'),
   'Pane clamp functions should route through sourcePaneSizing'
+);
+assert.ok(
+  pageSource.includes('function bottomDockAvailableMaxHeight()') &&
+    pageSource.includes('sourceWorkspaceHeight') &&
+    pageSource.includes('bottomDockReservedEditorHeight') &&
+    pageSource.includes('bottomDockReservedChromeHeight') &&
+    !pageSource.includes('const bottomDockMaxHeight = 1100'),
+  'Bottom dock resizing should use the current workspace height instead of a fixed max-height cap'
 );
 assert.ok(
   pageSource.includes('railSize: sidePaneMinWidth') &&
@@ -122,26 +166,39 @@ assert.ok(
     pageSource.includes('contextPaneExpandedWidthStorageKey'),
   'Resize finish and rail restore should use shared helper state and persisted expanded widths'
 );
-assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr)');
-assertDeclaration('.shell', 'width: calc(100vw - 8px)');
-assertDeclaration('.shell', 'height: calc(100dvh - 8px)');
-assertDeclaration('.shell', 'min-height: min(520px, calc(100dvh - 8px))');
-assertDeclaration('.shell', 'margin: 4px auto');
-assertDeclaration('.shell.side-right', 'grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width)');
+assertDeclaration('.shell', '--pane-resizer-size: 0px');
+assertDeclaration('.shell', '--pane-resizer-hit-size: 10px');
+assertDeclaration('.shell', '--bottom-dock-resizer-size: 8px');
+assertDeclaration('.shell', 'grid-template-columns: var(--side-pane-width) minmax(0, 1fr)');
+assertDeclaration('.shell', 'grid-template-rows: minmax(0, 1fr)');
+assertDeclaration('.shell', 'width: 100vw');
+assertDeclaration('.shell', 'height: 100dvh');
+assertDeclaration('.shell', 'min-height: min(520px, 100dvh)');
+assertDeclaration('.shell', 'margin: 0');
+assertDeclaration('.shell.side-right', 'grid-template-columns: minmax(0, 1fr) var(--side-pane-width)');
+assertDeclaration('.source-dockview-activity-shell', 'grid-column: 1');
+assertDeclaration('.workspace', 'grid-column: 2');
+assertDeclaration('.workspace', 'height: 100%');
 assertDeclaration('.shell.activity-hidden', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.shell.activity-hidden .workspace', 'grid-column: 1');
-assertDeclaration('.shell.activity-rail-only', 'grid-template-columns: 56px 6px minmax(0, 1fr)');
+assertDeclaration('.shell.activity-rail-only', 'grid-template-columns: 56px minmax(0, 1fr)');
+assertDeclaration('.shell.side-right .source-dockview-activity-shell', 'grid-column: 2');
 assertDeclaration('.shell.activity-rail-only .activity-shell', 'grid-template-columns: 46px');
+assertDeclaration('.shell.activity-rail-only .source-dockview-activity-shell', 'min-width: 0');
 assertDeclaration('.shell.activity-rail-only .sidebar', 'display: none');
 assert.ok(
-  pageSource.includes('@media (max-width: 1380px)'),
-  'Mid-width desktop windows should collapse side context cards to the icon rail'
+    pageSource.includes('const sourceWorkspaceMinimumEditorWidth = 620') &&
+    pageSource.includes('const sourceWorkspacePaneGapSize = 0') &&
+    pageSource.includes('const sourceWorkspacePaneChromeSize = 0') &&
+    pageSource.includes('chromeSize: sourceWorkspacePaneChromeSize') &&
+    pageSource.includes('@media (max-width: 1180px)'),
+  'Laptop-width workspaces should keep side and context panes expanded until the rendered canvas is genuinely tight'
 );
 assert.ok(
   pageSource.includes('@media (max-width: 1120px)'),
   'Narrow split-window desktop widths should collapse the left source pane to its rail'
 );
-assertDeclaration('.shell:not(.activity-hidden)', 'grid-template-columns: 56px 6px minmax(0, 1fr)');
+assertDeclaration('.shell:not(.activity-hidden)', 'grid-template-columns: 56px minmax(0, 1fr)');
 assertDeclaration('.shell:not(.activity-hidden) .activity-shell', 'grid-template-columns: 46px');
 assertDeclaration('.shell:not(.activity-hidden) .sidebar', 'display: none');
 assertDeclaration('.activity-shell', 'min-width: 0');
@@ -203,13 +260,16 @@ assertDeclaration('.hidden-dock-panel-button', 'height: 26px');
 assertDeclaration('.hidden-dock-panel-button span', 'clip: rect(0, 0, 0, 0)');
 assertDeclaration('.dock-drop-zones', 'display: flex');
 assertDeclaration('.dock-drop-zone', 'height: 22px');
-assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width)');
-assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height))');
+assertDeclaration('.workspace-arrangement', 'position: relative');
+assertDeclaration('.workspace-arrangement', 'height: 100%');
+assertDeclaration('.workspace-main-column', 'height: 100%');
+assertDeclaration('.workspace-arrangement.context-side', 'grid-template-columns: minmax(0, 1fr) var(--context-pane-width)');
+assertDeclaration('.workspace-arrangement.context-bottom', 'grid-template-rows: minmax(0, 1fr) minmax(96px, var(--context-pane-height))');
 assertDeclaration('.context-panel-grid.stacked', 'grid-template-columns: minmax(0, 1fr)');
 assert.ok(
-  pageSource.includes('class:stacked={contextCardsTabbed()}') &&
-    pageSource.includes("return contextPanelMode === 'stack' || contextPanelPlacement === 'side';") &&
-    pageSource.includes('return !contextCardsTabbed() || activeVisibleContextCardID() === cardID;'),
+  pageSource.includes('class:stacked={contextCardsStacked()}') &&
+    pageSource.includes("mode === 'stack' || placement === 'side' ? 'tabs' : 'grid'") &&
+    pageSource.includes('return !contextPanelPresentation.singleCard || activeVisibleContextCardID() === cardID;'),
   'Side context placement should use the active-card stacked render path instead of a long all-card grid'
 );
 assertDeclaration('.context-stack-tabs', 'display: flex');
@@ -221,7 +281,7 @@ assertDeclaration('.context-card-tab-icon', 'display: none');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'overflow-y: auto');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-columns: 28px minmax(0, 1fr)');
 assertDeclaration('.workspace-arrangement.context-side .context-panel-grid', 'grid-template-rows: auto minmax(0, 1fr)');
-assertDeclaration('.workspace-arrangement.context-side.context-rail-only', 'grid-template-columns: minmax(0, 1fr) 6px 34px');
+assertDeclaration('.workspace-arrangement.context-side.context-rail-only', 'grid-template-columns: minmax(0, 1fr) 34px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'grid-template-columns: 28px');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid', 'overflow: hidden');
 assertDeclaration('.workspace-arrangement.context-side.context-rail-only .context-panel-grid > section', 'display: none');
@@ -290,8 +350,8 @@ assertDeclaration('.workspace-arrangement.context-side .runtime-context-row', 'g
 assertDeclaration('.workspace-arrangement.context-side .runtime-context-row strong', 'grid-column: 1 / -1');
 assertDeclaration('.workspace-arrangement.context-side .agent-session-row', 'grid-template-columns: auto minmax(0, 1fr)');
 assertDeclaration('.workspace-arrangement.context-side .agent-session-focus-lane', 'grid-column: 1 / -1');
-assertDeclaration('.workspace-arrangement.context-side .worktree-context-row', 'grid-template-columns: auto auto minmax(0, 1fr)');
-assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions', 'grid-column: 1 / -1');
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-row', 'grid-template-columns: auto auto minmax(0, 1fr) auto');
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions', 'grid-column: 4');
 assertDeclaration('.workspace-arrangement.context-side .repo-dashboard-row', 'grid-template-columns: minmax(0, 1fr) auto');
 assertDeclaration('.workspace-arrangement.context-side .repo-dashboard-metric', 'display: none');
 assert.ok(
@@ -302,7 +362,7 @@ assert.ok(
   'Side context badges should compress to 16px glanceable tokens'
 );
 assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions button', 'width: 20px');
-assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions .worktree-snapshot-chip', 'max-width: 108px');
+assertDeclaration('.workspace-arrangement.context-side .worktree-context-actions', 'max-width: 28px');
 assertDeclaration('.workspace-arrangement.context-side .agent-session-focus-lane', 'min-height: 16px');
 assert.ok(
   pageSource.includes('.workspace-arrangement.context-side .runtime-context-row > span:not(.runtime-port)') &&
@@ -331,10 +391,31 @@ assert.ok(
   'Side context lists should keep rows content-sized instead of stretching single rows to the whole pane'
 );
 assertDeclaration('.workspace-arrangement.context-bottom .context-panel-grid', 'overflow-y: auto');
+assertDeclaration('.side-pane-resizer', 'width: var(--pane-resizer-hit-size)');
+assertDeclaration('.side-pane-resizer', 'background: transparent');
 assertDeclaration('.side-pane-resizer', 'cursor: col-resize');
+assertDeclaration('.side-pane-resizer', 'touch-action: none');
+assertDeclaration('.side-pane-resizer::after', 'width: 2px');
+assertDeclaration('.side-pane-resizer::after', 'height: 56px');
+assertDeclaration('.side-pane-resizer::after', 'background: rgba(126, 240, 223, 0.58)');
+assertDeclaration('.side-pane-resizer::after', 'opacity: 0');
+assertDeclaration(':global(body.resizing-source-pane) .side-pane-resizer::after', 'height: 72px');
+assertDeclaration(':global(body.resizing-source-pane) .side-pane-resizer::after', 'opacity: 1');
+assertDeclaration('.context-pane-resizer', 'width: var(--pane-resizer-hit-size)');
+assertDeclaration('.context-pane-resizer', 'background: transparent');
 assertDeclaration('.context-pane-resizer', 'cursor: col-resize');
+assertDeclaration('.context-pane-resizer', 'touch-action: none');
+assertDeclaration('.context-pane-resizer::after', 'height: 38px');
+assertDeclaration('.context-pane-resizer::after', 'background: rgba(126, 240, 223, 0.46)');
+assertDeclaration('.context-pane-resizer::after', 'opacity: 0');
+assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer::after', 'width: 42px');
 assertDeclaration('.workspace-arrangement.context-bottom .context-pane-resizer', 'cursor: row-resize');
+assertDeclaration('.bottom-dock-resizer', 'flex: 0 0 var(--bottom-dock-resizer-size)');
 assertDeclaration('.bottom-dock-resizer', 'cursor: row-resize');
+assertDeclaration('.bottom-dock-resizer', 'touch-action: none');
+assertDeclaration('.bottom-dock-resizer::after', 'width: 68px');
+assertDeclaration('.bottom-dock-resizer::after', 'background: rgba(126, 240, 223, 0.58)');
+assertDeclaration(':global(body.resizing-bottom-dock) .bottom-dock-resizer::after', 'width: 96px');
 assertDeclaration('.editor-frame', 'min-width: 0');
 assertDeclaration('.activity-panel', 'grid-template-rows: auto auto minmax(0, 1fr)');
 assertDeclaration('.activity-panel-list', 'overflow-y: auto');
@@ -346,10 +427,19 @@ assertDeclaration('.workspace-snapshot-readiness.ready', 'color: #76e6cf');
 assertDeclaration('.workspace-snapshot-readiness.blocked', 'color: #ff9d8e');
 assertDeclaration('.conversation-session-row.active', 'border-color: color-mix(in srgb, var(--accent) 62%, transparent)');
 assertDeclaration('.conversation-session-open', 'grid-template-columns: auto minmax(0, 1fr)');
+assertDeclaration('.conversation-session-actions', 'grid-template-columns: minmax(0, 84px) 23px');
+assertDeclaration('.conversation-session-actions .conversation-switch-action', 'height: 23px');
+assert.ok(pageSource.includes('class="activity-session-row agent-activity-row"'), 'Agent rows should use the compact non-overlapping activity layout');
+assert.ok(pageSource.includes('agentSessionResumeMetaLabel(session, sessionSnapshot)'), 'Agent rows should show session title/time/branch metadata instead of the full resume command inline');
+assert.match(blockFor('.agent-activity-row'), /"badge main actions"/, 'Agent rows should keep actions in a compact menu lane');
+assertDeclaration('.agent-activity-actions', 'grid-area: actions');
+assertDeclaration('.agent-activity-actions', 'max-width: 28px');
+assertDeclaration('.row-action-menu', 'position: absolute');
+assertDeclaration('.agent-activity-row .agent-session-focus-lane strong', 'display: none');
 assert.ok(pageSource.includes('min-height: 58px'), 'Worktree rows should have stable dense height');
-assertDeclaration('.activity-worktree-row', 'grid-template-columns: auto minmax(0, 1fr)');
-assertDeclaration('.activity-worktree-row .activity-row-actions', 'grid-column: 2');
-assertDeclaration('.activity-worktree-row .activity-row-actions', 'flex-wrap: wrap');
+assertDeclaration('.activity-worktree-row', 'grid-template-columns: auto minmax(0, 1fr) auto');
+assertDeclaration('.activity-worktree-row .activity-row-actions', 'grid-column: 3');
+assertDeclaration('.activity-worktree-row .activity-row-actions', 'max-width: 28px');
 assertDeclaration('.activity-filter-box', 'grid-template-columns: 18px minmax(0, 1fr)');
 assertDeclaration('.worktree-row-main', 'gap: 2px');
 assertDeclaration('.worktree-safety-line', 'display: flex');
@@ -368,8 +458,8 @@ assertDeclaration('.worktree-context-main', 'display: grid');
 assertDeclaration('.worktree-context-actions', 'display: inline-flex');
 assertDeclaration('.worktree-decision-queue', 'display: grid');
 assertDeclaration('.worktree-decision-queue', 'overflow-y: auto');
-assertDeclaration('.worktree-decision-items', 'overflow: hidden');
-assertDeclaration('.worktree-decision-item', 'grid-template-columns: auto auto minmax(0, 1fr) 20px 20px 20px');
+assertDeclaration('.worktree-decision-items', 'overflow: visible');
+assertDeclaration('.worktree-decision-item', 'grid-template-columns: auto auto minmax(0, 1fr) auto');
 assertDeclaration('.worktree-decision-item button', 'width: 20px');
 assertDeclaration('.worktree-decision-lane', 'display: inline-grid');
 assertDeclaration('.worktree-decision-lane', 'text-transform: uppercase');
@@ -391,20 +481,62 @@ assertDeclaration('.editor-body-grid', 'flex: 1 1 auto');
 assertDeclaration('.editor-body-grid.insights-hidden', 'grid-template-columns: minmax(0, 1fr)');
 assertDeclaration('.editor-canvas', 'position: relative');
 assertDeclaration('.editor-insight-resizer', 'cursor: col-resize');
-assertDeclaration('.terminal-launchpad', 'height: min(var(--bottom-dock-height), 55dvh)');
-assertDeclaration('.terminal-launchpad', 'max-height: min(var(--bottom-dock-height), 55dvh)');
+assertDeclaration('.terminal-launchpad', 'grid-template-rows: auto minmax(0, 1fr)');
+assertDeclaration('.terminal-launchpad', 'height: 100%');
+assertDeclaration('.terminal-launchpad', 'max-height: none');
+assertDeclaration(':global(.source-dockview-bottom-shell .terminal-launchpad)', 'height: var(--bottom-dock-height)');
 assertDeclaration('.embedded-terminal-panel', 'display: grid');
-assertDeclaration('.embedded-terminal-host', 'height: clamp(96px, calc(var(--bottom-dock-height) - 226px), 360px)');
+assertDeclaration('.embedded-terminal-panel', 'min-height: 0');
+assertDeclaration('.embedded-terminal-host', 'height: 100%');
+assertDeclaration('.embedded-terminal-host', 'min-height: 0');
 assertDeclaration('.embedded-terminal-host', 'overflow: hidden');
-assertDeclaration('.embedded-terminal-command', 'grid-template-columns: 16px minmax(0, 1fr) auto');
-assertDeclaration('.terminal-launchpad-grid', 'grid-template-columns: repeat(4, minmax(0, 1fr))');
-assertDeclaration('.terminal-launchpad-row', 'display: grid');
-assertDeclaration('.terminal-launchpad-row', 'grid-template-columns: auto minmax(0, 1fr) 24px');
-assertDeclaration('.terminal-agent-row', 'grid-template-columns: auto minmax(0, 1fr) 24px 24px');
-assertDeclaration('.browser-dock', 'height: min(var(--bottom-dock-height), 55dvh)');
-assertDeclaration('.browser-dock', 'max-height: min(var(--bottom-dock-height), 55dvh)');
+assert.ok(pageSource.includes('listPlaywrightSessionsFromTauri'), 'Terminal dock should scan native Playwright sessions');
+assert.ok(pageSource.includes('killPlaywrightSessionsFromTauri'), 'Terminal dock should expose native Playwright cleanup');
+assert.ok(pageSource.includes("id: 'kill-playwright-sessions'"), 'Command palette should keep Playwright cleanup available after removing terminal shortcut cards');
+assert.ok(!pageSource.includes('aria-label="Playwright session cleanup"'), 'Terminal dock should not repeat Playwright cleanup cards inside the terminal tab');
+assert.ok(!pageSource.includes('class="terminal-launchpad-grid"'), 'Terminal dock should not render repeated shortcut card grids');
+assert.ok(
+  pageSource.includes('fontSize: 15') &&
+    pageSource.includes('lineHeight: 1.2') &&
+    pageSource.includes('"Google Sans Mono"') &&
+    pageSource.includes('scrollback: 8000') &&
+    pageSource.includes("background: '#282a36'") &&
+    pageSource.includes("foreground: '#f8f8f2'") &&
+    pageSource.includes("magenta: '#ff79c6'") &&
+    pageSource.includes("black: '#000000'") &&
+    pageSource.includes("white: '#bbbbbb'") &&
+    pageSource.includes("brightBlue: '#caa9fa'") &&
+    pageSource.includes("macOptionIsMeta: true"),
+  'Embedded terminal should use Warp Dracula xterm colors and command-line friendly defaults'
+);
+assert.ok(
+  pageSource.includes("import('@xterm/addon-search')") &&
+    pageSource.includes("import('@xterm/addon-serialize')") &&
+    pageSource.includes("import('@xterm/addon-unicode-graphemes')") &&
+    pageSource.includes("import('@xterm/addon-web-links')") &&
+    pageSource.includes("import('@xterm/addon-webgl')") &&
+    pageSource.includes('new SearchAddon({ highlightLimit: 2000 })') &&
+    pageSource.includes('new SerializeAddon()') &&
+    pageSource.includes('new UnicodeGraphemesAddon()') &&
+    pageSource.includes('new WebLinksAddon(openEmbeddedTerminalWebLink)') &&
+    pageSource.includes('webglAddon.onContextLoss'),
+  'Embedded terminal should wire safe xterm addons for search, serialization, unicode graphemes, links, and best-effort WebGL'
+);
+assert.ok(
+  !pageSource.includes("import('@xterm/addon-attach')") &&
+    !pageSource.includes("import('@xterm/addon-clipboard')") &&
+    !pageSource.includes("import('@xterm/addon-image')") &&
+    !pageSource.includes("import('@xterm/addon-ligatures')") &&
+    !pageSource.includes("import('@xterm/addon-progress')") &&
+    !pageSource.includes("import('@xterm/addon-unicode11')") &&
+    !pageSource.includes("import('@xterm/addon-web-fonts')"),
+  'Embedded terminal should not auto-load xterm addons that need a websocket transport, clipboard policy, asset policy, or beta peer support'
+);
+assertDeclaration('.browser-dock', 'height: 100%');
+assertDeclaration(':global(.source-dockview-bottom-shell .browser-dock)', 'height: var(--bottom-dock-height)');
+assertDeclaration('.browser-dock', 'max-height: none');
 assertDeclaration('.browser-frame-wrap', 'min-height: 128px');
-assertDeclaration('.browser-frame-wrap', 'height: clamp(128px, calc(var(--bottom-dock-height) - 122px), 520px)');
+assertDeclaration('.browser-frame-wrap', 'height: 100%');
 assertDeclaration('.browser-frame', 'width: 100%');
 assertDeclaration('.browser-runtime-list', 'overflow-x: auto');
 assertDeclaration('.editor-frame', 'display: flex');
@@ -412,11 +544,30 @@ assertDeclaration('.editor-frame', 'flex-direction: column');
 assertDeclaration('.editor-toolbar', 'height: 22px');
 assertDeclaration('.editor-file-state', 'height: 18px');
 assertDeclaration('.editor-file-state', 'border: 0');
+assert.ok(pageSource.includes('type SourceEditorFilePanelID = `file:${string}`'), 'Open editor files should use stable Dockview file panel IDs');
+assert.ok(pageSource.includes('sourceEditorFileDockviewStorageKey'), 'Open editor file tabs should persist their Dockview layout separately');
+assert.ok(pageSource.includes('function sourceEditorFileDockviewHostAction'), 'Open editor file tabs should initialize a nested Dockview host');
+assert.ok(pageSource.includes('function sourceEditorFileDockviewPanelAction'), 'Open editor file panes should register DOM nodes with Dockview');
+assert.ok(
+  pageSource.includes("node.addEventListener('source-dockview-layout', handleDockviewLayout)") &&
+    pageSource.includes("node.removeEventListener('source-dockview-layout', handleDockviewLayout)") &&
+    pageSource.includes("if (panelID === 'terminal') scheduleEmbeddedTerminalFit();"),
+  'Runtime Dockview panels should refit the embedded terminal when Dockview reports a layout pass'
+);
+assert.ok(pageSource.includes('shellClass="source-dockview-editor-files-shell"'), 'Open editor files should render through a nested Dockview shell');
+assert.ok(pageSource.includes('use:sourceEditorFileDockviewPanelAction={sourceEditorFilePanelID(tab)}'), 'Each open editor file should render as its own Dockview panel');
+assert.ok(!pageSource.includes('class="tab-strip"'), 'Open editor files should not use the old custom tab strip');
+assert.ok(!pageSource.includes('.source-tab'), 'Open editor files should not keep old local tab-strip CSS');
 assertDeclaration('.editor-icon-button', 'height: 20px');
 assertDeclaration('.editor-lookup-popover', 'position: absolute');
 assertDeclaration('.git-command-drawer', 'flex: 0 0 auto');
 assertDeclaration('.context-panel-grid.collapsed', 'display: none');
 assertDeclaration('.editor-frame', 'height: auto');
+assertDeclaration('.source-browser-stack', 'flex: 1 1 auto');
+assertDeclaration('.source-browser-stack', 'height: 100%');
+assertDeclaration('.source-files-pane', 'flex: 1 1 auto');
+assertDeclaration('.source-files-search-pane', 'grid-template-rows: auto minmax(0, 1fr)');
+assertDeclaration('.source-files-recent-pane .recent-list', 'overflow-y: auto');
 assertDeclaration('.source-list-panel', 'overflow: hidden');
 assertDeclaration('.file-tree', 'overflow-y: auto');
 assertDeclaration('.file-tree', 'overflow-x: hidden');
@@ -425,6 +576,43 @@ assertDeclaration('.file-tree', 'scrollbar-width: thin');
 assertDeclaration('.file-tree button.file-row small', 'display: none');
 assert.ok(pageSource.includes("| 'runs'"), 'Source shell should define an orchestration runs activity mode');
 assert.ok(pageSource.includes('sourceActivityModeStorageKey'), 'Source shell should persist the active activity mode');
+assert.ok(pageSource.includes("type SourceFilesPaneID = 'files' | 'search' | 'recent'"), 'Source files should split Files/Search/Recent into tabs');
+assert.ok(pageSource.includes("let sourceFilesPane = $state<SourceFilesPaneID>('files')"), 'Source files should default Dockview to the full-height Files panel');
+assert.ok(pageSource.includes('const sourceFilesDockviewPanels'), 'Source files should declare stable Dockview panels for Files/Search/Recent');
+assert.ok(pageSource.includes('createSourceDockviewTabStackWorkspace'), 'Source files should use the Dockview tab-stack helper');
+assert.ok(pageSource.includes('sourceFilesDockviewStorageKey'), 'Source files should persist nested Dockview tab layout separately from the global dock');
+assert.ok(pageSource.includes('function sourceFilesDockviewPanelAction'), 'Source file panes should register DOM nodes with the nested Dockview host');
+assert.ok(pageSource.includes('function selectSourceFilesPane'), 'Source file Dockview active-tab changes should use the shared selection path');
+assert.ok(pageSource.includes('shellClass="source-dockview-files-shell"'), 'Source files should render a nested Dockview shell');
+assert.ok(!pageSource.includes('aria-label="Source file panes"'), 'Source files should not use local in-component tab buttons');
+assert.ok(pageSource.includes('id="source-files-tree-pane"') && pageSource.includes("use:sourceFilesDockviewPanelAction={'files'}"), 'Project file tree should render as its own Dockview panel');
+assert.ok(pageSource.includes('id="source-files-search-pane"') && pageSource.includes("use:sourceFilesDockviewPanelAction={'search'}"), 'Source search should render as its own Dockview panel');
+assert.ok(pageSource.includes('id="source-files-recent-pane"') && pageSource.includes("use:sourceFilesDockviewPanelAction={'recent'}"), 'Recent files should render as their own Dockview panel');
+assert.ok(dockviewWorkspaceSource.includes('createSourceDockviewTabStackWorkspace'), 'Dockview workspace bridge should expose a reusable tab-stack host');
+assert.ok(dockviewWorkspaceSource.includes('getTabContextMenuItems: () => []'), 'Nested tab stacks should suppress destructive close menus by default');
+assert.ok(dockviewWorkspaceSource.includes('restoreClosedPanels'), 'Nested tab stacks should be able to restore required panels after a close event');
+assert.ok(dockviewShellSource.includes('source-dockview-host'), 'Dockview shell hosts should receive the shared host class for full-height Dockview internals');
+assertDeclaration(':global(.source-dockview-files-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-files-host)', 'visibility: hidden', dockviewShellSource);
+assert.ok(!pageSource.includes("sourceSidebarSectionCollapsed('tree')"), 'Project file tree should not be hidden by a persisted collapsed state');
+assert.ok(pageSource.includes('{sourceSidebarTreeStatusLabel}'), 'Project file tree section should keep detailed scan status in the title instead of repeating count text');
+assertDeclaration('.source-section-title', 'grid-template-columns: 18px minmax(0, 1fr)');
+assert.ok(pageSource.includes("type SourceConversationPaneID = 'active' | 'saved'"), 'Conversations should split active sessions and saved snapshots into tabs');
+assert.ok(pageSource.includes("let sourceConversationPane = $state<SourceConversationPaneID>('active')"), 'Conversations should default to active sessions');
+assert.ok(pageSource.includes('const sourceConversationDockviewPanels'), 'Conversations should declare stable Dockview panels for Active/Saved');
+assert.ok(pageSource.includes('sourceConversationDockviewStorageKey'), 'Conversations should persist nested Dockview tab layout separately');
+assert.ok(pageSource.includes('function sourceConversationDockviewPanelAction'), 'Conversation panes should register DOM nodes with the nested Dockview host');
+assert.ok(pageSource.includes('shellClass="source-dockview-conversation-shell"'), 'Conversations should render a nested Dockview shell');
+assert.ok(!pageSource.includes('aria-label="Conversation panes"'), 'Conversations should not use local in-component tab buttons');
+assert.ok(pageSource.includes('id="conversation-active-pane"') && pageSource.includes("use:sourceConversationDockviewPanelAction={'active'}"), 'Active conversations should render as their own Dockview panel');
+assert.ok(pageSource.includes('id="conversation-saved-pane"') && pageSource.includes("use:sourceConversationDockviewPanelAction={'saved'}"), 'Saved workspace snapshots should render as their own Dockview panel');
+assertDeclaration(':global(.source-dockview-conversation-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-conversation-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-conversation-shell .source-dockview-attached-panel.conversation-active-pane)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-conversation-shell .source-dockview-attached-panel.conversation-active-pane)', 'grid-auto-rows: max-content', dockviewShellSource);
+assertDeclaration('.conversation-active-pane', 'display: grid');
+assertDeclaration('.conversation-active-pane', 'overflow-y: auto');
+assertDeclaration('.conversation-activity-list', 'grid-template-rows: minmax(0, 1fr)');
 assert.ok(pageSource.includes('pasteCleanupModeStorageKey'), 'Clipboard cleanup should persist its cleanup mode');
 assert.ok(pageSource.includes('pasteCleanupHistoryStorageKey'), 'Clipboard cleanup should persist recent cleaned/reply history');
 assert.ok(pageSource.includes('sidePaneWidthStorageKey'), 'Source shell should persist the side pane width');
@@ -538,7 +726,7 @@ assert.ok(
   pageSource.includes("const hideableDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser']"),
   'Source shell should let the Activity pane collapse like other dock panels'
 );
-assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-compact-chrome'"), 'Source shell should define the compact layout migration version');
+assert.ok(pageSource.includes("const sourceLayoutVersion = '2026-06-center-runtime-no-bottom-row'"), 'Source shell should define the center-only runtime Dockview migration version');
 assert.ok(pageSource.includes('const sourceTerminalApps'), 'Source shell should define reusable terminal app choices');
 assert.ok(pageSource.includes('let sourceActivityMode'), 'Source shell should track the active side pane mode');
 assert.ok(pageSource.includes('let sourceActivityFilter'), 'Source shell should track the side pane activity filter');
@@ -555,6 +743,10 @@ assert.ok(pageSource.includes('visiblePasteCleanupHistory'), 'Clipboard cleanup 
 assert.ok(pageSource.includes('buildWorktreeSafetySummary'), 'Worktree UI should use the shared safety model');
 assert.ok(pageSource.includes('buildWorktreeCleanupBrief'), 'Worktree UI should use the shared cleanup brief model');
 assert.ok(pageSource.includes("from '$lib/worktreeCleanupPlan'"), 'Worktree UI should import the cleanup command planner');
+assert.ok(
+  pageSource.includes("from '$lib/worktreeCleanupRunbook'"),
+  'Worktree UI should import the pure cleanup runbook model'
+);
 assert.ok(pageSource.includes('function projectWorktreeCleanupPlan'), 'Worktree UI should derive a command-grade cleanup plan per worktree');
 assert.ok(
   pageSource.includes('formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree))'),
@@ -594,6 +786,23 @@ assert.ok(
 );
 assert.ok(pageSource.includes('let projectWorktreeSafetyStats'), 'Worktree context should summarize safety counts');
 assert.ok(pageSource.includes('let prioritizedProjectWorktrees'), 'Worktree context should derive prioritized worktrees');
+assert.ok(pageSource.includes('let projectWorktreeCleanupRunbook'), 'Worktree context should derive a pure cleanup runbook');
+assert.ok(
+  pageSource.includes('buildWorktreeCleanupRunbook({') &&
+    pageSource.includes('cleanupPlans: projectWorktreeCleanupPlans') &&
+    pageSource.includes('decisionQueue: projectWorktreeDecisionQueue') &&
+    pageSource.includes('safetySummaries: projectWorktreeRunbookSafetyInputs'),
+  'Worktree runbook should be built from existing cleanup plans, decision queue, and safety summaries'
+);
+assert.ok(
+  pageSource.includes('function copyProjectWorktreeCleanupRunbook'),
+  'Worktree context should expose a copy-only full runbook action'
+);
+assert.ok(
+  pageSource.includes('class="activity-worktree-runbook"') &&
+    pageSource.includes('aria-label="Worktree cleanup runbook controls"'),
+  'Worktree activity pane should expose the cleanup runbook summary where worktrees are browsed'
+);
 assert.ok(pageSource.includes('let sidePaneWidth'), 'Source shell should track the resizable side pane width');
 assert.ok(pageSource.includes('let contextPaneWidth'), 'Workspace should track the resizable side context pane width');
 assert.ok(pageSource.includes('const sidePaneCollapseThreshold'), 'Side pane resize should support drag-to-hide');
@@ -659,6 +868,33 @@ assert.ok(pageSource.includes('function fitEmbeddedTerminal'), 'Terminal dock sh
 assert.ok(pageSource.includes('readTerminalSessionScrollbackFromTauri'), 'Terminal dock should restore native PTY scrollback when attaching');
 assert.ok(pageSource.includes('function handleTerminalOutput'), 'Terminal dock should consume native PTY output events');
 assert.ok(pageSource.includes('function disposeEmbeddedTerminal'), 'Terminal dock should dispose xterm and PTY resources');
+assert.ok(
+  pageSource.includes('const embeddedTerminalDeferredFitDelays') &&
+    pageSource.includes('function scheduleEmbeddedTerminalFit') &&
+    pageSource.includes('function clearEmbeddedTerminalFitSchedule') &&
+    pageSource.includes('window.requestAnimationFrame') &&
+    pageSource.includes('window.clearTimeout(timer)'),
+  'Embedded terminal should refit after first paint and delayed font/container settling'
+);
+assert.ok(
+  sourceFunctionBlock(pageSource, 'dockPanelMoveTargets').includes("case 'terminal':") &&
+    sourceFunctionBlock(pageSource, 'dockPanelMoveTargets').includes("case 'browser':") &&
+    sourceFunctionBlock(pageSource, 'dockPanelMoveTargets').includes("return ['center'];") &&
+    sourceFunctionBlock(pageSource, 'showDockPanel').includes(
+      'applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));'
+    ) &&
+    !sourceFunctionBlock(pageSource, 'showDockPanel').includes(
+      "dockGroupIDForPanel(nextDockLayout, panelID) === 'bottom'"
+    ) &&
+    sourceFunctionBlock(pageSource, 'showDockPanel').includes("if (panelID === 'terminal')") &&
+    sourceFunctionBlock(pageSource, 'showDockPanel').includes('scheduleEmbeddedTerminalFit()'),
+  'Showing terminal or browser should route through the center-only runtime layout planner without bottom height recovery'
+);
+assert.ok(
+  pageSource.includes("if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();") &&
+    pageSource.includes("if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();"),
+  'Center and bottom Dockview layout changes should refit the embedded terminal'
+);
 assert.ok(pageSource.includes('function persistSourceDockLayout'), 'Workspace should persist source dock layout state');
 assert.ok(pageSource.includes('function loadStoredSourceDockLayout'), 'Workspace should restore source dock layout state');
 assert.ok(pageSource.includes('function captureCurrentWorkspaceSnapshot'), 'Workspace should capture the current conversation context');
@@ -1003,8 +1239,8 @@ assert.ok(
   pageSource.includes("class:context-top={contextPanelPlacement === 'top' && effectiveContextPaneVisible()}") &&
     pageSource.includes("class:context-side={contextPanelPlacement === 'side' && effectiveContextPaneVisible()}") &&
     pageSource.includes("class:context-bottom={contextPanelPlacement === 'bottom' && effectiveContextPaneVisible()}") &&
-    pageSource.includes("if (!shouldRenderDockPanel('context')) return false;"),
-  'Workspace context placement should require an active context dock plus the responsive effective visibility guard'
+    pageSource.includes("if (!sourceDockPanelVisible('context')) return false;"),
+  'Workspace context placement should keep visible context docks mounted for tabbed Dockview ownership'
 );
 assert.ok(pageSource.includes('class="workspace-arrangement"'), 'Workspace should wrap context and editor into a rearrangeable layout');
 assert.ok(pageSource.includes('class="context-identity-item"'), 'Workspace context identity should render as a compact status line');
@@ -1029,23 +1265,33 @@ assert.ok(pageSource.includes('aria-label="Copy worktree cleanup plan"'), 'Workt
 assert.ok(pageSource.includes('aria-label="Open worktree in source browser"'), 'Worktree rows should expose source-browser jumps');
 assert.ok(pageSource.includes('title="Open worktree in source browser"'), 'Worktree source-browser jumps should explain themselves');
 assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}'), 'Worktree rows should expose a recommended cleanup action');
-assert.ok(pageSource.includes('class="side-pane-resizer"'), 'Source shell should render a side pane resizer');
-assert.ok(pageSource.includes('aria-label="Resize side pane"'), 'Side pane resizer should be labeled');
-assert.ok(pageSource.includes('class="context-pane-resizer"'), 'Workspace should render a context pane resizer');
-assert.ok(pageSource.includes('aria-label="Resize context pane"'), 'Context pane resizer should be labeled');
-assert.ok(pageSource.includes('class="bottom-dock-resizer"'), 'Workspace should render a bottom dock resizer');
-assert.ok(pageSource.includes('aria-label="Resize bottom dock"'), 'Bottom dock resizer should be labeled');
+assert.ok(pageSource.includes("import SourcePaneResizer from '$lib/SourcePaneResizer.svelte'"), 'Source shell should import the shared pane resizer');
+assert.ok(sourcePaneResizerSource.includes('type SourcePaneResizerOrientation ='), 'Shared pane resizer should define explicit orientation values');
+assert.ok(sourcePaneResizerSource.includes('aria-label={ariaLabel}'), 'Shared pane resizer should render its accessible label');
+assert.ok(sourcePaneResizerSource.includes('data-pane-resizer={orientation}'), 'Shared pane resizer should expose orientation for layout diagnostics');
+assert.ok(pageSource.includes('className="side-pane-resizer"'), 'Source shell should render a side pane resizer');
+assert.ok(pageSource.includes('ariaLabel="Resize side pane"'), 'Side pane resizer should be labeled');
+assert.ok(
+  pageSource.includes("if (event.key === 'Enter' || event.key === ' ')") &&
+    pageSource.includes('toggleActivityPaneRail();'),
+  'Side pane resizer should toggle the activity rail from keyboard activation'
+);
+assert.ok(pageSource.includes('ondblclick={toggleActivityPaneRail}'), 'Side pane resizer should toggle the activity rail on double click');
+assert.ok(pageSource.includes('className="context-pane-resizer"'), 'Workspace should render a context pane resizer');
+assert.ok(pageSource.includes('ariaLabel="Resize context pane"'), 'Context pane resizer should be labeled');
+assert.ok(pageSource.includes("orientation={contextPanelPlacement === 'bottom' ? 'horizontal' : 'vertical'}"), 'Context pane resizer should expose side/bottom orientation');
+assert.ok(!pageSource.includes('className="bottom-dock-resizer"'), 'Workspace should not render the retired bottom runtime dock resizer');
+assert.ok(!pageSource.includes('ariaLabel="Resize bottom dock"'), 'Retired bottom runtime dock resizer should not be labeled in the template');
 assert.ok(pageSource.includes('context-card-close'), 'Workspace context cards should render per-card close controls');
 assert.ok(pageSource.includes('class="context-restore-button"'), 'Workspace should render hidden-card restore when needed');
-assert.ok(pageSource.includes('class="context-stack-tabs"'), 'Workspace should render tabs for stacked context cards');
-assert.ok(pageSource.includes('aria-label="Context card tabs"'), 'Stacked context tabs should be accessible');
+assert.ok(pageSource.includes('class="context-stack-tabs"'), 'Workspace should keep compact context tabs for rail mode');
+assert.ok(pageSource.includes('aria-label="Context card tabs"'), 'Rail context tabs should be accessible');
 assert.ok(pageSource.includes('class="terminal-launchpad"'), 'Workspace should render a terminal launchpad dock');
 assert.ok(pageSource.includes('aria-label="Terminal dock"'), 'Terminal launchpad should be accessible');
 assert.ok(pageSource.includes('aria-label="Terminal dock app"'), 'Terminal launchpad should expose terminal app selection');
 assert.ok(pageSource.includes('aria-label="Embedded terminal"'), 'Terminal launchpad should render an embedded terminal surface');
-assert.ok(pageSource.includes('aria-label="Embedded terminal command"'), 'Terminal launchpad should expose a compact command runner');
-assert.ok(pageSource.includes('onsubmit={submitEmbeddedTerminalCommand}'), 'Terminal command runner should submit commands without extra chrome');
-assert.ok(pageSource.includes('aria-label="Embedded terminal sessions"'), 'Terminal launchpad should list embedded PTY sessions');
+assert.ok(!pageSource.includes('aria-label="Embedded terminal command"'), 'Terminal launchpad should not spend tab height on a redundant command runner');
+assert.ok(!pageSource.includes('aria-label="Embedded terminal sessions"'), 'Terminal launchpad should not repeat embedded PTY session cards');
 assert.ok(pageSource.includes('bind:this={embeddedTerminalElement}'), 'Embedded terminal should bind its xterm host');
 assert.ok(pageSource.includes('aria-label="Start embedded terminal"'), 'Terminal launchpad should start embedded sessions');
 assert.ok(pageSource.includes('onclick={attachOrStartProjectEmbeddedTerminal}'), 'Terminal launchpad project button should attach before starting duplicate project PTYs');
@@ -1062,17 +1308,21 @@ assert.ok(pageSource.includes('await attachEmbeddedTerminalSession(matchingSessi
 assert.ok(pageSource.includes('function workspaceSnapshotForEmbeddedTerminalSession'), 'Embedded terminal sessions should resolve matching workspace snapshots');
 assert.ok(pageSource.includes('function embeddedTerminalSessionFocusPlan'), 'Embedded terminal sessions should expose copyable focus plans');
 assert.ok(pageSource.includes('function restoreEmbeddedTerminalSessionWorkspace'), 'Embedded terminal sessions should restore their matching workspace snapshot');
-assert.ok(pageSource.includes('embeddedTerminalSessionMetaLabel(session)'), 'Embedded terminal rows should show saved workspace state inline');
-assert.ok(pageSource.includes('title={embeddedTerminalSessionFocusPlan(session)}'), 'Embedded terminal rows should expose the full focus plan as hover context');
-assert.ok(pageSource.includes('aria-label="Attach embedded terminal session"'), 'Terminal launchpad should attach embedded sessions');
-assert.ok(pageSource.includes('aria-label="Close listed embedded terminal session"'), 'Terminal launchpad should close listed embedded sessions');
-assert.ok(pageSource.includes('aria-label="Resume agent from terminal dock"'), 'Terminal launchpad should resume agents');
-assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Terminal launchpad should run agent resumes inside the embedded PTY');
-assert.ok(pageSource.includes('aria-label="Open worktree from terminal dock"'), 'Terminal launchpad should open worktrees');
-assert.ok(pageSource.includes('onclick={() => openPathEmbeddedTerminal(worktree.path)}'), 'Terminal worktree shortcuts should open embedded worktree shells');
-assert.ok(pageSource.includes('onclick={() => openPathEmbeddedTerminal(context.cwd)}'), 'Terminal runtime shortcuts should open embedded shells at active context cwd');
-assert.ok(pageSource.includes('onclick={() => openWorkspaceSnapshotEmbeddedTerminal(snapshot)}'), 'Saved workspace shortcuts should open embedded snapshot shells');
-assert.ok(pageSource.includes('onclick={() => resumeAgentSessionEmbeddedTerminal(session)}'), 'Conversation shortcuts should resume agents inside embedded terminals');
+assert.ok(pageSource.includes('embeddedTerminalSessionWorkspaceLabel(session)'), 'Embedded terminal commands should show saved workspace state');
+assert.ok(pageSource.includes('copyEmbeddedTerminalSessionFocusPlan(session)'), 'Embedded terminal commands should expose copyable focus plans');
+assert.ok(pageSource.includes('id: `terminal-attach-${session.sessionId}`'), 'Command palette should attach embedded sessions');
+assert.ok(pageSource.includes('id: `terminal-close-${session.sessionId}`'), 'Command palette should close listed embedded sessions');
+assert.ok(pageSource.includes('id: `terminal-embedded-resume-${session.provider}-${session.id}`'), 'Command palette should resume agents in embedded terminals');
+assert.ok(pageSource.includes('perform: () => resumeAgentSessionEmbeddedTerminal(session)'), 'Terminal commands should run agent resumes inside the embedded PTY');
+assert.ok(pageSource.includes('aria-label="Open worktree in embedded terminal"'), 'Worktree row menu should open worktrees in embedded terminals');
+assert.ok(pageSource.includes('openPathEmbeddedTerminal(worktree.path);'), 'Worktree row menu should open embedded worktree shells');
+assert.ok(pageSource.includes('openActivityTerminalPath(context.cwd);'), 'Runtime row menu should open active context cwd in the configured terminal app');
+assert.ok(
+  pageSource.includes('openWorkspaceSnapshotEmbeddedTerminal(snapshot);'),
+  'Saved workspace shortcuts should open embedded snapshot shells'
+);
+assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'), 'Conversation row menu should expose embedded terminal resume');
+assert.ok(pageSource.includes('resumeAgentSessionEmbeddedTerminal(session);'), 'Conversation shortcuts should resume agents inside embedded terminals');
 assert.ok(pageSource.includes('disabled={!selectedProject.path || embeddedTerminalStarting}'), 'Terminal dock should allow a new embedded session while another session is active');
 assert.ok(!pageSource.includes('Stop or attach a matching terminal before resume'), 'Agent resume should start a matching embedded session instead of blocking on another cwd');
 assert.ok(pageSource.includes('aria-label="Browser dock"'), 'Workspace should render a browser dock');
@@ -1244,11 +1494,13 @@ assert.ok(pageSource.includes('aria-label="Run loop tally"'), 'Run loop tally sh
 assert.ok(pageSource.includes("selectContextPanelMode('grid')"), 'Context layout controls should select grid mode');
 assert.ok(pageSource.includes("selectContextPanelMode('stack')"), 'Context layout controls should select stack mode');
 assert.ok(pageSource.includes('function contextCardsTabbed()'), 'Context cards should centralize tabbed lane behavior');
-assert.ok(pageSource.includes("return contextPanelMode === 'stack' || contextPanelPlacement === 'side'"), 'Side context cards should render as a single tabbed lane');
-assert.ok(pageSource.includes('class:stacked={contextCardsTabbed()}'), 'Context card grid should support stacked layout');
+assert.ok(pageSource.includes("mode === 'stack' || placement === 'side' ? 'tabs' : 'grid'"), 'Side context cards should render as a single tabbed lane');
+assert.ok(pageSource.includes('class:stacked={contextCardsStacked()}'), 'Context card grid should support stacked layout');
+assert.ok(pageSource.includes('function contextCardsUseDockviewTabs()'), 'Expanded tabbed context cards should centralize Dockview routing');
+assert.ok(pageSource.includes('class:dockview-card-tabs={contextCardsUseDockviewTabs()}'), 'Expanded tabbed context cards should use the Dockview card tab surface');
 assert.ok(pageSource.includes('class="editor-insight-resizer"'), 'Editor shell should render an inspector resizer');
 assert.ok(pageSource.includes('aria-label="Resize editor insights"'), 'Inspector resizer should be labeled');
-assert.ok(pageSource.includes("class:insights-hidden={editorInsightCollapsed || !shouldRenderDockPanel('insights')}"), 'Editor shell should remove the inspector from layout when collapsed or another dock tab is active');
+assert.ok(pageSource.includes('class:insights-hidden={!editorInsightsDockColumnVisible()}'), 'Editor shell should remove the inspector from layout when collapsed or when the right Dockview owns the tab');
 assert.ok(pageSource.includes('class="editor-canvas"'), 'Editor shell should wrap Monaco in a canvas for overlays');
 assert.ok(pageSource.includes('class="editor-lookup-popover"'), 'Editor shell should render inline lookup results over the editor');
 assert.ok(pageSource.includes("showEditorInsightPanel('git')"), 'Editor actions should reopen the Git inspector');
@@ -1284,10 +1536,14 @@ assert.ok(pageSource.includes('function persistPasteCleanupHistory'), 'Paste cle
 assert.ok(pageSource.includes('function clearPasteCleanupInput'), 'Paste cleanup should share clear behavior between UI and commands');
 assert.ok(pageSource.includes('function clearPasteCleanupReplyDraft'), 'Paste cleanup should clear reply drafts from commands');
 assert.ok(pageSource.includes('function setPasteCleanupMode'), 'Paste cleanup should share mode switching between UI and commands');
-assert.ok(pageSource.includes('class="activity-row-actions"'), 'Activity rows should render compact action controls');
+assert.ok(
+  pageSource.includes('activity-row-actions') && pageSource.includes('row-action-menu-anchor'),
+  'Activity rows should render compact menu action controls'
+);
 assert.ok(pageSource.includes('placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}'), 'Activity filter placeholder should be dynamic');
 assert.ok(pageSource.includes('aria-label="Filter workspace activity"'), 'Activity filter should be accessible');
-assert.ok(pageSource.includes('filteredProjectAgentSessions'), 'Activity panels should filter conversation and agent rows');
+assert.ok(pageSource.includes('filteredConversationAgentSessions'), 'Conversations should filter the full local thread list');
+assert.ok(pageSource.includes('filteredProjectAgentSessions'), 'Agent rows should stay scoped to the selected project');
 assert.ok(pageSource.includes('filteredProjectOrchestrationRuns'), 'Activity panels should filter orchestration run rows');
 assert.ok(pageSource.includes('listOrchestrationRunsFromTauri'), 'Source page should load orchestration runs from the native event store');
 assert.ok(pageSource.includes('class="run-ingest-strip"'), 'Runs mode should render compact orchestration ingest controls');
@@ -1358,10 +1614,7 @@ assert.ok(pageSource.includes('aria-label="Copy agent focus plan"'), 'Agent rows
 assert.ok(pageSource.includes('aria-label="Open agent workspace"'), 'Agent rows should restore or save the session workspace directly');
 assert.ok(pageSource.includes('aria-label="Copy agent workspace repair plan"'), 'Agent rows should expose missing-worktree repair plans');
 assert.ok(pageSource.includes('aria-label="Resume agent in embedded terminal"'), 'Agent rows should expose one-click embedded terminal resume');
-assert.ok(pageSource.includes('class="terminal-launchpad-row terminal-agent-row"'), 'Terminal agent shortcuts should support a second focus-plan action');
-assert.ok(pageSource.includes('Copy terminal agent focus plan'), 'Terminal agent shortcuts should expose focus plan copy');
-assert.ok(pageSource.includes('Copy terminal agent repair plan'), 'Terminal agent shortcuts should switch to repair-plan copy for missing worktrees');
-assert.ok(pageSource.includes("sessionReadiness?.label ?? 'No saved workspace'"), 'Terminal agent shortcuts should show saved workspace readiness');
+assert.ok(!pageSource.includes('class="terminal-launchpad-row terminal-agent-row"'), 'Terminal tab should not duplicate agent shortcut rows');
 assert.ok(pageSource.includes('aria-label="Saved workspace snapshots"'), 'Conversations activity should render saved workspace snapshots');
 assert.ok(pageSource.includes('class={`workspace-snapshot-readiness ${readiness.tone}`}'), 'Saved workspace rows should show compact restore readiness');
 assert.ok(pageSource.includes('{readiness.label} · {readiness.detail}'), 'Saved workspace rows should explain restore readiness');
@@ -1372,11 +1625,20 @@ assert.ok(pageSource.includes('aria-label="Save current workspace snapshot"'), '
 assert.ok(pageSource.includes('aria-label="Resume workspace snapshot in embedded terminal"'), 'Saved workspace rows should launch their resume command in the embedded terminal');
 assert.ok(pageSource.includes('aria-label="Copy workspace restore plan"'), 'Saved workspace rows should expose restore-plan copy');
 assert.ok(pageSource.includes('aria-label="Copy workspace repair plan"'), 'Saved workspace rows should expose repair-plan copy for missing worktrees');
-assert.ok(pageSource.includes('onclick={() => openWorkspaceSnapshotPath(snapshot)}'), 'Saved workspace rows should use guarded path open');
-assert.ok(pageSource.includes('onclick={() => openWorkspaceSnapshotPathTerminal(snapshot)}'), 'Saved workspace rows should use guarded terminal open');
+assert.ok(pageSource.includes('openWorkspaceSnapshotPath(snapshot);'), 'Saved workspace rows should use guarded path open');
+assert.ok(pageSource.includes('openWorkspaceSnapshotPathTerminal(snapshot);'), 'Saved workspace rows should use guarded terminal open');
 assert.ok(pageSource.includes('aria-label="Delete workspace snapshot"'), 'Saved workspace rows should expose snapshot removal');
 assert.ok(pageSource.includes('aria-label="Open conversation workspace"'), 'Conversation row body should open that session workspace');
 assert.ok(pageSource.includes('class="activity-session-row conversation-session-row"'), 'Conversation rows should use a compact clickable row layout');
+assert.ok(pageSource.includes('conversation-switch-action'), 'Conversation rows should expose a visible switch action');
+assert.ok(
+  pageSource.includes('aria-label={`Run conversation switch action: ${sessionFocusLane.title}`}'),
+  'Conversation switch action should describe the focus-lane operation'
+);
+assert.ok(
+  pageSource.includes('onclick={() => runAgentSessionFocusLane(session, sessionFocusLane)}'),
+  'Conversation switch action should use the shared focus-lane behavior'
+);
 assert.ok(pageSource.includes('aria-label="Save conversation workspace snapshot"'), 'Conversation rows should capture their session workspace');
 assert.ok(pageSource.includes('aria-label="Restore conversation workspace"'), 'Conversation rows should restore their saved session workspace');
 assert.ok(pageSource.includes('aria-label="Copy conversation workspace restore plan"'), 'Conversation rows should copy their saved workspace restore plan');
@@ -1483,7 +1745,39 @@ assert.ok(
   pageSource.includes('tiny source scan'),
   'Still-tiny scans after repair should keep an explicit runtime label'
 );
-assert.ok(pageSource.includes('class="scan-summary"'), 'Source tree should render the scan summary below the heading');
+assert.ok(
+  pageSource.includes('sourceSidebarIndexStatusLabel'),
+  'Source tree should render a compact index status below the heading'
+);
+assert.ok(
+  pageSource.includes('sourceSidebarScanMetaLabel'),
+  'Source tree should render compact scan metadata below the heading'
+);
+assert.ok(
+  pageSource.includes('sourceSidebarCompactStatusLabel = $derived(sourceSidebarCompactStatus())'),
+  'Source tree should derive one compact count and scan-status line instead of repeating counts'
+);
+assert.ok(
+  pageSource.includes('sourceSidebarScanTelemetryExpanded = $derived(sourceSidebarScanTelemetryShouldExpand())') &&
+    pageSource.includes('sourceRuntimeNoticeExpanded = $derived(sourceRuntimeNoticeShouldExpand())'),
+  'Source tree should expand scan telemetry and runtime notes only when they need attention'
+);
+assert.ok(
+  !pageSource.includes('let recordCountLabel'),
+  'Source tree should not keep a second derived record-count label after the compact header merge'
+);
+assert.ok(pageSource.includes('function compactCountValue('), 'Activity rail should compact large count badges');
+assert.ok(
+  pageSource.includes('function sourceActivityBadgeVisible(') &&
+    pageSource.includes('return sourceActivityMode === mode && sourceActivityCount(mode) > 0;'),
+  'Activity rail badges should only render for the active non-empty view'
+);
+assert.ok(
+  pageSource.includes("title={sourceActivityButtonTitle('files')}") &&
+    pageSource.includes("{#if sourceActivityBadgeVisible('files')}") &&
+    pageSource.includes("sourceActivityCountLabel('files')"),
+  'Activity rail file counts should move to the title plus active compact badge path'
+);
 assert.ok(pageSource.includes('class="scan-health-note"'), 'Source tree should render compact scan health guidance');
 assert.ok(pageSource.includes('sourceRuntimeNotice'), 'Source tree should derive a compact native/browser runtime notice');
 assert.ok(pageSource.includes('class="scan-runtime-note"'), 'Source tree should render native/browser runtime guidance');
@@ -1499,6 +1793,34 @@ assert.ok(
 );
 assertDeclaration('.scan-summary', 'overflow: hidden');
 assertDeclaration('.scan-summary', 'text-overflow: ellipsis');
+assert.ok(
+  pageSource.includes('.scan-summary .index-summary,\n  .scan-summary .scan-evidence') &&
+    pageSource.includes('.scan-summary .scan-evidence') &&
+    pageSource.includes('flex: 1 1 0;'),
+  'Source tree summary should keep the index status and scan evidence on one truncating line'
+);
+assert.ok(
+  !blockFor('.scan-summary .index-summary').includes('flex: 0 0 auto'),
+  'Source tree index status should be allowed to shrink so scan metadata remains visible'
+);
+assertDeclaration('.scan-summary .index-summary', 'max-width: min(42%, 150px)');
+assert.ok(
+  pageSource.includes('.scan-summary .scan-evidence {\n    flex: 1 1 0;\n  }'),
+  'Source tree scan evidence should keep the flexible remaining lane'
+);
+assertDeclaration(
+  '.scan-summary .index-summary,\n  .scan-summary .scan-evidence',
+  'text-overflow: ellipsis'
+);
+assertDeclaration('.activity-rail button strong', 'max-width: 30px');
+assertDeclaration('.activity-rail button strong', 'font-size: 9px');
+assert.ok(pageSource.includes('function toggleActivityPaneRail'), 'Activity rail should expose a direct collapse/expand toggle');
+assert.ok(pageSource.includes('function activityRailToggleLabel'), 'Activity rail toggle should derive an accessible label');
+assert.ok(pageSource.includes('function activityRailToggleDirection'), 'Activity rail toggle should mirror side-pane direction');
+assert.ok(pageSource.includes('data-testid="activity-rail-toggle"'), 'Activity rail should expose a stable collapse/expand hook');
+assert.ok(pageSource.includes('onclick={toggleActivityPaneRail}'), 'Activity rail toggle should use the shared rail transition path');
+assertDeclaration('.activity-rail button.activity-rail-toggle', 'margin-top: auto');
+assertDeclaration('.activity-rail button.activity-rail-toggle', 'border-color: rgba(92, 226, 207, 0.18)');
 assertDeclaration('.scan-runtime-note', 'grid-template-columns: minmax(0, 1fr) auto');
 assertDeclaration('.scan-runtime-note span', 'text-overflow: ellipsis');
 assertDeclaration('.scan-health-note', 'grid-template-columns: minmax(0, 1fr) auto');
@@ -1616,6 +1938,15 @@ assert.ok(editorSource.includes('basic-languages/php/php.contribution'), 'Editor
 assert.ok(editorSource.includes('basic-languages/protobuf/protobuf.contribution'), 'Editor should load Protobuf highlighting');
 assert.ok(editorSource.includes('automaticLayout: false'), 'Editor should avoid Monaco automatic ResizeObserver layout');
 assert.ok(editorSource.includes('layoutObserver = new ResizeObserver'), 'Editor should own a deferred layout observer');
+assert.ok(
+  editorSource.includes('const mountHost = host') &&
+    editorSource.includes('function waitForConnectedMountHost') &&
+    editorSource.includes('componentDestroyed ||') &&
+    editorSource.includes('host !== mountHost') &&
+    editorSource.includes('mountHost.isConnected') &&
+    editorSource.includes('monaco.editor.create(mountHost'),
+  'Editor should not create Monaco against a stale or detached host during Dockview/HMR reparenting'
+);
 assert.ok(editorSource.includes('editable?: boolean'), 'Editor should expose an editable mode prop');
 assert.ok(editorSource.includes('content?: string'), 'Editor should allow external draft content');
 assert.ok(
@@ -1641,7 +1972,14 @@ assert.ok(
   pageSource.includes('class:dirty={isSourcePathDirty(tab.path)}'),
   'Source tabs should show dirty state per path'
 );
-assert.ok(pageSource.includes('class="tab-dirty-dot"'), 'Dirty tabs should include a compact dirty marker');
+assert.ok(
+  pageSource.includes("return `${isSourcePathDirty(tab.path) ? '* ' : ''}${tab.fileName}`;"),
+  'Dirty Dockview file tabs should include a compact dirty marker in the tab title'
+);
+assert.ok(
+  pageSource.includes('· modified'),
+  'Inactive dirty Dockview file panels should preserve a visible modified marker'
+);
 assert.ok(pageSource.includes('aria-label="Save source file"'), 'Editor toolbar should expose save');
 assert.ok(pageSource.includes('aria-label="Revert source file"'), 'Editor toolbar should expose revert');
 assert.ok(
@@ -1696,6 +2034,14 @@ assert.ok(
 assert.ok(
   editorSource.includes('registerReferenceProvider'),
   'Editor should expose native references to Monaco peek'
+);
+assert.ok(
+  editorSource.includes('registerSourceCodeLensProvider'),
+  'Editor should register native reference CodeLens counts with Monaco'
+);
+assert.ok(
+  editorSource.includes('registerCodeLensProvider'),
+  'Editor should expose VS Code-style reference counts above symbols'
 );
 assert.ok(
   editorSource.includes('registerSourceDocumentHighlightProvider'),
@@ -1839,6 +2185,10 @@ assert.ok(
   'Editor should return native reference targets to Monaco'
 );
 assert.ok(
+  editorSource.includes('onReferenceCountLookup?: SourceEditorReferenceCountLookup'),
+  'Editor should support quiet reference counts for CodeLens without opening result drawers'
+);
+assert.ok(
   editorSource.includes('onImplementationLookup?: SourceEditorImplementationLookup'),
   'Editor should return native implementation targets to Monaco'
 );
@@ -1878,6 +2228,41 @@ assert.ok(editorSource.includes('getWordAtPosition'), 'Editor should read the sy
 assert.ok(editorSource.includes('editor.action.showHover'), 'Editor should expose a hover command');
 assert.ok(editorSource.includes('editor.action.revealDefinition'), 'Editor should expose go-to-definition');
 assert.ok(editorSource.includes('editor.action.referenceSearch.trigger'), 'Editor should expose Monaco reference search');
+assert.ok(
+  editorSource.includes('standalone/browser/referenceSearch/standaloneReferenceSearch'),
+  'Editor should load Monaco standalone reference-search widget support'
+);
+assert.ok(
+  sourceFunctionBlock(editorSource, 'showCodeLensReferences').includes('onReferenceLookup?.(request)') &&
+    sourceFunctionBlock(editorSource, 'showCodeLensReferences').includes('ensureSourceTargetModels') &&
+    sourceFunctionBlock(editorSource, 'showCodeLensReferences').includes('editor.action.peekLocations') &&
+    sourceFunctionBlock(editorSource, 'showCodeLensReferences').includes('if (!commandService)') &&
+    sourceFunctionBlock(editorSource, 'showCodeLensReferences').includes('requestReferencesAtPosition(position)'),
+  'CodeLens reference links should resolve explicit locations, open Monaco reference peek directly, and fall back to position-specific reference search'
+);
+assert.ok(
+  sourceFunctionBlock(editorSource, 'requestReferencesAtPosition').includes('editor.setPosition(position)') &&
+    sourceFunctionBlock(editorSource, 'requestReferencesAtPosition').includes('requestReferencesAtCursor()') &&
+    sourceFunctionBlock(editorSource, 'requestReferencesAtCursor').includes('editor.action.referenceSearch.trigger'),
+  'CodeLens fallback reference search should keep Monaco focused at the clicked symbol position'
+);
+assert.ok(
+  sourceFunctionBlock(editorSource, 'sourceSymbolToLookupRequest').includes('symbol.detail.lastIndexOf(symbol.name)') &&
+    sourceFunctionBlock(editorSource, 'sourceSymbolToLookupRequest').includes('symbol.column + symbolNameOffset'),
+  'CodeLens reference links should target the symbol-name column, not the declaration modifier column'
+);
+assert.ok(
+  !sourceFunctionBlock(editorSource, 'showCodeLensReferences').includes('editor.action.showReferences'),
+  'CodeLens reference links should avoid Monaco private showReferences command wiring'
+);
+assert.ok(
+  sourceFunctionBlock(editorSource, 'installExternalEditorOpener').includes('monaco.editor.registerEditorOpener') &&
+    sourceFunctionBlock(editorSource, 'installExternalEditorOpener').includes('editor.setModel(targetModel)') &&
+    sourceFunctionBlock(editorSource, 'installExternalEditorOpener').includes('queueMicrotask') &&
+    sourceFunctionBlock(editorSource, 'installExternalEditorOpener').includes('onExternalNavigation({ path, ...location })') &&
+    !editorSource.includes('_codeEditorService'),
+  'Cross-file Monaco reference navigation should use the public editor opener and sync app navigation asynchronously'
+);
 assert.ok(editorSource.includes('editor.action.goToImplementation'), 'Editor should expose go-to-implementation');
 assert.ok(editorSource.includes('editor.action.goToTypeDefinition'), 'Editor should expose go-to-type-definition');
 assert.ok(editorSource.includes('editor.action.formatDocument'), 'Editor should expose format-document');
@@ -1927,6 +2312,7 @@ assert.ok(pageSource.includes('requestSourceIntelligenceAction'), 'Source page s
 assert.ok(pageSource.includes('findSourceDefinitionsFromTauri'), 'Source page should call native project definition lookup');
 assert.ok(pageSource.includes('findSourceLspDefinitionsFromTauri'), 'Source page should try LSP definition lookup before project index lookup');
 assert.ok(pageSource.includes('findSourceLspReferencesFromTauri'), 'Source page should try LSP reference lookup before project index lookup');
+assert.ok(pageSource.includes('function countSourceReferencesForCodeLens'), 'Source page should expose quiet CodeLens reference counting');
 assert.ok(pageSource.includes('findSourceLspImplementationsFromTauri'), 'Source page should use LSP implementation lookup');
 assert.ok(pageSource.includes('findSourceLspTypeDefinitionsFromTauri'), 'Source page should use LSP type-definition lookup');
 assert.ok(pageSource.includes('findSourceLspDocumentHighlightsFromTauri'), 'Source page should use LSP document highlights');
@@ -1984,10 +2370,31 @@ assert.ok(pageSource.includes("event.key === '['"), 'Window shortcuts should bin
 assert.ok(pageSource.includes("event.key === ']'"), 'Window shortcuts should bind Cmd+] for source forward navigation');
 assert.ok(pageSource.includes('function runSourceDefinitionLookup'), 'Source page should expose project definition lookup');
 assert.ok(pageSource.includes('function runSourceReferenceLookup'), 'Source page should expose project reference lookup');
+assert.ok(pageSource.includes('function findSourceDefinitionTargetsForEditor'), 'Monaco definition provider should have a quiet lookup path');
+assert.ok(pageSource.includes('function findSourceReferenceTargetsForEditor'), 'Monaco reference provider should have a quiet lookup path');
+assert.ok(pageSource.includes('function findSourceImplementationTargetsForEditor'), 'Monaco implementation provider should have a quiet lookup path');
+assert.ok(pageSource.includes('function findSourceTypeDefinitionTargetsForEditor'), 'Monaco type-definition provider should have a quiet lookup path');
 assert.ok(pageSource.includes('function runSourceImplementationLookup'), 'Source page should expose implementation lookup');
 assert.ok(pageSource.includes('function runSourceTypeDefinitionLookup'), 'Source page should expose type-definition lookup');
 assert.ok(pageSource.includes('function handleEditorDefinitionLookup'), 'Source page should receive editor definition lookup requests');
 assert.ok(pageSource.includes('function handleEditorReferenceLookup'), 'Source page should receive editor reference lookup requests');
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'handleEditorDefinitionLookup').includes('runSourceDefinitionLookup'),
+  'Monaco definition lookups should not open the app lookup surface'
+);
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'handleEditorReferenceLookup').includes('runSourceReferenceLookup'),
+  'Monaco reference lookups should not open the app lookup surface before the Monaco popup'
+);
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'handleEditorImplementationLookup').includes('runSourceImplementationLookup'),
+  'Monaco implementation lookups should not open the app lookup surface before the Monaco popup'
+);
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'handleEditorTypeDefinitionLookup').includes('runSourceTypeDefinitionLookup'),
+  'Monaco type-definition lookups should not open the app lookup surface before the Monaco popup'
+);
+assert.ok(pageSource.includes('function handleEditorReferenceCountLookup'), 'Source page should receive quiet CodeLens reference count requests');
 assert.ok(pageSource.includes('function handleEditorDocumentHighlightLookup'), 'Source page should receive editor document highlight requests');
 assert.ok(pageSource.includes('function handleEditorImplementationLookup'), 'Source page should receive editor implementation lookup requests');
 assert.ok(pageSource.includes('function handleEditorTypeDefinitionLookup'), 'Source page should receive editor type-definition lookup requests');
@@ -2004,6 +2411,11 @@ assert.ok(pageSource.includes('workspaceEditSourceRecordsByPath'), 'Source page 
 assert.ok(pageSource.includes('function handleEditorWorkspaceEditAction'), 'Source page should stage selected quick-fix workspace edits');
 assert.ok(pageSource.includes('onDefinitionLookup={handleEditorDefinitionLookup}'), 'Editor should be wired to project definition lookup');
 assert.ok(pageSource.includes('onReferenceLookup={handleEditorReferenceLookup}'), 'Editor should be wired to project reference lookup');
+assert.ok(
+  !pageSource.includes('editorNavPanel === null && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery'),
+  'Reference lookups should not trigger the app inline lookup popover before Monaco peek references'
+);
+assert.ok(pageSource.includes('onReferenceCountLookup={handleEditorReferenceCountLookup}'), 'Editor should be wired to quiet CodeLens reference counting');
 assert.ok(pageSource.includes('onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}'), 'Editor should be wired to LSP document highlights');
 assert.ok(pageSource.includes('onImplementationLookup={handleEditorImplementationLookup}'), 'Editor should be wired to LSP implementation lookup');
 assert.ok(pageSource.includes('onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}'), 'Editor should be wired to LSP type-definition lookup');
@@ -2055,8 +2467,22 @@ assert.ok(pageSource.includes('class="editor-local-nav"'), 'Editor should render
 assert.ok(pageSource.includes('class="editor-nav-drawer"'), 'Editor should render a compact local navigation drawer');
 assert.ok(pageSource.includes("onProblemsRequest={() => openEditorNavPanel('problems')}"), 'Editor problem shortcuts should open the local drawer');
 assert.ok(pageSource.includes("onSymbolsRequest={() => openEditorNavPanel('symbols')}"), 'Editor Cmd+Shift+O should open the local symbols drawer');
-assert.ok(pageSource.includes("openEditorNavPanel('definitions')"), 'Definition lookups should open the local definitions drawer');
-assert.ok(pageSource.includes("openEditorNavPanel('references')"), 'Reference lookups should open the local references drawer');
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'runSourceDefinitionLookup').includes("openEditorNavPanel('definitions')"),
+  'Definition lookups should populate results without opening the displacing local drawer'
+);
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'runSourceReferenceLookup').includes("openEditorNavPanel('references')"),
+  'Reference lookups should populate results without opening the displacing local drawer'
+);
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'runSourceImplementationLookup').includes("openEditorNavPanel('definitions')"),
+  'Implementation lookups should populate results without opening the displacing local drawer'
+);
+assert.ok(
+  !sourceFunctionBlock(pageSource, 'runSourceTypeDefinitionLookup').includes("openEditorNavPanel('definitions')"),
+  'Type-definition lookups should populate results without opening the displacing local drawer'
+);
 assert.ok(pageSource.includes('editorNavPanel === null &&'), 'Collapsed lookup popover should not duplicate the local drawer');
 assertDeclaration('.editor-local-nav', 'grid-template-columns: repeat(4, minmax(0, 1fr))');
 assertDeclaration('.editor-local-nav', 'height: 24px');
@@ -2067,24 +2493,196 @@ assertDeclaration('.editor-nav-drawer', 'grid-template-rows: 28px minmax(0, 1fr)
 assertDeclaration('.editor-nav-drawer', 'max-height: 190px');
 assertDeclaration('.editor-nav-list', 'overflow-y: auto');
 assert.ok(pageSource.includes('source-intelligence-panel'), 'Source page should render language intelligence panel');
+assert.ok(pageSource.includes('sourceDockviewActivityHostAction'), 'Source page should mount a Dockview host for the Activity/sidebar pane slice');
 assert.ok(pageSource.includes('sourceDockviewInsightsHostAction'), 'Source page should mount a Dockview host for the first visible insights pane slice');
+assert.ok(pageSource.includes('sourceDockviewContextHostAction'), 'Source page should mount a Dockview host for the right context pane slice');
 assert.ok(pageSource.includes('sourceDockviewPanelAction'), 'Source page should register Svelte-owned pane DOM with Dockview');
+assert.ok(pageSource.includes("const sourceDockviewActivitySliceID: SourceDockviewMigrationSliceID = 'activity-only'"), 'Activity Dockview host should use the migration-slice registry');
+assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDockviewActivitySliceID)'), 'Activity Dockview host should derive panel options from the migration slice');
+assert.ok(pageSource.includes('sourceDockviewActivityPlanOptions.panelIDs ?? []'), 'Activity Dockview host should derive migrated panel membership from the slice helper');
+assert.ok(pageSource.includes('...sourceDockviewActivityPlanOptions'), 'Activity Dockview host should avoid creating editor placeholders through slice plan options');
+assert.ok(pageSource.includes('sourceDockviewActivityStorageKey'), 'Activity Dockview host should persist its tab layout separately');
 assert.ok(pageSource.includes("const sourceDockviewInsightsSliceID: SourceDockviewMigrationSliceID = 'insights-only'"), 'Insights Dockview host should use the migration-slice registry');
 assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDockviewInsightsSliceID)'), 'Insights Dockview host should derive panel options from the migration slice');
 assert.ok(pageSource.includes('sourceDockviewInsightsPlanOptions.panelIDs ?? []'), 'Insights Dockview host should derive migrated panel membership from the slice helper');
 assert.ok(pageSource.includes('...sourceDockviewInsightsPlanOptions'), 'Insights Dockview host should avoid creating editor placeholders through slice plan options');
 assert.ok(pageSource.includes('sourceDockviewInsightsStorageKey'), 'Insights Dockview host should use slice-specific persisted layout storage');
+assert.ok(pageSource.includes("const sourceDockviewContextSliceID: SourceDockviewMigrationSliceID = 'context-insights'"), 'Context Dockview host should use the context/insights migration slice');
+assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDockviewContextSliceID)'), 'Context Dockview host should derive panel options from the migration slice');
+assert.ok(pageSource.includes('sourceDockviewContextPlanOptions.panelIDs ?? []'), 'Context Dockview host should derive migrated panel membership from the slice helper');
+assert.ok(pageSource.includes('...sourceDockviewContextPlanOptions'), 'Context Dockview host should avoid creating editor placeholders through slice plan options');
+assert.ok(pageSource.includes('sourceDockviewContextStorageKey'), 'Context Dockview host should persist right-pane tab layout separately');
+assert.ok(pageSource.includes('sourceContextCardDockviewStorageKey'), 'Context cards should persist their nested Dockview tab layout separately');
+assert.ok(pageSource.includes('function sourceContextCardDockviewHostAction'), 'Context cards should mount a nested Dockview tab-stack host');
+assert.ok(pageSource.includes('function sourceContextCardDockviewPanelAction'), 'Context card panes should register DOM nodes with the nested Dockview host');
 assert.ok(
-  pageSource.includes('sourceDockviewStorageKey,') &&
-    pageSource.includes('window.localStorage.removeItem(sourceDockviewStorageKey);'),
-  'Source layout migration should import the legacy Dockview storage key before clearing it'
+  sourceFunctionBlock(pageSource, 'initializeSourceContextCardDockview').includes('hideContextCard(panelID);') &&
+    sourceFunctionBlock(pageSource, 'initializeSourceContextCardDockview').includes('selectActiveContextCard(panelID);'),
+  'Context card Dockview events should reuse the existing hide-card and active-card paths'
 );
-assert.ok(pageSource.includes('sourceDockviewLayoutOnlyContainsPanels'), 'Insights Dockview host should reject stale full-workspace snapshots');
+assert.ok(pageSource.includes('function sourceDockviewContextOwnsPanel'), 'Context Dockview host should arbitrate context/insights panel DOM ownership');
+assert.ok(pageSource.includes('function sourceDockviewActivityOwnsPanel'), 'Activity Dockview host should arbitrate Activity panel DOM ownership');
+assert.ok(pageSource.includes('function editorInsightsDockColumnVisible'), 'Editor-side insights should be gated separately from right Dockview tab ownership');
+assert.ok(pageSource.includes('function sourceIntelligencePanelMounted'), 'Insights DOM should remain mounted when the right Dockview owns it');
+assert.ok(pageSource.includes('class:insights-hidden={!editorInsightsDockColumnVisible()}'), 'Editor grid should not reserve an insights column while the right Dockview owns the tab');
+assert.ok(pageSource.includes("sourceDockviewContextOwnsPanel('insights')"), 'Insights mount visibility should account for right Dockview ownership');
+assert.ok(
+  sourceFunctionBlock(pageSource, 'syncSourceDockviewPanelElement').includes("panelID === 'activity' && sourceDockviewActivityOwnsPanel(panelID) ? element : null"),
+  'Activity panel DOM should be routed to the activity Dockview host only when Activity owns it'
+);
+assert.ok(
+  sourceFunctionBlock(pageSource, 'syncSourceDockviewPanelElement').includes('contextOwnsPanel ? element : null') &&
+    sourceFunctionBlock(pageSource, 'syncSourceDockviewPanelElement').includes("panelID === 'insights' && !contextOwnsPanel ? element : null"),
+  'Dockview panel DOM should be routed to exactly one context or insights host'
+);
+assert.ok(
+  sourceFunctionBlock(pageSource, 'sourceDockviewContextOwnsPanel').includes("if (panelID === 'context') return sourceDockPanelVisible('context');") &&
+    sourceFunctionBlock(pageSource, 'sourceDockviewContextOwnsPanel').includes("if (panelID !== 'insights') return false;") &&
+    sourceFunctionBlock(pageSource, 'sourceDockviewContextOwnsPanel').includes('return contextGroupID !== null && insightsGroupID === contextGroupID;'),
+  'Right Dockview ownership should keep context always owned and insights owned only when co-grouped with context'
+);
+assert.ok(pageSource.includes("const sourceDockviewBottomSliceID: SourceDockviewMigrationSliceID = 'bottom-runtime'"), 'Bottom Dockview host should use the runtime migration-slice registry');
+assert.ok(pageSource.includes("const sourceDockviewCenterSliceID: SourceDockviewMigrationSliceID = 'center-runtime'"), 'Center Dockview host should use the runtime migration-slice registry');
+assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDockviewCenterSliceID)'), 'Center Dockview host should derive editor/runtime panel options from the slice helper');
+assert.ok(pageSource.includes('sourceDockviewCenterStorageKey'), 'Center Dockview host should persist editor/runtime tab layout separately');
+assert.ok(pageSource.includes('sourceDockviewCenterHostAction'), 'Source page should mount a Dockview host for center editor/runtime panels');
+assert.ok(pageSource.includes('sourceDockviewMigrationSlicePlanOptions(sourceDockviewBottomSliceID)'), 'Retired bottom Dockview slice should remain readable for layout migration cleanup');
+assert.ok(pageSource.includes('sourceDockviewBottomStorageKey'), 'Retired bottom Dockview storage key should remain clearable during layout migration');
+assert.ok(!pageSource.includes('hostAction={sourceDockviewBottomHostAction}'), 'Source page should not mount a visible Dockview host for retired bottom runtime panels');
+assert.ok(pageSource.includes("use:sourceDockviewPanelAction={'editor'}"), 'Editor surface should register its Svelte-owned DOM with Dockview');
+assert.ok(pageSource.includes("use:sourceDockviewPanelAction={'activity'}"), 'Activity sidebar should register its Svelte-owned DOM with Dockview');
+assert.ok(pageSource.includes("use:sourceDockviewPanelAction={'context'}"), 'Context pane should register its Svelte-owned DOM with Dockview');
+assert.ok(pageSource.includes("use:sourceDockviewPanelAction={'terminal'}"), 'Terminal dock should register its Svelte-owned DOM with Dockview');
+assert.ok(pageSource.includes("use:sourceDockviewPanelAction={'browser'}"), 'Browser dock should register its Svelte-owned DOM with Dockview');
+assert.ok(pageSource.includes('function sourceDockviewCenterOwnsPanel'), 'Center Dockview host should arbitrate editor/runtime ownership');
+assert.ok(pageSource.includes('function sourceDockviewBottomOwnsPanel'), 'Bottom Dockview host should arbitrate bottom runtime ownership');
+assert.ok(
+  sourceFunctionBlock(pageSource, 'dockPanelMoveTargets').includes("return ['center'];"),
+  'Terminal and Browser should stay in center tabs instead of creating a bottom dock'
+);
+assert.ok(
+  sourceFunctionBlock(pageSource, 'syncSourceDockviewPanelElement').includes('centerOwnsPanel ? element : null') &&
+    sourceFunctionBlock(pageSource, 'syncSourceDockviewPanelElement').includes('bottomOwnsPanel ? element : null'),
+  'Runtime panel DOM should be routed through center ownership while the retired bottom owner stays detached'
+);
+assert.ok(
+  sourceFunctionBlock(pageSource, 'persistSourceLayoutVersion').includes('window.localStorage.setItem(sourceLayoutVersionStorageKey, sourceLayoutVersion);') &&
+    !sourceFunctionBlock(pageSource, 'persistSourceLayoutVersion').includes('removeItem') &&
+    sourceFunctionBlock(pageSource, 'clearMigratedSourceDockviewLayouts').includes('window.localStorage.removeItem(sourceDockviewStorageKey);') &&
+    pageSource.includes('if (migrateSourceLayout) {\n      clearMigratedSourceDockviewLayouts();'),
+  'Source layout migration should clear Dockview storage only when the layout version changes'
+);
+assert.ok(
+  dockviewWorkspaceSource.includes('sourceDockviewStoredLayoutMatchesPanelPlans') &&
+    sourceFunctionBlock(dockviewWorkspaceSource, 'createSourceDockviewWorkspace').includes(
+      'sourceDockviewStoredLayoutMatchesPanelPlans(storedLayout, restorePlans)'
+    ) &&
+    sourceFunctionBlock(dockviewWorkspaceSource, 'createSourceDockviewTabStackWorkspace').includes(
+      'sourceDockviewStoredLayoutMatchesPanelIDs(storedLayout, panelIDs)'
+    ) &&
+    sourceFunctionBlock(pageSource, 'initializeSourceDockviewCenter').includes('storedLayout: null') &&
+    sourceFunctionBlock(pageSource, 'initializeSourceDockviewCenter').includes(
+      'restoreStoredLayout: false'
+    ) &&
+    sourceFunctionBlock(pageSource, 'initializeSourceDockviewBottom').includes(
+      'storedLayout: loadStoredSourceDockviewLayout(sourceDockviewBottomStorageKey)'
+    ),
+  'App Dockview hosts should validate stored JSON by panel plans, fixed tab stacks by exact panel IDs, and center runtime should skip stale stored restores'
+);
+assert.ok(pageSource.includes('disposeSourceDockviewActivity();'), 'Source page should dispose the activity Dockview host during teardown');
+assert.ok(pageSource.includes('disposeSourceDockviewContext();'), 'Source page should dispose the context Dockview host during teardown');
 assert.ok(pageSource.includes('disposeSourceDockviewInsights();'), 'Source page should dispose the Dockview host during teardown');
-assert.ok(pageSource.includes('class="source-dockview-insights-shell"'), 'Insights panel should keep a fallback shell around the Dockview host');
-assertDeclaration('.source-dockview-insights-shell', 'display: grid');
-assertDeclaration('.source-dockview-insights-host', 'visibility: hidden');
-assertDeclaration('.source-dockview-insights-shell.dockview-ready .source-dockview-insights-host', 'visibility: visible');
+assert.ok(pageSource.includes('disposeSourceDockviewCenter();'), 'Source page should dispose the center Dockview host during teardown');
+assert.ok(pageSource.includes('disposeSourceDockviewBottom();'), 'Source page should dispose the bottom Dockview host during teardown');
+assert.ok(pageSource.includes('disposeSourceContextCardDockview();'), 'Source page should dispose the nested context card Dockview host during teardown');
+assert.ok(pageSource.includes("from '$lib/SourceDockviewShell.svelte'"), 'Source page should use the shared Dockview shell component');
+assert.ok(pageSource.includes('shellClass="source-dockview-activity-shell"'), 'Activity panel should keep a fallback shell around the Dockview host');
+assert.ok(pageSource.includes('shellClass="source-dockview-center-shell"'), 'Editor/runtime center should keep a fallback shell around the Dockview host');
+assert.ok(pageSource.includes('shellClass="source-dockview-context-shell"'), 'Context panel should keep a fallback shell around the Dockview host');
+assert.ok(
+  pageSource.includes("'source-dockview-insights-shell'") &&
+    pageSource.includes("'source-dockview-insights-parking'"),
+  'Insights panel should keep a visible editor shell and a hidden parking shell for right Dockview ownership'
+);
+assert.ok(
+  pageSource.includes('class="source-runtime-panel-stage"') &&
+    !pageSource.includes('runtime-parking-only'),
+  'Runtime panels should stage Svelte-owned DOM without rendering a bottom Dockview shell'
+);
+assert.ok(dockviewShellSource.includes('class={shellClass}'), 'Dockview shell should apply the caller-provided shell class');
+assert.ok(dockviewShellSource.includes('`${hostClass} source-dockview-host`'), 'Dockview shell should apply the caller-provided host class plus the shared host class');
+assert.ok(dockviewShellSource.includes('use:hostAction'), 'Dockview shell should mount the caller-provided host action');
+assert.ok(dockviewShellSource.includes('role="status"'), 'Dockview shell should render errors as status text');
+assertDeclaration(':global(.source-dockview-activity-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-activity-shell)', 'width: 100%', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-activity-shell)', 'height: 100%', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-activity-shell)', 'background: #191a21', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-activity-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-activity-shell.dockview-ready .source-dockview-activity-host)', 'visibility: visible', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-activity-shell.dockview-ready > .activity-shell)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-shell)', 'width: 100%', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-shell)', 'height: 100%', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-shell)', 'background: #191a21', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-parking)', 'position: fixed', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-parking)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-insights-shell.dockview-ready .source-dockview-insights-host)', 'visibility: visible', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-context-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-context-shell)', 'background: #191a21', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-context-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-context-shell.dockview-ready .source-dockview-context-host)', 'visibility: visible', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-context-shell .context-panel-grid)', 'grid-template-columns: 28px minmax(0, 1fr)', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-context-shell .context-stack-tabs)', 'grid-column: 1', dockviewShellSource);
+assert.ok(
+  dockviewShellSource.includes(':global(.source-dockview-context-shell .orchestration-context-panel)') &&
+    dockviewShellSource.includes('grid-column: 2;'),
+  'Context Dockview shell should place reparented context cards in the content column'
+);
+assertDeclaration(':global(.source-dockview-center-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-center-shell)', 'height: 100%', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-center-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-center-shell.dockview-ready .source-dockview-center-host)', 'visibility: visible', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-center-shell.dockview-ready > .source-editor-dock-panel)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-bottom-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-bottom-shell.runtime-parking-only)', 'position: absolute', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-bottom-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-bottom-shell.dockview-ready .source-dockview-bottom-host)', 'visibility: visible', dockviewShellSource);
+assert.ok(
+  dockviewShellSource.includes(':global(.source-dockview-host .dv-content-container)') &&
+    dockviewShellSource.includes(':global(.source-dockview-host .dv-view)') &&
+    dockviewShellSource.includes('width: 100%;') &&
+    dockviewShellSource.includes('height: 100%;'),
+  'Dockview generated content wrappers should stretch attached panels to the full tab body'
+);
+assert.ok(
+  dockviewShellSource.includes(':global(.source-dockview-host.dockview-theme-dark),') &&
+    dockviewShellSource.includes('--dv-separator-border: transparent;') &&
+    dockviewShellSource.includes('--dv-tab-divider-color: transparent;') &&
+    dockviewShellSource.includes(':global(.source-dockview-host .dv-groupview),') &&
+    dockviewShellSource.includes('box-shadow: none;'),
+  'All Dockview hosts should flatten generated separators and group borders'
+);
+assertDeclaration('.source-editor-dock-panel', 'display: flex');
+assertDeclaration(':global(.source-dockview-editor-files-shell)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-editor-files-host)', 'visibility: hidden', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-editor-files-shell .source-dockview-attached-panel.source-editor-file-pane)', 'display: flex', dockviewShellSource);
+assert.ok(
+  pageSource.includes(':global(.source-dockview-center-shell .source-dockview-attached-panel.terminal-launchpad),') &&
+    pageSource.includes(':global(.source-dockview-center-shell .source-dockview-attached-panel.browser-dock)') &&
+    pageSource.includes('flex: 1 1 0;') &&
+    pageSource.includes('width: 100%;') &&
+    pageSource.includes('height: 100% !important;') &&
+    pageSource.includes(':global(.source-dockview-center-shell .embedded-terminal-panel),') &&
+    pageSource.includes(':global(.source-dockview-center-shell .browser-frame-wrap),') &&
+    pageSource.includes(':global(.source-dockview-center-shell .browser-frame)') &&
+    pageSource.includes('margin-top: 0;'),
+  'Center runtime Terminal and Browser panels should fill the Dockview tab body'
+);
+assertDeclaration(':global(.source-dockview-center-shell .source-dockview-panel-host)', 'display: grid', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-center-shell .source-dockview-panel-host)', 'grid-template-rows: minmax(0, 1fr)', dockviewShellSource);
+assertDeclaration(':global(.source-dockview-center-shell .source-dockview-attached-panel)', 'grid-area: 1 / 1', dockviewShellSource);
+assertDeclaration('.workspace.chrome-compact .dock-panel-tabs.empty', 'height: 0');
 assert.ok(pageSource.includes('aria-label="Show hover"'), 'Editor controls should expose hover');
 assert.ok(pageSource.includes('aria-label="Trigger completions"'), 'Editor controls should expose completions');
 assert.ok(pageSource.includes('aria-label="Show signature help"'), 'Editor controls should expose signature help');
@@ -2313,8 +2911,9 @@ assert.ok(
   'Task ledger rows should expose a compact open-task action'
 );
 assert.ok(
-  pageSource.includes('onclick={() => openGitTaskReference(row.taskID)}'),
-  'Task ledger open action should use the shared task link handler'
+  pageSource.includes('closeGitRowActionMenu();') &&
+    pageSource.includes('openGitTaskReference(row.taskID);'),
+  'Task ledger open action should close the menu and use the shared task link handler'
 );
 assert.ok(
   pageSource.includes('onclick={() => copyGitTaskSourceGroup(group)}'),
@@ -2389,6 +2988,19 @@ assert.ok(pageSource.includes('class="git-status-list"'), 'Git tab should render
 assert.ok(pageSource.includes('class="git-status-overview"'), 'Git tab should render staged/unstaged summary');
 assert.ok(pageSource.includes('class="git-status-group"'), 'Git tab should render grouped changed files');
 assert.ok(pageSource.includes('class="git-status-group-heading"'), 'Git tab should render group-level actions');
+assert.ok(pageSource.includes('data-testid="git-activity-panel"'), 'Git activity should expose a stable Source Control panel hook');
+assert.ok(pageSource.includes('data-testid="git-branch-summary"'), 'Git activity should expose a branch summary hook');
+assert.ok(pageSource.includes('class="activity-git-command-strip"'), 'Git activity should expose Source Control commands');
+assert.ok(pageSource.includes('class="activity-git-remote-row"'), 'Git activity should expose fetch pull push actions');
+assert.ok(pageSource.includes('class="git-commit-row activity-git-commit-row"'), 'Git activity should expose a VS Code-style commit row');
+assert.ok(pageSource.includes('data-testid="git-changed-files"'), 'Git activity should promote changed files into the activity panel');
+assert.ok(pageSource.includes('data-testid={`git-status-group-${group.id}`}'), 'Git activity should expose grouped source-control hooks');
+assert.ok(pageSource.includes('data-git-path={fileStatus.relativePath}'), 'Git activity file rows should expose the Git path');
+assert.ok(pageSource.includes('data-git-status={fileStatus.status}'), 'Git activity file rows should expose the Git status');
+assert.ok(pageSource.includes('data-testid="git-repositories-section"'), 'Git activity should keep repositories as a secondary section');
+assert.ok(pageSource.includes('data-testid="git-task-ledger-section"'), 'Git activity should keep task ledger as a secondary section');
+assert.ok(pageSource.includes('data-testid="git-history-section"'), 'Git activity should keep history as a secondary section');
+assert.ok(pageSource.includes('class="activity-git-secondary-section"'), 'Git activity secondary sections should render as disclosure sections');
 assert.ok(pageSource.includes('aria-label="Stage selected source file"'), 'Git tab should expose staging for the selected file');
 assert.ok(pageSource.includes('aria-label="Unstage selected source file"'), 'Git tab should expose unstaging for the selected file');
 assert.ok(pageSource.includes('aria-label="Fetch selected repository"'), 'Git tab should expose repository fetch');
@@ -2467,6 +3079,28 @@ assert.ok(pageSource.includes('class="git-diff-block"'), 'Source page should ren
 assertDeclaration('.git-status-badge', 'font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace');
 assertDeclaration('.git-diff-panel', 'overflow: hidden');
 assertDeclaration('.git-status-list', 'overflow-y: auto');
+assertDeclaration('.activity-git-source-control', 'display: grid');
+assertDeclaration('.activity-git-secondary-section', 'display: grid');
+assertDeclaration('.activity-git-secondary-section summary', 'grid-template-columns: auto minmax(0, 1fr) auto');
+assertDeclaration('.activity-git-secondary-section[open] summary::before', 'transform: rotate(90deg)');
+assert.ok(pageSource.includes('data-testid="git-command-drawer"'), 'Source Control commands should live in a collapsed drawer');
+assertDeclaration('.activity-git-command-drawer', 'overflow: hidden');
+assertDeclaration('.activity-git-command-drawer summary', 'height: 27px');
+assertDeclaration('.activity-git-command-strip', 'display: grid');
+assertDeclaration('.activity-git-remote-row', 'grid-template-columns: repeat(3, minmax(0, 1fr))');
+assertDeclaration('.activity-git-commit-row', 'grid-template-columns: minmax(0, 1fr) minmax(78px, auto)');
+assertDeclaration('.activity-source-control-list', 'max-height: none');
+assertDeclaration('.activity-source-control-list .git-status-group-heading', 'grid-template-columns: auto minmax(0, 1fr) auto auto');
+assertDeclaration('.activity-source-control-list .git-status-group-heading::before', 'border-left: 5px solid rgba(174, 184, 181, 0.76)');
+assertDeclaration('.activity-source-control-list .git-status-group:not([open]) .git-status-group-heading::before', 'transform: rotate(0deg)');
+assertDeclaration('.activity-source-control-list .git-status-row', 'background: transparent');
+assert.ok(pageSource.includes('<details\n                        class="git-status-group"'), 'Activity Source Control groups should collapse with native details sections');
+assert.ok(
+  pageSource.includes('event.preventDefault();') &&
+    pageSource.includes('event.stopPropagation();') &&
+    pageSource.includes('void runGitStatusGroupAction(group);'),
+  'Activity Source Control group actions should not toggle the details section'
+);
 assertDeclaration('.git-status-overview', 'text-overflow: ellipsis');
 assertDeclaration('.git-status-group', 'display: grid');
 assertDeclaration('.git-status-group-heading', 'grid-template-columns: minmax(0, 1fr) auto auto');
@@ -2577,6 +3211,22 @@ assert.ok(pageSource.includes('aria-label="Refresh worktrees"'), 'Worktree panel
 assert.ok(pageSource.includes('class="worktree-context-panel"'), 'Source page should render a worktree safety panel');
 assert.ok(pageSource.includes('{projectWorktreeCleanupBrief.headline}'), 'Worktree panel should show the aggregate cleanup headline');
 assert.ok(pageSource.includes('function copyProjectWorktreeCleanupBrief'), 'Worktree panel should copy the aggregate cleanup brief');
+assert.ok(
+  pageSource.includes('aria-label="Worktree cleanup runbook summary"'),
+  'Worktree panel should expose a compact runbook count summary'
+);
+assert.ok(pageSource.includes('class="worktree-runbook-chip safe"'), 'Runbook summary should show safe/removable count');
+assert.ok(pageSource.includes('class="worktree-runbook-chip backup"'), 'Runbook summary should show backup-required count');
+assert.ok(pageSource.includes('class="worktree-runbook-chip blocked"'), 'Runbook summary should show blocked/protected/active count');
+assert.ok(pageSource.includes('class="worktree-runbook-chip saved"'), 'Runbook summary should show saved-workspace review count');
+assert.ok(
+  pageSource.includes('aria-label="Copy worktree cleanup runbook"'),
+  'Worktree panel should expose a copy-only full runbook affordance'
+);
+assert.ok(
+  pageSource.includes('aria-label="Copy worktree runbook command block"'),
+  'Worktree rows should expose a copy-only item command-block affordance'
+);
 assert.ok(pageSource.includes('aria-label="Copy worktree cleanup script"'), 'Worktree panel should expose the guarded cleanup script');
 assert.ok(pageSource.includes('class="worktree-decision-queue"'), 'Worktree panel should render a cleanup decision queue');
 assert.ok(
@@ -2601,6 +3251,10 @@ assert.ok(
 );
 assert.ok(pageSource.includes('class="worktree-next-check"'), 'Worktree rows should render compact next-step hints');
 assert.ok(pageSource.includes('Worktree Safety'), 'Worktree panel should have a clear heading');
+assertDeclaration('.worktree-runbook-strip', 'display: flex');
+assertDeclaration('.worktree-runbook-strip', 'overflow: hidden');
+assertDeclaration('.worktree-runbook-chip', 'display: inline-flex');
+assertDeclaration('.worktree-runbook-chip strong', 'font-size: 9px');
 assertDeclaration('.worktree-context-list', 'overflow-y: auto');
 assertDeclaration('.worktree-context-list', 'scrollbar-width: thin');
 assertDeclaration('.worktree-next-check', 'display: inline-flex');
@@ -2621,6 +3275,15 @@ assertDeclaration('.repo-task-link', 'white-space: nowrap');
 assert.ok(pageSource.includes('listAgentSessionsFromTauri'), 'Source page should load native agent sessions');
 assert.ok(pageSource.includes('agentSessions'), 'Source page should track agent sessions');
 assert.ok(pageSource.includes('selectedProjectAgentSessions'), 'Source page should filter sessions to the selected project');
+assert.ok(
+  pageSource.includes('{#each filteredConversationAgentSessions as session') &&
+    pageSource.includes('{#each filteredProjectAgentSessions as session'),
+  'Conversations should use all local threads while the Agents tab remains project-scoped'
+);
+assert.ok(
+  pageSource.includes('formatConversationSessionSummary('),
+  'Conversation summary should describe the full local conversation list'
+);
 assert.ok(pageSource.includes('function loadAgentSessions'), 'Source page should expose an agent session refresh action');
 assert.ok(pageSource.includes('function agentSessionRowKey'), 'Agent session lists should use duplicate-safe row keys');
 assert.ok(pageSource.includes("agentSessionRowKey(session, index, 'context')"), 'Context agent list should not key only by provider and id');

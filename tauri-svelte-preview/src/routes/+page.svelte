@@ -2,8 +2,7 @@
   import {
     Activity,
     Braces,
-    Check,
-    ChevronDown,
+    ChevronLeft,
     ChevronRight,
     Copy,
     ExternalLink,
@@ -15,13 +14,11 @@
     History,
     MoreHorizontal,
     Network,
-    PanelBottom,
-    PanelLeftOpen,
-    Plus,
     RefreshCw,
     RotateCcw,
     Save,
     Search,
+    Settings,
     SplitSquareHorizontal,
     Terminal,
     Trash2,
@@ -31,10 +28,38 @@
   import 'dockview-core/dist/styles/dockview.css';
   import '@xterm/xterm/css/xterm.css';
   import { onMount, tick } from 'svelte';
-  import type { SerializedDockview } from 'dockview-core';
+  import type { SerializedDockview, SerializedPaneview } from 'dockview-core';
   import type { FitAddon as XTermFitAddon } from '@xterm/addon-fit';
+  import type { SearchAddon as XTermSearchAddon } from '@xterm/addon-search';
+  import type { SerializeAddon as XTermSerializeAddon } from '@xterm/addon-serialize';
+  import type { WebglAddon as XTermWebglAddon } from '@xterm/addon-webgl';
   import type { Terminal as XTermTerminal } from '@xterm/xterm';
   import MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import SettingsPanel from '$lib/SettingsPanel.svelte';
+  import { settings, defaultSettings } from '$lib/settingsStore.svelte';
+  import { dock } from '$lib/stores/dockLayoutStore.svelte';
+  import { files, isSourcePathDirty } from '$lib/stores/filesStore.svelte';
+  import { gitStore } from '$lib/stores/gitStore.svelte';
+  import { projectStore } from '$lib/stores/projectStore.svelte';
+  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import ConversationList from '$lib/components/ConversationList.svelte';
+  import Chip from '$lib/components/Chip.svelte';
+  import BrowserPanel from '$lib/components/panels/BrowserPanel.svelte';
+  import EditorPanel from '$lib/components/panels/EditorPanel.svelte';
+  import GitInsightsPanel from '$lib/components/panels/GitInsightsPanel.svelte';
+  import ActivityClipboardPanel from '$lib/components/panels/ActivityClipboardPanel.svelte';
+  import ActivityWorktreesPanel from '$lib/components/panels/ActivityWorktreesPanel.svelte';
+  import ActivityGitPanel from '$lib/components/panels/ActivityGitPanel.svelte';
+  import ActivityFilesPanel from '$lib/components/panels/ActivityFilesPanel.svelte';
+  import ActivityProjectControls from '$lib/components/panels/ActivityProjectControls.svelte';
+  import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
+  import QuickOpenOverlay from '$lib/components/overlays/QuickOpenOverlay.svelte';
+  import HiddenDockRail from '$lib/components/chrome/HiddenDockRail.svelte';
+  import EditorTopbarViewMenu from '$lib/components/chrome/EditorTopbarViewMenu.svelte';
+  import SourceDockviewShell from '$lib/SourceDockviewShell.svelte';
+  import SourceWorkbench from '$lib/SourceWorkbench.svelte';
+  import WorkbenchContextPanel from '$lib/WorkbenchContextPanel.svelte';
+  import SourcePaneResizer from '$lib/SourcePaneResizer.svelte';
   import {
     cleanupPasteReplyDraft,
     cleanupPasteText,
@@ -82,6 +107,7 @@
     worktreePrimaryAction
   } from '$lib/worktreeSafety';
   import { buildWorktreeCleanupPlan } from '$lib/worktreeCleanupPlan';
+  import { buildWorktreeCleanupRunbook } from '$lib/worktreeCleanupRunbook';
   import {
     describeWorkspaceSnapshotRestoreReadiness,
     parseStoredWorkspaceSnapshot,
@@ -115,10 +141,23 @@
     type SourceDockPanelID
   } from '$lib/sourceDockLayout';
   import {
+    sourceEditorFilePanelID,
+    sourceEditorFilePanelIDFromPath,
+    sourceEditorFilePathFromPanelID,
+    sourceEditorFileDockviewTitle,
+    type SourceEditorFilePanelID
+  } from '$lib/sourceEditorPanels';
+  import {
+    createSourcePaneviewStackWorkspace,
+    createSourceDockviewTabStackWorkspace,
     createSourceDockviewWorkspace,
     sourceDockviewMigrationSlicePlanOptions,
     sourceDockviewMigrationSliceStorageKey,
     sourceDockviewStorageKey,
+    type SourcePaneviewStackPanel,
+    type SourcePaneviewStackWorkspace,
+    type SourceDockviewTabStackPanel,
+    type SourceDockviewTabStackWorkspace,
     type SourceDockviewMigrationSliceID,
     type SourceDockviewWorkspace
   } from '$lib/sourceDockviewWorkspace';
@@ -154,7 +193,6 @@
     formatSourceDiagnosticSummary,
     formatSourceIndexSummary,
     flattenSourceTree,
-    formatSourceRecordCount,
     formatSourceScanEvidence,
     formatSourceScanHealth,
     formatSourceScanRecovery,
@@ -244,7 +282,9 @@
     isNativeTauriRuntime,
     listAgentSessionsFromTauri,
     listGitRepositorySummariesFromTauri,
+    listAgentSessionsFromLocalBridge,
     listOrchestrationRunsFromTauri,
+    listPlaywrightSessionsFromTauri,
     listProjectWorktreesFromTauri,
     listRuntimeContextsFromTauri,
     listTerminalSessionsFromTauri,
@@ -277,8 +317,10 @@
     startTerminalSessionFromTauri,
     unstageGitPathsFromTauri,
     validateProjectRootFromTauri,
+    warmSourceLspForRootFromTauri,
     writeTerminalSessionFromTauri,
     closeTerminalSessionFromTauri,
+    killPlaywrightSessionsFromTauri,
     writeSourceToTauri,
     type NativeSourceScanProgress,
     type AgentSession,
@@ -287,6 +329,7 @@
     type OrchestrationArtifact,
     type OrchestrationEvent,
     type OrchestrationRun,
+    type PlaywrightSessionInfo,
     type ProjectGitFileStatus,
     type ProjectGitStatus,
     type ProjectRootValidationResult,
@@ -361,7 +404,6 @@
   const editorInsightDefaultWidth = 260;
   const editorInsightMinWidth = 96;
   const editorInsightMaxWidth = 1200;
-  const editorInsightCollapseThreshold = 76;
   const contextPaneDefaultWidth = 330;
   const contextPaneMinWidth = 34;
   const contextPaneMaxWidth = 1600;
@@ -373,12 +415,18 @@
   const contextPaneHeightCollapseThreshold = 84;
   const bottomDockDefaultHeight = 300;
   const bottomDockMinHeight = 96;
-  const bottomDockMaxHeight = 1100;
+  const bottomDockFallbackMaxHeight = 1100;
+  const bottomDockReservedEditorHeight = 148;
+  const bottomDockReservedChromeHeight = 92;
   const bottomDockCollapseThreshold = 84;
-  const sourceWorkspaceMinimumEditorWidth = 720;
-  const sourceWorkspacePaneGapSize = 6;
+  const sourceWorkspaceMinimumEditorWidth = 620;
+  const sourceWorkspacePaneGapSize = 0;
+  const sourceWorkspacePaneChromeSize = 0;
   const sourceWorkspaceDefaultViewportWidth =
-    sourceWorkspaceMinimumEditorWidth + sidePaneDefaultWidth + contextPaneDefaultWidth + sourceWorkspacePaneGapSize * 2;
+    sourceWorkspaceMinimumEditorWidth +
+    sidePaneDefaultWidth +
+    contextPaneDefaultWidth +
+    (sourceWorkspacePaneGapSize + sourceWorkspacePaneChromeSize) * 2;
   const activityPaneSizingConfig: SourcePaneSizingConfig = {
     defaultSize: sidePaneDefaultWidth,
     minSize: sidePaneMinWidth,
@@ -401,24 +449,52 @@
     maxSize: contextPaneMaxHeight,
     collapseThreshold: contextPaneHeightCollapseThreshold
   };
-  const bottomDockSizingConfig: SourcePaneSizingConfig = {
-    defaultSize: bottomDockDefaultHeight,
-    minSize: bottomDockMinHeight,
-    maxSize: bottomDockMaxHeight,
-    collapseThreshold: bottomDockCollapseThreshold
-  };
   const orchestrationRefreshIntervalMs = 5_000;
   const defaultOrchestrationEventFilePath = '/tmp/mcb-orchestration-events.jsonl';
   const sourceScanProgressEventName = nativeSourceScanProgressEvent;
   const expandedSourceScanLimitShortLabel = `${Math.round(expandedSourceScanLimit / 1000)}K`;
-  const sourceLayoutVersion = '2026-06-compact-chrome';
-  const sourceDockviewInsightsEnabled = true;
+  const sourceLayoutVersion = '2026-06-center-runtime-no-bottom-row';
+  // A/B flag: when true, render the unified Task-2 `SourceWorkbench` (one Dockview with
+  // native drag-between-groups, tab switching, and border-drag resizing) as the whole shell.
+  // When false, fall back to the existing homemade shell + multi-Dockview path untouched.
+  const useUnifiedWorkbench = true;
+  const sourceDockviewWorkbenchEnabled = true;
+  const sourceDockviewWorkbenchStorageKey = sourceDockviewStorageKey;
+  const sourceDockviewActivityEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewActivitySliceID: SourceDockviewMigrationSliceID = 'activity-only';
+  const sourceDockviewActivityPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewActivitySliceID);
+  const sourceDockviewActivityPanelIDs = sourceDockviewActivityPlanOptions.panelIDs ?? [];
+  const sourceDockviewActivityStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewActivitySliceID);
+  const sourceDockviewInsightsEnabled = !sourceDockviewWorkbenchEnabled;
   const sourceDockviewInsightsSliceID: SourceDockviewMigrationSliceID = 'insights-only';
   const sourceDockviewInsightsPlanOptions =
     sourceDockviewMigrationSlicePlanOptions(sourceDockviewInsightsSliceID);
   const sourceDockviewInsightsPanelIDs = sourceDockviewInsightsPlanOptions.panelIDs ?? [];
   const sourceDockviewInsightsStorageKey =
     sourceDockviewMigrationSliceStorageKey(sourceDockviewInsightsSliceID);
+  const sourceDockviewContextEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewContextSliceID: SourceDockviewMigrationSliceID = 'context-insights';
+  const sourceDockviewContextPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewContextSliceID);
+  const sourceDockviewContextPanelIDs = sourceDockviewContextPlanOptions.panelIDs ?? [];
+  const sourceDockviewContextStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewContextSliceID);
+  const sourceDockviewCenterEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewCenterSliceID: SourceDockviewMigrationSliceID = 'center-runtime';
+  const sourceDockviewCenterPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewCenterSliceID);
+  const sourceDockviewCenterPanelIDs = sourceDockviewCenterPlanOptions.panelIDs ?? [];
+  const sourceDockviewCenterStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewCenterSliceID);
+  const sourceDockviewBottomEnabled = !sourceDockviewWorkbenchEnabled;
+  const sourceDockviewBottomSliceID: SourceDockviewMigrationSliceID = 'bottom-runtime';
+  const sourceDockviewBottomPlanOptions =
+    sourceDockviewMigrationSlicePlanOptions(sourceDockviewBottomSliceID);
+  const sourceDockviewBottomPanelIDs = sourceDockviewBottomPlanOptions.panelIDs ?? [];
+  const sourceDockviewBottomStorageKey =
+    sourceDockviewMigrationSliceStorageKey(sourceDockviewBottomSliceID);
   const initialProject = defaultProjectRoots[0];
   const macCommandBarRepoPath =
     defaultProjectRoots.find((project) => project.id === 'mac-command-bar')?.path ??
@@ -451,7 +527,7 @@
     endColumn: number;
   };
   type SourceIntelligencePanel = 'problems' | 'symbols' | 'git';
-  type SourceEditorNavPanel = 'problems' | 'symbols' | 'definitions' | 'references';
+  type SourceEditorDisplayMode = 'source' | 'preview';
   type SourceActivityMode =
     | 'files'
     | 'clipboard'
@@ -461,10 +537,37 @@
     | 'agents'
     | 'worktrees'
     | 'git';
+  type SourceFilesPaneID = 'files' | 'search' | 'recent';
+  type SourceConversationPaneID = 'active' | 'saved';
+  type SourceContextCardDockviewPanelID = SourceContextCardID;
+  const sourceEditorFileDockviewStorageKey = `${sourceDockviewStorageKey}.center.editor-files`;
+  const sourceFilesDockviewStorageKey = `${sourceDockviewStorageKey}.activity.files.paneview`;
+  const sourceFilesDockviewPanels: SourcePaneviewStackPanel<SourceFilesPaneID>[] = [
+    { id: 'files', title: 'Files', size: 460, minimumBodySize: 160, isExpanded: true },
+    { id: 'search', title: 'Search', size: 190, minimumBodySize: 72, isExpanded: false },
+    { id: 'recent', title: 'Recent', size: 170, minimumBodySize: 72, isExpanded: false }
+  ];
+  const sourceFilesDockviewPanelIDs = sourceFilesDockviewPanels.map((panel) => panel.id);
+  const sourceConversationDockviewStorageKey = `${sourceDockviewStorageKey}.activity.conversations.paneview`;
+  const sourceConversationDockviewPanels: SourcePaneviewStackPanel<SourceConversationPaneID>[] = [
+    { id: 'active', title: 'Active', size: 390, minimumBodySize: 120, isExpanded: true },
+    { id: 'saved', title: 'Saved', size: 210, minimumBodySize: 92, isExpanded: false }
+  ];
+  const sourceConversationDockviewPanelIDs = sourceConversationDockviewPanels.map((panel) => panel.id);
+  const sourceContextCardDockviewStorageKey = `${sourceDockviewStorageKey}.context.cards.paneview`;
   type SourceLayoutPresetID = 'review' | 'code' | 'git' | 'runs' | 'sessions' | 'custom';
   type SourceTerminalApp = 'Warp' | 'Terminal' | 'iTerm' | 'iTerm2' | 'Ghostty' | 'WezTerm' | 'Alacritty';
   type SourceContextPanelMode = 'grid' | 'stack';
+  type SourceContextPanelPresentationMode = 'grid' | 'stack' | 'tabs';
   type SourceContextPanelPlacement = 'top' | 'side' | 'bottom';
+  type SourceContextPanelPresentation = {
+    requestedMode: SourceContextPanelMode;
+    placement: SourceContextPanelPlacement;
+    presentationMode: SourceContextPanelPresentationMode;
+    stacked: boolean;
+    tabbed: boolean;
+    singleCard: boolean;
+  };
   type SourceSidePanePosition = 'left' | 'right';
   type SourceWorkspacePaneID = 'activity' | 'context';
   type SourceContextCardID = 'orchestration' | 'runtime' | 'agents' | 'worktrees' | 'repo';
@@ -531,7 +634,7 @@
     {
       id: 'review',
       label: 'Review',
-      title: 'Balanced source review with context visible',
+      title: 'Balanced source review with side context visible',
       activityMode: 'files',
       sidePaneWidth: sidePaneDefaultWidth,
       sidePanePosition: 'left',
@@ -540,10 +643,10 @@
       contextPaneWidth: contextPaneDefaultWidth,
       contextPaneHeight: contextPaneDefaultHeight,
       contextPanelCollapsed: false,
-      contextPanelMode: 'grid',
-      contextPanelPlacement: 'top',
+      contextPanelMode: 'stack',
+      contextPanelPlacement: 'side',
       chromeCompact: true,
-      intelligencePanel: 'symbols'
+      intelligencePanel: 'git'
     },
     {
       id: 'code',
@@ -560,7 +663,7 @@
       contextPanelMode: 'grid',
       contextPanelPlacement: 'top',
       chromeCompact: true,
-      intelligencePanel: 'symbols'
+      intelligencePanel: 'git'
     },
     {
       id: 'git',
@@ -594,7 +697,7 @@
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
       chromeCompact: true,
-      intelligencePanel: 'problems'
+      intelligencePanel: 'git'
     },
     {
       id: 'sessions',
@@ -611,7 +714,7 @@
       contextPanelMode: 'stack',
       contextPanelPlacement: 'side',
       chromeCompact: true,
-      intelligencePanel: 'problems'
+      intelligencePanel: 'git'
     }
   ];
   const sourceTerminalApps: SourceTerminalApp[] = [
@@ -623,8 +726,15 @@
     'WezTerm',
     'Alacritty'
   ];
-  const dockTabGroupIDs: SourceDockGroupID[] = ['right', 'bottom'];
-  const dockPanelDragDataType = 'application/x-mcb-dock-panel';
+  const sourceTerminalFallbackApp: SourceTerminalApp = 'Terminal';
+  const sourceDockviewWorkbenchPanelIDs: SourceDockPanelID[] = [
+    'activity',
+    'editor',
+    'context',
+    'insights',
+    'terminal',
+    'browser'
+  ];
   const managedDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
   const hideableDockPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
   const contextCardOrder: SourceContextCardID[] = ['orchestration', 'runtime', 'agents', 'worktrees', 'repo'];
@@ -635,37 +745,92 @@
     worktrees: 'Worktrees',
     repo: 'Git'
   };
+  const contextCardPaneviewSizes: Record<SourceContextCardID, number> = {
+    orchestration: 210,
+    runtime: 160,
+    agents: 170,
+    worktrees: 230,
+    repo: 210
+  };
 
-  let customProjectRoots = $state<ProjectRoot[]>([]);
-  let selectedSourcePaths = $state<Record<string, string>>({});
-  let recentSourceRecords = $state<SourceRecentRecord[]>([]);
-  let openSourceTabs = $state<SourceOpenTab[]>([]);
+  // ── Settings panel + live appearance wiring ──────────────────────────────
+  // The settings dialog open state. The gear in the activity rail toggles it.
+  let settingsOpen = $state(false);
+
+  // Baseline defaults the store ships with. Comparing the live settings against
+  // these lets us apply overrides ONLY when the user has actually changed a
+  // value — so an untouched install renders byte-for-byte identical to before
+  // this wiring existed (Monaco/terminal/app text all use their old hardcoded
+  // values via the unchanged default paths).
+  const appearanceDefaults = defaultSettings();
+
+  // Editor (Monaco) override: each field is included only when it differs from
+  // the editor default. When nothing changed, the object is empty/undefined and
+  // MonacoSourceEditor falls back entirely to sourcePreviewAppearance.
+  let editorAppearanceOverride = $derived.by(() => {
+    const override: { fontSize?: number; fontFamily?: string; lineHeight?: number } = {};
+    if (settings.editor.fontSize !== appearanceDefaults.editor.fontSize) {
+      override.fontSize = settings.editor.fontSize;
+    }
+    if (settings.editor.fontFamily !== appearanceDefaults.editor.fontFamily) {
+      override.fontFamily = settings.editor.fontFamily;
+    }
+    if (settings.editor.lineHeight !== appearanceDefaults.editor.lineHeight) {
+      override.lineHeight = settings.editor.lineHeight;
+    }
+    return Object.keys(override).length > 0 ? override : undefined;
+  });
+
+  // App (chrome/UI) font size: only override the inherited baseline when the
+  // user changed it. When unchanged, `--app-font-size` is left unset and the
+  // shell keeps inheriting the original :root size — no visual change.
+  let appFontSizeOverridden = $derived(
+    settings.appearance.appFontSize !== appearanceDefaults.appearance.appFontSize
+  );
+
+  // Embedded terminal (xterm) font. These are the EXACT values previously
+  // hardcoded in the XTerm constructor; they remain the source of truth for the
+  // default look. We only swap in a store value when the user actually changed
+  // it from the store default — so an untouched install keeps the original full
+  // font stack / 15px / 1.2 line height (the store default fontFamily is the
+  // bare "Google Sans Mono", which is NOT the same as this fallback stack).
+  const EMBEDDED_TERMINAL_FONT_DEFAULTS = {
+    fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+    fontSize: 15,
+    lineHeight: 1.2
+  } as const;
+
+  let embeddedTerminalAppearance = $derived({
+    fontFamily:
+      settings.terminal.fontFamily !== appearanceDefaults.terminal.fontFamily
+        ? settings.terminal.fontFamily
+        : EMBEDDED_TERMINAL_FONT_DEFAULTS.fontFamily,
+    fontSize:
+      settings.terminal.fontSize !== appearanceDefaults.terminal.fontSize
+        ? settings.terminal.fontSize
+        : EMBEDDED_TERMINAL_FONT_DEFAULTS.fontSize,
+    lineHeight:
+      settings.terminal.lineHeight !== appearanceDefaults.terminal.lineHeight
+        ? settings.terminal.lineHeight
+        : EMBEDDED_TERMINAL_FONT_DEFAULTS.lineHeight
+  });
+
   let workspaceSnapshots = $state<WorkspaceSnapshot[]>([]);
   let activeWorkspaceSessionKey = $state<string | null>(null);
-  let sourceScanCache = $state<SourceScanCache>({});
-  let sourceScanModeByProject = $state<Record<string, SourceScanEvidenceMode>>({});
-  let backgroundIndexingProjectIDs = $state<Set<string>>(new Set());
-  let backgroundIndexErrorByProject = $state<Record<string, string>>({});
-  let projectGitStatus = $state<ProjectGitStatus | null>(null);
-  let projectGitLoading = $state(false);
-  let projectGitError = $state('');
   let runtimeContexts = $state<RuntimeContext[]>([]);
   let runtimeContextsLoading = $state(false);
   let runtimeContextError = $state('');
   let runtimeContextSource = $state('browser preview');
+  let playwrightSessions = $state<PlaywrightSessionInfo[]>([]);
+  let playwrightSessionsLoading = $state(false);
+  let playwrightSessionError = $state('');
+  let playwrightSessionSource = $state('browser preview');
+  let playwrightSessionsKilling = $state(false);
+  let playwrightSessionsRequestID = 0;
   let projectWorktrees = $state<ProjectWorktree[]>([]);
   let projectWorktreesLoading = $state(false);
   let projectWorktreeError = $state('');
   let projectWorktreeSource = $state('browser preview');
-  let gitRepositorySummaries = $state<GitRepositorySummary[]>([]);
-  let gitRepositorySummariesLoading = $state(false);
-  let gitRepositorySummaryError = $state('');
-  let gitRepositorySummarySource = $state('browser preview');
-  let gitCommitHistory = $state<GitCommitHistoryEntry[]>([]);
-  let selectedGitCommitSha = $state('');
-  let gitCommitHistoryLoading = $state(false);
-  let gitCommitHistoryError = $state('');
-  let gitCommitHistorySource = $state('browser preview');
   let orchestrationRuns = $state<OrchestrationRun[]>([]);
   let orchestrationRunsLoading = $state(false);
   let orchestrationRunError = $state('');
@@ -679,62 +844,37 @@
   let agentSessionsLoading = $state(false);
   let agentSessionError = $state('');
   let agentSessionSource = $state('browser preview');
-  let selectedProjectID = $state(initialProject.id);
-  let records = $state<SourceRecord[]>([]);
-  let selectedRecord = $state<SourceRecord | null>(null);
-  let selectedSourceLine = $state<number | null>(null);
-  let selectedSourceLineRequestId = $state(0);
-  let sourceNavigationBackStack = $state<SourceNavigationLocation[]>([]);
-  let sourceNavigationForwardStack = $state<SourceNavigationLocation[]>([]);
-  let preview = $state<SourcePreview | null>(null);
-  let sourceDraftContentByPath = $state<Record<string, string>>({});
-  let savedSourceContentByPath = $state<Record<string, string>>({});
-  let workspaceEditSourceRecordsByPath = $state<Record<string, SourceRecord>>({});
+  // Seed the project store's selected id (store inits ''); onMount overrides from storage.
+  projectStore.selectedID = initialProject.id;
   let sourceDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceLspDiagnostics = $state<SourceDiagnostic[]>([]);
   let sourceSymbols = $state<SourceSymbol[]>([]);
   let sourceLspStatus = $state<SourceLspStatus | null>(null);
   let sourceLspStatusLoading = $state(false);
   let sourceLspStatusError = $state('');
-  let sourceDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
-  let sourceDefinitionQuery = $state('');
-  let sourceDefinitionLoading = $state(false);
-  let sourceDefinitionError = $state('');
-  let sourceReferenceTargets = $state<SourceReferenceTarget[]>([]);
-  let sourceReferenceQuery = $state('');
-  let sourceReferenceLoading = $state(false);
-  let sourceReferenceError = $state('');
-  let sourceImplementationTargets = $state<SourceDefinitionTarget[]>([]);
-  let sourceImplementationQuery = $state('');
-  let sourceImplementationLoading = $state(false);
-  let sourceImplementationError = $state('');
-  let sourceTypeDefinitionTargets = $state<SourceDefinitionTarget[]>([]);
-  let sourceTypeDefinitionQuery = $state('');
-  let sourceTypeDefinitionLoading = $state(false);
-  let sourceTypeDefinitionError = $state('');
-  let selectedSourceGitDiff = $state<SourceGitDiff | null>(null);
-  let selectedSourceGitDiffLoading = $state(false);
-  let selectedSourceGitDiffError = $state('');
-  let gitCommitMessage = $state('');
-  let gitActionBusy = $state<'stage' | 'unstage' | 'commit' | 'fetch' | 'pull' | 'push' | ''>('');
-  let gitActionStatus = $state('');
-  let gitActionError = $state('');
   let sourceIntelligenceCommand = $state<SourceEditorIntelligenceCommand | null>(null);
-  let sourceIntelligencePanel = $state<SourceIntelligencePanel>('symbols');
+  let sourceIntelligencePanel = $state<SourceIntelligencePanel>('git');
   let sourceSearchQuery = $state('');
   let sourceSearchResults = $state<SourceSearchMatch[]>([]);
   let sourceSearchLoading = $state(false);
   let sourceSearchError = $state('');
   let sourceSearchInput = $state<HTMLInputElement | null>(null);
-  let sourceActivityMode = $state<SourceActivityMode>('files');
+  let sourceEditorFileDockviewReady = $state(false);
+  let sourceEditorFileDockviewError = $state('');
+  let sourceFilesPane = $state<SourceFilesPaneID>('files');
+  let sourceFilesDockviewReady = $state(false);
+  let sourceFilesDockviewError = $state('');
+  let sourceConversationPane = $state<SourceConversationPaneID>('active');
+  let sourceConversationDockviewReady = $state(false);
+  let sourceConversationDockviewError = $state('');
+  let sourceContextCardDockviewReady = $state(false);
+  let sourceContextCardDockviewError = $state('');
   let sourceActivityFilter = $state('');
   let sourceActivityFiltersByMode = $state<Record<SourceActivityMode, string>>(createSourceActivityFilterState());
-  let editorNavPanel = $state<SourceEditorNavPanel | null>(null);
   let pasteCleanupInput = $state('');
   let pasteCleanupReplyDraft = $state('');
   let pasteCleanupMode = $state<PasteCleanupMode>('plain');
   let pasteCleanupHistory = $state<PasteCleanupHistoryItem[]>([]);
-  let sourceLayoutPreset = $state<SourceLayoutPresetID>('code');
   let sourceLayoutPresetOverrides = $state<SourceLayoutPresetOverrides>({});
   let sourceChromeCompact = $state(true);
   let sourceTerminalApp = $state<SourceTerminalApp>('Warp');
@@ -753,46 +893,46 @@
   let contextPanelMode = $state<SourceContextPanelMode>('grid');
   let contextPanelPlacement = $state<SourceContextPanelPlacement>('top');
   let sidePanePosition = $state<SourceSidePanePosition>('left');
-  let sidePaneWidth = $state(sidePaneDefaultWidth);
   let sidePaneExpandedWidth = $state(sidePaneDefaultWidth);
   let editorInsightWidth = $state(editorInsightDefaultWidth);
   let editorInsightCollapsed = $state(true);
-  let contextPaneWidth = $state(contextPaneDefaultWidth);
   let contextPaneExpandedWidth = $state(contextPaneDefaultWidth);
   let contextPaneHeight = $state(contextPaneDefaultHeight);
   let contextPanelCollapsed = $state(true);
-  let sourceDockLayout = $state<SourceDockLayout>(createDefaultSourceDockLayout());
   let sourceFocusRestoreLayout = $state<SourceLayoutSnapshot | null>(null);
+  let sourceDockviewWorkbenchReady = $state(false);
+  let sourceDockviewWorkbenchError = $state('');
+  let sourceDockviewActivityReady = $state(false);
+  let sourceDockviewActivityError = $state('');
   let sourceDockviewInsightsReady = $state(false);
   let sourceDockviewInsightsError = $state('');
-  let draggingDockPanelID = $state<SourceDockPanelID | null>(null);
-  let dockDropTargetGroupID = $state<SourceDockGroupID | null>(null);
-  let dockDropTargetPanelID = $state<SourceDockPanelID | null>(null);
-  let dockDropTargetPanelPlacement = $state<'before' | 'after' | null>(null);
+  let sourceDockviewContextReady = $state(false);
+  let sourceDockviewContextError = $state('');
+  let sourceDockviewCenterReady = $state(false);
+  let sourceDockviewCenterError = $state('');
+  let sourceDockviewBottomReady = $state(false);
+  let sourceDockviewBottomError = $state('');
   let hiddenContextCardIDs = $state<Set<SourceContextCardID>>(new Set());
   let activeContextCardID = $state<SourceContextCardID>('orchestration');
   let viewMenuOpen = $state(false);
   let editorActionMenuOpen = $state(false);
-  let query = $state('');
-  let expandedFolderIds = $state<Set<string>>(new Set());
-  let loading = $state(true);
-  let scanning = $state(false);
-  let activeSourceScanId = $state('');
-  let sourceScanProgress = $state<NativeSourceScanProgress | null>(null);
-  let sourceScanStats = $state<SourceScanStats | null>(null);
-  let scanLimitReached = $state(false);
+  let activeActivityRowActionMenu = $state<string | null>(null);
+  let activeAgentRowActionMenu = $state<string | null>(null);
+  let activeWorktreeRowActionMenu = $state<string | null>(null);
+  // Scan/index state moved to files.scan.* (Phase A4); runtime/error stay page-level (cross-cutting).
   let runtime = $state('pending source scan');
   let error = $state('');
-  let fileActionStatus = $state('');
-  let fileActionBusy = $state('');
+  // file-action status moved to files.fileActionStatus / files.fileActionBusy (Phase A6).
   let addingProject = $state(false);
   let choosingProjectRoot = $state(false);
   let projectRootValidating = $state(false);
-  let projectRootValidationByPath = $state<Record<string, ProjectRootValidationResult>>({});
   let quickOpenVisible = $state(false);
   let quickOpenQuery = $state('');
   let quickOpenIndex = $state(0);
-  let quickOpenInput = $state<HTMLInputElement | null>(null);
+  // The search input lives in QuickOpenOverlay; the page focuses it via this ref's
+  // exported `focusInput()` handle (see openQuickOpen / openWorkspaceSymbolQuickOpen /
+  // openCurrentFileGoToLine).
+  let quickOpenOverlayRef = $state<{ focusInput: () => void } | null>(null);
   let workspaceSymbolResults = $state<SourceWorkspaceSymbol[]>([]);
   let workspaceSymbolLoading = $state(false);
   let workspaceSymbolError = $state('');
@@ -800,9 +940,9 @@
   let commandPaletteVisible = $state(false);
   let commandPaletteQuery = $state('');
   let commandPaletteIndex = $state(0);
-  let commandPaletteInput = $state<HTMLInputElement | null>(null);
   let sourceWorkspaceElement = $state<HTMLElement | null>(null);
   let sourceWorkspaceWidth = $state(0);
+  let sourceWorkspaceHeight = $state(0);
   let fileTreeElement = $state<HTMLDivElement | null>(null);
   let embeddedTerminalElement = $state<HTMLDivElement | null>(null);
   let fileTreeScrollTop = $state(0);
@@ -814,16 +954,68 @@
   let projectFormError = $state('');
   let projectActivationGeneration = 0;
   let scanGeneration = 0;
+  let projectGitStatusRequestID = 0;
+  let selectedSourceGitDiffRequestID = 0;
   let sourceIntelligenceCommandId = 0;
   let sourceLspDiagnosticsTimer: number | null = null;
+  // Debounced, cancel-in-flight proactive LSP warm on project switch (B2.2). The timer
+  // collapses rapid project flipping to one warm call; the generation token discards the
+  // result of any warm whose project was superseded before the debounce fired.
+  let warmSourceLspTimer: number | null = null;
+  let warmSourceLspGeneration = 0;
+  let sourceDockviewWorkbenchWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewWorkbenchResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewWorkbenchHostToken = 0;
+  // Unified Task-2 workbench handles (set by <SourceWorkbench> via bindable props).
+  let unifiedWorkbenchSetPanelElement = $state<
+    (panelID: SourceDockPanelID, element: HTMLElement | null) => void
+  >(() => {});
+  let unifiedWorkbenchReady = $state(false);
+  let unifiedWorkbenchError = $state('');
+  let sourceDockviewActivityWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewActivityResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewActivityHostToken = 0;
   let sourceDockviewInsightsWorkspace: SourceDockviewWorkspace | null = null;
   let sourceDockviewInsightsResizeObserver: ResizeObserver | null = null;
   let sourceDockviewInsightsHostToken = 0;
+  let sourceDockviewContextWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewContextResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewContextHostToken = 0;
+  let sourceDockviewCenterWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewCenterResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewCenterHostToken = 0;
+  let sourceDockviewBottomWorkspace: SourceDockviewWorkspace | null = null;
+  let sourceDockviewBottomResizeObserver: ResizeObserver | null = null;
+  let sourceDockviewBottomHostToken = 0;
   const sourceDockviewPanelElements = new Map<SourceDockPanelID, HTMLElement>();
+  let sourceEditorFileDockviewWorkspace: SourceDockviewTabStackWorkspace<SourceEditorFilePanelID> | null = null;
+  let sourceEditorFileDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceEditorFileDockviewHostToken = 0;
+  const sourceEditorFileDockviewPanelElements = new Map<SourceEditorFilePanelID, HTMLElement>();
+  let sourceFilesDockviewWorkspace: SourcePaneviewStackWorkspace<SourceFilesPaneID> | null = null;
+  let sourceFilesDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceFilesDockviewHostToken = 0;
+  const sourceFilesDockviewPanelElements = new Map<SourceFilesPaneID, HTMLElement>();
+  let sourceConversationDockviewWorkspace: SourcePaneviewStackWorkspace<SourceConversationPaneID> | null = null;
+  let sourceConversationDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceConversationDockviewHostToken = 0;
+  const sourceConversationDockviewPanelElements = new Map<SourceConversationPaneID, HTMLElement>();
+  let sourceContextCardDockviewWorkspace: SourcePaneviewStackWorkspace<SourceContextCardDockviewPanelID> | null = null;
+  let sourceContextCardDockviewResizeObserver: ResizeObserver | null = null;
+  let sourceContextCardDockviewHostToken = 0;
+  const sourceContextCardDockviewPanelElements = new Map<SourceContextCardDockviewPanelID, HTMLElement>();
   let embeddedTerminal: XTermTerminal | null = null;
   let embeddedTerminalFitAddon: XTermFitAddon | null = null;
+  let embeddedTerminalSearchAddon: XTermSearchAddon | null = null;
+  let embeddedTerminalSerializeAddon: XTermSerializeAddon | null = null;
+  let embeddedTerminalWebglAddon: XTermWebglAddon | null = null;
+  let embeddedTerminalAddonStatus = $state('fit');
   let embeddedTerminalInputDisposable: { dispose: () => void } | null = null;
+  const embeddedTerminalDeferredFitDelays = [50, 180, 420];
+  let embeddedTerminalFitFrame = 0;
+  let embeddedTerminalFitTimers: number[] = [];
   let embeddedTerminalRendererLoading = false;
+  let embeddedTerminalRendererPromise: Promise<void> | null = null;
 
   type SourceScanOptions = {
     force?: boolean;
@@ -854,12 +1046,12 @@
     action: 'stage' | 'unstage';
   };
 
-  let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, customProjectRoots));
+  let projectOptions = $derived(mergeProjectRoots(defaultProjectRoots, projectStore.customRoots));
   let selectedProject = $derived(
-    projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject
+    projectOptions.find((project) => project.id === projectStore.selectedID) ?? projectOptions[0] ?? initialProject
   );
   let selectedProjectRootValidation = $derived(
-    projectRootValidationByPath[projectRootValidationKey(selectedProject.path)] ?? null
+    projectStore.rootValidationByPath[projectRootValidationKey(selectedProject.path)] ?? null
   );
   let selectedProjectRootValidationSummary = $derived(
     projectRootValidationSummary(selectedProjectRootValidation)
@@ -868,12 +1060,12 @@
     projectRootGitRootSuggestion(selectedProject, selectedProjectRootValidation)
   );
   let selectedProjectIsCustom = $derived(
-    customProjectRoots.some((project) => project.id === selectedProject.id)
+    projectStore.customRoots.some((project) => project.id === selectedProject.id)
   );
-  let filteredRecords = $derived(filterSourceRecords(records, query));
+  let filteredRecords = $derived(filterSourceRecords(files.records, files.query));
   let sourceTree = $derived(buildSourceTree(filteredRecords));
-  let autoExpandFolders = $derived(query.trim().length > 0);
-  let visibleTreeRows = $derived(flattenSourceTree(sourceTree, expandedFolderIds, autoExpandFolders));
+  let autoExpandFolders = $derived(files.query.trim().length > 0);
+  let visibleTreeRows = $derived(flattenSourceTree(sourceTree, files.expandedFolderIds, autoExpandFolders));
   let virtualizedTreeRows = $derived(
     virtualizeSourceTreeRows(
       visibleTreeRows,
@@ -884,12 +1076,24 @@
     )
   );
   let projectRecentRecords = $derived(
-    recentSourceRecords
+    files.recentRecords
       .filter((record) => record.projectID === selectedProject.id)
       .slice(0, maxProjectRecentRecords)
   );
   let projectOpenSourceTabs = $derived(
-    openSourceTabs.filter((tab) => tab.projectID === selectedProject.id)
+    files.openTabs.filter((tab) => tab.projectID === selectedProject.id)
+  );
+  let sourceEditorFileDockviewPanels = $derived(
+    projectOpenSourceTabs.map((tab) => ({
+      id: sourceEditorFilePanelID(tab),
+      title: sourceEditorFileDockviewTitle(tab, isSourcePathDirty(tab.path))
+    }))
+  );
+  let sourceEditorFileDockviewPanelIDs = $derived(
+    sourceEditorFileDockviewPanels.map((panel) => panel.id)
+  );
+  let selectedSourceEditorFilePanelID = $derived(
+    files.selectedRecord ? sourceEditorFilePanelIDFromPath(files.selectedRecord.path) : sourceEditorFileDockviewPanels[0]?.id ?? null
   );
   let parsedQuickOpenQuery = $derived(parseQuickOpenQuery(quickOpenQuery));
   let quickOpenWorkspaceSymbolMode = $derived(parsedQuickOpenQuery.searchQuery.startsWith('#'));
@@ -897,49 +1101,116 @@
     quickOpenWorkspaceSymbolMode ? parsedQuickOpenQuery.searchQuery.slice(1).trim() : ''
   );
   let quickOpenResults = $derived(
-    quickOpenWorkspaceSymbolMode ? [] : rankSourceRecords(records, quickOpenQuery, 12)
+    quickOpenWorkspaceSymbolMode ? [] : rankSourceRecords(files.records, quickOpenQuery, 12)
   );
   let quickOpenActiveResultCount = $derived(
     quickOpenWorkspaceSymbolMode ? workspaceSymbolResults.length : quickOpenResults.length
   );
-  let sourceNavigationCanGoBack = $derived(sourceNavigationBackStack.length > 0);
-  let sourceNavigationCanGoForward = $derived(sourceNavigationForwardStack.length > 0);
+  let sourceNavigationCanGoBack = $derived(files.navBackStack.length > 0);
+  let sourceNavigationCanGoForward = $derived(files.navForwardStack.length > 0);
   let selectedIndex = $derived(
-    selectedRecord ? records.findIndex((record) => record.path === selectedRecord?.path) + 1 : 0
+    files.selectedRecord ? files.records.findIndex((record) => record.path === files.selectedRecord?.path) + 1 : 0
   );
   let selectedSourceDraftContent = $derived(
-    preview ? sourceDraftContentByPath[preview.path] ?? preview.content : ''
+    files.preview ? files.draftByPath[files.preview.path] ?? files.preview.content : ''
   );
-  let selectedSourceDirty = $derived(preview ? isSourcePathDirty(preview.path) : false);
+  let selectedSourceDirty = $derived(files.preview ? isSourcePathDirty(files.preview.path) : false);
+  let selectedSourceMarkdownPreviewAvailable = $derived(sourceMarkdownPreviewAvailable(files.preview));
+  let selectedSourceEditorDisplayMode = $derived(
+    files.preview && selectedSourceMarkdownPreviewAvailable
+      ? files.markdownPreviewModeByPath[files.preview.path] ?? 'source'
+      : 'source'
+  );
+  // The 24 Monaco lookup/edit handlers, bundled into one object so EditorPanel
+  // can take them as a single grouped prop and spread them onto the editor.
+  // All are hoisted page `function` declarations (stable refs), so a plain
+  // const object is fine — no reactivity needed.
+  const editorMonacoCallbacks = {
+    onCodeActionLookup: handleEditorCodeActionLookup,
+    onContentChange: updateSelectedSourceDraft,
+    onCommandPaletteRequest: openCommandPalette,
+    onCompletionLookup: handleEditorCompletionLookup,
+    onDiagnosticsChange: handleEditorDiagnosticsChange,
+    onDefinitionLookup: handleEditorDefinitionLookup,
+    onDocumentHighlightLookup: handleEditorDocumentHighlightLookup,
+    onExternalNavigation: navigateEditorExternalSource,
+    onExternalPreviewLookup: loadEditorExternalSourcePreview,
+    onFormatDocument: handleEditorFormatDocument,
+    onGoToLineRequest: openCurrentFileGoToLine,
+    onHoverLookup: handleEditorHoverLookup,
+    onImplementationLookup: handleEditorImplementationLookup,
+    onInlayHintLookup: handleEditorInlayHintLookup,
+    onNavigateBackRequest: navigateSourceBack,
+    onNavigateForwardRequest: navigateSourceForward,
+    onNextProblemRequest: selectNextSourceDiagnostic,
+    onPreviousProblemRequest: selectPreviousSourceDiagnostic,
+    onQuickOpenRequest: openQuickOpen,
+    onReferenceCountLookup: handleEditorReferenceCountLookup,
+    onReferenceLookup: handleEditorReferenceLookup,
+    onRename: handleEditorRename,
+    onSaveRequest: saveSelectedSourceFile,
+    onSemanticTokensLookup: handleEditorSemanticTokensLookup,
+    onSignatureHelpLookup: handleEditorSignatureHelpLookup,
+    onSymbolsChange: handleEditorSymbolsChange,
+    onTypeDefinitionLookup: handleEditorTypeDefinitionLookup,
+    onWorkspaceEditAction: handleEditorWorkspaceEditAction
+  };
+  // GitInsightsPanel passthroughs — stable refs grouped like editorMonacoCallbacks.
+  // (Pure display helpers; the reactive git VALUES are passed inline as the `git` prop.)
+  const gitInsightsFormatters = {
+    badge: selectedSourceGitBadge,
+    statusGroupActionLabel: gitStatusGroupActionLabel,
+    statusFileTitle: gitStatusFileTitle,
+    statusFileSummary: gitStatusFileSummary,
+    taskUrl: gitTaskUrl,
+    commitTaskSourceLabel: gitGraphCommitTaskSourceLabel,
+    commitEntryForRow: gitCommitEntryForRow
+  };
+  const gitInsightsActions = {
+    onStageSelected: () =>
+      files.selectedRecord && runGitPathAction('stage', [files.selectedRecord.relativePath]),
+    onUnstageSelected: () =>
+      files.selectedRecord && runGitPathAction('unstage', [files.selectedRecord.relativePath]),
+    onRemoteAction: runGitRemoteAction,
+    onCommit: commitGitChanges,
+    onStatusGroupAction: runGitStatusGroupAction,
+    onSelectStatusFile: selectGitStatusFile,
+    onSelectCommit: selectGitCommit,
+    onCommitRowKeydown: handleGitCommitRowKeydown,
+    onCopyTaskSourceGroup: copyGitTaskSourceGroup,
+    onCopySelectedCommitDetail: copySelectedGitCommitDetail,
+    onCopyCommitHandoff: copyGitCommitHandoff,
+    onCopyCommitSha: copyGitCommitSha,
+    onCopyCommitSummary: copyGitCommitSummary,
+    onOpenTaskReference: openGitTaskReference,
+    onCopyTaskReference: copyGitTaskReference
+  };
   let dirtyProjectSourceRecords = $derived(
-    dirtySourceRecordsForProject(projectOpenSourceTabs, workspaceEditSourceRecordsByPath, selectedProject)
+    dirtySourceRecordsForProject(projectOpenSourceTabs, files.workspaceEditRecordsByPath, selectedProject)
   );
   let cleanProjectOpenSourceTabCount = $derived(
     projectOpenSourceTabs.filter((tab) => !isSourcePathDirty(tab.path)).length
   );
   let otherCleanProjectOpenSourceTabCount = $derived(
-    projectOpenSourceTabs.filter((tab) => tab.path !== selectedRecord?.path && !isSourcePathDirty(tab.path)).length
+    projectOpenSourceTabs.filter((tab) => tab.path !== files.selectedRecord?.path && !isSourcePathDirty(tab.path)).length
   );
   let sourceIntelligenceAvailable = $derived(
-    preview ? sourceSupportsLanguageIntelligence(preview.language) : false
+    files.preview ? sourceSupportsLanguageIntelligence(files.preview.language) : false
   );
   let sourceDiagnosticSummary = $derived(formatSourceDiagnosticSummary(sourceDiagnostics));
-  let recordCountLabel = $derived(
-    formatSourceRecordCount(filteredRecords.length, records.length, scanLimitReached)
-  );
-  let sourceIndexLoading = $derived(scanning || Boolean(activeSourceScanId));
+  let sourceIndexLoading = $derived(files.scan.scanning || Boolean(files.scan.activeScanId));
   let scanSummaryLabel = $derived(
-    formatSourceScanSummary(filteredRecords.length, records.length, scanLimitReached, query)
+    formatSourceScanSummary(filteredRecords.length, files.records.length, files.scan.limitReached, files.query)
   );
   let sourceScanHealth = $derived(
     formatSourceScanHealth({
-      totalCount: records.length,
+      totalCount: files.records.length,
       filteredCount: filteredRecords.length,
-      truncated: scanLimitReached,
+      truncated: files.scan.limitReached,
       requestedLimit: expandedSourceScanLimit,
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
-      query,
-      scanning,
+      query: files.query,
+      scanning: files.scan.scanning,
       loading: sourceIndexLoading,
       error
     })
@@ -950,7 +1221,7 @@
   let selectedProjectIndexEntry = $derived(
     selectedProjectSourceScanCacheSignature
       ? getSourceScanCacheEntry(
-          sourceScanCache,
+          projectStore.scan.cache,
           selectedProject,
           expandedSourceScanLimit,
           Date.now(),
@@ -959,61 +1230,73 @@
         )
       : null
   );
-  let selectedProjectScanMode = $derived(sourceScanModeByProject[selectedProject.id] ?? 'idle');
+  let selectedProjectScanMode = $derived(projectStore.scan.modeByProject[selectedProject.id] ?? 'idle');
   let selectedProjectScanEvidence = $derived(
     formatSourceScanEvidence({
       project: selectedProject,
       mode: selectedProjectScanMode,
       entry: selectedProjectIndexEntry,
       requestedLimit: expandedSourceScanLimit,
-      scanning,
+      scanning: files.scan.scanning,
       loading: sourceIndexLoading,
       error
     })
   );
   let sourceScanRecovery = $derived(
     formatSourceScanRecovery({
-      totalCount: records.length,
+      totalCount: files.records.length,
       filteredCount: filteredRecords.length,
-      truncated: scanLimitReached,
+      truncated: files.scan.limitReached,
       requestedLimit: expandedSourceScanLimit,
       suspiciousThreshold: suspiciousSourceIndexFileThreshold,
-      query,
-      scanning,
+      query: files.query,
+      scanning: files.scan.scanning,
       loading: sourceIndexLoading,
       error,
-      stats: sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null
+      stats: files.scan.stats ?? selectedProjectIndexEntry?.stats ?? null
     })
   );
   let selectedProjectIndexSummary = $derived(
     formatSourceIndexSummary(
       selectedProjectIndexEntry,
-      backgroundIndexingProjectIDs.has(selectedProject.id),
-      backgroundIndexErrorByProject[selectedProject.id] ?? ''
+      projectStore.scan.backgroundIndexingIDs.has(selectedProject.id),
+      projectStore.scan.backgroundIndexErrorByProject[selectedProject.id] ?? ''
     )
   );
   let sourceScanStatsLabel = $derived(
-    formatSourceScanStats(sourceScanStats ?? selectedProjectIndexEntry?.stats ?? null)
+    formatSourceScanStats(files.scan.stats ?? selectedProjectIndexEntry?.stats ?? null)
   );
+  let sourceSidebarIndexStatusLabel = $derived(sourceSidebarIndexStatus());
+  let sourceSidebarScanMetaLabel = $derived(sourceSidebarScanMeta());
+  let sourceSidebarTreeCountLabel = $derived(sourceSidebarTreeCount());
+  let sourceSidebarTreeStatusLabel = $derived(sourceSidebarTreeStatus());
+  let sourceSidebarScanTelemetryLabel = $derived(
+    sourceSidebarScanTelemetry(files.scan.stats ?? selectedProjectIndexEntry?.stats ?? null)
+  );
+  let sourceSidebarCompactStatusLabel = $derived(sourceSidebarCompactStatus());
   let sourceRuntimeNotice = $derived(sourceRuntimeNoticeText(runtime, error));
+  let sourceSidebarCompactStatusTitle = $derived(sourceSidebarCompactTitle());
+  let sourceSidebarScanTelemetryExpanded = $derived(sourceSidebarScanTelemetryShouldExpand());
+  let sourceRuntimeNoticeExpanded = $derived(sourceRuntimeNoticeShouldExpand());
   const sourceWorkspacePlan = $derived(
     resolveSourcePaneWorkspacePlan<SourceWorkspacePaneID>({
       viewportSize: sourceWorkspaceViewportSize(),
       minEditorSize: sourceWorkspaceMinimumEditorWidth,
       gapSize: sourceWorkspacePaneGapSize,
+      chromeSize: sourceWorkspacePaneChromeSize,
       items: [
         {
           id: 'activity',
           visible: shouldRenderDockPanel('activity'),
-          size: sidePaneWidth,
+          size: dock.sidePaneWidth,
           config: activityPaneSizingConfig,
           collapsePriority: 2,
           previousExpandedSize: sidePaneExpandedWidth
         },
         {
           id: 'context',
-          visible: contextPanelPlacement === 'side' && shouldRenderDockPanel('context'),
-          size: contextPaneWidth,
+          visible: contextPanelPlacement === 'side' && sourceDockPanelVisible('context'),
+          size: dock.contextPaneWidth,
           config: contextPaneWidthSizingConfig,
           collapsePriority: 1,
           previousExpandedSize: contextPaneExpandedWidth
@@ -1025,51 +1308,51 @@
   let effectiveContextPaneWidth = $derived(
     contextPanelPlacement === 'side'
       ? sourceWorkspacePlanItem('context')?.size ?? 0
-      : contextPaneWidth
+      : dock.contextPaneWidth
   );
   let gitStatusByRelativePath = $derived(
-    new Map((projectGitStatus?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
+    new Map((gitStore.status?.files ?? []).map((fileStatus) => [fileStatus.relativePath, fileStatus]))
   );
-  let selectedProjectGitChangedFiles = $derived(projectGitStatus?.files ?? []);
+  let selectedProjectGitChangedFiles = $derived(gitStore.status?.files ?? []);
   let selectedProjectGitFileGroups = $derived(
     buildGitStatusFileGroups(selectedProjectGitChangedFiles)
   );
   let selectedProjectGitFileGroupSummary = $derived(
     formatGitStatusFileGroupSummary(selectedProjectGitFileGroups)
   );
-  let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(selectedRecord));
+  let selectedRecordGitStatus = $derived(gitStatusForSourceRecord(files.selectedRecord));
   let selectedGitPathActionDisabled = $derived(
-    !selectedRecordGitStatus || selectedSourceDirty || gitActionBusy !== ''
+    !selectedRecordGitStatus || selectedSourceDirty || gitStore.actionBusy !== ''
   );
   let selectedGitUnstageDisabled = $derived(
-    !selectedRecordGitStatus || !isGitFileStaged(selectedRecordGitStatus) || gitActionBusy !== ''
+    !selectedRecordGitStatus || !isGitFileStaged(selectedRecordGitStatus) || gitStore.actionBusy !== ''
   );
   let gitHasStagedChanges = $derived(selectedProjectGitChangedFiles.some(isGitFileStaged));
   let gitCommitDisabled = $derived(
-    gitCommitMessage.trim().length === 0 || !gitHasStagedChanges || gitActionBusy !== ''
+    gitStore.commitMessage.trim().length === 0 || !gitHasStagedChanges || gitStore.actionBusy !== ''
   );
-  let gitRemoteActionDisabled = $derived(projectGitLoading || Boolean(projectGitError) || gitActionBusy !== '');
+  let gitRemoteActionDisabled = $derived(gitStore.statusLoading || Boolean(gitStore.statusError) || gitStore.actionBusy !== '');
   let gitCommitHistorySummary = $derived(
     formatGitCommitHistorySummary(
-      gitCommitHistory.length,
-      gitCommitHistoryLoading,
-      gitCommitHistoryError,
-      gitCommitHistorySource
+      gitStore.commitHistory.length,
+      gitStore.commitHistoryLoading,
+      gitStore.commitHistoryError,
+      gitStore.commitHistorySource
     )
   );
   let selectedGitCommit = $derived(
-    gitCommitHistory.find((entry) => entry.sha === selectedGitCommitSha) ?? gitCommitHistory[0] ?? null
+    gitStore.commitHistory.find((entry) => entry.sha === gitStore.selectedCommitSha) ?? gitStore.commitHistory[0] ?? null
   );
   let selectedSourceGitSummary = $derived(
     formatSelectedSourceGitSummary(
       selectedRecordGitStatus,
-      selectedSourceGitDiff,
-      selectedSourceGitDiffLoading,
-      selectedSourceGitDiffError
+      gitStore.selectedDiff,
+      gitStore.selectedDiffLoading,
+      gitStore.selectedDiffError
     )
   );
   let projectGitSummary = $derived(
-    formatSourceContextGitSummary(projectGitStatus, projectGitLoading, projectGitError)
+    formatSourceContextGitSummary(gitStore.status, gitStore.statusLoading, gitStore.statusError)
   );
   let sourceContextIdentity = $derived(
     formatSourceContextIdentity(selectedProject, projectGitSummary, runtime)
@@ -1141,6 +1424,7 @@
       activityTextMatchesFilter(
         sourceActivityFilter,
         session.provider,
+        agentSessionProviderLabel(session),
         session.title,
         session.model,
         session.projectPath,
@@ -1149,6 +1433,24 @@
       )
     )
   );
+  let filteredConversationAgentSessions = $derived(
+    agentSessions.filter((session) =>
+      activityTextMatchesFilter(
+        sourceActivityFilter,
+        session.provider,
+        agentSessionProviderLabel(session),
+        session.title,
+        session.model,
+        session.projectPath,
+        session.lastActivity,
+        agentSessionResumeCommand(session)
+      )
+    )
+  );
+  // Keys (per workspaceSnapshotIDForAgentSession) with a live terminal attached.
+  // Empty for now — the live-terminal manager isn't wired yet, so no LIVE dots;
+  // a later pass populates this once terminal lifecycle lands.
+  const conversationLiveKeys = new Set<string>();
   let filteredWorkspaceSnapshots = $derived(
     workspaceSnapshots.filter((snapshot) =>
       activityTextMatchesFilter(
@@ -1203,7 +1505,7 @@
     })
   );
   let selectedProjectRepositorySummaries = $derived(
-    gitRepositorySummaries.filter(
+    gitStore.repositorySummaries.filter(
       (summary) =>
         summary.projectID === selectedProject.id ||
         normalizeProjectPath(summary.path) === normalizeProjectPath(selectedProject.path)
@@ -1211,18 +1513,18 @@
   );
   let repositoryDashboardGitGraph = $derived(
     buildGitGraphViewModel({
-      repositories: gitRepositorySummaries,
+      repositories: gitStore.repositorySummaries,
       commits: []
     })
   );
   let selectedProjectGitGraph = $derived(
     buildGitGraphViewModel({
       repositories: selectedProjectRepositorySummaries,
-      commits: gitCommitHistory
+      commits: gitStore.commitHistory
     })
   );
   let selectedGitCommitRow = $derived(
-    selectedProjectGitGraph.commits.find((entry) => entry.sha === selectedGitCommitSha) ??
+    selectedProjectGitGraph.commits.find((entry) => entry.sha === gitStore.selectedCommitSha) ??
       selectedProjectGitGraph.commits[0] ??
       null
   );
@@ -1264,25 +1566,25 @@
   let selectedProjectPrimaryRepoSummary = $derived(selectedProjectRepositorySummaries[0] ?? null);
   let selectedProjectGitBranchHealth = $derived(
     formatGitBranchHealthSummary({
-      branch: projectGitStatus?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? null,
-      ahead: projectGitStatus?.ahead ?? selectedProjectPrimaryRepoSummary?.ahead ?? 0,
-      behind: projectGitStatus?.behind ?? selectedProjectPrimaryRepoSummary?.behind ?? 0,
-      stagedCount: projectGitStatus
+      branch: gitStore.status?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? null,
+      ahead: gitStore.status?.ahead ?? selectedProjectPrimaryRepoSummary?.ahead ?? 0,
+      behind: gitStore.status?.behind ?? selectedProjectPrimaryRepoSummary?.behind ?? 0,
+      stagedCount: gitStore.status
         ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'staged')
         : selectedProjectPrimaryRepoSummary?.stagedCount ?? 0,
-      unstagedCount: projectGitStatus
+      unstagedCount: gitStore.status
         ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'unstaged')
         : selectedProjectPrimaryRepoSummary?.unstagedCount ?? 0,
-      untrackedCount: projectGitStatus
+      untrackedCount: gitStore.status
         ? gitStatusGroupFileCount(selectedProjectGitFileGroups, 'untracked')
         : selectedProjectPrimaryRepoSummary?.untrackedCount ?? 0,
-      changedCount: projectGitStatus
+      changedCount: gitStore.status
         ? selectedProjectGitChangedFiles.length
         : selectedProjectPrimaryRepoSummary?.dirtyCount ?? 0,
-      isDirty: projectGitStatus
+      isDirty: gitStore.status
         ? selectedProjectGitChangedFiles.length > 0
         : selectedProjectPrimaryRepoSummary?.isDirty ?? false,
-      error: projectGitError || selectedProjectPrimaryRepoSummary?.error || null,
+      error: gitStore.statusError || selectedProjectPrimaryRepoSummary?.error || null,
       rootLabel: selectedProjectPrimaryRepoSummary?.rootLabel ?? formatSourceContextRootLabel(selectedProject.path),
       lastCommitSha: selectedProjectPrimaryRepoSummary?.lastCommitSha ?? null
     })
@@ -1290,12 +1592,12 @@
   let selectedProjectGitGraphSummary = $derived(
     formatGitGraphSummary(
       selectedProjectGitGraph,
-      gitRepositorySummariesLoading,
-      gitRepositorySummaryError,
-      gitRepositorySummarySource,
-      gitCommitHistoryLoading,
-      gitCommitHistoryError,
-      gitCommitHistorySource
+      gitStore.repositorySummariesLoading,
+      gitStore.repositorySummaryError,
+      gitStore.repositorySummarySource,
+      gitStore.commitHistoryLoading,
+      gitStore.commitHistoryError,
+      gitStore.commitHistorySource
     )
   );
   let selectedProjectGitTaskIDs = $derived(
@@ -1366,17 +1668,44 @@
       activeSessionPaths: selectedProjectAgentSessionPaths
     })
   );
+  let projectWorktreeCleanupPlans = $derived(
+    prioritizedProjectWorktrees.map((worktree) => projectWorktreeCleanupPlan(worktree))
+  );
+  let projectWorktreeRunbookSafetyInputs = $derived(
+    prioritizedProjectWorktrees.map((worktree) => ({
+      path: worktree.path,
+      repoName: worktree.repo,
+      branch: worktree.branch,
+      taskID: worktree.taskID,
+      safety: projectWorktreeSafety(worktree)
+    }))
+  );
+  let projectWorktreeCleanupRunbook = $derived(
+    buildWorktreeCleanupRunbook({
+      cleanupPlans: projectWorktreeCleanupPlans,
+      decisionQueue: projectWorktreeDecisionQueue,
+      safetySummaries: projectWorktreeRunbookSafetyInputs
+    })
+  );
   let repoDashboardSummary = $derived(
     formatRepoDashboardSummary(
-      gitRepositorySummaries,
-      gitRepositorySummariesLoading,
-      gitRepositorySummaryError,
-      gitRepositorySummarySource
+      gitStore.repositorySummaries,
+      gitStore.repositorySummariesLoading,
+      gitStore.repositorySummaryError,
+      gitStore.repositorySummarySource
     )
   );
   let agentSessionSummary = $derived(
     formatAgentSessionSummary(
       selectedProjectAgentSessions.length,
+      agentSessionsLoading,
+      agentSessionError,
+      agentSessionSource
+    )
+  );
+  let conversationSessionSummary = $derived(
+    formatConversationSessionSummary(
+      agentSessions.length,
       agentSessionsLoading,
       agentSessionError,
       agentSessionSource
@@ -1392,52 +1721,25 @@
   );
   let visibleContextCards = $derived(visibleContextCardIDs());
   let activeContextCard = $derived(activeVisibleContextCardID());
+  let sourceContextCardDockviewPanels = $derived(
+    visibleContextCards.map((cardID) => ({
+      id: cardID,
+      title: contextCardLabels[cardID],
+      size: contextCardPaneviewSizes[cardID],
+      minimumBodySize: 72,
+      isExpanded: true
+    }))
+  );
+  let sourceContextCardDockviewPanelIDs = $derived(
+    sourceContextCardDockviewPanels.map((panel) => panel.id)
+  );
+  let contextPanelPresentation = $derived(
+    resolveContextPanelPresentation(contextPanelMode, contextPanelPlacement)
+  );
   let sourceSearchSummary = $derived(
     formatSourceSearchSummary(sourceSearchResults.length, sourceSearchLoading, sourceSearchError)
   );
-  let sourceDefinitionSummary = $derived(
-    formatSourceDefinitionSummary(
-      sourceDefinitionTargets.length,
-      sourceDefinitionLoading,
-      sourceDefinitionError,
-      sourceDefinitionQuery
-    )
-  );
-  let sourceReferenceSummary = $derived(
-    formatSourceReferenceSummary(
-      sourceReferenceTargets.length,
-      sourceReferenceLoading,
-      sourceReferenceError,
-      sourceReferenceQuery
-    )
-  );
-  let sourceImplementationSummary = $derived(
-    formatSourceImplementationSummary(
-      sourceImplementationTargets.length,
-      sourceImplementationLoading,
-      sourceImplementationError,
-      sourceImplementationQuery
-    )
-  );
-  let sourceTypeDefinitionSummary = $derived(
-    formatSourceTypeDefinitionSummary(
-      sourceTypeDefinitionTargets.length,
-      sourceTypeDefinitionLoading,
-      sourceTypeDefinitionError,
-      sourceTypeDefinitionQuery
-    )
-  );
-  let sourceDefinitionNavCount = $derived(
-    sourceDefinitionTargets.length + sourceImplementationTargets.length + sourceTypeDefinitionTargets.length
-  );
-  let sourceLookupLoading = $derived(
-    sourceDefinitionLoading ||
-      sourceReferenceLoading ||
-      sourceImplementationLoading ||
-      sourceTypeDefinitionLoading
-  );
-  let sourceLookupSummary = $derived(formatSourceLookupSummary());
-  let sourceActivityPanelLabel = $derived(sourceActivityLabel(sourceActivityMode));
+  let sourceActivityPanelLabel = $derived(sourceActivityLabel(dock.activityMode));
   let sourceCommandPaletteItems = $derived<SourceCommandPaletteItem[]>([
     {
       id: 'quick-open',
@@ -1449,14 +1751,14 @@
       id: 'workspace-symbols',
       label: 'Search workspace symbols',
       detail: 'Cmd+P then #symbol',
-      disabled: !preview || !sourceIntelligenceAvailable,
+      disabled: !files.preview || !sourceIntelligenceAvailable,
       perform: openWorkspaceSymbolQuickOpen
     },
     {
       id: 'go-to-line',
       label: 'Go to line',
-      detail: selectedRecord ? `${selectedRecord.relativePath}:line` : 'No file',
-      disabled: !selectedRecord,
+      detail: files.selectedRecord ? `${files.selectedRecord.relativePath}:line` : 'No file',
+      disabled: !files.selectedRecord,
       perform: openCurrentFileGoToLine
     },
     {
@@ -1483,21 +1785,21 @@
       id: 'scan-project',
       label: 'Scan current project',
       detail: selectedProject.name,
-      disabled: scanning,
-      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
+      disabled: files.scan.scanning,
+      perform: () => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-project-expanded',
       label: `Scan current project up to ${expandedSourceScanLimit.toLocaleString()} files`,
       detail: selectedProject.name,
-      disabled: scanning,
-      perform: () => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
+      disabled: files.scan.scanning,
+      perform: () => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })
     },
     {
       id: 'scan-reset-index',
       label: `Reset project index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`,
       detail: selectedProjectIndexSummary,
-      disabled: scanning,
+      disabled: files.scan.scanning,
       perform: () => resetProjectScanCache(selectedProject)
     },
     {
@@ -1507,10 +1809,19 @@
       perform: copySourceScanDiagnosticBrief
     },
     {
+      id: 'kill-playwright-sessions',
+      label: 'Kill Playwright sessions',
+      detail: playwrightSessions.length
+        ? `${playwrightSessions.length} active from ${playwrightSessionSource}`
+        : playwrightSessionError || 'No Playwright sessions',
+      disabled: playwrightSessions.length === 0 || playwrightSessionsLoading || playwrightSessionsKilling,
+      perform: killPlaywrightSessions
+    },
+    {
       id: 'scan-stop',
       label: 'Stop source scan',
-      detail: sourceScanProgress?.status ?? 'Cancel the active scanner',
-      disabled: !scanning,
+      detail: files.scan.progress?.status ?? 'Cancel the active scanner',
+      disabled: !files.scan.scanning,
       perform: cancelSourceScan
     },
     {
@@ -1531,42 +1842,42 @@
       id: 'project-use-git-root',
       label: 'Use detected Git root',
       detail: selectedProjectGitRootSuggestion || selectedProjectRootValidationSummary,
-      disabled: !selectedProjectGitRootSuggestion || projectRootValidating || scanning,
+      disabled: !selectedProjectGitRootSuggestion || projectRootValidating || files.scan.scanning,
       perform: useValidatedGitRootForSelectedProject
     },
     {
       id: 'project-repair-onboarding',
       label: 'Repair project setup',
       detail: `${selectedProject.name} · validate, clear index, rescan`,
-      disabled: projectRootValidating || scanning,
+      disabled: projectRootValidating || files.scan.scanning,
       perform: repairSelectedProjectOnboarding
     },
     {
       id: 'project-open-folder',
       label: 'Open project folder',
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-open:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-open:${selectedProject.path}`,
       perform: () => openActivityPath(selectedProject.path)
     },
     {
       id: 'project-reveal-folder',
       label: 'Reveal project folder',
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-reveal:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-reveal:${selectedProject.path}`,
       perform: () => revealActivityPath(selectedProject.path)
     },
     {
       id: 'project-open-terminal',
       label: `Open project in ${sourceTerminalApp}`,
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-terminal:${selectedProject.path}`,
       perform: () => openActivityTerminalPath(selectedProject.path)
     },
     {
       id: 'terminal-open-project',
       label: `Open project shell in ${sourceTerminalApp}`,
       detail: selectedProject.path,
-      disabled: !selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`,
+      disabled: !selectedProject.path || files.fileActionBusy === `activity-terminal:${selectedProject.path}`,
       perform: () => openActivityTerminalPath(selectedProject.path)
     },
     {
@@ -1611,7 +1922,7 @@
       disabled: workspaceSnapshots.length === 0,
       perform: () => {
         const snapshot = workspaceSnapshots[0];
-        if (snapshot) openWorkspaceSnapshotEmbeddedTerminal(snapshot);
+        if (snapshot) openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot);
       }
     },
     {
@@ -1687,7 +1998,7 @@
       id: `conversation-resume-snapshot-embedded-${snapshot.id}`,
       label: `Resume workspace embedded: ${snapshot.title}`,
       detail: snapshot.resumeCommand ?? workspaceSnapshotScopeLabel(snapshot),
-      perform: () => openWorkspaceSnapshotEmbeddedTerminal(snapshot)
+      perform: () => openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot)
     })),
     ...workspaceSnapshots.slice(0, 8).map((snapshot) => ({
       id: `conversation-copy-restore-plan-${snapshot.id}`,
@@ -1706,14 +2017,14 @@
       id: 'save-file',
       label: 'Save file',
       detail: 'Cmd+S',
-      disabled: !selectedSourceDirty || fileActionBusy === 'save',
+      disabled: !selectedSourceDirty || files.fileActionBusy === 'save',
       perform: saveSelectedSourceFile
     },
     {
       id: 'save-all-files',
       label: 'Save all dirty files',
       detail: `${dirtyProjectSourceRecords.length} dirty`,
-      disabled: dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all',
+      disabled: dirtyProjectSourceRecords.length === 0 || files.fileActionBusy === 'save-all',
       perform: saveAllDirtySourceFiles
     },
     {
@@ -1739,15 +2050,15 @@
     {
       id: 'close-current-tab',
       label: 'Close current tab',
-      detail: selectedRecord?.fileName ?? 'No file',
-      disabled: !selectedRecord,
+      detail: files.selectedRecord?.fileName ?? 'No file',
+      disabled: !files.selectedRecord,
       perform: closeSelectedSourceTab
     },
     {
       id: 'close-other-clean-tabs',
       label: 'Close other clean tabs',
       detail: `${otherCleanProjectOpenSourceTabCount} clean`,
-      disabled: !selectedRecord || otherCleanProjectOpenSourceTabCount === 0,
+      disabled: !files.selectedRecord || otherCleanProjectOpenSourceTabCount === 0,
       perform: closeOtherCleanSourceTabs
     },
     {
@@ -1760,164 +2071,127 @@
     {
       id: 'format-document',
       label: 'Format document',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('format')
     },
     {
       id: 'rename-symbol',
       label: 'Rename symbol',
       detail: 'F2',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('rename')
     },
     {
       id: 'quick-fix',
       label: 'Quick fix',
       detail: 'Alt+Enter',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('quick-fix')
     },
     {
       id: 'trigger-completions',
       label: 'Trigger completions',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('completion')
     },
     {
       id: 'show-signature-help',
       label: 'Show signature help',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('signature-help')
     },
     {
       id: 'revert-file',
       label: 'Revert file',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !selectedSourceDirty || fileActionBusy === 'save',
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !selectedSourceDirty || files.fileActionBusy === 'save',
       perform: revertSelectedSourceFile
     },
     {
       id: 'copy-path',
       label: 'Copy file path',
-      detail: preview?.relativePath ?? 'No file',
-      disabled: !preview || fileActionBusy === 'copy',
+      detail: files.preview?.relativePath ?? 'No file',
+      disabled: !files.preview || files.fileActionBusy === 'copy',
       perform: copySelectedPath
     },
     {
       id: 'source-copy-context-brief',
       label: 'Copy source context brief',
-      detail: selectedRecord?.relativePath ?? selectedProject.name,
+      detail: files.selectedRecord?.relativePath ?? selectedProject.name,
       disabled: !selectedProject.path,
       perform: copySourceContextBrief
     },
     {
       id: 'open-file-native',
       label: 'Open file in IDE',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || fileActionBusy === 'open',
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.fileActionBusy === 'open',
       perform: openSelectedFile
     },
     {
       id: 'reveal-file',
       label: 'Reveal file in Finder',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || fileActionBusy === 'reveal',
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.fileActionBusy === 'reveal',
       perform: revealSelectedFile
     },
     {
       id: 'go-definition',
       label: 'Go to definition',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading,
       perform: () => requestSourceIntelligenceAction('definition')
     },
     {
       id: 'find-references',
       label: 'Find references',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading,
       perform: () => requestSourceIntelligenceAction('references')
     },
     {
       id: 'find-implementations',
       label: 'Find implementations',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('implementation')
     },
     {
       id: 'go-type-definition',
       label: 'Go to type definition',
-      detail: preview?.fileName ?? 'No file',
-      disabled: !preview || loading || !sourceIntelligenceAvailable,
+      detail: files.preview?.fileName ?? 'No file',
+      disabled: !files.preview || files.scan.loading || !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('type-definition')
     },
     {
       id: 'show-hover',
       label: 'Show hover',
-      detail: preview?.language ?? 'No language',
+      detail: files.preview?.language ?? 'No language',
       disabled: !sourceIntelligenceAvailable,
       perform: () => requestSourceIntelligenceAction('hover')
     },
     {
-      id: 'editor-local-problems',
-      label: 'Show local problems drawer',
-      detail: sourceDiagnosticSummary,
-      perform: () => openEditorNavPanel('problems')
-    },
-    {
-      id: 'editor-local-symbols',
-      label: 'Show local symbols drawer',
-      detail: `${sourceSymbols.length} symbols`,
-      perform: () => openEditorNavPanel('symbols')
-    },
-    {
-      id: 'editor-local-definitions',
-      label: 'Show local definitions drawer',
-      detail: sourceLookupSummary,
-      perform: () => openEditorNavPanel('definitions')
-    },
-    {
-      id: 'editor-local-references',
-      label: 'Show local references drawer',
-      detail: sourceReferenceSummary || 'No references yet',
-      perform: () => openEditorNavPanel('references')
-    },
-    {
-      id: 'clear-source-lookups',
-      label: 'Clear source lookup results',
-      detail: sourceLookupSummary,
-      disabled:
-        sourceDefinitionNavCount === 0 &&
-        sourceReferenceTargets.length === 0 &&
-        !sourceDefinitionQuery &&
-        !sourceReferenceQuery &&
-        !sourceImplementationQuery &&
-        !sourceTypeDefinitionQuery,
-      perform: clearSourceLookupResults
-    },
-    {
       id: 'source-copy-intelligence-brief',
       label: 'Copy source intelligence brief',
-      detail: preview?.fileName ?? selectedProject.name,
-      disabled: !preview,
+      detail: files.preview?.fileName ?? selectedProject.name,
+      disabled: !files.preview,
       perform: copySourceIntelligenceBrief
     },
     {
       id: 'lsp-retry-status',
       label: 'Retry language server status',
       detail: sourceLspStatusLabel(),
-      disabled: !preview || !sourceIntelligenceAvailable || sourceLspStatusLoading,
-      perform: () => loadSourceLspStatus(preview, selectedProject)
+      disabled: !files.preview || !sourceIntelligenceAvailable || sourceLspStatusLoading,
+      perform: () => loadSourceLspStatus(files.preview, selectedProject)
     },
     {
       id: 'lsp-copy-status',
       label: 'Copy language server status',
       detail: sourceLspStatusLabel(),
-      disabled: !preview,
+      disabled: !files.preview,
       perform: copySourceLspStatusReport
     },
     {
@@ -1936,14 +2210,8 @@
     {
       id: 'insights-toggle',
       label: editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights',
-      detail: 'Problems, symbols, Git',
+      detail: 'Selected-file Git',
       perform: toggleEditorInsightCollapsed
-    },
-    {
-      id: 'insights-problems',
-      label: 'Show problems',
-      detail: sourceDiagnosticSummary,
-      perform: () => showEditorInsightPanel('problems')
     },
     {
       id: 'next-problem',
@@ -1958,12 +2226,6 @@
       detail: 'Shift+F8',
       disabled: sourceDiagnostics.length === 0,
       perform: () => selectPreviousSourceDiagnostic()
-    },
-    {
-      id: 'insights-symbols',
-      label: 'Show symbols',
-      detail: `${sourceSymbols.length} symbols`,
-      perform: () => showEditorInsightPanel('symbols')
     },
     {
       id: 'insights-git',
@@ -2025,7 +2287,7 @@
     {
       id: 'layout-copy-diagnostic',
       label: 'Copy layout diagnostic',
-      detail: `${sourceLayoutPreset} layout · ${sourceActivityLabel(sourceActivityMode)}`,
+      detail: `${dock.layoutPreset} layout · ${sourceActivityLabel(dock.activityMode)}`,
       perform: copySourceLayoutDiagnostic
     },
     {
@@ -2052,7 +2314,7 @@
         id: `dock-move-${panelID}-${groupID}`,
         label: `Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`,
         detail: dockPanelPlacementSummary(panelID),
-        disabled: dockGroupIDForPanel(sourceDockLayout, panelID) === groupID,
+        disabled: dockGroupIDForPanel(dock.layout, panelID) === groupID,
         perform: () => moveDockPanelToManagedGroup(panelID, groupID)
       }))
     ),
@@ -2295,35 +2557,35 @@
       id: 'activity-files',
       label: 'Show files',
       detail: sourceActivitySummary('files'),
-      disabled: sourceActivityMode === 'files',
+      disabled: dock.activityMode === 'files',
       perform: () => selectSourceActivityMode('files')
     },
     {
       id: 'activity-clipboard',
       label: 'Show clipboard cleanup',
       detail: sourceActivitySummary('clipboard'),
-      disabled: sourceActivityMode === 'clipboard',
+      disabled: dock.activityMode === 'clipboard',
       perform: () => selectSourceActivityMode('clipboard')
     },
     {
       id: 'paste-read-clipboard',
       label: 'Read clipboard for cleanup',
       detail: pasteCleanupMode,
-      disabled: fileActionBusy === 'paste-read',
+      disabled: files.fileActionBusy === 'paste-read',
       perform: readPasteCleanupClipboard
     },
     {
       id: 'paste-copy-cleaned',
       label: 'Copy cleaned paste',
       detail: pasteCleanupStats,
-      disabled: pasteCleanupOutput.trim().length === 0 || fileActionBusy === 'paste-copy',
+      disabled: pasteCleanupOutput.trim().length === 0 || files.fileActionBusy === 'paste-copy',
       perform: copyPasteCleanupOutput
     },
     {
       id: 'paste-copy-reply-draft',
       label: 'Copy paste reply draft',
       detail: pasteCleanupReplyStats,
-      disabled: pasteCleanupReplyOutput.trim().length === 0 || fileActionBusy === 'paste-reply-copy',
+      disabled: pasteCleanupReplyOutput.trim().length === 0 || files.fileActionBusy === 'paste-reply-copy',
       perform: copyPasteCleanupReplyDraft
     },
     {
@@ -2357,7 +2619,7 @@
       id: `paste-copy-history-${item.id}`,
       label: `Copy ${pasteCleanupHistoryKindLabel(item.kind)} history`,
       detail: item.summary,
-      disabled: fileActionBusy === 'activity-copy',
+      disabled: files.fileActionBusy === 'activity-copy',
       perform: () => copyPasteCleanupHistoryItem(item)
     })),
     ...pasteCleanupModes.map((mode) => ({
@@ -2371,14 +2633,14 @@
       id: 'activity-conversations',
       label: 'Show conversations',
       detail: sourceActivitySummary('conversations'),
-      disabled: sourceActivityMode === 'conversations',
+      disabled: dock.activityMode === 'conversations',
       perform: () => selectSourceActivityMode('conversations')
     },
     {
       id: 'activity-runs',
       label: 'Show orchestration runs',
       detail: sourceActivitySummary('runs'),
-      disabled: sourceActivityMode === 'runs',
+      disabled: dock.activityMode === 'runs',
       perform: () => selectSourceActivityMode('runs')
     },
     {
@@ -2509,21 +2771,21 @@
       id: 'activity-sessions',
       label: 'Show active sessions',
       detail: sourceActivitySummary('sessions'),
-      disabled: sourceActivityMode === 'sessions',
+      disabled: dock.activityMode === 'sessions',
       perform: () => selectSourceActivityMode('sessions')
     },
     {
       id: 'activity-agents',
       label: 'Show agents',
       detail: sourceActivitySummary('agents'),
-      disabled: sourceActivityMode === 'agents',
+      disabled: dock.activityMode === 'agents',
       perform: () => selectSourceActivityMode('agents')
     },
     {
       id: 'activity-worktrees',
       label: 'Show worktrees',
       detail: sourceActivitySummary('worktrees'),
-      disabled: sourceActivityMode === 'worktrees',
+      disabled: dock.activityMode === 'worktrees',
       perform: () => selectSourceActivityMode('worktrees')
     },
     {
@@ -2532,6 +2794,13 @@
       detail: projectWorktreeCleanupBrief.headline,
       disabled: projectWorktrees.length === 0,
       perform: copyProjectWorktreeCleanupBrief
+    },
+    {
+      id: 'worktree-cleanup-runbook',
+      label: 'Copy worktree cleanup runbook',
+      detail: projectWorktreeCleanupRunbook.headline,
+      disabled: projectWorktrees.length === 0,
+      perform: copyProjectWorktreeCleanupRunbook
     },
     {
       id: 'worktree-cleanup-script',
@@ -2544,14 +2813,14 @@
       id: 'activity-git',
       label: 'Show Git and tasks',
       detail: sourceActivitySummary('git'),
-      disabled: sourceActivityMode === 'git',
+      disabled: dock.activityMode === 'git',
       perform: () => selectSourceActivityMode('git')
     },
     {
       id: 'git-refresh-history',
       label: 'Refresh Git history',
       detail: selectedProject.name,
-      disabled: gitCommitHistoryLoading,
+      disabled: gitStore.commitHistoryLoading,
       perform: () => loadGitCommitHistory(selectedProject)
     },
     {
@@ -2625,13 +2894,13 @@
       detail: row.nextAction,
       perform: () => focusGitTaskLedger(row.taskID)
     })),
-    ...gitCommitHistory.slice(0, 8).map((entry) => ({
+    ...gitStore.commitHistory.slice(0, 8).map((entry) => ({
       id: `git-copy-commit-${entry.sha}`,
       label: `Copy commit: ${entry.shortSha}`,
       detail: entry.subject,
       perform: () => copyGitCommitSummary(entry)
     })),
-    ...gitCommitHistory.slice(0, 8).map((entry) => ({
+    ...gitStore.commitHistory.slice(0, 8).map((entry) => ({
       id: `git-copy-commit-handoff-${entry.sha}`,
       label: `Copy commit handoff: ${entry.shortSha}`,
       detail: entry.subject,
@@ -2640,9 +2909,9 @@
     {
       id: 'activity-refresh',
       label: `Refresh ${sourceActivityPanelLabel}`,
-      detail: sourceActivitySummary(sourceActivityMode),
-      disabled: sourceActivityRefreshing(sourceActivityMode),
-      perform: () => refreshSourceActivityMode(sourceActivityMode)
+      detail: sourceActivitySummary(dock.activityMode),
+      disabled: sourceActivityRefreshing(dock.activityMode),
+      perform: () => refreshSourceActivityMode(dock.activityMode)
     },
     ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => {
       const action = projectWorktreePrimaryAction(worktree);
@@ -2668,6 +2937,16 @@
       disabled: false,
       perform: () => copyWorktreeCleanupPlan(worktree)
     })),
+    ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => {
+      const commandBlock = projectWorktreeRunbookCommandBlock(worktree);
+      return {
+        id: `worktree-runbook-command-block-${worktree.path}`,
+        label: `Copy worktree runbook command block: ${worktree.branch}`,
+        detail: commandBlock?.title ?? projectWorktreeSafety(worktree).recommendation,
+        disabled: false,
+        perform: () => copyWorktreeRunbookCommandBlock(worktree)
+      };
+    }),
     ...prioritizedProjectWorktrees.slice(0, 8).map((worktree) => ({
       id: `worktree-audit-command-${worktree.path}`,
       label: `Copy worktree audit command: ${worktree.branch}`,
@@ -2764,19 +3043,19 @@
     {
       id: 'git-stage-file',
       label: 'Stage selected file',
-      detail: selectedRecord?.relativePath ?? 'No file',
-      disabled: selectedGitPathActionDisabled || !selectedRecord,
+      detail: files.selectedRecord?.relativePath ?? 'No file',
+      disabled: selectedGitPathActionDisabled || !files.selectedRecord,
       perform: () => {
-        if (selectedRecord) void runGitPathAction('stage', [selectedRecord.relativePath]);
+        if (files.selectedRecord) void runGitPathAction('stage', [files.selectedRecord.relativePath]);
       }
     },
     {
       id: 'git-unstage-file',
       label: 'Unstage selected file',
-      detail: selectedRecord?.relativePath ?? 'No file',
-      disabled: selectedGitUnstageDisabled || !selectedRecord,
+      detail: files.selectedRecord?.relativePath ?? 'No file',
+      disabled: selectedGitUnstageDisabled || !files.selectedRecord,
       perform: () => {
-        if (selectedRecord) void runGitPathAction('unstage', [selectedRecord.relativePath]);
+        if (files.selectedRecord) void runGitPathAction('unstage', [files.selectedRecord.relativePath]);
       }
     },
     {
@@ -2807,6 +3086,36 @@
     ).slice(0, 12)
   );
 
+  // Apply terminal font settings live to an already-running embedded terminal.
+  // Reading the derived fields registers them as dependencies. We only touch the
+  // terminal when a value actually differs from its current options, so the
+  // first run after mount (values already match the constructor) is a no-op and
+  // never triggers a spurious refit/PTY resize.
+  $effect(() => {
+    const { fontFamily, fontSize, lineHeight } = embeddedTerminalAppearance;
+    const terminal = embeddedTerminal;
+    if (!terminal) return;
+
+    let changed = false;
+    if (terminal.options.fontFamily !== fontFamily) {
+      terminal.options.fontFamily = fontFamily;
+      changed = true;
+    }
+    if (terminal.options.fontSize !== fontSize) {
+      terminal.options.fontSize = fontSize;
+      changed = true;
+    }
+    if (terminal.options.lineHeight !== lineHeight) {
+      terminal.options.lineHeight = lineHeight;
+      changed = true;
+    }
+
+    if (changed) {
+      // Re-measure cell size and resize the PTY to match the new font metrics.
+      fitEmbeddedTerminal();
+    }
+  });
+
   $effect(() => {
     if (!quickOpenVisible) return;
     const lastResultIndex = Math.max(0, quickOpenActiveResultCount - 1);
@@ -2824,7 +3133,7 @@
       return;
     }
 
-    if (!query || !preview || !sourceIntelligenceAvailable) {
+    if (!query || !files.preview || !sourceIntelligenceAvailable) {
       workspaceSymbolResults = [];
       workspaceSymbolError = '';
       workspaceSymbolLoading = false;
@@ -2850,11 +3159,11 @@
     const element = sourceWorkspaceElement;
     if (!element) return;
 
-    measureSourceWorkspaceWidth();
+    measureSourceWorkspaceSize();
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', measureSourceWorkspaceWidth);
-      return () => window.removeEventListener('resize', measureSourceWorkspaceWidth);
+      window.addEventListener('resize', measureSourceWorkspaceSize);
+      return () => window.removeEventListener('resize', measureSourceWorkspaceSize);
     }
 
     let resizeFrame = 0;
@@ -2862,15 +3171,15 @@
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = 0;
-        measureSourceWorkspaceWidth();
+        measureSourceWorkspaceSize();
       });
     });
     resizeObserver.observe(element);
-    window.addEventListener('resize', measureSourceWorkspaceWidth);
+    window.addEventListener('resize', measureSourceWorkspaceSize);
     return () => {
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeObserver.disconnect();
-      window.removeEventListener('resize', measureSourceWorkspaceWidth);
+      window.removeEventListener('resize', measureSourceWorkspaceSize);
     };
   });
 
@@ -2942,9 +3251,7 @@
     const element = embeddedTerminalElement;
     if (!sourceDockPanelVisible('terminal') || !element) return;
 
-    void ensureEmbeddedTerminalRenderer().then(() => {
-      window.setTimeout(fitEmbeddedTerminal, 0);
-    });
+    void ensureEmbeddedTerminalRenderer().then(scheduleEmbeddedTerminalFit);
 
     if (typeof ResizeObserver === 'undefined') return;
 
@@ -2953,7 +3260,7 @@
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = 0;
-        fitEmbeddedTerminal();
+        scheduleEmbeddedTerminalFit();
       });
     });
     resizeObserver.observe(element);
@@ -2965,17 +3272,20 @@
 
   async function scanProject(
     project: ProjectRoot,
-    preferredPath = selectedSourcePaths[project.id] ?? selectedRecord?.path ?? null,
+    preferredPath = projectStore.selectedSourcePaths[project.id] ?? files.selectedRecord?.path ?? null,
     options: SourceScanOptions = {}
   ) {
     const generation = ++scanGeneration;
+    // A new scan may surface a different tree / changed files on disk; drop all
+    // memoized external previews so none survive into the rescanned project.
+    externalPreviewCache.clear();
     const scanLimit = options.limit ?? expandedSourceScanLimit;
     const sourceSignature = sourceScanCacheSignatureForProject(project);
     const cachedScan =
       options.force || !sourceSignature
         ? null
         : getSourceScanCacheEntry(
-            sourceScanCache,
+            projectStore.scan.cache,
             project,
             scanLimit,
             Date.now(),
@@ -2988,15 +3298,15 @@
       sourceScanCacheEntryNeedsRepair(cachedScan, scanLimit, suspiciousSourceIndexFileThreshold);
 
     if (cachedScanNeedsRepair) {
-      sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-      persistSourceScanCache(sourceScanCache);
+      projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+      persistSourceScanCache(projectStore.scan.cache);
       setSourceScanMode(project.id, 'repair');
-      fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
+      files.fileActionStatus = `Cached index for ${project.name} only had ${cachedScan.records.length.toLocaleString()} files. Rebuilding the project index.`;
     } else if (cachedScan) {
-      activeSourceScanId = '';
-      sourceScanProgress = null;
-      scanning = false;
-      loading = true;
+      files.scan.activeScanId = '';
+      files.scan.progress = null;
+      files.scan.scanning = false;
+      files.scan.loading = true;
       error = '';
       runtime = 'cached source scan';
       setSourceScanMode(project.id, 'cache');
@@ -3013,17 +3323,26 @@
       if (nextSelection) {
         await loadRecord(nextSelection, generation);
       } else {
-        loading = false;
+        files.scan.loading = false;
       }
       return;
     }
 
-    scanning = true;
-    loading = true;
+    files.scan.scanning = true;
+    files.scan.loading = true;
     const scanId = createSourceScanId();
-    activeSourceScanId = scanId;
-    sourceScanProgress = null;
-    sourceScanStats = null;
+    // Supersede any previous in-flight scan: cancel its backend walk so it does
+    // not run to completion after we've moved on. The generation counter above
+    // already discards a superseded scan's *result*, but without this the Rust
+    // walk kept running anyway — a wasted "ghost" scan executing in parallel that
+    // doubled native load time (each walk of a large tree is multiple seconds).
+    const supersededScanId = files.scan.activeScanId;
+    if (supersededScanId && supersededScanId !== scanId) {
+      void cancelSourceScanFromTauri(supersededScanId).catch(() => {});
+    }
+    files.scan.activeScanId = scanId;
+    files.scan.progress = null;
+    files.scan.stats = null;
     error = '';
     runtime = 'scanning source files';
     setSourceScanMode(project.id, 'native');
@@ -3052,10 +3371,10 @@
           suspiciousSourceIndexFileThreshold
         )
       ) {
-        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-        persistSourceScanCache(sourceScanCache);
+        projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+        persistSourceScanCache(projectStore.scan.cache);
         setSourceScanMode(project.id, 'repair');
-        fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
+        files.fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Rebuilding the project index.`;
         await scanProject(project, preferredPath, {
           force: true,
           limit: Math.max(scanLimit, expandedSourceScanLimit),
@@ -3068,8 +3387,8 @@
       const shouldCacheScanResult = !(options.skipTinyIndexRepair && suspiciousScanResult);
       const nextSourceSignature = sourceScanCacheSignatureForProject(project);
       if (shouldCacheScanResult && nextSourceSignature) {
-        sourceScanCache = upsertSourceScanCacheEntry(
-          sourceScanCache,
+        projectStore.scan.cache = upsertSourceScanCacheEntry(
+          projectStore.scan.cache,
           project,
           nextRecords,
           tauriScan.limit,
@@ -3079,16 +3398,16 @@
           tauriScan.stats,
           nextSourceSignature
         );
-        persistSourceScanCache(sourceScanCache);
+        persistSourceScanCache(projectStore.scan.cache);
       } else if (!shouldCacheScanResult) {
-        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-        persistSourceScanCache(sourceScanCache);
+        projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+        persistSourceScanCache(projectStore.scan.cache);
       }
       clearBackgroundIndexError(project.id);
 
       if (options.skipTinyIndexRepair && suspiciousScanResult) {
         setSourceScanMode(project.id, 'tiny');
-        fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Check the project root or reset the index.`;
+        files.fileActionStatus = `Only ${nextRecords.length.toLocaleString()} files indexed for ${project.name}. Check the project root or reset the index.`;
       }
 
       const nextSelection = applySourceRecords(
@@ -3103,73 +3422,73 @@
       if (nextSelection) {
         await loadRecord(nextSelection, generation);
       } else {
-        loading = false;
+        files.scan.loading = false;
       }
     } catch (scanError) {
       if (generation !== scanGeneration) return;
-      records = [];
-      selectedRecord = null;
-      selectedSourceLine = null;
-      scanLimitReached = false;
-      sourceScanStats = null;
-      preview = null;
-      expandedFolderIds = new Set();
+      files.records = [];
+      files.selectedRecord = null;
+      files.selectedSourceLine = null;
+      files.scan.limitReached = false;
+      files.scan.stats = null;
+      files.preview = null;
+      files.expandedFolderIds = new Set();
       syncSourcePreviewContent(null);
       runtime = 'source scan unavailable';
       error = scanError instanceof Error ? scanError.message : 'Could not scan source files';
       setSourceScanMode(project.id, 'failed');
-      loading = false;
+      files.scan.loading = false;
     } finally {
       if (generation === scanGeneration) {
-        scanning = false;
-        activeSourceScanId = '';
-        sourceScanProgress = null;
-        if (!selectedRecord) loading = false;
+        files.scan.scanning = false;
+        files.scan.activeScanId = '';
+        files.scan.progress = null;
+        if (!files.selectedRecord) files.scan.loading = false;
       }
     }
   }
 
   function cancelSourceScan() {
-    if (!scanning) return;
+    if (!files.scan.scanning) return;
 
-    if (activeSourceScanId) {
-      void cancelSourceScanFromTauri(activeSourceScanId).catch(() => {
+    if (files.scan.activeScanId) {
+      void cancelSourceScanFromTauri(files.scan.activeScanId).catch(() => {
         // Stop is optimistic; stale scan results are already ignored by generation.
       });
     }
     scanGeneration += 1;
-    scanning = false;
-    loading = false;
-    activeSourceScanId = '';
-    sourceScanProgress = null;
-    sourceScanStats = null;
+    files.scan.scanning = false;
+    files.scan.loading = false;
+    files.scan.activeScanId = '';
+    files.scan.progress = null;
+    files.scan.stats = null;
     runtime = 'source scan stopped';
     error = '';
     setSourceScanMode(selectedProject.id, 'stopped');
-    fileActionStatus = 'Scan stopped';
+    files.fileActionStatus = 'Scan stopped';
   }
 
   function clearSourceRecordsForIncomingProject(project: ProjectRoot, force = false) {
-    const hasCurrentSourceState = records.length > 0 || selectedRecord !== null || preview !== null;
+    const hasCurrentSourceState = files.records.length > 0 || files.selectedRecord !== null || files.preview !== null;
     const hasDifferentSelectedRecord =
-      selectedRecord !== null && !sourceRecordBelongsToProject(selectedRecord, project);
+      files.selectedRecord !== null && !sourceRecordBelongsToProject(files.selectedRecord, project);
     const hasDifferentRecords =
-      selectedRecord === null &&
-      records.length > 0 &&
-      records.some((record) => !sourceRecordBelongsToProject(record, project));
+      files.selectedRecord === null &&
+      files.records.length > 0 &&
+      files.records.some((record) => !sourceRecordBelongsToProject(record, project));
 
     if (!force && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
     if (force && !hasCurrentSourceState && !hasDifferentSelectedRecord && !hasDifferentRecords) return;
 
-    records = [];
-    selectedRecord = null;
-    selectedSourceLine = null;
-    sourceNavigationBackStack = [];
-    sourceNavigationForwardStack = [];
-    scanLimitReached = false;
-    sourceScanStats = null;
-    preview = null;
-    expandedFolderIds = new Set();
+    files.records = [];
+    files.selectedRecord = null;
+    files.selectedSourceLine = null;
+    files.navBackStack = [];
+    files.navForwardStack = [];
+    files.scan.limitReached = false;
+    files.scan.stats = null;
+    files.preview = null;
+    files.expandedFolderIds = new Set();
     syncSourcePreviewContent(null);
   }
 
@@ -3198,23 +3517,23 @@
   }
 
   function resetProjectScanCache(project: ProjectRoot = selectedProject, limit = expandedSourceScanLimit) {
-    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-    persistSourceScanCache(sourceScanCache);
-    fileActionStatus = `Index reset for ${project.name}`;
-    return scanProject(project, selectedSourcePaths[project.id], { force: true, limit });
+    projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+    persistSourceScanCache(projectStore.scan.cache);
+    files.fileActionStatus = `Index reset for ${project.name}`;
+    return scanProject(project, projectStore.selectedSourcePaths[project.id], { force: true, limit });
   }
 
   function resetProjectOnboardingScanState(project: ProjectRoot) {
-    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-    persistSourceScanCache(sourceScanCache);
+    projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+    persistSourceScanCache(projectStore.scan.cache);
     clearBackgroundIndexError(project.id);
-    const nextScanModes = { ...sourceScanModeByProject };
+    const nextScanModes = { ...projectStore.scan.modeByProject };
     delete nextScanModes[project.id];
-    sourceScanModeByProject = nextScanModes;
+    projectStore.scan.modeByProject = nextScanModes;
 
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     delete nextSelectedSourcePaths[project.id];
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
 
     clearSourceRecordsForIncomingProject(project, true);
@@ -3235,8 +3554,8 @@
     const rootLabel = selectedProjectRootValidation
       ? projectRootValidationSummary(selectedProjectRootValidation)
       : 'Root not checked';
-    const scanLabel = scanning && sourceScanProgress
-      ? `Scanning ${sourceScanProgress.matchedFiles.toLocaleString()} files / ${sourceScanProgress.visitedEntries.toLocaleString()} entries`
+    const scanLabel = files.scan.scanning && files.scan.progress
+      ? `Scanning ${files.scan.progress.matchedFiles.toLocaleString()} files / ${files.scan.progress.visitedEntries.toLocaleString()} entries`
       : selectedProjectScanEvidence.label;
 
     return [rootLabel, scanLabel, scanCap].filter(Boolean).join(' · ');
@@ -3254,11 +3573,181 @@
     ].filter(Boolean).join('\n');
   }
 
+  function sourceSidebarIndexStatus() {
+    const indexError = projectStore.scan.backgroundIndexErrorByProject[selectedProject.id]?.trim() ?? '';
+    const normalizedQuery = files.query.trim();
+
+    if (error.trim() || indexError) return 'Scan needs attention';
+    if (sourceScanNeedsAttention) return sourceScanHealth.summary;
+    if (files.scan.scanning) return 'Scanning source files';
+    if (projectStore.scan.backgroundIndexingIDs.has(selectedProject.id)) return 'Indexing in background';
+    if (normalizedQuery.length > 0) return 'File filter active';
+    if (selectedProjectIndexEntry) return selectedProjectIndexEntry.truncated ? 'Index ready · limited' : 'Index ready';
+    if (sourceIndexLoading) return 'Loading index';
+    return 'Index not ready';
+  }
+
+  function sourceSidebarScanMeta() {
+    const parts = [];
+    const normalizedQuery = files.query.trim();
+
+    if (normalizedQuery.length > 0) {
+      parts.push(`Filter: ${normalizedQuery}`);
+    }
+
+    if (files.scan.scanning) {
+      parts.push('Native scan');
+    } else {
+      switch (selectedProjectScanMode) {
+        case 'cache':
+          parts.push('Cached');
+          break;
+        case 'native':
+          parts.push('Fresh');
+          break;
+        case 'background':
+          parts.push('Background');
+          break;
+        case 'repair':
+          parts.push('Rebuilding');
+          break;
+        case 'tiny':
+          parts.push('Tiny index');
+          break;
+        case 'failed':
+          parts.push('Failed');
+          break;
+        case 'stopped':
+          parts.push('Stopped');
+          break;
+        default:
+          parts.push(selectedProjectIndexEntry ? 'Indexed' : 'Idle');
+          break;
+      }
+    }
+
+    if (selectedProjectIndexEntry) {
+      parts.push(formatRelativeAge(selectedProjectIndexEntry.scannedAt));
+    }
+
+    parts.push(
+      files.scan.limitReached || selectedProjectIndexEntry?.truncated
+        ? `${expandedSourceScanLimit.toLocaleString()} cap reached`
+        : `${expandedSourceScanLimit.toLocaleString()} cap`
+    );
+
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function sourceSidebarCompactStatus() {
+    const visibleCount = filteredRecords.length;
+    const totalCount = files.records.length;
+    const countLabel =
+      visibleCount === totalCount
+        ? `${totalCount.toLocaleString()} files`
+        : `${visibleCount.toLocaleString()} / ${totalCount.toLocaleString()} files`;
+    const parts = [countLabel, sourceSidebarScanMetaLabel];
+
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function sourceSidebarTreeCount() {
+    const visibleCount = filteredRecords.length;
+    const totalCount = files.records.length;
+    if (visibleCount === totalCount) return compactCountValue(totalCount);
+    return `${compactCountValue(visibleCount)} / ${compactCountValue(totalCount)}`;
+  }
+
+  function sourceSidebarTreeStatus() {
+    const parts = [sourceSidebarIndexStatusLabel, sourceSidebarScanMetaLabel];
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function sourceSidebarCompactTitle() {
+    return [
+      selectedProjectIndexSummary,
+      sourceSidebarCompactStatusLabel,
+      sourceSidebarScanTelemetryLabel,
+      sourceRuntimeNotice
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function sourceSidebarScanTelemetryShouldExpand() {
+    return Boolean(
+      sourceSidebarScanTelemetryLabel &&
+        (sourceScanNeedsAttention ||
+          files.scan.limitReached ||
+          selectedProjectScanEvidence.tone === 'warning' ||
+          selectedProjectScanEvidence.tone === 'error')
+    );
+  }
+
+  function sourceRuntimeNoticeShouldExpand() {
+    return Boolean(sourceRuntimeNotice && error.trim());
+  }
+
+  function sourceSidebarScanTelemetry(stats: SourceScanStats | null | undefined) {
+    if (!stats) return '';
+
+    const visitedEntries = sourceScanStatNumber(stats, 'visitedEntries', 'visitedEntryCount');
+    const skippedDirectories = sourceScanStatNumber(
+      stats,
+      'skippedDirectories',
+      'skippedDirectoryCount'
+    );
+    const unsupportedFiles = sourceScanStatNumber(stats, 'unsupportedFiles', 'unsupportedFileCount');
+    const unreadableEntries = sourceScanStatNumber(stats, 'unreadableEntries', 'unreadableEntryCount');
+    const collectionLimit = sourceScanOptionalStatNumber(stats.collectionLimit);
+    const parts = [];
+
+    if (visitedEntries > 0) {
+      parts.push(`${visitedEntries.toLocaleString()} entries checked`);
+    }
+    if (skippedDirectories > 0) {
+      parts.push(`${skippedDirectories.toLocaleString()} ${skippedDirectories === 1 ? 'dir' : 'dirs'} skipped`);
+    }
+    if (unsupportedFiles > 0) {
+      parts.push(`${unsupportedFiles.toLocaleString()} unsupported`);
+    }
+    if (unreadableEntries > 0) {
+      parts.push(`${unreadableEntries.toLocaleString()} unreadable`);
+    }
+    if (collectionLimit !== null && stats.collectionLimitReached) {
+      parts.push(`${collectionLimit.toLocaleString()} collection cap reached`);
+    }
+
+    return parts.join(' · ');
+  }
+
+  function sourceScanStatNumber(
+    stats: SourceScanStats,
+    primaryKey: keyof SourceScanStats,
+    fallbackKey: keyof SourceScanStats
+  ) {
+    const primaryValue = stats[primaryKey];
+    if (typeof primaryValue === 'number' && Number.isFinite(primaryValue)) {
+      return Math.max(0, Math.floor(primaryValue));
+    }
+
+    const fallbackValue = stats[fallbackKey];
+    if (typeof fallbackValue === 'number' && Number.isFinite(fallbackValue)) {
+      return Math.max(0, Math.floor(fallbackValue));
+    }
+
+    return 0;
+  }
+
+  function sourceScanOptionalStatNumber(value: number | null | undefined) {
+    return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+  }
+
   async function indexProjectsInBackground(projects: ProjectRoot[]) {
     const projectsToIndex = selectBackgroundIndexProjects(
       projects,
       selectedProject.id,
-      sourceScanCache,
+      projectStore.scan.cache,
       Date.now(),
       sourceScanCacheMaxAgeMs,
       expandedSourceScanLimit,
@@ -3272,7 +3761,7 @@
   }
 
   async function indexProjectInBackground(project: ProjectRoot) {
-    if (project.id === selectedProject.id || backgroundIndexingProjectIDs.has(project.id)) return;
+    if (project.id === selectedProject.id || projectStore.scan.backgroundIndexingIDs.has(project.id)) return;
 
     setBackgroundProjectIndexing(project.id, true);
     clearBackgroundIndexError(project.id);
@@ -3297,11 +3786,11 @@
           suspiciousSourceIndexFileThreshold
         )
       ) {
-        sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-        persistSourceScanCache(sourceScanCache);
+        projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+        persistSourceScanCache(projectStore.scan.cache);
         setSourceScanMode(project.id, 'tiny');
-        backgroundIndexErrorByProject = {
-          ...backgroundIndexErrorByProject,
+        projectStore.scan.backgroundIndexErrorByProject = {
+          ...projectStore.scan.backgroundIndexErrorByProject,
           [project.id]: `Only ${nextRecords.length.toLocaleString()} files indexed. Open the project to repair the index.`
         };
         return;
@@ -3309,8 +3798,8 @@
 
       const sourceSignature = sourceScanCacheSignatureForProject(project);
       if (sourceSignature) {
-        sourceScanCache = upsertSourceScanCacheEntry(
-          sourceScanCache,
+        projectStore.scan.cache = upsertSourceScanCacheEntry(
+          projectStore.scan.cache,
           project,
           nextRecords,
           tauriScan.limit,
@@ -3320,14 +3809,14 @@
           tauriScan.stats,
           sourceSignature
         );
-        persistSourceScanCache(sourceScanCache);
+        persistSourceScanCache(projectStore.scan.cache);
       }
       setSourceScanMode(project.id, 'background');
       clearBackgroundIndexError(project.id);
     } catch (indexError) {
       setSourceScanMode(project.id, 'failed');
-      backgroundIndexErrorByProject = {
-        ...backgroundIndexErrorByProject,
+      projectStore.scan.backgroundIndexErrorByProject = {
+        ...projectStore.scan.backgroundIndexErrorByProject,
         [project.id]: indexError instanceof Error ? indexError.message : 'Could not index project'
       };
     } finally {
@@ -3337,26 +3826,31 @@
 
   async function loadProjectGitStatus(project: ProjectRoot) {
     const projectID = project.id;
-    projectGitLoading = true;
-    projectGitStatus = null;
-    projectGitError = '';
+    const requestID = ++projectGitStatusRequestID;
+    gitStore.statusLoading = true;
+    gitStore.status = null;
+    gitStore.statusError = '';
 
     try {
       const nextStatus = await readProjectGitStatusFromTauri(project.path);
-      if (selectedProjectID !== projectID) return;
+      if (!isCurrentProjectGitStatusRequest(requestID, projectID)) return;
 
-      projectGitStatus = nextStatus;
-      projectGitError = nextStatus ? '' : 'Native Git unavailable';
+      gitStore.status = nextStatus;
+      gitStore.statusError = nextStatus ? '' : 'Native Git unavailable';
     } catch (gitError) {
-      if (selectedProjectID !== projectID) return;
+      if (!isCurrentProjectGitStatusRequest(requestID, projectID)) return;
 
-      projectGitStatus = null;
-      projectGitError = gitError instanceof Error ? gitError.message : 'Could not read Git status';
+      gitStore.status = null;
+      gitStore.statusError = gitError instanceof Error ? gitError.message : 'Could not read Git status';
     } finally {
-      if (selectedProjectID === projectID) {
-        projectGitLoading = false;
+      if (isCurrentProjectGitStatusRequest(requestID, projectID)) {
+        gitStore.statusLoading = false;
       }
     }
+  }
+
+  function isCurrentProjectGitStatusRequest(requestID: number, projectID: string) {
+    return requestID === projectGitStatusRequestID && projectStore.selectedID === projectID;
   }
 
   async function loadRuntimeContexts(projects: ProjectRoot[] = projectOptions) {
@@ -3408,33 +3902,33 @@
   }
 
   async function loadGitRepositorySummaries(projects: ProjectRoot[] = projectOptions) {
-    gitRepositorySummariesLoading = true;
-    gitRepositorySummaryError = '';
+    gitStore.repositorySummariesLoading = true;
+    gitStore.repositorySummaryError = '';
 
     try {
       const nativeSummaries = await listGitRepositorySummariesFromTauri(projects);
       if (nativeSummaries) {
-        gitRepositorySummaries = nativeSummaries;
-        gitRepositorySummarySource = 'native git dashboard';
+        gitStore.repositorySummaries = nativeSummaries;
+        gitStore.repositorySummarySource = 'native git dashboard';
         return;
       }
 
-      gitRepositorySummaries = demoGitRepositorySummariesForProjects(projects);
-      gitRepositorySummarySource = 'browser preview';
+      gitStore.repositorySummaries = demoGitRepositorySummariesForProjects(projects);
+      gitStore.repositorySummarySource = 'browser preview';
     } catch (summaryError) {
-      gitRepositorySummaries = demoGitRepositorySummariesForProjects(projects);
-      gitRepositorySummarySource = 'browser preview';
-      gitRepositorySummaryError =
+      gitStore.repositorySummaries = demoGitRepositorySummariesForProjects(projects);
+      gitStore.repositorySummarySource = 'browser preview';
+      gitStore.repositorySummaryError =
         summaryError instanceof Error ? summaryError.message : 'Could not scan repositories';
     } finally {
-      gitRepositorySummariesLoading = false;
+      gitStore.repositorySummariesLoading = false;
     }
   }
 
   function sourceScanCacheSignatureForProject(project: ProjectRoot): string | null {
     const projectPath = normalizeProjectPath(project.path);
     const summary =
-      gitRepositorySummaries.find(
+      gitStore.repositorySummaries.find(
         (candidate) =>
           candidate.projectID === project.id ||
           normalizeProjectPath(candidate.path) === projectPath
@@ -3459,7 +3953,7 @@
       ].join('|');
     }
 
-    if (gitRepositorySummariesLoading || gitRepositorySummaries.length === 0) {
+    if (gitStore.repositorySummariesLoading || gitStore.repositorySummaries.length === 0) {
       return null;
     }
 
@@ -3468,12 +3962,12 @@
 
   async function loadGitCommitHistory(project: ProjectRoot = selectedProject) {
     const projectID = project.id;
-    gitCommitHistoryLoading = true;
-    gitCommitHistoryError = '';
+    gitStore.commitHistoryLoading = true;
+    gitStore.commitHistoryError = '';
 
     try {
       const nativeHistory = await readGitCommitHistoryFromTauri(project.path, maxGitCommitHistoryEntries);
-      if (selectedProjectID !== projectID) return;
+      if (projectStore.selectedID !== projectID) return;
 
       if (nativeHistory) {
         setGitCommitHistory(nativeHistory, 'native git log');
@@ -3482,24 +3976,24 @@
 
       setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
     } catch (historyError) {
-      if (selectedProjectID !== projectID) return;
+      if (projectStore.selectedID !== projectID) return;
 
       setGitCommitHistory(demoGitCommitHistoryForProject(project), 'browser preview');
-      gitCommitHistoryError =
+      gitStore.commitHistoryError =
         historyError instanceof Error ? historyError.message : 'Could not read Git history';
     } finally {
-      if (selectedProjectID === projectID) {
-        gitCommitHistoryLoading = false;
+      if (projectStore.selectedID === projectID) {
+        gitStore.commitHistoryLoading = false;
       }
     }
   }
 
   function setGitCommitHistory(entries: GitCommitHistoryEntry[], source: string) {
-    gitCommitHistory = entries;
-    gitCommitHistorySource = source;
+    gitStore.commitHistory = entries;
+    gitStore.commitHistorySource = source;
 
-    if (!entries.some((entry) => entry.sha === selectedGitCommitSha)) {
-      selectedGitCommitSha = entries[0]?.sha ?? '';
+    if (!entries.some((entry) => entry.sha === gitStore.selectedCommitSha)) {
+      gitStore.selectedCommitSha = entries[0]?.sha ?? '';
     }
   }
 
@@ -3549,24 +4043,38 @@
     agentSessionsLoading = true;
     agentSessionError = '';
 
+    let sessionScanError = '';
     try {
       const nativeSessions = await listAgentSessionsFromTauri();
       if (nativeSessions) {
         agentSessions = nativeSessions;
         agentSessionSource = 'native session scan';
+        agentSessionsLoading = false;
         return;
       }
-
-      agentSessions = demoAgentSessionsForProject(selectedProject);
-      agentSessionSource = 'browser preview';
     } catch (sessionError) {
-      agentSessions = demoAgentSessionsForProject(selectedProject);
-      agentSessionSource = 'browser preview';
-      agentSessionError =
+      sessionScanError =
         sessionError instanceof Error ? sessionError.message : 'Could not scan agent sessions';
+    }
+
+    try {
+      const bridgeSessions = await listAgentSessionsFromLocalBridge();
+      if (bridgeSessions) {
+        agentSessions = bridgeSessions;
+        agentSessionSource = 'browser local session scan';
+        return;
+      }
+    } catch (bridgeError) {
+      sessionScanError =
+        sessionScanError
+        || (bridgeError instanceof Error ? bridgeError.message : 'Could not scan local agent sessions');
     } finally {
       agentSessionsLoading = false;
     }
+
+    agentSessions = [];
+    agentSessionSource = 'browser preview';
+    agentSessionError = sessionScanError;
   }
 
   function demoRuntimeContextsForProject(project: ProjectRoot): RuntimeContext[] {
@@ -3872,20 +4380,6 @@
     };
   }
 
-  function demoAgentSessionsForProject(project: ProjectRoot): AgentSession[] {
-    return [
-      {
-        provider: 'codex',
-        id: 'preview-session',
-        title: `Review ${project.name}`,
-        model: null,
-        projectPath: project.path,
-        lastActivity: null,
-        resumeCommands: ['codex resume preview-session']
-      }
-    ];
-  }
-
   function formatRuntimeContextSummary(
     contextCount: number,
     loadingContexts: boolean,
@@ -3998,13 +4492,13 @@
   }
 
   function gitWorkspaceBriefText() {
-    const branch = projectGitStatus?.branch ?? selectedProjectGitGraph.repositories[0]?.branchLabel ?? 'unknown';
+    const branch = gitStore.status?.branch ?? selectedProjectGitGraph.repositories[0]?.branchLabel ?? 'unknown';
     const aheadBehind =
-      projectGitStatus
-        ? `ahead ${projectGitStatus.ahead} / behind ${projectGitStatus.behind}`
+      gitStore.status
+        ? `ahead ${gitStore.status.ahead} / behind ${gitStore.status.behind}`
         : 'ahead/behind unknown';
     const changedFiles =
-      projectGitStatus
+      gitStore.status
         ? `${selectedProjectGitChangedFiles.length} changed file${selectedProjectGitChangedFiles.length === 1 ? '' : 's'}`
         : 'changed files unknown';
     const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
@@ -4038,8 +4532,8 @@
 
   function sourceContextBriefText() {
     const tasks = selectedProjectGitTaskIDs.length > 0 ? selectedProjectGitTaskIDs.join(', ') : 'none';
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
     const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
       const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
@@ -4055,8 +4549,8 @@
       `Git: ${sourceContextIdentity.gitSummary}`,
       `Tasks: ${tasks}`,
       `Current file: ${currentFile}`,
-      `Language: ${preview?.language ?? 'none'}`,
-      `Line: ${selectedSourceLine ?? 'unknown'}`,
+      `Language: ${files.preview?.language ?? 'none'}`,
+      `Line: ${files.selectedSourceLine ?? 'unknown'}`,
       `LSP: ${sourceLspStatusLabel()}`,
       `Index: ${selectedProjectIndexSummary}`,
       `Dirty files: ${dirtyProjectSourceRecords.length}`,
@@ -4067,21 +4561,9 @@
   }
 
   function sourceIntelligenceBriefText() {
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
-    const definitionLines = sourceDefinitionTargets.slice(0, 8).map((target) => {
-      return `- ${target.symbolName} (${target.kind}) ${target.relativePath}:${target.line}`;
-    });
-    const implementationLines = sourceImplementationTargets.slice(0, 6).map((target) => {
-      return `- implementation ${target.symbolName} ${target.relativePath}:${target.line}`;
-    });
-    const typeDefinitionLines = sourceTypeDefinitionTargets.slice(0, 6).map((target) => {
-      return `- type ${target.symbolName} ${target.relativePath}:${target.line}`;
-    });
-    const referenceLines = sourceReferenceTargets.slice(0, 8).map((target) => {
-      return `- ${target.fileName}:${target.line}:${target.column} ${target.excerpt}`;
-    });
     const problemLines = sourceDiagnostics.slice(0, 8).map((diagnostic) => {
       return `- ${diagnostic.severity} ${diagnostic.line}:${diagnostic.column} ${diagnostic.message}`;
     });
@@ -4094,30 +4576,21 @@
       `Project: ${selectedProject.name}`,
       `Root: ${selectedProject.path}`,
       `Current file: ${currentFile}`,
-      `Language: ${preview?.language ?? 'none'}`,
+      `Language: ${files.preview?.language ?? 'none'}`,
       `LSP: ${sourceLspStatusLabel()}`,
-      `Drawer: ${editorNavPanel ?? 'closed'}`,
       `Problems: ${sourceDiagnosticSummary}`,
       problemLines.length > 0 ? problemLines.join('\n') : '- none',
       `Symbols: ${sourceSymbols.length}`,
-      symbolLines.length > 0 ? symbolLines.join('\n') : '- none',
-      `Definitions: ${sourceDefinitionSummary || 'none'}`,
-      definitionLines.length > 0 ? definitionLines.join('\n') : '- none',
-      `Implementations: ${sourceImplementationSummary || 'none'}`,
-      implementationLines.length > 0 ? implementationLines.join('\n') : '- none',
-      `Type definitions: ${sourceTypeDefinitionSummary || 'none'}`,
-      typeDefinitionLines.length > 0 ? typeDefinitionLines.join('\n') : '- none',
-      `References: ${sourceReferenceSummary || 'none'}`,
-      referenceLines.length > 0 ? referenceLines.join('\n') : '- none'
+      symbolLines.length > 0 ? symbolLines.join('\n') : '- none'
     ].join('\n');
   }
 
   function sourceLayoutDiagnosticText() {
-    const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const normalizedLayout = normalizeSourceDockLayout(dock.layout);
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
-    const activePreset = sourceLayoutPresets.find((preset) => preset.id === sourceLayoutPreset);
+    const activePreset = sourceLayoutPresets.find((preset) => preset.id === dock.layoutPreset);
     const openTabs = projectOpenSourceTabs.slice(0, 8).map((tab) => {
       const dirtyPrefix = isSourcePathDirty(tab.path) ? '* ' : '- ';
       return `${dirtyPrefix}${tab.relativePath}`;
@@ -4150,13 +4623,13 @@
       `Project: ${selectedProject.name}`,
       `Root: ${selectedProject.path}`,
       `Current file: ${currentFile}`,
-      `Preset: ${sourceLayoutPreset}${activePreset ? ` (${activePreset.label})` : ''}`,
+      `Preset: ${dock.layoutPreset}${activePreset ? ` (${activePreset.label})` : ''}`,
       `Chrome: ${sourceChromeCompact ? 'compact' : 'comfortable'}`,
-      `Activity: ${sourceActivityLabel(sourceActivityMode)} (${sourceActivityMode})`,
+      `Activity: ${sourceActivityLabel(dock.activityMode)} (${dock.activityMode})`,
       `Activity filter: ${sourceActivityFilter.trim() || 'none'}`,
-      `Side pane: ${sidePanePosition}, ${sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
+      `Side pane: ${sidePanePosition}, ${dock.sidePaneWidth}px, ${sourceDockPanelVisible('activity') ? 'visible' : 'hidden'}`,
       `Context: ${contextPanelPlacement}, ${contextPanelMode}, ${contextPanelCollapsed ? 'hidden' : 'visible'}`,
-      `Context size: ${contextPaneWidth}px wide / ${contextPaneHeight}px tall`,
+      `Context size: ${dock.contextPaneWidth}px wide / ${contextPaneHeight}px tall`,
       `Active context card: ${contextCardLabels[activeContextCardID]}`,
       `Insights: ${editorInsightCollapsed ? 'hidden' : 'visible'}, ${sourceIntelligencePanel}, ${editorInsightWidth}px`,
       `Bottom dock: ${bottomDockPanelVisible() ? 'visible' : 'hidden'}, ${bottomDockHeight()}px`,
@@ -4183,7 +4656,7 @@
 
   function sourceScanDiagnosticBrief() {
     const indexEntry = selectedProjectIndexEntry;
-    const stats = sourceScanStats ?? indexEntry?.stats ?? null;
+    const stats = files.scan.stats ?? indexEntry?.stats ?? null;
     const returnedFiles = stats?.returnedFiles ?? stats?.returnedCount;
     const requestedLimit = stats?.requestedLimit ?? stats?.effectiveLimit;
     const collectionLimit = stats?.collectionLimit;
@@ -4192,9 +4665,9 @@
     const skippedDirectories = stats?.skippedDirectories ?? stats?.skippedDirectoryCount;
     const unsupportedFiles = stats?.unsupportedFiles ?? stats?.unsupportedFileCount;
     const unreadableEntries = stats?.unreadableEntries ?? stats?.unreadableEntryCount;
-    const activeScan = scanning
-      ? `running (${(sourceScanProgress?.matchedFiles ?? records.length).toLocaleString()} matched / ${(
-          sourceScanProgress?.visitedEntries ?? 0
+    const activeScan = files.scan.scanning
+      ? `running (${(files.scan.progress?.matchedFiles ?? files.records.length).toLocaleString()} matched / ${(
+          files.scan.progress?.visitedEntries ?? 0
         ).toLocaleString()} visited)`
       : 'idle';
     const cacheState = indexEntry
@@ -4202,9 +4675,9 @@
           indexEntry.truncated ? 'truncated' : 'complete'
         }, ${formatRelativeAge(indexEntry.scannedAt)} old`
       : 'none';
-    const selectedPath = selectedSourcePaths[selectedProject.id] ?? 'none';
-    const currentFile = selectedRecord
-      ? `${selectedRecord.relativePath}${selectedSourceLine ? `:${selectedSourceLine}` : ''}`
+    const selectedPath = projectStore.selectedSourcePaths[selectedProject.id] ?? 'none';
+    const currentFile = files.selectedRecord
+      ? `${files.selectedRecord.relativePath}${files.selectedSourceLine ? `:${files.selectedSourceLine}` : ''}`
       : 'none';
     const recentFiles = projectRecentRecords.slice(0, 6).map((record) => `- ${record.relativePath}`);
     const openTabs = projectOpenSourceTabs.slice(0, 6).map((tab) => {
@@ -4241,10 +4714,10 @@
       `Root label: ${sourceContextIdentity.rootLabel}`,
       `Root validation: ${selectedProjectRootValidationSummary}`,
       `Scan limit: ${expandedSourceScanLimit.toLocaleString()}`,
-      `Indexed files: ${records.length.toLocaleString()}`,
+      `Indexed files: ${files.records.length.toLocaleString()}`,
       `Filtered files: ${filteredRecords.length.toLocaleString()}`,
-      `Query: ${query.trim() || 'none'}`,
-      `Limit reached: ${scanLimitReached ? 'yes' : 'no'}`,
+      `Query: ${files.query.trim() || 'none'}`,
+      `Limit reached: ${files.scan.limitReached ? 'yes' : 'no'}`,
       `Needs attention: ${sourceScanNeedsAttention ? 'yes' : 'no'}`,
       `Health: ${sourceScanHealthNote || 'ok'}`,
       `Scan evidence: ${selectedProjectScanEvidence.label}`,
@@ -4254,7 +4727,7 @@
       `Scan summary: ${scanSummaryLabel}`,
       `Scan stats: ${sourceScanStatsLabel || 'none'}`,
       `Active scan: ${activeScan}`,
-      `Loading: ${loading ? 'yes' : 'no'}`,
+      `Loading: ${files.scan.loading ? 'yes' : 'no'}`,
       `Runtime: ${runtime}`,
       `Browser source bridge active: ${runtime === 'browser source bridge' ? 'yes' : 'no'}`,
       error ? `Error: ${error}` : 'Error: none',
@@ -4293,7 +4766,7 @@
   }
 
   function gitCommitEntryForRow(row: GitGraphCommitRow) {
-    return gitCommitHistory.find((entry) => entry.sha === row.sha) ?? null;
+    return gitStore.commitHistory.find((entry) => entry.sha === row.sha) ?? null;
   }
 
   function gitCommitRefChips(entry: GitCommitHistoryEntry) {
@@ -4333,7 +4806,7 @@
   }
 
   function selectGitCommit(entry: GitCommitHistoryEntry) {
-    selectedGitCommitSha = entry.sha;
+    gitStore.selectedCommitSha = entry.sha;
   }
 
   function handleGitCommitRowKeydown(event: KeyboardEvent, entry: GitCommitHistoryEntry) {
@@ -4369,7 +4842,7 @@
     const parents = entry.parentShas.length > 0 ? entry.parentShas.join(', ') : 'none';
     const firstParent = entry.parentShas[0] ?? '';
     const taskReference = entry.taskID ? gitTaskReferenceText(entry.taskID) : 'none';
-    const branch = projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
+    const branch = gitStore.status?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? 'unknown';
     const inspectCommands = [
       `cd ${shellQuoteForCommand(selectedProject.path)}`,
       `git show --stat --oneline ${entry.sha}`,
@@ -4651,7 +5124,7 @@
     if (!url || typeof window === 'undefined') return;
 
     window.open(url, '_blank', 'noopener,noreferrer');
-    fileActionStatus = `Opened ${taskID}`;
+    files.fileActionStatus = `Opened ${taskID}`;
   }
 
   async function focusGitTaskLedger(taskID: string | null) {
@@ -4788,9 +5261,9 @@
   }
 
   async function selectGitStatusFile(fileStatus: ProjectGitFileStatus) {
-    const record = records.find((sourceRecord) => sourceRecord.relativePath === fileStatus.relativePath);
+    const record = files.records.find((sourceRecord) => sourceRecord.relativePath === fileStatus.relativePath);
     if (!record) {
-      gitActionStatus = `No indexed source record for ${fileStatus.relativePath}`;
+      gitStore.actionStatus = `No indexed source record for ${fileStatus.relativePath}`;
       return;
     }
 
@@ -4801,9 +5274,9 @@
     const nextPaths = paths.map((path) => path.trim()).filter(Boolean);
     if (nextPaths.length === 0) return;
 
-    gitActionBusy = action;
-    gitActionError = '';
-    gitActionStatus = '';
+    gitStore.actionBusy = action;
+    gitStore.actionError = '';
+    gitStore.actionStatus = '';
 
     try {
       const result =
@@ -4812,25 +5285,26 @@
           : await unstageGitPathsFromTauri(selectedProject.path, nextPaths);
 
       if (!result) {
-        gitActionStatus = 'Native Git unavailable';
+        gitStore.actionStatus = 'Native Git unavailable';
         return;
       }
 
-      projectGitStatus = result.status;
-      gitActionStatus = result.message;
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      projectGitStatusRequestID += 1;
+      gitStore.status = result.status;
+      gitStore.actionStatus = result.message;
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
     } catch (gitError) {
-      gitActionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
+      gitStore.actionError = gitError instanceof Error ? gitError.message : 'Could not update Git index';
     } finally {
-      gitActionBusy = '';
+      gitStore.actionBusy = '';
     }
   }
 
   async function runGitRemoteAction(action: 'fetch' | 'pull' | 'push') {
-    gitActionBusy = action;
-    gitActionError = '';
-    gitActionStatus = '';
+    gitStore.actionBusy = action;
+    gitStore.actionError = '';
+    gitStore.actionStatus = '';
 
     try {
       const result =
@@ -4841,47 +5315,49 @@
             : await pushGitRepositoryFromTauri(selectedProject.path);
 
       if (!result) {
-        gitActionStatus = 'Native Git unavailable';
+        gitStore.actionStatus = 'Native Git unavailable';
         return;
       }
 
-      projectGitStatus = result.status;
-      gitActionStatus = result.message;
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      projectGitStatusRequestID += 1;
+      gitStore.status = result.status;
+      gitStore.actionStatus = result.message;
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
       if (action !== 'fetch') void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
-      gitActionError = gitError instanceof Error ? gitError.message : `Could not ${action} repository`;
+      gitStore.actionError = gitError instanceof Error ? gitError.message : `Could not ${action} repository`;
     } finally {
-      gitActionBusy = '';
+      gitStore.actionBusy = '';
     }
   }
 
   async function commitGitChanges() {
-    const message = gitCommitMessage.trim();
+    const message = gitStore.commitMessage.trim();
     if (!message) return;
 
-    gitActionBusy = 'commit';
-    gitActionError = '';
-    gitActionStatus = '';
+    gitStore.actionBusy = 'commit';
+    gitStore.actionError = '';
+    gitStore.actionStatus = '';
 
     try {
       const result = await commitGitRepositoryFromTauri(selectedProject.path, message);
       if (!result) {
-        gitActionStatus = 'Native Git unavailable';
+        gitStore.actionStatus = 'Native Git unavailable';
         return;
       }
 
-      projectGitStatus = result.status;
-      gitCommitMessage = '';
-      gitActionStatus = result.message;
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
+      projectGitStatusRequestID += 1;
+      gitStore.status = result.status;
+      gitStore.commitMessage = '';
+      gitStore.actionStatus = result.message;
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
       void loadGitRepositorySummaries(projectOptions);
       void loadGitCommitHistory(selectedProject);
     } catch (gitError) {
-      gitActionError = gitError instanceof Error ? gitError.message : 'Could not commit Git changes';
+      gitStore.actionError = gitError instanceof Error ? gitError.message : 'Could not commit Git changes';
     } finally {
-      gitActionBusy = '';
+      gitStore.actionBusy = '';
     }
   }
 
@@ -4960,7 +5436,7 @@
     if (artifact.path?.trim()) {
       if (isProjectLocalTextArtifactPath(artifact.path)) {
         await selectRecord(sourceRecordFromRestoredPath(selectedProject, artifact.path));
-        fileActionStatus = `Opened artifact: ${artifact.title}`;
+        files.fileActionStatus = `Opened artifact: ${artifact.title}`;
         return;
       }
 
@@ -4970,7 +5446,7 @@
 
     if (artifact.url && typeof window !== 'undefined') {
       window.open(artifact.url, '_blank', 'noopener,noreferrer');
-      fileActionStatus = `Opened artifact: ${artifact.title}`;
+      files.fileActionStatus = `Opened artifact: ${artifact.title}`;
     }
   }
 
@@ -5101,7 +5577,7 @@
 
       orchestrationEventFilePath = nextPath;
       orchestrationEventImportStatus = 'Event file selected';
-      fileActionStatus = 'Orchestration event file selected';
+      files.fileActionStatus = 'Orchestration event file selected';
     } catch (chooseError) {
       orchestrationEventImportStatus =
         chooseError instanceof Error ? chooseError.message : 'Could not choose event file';
@@ -5236,7 +5712,7 @@
       orchestrationRuns = [run, ...orchestrationRuns.filter((entry) => entry.id !== run.id)];
       orchestrationRunSource = 'native event store';
       orchestrationEventImportStatus = `${label} recorded`;
-      fileActionStatus = `${label} recorded`;
+      files.fileActionStatus = `${label} recorded`;
       focusOrchestrationRun(run);
       void loadOrchestrationRuns(projectOptions, { background: true });
     } catch (recordError) {
@@ -5280,6 +5756,18 @@
     return `${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'} · ${sessionSource}`;
   }
 
+  function formatConversationSessionSummary(
+    sessionCount: number,
+    loadingSessions: boolean,
+    sessionError: string,
+    sessionSource: string
+  ) {
+    if (loadingSessions) return 'Scanning local conversations';
+    if (sessionError) return sessionError;
+    if (sessionCount === 0) return `No local conversations · ${sessionSource}`;
+    return `${sessionCount} ${sessionCount === 1 ? 'conversation' : 'conversations'} · ${sessionSource}`;
+  }
+
   function agentSessionMatchesProject(session: AgentSession, project: ProjectRoot) {
     if (!session.projectPath) return true;
 
@@ -5287,12 +5775,57 @@
     const projectPath = normalizeProjectPath(project.path);
     if (sessionPath === projectPath || sessionPath.startsWith(`${projectPath}/`)) return true;
 
-    const projectName = project.name.toLowerCase();
-    return sessionPath.toLowerCase().includes(`/worktrees/${projectName}/`);
+    return projectWorktreeSlugCandidates(project).some((slug) =>
+      sessionPath.toLowerCase().includes(`/worktrees/${slug}/`)
+    );
+  }
+
+  function projectWorktreeSlugCandidates(project: ProjectRoot) {
+    return Array.from(new Set([
+      project.id,
+      project.name,
+      fileNameFromRestoredPath(project.path),
+      project.name.replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    ]
+      .map((value) => value.trim().toLowerCase())
+      .flatMap((value) => [value, value.replace(/\s+/g, '-'), value.replace(/[^a-z0-9]+/g, '-')])
+      .map((value) => value.replace(/^-+|-+$/g, ''))
+      .filter(Boolean)));
   }
 
   function agentSessionProjectLabel(session: AgentSession) {
     return session.projectPath ? formatSourceContextRootLabel(session.projectPath) : 'global';
+  }
+
+  function agentSessionProviderLabel(session: AgentSession) {
+    const provider = session.provider.trim().toLowerCase();
+    const cmuxAgent = provider.startsWith('cmux-') ? provider.slice('cmux-'.length) : '';
+    if (cmuxAgent) return `CMUX ${agentSessionProviderName(cmuxAgent)}`;
+    return agentSessionProviderName(provider);
+  }
+
+  function agentSessionProviderBadgeLabel(session: AgentSession) {
+    const provider = session.provider.trim().toLowerCase();
+    if (provider.startsWith('cmux-')) return 'CMUX';
+    return agentSessionProviderName(provider);
+  }
+
+  function agentSessionProviderName(provider: string) {
+    switch (provider) {
+      case 'codex':
+        return 'Codex';
+      case 'claude':
+        return 'Claude';
+      case 'gemini':
+        return 'Gemini';
+      case 'opencode':
+        return 'OpenCode';
+      case 'cursor':
+      case 'cursor-agent':
+        return 'Cursor';
+      default:
+        return provider ? `${provider.slice(0, 1).toUpperCase()}${provider.slice(1)}` : 'Agent';
+    }
   }
 
   function agentSessionModelLabel(session: AgentSession) {
@@ -5301,6 +5834,78 @@
 
   function agentSessionActivityLabel(session: AgentSession) {
     return formatActivityTimestamp(session.lastActivity);
+  }
+
+  function agentSessionTaskID(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const candidates = [
+      snapshot?.branch,
+      snapshot?.title,
+      session.title,
+      agentSessionProjectLabel(session),
+      session.projectPath
+    ];
+
+    for (const candidate of candidates) {
+      const match = String(candidate ?? '').match(/\b(?:TSK|tsk)-\d+\b/);
+      const taskID = normalizeGitTaskID(match?.[0]);
+      if (taskID) return taskID;
+    }
+
+    return null;
+  }
+
+  function worktreeForAgentSession(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const paths = [snapshot?.worktreePath, snapshot?.cwd, session.projectPath]
+      .map((path) => normalizeProjectPath(path ?? ''))
+      .filter(Boolean);
+
+    return prioritizedProjectWorktrees.find((worktree) => {
+      const worktreePath = normalizeProjectPath(worktree.path);
+      return paths.some((path) => path === worktreePath || path.startsWith(`${worktreePath}/`));
+    }) ?? null;
+  }
+
+  function agentSessionBranchLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const worktree = worktreeForAgentSession(session, snapshot);
+    if (snapshot?.branch) return snapshot.branch;
+    if (worktree?.branch) return worktree.branch;
+
+    const sessionPath = normalizeProjectPath(session.projectPath ?? '');
+    const projectPath = normalizeProjectPath(selectedProject.path);
+    if (sessionPath === projectPath || !sessionPath) {
+      return gitStore.status?.branch ?? selectedProjectPrimaryRepoSummary?.branch ?? 'branch unknown';
+    }
+
+    return 'branch unknown';
+  }
+
+  function agentSessionRootLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const worktree = worktreeForAgentSession(session, snapshot);
+    if (worktree) return fileNameFromRestoredPath(worktree.path);
+    if (snapshot?.worktreePath) return fileNameFromRestoredPath(snapshot.worktreePath);
+    if (snapshot?.cwd) return formatSourceContextRootLabel(snapshot.cwd);
+    return agentSessionProjectLabel(session);
+  }
+
+  function agentSessionPathLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    const worktree = worktreeForAgentSession(session, snapshot);
+    const path = snapshot?.worktreePath ?? snapshot?.cwd ?? worktree?.path ?? session.projectPath ?? '';
+    return path ? formatSourceContextRootLabel(path) : 'global';
+  }
+
+  function agentSessionFileContextLabel(snapshot: WorkspaceSnapshot | null) {
+    if (!snapshot) return 'no saved file context';
+    return workspaceSnapshotFileStateLabel(snapshot);
+  }
+
+  function agentSessionResumeMetaLabel(session: AgentSession, snapshot: WorkspaceSnapshot | null) {
+    return [
+      agentSessionActivityLabel(session),
+      session.provider.startsWith('cmux-') ? agentSessionProviderLabel(session) : '',
+      agentSessionBranchLabel(session, snapshot),
+      agentSessionRootLabel(session, snapshot),
+      session.model ? agentSessionModelLabel(session) : ''
+    ].filter(Boolean).join(' · ');
   }
 
   function formatActivityTimestamp(value: string | null | undefined) {
@@ -5349,6 +5954,26 @@
       ?? stripLeadingShellCdCommand(commands[0] ?? '');
   }
 
+  function withAgentTerminalColorEnv(command: string) {
+    const trimmed = command.trim();
+    if (!/^(codex\s+resume\b|claude\s+(--resume|-r|--continue|-c)\b)/.test(trimmed)) {
+      return trimmed;
+    }
+    if (/^env\s+/.test(trimmed) && /\bFORCE_COLOR=/.test(trimmed)) return trimmed;
+
+    return [
+      'env -u NO_COLOR',
+      'TERM=xterm-256color',
+      'COLORTERM=truecolor',
+      'TERM_PROGRAM=MacCommandBar',
+      'CLICOLOR=1',
+      'CLICOLOR_FORCE=1',
+      'FORCE_COLOR=3',
+      `COLORFGBG=${shellQuoteForCommand('15;0')}`,
+      trimmed
+    ].join(' ');
+  }
+
   function agentSessionResumeShellCommand(session: AgentSession) {
     const commands = agentSessionResumeCommandList(session);
     const shellCommand = commands.find(isLeadingShellCdCommand);
@@ -5365,6 +5990,43 @@
 
   function captureAgentSessionWorkspaceSnapshot(session: AgentSession): WorkspaceSnapshot {
     return captureWorkspaceSnapshot(session);
+  }
+
+  function createAgentSessionShellSnapshot(session: AgentSession): WorkspaceSnapshot {
+    const sessionPath = agentSessionProjectPath(session);
+    const project = ensureWorkspaceSnapshotProject(
+      createProjectRoot(fileNameFromRestoredPath(sessionPath), sessionPath)
+    );
+    const plan = createWorkspaceSessionSnapshotPlan({
+      selectedProject: project,
+      projectOptions,
+      session,
+      selectedRecord: null,
+      selectedSourcePaths: {},
+      openSourceTabs: [],
+      selectedLine: null,
+      sourceActivityMode: 'conversations',
+      sourceTerminalApp,
+      browserUrl: null,
+      viewState: {
+        ...workspaceSnapshotViewState(),
+        sourceActivityFilter: ''
+      },
+      embeddedTerminal: null,
+      dockLayout: showSourceDockPanel(dock.layout, 'terminal'),
+      branch: null,
+      capturedAt: Date.now()
+    });
+    const snapshot = plan.snapshot;
+    const nextSnapshots = upsertWorkspaceSnapshot(
+      workspaceSnapshots,
+      snapshot,
+      maxWorkspaceSnapshots
+    );
+
+    workspaceSnapshots = nextSnapshots;
+    persistWorkspaceSnapshots(nextSnapshots);
+    return snapshot;
   }
 
   function activeWorkspaceAgentSession(): AgentSession | null {
@@ -5404,17 +6066,17 @@
       selectedProject,
       projectOptions,
       session,
-      selectedRecord,
-      selectedSourcePaths,
+      selectedRecord: files.selectedRecord,
+      selectedSourcePaths: projectStore.selectedSourcePaths,
       openSourceTabs: projectOpenSourceTabs,
-      branch: projectGitStatus?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
-      selectedLine: selectedSourceLine,
-      sourceActivityMode,
+      branch: gitStore.status?.branch ?? selectedProjectRepositorySummaries[0]?.branch ?? null,
+      selectedLine: files.selectedSourceLine,
+      sourceActivityMode: dock.activityMode,
       sourceTerminalApp,
       browserUrl: activeBrowserUrl || null,
       viewState: workspaceSnapshotViewState(),
       embeddedTerminal: workspaceSnapshotEmbeddedTerminal(),
-      dockLayout: sourceDockLayout,
+      dockLayout: dock.layout,
       capturedAt: Date.now()
     });
     const snapshot = plan.snapshot;
@@ -5426,14 +6088,14 @@
 
     workspaceSnapshots = nextSnapshots;
     persistWorkspaceSnapshots(nextSnapshots);
-    fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
+    files.fileActionStatus = `Workspace snapshot saved for ${snapshot.title}`;
     return snapshot;
   }
 
   async function restoreAgentSessionWorkspaceSnapshot(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
-      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      files.fileActionStatus = `No workspace snapshot saved for ${session.title}`;
       return;
     }
 
@@ -5443,9 +6105,28 @@
 
   async function openAgentSessionWorkspace(session: AgentSession) {
     captureActiveWorkspaceBeforeSwitch();
-    const snapshot = workspaceSnapshotForAgentSession(session) ?? captureAgentSessionWorkspaceSnapshot(session);
+    const snapshot = workspaceSnapshotForAgentSession(session) ?? createAgentSessionShellSnapshot(session);
     await restoreConversationWorkspaceSnapshot(snapshot);
     markAgentSessionWorkspaceActive(session);
+  }
+
+  async function switchToConversationWorkspace(session: AgentSession) {
+    captureActiveWorkspaceBeforeSwitch();
+    const snapshot = workspaceSnapshotForAgentSession(session) ?? createAgentSessionShellSnapshot(session);
+    const readiness = workspaceSnapshotRestoreReadiness(snapshot);
+
+    await restoreConversationWorkspaceSnapshot(snapshot);
+    markAgentSessionWorkspaceActive(session);
+
+    if (!readiness.canResumeEmbedded) {
+      files.fileActionStatus =
+        readiness.kind === 'missing-worktree'
+          ? 'Conversation restored; repair worktree before terminal resume'
+          : `Conversation restored: ${session.title}`;
+      return;
+    }
+
+    await openWorkspaceSnapshotEmbeddedTerminal(snapshot, { restoreWorkspace: false });
   }
 
   function markAgentSessionWorkspaceActive(session: AgentSession) {
@@ -5484,7 +6165,9 @@
   }
 
   async function openWorkspaceSnapshotTerminal(snapshot: WorkspaceSnapshot) {
-    const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
+    const command = withAgentTerminalColorEnv(
+      stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '')
+    );
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
     const readiness = workspaceSnapshotRestoreReadiness(snapshot);
@@ -5498,42 +6181,46 @@
 
     await restoreConversationWorkspaceSnapshot(snapshot);
 
-    fileActionBusy = `workspace-terminal-command:${snapshot.id}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `workspace-terminal-command:${snapshot.id}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       if (command) {
-        const openedCommand = await openTerminalCommandFromTauri(
+        const openedCommand = await openTerminalCommandWithFallback(
           path,
           command,
           snapshot.sourceTerminalApp
         );
-        if (openedCommand) {
-          fileActionStatus = 'Opened workspace resume command';
+        if (openedCommand.opened) {
+          files.fileActionStatus = terminalOpenStatus(
+            openedCommand,
+            'Opened workspace resume command',
+            'opened workspace resume command in Terminal'
+          );
           return;
         }
       }
 
       const openedPath = path.trim()
-        ? await openTerminalPathFromTauri(path, snapshot.sourceTerminalApp)
-        : false;
+        ? await openTerminalPathWithFallback(path, snapshot.sourceTerminalApp)
+        : { opened: false, app: snapshot.sourceTerminalApp, usedFallback: false };
       if (command) await navigator.clipboard.writeText(command);
-      fileActionStatus = command
-        ? openedPath
+      files.fileActionStatus = command
+        ? openedPath.opened
           ? 'Opened workspace terminal and copied resume command'
           : 'Workspace resume command copied'
-        : openedPath
+        : openedPath.opened
           ? 'Opened workspace terminal'
           : 'Native action unavailable';
     } catch (terminalError) {
       try {
         const openedPath = path.trim()
-          ? await openTerminalPathFromTauri(path, snapshot.sourceTerminalApp)
-          : false;
+          ? await openTerminalPathWithFallback(path, snapshot.sourceTerminalApp)
+          : { opened: false, app: snapshot.sourceTerminalApp, usedFallback: false };
         if (command) await navigator.clipboard.writeText(command);
-        fileActionStatus = command
-          ? openedPath
+        files.fileActionStatus = command
+          ? openedPath.opened
             ? 'Opened workspace terminal and copied resume command'
             : 'Workspace resume command copied'
           : 'Native action unavailable';
@@ -5541,12 +6228,18 @@
         error = terminalError instanceof Error ? terminalError.message : 'Could not open workspace terminal';
       }
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
-  async function openWorkspaceSnapshotEmbeddedTerminal(snapshot: WorkspaceSnapshot) {
-    const command = stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '');
+  async function openWorkspaceSnapshotEmbeddedTerminal(
+    snapshot: WorkspaceSnapshot,
+    options: { restoreWorkspace?: boolean } = {}
+  ) {
+    const shouldRestoreWorkspace = options.restoreWorkspace ?? true;
+    const command = withAgentTerminalColorEnv(
+      stripLeadingShellCdCommand(snapshot.resumeCommand?.trim() ?? '')
+    );
     const path = snapshot.worktreePath ?? snapshot.cwd;
     if (!command && !path.trim()) return;
     const readiness = workspaceSnapshotRestoreReadiness(snapshot);
@@ -5558,35 +6251,49 @@
       return;
     }
 
-    await restoreConversationWorkspaceSnapshot(snapshot);
+    if (shouldRestoreWorkspace) {
+      await restoreConversationWorkspaceSnapshot(snapshot);
+    }
     showDockPanel('terminal');
     await tick();
 
-    fileActionBusy = `workspace-embedded-terminal-command:${snapshot.id}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `workspace-embedded-terminal-command:${snapshot.id}`;
+    files.fileActionStatus = '';
     error = '';
     embeddedTerminalError = '';
 
     try {
-      if (command) {
-        if (
-          embeddedTerminalSession &&
-          normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(path)
-        ) {
-          await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
-          embeddedTerminalStatus = 'Running embedded workspace command';
-          fileActionStatus = 'Sent workspace command to embedded terminal';
-          embeddedTerminal?.focus();
-          return;
-        }
-
-        await startEmbeddedTerminalSession(path, command);
-        fileActionStatus = 'Started embedded workspace command';
+      const savedSession = embeddedTerminalSessionForSnapshot(snapshot);
+      if (savedSession) {
+        await attachEmbeddedTerminalSession(savedSession);
+        files.fileActionStatus = `Attached conversation terminal: ${snapshot.title}`;
         return;
       }
 
-      await openPathEmbeddedTerminal(path);
-      fileActionStatus = 'Opened embedded workspace terminal';
+      const snapshotFallbackRoots = [snapshot.worktreePath, snapshot.cwd, snapshot.project?.path];
+      if (command) {
+        const session = await startEmbeddedTerminalSession(path, command, snapshotFallbackRoots);
+        if (session) {
+          bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
+          // Keep the cwd-fallback notice if one was raised; otherwise confirm resume.
+          files.fileActionStatus = files.fileActionStatus.startsWith('Working directory ‹')
+            ? files.fileActionStatus
+            : `Started conversation terminal: ${snapshot.title}`;
+        } else {
+          files.fileActionStatus = 'Embedded terminal unavailable';
+        }
+        return;
+      }
+
+      const session = await startEmbeddedTerminalSession(path, '', snapshotFallbackRoots);
+      if (session) {
+        bindWorkspaceSnapshotEmbeddedTerminal(snapshot, session);
+        files.fileActionStatus = files.fileActionStatus.startsWith('Working directory ‹')
+          ? files.fileActionStatus
+          : `Started conversation shell: ${snapshot.title}`;
+      } else {
+        files.fileActionStatus = 'Embedded terminal unavailable';
+      }
     } catch (terminalError) {
       error =
         terminalError instanceof Error
@@ -5594,7 +6301,7 @@
           : 'Could not resume workspace in embedded terminal';
       embeddedTerminalStatus = 'Embedded workspace resume failed';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -5606,7 +6313,7 @@
       activeWorkspaceSessionKey = null;
       persistActiveWorkspaceSessionKey(null);
     }
-    fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
+    files.fileActionStatus = `Workspace snapshot deleted for ${snapshot.title}`;
   }
 
   function workspaceSnapshotRepairPlan(snapshot: WorkspaceSnapshot) {
@@ -5803,31 +6510,10 @@
     await copyActivityCommand(workspaceSnapshotRepairPlan(snapshot), successStatus);
   }
 
-  function workspaceSnapshotsForTerminalPath(path: string, limit = 3): WorkspaceSnapshot[] {
-    const normalizedPath = normalizeProjectPath(path);
-    if (!normalizedPath) return [];
-
+  function workspaceSnapshotForEmbeddedTerminalSession(session: TerminalSessionInfo) {
     return [...workspaceSnapshots]
       .sort((left, right) => right.capturedAt - left.capturedAt)
-      .filter((snapshot) => {
-        const snapshotPaths = [
-          snapshot.embeddedTerminal?.cwd ?? '',
-          snapshot.cwd,
-          snapshot.worktreePath ?? '',
-          snapshot.project.path
-        ].map(normalizeProjectPath).filter(Boolean);
-        return snapshotPaths.includes(normalizedPath);
-      })
-      .slice(0, limit);
-  }
-
-  function workspaceSnapshotForEmbeddedTerminalSession(session: TerminalSessionInfo) {
-    const normalizedCwd = normalizeProjectPath(session.cwd);
-    const sessionMatch = [...workspaceSnapshots]
-      .sort((left, right) => right.capturedAt - left.capturedAt)
-      .find((snapshot) => snapshot.embeddedTerminal?.sessionID === session.sessionId);
-
-    return sessionMatch ?? workspaceSnapshotsForTerminalPath(normalizedCwd, 1)[0] ?? null;
+      .find((snapshot) => snapshot.embeddedTerminal?.sessionID === session.sessionId) ?? null;
   }
 
   function embeddedTerminalSessionWorkspaceLabel(session: TerminalSessionInfo) {
@@ -5902,7 +6588,7 @@
       showDockPanel('terminal');
       await tick();
       await attachEmbeddedTerminalSession(session);
-      fileActionStatus = 'Attached embedded terminal; no saved workspace found';
+      files.fileActionStatus = 'Attached embedded terminal; no saved workspace found';
       return;
     }
 
@@ -5919,13 +6605,13 @@
     showDockPanel('terminal');
     await tick();
     await attachEmbeddedTerminalSession(session);
-    fileActionStatus = `Restored terminal workspace: ${snapshot.title}`;
+    files.fileActionStatus = `Restored terminal workspace: ${snapshot.title}`;
   }
 
   async function copyAgentSessionWorkspaceRestorePlan(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
-      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      files.fileActionStatus = `No workspace snapshot saved for ${session.title}`;
       return;
     }
 
@@ -5935,7 +6621,7 @@
   async function copyAgentSessionWorkspaceRepairPlan(session: AgentSession) {
     const snapshot = workspaceSnapshotForAgentSession(session);
     if (!snapshot) {
-      fileActionStatus = `No workspace snapshot saved for ${session.title}`;
+      files.fileActionStatus = `No workspace snapshot saved for ${session.title}`;
       return;
     }
 
@@ -5965,24 +6651,24 @@
     const restored = restoreWorkspaceSnapshot(snapshot);
     const project = ensureWorkspaceSnapshotProject(snapshot.project);
     const nextSelectedSourcePaths = {
-      ...selectedSourcePaths,
+      ...projectStore.selectedSourcePaths,
       ...restored.selectedSourcePaths
     };
 
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
-    sourceActivityMode = restored.sourceActivityMode;
-    persistSourceActivityMode(sourceActivityMode);
+    dock.activityMode = restored.sourceActivityMode;
+    persistSourceActivityMode(dock.activityMode);
     sourceTerminalApp = restored.sourceTerminalApp;
     persistSourceTerminalApp(sourceTerminalApp);
     setBrowserDockUrl(restored.browserUrl ?? '');
     applyWorkspaceSnapshotViewState(restored.viewState);
-    sourceDockLayout = sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState);
-    syncSourceDockLayoutToWorkspace(sourceDockLayout);
-    persistSourceDockLayout(sourceDockLayout);
+    dock.layout = ensureWorkbenchRightPanels(sourceDockLayoutWithWorkspaceViewState(restored.dockLayout, restored.viewState));
+    syncSourceDockLayoutToWorkspace(dock.layout);
+    persistSourceDockLayout(dock.layout);
     activeWorkspaceSessionKey = snapshot.id;
     persistActiveWorkspaceSessionKey(activeWorkspaceSessionKey);
-    fileActionStatus = `Workspace restored: ${snapshot.title}`;
+    files.fileActionStatus = `Workspace restored: ${snapshot.title}`;
 
     await activateWorkspaceSnapshotProject(project, restored.selectedPath);
 
@@ -6014,8 +6700,8 @@
       contextPanelCollapsed,
       editorInsightCollapsed,
       sidePanePosition,
-      sidePaneWidth,
-      contextPaneWidth,
+      sidePaneWidth: dock.sidePaneWidth,
+      contextPaneWidth: dock.contextPaneWidth,
       contextPaneHeight,
       editorInsightWidth,
       sourceChromeCompact,
@@ -6032,8 +6718,8 @@
     contextPanelCollapsed = viewState.contextPanelCollapsed;
     editorInsightCollapsed = viewState.editorInsightCollapsed;
     sidePanePosition = viewState.sidePanePosition;
-    sidePaneWidth = clampSidePaneWidth(viewState.sidePaneWidth);
-    contextPaneWidth = clampContextPaneWidth(viewState.contextPaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(viewState.sidePaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(viewState.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(viewState.contextPaneHeight);
     editorInsightWidth = clampEditorInsightWidth(viewState.editorInsightWidth);
     sourceChromeCompact = viewState.sourceChromeCompact;
@@ -6046,8 +6732,8 @@
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSidePanePosition(sidePanePosition);
-    persistSidePaneWidth(sidePaneWidth);
-    persistContextPaneWidth(contextPaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistEditorInsightWidth(editorInsightWidth);
     persistSourceChromeCompact(sourceChromeCompact);
@@ -6080,7 +6766,6 @@
 
     return describeWorkspaceSnapshotRestoreReadiness(snapshot, {
       liveTerminalSessionIDs: embeddedTerminalSessions.map((session) => session.sessionId),
-      liveTerminalCwds: embeddedTerminalSessions.map((session) => session.cwd),
       knownWorktreePaths: shouldUseCurrentWorktreeScan
         ? projectWorktrees.map((worktree) => worktree.path)
         : []
@@ -6098,12 +6783,7 @@
       if (!sessions) return;
 
       embeddedTerminalSessions = sessions;
-      const matchingSession =
-        sessions.find((session) => session.sessionId === savedTerminal.sessionID) ??
-        sessions.find(
-          (session) =>
-            normalizeProjectPath(session.cwd) === normalizeProjectPath(savedTerminal.cwd)
-        );
+      const matchingSession = sessions.find((session) => session.sessionId === savedTerminal.sessionID);
 
       if (matchingSession) {
         await attachEmbeddedTerminalSession(matchingSession);
@@ -6126,7 +6806,7 @@
   ) {
     await activateProject(project, {
       scanLimit: expandedSourceScanLimit,
-      projects: mergeProjectRoots(defaultProjectRoots, customProjectRoots),
+      projects: mergeProjectRoots(defaultProjectRoots, projectStore.customRoots),
       waitForScan: false,
       preserveSelectedRecordOnScan: Boolean(restoredSelectedPath)
     });
@@ -6141,8 +6821,8 @@
     if (existingProject) return existingProject;
 
     const nextProject = createProjectRoot(project.name, project.path);
-    const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
-    customProjectRoots = nextCustomProjectRoots;
+    const nextCustomProjectRoots = mergeProjectRoots([], [...projectStore.customRoots, nextProject]);
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
     return nextProject;
   }
@@ -6172,14 +6852,14 @@
       }));
     if (restoredTabs.length === 0) return;
 
-    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, restoredTabs);
-    openSourceTabs = nextOpenSourceTabs;
+    const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, project.id, restoredTabs);
+    files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
   }
 
   function sourceRecordFromRestoredPath(project: ProjectRoot, path: string): SourceRecord {
     const normalizedPath = normalizeProjectPath(path);
-    const existingRecord = records.find((record) => normalizeProjectPath(record.path) === normalizedPath);
+    const existingRecord = files.records.find((record) => normalizeProjectPath(record.path) === normalizedPath);
     if (existingRecord) return existingRecord;
 
     const normalizedProjectPath = normalizeProjectPath(project.path);
@@ -6227,6 +6907,53 @@
   function workspaceSnapshotForAgentSession(session: AgentSession): WorkspaceSnapshot | null {
     const snapshotID = workspaceSnapshotIDForAgentSession(session);
     return workspaceSnapshots.find((snapshot) => snapshot.id === snapshotID) ?? null;
+  }
+
+  function agentSessionForWorkspaceSnapshot(snapshot: WorkspaceSnapshot): AgentSession | null {
+    return agentSessions.find((session) => workspaceSnapshotIDForAgentSession(session) === snapshot.id)
+      ?? null;
+  }
+
+  async function openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot: WorkspaceSnapshot) {
+    const session = agentSessionForWorkspaceSnapshot(snapshot);
+    if (session) {
+      await switchToConversationWorkspace(session);
+      return;
+    }
+
+    captureActiveWorkspaceBeforeSwitch();
+    await openWorkspaceSnapshotEmbeddedTerminal(snapshot);
+  }
+
+  function embeddedTerminalSnapshotForSession(session: TerminalSessionInfo): WorkspaceSnapshotEmbeddedTerminal {
+    return {
+      sessionID: session.sessionId,
+      cwd: session.cwd,
+      shell: session.shell,
+      startedAt: session.startedAt
+    };
+  }
+
+  function embeddedTerminalSessionForSnapshot(snapshot: WorkspaceSnapshot) {
+    const savedSessionID = snapshot.embeddedTerminal?.sessionID?.trim();
+    if (!savedSessionID) return null;
+
+    return embeddedTerminalSessions.find((session) => session.sessionId === savedSessionID)
+      ?? (embeddedTerminalSession?.sessionId === savedSessionID ? embeddedTerminalSession : null);
+  }
+
+  function bindWorkspaceSnapshotEmbeddedTerminal(
+    snapshot: WorkspaceSnapshot,
+    session: TerminalSessionInfo
+  ) {
+    const nextSnapshot: WorkspaceSnapshot = {
+      ...snapshot,
+      embeddedTerminal: embeddedTerminalSnapshotForSession(session),
+      capturedAt: Date.now()
+    };
+    const nextSnapshots = upsertWorkspaceSnapshot(workspaceSnapshots, nextSnapshot, maxWorkspaceSnapshots);
+    workspaceSnapshots = nextSnapshots;
+    persistWorkspaceSnapshots(nextSnapshots);
   }
 
   function worktreeWorkspaceSnapshots(worktree: ProjectWorktree, limit = 3): WorkspaceSnapshot[] {
@@ -6363,7 +7090,7 @@
     return `'${value.replace(/'/g, "'\\''")}'`;
   }
 
-  function sourceLspInstallCommand(language: SourcePreview['language'] | null | undefined = preview?.language) {
+  function sourceLspInstallCommand(language: SourcePreview['language'] | null | undefined = files.preview?.language) {
     switch (language) {
       case 'csharp':
         return 'dotnet tool install --global csharp-ls';
@@ -6393,23 +7120,23 @@
 
   function sourceLspStatusLabel() {
     if (sourceLspStatusLoading) return 'lsp...';
-    if (!preview) return 'no file';
-    if (!sourceSupportsLanguageIntelligence(preview.language)) return 'syntax only';
+    if (!files.preview) return 'no file';
+    if (!sourceSupportsLanguageIntelligence(files.preview.language)) return 'syntax only';
     if (sourceLspStatus?.available) return 'lsp';
     return 'index fallback';
   }
 
   function sourceLspStatusReportLines() {
-    if (!preview) return ['No source file loaded'];
+    if (!files.preview) return ['No source file loaded'];
 
-    const supported = sourceSupportsLanguageIntelligence(preview.language);
-    const installCommand = sourceLspInstallCommand(preview.language);
+    const supported = sourceSupportsLanguageIntelligence(files.preview.language);
+    const installCommand = sourceLspInstallCommand(files.preview.language);
     const runtimeCommand = sourceLspRuntimeCommand();
     const statusReason =
       sourceLspStatusError || sourceLspStatus?.reason || 'Using project index fallback';
     const lines = [
-      `File: ${preview.relativePath}`,
-      `Language: ${preview.language}`,
+      `File: ${files.preview.relativePath}`,
+      `Language: ${files.preview.language}`,
       `Mode: ${sourceLspStatusLabel()}`
     ];
 
@@ -6594,7 +7321,7 @@
     const worktreePath = normalizeProjectPath(worktree.path);
     if (!worktreePath) return null;
 
-    return gitRepositorySummaries.find((summary) => normalizeProjectPath(summary.path) === worktreePath) ?? null;
+    return gitStore.repositorySummaries.find((summary) => normalizeProjectPath(summary.path) === worktreePath) ?? null;
   }
 
   function projectWorktreeLastActivityAgeDays(worktree: ProjectWorktree) {
@@ -6684,6 +7411,17 @@
     ].join('\n');
   }
 
+  function projectWorktreeCleanupRunbookItem(worktree: ProjectWorktree) {
+    const worktreePath = normalizeProjectPath(worktree.path);
+    return (
+      projectWorktreeCleanupRunbook.items.find((item) => normalizeProjectPath(item.path) === worktreePath) ?? null
+    );
+  }
+
+  function projectWorktreeRunbookCommandBlock(worktree: ProjectWorktree) {
+    return projectWorktreeCleanupRunbookItem(worktree)?.commandBlocks[0] ?? null;
+  }
+
   function projectWorktreePrimaryAction(worktree: ProjectWorktree) {
     return worktreePrimaryAction(projectWorktreeSafety(worktree));
   }
@@ -6730,10 +7468,10 @@
     if (!worktree.path.trim()) return false;
 
     rememberSourceActivityFilter();
-    sourceActivityMode = 'files';
+    dock.activityMode = 'files';
     setSourceActivityFilter('');
-    persistSourceActivityMode(sourceActivityMode);
-    fileActionStatus = `Opening ${worktree.branch} source tree`;
+    persistSourceActivityMode(dock.activityMode);
+    files.fileActionStatus = `Opening ${worktree.branch} source tree`;
     void addCustomProjectRoot(sourceProjectNameForWorktree(worktree), worktree.path, false);
     return true;
   }
@@ -6742,6 +7480,20 @@
     return copyActivityCommand(
       formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree)),
       'Worktree cleanup plan copied'
+    );
+  }
+
+  function copyWorktreeRunbookCommandBlock(worktree: ProjectWorktree) {
+    const item = projectWorktreeCleanupRunbookItem(worktree);
+    const commandBlock = item?.commandBlocks[0] ?? null;
+    const copyText =
+      commandBlock?.copyText ??
+      item?.copyText ??
+      formatWorktreeCleanupPlanReport(worktree, projectWorktreeCleanupPlan(worktree));
+
+    return copyActivityCommand(
+      copyText,
+      commandBlock ? 'Worktree runbook command block copied' : 'Worktree runbook item copied'
     );
   }
 
@@ -6787,13 +7539,13 @@
       return;
     }
     if (!confirmWorktreePrimaryAction(worktree, action)) {
-      fileActionStatus = 'Worktree cleanup cancelled';
+      files.fileActionStatus = 'Worktree cleanup cancelled';
       return;
     }
 
     const busyKey = `worktree-primary:${worktree.path}`;
-    fileActionBusy = busyKey;
-    fileActionStatus = '';
+    files.fileActionBusy = busyKey;
+    files.fileActionStatus = '';
     error = '';
 
     try {
@@ -6805,7 +7557,7 @@
         }
 
         projectWorktrees = result.worktrees;
-        fileActionStatus = `${result.message}: ${result.archivePath}`;
+        files.fileActionStatus = `${result.message}: ${result.archivePath}`;
         void loadGitRepositorySummaries(projects);
         return;
       }
@@ -6817,17 +7569,21 @@
       }
 
       projectWorktrees = result.worktrees;
-      fileActionStatus = result.message;
+      files.fileActionStatus = result.message;
       void loadGitRepositorySummaries(projects);
     } catch (removeError) {
       error = removeError instanceof Error ? removeError.message : 'Could not remove worktree';
     } finally {
-      if (fileActionBusy === busyKey) fileActionBusy = '';
+      if (files.fileActionBusy === busyKey) files.fileActionBusy = '';
     }
   }
 
   function copyProjectWorktreeCleanupBrief() {
     return copyActivityCommand(projectWorktreeCleanupBrief.report, 'Worktree cleanup brief copied');
+  }
+
+  function copyProjectWorktreeCleanupRunbook() {
+    return copyActivityCommand(projectWorktreeCleanupRunbook.copyText, 'Worktree cleanup runbook copied');
   }
 
   function copyProjectWorktreeCleanupScript() {
@@ -6856,7 +7612,7 @@
         return openAgentSessionWorkspace(session);
       case 'reattach':
       case 'resume':
-        return resumeAgentSessionEmbeddedTerminal(session);
+        return switchToConversationWorkspace(session);
       case 'save-workspace':
         captureAgentSessionWorkspaceSnapshot(session);
         return;
@@ -6873,12 +7629,109 @@
         ? `${selectedProjectAgentSessions.length} ${selectedProjectAgentSessions.length === 1 ? 'agent' : 'agents'}`
         : '',
       selectedProjectRuntimeContexts.length ? `${selectedProjectRuntimeContexts.length} active` : '',
+      playwrightSessions.length
+        ? `${playwrightSessions.length} Playwright`
+        : '',
       projectWorktrees.length
         ? `${projectWorktrees.length} ${projectWorktrees.length === 1 ? 'worktree' : 'worktrees'}`
         : ''
     ].filter(Boolean);
 
     return parts.join(' · ') || sourceTerminalApp;
+  }
+
+  type ExternalTerminalOpenResult = {
+    opened: boolean;
+    app: SourceTerminalApp;
+    usedFallback: boolean;
+    fallbackFrom?: SourceTerminalApp;
+  };
+
+  function terminalActionErrorMessage(terminalError: unknown) {
+    return terminalError instanceof Error ? terminalError.message : String(terminalError ?? '');
+  }
+
+  function shouldFallbackExternalTerminal(terminalError: unknown, app: SourceTerminalApp) {
+    if (app === sourceTerminalFallbackApp) return false;
+
+    const message = terminalActionErrorMessage(terminalError);
+    if (/unsupported terminal app/i.test(message)) return false;
+    if (/terminal command execution is not supported/i.test(message)) return false;
+
+    return true;
+  }
+
+  function persistSourceTerminalFallback(app: SourceTerminalApp) {
+    sourceTerminalApp = app;
+    persistSourceTerminalApp(app);
+  }
+
+  async function openTerminalPathWithFallback(
+    path: string,
+    preferredApp: SourceTerminalApp
+  ): Promise<ExternalTerminalOpenResult> {
+    try {
+      const opened = await openTerminalPathFromTauri(path, preferredApp);
+      return { opened, app: preferredApp, usedFallback: false };
+    } catch (terminalError) {
+      if (!shouldFallbackExternalTerminal(terminalError, preferredApp)) throw terminalError;
+
+      const opened = await openTerminalPathFromTauri(path, sourceTerminalFallbackApp);
+      if (opened) persistSourceTerminalFallback(sourceTerminalFallbackApp);
+      return {
+        opened,
+        app: sourceTerminalFallbackApp,
+        usedFallback: true,
+        fallbackFrom: preferredApp
+      };
+    }
+  }
+
+  async function openTerminalCommandWithFallback(
+    path: string,
+    command: string,
+    preferredApp: SourceTerminalApp
+  ): Promise<ExternalTerminalOpenResult> {
+    try {
+      const opened = await openTerminalCommandFromTauri(path, command, preferredApp);
+      return { opened, app: preferredApp, usedFallback: false };
+    } catch (terminalError) {
+      if (!shouldFallbackExternalTerminal(terminalError, preferredApp)) throw terminalError;
+
+      const opened = await openTerminalCommandFromTauri(path, command, sourceTerminalFallbackApp);
+      if (opened) persistSourceTerminalFallback(sourceTerminalFallbackApp);
+      return {
+        opened,
+        app: sourceTerminalFallbackApp,
+        usedFallback: true,
+        fallbackFrom: preferredApp
+      };
+    }
+  }
+
+  function terminalOpenStatus(
+    result: ExternalTerminalOpenResult,
+    normalStatus: string,
+    fallbackStatus: string
+  ) {
+    if (!result.usedFallback || !result.fallbackFrom) return normalStatus;
+    return `${result.fallbackFrom} unavailable; ${fallbackStatus}`;
+  }
+
+  function embeddedTerminalAddonLabel() {
+    const addonParts = embeddedTerminalAddonStatus
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part && (part !== 'webgl' || embeddedTerminalWebglAddon));
+    if (embeddedTerminalSearchAddon && !addonParts.includes('search')) addonParts.push('search');
+    if (embeddedTerminalSerializeAddon && !addonParts.includes('serialize')) addonParts.push('serialize');
+    if (embeddedTerminalWebglAddon && !addonParts.includes('webgl')) addonParts.push('webgl');
+    return addonParts.join(', ') || 'fit';
+  }
+
+  function openEmbeddedTerminalWebLink(event: MouseEvent, uri: string) {
+    event.preventDefault();
+    window.open(uri, '_blank', 'noopener,noreferrer');
   }
 
   async function loadEmbeddedTerminalSessions() {
@@ -6910,71 +7763,292 @@
     }
   }
 
+  async function loadPlaywrightSessions(force = false) {
+    if (playwrightSessionsLoading && !force) return;
+
+    const requestID = ++playwrightSessionsRequestID;
+    playwrightSessionsLoading = true;
+    playwrightSessionError = '';
+
+    try {
+      const sessions = await listPlaywrightSessionsFromTauri();
+      if (requestID !== playwrightSessionsRequestID) return;
+      if (!sessions) {
+        playwrightSessions = [];
+        playwrightSessionSource = 'browser preview';
+        return;
+      }
+
+      playwrightSessions = sessions;
+      playwrightSessionSource = 'native process scan';
+    } catch (sessionError) {
+      if (requestID !== playwrightSessionsRequestID) return;
+      playwrightSessions = [];
+      playwrightSessionSource = 'native process scan';
+      playwrightSessionError =
+        sessionError instanceof Error ? sessionError.message : 'Could not scan Playwright sessions';
+    } finally {
+      if (requestID === playwrightSessionsRequestID) {
+        playwrightSessionsLoading = false;
+      }
+    }
+  }
+
+  async function killPlaywrightSessions() {
+    if (playwrightSessionsKilling) return;
+
+    playwrightSessionsKilling = true;
+    playwrightSessionError = '';
+
+    try {
+      const result = await killPlaywrightSessionsFromTauri();
+      if (!result) {
+        playwrightSessionError = 'Playwright cleanup runs in the Tauri app.';
+        files.fileActionStatus = 'Open the Tauri app to stop Playwright sessions';
+        return;
+      }
+
+      const stoppedCount = result.terminatedPids.length;
+      const failedCount = result.failedPgids.length;
+      files.fileActionStatus = failedCount
+        ? `Stopped ${stoppedCount} Playwright processes; ${failedCount} failed`
+        : stoppedCount
+          ? `Stopped ${stoppedCount} Playwright processes`
+          : 'No Playwright sessions to stop';
+      await loadPlaywrightSessions(true);
+    } catch (cleanupError) {
+      playwrightSessionError =
+        cleanupError instanceof Error ? cleanupError.message : 'Could not stop Playwright sessions';
+      files.fileActionStatus = 'Playwright cleanup failed';
+    } finally {
+      playwrightSessionsKilling = false;
+    }
+  }
+
+  function embeddedTerminalHostReady() {
+    if (!embeddedTerminalElement) return false;
+    const rect = embeddedTerminalElement.getBoundingClientRect();
+    const width = Math.round(rect.width || embeddedTerminalElement.clientWidth);
+    const height = Math.round(rect.height || embeddedTerminalElement.clientHeight);
+    return width >= 40 && height >= 40;
+  }
+
+  function remountEmbeddedTerminalRenderer() {
+    if (!embeddedTerminal || !embeddedTerminalElement || !embeddedTerminal.element) return;
+    if (embeddedTerminal.element.parentElement === embeddedTerminalElement) return;
+
+    embeddedTerminalElement.replaceChildren(embeddedTerminal.element);
+    scheduleEmbeddedTerminalFit();
+  }
+
   async function ensureEmbeddedTerminalRenderer() {
-    if (embeddedTerminal || embeddedTerminalRendererLoading || !embeddedTerminalElement) return;
+    if (embeddedTerminal) {
+      remountEmbeddedTerminalRenderer();
+      return;
+    }
+    if (!embeddedTerminalElement) return;
+    if (embeddedTerminalRendererPromise) {
+      await embeddedTerminalRendererPromise;
+      remountEmbeddedTerminalRenderer();
+      return;
+    }
 
     embeddedTerminalRendererLoading = true;
     embeddedTerminalStatus = 'Loading embedded terminal';
 
-    try {
-      const [{ Terminal: XTerm }, { FitAddon }] = await Promise.all([
-        import('@xterm/xterm'),
-        import('@xterm/addon-fit')
-      ]);
+    embeddedTerminalRendererPromise = (async () => {
+      try {
+        const [
+          { Terminal: XTerm },
+          { FitAddon },
+          { SearchAddon },
+          { SerializeAddon },
+          { UnicodeGraphemesAddon },
+          { WebLinksAddon }
+        ] = await Promise.all([
+          import('@xterm/xterm'),
+          import('@xterm/addon-fit'),
+          import('@xterm/addon-search'),
+          import('@xterm/addon-serialize'),
+          import('@xterm/addon-unicode-graphemes'),
+          import('@xterm/addon-web-links')
+        ]);
 
-      if (!embeddedTerminalElement || embeddedTerminal) return;
+        if (!embeddedTerminalElement || embeddedTerminal) return;
 
-      const terminal = new XTerm({
-        convertEol: true,
-        cursorBlink: true,
-        fontFamily: sourcePreviewAppearance.fontFamily,
-        fontSize: 12,
-        lineHeight: 1.2,
-        scrollback: 3000,
-        theme: {
-          background: '#101414',
-          foreground: '#dce4e2',
-          cursor: '#72e2cf',
-          selectionBackground: '#274740',
-          black: '#1d2423',
-          red: '#ff6b7f',
-          green: '#72e2cf',
-          yellow: '#ffd166',
-          blue: '#61afef',
-          magenta: '#c678dd',
-          cyan: '#56dce0',
-          white: '#e8f0ee'
-        }
-      });
-      const fitAddon = new FitAddon();
-      terminal.loadAddon(fitAddon);
-      terminal.open(embeddedTerminalElement);
-      embeddedTerminalInputDisposable = terminal.onData((data) => {
-        if (!embeddedTerminalSession) {
-          embeddedTerminalStatus = 'Start a native terminal first';
-          return;
-        }
-
-        void writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data).catch(() => {
-          embeddedTerminalError = 'Could not write to embedded terminal';
+        const terminal = new XTerm({
+          convertEol: true,
+          cursorBlink: true,
+          cursorStyle: 'block',
+          allowProposedApi: true,
+          macOptionIsMeta: true,
+          // Sourced from settings.terminal via embeddedTerminalAppearance, which
+          // falls back to the exact original hardcoded defaults when unchanged.
+          fontFamily: embeddedTerminalAppearance.fontFamily,
+          fontSize: embeddedTerminalAppearance.fontSize,
+          fontWeight: 500,
+          fontWeightBold: 760,
+          lineHeight: embeddedTerminalAppearance.lineHeight,
+          scrollback: 8000,
+          theme: {
+            background: '#282a36',
+            foreground: '#f8f8f2',
+            cursor: '#f8f8f2',
+            cursorAccent: '#282a36',
+            selectionBackground: '#44475a',
+            black: '#000000',
+            red: '#ff5555',
+            green: '#50fa7b',
+            yellow: '#f1fa8c',
+            blue: '#bd93f9',
+            magenta: '#ff79c6',
+            cyan: '#8be9fd',
+            white: '#bbbbbb',
+            brightBlack: '#555555',
+            brightRed: '#ff5555',
+            brightGreen: '#50fa7b',
+            brightYellow: '#f1fa8c',
+            brightBlue: '#caa9fa',
+            brightMagenta: '#ff79c6',
+            brightCyan: '#8be9fd',
+            brightWhite: '#ffffff'
+          }
         });
-      });
-      embeddedTerminal = terminal;
-      embeddedTerminalFitAddon = fitAddon;
-      embeddedTerminalStatus = 'Embedded terminal ready';
-      fitEmbeddedTerminal();
-    } catch (terminalError) {
-      embeddedTerminalError =
-        terminalError instanceof Error ? terminalError.message : 'Could not load embedded terminal';
-      embeddedTerminalStatus = 'Embedded terminal unavailable';
+        const fitAddon = new FitAddon();
+        const searchAddon = new SearchAddon({ highlightLimit: 2000 });
+        const serializeAddon = new SerializeAddon();
+        const unicodeGraphemesAddon = new UnicodeGraphemesAddon();
+        const webLinksAddon = new WebLinksAddon(openEmbeddedTerminalWebLink);
+        terminal.loadAddon(fitAddon);
+        terminal.loadAddon(searchAddon);
+        terminal.loadAddon(serializeAddon);
+        terminal.loadAddon(unicodeGraphemesAddon);
+        terminal.loadAddon(webLinksAddon);
+        terminal.open(embeddedTerminalElement);
+        let webglAddon: XTermWebglAddon | null = null;
+        try {
+          const { WebglAddon } = await import('@xterm/addon-webgl');
+          webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            webglAddon?.dispose();
+            if (embeddedTerminalWebglAddon === webglAddon) {
+              embeddedTerminalWebglAddon = null;
+              embeddedTerminalAddonStatus = embeddedTerminalAddonLabel();
+            }
+          });
+          terminal.loadAddon(webglAddon);
+        } catch {
+          webglAddon = null;
+        }
+        embeddedTerminalInputDisposable = terminal.onData((data) => {
+          if (!embeddedTerminalSession) {
+            embeddedTerminalStatus = 'Start a native terminal first';
+            return;
+          }
+
+          void writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, data).catch(() => {
+            embeddedTerminalError = 'Could not write to embedded terminal';
+          });
+        });
+        embeddedTerminal = terminal;
+        embeddedTerminalFitAddon = fitAddon;
+        embeddedTerminalSearchAddon = searchAddon;
+        embeddedTerminalSerializeAddon = serializeAddon;
+        embeddedTerminalWebglAddon = webglAddon;
+        embeddedTerminalAddonStatus = ['fit', 'search', 'serialize', 'unicode', 'links', webglAddon ? 'webgl' : 'canvas']
+          .filter(Boolean)
+          .join(', ');
+        embeddedTerminalStatus = 'Embedded terminal ready';
+        scheduleEmbeddedTerminalFit();
+      } catch (terminalError) {
+        embeddedTerminalError =
+          terminalError instanceof Error ? terminalError.message : 'Could not load embedded terminal';
+        embeddedTerminalStatus = 'Embedded terminal unavailable';
+      } finally {
+        embeddedTerminalRendererLoading = false;
+      }
+    })();
+
+    try {
+      await embeddedTerminalRendererPromise;
     } finally {
-      embeddedTerminalRendererLoading = false;
+      embeddedTerminalRendererPromise = null;
     }
   }
 
-  async function startEmbeddedTerminalSession(cwd = selectedProject.path, startupCommand = '') {
-    const root = cwd.trim();
-    if (!root || embeddedTerminalStarting) return;
+  // A cwd is unusable when it is empty or points at an OS temp/ephemeral dir
+  // (e.g. /private/var/folders/.../T). Spawning a PTY there makes the shell
+  // error out (compinit/compdef failures) so the agent session cannot resume.
+  function looksLikeEphemeralCwd(path: string): boolean {
+    const normalized = normalizeProjectPath(path);
+    if (!normalized) return true;
+    return (
+      normalized.startsWith('/private/var/folders/') ||
+      normalized.startsWith('/var/folders/') ||
+      normalized === '/tmp' ||
+      normalized.startsWith('/tmp/') ||
+      normalized === '/private/tmp' ||
+      normalized.startsWith('/private/tmp/')
+    );
+  }
+
+  // Best-effort $HOME for the running user. There is no frontend home-dir API,
+  // but every known project path lives under /Users/<user>, so derive it from
+  // the active project (falling back to the bundled repo path).
+  function homeDirGuess(): string {
+    const candidates = [selectedProject?.path, macCommandBarRepoPath];
+    for (const candidate of candidates) {
+      const normalized = normalizeProjectPath(candidate ?? '');
+      const match = normalized.match(/^(\/Users\/[^/]+)(?:\/|$)/);
+      if (match) return match[1];
+    }
+    return '';
+  }
+
+  // Resolve the first candidate that exists, is a directory, and is not an
+  // ephemeral temp dir. Uses the existing validate_project_root bridge (which
+  // works in both the Tauri runtime and the dev bridge) and also considers the
+  // detected git root of any otherwise-rejected candidate.
+  async function firstValidTerminalCwd(candidates: Array<string | null | undefined>): Promise<string> {
+    const seen = new Set<string>();
+    const queue = candidates
+      .map((candidate) => normalizeProjectPath(candidate ?? ''))
+      .filter((candidate) => candidate.length > 0);
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const candidate = queue[index];
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (looksLikeEphemeralCwd(candidate)) continue;
+
+      let validation: ProjectRootValidationResult | null = null;
+      try {
+        validation = await validateProjectRootFromTauri(candidate);
+      } catch {
+        validation = null;
+      }
+
+      if (validation?.exists && validation.isDirectory) {
+        return candidate;
+      }
+
+      // If the candidate itself is gone but its git root survives, try that next.
+      const gitRoot = normalizeProjectPath(validation?.gitRoot ?? '');
+      if (gitRoot && !seen.has(gitRoot) && !looksLikeEphemeralCwd(gitRoot)) {
+        queue.push(gitRoot);
+      }
+    }
+
+    return '';
+  }
+
+  async function startEmbeddedTerminalSession(
+    cwd = selectedProject.path,
+    startupCommand = '',
+    fallbackRoots: Array<string | null | undefined> = []
+  ) {
+    const requestedRoot = cwd.trim();
+    if (!requestedRoot || embeddedTerminalStarting) return null;
     const command = startupCommand.trim();
 
     embeddedTerminalStarting = true;
@@ -6985,22 +8059,56 @@
       await ensureEmbeddedTerminalRenderer();
       if (!embeddedTerminal) {
         embeddedTerminalStatus = 'Embedded terminal unavailable';
-        return;
+        return null;
+      }
+
+      // Resolution order: requested cwd → caller fallbacks (project/git roots) →
+      // active project path → $HOME. Never spawn in a dead/ephemeral directory.
+      const home = homeDirGuess();
+      const resolvedRoot = await firstValidTerminalCwd([
+        requestedRoot,
+        ...fallbackRoots,
+        selectedProject?.path,
+        home
+      ]);
+      let root = resolvedRoot || (home ? home : requestedRoot);
+      const usedFallback = normalizeProjectPath(root) !== normalizeProjectPath(requestedRoot);
+      if (usedFallback) {
+        files.fileActionStatus = `Working directory ‹${requestedRoot}› is unavailable — opened terminal in ‹${root}›.`;
       }
 
       fitEmbeddedTerminal();
-      const session = await startTerminalSessionFromTauri({
+      let session = await startTerminalSessionFromTauri({
         cwd: root,
         cols: embeddedTerminal.cols || 96,
         rows: embeddedTerminal.rows || 24
+      }).catch((startError) => {
+        // A bad cwd can reject the native call outright; retry once at $HOME.
+        if (home && normalizeProjectPath(home) !== normalizeProjectPath(root)) {
+          return null;
+        }
+        throw startError;
       });
+
+      if (!session && home && normalizeProjectPath(home) !== normalizeProjectPath(root)) {
+        const retryRoot = root;
+        root = home;
+        session = await startTerminalSessionFromTauri({
+          cwd: root,
+          cols: embeddedTerminal.cols || 96,
+          rows: embeddedTerminal.rows || 24
+        });
+        if (session) {
+          files.fileActionStatus = `Working directory ‹${retryRoot}› is unavailable — opened terminal in ‹${root}›.`;
+        }
+      }
 
       if (!session) {
         embeddedTerminalError = 'Embedded terminal sessions run inside the Tauri app.';
         embeddedTerminalStatus = 'Browser preview cannot start a native PTY';
         embeddedTerminal.writeln('\r\nEmbedded terminal is available in the Tauri app.');
         embeddedTerminal.writeln(`Use Project to open ${sourceTerminalApp} from browser preview.\r\n`);
-        return;
+        return null;
       }
 
       embeddedTerminalSession = session;
@@ -7008,14 +8116,16 @@
       embeddedTerminalStatus = command ? 'Running embedded command' : 'Native terminal running';
       embeddedTerminal.reset();
       embeddedTerminal.focus();
-      window.setTimeout(fitEmbeddedTerminal, 0);
+      scheduleEmbeddedTerminalFit();
       if (command) {
         await writeTerminalSessionFromTauri(session.sessionId, `${command}\r`);
       }
+      return session;
     } catch (terminalError) {
       embeddedTerminalError =
         terminalError instanceof Error ? terminalError.message : 'Could not start embedded terminal';
       embeddedTerminalStatus = 'Embedded terminal failed';
+      return null;
     } finally {
       embeddedTerminalStarting = false;
     }
@@ -7118,7 +8228,7 @@
       }
       embeddedTerminalStatus = 'Native terminal attached';
       embeddedTerminal.focus();
-      window.setTimeout(fitEmbeddedTerminal, 0);
+      scheduleEmbeddedTerminalFit();
     } catch (terminalError) {
       embeddedTerminalError =
         terminalError instanceof Error ? terminalError.message : 'Could not attach embedded terminal';
@@ -7168,8 +8278,13 @@
 
   function fitEmbeddedTerminal() {
     if (!embeddedTerminal || !embeddedTerminalFitAddon || !embeddedTerminalElement) return;
+    if (!embeddedTerminalHostReady()) {
+      embeddedTerminalStatus = 'Terminal fit pending';
+      return;
+    }
 
     try {
+      remountEmbeddedTerminalRenderer();
       embeddedTerminalFitAddon.fit();
       if (embeddedTerminalSession) {
         void resizeTerminalSessionFromTauri(
@@ -7183,6 +8298,35 @@
     } catch {
       embeddedTerminalStatus = 'Terminal fit pending';
     }
+  }
+
+  function clearEmbeddedTerminalFitSchedule() {
+    if (typeof window === 'undefined') return;
+
+    if (embeddedTerminalFitFrame) {
+      window.cancelAnimationFrame(embeddedTerminalFitFrame);
+      embeddedTerminalFitFrame = 0;
+    }
+    for (const timer of embeddedTerminalFitTimers) {
+      window.clearTimeout(timer);
+    }
+    embeddedTerminalFitTimers = [];
+  }
+
+  function scheduleEmbeddedTerminalFit() {
+    if (typeof window === 'undefined') {
+      fitEmbeddedTerminal();
+      return;
+    }
+
+    clearEmbeddedTerminalFitSchedule();
+    embeddedTerminalFitFrame = window.requestAnimationFrame(() => {
+      embeddedTerminalFitFrame = 0;
+      fitEmbeddedTerminal();
+    });
+    embeddedTerminalFitTimers = embeddedTerminalDeferredFitDelays.map((delay) =>
+      window.setTimeout(fitEmbeddedTerminal, delay)
+    );
   }
 
   function handleTerminalOutput(payload: TerminalOutputPayload) {
@@ -7216,9 +8360,14 @@
       void closeTerminalSessionFromTauri(session.sessionId);
     }
 
+    clearEmbeddedTerminalFitSchedule();
     embeddedTerminalInputDisposable?.dispose();
     embeddedTerminalInputDisposable = null;
     embeddedTerminalFitAddon = null;
+    embeddedTerminalSearchAddon = null;
+    embeddedTerminalSerializeAddon = null;
+    embeddedTerminalWebglAddon = null;
+    embeddedTerminalAddonStatus = 'fit';
     embeddedTerminal?.dispose();
     embeddedTerminal = null;
   }
@@ -7226,7 +8375,7 @@
   function embeddedTerminalStatusLabel(session = embeddedTerminalSession) {
     if (!session) return embeddedTerminalStatus;
 
-    return `${embeddedTerminalSessionTitle(session)} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''}`;
+    return `${embeddedTerminalSessionTitle(session)} · ${session.cols}x${session.rows}${session.pid ? ` · pid ${session.pid}` : ''} · ${embeddedTerminalAddonLabel()}`;
   }
 
   function embeddedTerminalSessionTitle(session: TerminalSessionInfo) {
@@ -7249,9 +8398,9 @@
   }
 
   function selectedSourceGitBadge() {
-    if (selectedSourceGitDiffLoading) return '...';
+    if (gitStore.selectedDiffLoading) return '...';
     if (selectedRecordGitStatus?.badge) return selectedRecordGitStatus.badge;
-    if (selectedSourceGitDiff?.status && selectedSourceGitDiff.status !== 'clean') return 'M';
+    if (gitStore.selectedDiff?.status && gitStore.selectedDiff.status !== 'clean') return 'M';
     return '0';
   }
 
@@ -7273,46 +8422,60 @@
   }
 
   function clearSelectedSourceGitDiff() {
-    selectedSourceGitDiff = null;
-    selectedSourceGitDiffLoading = false;
-    selectedSourceGitDiffError = '';
+    selectedSourceGitDiffRequestID += 1;
+    gitStore.selectedDiff = null;
+    gitStore.selectedDiffLoading = false;
+    gitStore.selectedDiffError = '';
   }
 
   async function loadSelectedSourceGitDiff(
-    record: SourceRecord | null = selectedRecord,
+    record: SourceRecord | null = files.selectedRecord,
     project: ProjectRoot = selectedProject
   ) {
-    if (!record || selectedRecord?.path !== record.path) {
+    if (!record || files.selectedRecord?.path !== record.path) {
       clearSelectedSourceGitDiff();
       return;
     }
 
     const expectedPath = record.path;
     const expectedProjectPath = project.path;
-    selectedSourceGitDiff = null;
-    selectedSourceGitDiffError = '';
-    selectedSourceGitDiffLoading = true;
+    const requestID = ++selectedSourceGitDiffRequestID;
+    gitStore.selectedDiff = null;
+    gitStore.selectedDiffError = '';
+    gitStore.selectedDiffLoading = true;
 
     try {
       const diff = await readSourceGitDiffFromTauri(expectedProjectPath, expectedPath);
-      if (selectedRecord?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (!isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) return;
 
-      selectedSourceGitDiff = diff;
-      if (!diff) selectedSourceGitDiffError = 'Native Git diff unavailable';
+      gitStore.selectedDiff = diff;
+      if (!diff) gitStore.selectedDiffError = 'Native Git diff unavailable';
     } catch (gitDiffError) {
-      if (selectedRecord?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (!isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) return;
 
-      selectedSourceGitDiffError =
+      gitStore.selectedDiffError =
         gitDiffError instanceof Error ? gitDiffError.message : 'Could not read Git diff';
     } finally {
-      if (selectedRecord?.path === expectedPath && selectedProject.path === expectedProjectPath) {
-        selectedSourceGitDiffLoading = false;
+      if (isCurrentSelectedSourceGitDiffRequest(requestID, expectedPath, expectedProjectPath)) {
+        gitStore.selectedDiffLoading = false;
       }
     }
   }
 
+  function isCurrentSelectedSourceGitDiffRequest(
+    requestID: number,
+    expectedPath: string,
+    expectedProjectPath: string
+  ) {
+    return (
+      requestID === selectedSourceGitDiffRequestID &&
+      files.selectedRecord?.path === expectedPath &&
+      selectedProject.path === expectedProjectPath
+    );
+  }
+
   async function loadSourceLspStatus(
-    nextPreview: SourcePreview | null = preview,
+    nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
   ) {
     sourceLspStatus = null;
@@ -7329,7 +8492,7 @@
 
     try {
       const status = await readSourceLspStatusFromTauri(expectedProjectPath, nextPreview.language);
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
 
       sourceLspStatus = status;
       if (!status) {
@@ -7338,12 +8501,12 @@
         sourceLspStatusError = status.reason ?? 'Language server unavailable';
       }
     } catch (lspStatusError) {
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
 
       sourceLspStatusError =
         lspStatusError instanceof Error ? lspStatusError.message : 'Could not read LSP status';
     } finally {
-      if (preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+      if (files.preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
         sourceLspStatusLoading = false;
       }
     }
@@ -7361,21 +8524,21 @@
     sourceSearchLoading = true;
     try {
       const nativeResults = await searchSourceFilesFromTauri(
-        records,
+        files.records,
         normalizedQuery,
         maxSourceSearchResults
       );
       sourceSearchResults =
         nativeResults ??
         findSourceSearchMatches(
-          records.map((record) => demoPreviewFor(record)),
+          files.records.map((record) => demoPreviewFor(record)),
           normalizedQuery,
           maxSourceSearchResults
         );
       sourceSearchError = nativeResults ? '' : 'Browser preview results';
     } catch (searchError) {
       sourceSearchResults = findSourceSearchMatches(
-        records.map((record) => demoPreviewFor(record)),
+        files.records.map((record) => demoPreviewFor(record)),
         normalizedQuery,
         maxSourceSearchResults
       );
@@ -7399,7 +8562,7 @@
   }
 
   async function selectSourceSearchResult(result: SourceSearchMatch) {
-    const record = records.find((sourceRecord) => sourceRecord.path === result.path) ?? result;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === result.path) ?? result;
     await selectRecord(record, result.line);
   }
 
@@ -7409,23 +8572,14 @@
     sourceSearchLoading = false;
   }
 
-  async function runSourceDefinitionLookup(request: SourceEditorLookupRequest) {
+  async function findSourceDefinitionTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
-    sourceDefinitionQuery = normalizedSymbolName;
-    sourceDefinitionError = '';
+    if (!normalizedSymbolName) return [];
 
-    if (!normalizedSymbolName) {
-      sourceDefinitionTargets = [];
-      fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    sourceDefinitionLoading = true;
-    fileActionStatus = `Looking up ${normalizedSymbolName}`;
     try {
-      const lspTargets = preview
+      const lspTargets = files.preview
         ? await findSourceLspDefinitionsFromTauri(
-            { ...preview, content: selectedSourceDraftContent },
+            { ...files.preview, content: selectedSourceDraftContent },
             {
               root: selectedProject.path,
               line: request.line,
@@ -7434,93 +8588,38 @@
             }
           ).catch(() => null)
         : null;
-      const nativeTargets = lspTargets?.length
-        ? lspTargets
-        : await findSourceDefinitionsFromTauri(
-            records,
-            normalizedSymbolName,
-            maxSourceDefinitionResults
-          );
-      const nextTargets =
-        nativeTargets ??
-        findSourceDefinitionTargets(
-          records.map((record) => demoPreviewFor(record)),
-          normalizedSymbolName,
-          maxSourceDefinitionResults
-        );
+      if (lspTargets?.length) return lspTargets;
 
-      sourceDefinitionTargets = nextTargets;
-      sourceDefinitionError = lspTargets?.length
-        ? ''
-        : nativeTargets
-          ? ''
-          : 'Browser preview definitions';
-      openEditorNavPanel('definitions');
-
-      if (nextTargets.length === 0) {
-        fileActionStatus = `No definition for ${normalizedSymbolName}`;
-        return nextTargets;
-      }
-
-      fileActionStatus = `${nextTargets.length} ${nextTargets.length === 1 ? 'definition' : 'definitions'} for ${normalizedSymbolName}`;
-      return nextTargets;
-    } catch (definitionError) {
-      sourceDefinitionTargets = findSourceDefinitionTargets(
-        records.map((record) => demoPreviewFor(record)),
+      const nativeTargets = await findSourceDefinitionsFromTauri(
+        files.records,
         normalizedSymbolName,
         maxSourceDefinitionResults
       );
-      sourceDefinitionError =
-        definitionError instanceof Error ? definitionError.message : 'Could not find definition';
-      openEditorNavPanel('definitions');
-
-      return sourceDefinitionTargets;
-    } finally {
-      sourceDefinitionLoading = false;
+      return (
+        nativeTargets ??
+        findSourceDefinitionTargets(
+          files.records.map((record) => demoPreviewFor(record)),
+          normalizedSymbolName,
+          maxSourceDefinitionResults
+        )
+      );
+    } catch {
+      return findSourceDefinitionTargets(
+        files.records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceDefinitionResults
+      );
     }
   }
 
-  function formatSourceDefinitionSummary(
-    targetCount: number,
-    loadingDefinitions: boolean,
-    definitionError: string,
-    symbolName: string
-  ) {
-    if (loadingDefinitions) return 'Finding definition';
-    if (definitionError) return definitionError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'definition' : 'definitions'} for ${symbolName}`;
-  }
-
-  async function selectSourceDefinitionTarget(target: SourceDefinitionTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceDefinitionTargets() {
-    sourceDefinitionTargets = [];
-    sourceDefinitionError = '';
-    sourceDefinitionLoading = false;
-    sourceDefinitionQuery = '';
-  }
-
-  async function runSourceReferenceLookup(request: SourceEditorLookupRequest) {
+  async function findSourceReferenceTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
-    sourceReferenceQuery = normalizedSymbolName;
-    sourceReferenceError = '';
+    if (!normalizedSymbolName) return [];
 
-    if (!normalizedSymbolName) {
-      sourceReferenceTargets = [];
-      fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    sourceReferenceLoading = true;
-    fileActionStatus = `Finding references for ${normalizedSymbolName}`;
     try {
-      const lspTargets = preview
+      const lspTargets = files.preview
         ? await findSourceLspReferencesFromTauri(
-            { ...preview, content: selectedSourceDraftContent },
+            { ...files.preview, content: selectedSourceDraftContent },
             {
               root: selectedProject.path,
               line: request.line,
@@ -7529,265 +8628,213 @@
             }
           ).catch(() => null)
         : null;
-      const nativeTargets = lspTargets?.length
-        ? lspTargets
-        : await findSourceReferencesFromTauri(
-            records,
-            normalizedSymbolName,
-            maxSourceSearchResults
-          );
-      sourceReferenceTargets =
-        lspTargets?.length
-          ? lspTargets
-          : nativeTargets ??
-            findSourceReferenceTargets(
-              records.map((record) => demoPreviewFor(record)),
-              normalizedSymbolName,
-              maxSourceSearchResults
-            );
-      sourceReferenceError = lspTargets?.length
-        ? ''
-        : nativeTargets
-          ? ''
-          : 'Browser preview references';
-      openEditorNavPanel('references');
-      fileActionStatus = `${sourceReferenceTargets.length} references for ${normalizedSymbolName}`;
-      return sourceReferenceTargets;
-    } catch (referenceError) {
-      sourceReferenceTargets = findSourceReferenceTargets(
-        records.map((record) => demoPreviewFor(record)),
+      if (lspTargets?.length) return lspTargets;
+
+      const nativeTargets = await findSourceReferencesFromTauri(
+        files.records,
         normalizedSymbolName,
         maxSourceSearchResults
       );
-      sourceReferenceError =
-        referenceError instanceof Error ? referenceError.message : 'Could not find references';
-      openEditorNavPanel('references');
-      return sourceReferenceTargets;
-    } finally {
-      sourceReferenceLoading = false;
+      return (
+        nativeTargets ??
+        findSourceReferenceTargets(
+          files.records.map((record) => demoPreviewFor(record)),
+          normalizedSymbolName,
+          maxSourceSearchResults
+        )
+      );
+    } catch {
+      return findSourceReferenceTargets(
+        files.records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceSearchResults
+      );
     }
   }
 
-  function formatSourceReferenceSummary(
-    targetCount: number,
-    loadingReferences: boolean,
-    referenceError: string,
-    symbolName: string
-  ) {
-    if (loadingReferences) return 'Finding references';
-    if (referenceError) return referenceError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'reference' : 'references'} for ${symbolName}`;
+  // A code-lens reference COUNT is a low-priority annotation, so cap its cost.
+  const codeLensReferenceCountTimeoutMs = 700;
+  const maxCodeLensNativeReferenceScanRecords = 1500;
+
+  function raceSourceCountTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(null);
+      }, ms);
+      const finish = (value: T | null) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      };
+      promise.then(finish, () => finish(null));
+    });
   }
 
-  async function selectSourceReferenceTarget(target: SourceReferenceTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceReferenceTargets() {
-    sourceReferenceTargets = [];
-    sourceReferenceError = '';
-    sourceReferenceLoading = false;
-    sourceReferenceQuery = '';
-  }
-
-  async function runSourceImplementationLookup(request: SourceEditorLookupRequest) {
+  async function countSourceReferencesForCodeLens(
+    request: SourceEditorLookupRequest
+  ): Promise<number | null> {
     const normalizedSymbolName = request.symbolName.trim();
-    sourceImplementationQuery = normalizedSymbolName;
-    sourceImplementationError = '';
+    if (!normalizedSymbolName) return null;
 
-    if (!normalizedSymbolName) {
-      sourceImplementationTargets = [];
-      fileActionStatus = 'No symbol under cursor';
-      return [];
+    // Prefer the indexed LSP, but a cold server's request can block for the
+    // full Rust LSP timeout (6s); ~15 visible lenses waiting that long is the
+    // "30s code-lens" freeze. Give the count a short budget, then fall back.
+    if (files.preview && sourceIntelligenceAvailable) {
+      const lspTargets = await raceSourceCountTimeout(
+        findSourceLspReferencesFromTauri(
+          { ...files.preview, content: selectedSourceDraftContent },
+          {
+            root: selectedProject.path,
+            line: request.line,
+            column: request.column,
+            limit: maxSourceSearchResults
+          }
+        ).catch(() => null),
+        codeLensReferenceCountTimeoutMs
+      );
+      if (lspTargets) return lspTargets.length;
     }
 
-    if (!preview || !sourceIntelligenceAvailable) {
-      sourceImplementationTargets = [];
-      sourceImplementationError = 'Language server unavailable';
-      fileActionStatus = `No implementation lookup for ${normalizedSymbolName}`;
-      return [];
+    // The native fallback reads file contents across the index. On the real
+    // Tauri runtime that means reading ~the whole project per symbol for a
+    // large repo (the other half of the freeze), so skip it past a size cap —
+    // the LSP owns big native repos. The web preview resolves this in-memory
+    // (the mock), so keep the fallback there and for small native repos, else
+    // counts vanish (regression 52ad343). Unknown ⇒ null so no count renders.
+    if (isNativeTauriRuntime() && files.records.length > maxCodeLensNativeReferenceScanRecords) {
+      return null;
     }
 
-    sourceImplementationLoading = true;
-    fileActionStatus = `Finding implementations for ${normalizedSymbolName}`;
     try {
-      const lspTargets =
+      const nativeTargets = await findSourceReferencesFromTauri(
+        files.records,
+        normalizedSymbolName,
+        maxSourceSearchResults
+      ).catch(() => null);
+      if (nativeTargets) return nativeTargets.length;
+
+      return findSourceReferenceTargets(
+        files.records.map((record) => demoPreviewFor(record)),
+        normalizedSymbolName,
+        maxSourceSearchResults
+      ).length;
+    } catch {
+      return null;
+    }
+  }
+
+  // Per-path memo for external source previews. A repeated lookup of the same
+  // path is a map hit, so the lazy target-model resolver / def+ref providers
+  // never re-read the same file via `read_source_file`. Invalidated on a
+  // successful save of that path (commitSourcePreviewContent) and cleared
+  // wholesale when a new project scan starts (scanProject) — a stale preview
+  // after an edit would be a correctness bug.
+  const externalPreviewCache = new Map<string, SourcePreview>();
+
+  async function loadEditorExternalSourcePreview(record: SourceRecord) {
+    const sourceRecord = sourceRecordFromRestoredPath(selectedProject, record.path);
+
+    if (files.preview?.path === sourceRecord.path) {
+      return previewFromContent(
+        { ...sourceRecord, byteCount: new TextEncoder().encode(selectedSourceDraftContent).length },
+        selectedSourceDraftContent
+      );
+    }
+
+    const draft = files.draftByPath[sourceRecord.path];
+    const saved = files.savedByPath[sourceRecord.path];
+    if (draft !== undefined && saved !== undefined) {
+      return previewFromContent(
+        { ...sourceRecord, byteCount: new TextEncoder().encode(draft).length },
+        draft
+      );
+    }
+
+    const cached = externalPreviewCache.get(sourceRecord.path);
+    if (cached) return cached;
+
+    const sourcePreview = await readSourceFromTauri(sourceRecord);
+    if (sourcePreview) {
+      externalPreviewCache.set(sourceRecord.path, sourcePreview);
+      syncSourcePreviewContent(sourcePreview);
+      return sourcePreview;
+    }
+
+    const demoPreview = demoPreviewFor(sourceRecord);
+    return demoPreview.content.length > 0 ? demoPreview : null;
+  }
+
+  async function navigateEditorExternalSource(request: { path: string; line: number; column: number }) {
+    const record = sourceRecordFromRestoredPath(selectedProject, request.path);
+    await selectRecord(record, request.line);
+  }
+
+  async function findSourceImplementationTargetsForEditor(request: SourceEditorLookupRequest) {
+    const normalizedSymbolName = request.symbolName.trim();
+    if (!normalizedSymbolName || !files.preview || !sourceIntelligenceAvailable) return [];
+
+    try {
+      return (
         (await findSourceLspImplementationsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
             column: request.column,
             limit: maxSourceDefinitionResults
           }
-        )) ?? [];
-
-      sourceImplementationTargets = lspTargets;
-      sourceImplementationError = '';
-      openEditorNavPanel('definitions');
-      fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'implementation' : 'implementations'} for ${normalizedSymbolName}`;
-      return lspTargets;
-    } catch (implementationError) {
-      sourceImplementationTargets = [];
-      sourceImplementationError =
-        implementationError instanceof Error
-          ? implementationError.message
-          : 'Could not find implementations';
-      openEditorNavPanel('definitions');
-      return sourceImplementationTargets;
-    } finally {
-      sourceImplementationLoading = false;
+        )) ?? []
+      );
+    } catch {
+      return [];
     }
   }
 
-  function formatSourceImplementationSummary(
-    targetCount: number,
-    loadingImplementations: boolean,
-    implementationError: string,
-    symbolName: string
-  ) {
-    if (loadingImplementations) return 'Finding implementations';
-    if (implementationError) return implementationError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'implementation' : 'implementations'} for ${symbolName}`;
-  }
-
-  async function selectSourceImplementationTarget(target: SourceDefinitionTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceImplementationTargets() {
-    sourceImplementationTargets = [];
-    sourceImplementationError = '';
-    sourceImplementationLoading = false;
-    sourceImplementationQuery = '';
-  }
-
-  async function runSourceTypeDefinitionLookup(request: SourceEditorLookupRequest) {
+  async function findSourceTypeDefinitionTargetsForEditor(request: SourceEditorLookupRequest) {
     const normalizedSymbolName = request.symbolName.trim();
-    sourceTypeDefinitionQuery = normalizedSymbolName;
-    sourceTypeDefinitionError = '';
+    if (!normalizedSymbolName || !files.preview || !sourceIntelligenceAvailable) return [];
 
-    if (!normalizedSymbolName) {
-      sourceTypeDefinitionTargets = [];
-      fileActionStatus = 'No symbol under cursor';
-      return [];
-    }
-
-    if (!preview || !sourceIntelligenceAvailable) {
-      sourceTypeDefinitionTargets = [];
-      sourceTypeDefinitionError = 'Language server unavailable';
-      fileActionStatus = `No type definition lookup for ${normalizedSymbolName}`;
-      return [];
-    }
-
-    sourceTypeDefinitionLoading = true;
-    fileActionStatus = `Finding type definition for ${normalizedSymbolName}`;
     try {
-      const lspTargets =
+      return (
         (await findSourceLspTypeDefinitionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
             column: request.column,
             limit: maxSourceDefinitionResults
           }
-        )) ?? [];
-
-      sourceTypeDefinitionTargets = lspTargets;
-      sourceTypeDefinitionError = '';
-      openEditorNavPanel('definitions');
-      fileActionStatus = `${lspTargets.length} ${lspTargets.length === 1 ? 'type definition' : 'type definitions'} for ${normalizedSymbolName}`;
-      return lspTargets;
-    } catch (typeDefinitionError) {
-      sourceTypeDefinitionTargets = [];
-      sourceTypeDefinitionError =
-        typeDefinitionError instanceof Error
-          ? typeDefinitionError.message
-          : 'Could not find type definition';
-      openEditorNavPanel('definitions');
-      return sourceTypeDefinitionTargets;
-    } finally {
-      sourceTypeDefinitionLoading = false;
+        )) ?? []
+      );
+    } catch {
+      return [];
     }
-  }
-
-  function formatSourceTypeDefinitionSummary(
-    targetCount: number,
-    loadingTypeDefinitions: boolean,
-    typeDefinitionError: string,
-    symbolName: string
-  ) {
-    if (loadingTypeDefinitions) return 'Finding type definition';
-    if (typeDefinitionError) return typeDefinitionError;
-    if (!symbolName.trim()) return '';
-    return `${targetCount} ${targetCount === 1 ? 'type definition' : 'type definitions'} for ${symbolName}`;
-  }
-
-  function formatSourceLookupSummary() {
-    if (sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading) {
-      return sourceReferenceSummary || 'References';
-    }
-    if (sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading) {
-      return sourceImplementationSummary || 'Implementations';
-    }
-    if (sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading) {
-      return sourceTypeDefinitionSummary || 'Type definitions';
-    }
-    if (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading) {
-      return sourceDefinitionSummary || 'Definitions';
-    }
-    return 'No lookups yet';
-  }
-
-  function openEditorNavPanel(panel: SourceEditorNavPanel) {
-    editorNavPanel = panel;
-  }
-
-  function toggleEditorNavPanel(panel: SourceEditorNavPanel) {
-    editorNavPanel = editorNavPanel === panel ? null : panel;
-  }
-
-  function closeEditorNavPanel() {
-    editorNavPanel = null;
-  }
-
-  async function selectSourceTypeDefinitionTarget(target: SourceDefinitionTarget) {
-    const record = records.find((sourceRecord) => sourceRecord.path === target.path) ?? target;
-    await selectRecord(record, target.line);
-  }
-
-  function clearSourceTypeDefinitionTargets() {
-    sourceTypeDefinitionTargets = [];
-    sourceTypeDefinitionError = '';
-    sourceTypeDefinitionLoading = false;
-    sourceTypeDefinitionQuery = '';
   }
 
   function setBackgroundProjectIndexing(projectID: string, indexing: boolean) {
-    const nextProjectIDs = new Set(backgroundIndexingProjectIDs);
+    const nextProjectIDs = new Set(projectStore.scan.backgroundIndexingIDs);
     if (indexing) {
       nextProjectIDs.add(projectID);
     } else {
       nextProjectIDs.delete(projectID);
     }
-    backgroundIndexingProjectIDs = nextProjectIDs;
+    projectStore.scan.backgroundIndexingIDs = nextProjectIDs;
   }
 
   function clearBackgroundIndexError(projectID: string) {
-    if (!(projectID in backgroundIndexErrorByProject)) return;
+    if (!(projectID in projectStore.scan.backgroundIndexErrorByProject)) return;
 
-    const nextErrors = { ...backgroundIndexErrorByProject };
+    const nextErrors = { ...projectStore.scan.backgroundIndexErrorByProject };
     delete nextErrors[projectID];
-    backgroundIndexErrorByProject = nextErrors;
+    projectStore.scan.backgroundIndexErrorByProject = nextErrors;
   }
 
   function setSourceScanMode(projectID: string, mode: SourceScanEvidenceMode) {
-    sourceScanModeByProject = { ...sourceScanModeByProject, [projectID]: mode };
+    projectStore.scan.modeByProject = { ...projectStore.scan.modeByProject, [projectID]: mode };
   }
 
   function applySourceRecords(
@@ -7798,44 +8845,39 @@
     stats: SourceScanStats | null = null,
     options: { preserveSelectedRecord?: boolean } = {}
   ): SourceRecord | null {
-    records = nextRecords;
+    files.records = nextRecords;
     runtime = nextRuntime;
-    scanLimitReached = truncated;
-    sourceScanStats = stats;
+    files.scan.limitReached = truncated;
+    files.scan.stats = stats;
 
     const nextSelection = selectPreferredSourceRecord(
       nextRecords,
       preferredPath,
-      selectedRecord?.path
+      files.selectedRecord?.path
     );
     const shouldPreserveSelectedRecord =
       Boolean(options.preserveSelectedRecord) &&
       Boolean(preferredPath) &&
-      selectedRecord?.path === preferredPath &&
+      files.selectedRecord?.path === preferredPath &&
       nextSelection?.path !== preferredPath;
 
     if (shouldPreserveSelectedRecord) {
       return null;
     }
 
-    selectedRecord = nextSelection;
-    selectedSourceLine = null;
-    preview = nextSelection ? previewFromContent(nextSelection, '') : null;
-    expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
+    files.selectedRecord = nextSelection;
+    files.selectedSourceLine = null;
+    files.preview = nextSelection ? previewFromContent(nextSelection, '') : null;
+    files.expandedFolderIds = nextSelection ? new Set(folderIdsForSourceRecord(nextSelection)) : new Set();
     clearSourceSearchResults();
-    clearSourceDefinitionTargets();
-    clearSourceReferenceTargets();
-    clearSourceImplementationTargets();
-    clearSourceTypeDefinitionTargets();
-    closeEditorNavPanel();
     if (nextSelection) requestSourceTreeReveal(nextSelection);
     return nextSelection;
   }
 
   async function loadRecord(record: SourceRecord, expectedScanGeneration: number | null = null) {
-    loading = true;
+    files.scan.loading = true;
     error = '';
-    fileActionStatus = '';
+    files.fileActionStatus = '';
     resetSourceIntelligence();
     clearSelectedSourceGitDiff();
 
@@ -7849,7 +8891,7 @@
           : 'browser source bridge'
         : 'browser preview';
       const nextPreview = tauriPreview ?? demoPreviewFor(record);
-      preview = nextPreview;
+      files.preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
       void loadSourceLspStatus(nextPreview);
       void loadSourceLspDiagnostics(nextPreview);
@@ -7860,64 +8902,64 @@
       runtime = 'browser preview';
       error = previewError instanceof Error ? previewError.message : 'Could not read source file';
       const nextPreview = demoPreviewFor(record);
-      preview = nextPreview;
+      files.preview = nextPreview;
       syncSourcePreviewContent(nextPreview);
       void loadSourceLspStatus(nextPreview);
       void loadSourceLspDiagnostics(nextPreview);
       void loadSourceLspSymbols(nextPreview);
     } finally {
       if (expectedScanGeneration === null || expectedScanGeneration === scanGeneration) {
-        loading = false;
+        files.scan.loading = false;
         void loadSelectedSourceGitDiff(record);
       }
     }
   }
 
   function currentSourceNavigationLocation() {
-    return selectedRecord ? sourceNavigationLocationForRecord(selectedRecord, selectedSourceLine) : null;
+    return files.selectedRecord ? sourceNavigationLocationForRecord(files.selectedRecord, files.selectedSourceLine) : null;
   }
 
   function recordSourceNavigation(nextLocation: SourceNavigationLocation | null) {
     const nextBackStack = pushSourceNavigationHistory(
-      sourceNavigationBackStack,
+      files.navBackStack,
       currentSourceNavigationLocation(),
       nextLocation,
       maxSourceNavigationHistoryEntries
     );
 
-    if (nextBackStack !== sourceNavigationBackStack) {
-      sourceNavigationBackStack = nextBackStack;
-      sourceNavigationForwardStack = [];
+    if (nextBackStack !== files.navBackStack) {
+      files.navBackStack = nextBackStack;
+      files.navForwardStack = [];
     }
   }
 
   async function selectSourceNavigationLocation(location: SourceNavigationLocation) {
-    const record = records.find((sourceRecord) => sourceRecord.path === location.path) ??
+    const record = files.records.find((sourceRecord) => sourceRecord.path === location.path) ??
       sourceRecordFromRestoredPath(selectedProject, location.path);
     await selectRecord(record, location.line, false);
   }
 
   async function navigateSourceBack() {
     const step = navigateSourceHistoryBack(
-      sourceNavigationBackStack,
-      sourceNavigationForwardStack,
+      files.navBackStack,
+      files.navForwardStack,
       currentSourceNavigationLocation()
     );
 
-    sourceNavigationBackStack = step.backStack;
-    sourceNavigationForwardStack = step.forwardStack;
+    files.navBackStack = step.backStack;
+    files.navForwardStack = step.forwardStack;
     if (step.target) await selectSourceNavigationLocation(step.target);
   }
 
   async function navigateSourceForward() {
     const step = navigateSourceHistoryForward(
-      sourceNavigationBackStack,
-      sourceNavigationForwardStack,
+      files.navBackStack,
+      files.navForwardStack,
       currentSourceNavigationLocation()
     );
 
-    sourceNavigationBackStack = step.backStack;
-    sourceNavigationForwardStack = step.forwardStack;
+    files.navBackStack = step.backStack;
+    files.navForwardStack = step.forwardStack;
     if (step.target) await selectSourceNavigationLocation(step.target);
   }
 
@@ -7930,9 +8972,9 @@
       recordSourceNavigation(sourceNavigationLocationForRecord(record, targetLine));
     }
 
-    selectedRecord = record;
-    selectedSourceLine = targetLine;
-    if (targetLine) selectedSourceLineRequestId += 1;
+    files.selectedRecord = record;
+    files.selectedSourceLine = targetLine;
+    if (targetLine) files.selectedSourceLineRequestId += 1;
     expandFoldersForRecord(record);
     requestSourceTreeReveal(record);
     trackSelectedSourceRecord(record, selectedProject);
@@ -7940,23 +8982,23 @@
   }
 
   async function selectRecentRecord(recentRecord: SourceRecentRecord) {
-    const record = records.find((sourceRecord) => sourceRecord.path === recentRecord.path) ?? recentRecord;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === recentRecord.path) ?? recentRecord;
     await selectRecord(record);
   }
 
   async function selectOpenTab(tab: SourceOpenTab) {
-    const record = records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
+    const record = files.records.find((sourceRecord) => sourceRecord.path === tab.path) ?? tab;
     await selectRecord(record);
   }
 
   async function selectAdjacentDirtySourceFile(direction: 1 | -1) {
     const dirtyRecords = dirtyProjectSourceRecords;
     if (dirtyRecords.length === 0) {
-      fileActionStatus = 'No dirty files';
+      files.fileActionStatus = 'No dirty files';
       return;
     }
 
-    const selectedPath = selectedRecord?.path ?? '';
+    const selectedPath = files.selectedRecord?.path ?? '';
     const currentIndex = dirtyRecords.findIndex((record) => record.path === selectedPath);
     const nextIndex =
       currentIndex === -1
@@ -7966,7 +9008,7 @@
         : (currentIndex + direction + dirtyRecords.length) % dirtyRecords.length;
     const nextRecord = dirtyRecords[nextIndex];
     await selectRecord(nextRecord);
-    fileActionStatus = `Dirty file ${nextIndex + 1} of ${dirtyRecords.length}`;
+    files.fileActionStatus = `Dirty file ${nextIndex + 1} of ${dirtyRecords.length}`;
   }
 
   function handleWindowKeydown(event: KeyboardEvent) {
@@ -7989,6 +9031,15 @@
     }
 
     if (
+      event.key === 'Escape' &&
+      (activeActivityRowActionMenu || activeAgentRowActionMenu || activeWorktreeRowActionMenu || gitStore.activeRowActionMenu)
+    ) {
+      event.preventDefault();
+      closeRowActionMenus();
+      return;
+    }
+
+    if (
       (event.metaKey || event.ctrlKey) &&
       (event.key.toLowerCase() === 'k' || (event.shiftKey && event.key.toLowerCase() === 'p'))
     ) {
@@ -7999,7 +9050,7 @@
 
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      if (selectedSourceDirty && fileActionBusy !== 'save') {
+      if (selectedSourceDirty && files.fileActionBusy !== 'save') {
         void saveSelectedSourceFile();
       }
       return;
@@ -8042,15 +9093,148 @@
 
   function toggleEditorActionMenu() {
     editorActionMenuOpen = !editorActionMenuOpen;
+    if (editorActionMenuOpen) closeRowActionMenus();
   }
 
   function closeEditorActionMenu() {
     editorActionMenuOpen = false;
   }
 
+  function activityRowActionMenuID(scope: string, id: string) {
+    return `${scope}:${id}`;
+  }
+
+  function activityRowActionMenuOpen(scope: string, id: string) {
+    return activeActivityRowActionMenu === activityRowActionMenuID(scope, id);
+  }
+
+  function openActivityRowActionMenu(scope: string, id: string) {
+    activeActivityRowActionMenu = activityRowActionMenuID(scope, id);
+    closeAgentRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeGitRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleActivityRowActionMenu(scope: string, id: string) {
+    const menuID = activityRowActionMenuID(scope, id);
+    if (activeActivityRowActionMenu === menuID) {
+      closeActivityRowActionMenu();
+      return;
+    }
+
+    openActivityRowActionMenu(scope, id);
+  }
+
+  function closeActivityRowActionMenu() {
+    activeActivityRowActionMenu = null;
+  }
+
+  function agentRowActionMenuID(session: AgentSession, scope: 'conversation' | 'agent') {
+    return `${scope}:${session.provider}:${session.id}`;
+  }
+
+  function agentRowActionMenuOpen(session: AgentSession, scope: 'conversation' | 'agent') {
+    return activeAgentRowActionMenu === agentRowActionMenuID(session, scope);
+  }
+
+  function openAgentRowActionMenu(session: AgentSession, scope: 'conversation' | 'agent') {
+    activeAgentRowActionMenu = agentRowActionMenuID(session, scope);
+    closeActivityRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeGitRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleAgentRowActionMenu(session: AgentSession, scope: 'conversation' | 'agent') {
+    const menuID = agentRowActionMenuID(session, scope);
+    if (activeAgentRowActionMenu === menuID) {
+      closeAgentRowActionMenu();
+      return;
+    }
+
+    openAgentRowActionMenu(session, scope);
+  }
+
+  function closeAgentRowActionMenu() {
+    activeAgentRowActionMenu = null;
+  }
+
+  function worktreeRowActionMenuID(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    return `${scope}:${worktree.path}`;
+  }
+
+  function worktreeRowActionMenuOpen(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    return activeWorktreeRowActionMenu === worktreeRowActionMenuID(worktree, scope);
+  }
+
+  function openWorktreeRowActionMenu(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    activeWorktreeRowActionMenu = worktreeRowActionMenuID(worktree, scope);
+    closeActivityRowActionMenu();
+    closeAgentRowActionMenu();
+    closeGitRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleWorktreeRowActionMenu(worktree: ProjectWorktree, scope: 'activity' | 'context' | 'queue') {
+    const menuID = worktreeRowActionMenuID(worktree, scope);
+    if (activeWorktreeRowActionMenu === menuID) {
+      closeWorktreeRowActionMenu();
+      return;
+    }
+
+    openWorktreeRowActionMenu(worktree, scope);
+  }
+
+  function closeWorktreeRowActionMenu() {
+    activeWorktreeRowActionMenu = null;
+  }
+
+  function gitRowActionMenuID(id: string, scope: 'repository' | 'task-ledger') {
+    return `${scope}:${id}`;
+  }
+
+  function gitRowActionMenuOpen(id: string, scope: 'repository' | 'task-ledger') {
+    return gitStore.activeRowActionMenu === gitRowActionMenuID(id, scope);
+  }
+
+  function openGitRowActionMenu(id: string, scope: 'repository' | 'task-ledger') {
+    gitStore.activeRowActionMenu = gitRowActionMenuID(id, scope);
+    closeActivityRowActionMenu();
+    closeAgentRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeEditorActionMenu();
+    closeViewMenu();
+  }
+
+  function toggleGitRowActionMenu(id: string, scope: 'repository' | 'task-ledger') {
+    const menuID = gitRowActionMenuID(id, scope);
+    if (gitStore.activeRowActionMenu === menuID) {
+      closeGitRowActionMenu();
+      return;
+    }
+
+    openGitRowActionMenu(id, scope);
+  }
+
+  function closeGitRowActionMenu() {
+    gitStore.activeRowActionMenu = null;
+  }
+
+  function closeRowActionMenus() {
+    closeActivityRowActionMenu();
+    closeAgentRowActionMenu();
+    closeWorktreeRowActionMenu();
+    closeGitRowActionMenu();
+  }
+
   function toggleViewMenu() {
     viewMenuOpen = !viewMenuOpen;
     closeEditorActionMenu();
+    if (viewMenuOpen) closeRowActionMenus();
   }
 
   function closeViewMenu() {
@@ -8063,7 +9247,8 @@
     commandPaletteIndex = 0;
     closeViewMenu();
     closeEditorActionMenu();
-    window.setTimeout(() => commandPaletteInput?.focus(), 0);
+    closeRowActionMenus();
+    // Focus now happens in CommandPaletteOverlay's $effect on `visible`.
   }
 
   function closeCommandPalette() {
@@ -8118,7 +9303,8 @@
     quickOpenVisible = true;
     quickOpenQuery = '';
     quickOpenIndex = 0;
-    window.setTimeout(() => quickOpenInput?.focus(), 0);
+    closeRowActionMenus();
+    window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
 
   function openWorkspaceSymbolQuickOpen() {
@@ -8128,24 +9314,17 @@
     closeCommandPalette();
     closeViewMenu();
     closeEditorActionMenu();
-    window.setTimeout(() => {
-      quickOpenInput?.focus();
-      const cursor = quickOpenQuery.length;
-      quickOpenInput?.setSelectionRange(cursor, cursor);
-    }, 0);
+    closeRowActionMenus();
+    window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
 
   function openCurrentFileGoToLine() {
-    if (!selectedRecord) return;
+    if (!files.selectedRecord) return;
 
     quickOpenVisible = true;
-    quickOpenQuery = `${selectedRecord.relativePath}:`;
+    quickOpenQuery = `${files.selectedRecord.relativePath}:`;
     quickOpenIndex = 0;
-    window.setTimeout(() => {
-      quickOpenInput?.focus();
-      const cursor = quickOpenQuery.length;
-      quickOpenInput?.setSelectionRange(cursor, cursor);
-    }, 0);
+    window.setTimeout(() => quickOpenOverlayRef?.focusInput(), 0);
   }
 
   function focusGlobalSourceSearch() {
@@ -8214,18 +9393,21 @@
 
   async function closeSourceTab(tab: SourceOpenTab, event: MouseEvent) {
     event.stopPropagation();
+    await closeSourceTabRecord(tab);
+  }
 
-    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, selectedRecord?.path);
+  async function closeSourceTabRecord(tab: SourceOpenTab) {
+    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, tab.path, files.selectedRecord?.path);
     await applySourceTabCloseResult(closeResult, isSourcePathDirty(tab.path) ? 'Closed tab; draft retained' : 'Closed tab');
   }
 
   async function closeSelectedSourceTab() {
-    if (!selectedRecord) return;
+    if (!files.selectedRecord) return;
 
-    const selectedTab = projectOpenSourceTabs.find((tab) => tab.path === selectedRecord?.path);
+    const selectedTab = projectOpenSourceTabs.find((tab) => tab.path === files.selectedRecord?.path);
     if (!selectedTab) return;
 
-    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, selectedTab.path, selectedRecord.path);
+    const closeResult = closeOpenSourceTab(projectOpenSourceTabs, selectedTab.path, files.selectedRecord.path);
     await applySourceTabCloseResult(
       closeResult,
       isSourcePathDirty(selectedTab.path) ? 'Closed current tab; draft retained' : 'Closed current tab'
@@ -8233,11 +9415,11 @@
   }
 
   async function closeOtherCleanSourceTabs() {
-    if (!selectedRecord) return;
+    if (!files.selectedRecord) return;
 
     const closeResult = closeOtherCleanOpenSourceTabs(
       projectOpenSourceTabs,
-      selectedRecord.path,
+      files.selectedRecord.path,
       dirtyProjectSourcePathSet()
     );
     await applySourceTabCloseResult(
@@ -8251,7 +9433,7 @@
   async function closeAllCleanSourceTabs() {
     const closeResult = closeAllCleanOpenSourceTabs(
       projectOpenSourceTabs,
-      selectedRecord?.path,
+      files.selectedRecord?.path,
       dirtyProjectSourcePathSet()
     );
     const retainedDraftNote =
@@ -8274,12 +9456,12 @@
     closeResult: { tabs: SourceOpenTab[]; nextActivePath: string | null },
     status: string
   ) {
-    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, closeResult.tabs);
-    openSourceTabs = nextOpenSourceTabs;
+    const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, selectedProject.id, closeResult.tabs);
+    files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
-    if (closeResult.nextActivePath === selectedRecord?.path) {
-      fileActionStatus = status;
+    if (closeResult.nextActivePath === files.selectedRecord?.path) {
+      files.fileActionStatus = status;
       return;
     }
 
@@ -8288,22 +9470,22 @@
       if (nextTab) {
         await selectOpenTab(nextTab);
       }
-      fileActionStatus = status;
+      files.fileActionStatus = status;
       return;
     }
 
     clearSelectedSourceRecordForProject(selectedProject.id);
-    fileActionStatus = status;
+    files.fileActionStatus = status;
   }
 
   function trackSelectedSourceRecord(record: SourceRecord, project: ProjectRoot) {
     const openedAt = Date.now();
     const nextSelectedSourcePaths = {
-      ...selectedSourcePaths,
+      ...projectStore.selectedSourcePaths,
       [project.id]: record.path
     };
     const nextRecentSourceRecords = upsertRecentSourceRecord(
-      recentSourceRecords,
+      files.recentRecords,
       record,
       project,
       openedAt,
@@ -8316,11 +9498,11 @@
       openedAt,
       maxProjectOpenSourceTabs
     );
-    const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, project.id, nextProjectOpenTabs);
+    const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, project.id, nextProjectOpenTabs);
 
-    selectedSourcePaths = nextSelectedSourcePaths;
-    recentSourceRecords = nextRecentSourceRecords;
-    openSourceTabs = nextOpenSourceTabs;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
+    files.recentRecords = nextRecentSourceRecords;
+    files.openTabs = nextOpenSourceTabs;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
     persistRecentSourceRecords(nextRecentSourceRecords);
     persistOpenSourceTabs(nextOpenSourceTabs);
@@ -8338,79 +9520,79 @@
   }
 
   function clearSelectedSourceRecordForProject(projectID: string) {
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     delete nextSelectedSourcePaths[projectID];
 
-    selectedSourcePaths = nextSelectedSourcePaths;
-    selectedRecord = null;
-    selectedSourceLine = null;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
+    files.selectedRecord = null;
+    files.selectedSourceLine = null;
     pendingTreeRevealPath = null;
     pendingTreeFocusRowIndex = null;
-    scanLimitReached = false;
-    preview = null;
+    files.scan.limitReached = false;
+    files.preview = null;
     resetSourceIntelligence();
     clearSelectedSourceGitDiff();
-    loading = false;
+    files.scan.loading = false;
     error = '';
-    fileActionStatus = '';
+    files.fileActionStatus = '';
     persistSelectedSourcePaths(nextSelectedSourcePaths);
   }
 
   function expandFoldersForRecord(record: SourceRecord) {
-    const nextFolderIds = new Set(expandedFolderIds);
+    const nextFolderIds = new Set(files.expandedFolderIds);
     for (const folderID of folderIdsForSourceRecord(record)) {
       nextFolderIds.add(folderID);
     }
-    expandedFolderIds = nextFolderIds;
+    files.expandedFolderIds = nextFolderIds;
   }
 
   async function copySelectedPath() {
-    if (!preview) return;
+    if (!files.preview) return;
 
-    fileActionBusy = 'copy';
+    files.fileActionBusy = 'copy';
 
     try {
-      await copyTextToClipboard(preview.path, 'Path copied');
+      await copyTextToClipboard(files.preview.path, 'Path copied');
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy source path';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function copyTextToClipboard(text: string, successStatus: string) {
-    fileActionStatus = '';
+    files.fileActionStatus = '';
     error = '';
 
     await navigator.clipboard.writeText(text);
-    fileActionStatus = successStatus;
+    files.fileActionStatus = successStatus;
   }
 
   async function copyActivityCommand(text: string, successStatus = 'Copied') {
     if (!text.trim()) return;
 
-    fileActionBusy = 'activity-copy';
+    files.fileActionBusy = 'activity-copy';
 
     try {
       await copyTextToClipboard(text, successStatus);
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy activity text';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function readPasteCleanupClipboard() {
-    fileActionBusy = 'paste-read';
+    files.fileActionBusy = 'paste-read';
 
     try {
       pasteCleanupInput = await navigator.clipboard.readText();
-      fileActionStatus = 'Clipboard loaded';
+      files.fileActionStatus = 'Clipboard loaded';
       error = '';
     } catch (clipboardError) {
       error = clipboardError instanceof Error ? clipboardError.message : 'Could not read clipboard';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -8432,7 +9614,7 @@
   async function copyPasteCleanupOutput() {
     if (!pasteCleanupOutput.trim()) return;
 
-    fileActionBusy = 'paste-copy';
+    files.fileActionBusy = 'paste-copy';
 
     try {
       await copyTextToClipboard(pasteCleanupOutput, 'Cleaned text copied');
@@ -8440,14 +9622,14 @@
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy cleaned text';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function copyPasteCleanupReplyDraft() {
     if (!pasteCleanupReplyOutput.trim()) return;
 
-    fileActionBusy = 'paste-reply-copy';
+    files.fileActionBusy = 'paste-reply-copy';
 
     try {
       await copyTextToClipboard(pasteCleanupReplyOutput, 'Reply draft copied');
@@ -8455,7 +9637,7 @@
     } catch (copyError) {
       error = copyError instanceof Error ? copyError.message : 'Could not copy reply draft';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -8472,14 +9654,14 @@
       setPasteCleanupMode(item.mode);
     }
 
-    fileActionStatus = `${pasteCleanupHistoryKindLabel(item.kind)} restored`;
+    files.fileActionStatus = `${pasteCleanupHistoryKindLabel(item.kind)} restored`;
     error = '';
   }
 
   function clearPasteCleanupHistory() {
     pasteCleanupHistory = [];
     persistPasteCleanupHistory([]);
-    fileActionStatus = 'Paste cleanup history cleared';
+    files.fileActionStatus = 'Paste cleanup history cleared';
     error = '';
   }
 
@@ -8505,13 +9687,13 @@
 
   function clearPasteCleanupInput() {
     pasteCleanupInput = '';
-    fileActionStatus = 'Paste cleanup cleared';
+    files.fileActionStatus = 'Paste cleanup cleared';
     error = '';
   }
 
   function clearPasteCleanupReplyDraft() {
     pasteCleanupReplyDraft = '';
-    fileActionStatus = 'Reply draft cleared';
+    files.fileActionStatus = 'Reply draft cleared';
     error = '';
   }
 
@@ -8522,101 +9704,62 @@
   async function openActivityPath(path: string) {
     if (!path.trim()) return;
 
-    fileActionBusy = `activity-open:${path}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-open:${path}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const opened = await openPathFromTauri(path);
-      fileActionStatus = opened ? 'Opened path' : 'Native action unavailable';
+      files.fileActionStatus = opened ? 'Opened path' : 'Native action unavailable';
     } catch (openError) {
       error = openError instanceof Error ? openError.message : 'Could not open path';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function revealActivityPath(path: string) {
     if (!path.trim()) return;
 
-    fileActionBusy = `activity-reveal:${path}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-reveal:${path}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const revealed = await revealPathFromTauri(path);
-      fileActionStatus = revealed ? 'Revealed path' : 'Native action unavailable';
+      files.fileActionStatus = revealed ? 'Revealed path' : 'Native action unavailable';
     } catch (revealError) {
       error = revealError instanceof Error ? revealError.message : 'Could not reveal path';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function openActivityTerminalPath(path: string) {
     if (!path.trim()) return;
 
-    fileActionBusy = `activity-terminal:${path}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-terminal:${path}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
-      const opened = await openTerminalPathFromTauri(path, sourceTerminalApp);
-      fileActionStatus = opened ? 'Opened terminal' : 'Native action unavailable';
+      const opened = await openTerminalPathWithFallback(path, sourceTerminalApp);
+      files.fileActionStatus = opened.opened
+        ? terminalOpenStatus(opened, 'Opened terminal', 'opened terminal')
+        : 'Native action unavailable';
     } catch (terminalError) {
       error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function resumeAgentSessionEmbeddedTerminal(session: AgentSession) {
-    const command = agentSessionTerminalCommand(session);
-    if (!command.trim()) return;
-    if (
-      await copyAgentSessionMissingWorktreeRepairPlan(
-        session,
-        'Workspace repair plan copied before embedded resume'
-      )
-    ) {
-      return;
-    }
-
-    captureActiveWorkspaceBeforeSwitch();
-    captureAgentSessionWorkspaceSnapshot(session);
-    markAgentSessionWorkspaceActive(session);
-    showDockPanel('terminal');
-    await tick();
-
-    const path = agentSessionProjectPath(session);
-    fileActionBusy = `embedded-terminal-command:${session.provider}:${session.id}`;
-    fileActionStatus = '';
-    error = '';
-    embeddedTerminalError = '';
-
-    try {
-      if (embeddedTerminalSession) {
-        if (normalizeProjectPath(embeddedTerminalSession.cwd) === normalizeProjectPath(path)) {
-          await writeTerminalSessionFromTauri(embeddedTerminalSession.sessionId, `${command}\r`);
-          embeddedTerminalStatus = 'Running embedded resume command';
-          fileActionStatus = 'Sent resume command to embedded terminal';
-          embeddedTerminal?.focus();
-          return;
-        }
-      }
-
-      await startEmbeddedTerminalSession(path, command);
-      fileActionStatus = 'Started embedded resume command';
-    } catch (terminalError) {
-      error = terminalError instanceof Error ? terminalError.message : 'Could not resume agent in embedded terminal';
-      embeddedTerminalStatus = 'Embedded resume failed';
-    } finally {
-      fileActionBusy = '';
-    }
+    return switchToConversationWorkspace(session);
   }
 
   async function openAgentSessionTerminal(session: AgentSession) {
-    const command = agentSessionTerminalCommand(session);
+    const command = withAgentTerminalColorEnv(agentSessionTerminalCommand(session));
     if (!command.trim()) return;
     if (
       await copyAgentSessionMissingWorktreeRepairPlan(
@@ -8631,103 +9774,107 @@
     captureAgentSessionWorkspaceSnapshot(session);
     markAgentSessionWorkspaceActive(session);
     const path = session.projectPath ?? selectedProject.path;
-    fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
-    fileActionStatus = '';
+    files.fileActionBusy = `activity-terminal-command:${session.provider}:${session.id}`;
+    files.fileActionStatus = '';
     error = '';
 
     try {
-      const openedCommand = await openTerminalCommandFromTauri(path, command, sourceTerminalApp);
-      if (openedCommand) {
-        fileActionStatus = 'Opened terminal resume command';
+      const openedCommand = await openTerminalCommandWithFallback(path, command, sourceTerminalApp);
+      if (openedCommand.opened) {
+        files.fileActionStatus = terminalOpenStatus(
+          openedCommand,
+          'Opened terminal resume command',
+          'opened terminal resume command'
+        );
         return;
       }
 
       const openedPath = path.trim()
-        ? await openTerminalPathFromTauri(path, sourceTerminalApp)
-        : false;
+        ? await openTerminalPathWithFallback(path, sourceTerminalApp)
+        : { opened: false, app: sourceTerminalApp, usedFallback: false };
       await navigator.clipboard.writeText(command);
-      fileActionStatus = openedPath
+      files.fileActionStatus = openedPath.opened
         ? 'Opened terminal and copied resume command'
         : 'Resume command copied';
     } catch (terminalError) {
       try {
         const openedPath = path.trim()
-          ? await openTerminalPathFromTauri(path, sourceTerminalApp)
-          : false;
+          ? await openTerminalPathWithFallback(path, sourceTerminalApp)
+          : { opened: false, app: sourceTerminalApp, usedFallback: false };
         await navigator.clipboard.writeText(command);
-        fileActionStatus = openedPath
+        files.fileActionStatus = openedPath.opened
           ? 'Opened terminal and copied resume command'
           : 'Resume command copied';
       } catch {
         error = terminalError instanceof Error ? terminalError.message : 'Could not open terminal command';
       }
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function openSelectedFile() {
-    if (!preview) return;
+    if (!files.preview) return;
 
-    fileActionBusy = 'open';
-    fileActionStatus = '';
+    files.fileActionBusy = 'open';
+    files.fileActionStatus = '';
     error = '';
 
     try {
-      const opened = await openSourceFileFromTauri(preview.path);
-      fileActionStatus = opened ? 'Opened file' : 'Native action unavailable';
+      const opened = await openSourceFileFromTauri(files.preview.path);
+      files.fileActionStatus = opened ? 'Opened file' : 'Native action unavailable';
     } catch (openError) {
       error = openError instanceof Error ? openError.message : 'Could not open source file';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function revealSelectedFile() {
-    if (!preview) return;
+    if (!files.preview) return;
 
-    fileActionBusy = 'reveal';
-    fileActionStatus = '';
+    files.fileActionBusy = 'reveal';
+    files.fileActionStatus = '';
     error = '';
 
     try {
-      const revealed = await revealSourceFileFromTauri(preview.path);
-      fileActionStatus = revealed ? 'Revealed in Finder' : 'Native action unavailable';
+      const revealed = await revealSourceFileFromTauri(files.preview.path);
+      files.fileActionStatus = revealed ? 'Revealed in Finder' : 'Native action unavailable';
     } catch (revealError) {
       error = revealError instanceof Error ? revealError.message : 'Could not reveal source file';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   async function saveSelectedSourceFile() {
-    if (!preview || !selectedRecord || !selectedSourceDirty) return;
+    if (!files.preview || !files.selectedRecord || !selectedSourceDirty) return;
 
-    const record = selectedRecord;
+    const record = files.selectedRecord;
     const content = selectedSourceDraftContent;
-    fileActionBusy = 'save';
-    fileActionStatus = '';
+    files.fileActionBusy = 'save';
+    files.fileActionStatus = '';
     error = '';
 
     try {
       const savedPreview = await writeSourceToTauri(record, content);
       if (!savedPreview) {
-        fileActionStatus = 'Native save unavailable';
+        files.fileActionStatus = 'Native save unavailable';
         return;
       }
 
       commitSourcePreviewContent(savedPreview);
       runtime = 'tauri file write';
-      if (selectedRecord?.path === record.path) {
-        preview = savedPreview;
+      if (files.selectedRecord?.path === record.path) {
+        files.preview = savedPreview;
       }
       void loadProjectGitStatus(selectedProject);
       void loadSelectedSourceGitDiff(record);
-      fileActionStatus = 'Saved file';
+      files.fileActionStatus = 'Saved file';
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save source file';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
@@ -8735,59 +9882,59 @@
     const dirtyRecords = dirtyProjectSourceRecords;
     if (dirtyRecords.length === 0) return;
 
-    fileActionBusy = 'save-all';
-    fileActionStatus = '';
+    files.fileActionBusy = 'save-all';
+    files.fileActionStatus = '';
     error = '';
 
     let savedCount = 0;
 
     try {
       for (const record of dirtyRecords) {
-        const content = sourceDraftContentByPath[record.path];
+        const content = files.draftByPath[record.path];
         if (content === undefined || !isSourcePathDirty(record.path)) continue;
 
         const savedPreview = await writeSourceToTauri(record, content);
         if (!savedPreview) {
-          fileActionStatus = `Native save unavailable for ${record.fileName}`;
+          files.fileActionStatus = `Native save unavailable for ${record.fileName}`;
           return;
         }
 
         commitSourcePreviewContent(savedPreview);
-        if (selectedRecord?.path === record.path) {
-          preview = savedPreview;
+        if (files.selectedRecord?.path === record.path) {
+          files.preview = savedPreview;
         }
         savedCount += 1;
       }
 
       runtime = 'tauri file write';
       void loadProjectGitStatus(selectedProject);
-      if (selectedRecord) void loadSelectedSourceGitDiff(selectedRecord);
-      fileActionStatus = `Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`;
+      if (files.selectedRecord) void loadSelectedSourceGitDiff(files.selectedRecord);
+      files.fileActionStatus = `Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`;
     } catch (saveError) {
       error = saveError instanceof Error ? saveError.message : 'Could not save all source files';
     } finally {
-      fileActionBusy = '';
+      files.fileActionBusy = '';
     }
   }
 
   function revertSelectedSourceFile() {
-    if (!preview || !selectedSourceDirty) return;
+    if (!files.preview || !selectedSourceDirty) return;
 
-    const savedContent = savedSourceContentByPath[preview.path] ?? preview.content;
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
-      [preview.path]: savedContent
+    const savedContent = files.savedByPath[files.preview.path] ?? files.preview.content;
+    files.draftByPath = {
+      ...files.draftByPath,
+      [files.preview.path]: savedContent
     };
-    fileActionStatus = 'Reverted edits';
+    files.fileActionStatus = 'Reverted edits';
     error = '';
   }
 
   function updateSelectedSourceDraft(content: string) {
-    if (!preview) return;
+    if (!files.preview) return;
 
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
-      [preview.path]: content
+    files.draftByPath = {
+      ...files.draftByPath,
+      [files.preview.path]: content
     };
     scheduleSourceLspDiagnostics();
   }
@@ -8795,54 +9942,66 @@
   function syncSourcePreviewContent(nextPreview: SourcePreview | null) {
     if (!nextPreview) return;
 
-    const existingDraft = sourceDraftContentByPath[nextPreview.path];
-    const existingSaved = savedSourceContentByPath[nextPreview.path];
+    const existingDraft = files.draftByPath[nextPreview.path];
+    const existingSaved = files.savedByPath[nextPreview.path];
     const hasUnsavedDraft =
       existingDraft !== undefined &&
       existingSaved !== undefined &&
       existingDraft !== existingSaved;
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
+    files.draftByPath = {
+      ...files.draftByPath,
       [nextPreview.path]: hasUnsavedDraft ? existingDraft : nextPreview.content
     };
-    savedSourceContentByPath = {
-      ...savedSourceContentByPath,
+    files.savedByPath = {
+      ...files.savedByPath,
       [nextPreview.path]: nextPreview.content
     };
   }
 
   function commitSourcePreviewContent(nextPreview: SourcePreview) {
-    sourceDraftContentByPath = {
-      ...sourceDraftContentByPath,
+    // A successful save just changed this path on disk; drop its memoized
+    // preview so the next external lookup re-reads the saved content.
+    externalPreviewCache.delete(nextPreview.path);
+    files.draftByPath = {
+      ...files.draftByPath,
       [nextPreview.path]: nextPreview.content
     };
-    savedSourceContentByPath = {
-      ...savedSourceContentByPath,
+    files.savedByPath = {
+      ...files.savedByPath,
       [nextPreview.path]: nextPreview.content
     };
-    if (workspaceEditSourceRecordsByPath[nextPreview.path]) {
-      const nextWorkspaceEditRecordsByPath = { ...workspaceEditSourceRecordsByPath };
+    if (files.workspaceEditRecordsByPath[nextPreview.path]) {
+      const nextWorkspaceEditRecordsByPath = { ...files.workspaceEditRecordsByPath };
       delete nextWorkspaceEditRecordsByPath[nextPreview.path];
-      workspaceEditSourceRecordsByPath = nextWorkspaceEditRecordsByPath;
+      files.workspaceEditRecordsByPath = nextWorkspaceEditRecordsByPath;
     }
   }
 
-  function isSourcePathDirty(path: string) {
-    const draftContent = sourceDraftContentByPath[path];
-    const savedContent = savedSourceContentByPath[path];
-    return draftContent !== undefined && savedContent !== undefined && draftContent !== savedContent;
+  function sourceMarkdownPreviewAvailable(nextPreview: SourcePreview | null) {
+    if (!nextPreview) return false;
+    const normalizedPath = nextPreview.path.toLowerCase();
+    return nextPreview.language === 'markdown' || normalizedPath.endsWith('.md') || normalizedPath.endsWith('.mdx');
   }
 
-  async function stageExternalWorkspaceEditDrafts(files: SourceRenameFileEdit[]) {
-    const selectedPath = preview?.path ?? '';
-    const externalFiles = files.filter((file) => file.path !== selectedPath && file.edits.length > 0);
+  function setSelectedSourceEditorDisplayMode(mode: SourceEditorDisplayMode) {
+    if (!files.preview || !sourceMarkdownPreviewAvailable(files.preview)) return;
+
+    files.markdownPreviewModeByPath = {
+      ...files.markdownPreviewModeByPath,
+      [files.preview.path]: mode
+    };
+  }
+
+  async function stageExternalWorkspaceEditDrafts(renameEditFiles: SourceRenameFileEdit[]) {
+    const selectedPath = files.preview?.path ?? '';
+    const externalFiles = renameEditFiles.filter((file) => file.path !== selectedPath && file.edits.length > 0);
     if (externalFiles.length === 0) {
       return { fileCount: 0, editCount: 0, missingCount: 0 };
     }
 
-    const nextDraftContentByPath = { ...sourceDraftContentByPath };
-    const nextSavedContentByPath = { ...savedSourceContentByPath };
-    const nextWorkspaceEditRecordsByPath = { ...workspaceEditSourceRecordsByPath };
+    const nextDraftContentByPath = { ...files.draftByPath };
+    const nextSavedContentByPath = { ...files.savedByPath };
+    const nextWorkspaceEditRecordsByPath = { ...files.workspaceEditRecordsByPath };
     let nextProjectOpenTabs = projectOpenSourceTabs;
     let fileCount = 0;
     let editCount = 0;
@@ -8883,13 +10042,13 @@
       editCount += file.edits.length;
     }
 
-    sourceDraftContentByPath = nextDraftContentByPath;
-    savedSourceContentByPath = nextSavedContentByPath;
-    workspaceEditSourceRecordsByPath = nextWorkspaceEditRecordsByPath;
+    files.draftByPath = nextDraftContentByPath;
+    files.savedByPath = nextSavedContentByPath;
+    files.workspaceEditRecordsByPath = nextWorkspaceEditRecordsByPath;
 
     if (fileCount > 0) {
-      const nextOpenSourceTabs = replaceProjectOpenTabs(openSourceTabs, selectedProject.id, nextProjectOpenTabs);
-      openSourceTabs = nextOpenSourceTabs;
+      const nextOpenSourceTabs = replaceProjectOpenTabs(files.openTabs, selectedProject.id, nextProjectOpenTabs);
+      files.openTabs = nextOpenSourceTabs;
       persistOpenSourceTabs(nextOpenSourceTabs);
     }
 
@@ -8898,9 +10057,9 @@
 
   function sourceRecordForWorkspaceEditFile(file: SourceRenameFileEdit): SourceRecord {
     const existingRecord =
-      records.find((record) => record.path === file.path) ??
+      files.records.find((record) => record.path === file.path) ??
       projectOpenSourceTabs.find((record) => record.path === file.path) ??
-      workspaceEditSourceRecordsByPath[file.path];
+      files.workspaceEditRecordsByPath[file.path];
     if (existingRecord) return existingRecord;
 
     const relativePath = file.relativePath || sourceRelativePathForPath(file.path);
@@ -8935,7 +10094,6 @@
       window.clearTimeout(sourceLspDiagnosticsTimer);
       sourceLspDiagnosticsTimer = null;
     }
-    clearSourceLookupResults();
   }
 
   function handleEditorDiagnosticsChange(diagnostics: SourceDiagnostic[]) {
@@ -8943,18 +10101,41 @@
   }
 
   function scheduleSourceLspDiagnostics() {
-    if (!preview || !sourceIntelligenceAvailable) return;
+    if (!files.preview || !sourceIntelligenceAvailable) return;
     if (sourceLspDiagnosticsTimer !== null) {
       window.clearTimeout(sourceLspDiagnosticsTimer);
     }
     sourceLspDiagnosticsTimer = window.setTimeout(() => {
       sourceLspDiagnosticsTimer = null;
-      void loadSourceLspDiagnostics(preview);
+      void loadSourceLspDiagnostics(files.preview);
     }, 650);
   }
 
+  // Proactively warm the running language server(s) for a freshly-selected project so the
+  // cold re-index happens in the background on switch, not on the first file-open there
+  // (master plan B2.2). Debounced so rapid project flipping collapses to one warm call, and
+  // cancel-in-flight via the generation token so a superseded switch's warm is discarded.
+  // No-op outside Tauri (the wrapper returns null) and a backend no-op when no server is
+  // running for that project's languages — so this never spawns a server speculatively.
+  function scheduleWarmSourceLspForRoot(root: string) {
+    if (!isNativeTauriRuntime() || !root.trim()) return;
+    if (warmSourceLspTimer !== null) {
+      window.clearTimeout(warmSourceLspTimer);
+    }
+    const generation = ++warmSourceLspGeneration;
+    warmSourceLspTimer = window.setTimeout(() => {
+      warmSourceLspTimer = null;
+      // Discard if a newer project switch superseded this one during the debounce window.
+      if (generation !== warmSourceLspGeneration) return;
+      void warmSourceLspForRootFromTauri(root).catch(() => {
+        // Warming is a best-effort latency optimization; a failure just means the next
+        // file-open pays the cold re-index, exactly as before B2.2.
+      });
+    }, 400);
+  }
+
   async function loadSourceLspDiagnostics(
-    nextPreview: SourcePreview | null = preview,
+    nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
   ) {
     if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) {
@@ -8964,7 +10145,7 @@
 
     const expectedPath = nextPreview.path;
     const expectedProjectPath = project.path;
-    const draftContent = sourceDraftContentByPath[nextPreview.path] ?? nextPreview.content;
+    const draftContent = files.draftByPath[nextPreview.path] ?? nextPreview.content;
 
     try {
       const diagnostics = await readSourceLspDiagnosticsFromTauri(
@@ -8975,24 +10156,24 @@
           column: 1
         }
       );
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
       sourceLspDiagnostics = diagnostics ?? [];
     } catch {
-      if (preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
+      if (files.preview?.path === expectedPath && selectedProject.path === expectedProjectPath) {
         sourceLspDiagnostics = [];
       }
     }
   }
 
   async function loadSourceLspSymbols(
-    nextPreview: SourcePreview | null = preview,
+    nextPreview: SourcePreview | null = files.preview,
     project: ProjectRoot = selectedProject
   ) {
     if (!nextPreview || !sourceSupportsLanguageIntelligence(nextPreview.language)) return;
 
     const expectedPath = nextPreview.path;
     const expectedProjectPath = project.path;
-    const draftContent = sourceDraftContentByPath[nextPreview.path] ?? nextPreview.content;
+    const draftContent = files.draftByPath[nextPreview.path] ?? nextPreview.content;
 
     try {
       const symbols = await findSourceLspSymbolsFromTauri(
@@ -9004,7 +10185,7 @@
           limit: 100
         }
       );
-      if (preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
+      if (files.preview?.path !== expectedPath || selectedProject.path !== expectedProjectPath) return;
       if (symbols?.length) sourceSymbols = symbols;
     } catch {
       // Parser-provided Monaco symbols stay in place when native LSP is unavailable.
@@ -9013,7 +10194,7 @@
 
   async function loadSourceLspWorkspaceSymbols(query: string) {
     const normalizedQuery = query.trim();
-    const sourcePreview = preview;
+    const sourcePreview = files.preview;
     if (!normalizedQuery || !sourcePreview || !sourceSupportsLanguageIntelligence(sourcePreview.language)) {
       workspaceSymbolResults = [];
       workspaceSymbolError = '';
@@ -9058,15 +10239,15 @@
   }
 
   async function handleEditorDefinitionLookup(request: SourceEditorLookupRequest) {
-    return runSourceDefinitionLookup(request);
+    return findSourceDefinitionTargetsForEditor(request);
   }
 
   async function handleEditorHoverLookup(request: SourceEditorLookupRequest): Promise<SourceLspHover | null> {
-    if (!preview || !sourceIntelligenceAvailable) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
     try {
       return await findSourceLspHoverFromTauri(
-        { ...preview, content: selectedSourceDraftContent },
+        { ...files.preview, content: selectedSourceDraftContent },
         {
           root: selectedProject.path,
           line: request.line,
@@ -9081,12 +10262,12 @@
   async function handleEditorCompletionLookup(
     request: SourceEditorLookupRequest
   ): Promise<SourceCompletionItem[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspCompletionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -9103,11 +10284,11 @@
   async function handleEditorSignatureHelpLookup(
     request: SourceEditorLookupRequest
   ): Promise<SourceSignatureHelp | null> {
-    if (!preview || !sourceIntelligenceAvailable) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
     try {
       return await findSourceLspSignatureHelpFromTauri(
-        { ...preview, content: selectedSourceDraftContent },
+        { ...files.preview, content: selectedSourceDraftContent },
         {
           root: selectedProject.path,
           line: request.line,
@@ -9122,12 +10303,12 @@
   async function handleEditorInlayHintLookup(
     request: SourceEditorInlayHintLookupRequest
   ): Promise<SourceInlayHint[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspInlayHintsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.startLine,
@@ -9166,12 +10347,12 @@
   async function handleEditorCodeActionLookup(
     request: SourceCodeActionLookupRequest
   ): Promise<SourceCodeAction[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspCodeActionsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             ...request,
             root: selectedProject.path,
@@ -9189,7 +10370,7 @@
       const staged = await stageExternalWorkspaceEditDrafts(action.files);
       if (staged.editCount === 0) return;
 
-      fileActionStatus = `${action.title}: ${staged.editCount.toLocaleString()} external ${staged.editCount === 1 ? 'edit' : 'edits'} staged in ${staged.fileCount.toLocaleString()} ${staged.fileCount === 1 ? 'file' : 'files'}`;
+      files.fileActionStatus = `${action.title}: ${staged.editCount.toLocaleString()} external ${staged.editCount === 1 ? 'edit' : 'edits'} staged in ${staged.fileCount.toLocaleString()} ${staged.fileCount === 1 ? 'file' : 'files'}`;
     } catch (workspaceEditError) {
       error =
         workspaceEditError instanceof Error
@@ -9199,26 +10380,26 @@
   }
 
   async function handleEditorFormatDocument(): Promise<SourceTextEdit[]> {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
-    fileActionStatus = 'Formatting source file';
+    files.fileActionStatus = 'Formatting source file';
     try {
       const edits =
         (await formatSourceWithLspFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: 1,
             column: 1
           }
         )) ?? [];
-      fileActionStatus =
+      files.fileActionStatus =
         edits.length === 0
           ? 'No formatting edits'
           : `${edits.length} formatting ${edits.length === 1 ? 'edit' : 'edits'} applied to draft`;
       return edits;
     } catch (formatError) {
-      fileActionStatus =
+      files.fileActionStatus =
         formatError instanceof Error ? formatError.message : 'Formatting unavailable';
       return [];
     }
@@ -9229,12 +10410,12 @@
     column: number;
     newName: string;
   }): Promise<SourceRenameResult | null> {
-    if (!preview || !sourceIntelligenceAvailable) return null;
+    if (!files.preview || !sourceIntelligenceAvailable) return null;
 
-    fileActionStatus = 'Renaming symbol';
+    files.fileActionStatus = 'Renaming symbol';
     try {
       const result = await renameSourceWithLspFromTauri(
-        { ...preview, content: selectedSourceDraftContent },
+        { ...files.preview, content: selectedSourceDraftContent },
         {
           root: selectedProject.path,
           line: request.line,
@@ -9242,11 +10423,11 @@
           newName: request.newName
         }
       );
-      const files = result?.files ?? [];
+      const renameResultFiles = result?.files ?? [];
       const currentFileEditCount =
-        files.find((file) => file.path === preview.path)?.edits.length ?? 0;
-      const totalEditCount = files.reduce((count, file) => count + file.edits.length, 0);
-      const externalDrafts = await stageExternalWorkspaceEditDrafts(files);
+        renameResultFiles.find((file) => file.path === files.preview.path)?.edits.length ?? 0;
+      const totalEditCount = renameResultFiles.reduce((count, file) => count + file.edits.length, 0);
+      const externalDrafts = await stageExternalWorkspaceEditDrafts(renameResultFiles);
       const renameParts = [
         currentFileEditCount > 0
           ? `${currentFileEditCount.toLocaleString()} current-file ${currentFileEditCount === 1 ? 'edit' : 'edits'}`
@@ -9258,28 +10439,32 @@
           ? `${externalDrafts.missingCount.toLocaleString()} external ${externalDrafts.missingCount === 1 ? 'file' : 'files'} could not be read`
           : ''
       ].filter(Boolean);
-      fileActionStatus =
+      files.fileActionStatus =
         totalEditCount === 0
           ? 'No rename edits'
           : `Rename staged: ${renameParts.join(' · ')}`;
       return result;
     } catch (renameError) {
-      fileActionStatus = renameError instanceof Error ? renameError.message : 'Rename unavailable';
+      files.fileActionStatus = renameError instanceof Error ? renameError.message : 'Rename unavailable';
       return null;
     }
   }
 
   async function handleEditorReferenceLookup(request: SourceEditorLookupRequest) {
-    return runSourceReferenceLookup(request);
+    return findSourceReferenceTargetsForEditor(request);
+  }
+
+  async function handleEditorReferenceCountLookup(request: SourceEditorLookupRequest) {
+    return countSourceReferencesForCodeLens(request);
   }
 
   async function handleEditorDocumentHighlightLookup(request: SourceEditorLookupRequest) {
-    if (!preview || !sourceIntelligenceAvailable) return [];
+    if (!files.preview || !sourceIntelligenceAvailable) return [];
 
     try {
       return (
         (await findSourceLspDocumentHighlightsFromTauri(
-          { ...preview, content: selectedSourceDraftContent },
+          { ...files.preview, content: selectedSourceDraftContent },
           {
             root: selectedProject.path,
             line: request.line,
@@ -9294,15 +10479,15 @@
   }
 
   async function handleEditorImplementationLookup(request: SourceEditorLookupRequest) {
-    return runSourceImplementationLookup(request);
+    return findSourceImplementationTargetsForEditor(request);
   }
 
   async function handleEditorTypeDefinitionLookup(request: SourceEditorLookupRequest) {
-    return runSourceTypeDefinitionLookup(request);
+    return findSourceTypeDefinitionTargetsForEditor(request);
   }
 
   function requestSourceIntelligenceAction(action: SourceIntelligenceAction) {
-    if (!preview || loading) return;
+    if (!files.preview || files.scan.loading) return;
     if (
       (action === 'hover' ||
         action === 'implementation' ||
@@ -9351,7 +10536,7 @@
     );
 
     if (!diagnostic) {
-      fileActionStatus = 'No problems';
+      files.fileActionStatus = 'No problems';
       return;
     }
 
@@ -9360,7 +10545,7 @@
 
   function currentSourceDiagnosticNavigationRequest() {
     return {
-      line: selectedSourceLine ?? 1,
+      line: files.selectedSourceLine ?? 1,
       column: 1
     };
   }
@@ -9370,20 +10555,20 @@
   }
 
   function revealSourceLine(line: number, recordNavigation = true) {
-    if (!preview || !selectedRecord) return;
+    if (!files.preview || !files.selectedRecord) return;
 
     const nextLine = Math.max(1, Math.floor(line));
     if (recordNavigation) {
-      recordSourceNavigation(sourceNavigationLocationForRecord(selectedRecord, nextLine));
+      recordSourceNavigation(sourceNavigationLocationForRecord(files.selectedRecord, nextLine));
     }
 
-    selectedSourceLine = nextLine;
-    selectedSourceLineRequestId += 1;
+    files.selectedSourceLine = nextLine;
+    files.selectedSourceLineRequestId += 1;
   }
 
   function handleProjectChange() {
     const nextProject =
-      projectOptions.find((project) => project.id === selectedProjectID) ?? projectOptions[0] ?? initialProject;
+      projectOptions.find((project) => project.id === projectStore.selectedID) ?? projectOptions[0] ?? initialProject;
     void activateProject(nextProject, {
       projects: projectOptions,
       scanLimit: expandedSourceScanLimit,
@@ -9406,7 +10591,7 @@
     };
   }
 
-  function rememberSourceActivityFilter(mode: SourceActivityMode = sourceActivityMode, filter = sourceActivityFilter) {
+  function rememberSourceActivityFilter(mode: SourceActivityMode = dock.activityMode, filter = sourceActivityFilter) {
     sourceActivityFiltersByMode = {
       ...sourceActivityFiltersByMode,
       [mode]: filter
@@ -9415,7 +10600,7 @@
 
   function setSourceActivityFilter(filter: string) {
     sourceActivityFilter = filter;
-    rememberSourceActivityFilter(sourceActivityMode, filter);
+    rememberSourceActivityFilter(dock.activityMode, filter);
   }
 
   function selectSourceActivityMode(mode: SourceActivityMode) {
@@ -9426,7 +10611,7 @@
       expandActivityPaneFromRail();
     }
     rememberSourceActivityFilter();
-    sourceActivityMode = mode;
+    dock.activityMode = mode;
     sourceActivityFilter = sourceActivityFiltersByMode[mode] ?? '';
     persistSourceActivityMode(mode);
     window.setTimeout(measureFileTreeViewport, 0);
@@ -9438,15 +10623,15 @@
     const override = sourceLayoutPresetOverrides[preset.id];
     const nextActivityMode = override?.activityMode ?? preset.activityMode;
 
-    sourceLayoutPreset = preset.id;
+    dock.layoutPreset = preset.id;
     rememberSourceActivityFilter();
-    sourceActivityMode = nextActivityMode;
+    dock.activityMode = nextActivityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[nextActivityMode] ?? '';
-    sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(override?.sidePaneWidth ?? preset.sidePaneWidth);
     sidePanePosition = override?.sidePanePosition ?? preset.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(override?.editorInsightWidth ?? preset.editorInsightWidth);
     editorInsightCollapsed = override?.editorInsightCollapsed ?? preset.editorInsightCollapsed;
-    contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? preset.contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(override?.contextPaneWidth ?? preset.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(override?.contextPaneHeight ?? preset.contextPaneHeight);
     contextPanelCollapsed = override?.contextPanelCollapsed ?? preset.contextPanelCollapsed;
     contextPanelMode = override?.contextPanelMode ?? preset.contextPanelMode;
@@ -9456,13 +10641,13 @@
     hiddenContextCardIDs = new Set(override?.hiddenContextCardIDs ?? []);
     activeContextCardID = override?.activeContextCardID ?? activeContextCardID;
 
-    persistSourceLayoutPreset(sourceLayoutPreset);
-    persistSourceActivityMode(sourceActivityMode);
-    persistSidePaneWidth(sidePaneWidth);
+    persistSourceLayoutPreset(dock.layoutPreset);
+    persistSourceActivityMode(dock.activityMode);
+    persistSidePaneWidth(dock.sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
@@ -9470,11 +10655,10 @@
     persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
-    sourceDockLayout = override?.dockLayout
+    const nextDockLayout = override?.dockLayout
       ? normalizeSourceDockLayout(override.dockLayout)
       : sourceDockLayoutFromWorkspace();
-    syncSourceDockLayoutToWorkspace(sourceDockLayout);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(nextDockLayout);
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -9482,26 +10666,26 @@
   }
 
   function currentSaveableSourceLayoutPreset(): SourceLayoutPresetDefinition {
-    const activePreset = sourceLayoutPresets.find((preset) => preset.id === sourceLayoutPreset);
+    const activePreset = sourceLayoutPresets.find((preset) => preset.id === dock.layoutPreset);
     if (activePreset) return activePreset;
     return sourceLayoutPresets.find((preset) => preset.id === 'code') ?? sourceLayoutPresets[0]!;
   }
 
   function captureSourceLayoutPresetOverride(): SourceLayoutPresetOverride {
     return {
-      activityMode: sourceActivityMode,
-      sidePaneWidth: clampSidePaneWidth(sidePaneWidth),
+      activityMode: dock.activityMode,
+      sidePaneWidth: clampSidePaneWidth(dock.sidePaneWidth),
       sidePanePosition,
       editorInsightWidth: clampEditorInsightWidth(editorInsightWidth),
       editorInsightCollapsed,
-      contextPaneWidth: clampContextPaneWidth(contextPaneWidth),
+      contextPaneWidth: clampContextPaneWidth(dock.contextPaneWidth),
       contextPaneHeight: clampContextPaneHeight(contextPaneHeight),
       contextPanelCollapsed,
       contextPanelMode,
       contextPanelPlacement,
       chromeCompact: sourceChromeCompact,
       intelligencePanel: sourceIntelligencePanel,
-      dockLayout: normalizeSourceDockLayout(sourceDockLayout),
+      dockLayout: normalizeSourceDockLayout(dock.layout),
       hiddenContextCardIDs: [...hiddenContextCardIDs],
       activeContextCardID
     };
@@ -9509,21 +10693,21 @@
 
   function captureSourceLayoutSnapshot(): SourceLayoutSnapshot {
     return {
-      preset: sourceLayoutPreset,
+      preset: dock.layoutPreset,
       ...captureSourceLayoutPresetOverride()
     };
   }
 
   function applySourceLayoutSnapshot(snapshot: SourceLayoutSnapshot, status: string) {
-    sourceLayoutPreset = snapshot.preset;
+    dock.layoutPreset = snapshot.preset;
     rememberSourceActivityFilter();
-    sourceActivityMode = snapshot.activityMode;
+    dock.activityMode = snapshot.activityMode;
     sourceActivityFilter = sourceActivityFiltersByMode[snapshot.activityMode] ?? '';
-    sidePaneWidth = clampSidePaneWidth(snapshot.sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(snapshot.sidePaneWidth);
     sidePanePosition = snapshot.sidePanePosition;
     editorInsightWidth = clampEditorInsightWidth(snapshot.editorInsightWidth);
     editorInsightCollapsed = snapshot.editorInsightCollapsed;
-    contextPaneWidth = clampContextPaneWidth(snapshot.contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(snapshot.contextPaneWidth);
     contextPaneHeight = clampContextPaneHeight(snapshot.contextPaneHeight);
     contextPanelCollapsed = snapshot.contextPanelCollapsed;
     contextPanelMode = snapshot.contextPanelMode;
@@ -9532,15 +10716,15 @@
     sourceIntelligencePanel = snapshot.intelligencePanel;
     hiddenContextCardIDs = new Set(snapshot.hiddenContextCardIDs);
     activeContextCardID = snapshot.activeContextCardID;
-    sourceDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
+    const nextDockLayout = normalizeSourceDockLayout(snapshot.dockLayout);
 
-    persistSourceLayoutPreset(sourceLayoutPreset);
-    persistSourceActivityMode(sourceActivityMode);
-    persistSidePaneWidth(sidePaneWidth);
+    persistSourceLayoutPreset(dock.layoutPreset);
+    persistSourceActivityMode(dock.activityMode);
+    persistSidePaneWidth(dock.sidePaneWidth);
     persistSidePanePosition(sidePanePosition);
     persistEditorInsightWidth(editorInsightWidth);
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    persistContextPaneWidth(contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     persistContextPaneHeight(contextPaneHeight);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistContextPanelMode(contextPanelMode);
@@ -9548,9 +10732,8 @@
     persistSourceChromeCompact(sourceChromeCompact);
     persistHiddenContextCards(hiddenContextCardIDs);
     persistActiveContextCard(activeContextCardID);
-    syncSourceDockLayoutToWorkspace(sourceDockLayout);
-    persistSourceDockLayout(sourceDockLayout);
-    fileActionStatus = status;
+    applySourceDockLayout(nextDockLayout);
+    files.fileActionStatus = status;
 
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
@@ -9565,10 +10748,10 @@
       ...sourceLayoutPresetOverrides,
       [presetID]: captureSourceLayoutPresetOverride()
     };
-    sourceLayoutPreset = presetID;
-    persistSourceLayoutPreset(sourceLayoutPreset);
+    dock.layoutPreset = presetID;
+    persistSourceLayoutPreset(dock.layoutPreset);
     persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
-    fileActionStatus = `${preset.label} layout saved`;
+    files.fileActionStatus = `${preset.label} layout saved`;
   }
 
   function resetSourceLayoutPresetOverride(presetID: ConcreteSourceLayoutPresetID) {
@@ -9579,8 +10762,8 @@
     delete nextOverrides[presetID];
     sourceLayoutPresetOverrides = nextOverrides;
     persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
-    fileActionStatus = `${preset.label} layout reset`;
-    if (sourceLayoutPreset === presetID) {
+    files.fileActionStatus = `${preset.label} layout reset`;
+    if (dock.layoutPreset === presetID) {
       applySourceLayoutPreset(presetID);
     }
   }
@@ -9613,6 +10796,7 @@
       case 'clipboard':
         return pasteCleanupHistory.length;
       case 'conversations':
+        return filteredConversationAgentSessions.length;
       case 'agents':
         return filteredProjectAgentSessions.length;
       case 'runs':
@@ -9624,6 +10808,31 @@
       case 'git':
         return filteredGitRepositoryRows.length;
     }
+  }
+
+  function sourceActivityCountLabel(mode: SourceActivityMode) {
+    return compactCountValue(sourceActivityCount(mode));
+  }
+
+  function sourceActivityButtonTitle(mode: SourceActivityMode) {
+    const count = sourceActivityCount(mode);
+    const label = sourceActivityLabel(mode);
+    return count > 0 ? `${label} · ${count.toLocaleString()}` : label;
+  }
+
+  function sourceActivityBadgeVisible(mode: SourceActivityMode) {
+    return dock.activityMode === mode && sourceActivityCount(mode) > 0;
+  }
+
+  function compactCountValue(value: number | null | undefined) {
+    const count =
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    if (count >= 10000) return `${Math.round(count / 1000)}K`;
+    if (count >= 1000) {
+      const thousands = Math.round(count / 100) / 10;
+      return `${Number.isInteger(thousands) ? thousands.toFixed(0) : thousands.toFixed(1)}K`;
+    }
+    return count.toLocaleString();
   }
 
   function sourceActivityFilterPlaceholder(mode: SourceActivityMode) {
@@ -9664,6 +10873,7 @@
       case 'clipboard':
         return pasteCleanupStats;
       case 'conversations':
+        return conversationSessionSummary;
       case 'agents':
         return agentSessionSummary;
       case 'runs':
@@ -9690,10 +10900,10 @@
     return 'Browser preview is using the local filesystem bridge for source files. Run the Tauri app for native Git, LSP, and terminal actions.';
   }
 
-  function refreshSourceActivityMode(mode: SourceActivityMode = sourceActivityMode) {
+  function refreshSourceActivityMode(mode: SourceActivityMode = dock.activityMode) {
     switch (mode) {
       case 'files':
-        void scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit });
+        void scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit });
         break;
       case 'clipboard':
         break;
@@ -9720,9 +10930,9 @@
   function sourceActivityRefreshing(mode: SourceActivityMode) {
     switch (mode) {
       case 'files':
-        return scanning;
+        return files.scan.scanning;
       case 'clipboard':
-        return fileActionBusy === 'paste-read';
+        return files.fileActionBusy === 'paste-read';
       case 'conversations':
       case 'agents':
         return agentSessionsLoading;
@@ -9733,7 +10943,7 @@
       case 'worktrees':
         return projectWorktreesLoading;
       case 'git':
-        return gitRepositorySummariesLoading || gitCommitHistoryLoading;
+        return gitStore.repositorySummariesLoading || gitStore.commitHistoryLoading;
     }
   }
 
@@ -9760,6 +10970,16 @@
   function persistSourceActivityMode(mode: SourceActivityMode) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceActivityModeStorageKey, mode);
+  }
+
+  async function selectSourceFilesPane(paneID: SourceFilesPaneID) {
+    sourceFilesPane = paneID;
+    await tick();
+    if (paneID === 'files') {
+      measureFileTreeViewport();
+    } else if (paneID === 'search') {
+      sourceSearchInput?.focus();
+    }
   }
 
   function loadStoredPasteCleanupMode(): PasteCleanupMode {
@@ -9833,9 +11053,9 @@
   }
 
   function markSourceLayoutCustom() {
-    if (sourceLayoutPreset === 'custom') return;
-    sourceLayoutPreset = 'custom';
-    persistSourceLayoutPreset(sourceLayoutPreset);
+    if (dock.layoutPreset === 'custom') return;
+    dock.layoutPreset = 'custom';
+    persistSourceLayoutPreset(dock.layoutPreset);
   }
 
   function loadStoredSourceLayoutPreset(): SourceLayoutPresetID {
@@ -9872,7 +11092,7 @@
     markSourceLayoutCustom();
     sourceChromeCompact = compact;
     persistSourceChromeCompact(compact);
-    fileActionStatus = compact ? 'Compact editor chrome enabled' : 'Comfortable editor chrome enabled';
+    files.fileActionStatus = compact ? 'Compact editor chrome enabled' : 'Comfortable editor chrome enabled';
   }
 
   function toggleSourceChromeCompact() {
@@ -10036,8 +11256,19 @@
   function persistSourceLayoutVersion() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(sourceLayoutVersionStorageKey, sourceLayoutVersion);
+  }
+
+  function clearMigratedSourceDockviewLayouts() {
+    if (typeof window === 'undefined') return;
     window.localStorage.removeItem(sourceDockviewStorageKey);
+    window.localStorage.removeItem(sourceDockviewActivityStorageKey);
     window.localStorage.removeItem(sourceDockviewInsightsStorageKey);
+    window.localStorage.removeItem(sourceDockviewContextStorageKey);
+    window.localStorage.removeItem(sourceDockviewCenterStorageKey);
+    window.localStorage.removeItem(sourceDockviewBottomStorageKey);
+    window.localStorage.removeItem(sourceFilesDockviewStorageKey);
+    window.localStorage.removeItem(sourceConversationDockviewStorageKey);
+    window.localStorage.removeItem(sourceContextCardDockviewStorageKey);
   }
 
   function loadStoredSourceTerminalApp(): SourceTerminalApp {
@@ -10065,27 +11296,27 @@
   }
 
   function moveDockPanelToGroup(panelID: SourceDockPanelID, groupID: SourceDockGroupID, targetIndex?: number) {
-    applySourceDockLayout(moveSourceDockPanel(sourceDockLayout, panelID, groupID, targetIndex));
+    applySourceDockLayout(moveSourceDockPanel(dock.layout, panelID, groupID, targetIndex));
   }
 
   function hideDockPanel(panelID: SourceDockPanelID) {
-    applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, panelID));
+    applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
   }
 
   function showDockPanel(panelID: SourceDockPanelID) {
     if (panelID === 'activity') {
-      const nextSidePaneWidth = sidePaneWidth <= sidePaneRailOnlyThreshold
+      const nextSidePaneWidth = dock.sidePaneWidth <= sidePaneRailOnlyThreshold
         ? sidePaneDefaultWidth
-        : sidePaneWidth;
-      sidePaneWidth = clampSidePaneWidth(nextSidePaneWidth);
+        : dock.sidePaneWidth;
+      dock.sidePaneWidth = clampSidePaneWidth(nextSidePaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
-          moveSourceDockPanel(sourceDockLayout, 'activity', sidePanePosition),
+          moveSourceDockPanel(dock.layout, 'activity', sidePanePosition),
           sidePanePosition,
-          sidePaneWidth
+          dock.sidePaneWidth
         )
       );
-      fileActionStatus = 'Activity panel shown';
+      files.fileActionStatus = 'Activity panel shown';
       if (typeof window !== 'undefined') {
         window.setTimeout(measureFileTreeViewport, 0);
       }
@@ -10093,37 +11324,45 @@
     }
 
     if (panelID === 'context') {
+      const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
       const nextContextPaneWidth =
-        contextPanelPlacement === 'side' && contextPaneWidth <= contextPaneRailOnlyThreshold
+        contextPanelPlacement === 'side' && dock.contextPaneWidth <= contextPaneRailOnlyThreshold
           ? contextPaneDefaultWidth
-          : contextPaneWidth;
-      contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
+          : dock.contextPaneWidth;
+      dock.contextPaneWidth = clampContextPaneWidth(nextContextPaneWidth);
       applySourceDockLayout(
         resizeSourceDockGroup(
-          showSourceDockPanel(sourceDockLayout, 'context'),
-          dockGroupForContextPanelPlacement(contextPanelPlacement),
-          contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
+          moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
+          contextGroupID,
+          contextPanelPlacement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
         )
       );
-      fileActionStatus = 'Context panel shown';
+      files.fileActionStatus = 'Context panel shown';
       return;
     }
 
-    applySourceDockLayout(showSourceDockPanel(sourceDockLayout, panelID));
+    applySourceDockLayout(showSourceDockPanel(dock.layout, panelID));
     if (panelID === 'terminal') {
-      fileActionStatus = 'Terminal dock shown';
+      files.fileActionStatus = 'Terminal dock shown';
+      scheduleEmbeddedTerminalFit();
     }
     if (panelID === 'browser') {
       if (!browserUrl && defaultBrowserUrl) {
         setBrowserDockUrl(defaultBrowserUrl);
       }
-      fileActionStatus = 'Browser dock shown';
+      files.fileActionStatus = 'Browser dock shown';
     }
   }
 
   function resetSourceDockLayout() {
-    applySourceLayoutPreset('code');
-    fileActionStatus = 'Dock layout reset';
+    if (sourceLayoutPresetOverrides.review) {
+      const nextOverrides = { ...sourceLayoutPresetOverrides };
+      delete nextOverrides.review;
+      sourceLayoutPresetOverrides = nextOverrides;
+      persistSourceLayoutPresetOverrides(sourceLayoutPresetOverrides);
+    }
+    applySourceLayoutPreset('review');
+    files.fileActionStatus = 'Dock layout reset';
   }
 
   function focusSourceEditorLayout() {
@@ -10134,24 +11373,24 @@
 
     markSourceLayoutCustom();
     rememberSourceActivityFilter();
-    sourceActivityMode = 'files';
+    dock.activityMode = 'files';
     sourceActivityFilter = sourceActivityFiltersByMode.files ?? '';
     contextPanelCollapsed = true;
     editorInsightCollapsed = true;
     sourceChromeCompact = true;
-    persistSourceActivityMode(sourceActivityMode);
+    persistSourceActivityMode(dock.activityMode);
     persistContextPanelCollapsed(contextPanelCollapsed);
     persistEditorInsightCollapsed(editorInsightCollapsed);
     persistSourceChromeCompact(sourceChromeCompact);
 
     const editorFocusHiddenPanelIDs: SourceDockPanelID[] = ['activity', 'context', 'insights', 'terminal', 'browser'];
-    let nextLayout = sourceDockLayout;
+    let nextLayout = dock.layout;
     for (const panelID of editorFocusHiddenPanelIDs) {
       nextLayout = hideSourceDockPanel(nextLayout, panelID);
     }
 
     applySourceDockLayout(activateSourceDockPanel(nextLayout, 'editor'));
-    fileActionStatus = 'Editor canvas focused';
+    files.fileActionStatus = 'Editor canvas focused';
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
@@ -10178,6 +11417,9 @@
   }
 
   function contextPaneRailOnly() {
+    // Dockview owns sizing in the unified workbench, so the homemade width-collapse plan must not
+    // force the context panel into its narrow rail-only presentation.
+    if (useUnifiedWorkbench) return false;
     return contextPanelPlacement === 'side' && sourceWorkspacePlanItem('context')?.state === 'rail';
   }
 
@@ -10187,10 +11429,12 @@
   }
 
   function contextPaneViewportCollapsed() {
+    // The unified workbench lets Dockview size the context group; never auto-collapse it here.
+    if (useUnifiedWorkbench) return false;
     const item = sourceWorkspacePlanItem('context');
     return (
       contextPanelPlacement === 'side' &&
-      shouldRenderDockPanel('context') &&
+      sourceDockPanelVisible('context') &&
       item?.reason === 'viewport-collapsed'
     );
   }
@@ -10200,7 +11444,7 @@
   }
 
   function effectiveContextPaneVisible() {
-    if (!shouldRenderDockPanel('context')) return false;
+    if (!sourceDockPanelVisible('context')) return false;
     return contextPanelPlacement !== 'side' || !contextPaneViewportCollapsed();
   }
 
@@ -10220,49 +11464,80 @@
   }
 
   function expandActivityPaneFromRail() {
-    sidePaneWidth = restoreSourcePaneExpandedSize(sidePaneWidth, activityPaneSizingConfig, {
+    dock.sidePaneWidth = restoreSourcePaneExpandedSize(dock.sidePaneWidth, activityPaneSizingConfig, {
       previousExpandedSize: sidePaneExpandedWidth
     });
-    persistSidePaneWidth(sidePaneWidth);
-    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
   }
 
   function snapActivityPaneToRail() {
-    sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
-    persistSidePaneWidth(sidePaneWidth);
-    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+    dock.sidePaneWidth = clampSidePaneWidth(sidePaneMinWidth);
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
   }
 
   function collapseActivityPaneToRail() {
     markSourceLayoutCustom();
     snapActivityPaneToRail();
-    sourceDockLayout = resizeSourceDockGroup(
-      showSourceDockPanel(sourceDockLayout, 'activity'),
+    applySourceDockLayout(resizeSourceDockGroup(
+      showSourceDockPanel(dock.layout, 'activity'),
       sidePanePosition,
-      sidePaneWidth
-    );
-    persistSidePaneWidth(sidePaneWidth);
-    persistSourceDockLayout(sourceDockLayout);
+      dock.sidePaneWidth
+    ));
+    persistSidePaneWidth(dock.sidePaneWidth);
     if (typeof window !== 'undefined') {
       window.setTimeout(measureFileTreeViewport, 0);
     }
-    fileActionStatus = 'Activity panel collapsed to rail';
+    files.fileActionStatus = 'Activity panel collapsed to rail';
+  }
+
+  function activityRailToggleLabel() {
+    return activityPaneRailOnly() ? 'Expand explorer from icon rail' : 'Collapse explorer to icon rail';
+  }
+
+  function activityRailToggleDirection() {
+    if (sidePanePosition === 'left') {
+      return activityPaneRailOnly() ? 'right' : 'left';
+    }
+
+    return activityPaneRailOnly() ? 'left' : 'right';
+  }
+
+  function toggleActivityPaneRail() {
+    markSourceLayoutCustom();
+
+    if (!sourceDockPanelVisible('activity')) {
+      showDockPanel('activity');
+      return;
+    }
+
+    if (activityPaneRailOnly()) {
+      expandActivityPaneFromRail();
+      files.fileActionStatus = 'Activity panel expanded';
+      if (typeof window !== 'undefined') {
+        window.setTimeout(measureFileTreeViewport, 0);
+      }
+      return;
+    }
+
+    collapseActivityPaneToRail();
   }
 
   function expandContextPaneFromRail() {
     if (contextPanelPlacement !== 'side') return;
-    contextPaneWidth = restoreSourcePaneExpandedSize(contextPaneWidth, contextPaneWidthSizingConfig, {
+    dock.contextPaneWidth = restoreSourcePaneExpandedSize(dock.contextPaneWidth, contextPaneWidthSizingConfig, {
       previousExpandedSize: contextPaneExpandedWidth
     });
-    persistContextPaneWidth(contextPaneWidth);
-    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
+    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
   }
 
   function snapContextPaneToRail(updateDockGroup = true) {
-    contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
-    persistContextPaneWidth(contextPaneWidth);
+    dock.contextPaneWidth = clampContextPaneWidth(contextPaneMinWidth);
+    persistContextPaneWidth(dock.contextPaneWidth);
     if (updateDockGroup) {
-      persistDockGroupSize(dockGroupForContextPanelPlacement('side'), contextPaneWidth);
+      persistDockGroupSize(dockGroupForContextPanelPlacement('side'), dock.contextPaneWidth);
     }
   }
 
@@ -10272,16 +11547,15 @@
     contextPanelCollapsed = false;
     snapContextPaneToRail(false);
     const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
-    sourceDockLayout = resizeSourceDockGroup(
-      moveSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context', contextGroupID),
+    applySourceDockLayout(resizeSourceDockGroup(
+      moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
       contextGroupID,
-      contextPaneWidth
-    );
+      dock.contextPaneWidth
+    ));
     persistContextPanelPlacement(contextPanelPlacement);
     persistContextPanelCollapsed(contextPanelCollapsed);
-    persistContextPaneWidth(contextPaneWidth);
-    persistSourceDockLayout(sourceDockLayout);
-    fileActionStatus = 'Context panel collapsed to rail';
+    persistContextPaneWidth(dock.contextPaneWidth);
+    files.fileActionStatus = 'Context panel collapsed to rail';
   }
 
   function toggleDockPanelVisibility(panelID: SourceDockPanelID) {
@@ -10308,119 +11582,6 @@
     moveDockPanelToGroup(panelID, groupID, targetIndex);
   }
 
-  function moveDockPanelFromTab(panelID: SourceDockPanelID, event: Event) {
-    const groupID = (event.currentTarget as HTMLSelectElement | null)?.value as SourceDockGroupID;
-    if (!dockPanelMoveTargets(panelID).includes(groupID)) return;
-
-    moveDockPanelToManagedGroup(panelID, groupID);
-  }
-
-  function beginDockPanelDrag(panelID: SourceDockPanelID, event: DragEvent) {
-    if (dockPanelMoveTargets(panelID).length <= 1) return;
-
-    draggingDockPanelID = panelID;
-    dockDropTargetGroupID = null;
-    dockDropTargetPanelID = null;
-    event.dataTransfer?.setData(dockPanelDragDataType, panelID);
-    event.dataTransfer?.setData('text/plain', panelID);
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = 'move';
-    }
-  }
-
-  function dragOverDockDropZone(event: DragEvent, groupID: SourceDockGroupID) {
-    const panelID = draggedDockPanelID(event);
-    if (!panelID || !dockPanelMoveTargets(panelID).includes(groupID)) return;
-
-    event.preventDefault();
-    dockDropTargetGroupID = groupID;
-    dockDropTargetPanelID = null;
-    dockDropTargetPanelPlacement = null;
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = 'move';
-    }
-  }
-
-  function dragOverDockPanelTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
-    const panelID = draggedDockPanelID(event);
-    if (!panelID || panelID === targetPanelID) return;
-
-    const targetGroupID = dockGroupIDForPanel(sourceDockLayout, targetPanelID);
-    if (!targetGroupID || !dockPanelMoveTargets(panelID).includes(targetGroupID)) return;
-
-    event.preventDefault();
-    dockDropTargetGroupID = targetGroupID;
-    dockDropTargetPanelID = targetPanelID;
-    dockDropTargetPanelPlacement = dockPanelTabDropPlacement(event);
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = 'move';
-    }
-  }
-
-  function dockPanelTabDropPlacement(event: DragEvent): 'before' | 'after' {
-    const target = event.currentTarget as HTMLElement | null;
-    const rect = target?.getBoundingClientRect();
-    if (!rect) return 'before';
-
-    return event.clientX > rect.left + rect.width / 2 ? 'after' : 'before';
-  }
-
-  function dropDockPanelOnGroup(event: DragEvent, groupID: SourceDockGroupID) {
-    const panelID = draggedDockPanelID(event);
-    if (!panelID || !dockPanelMoveTargets(panelID).includes(groupID)) {
-      clearDockPanelDrag();
-      return;
-    }
-
-    event.preventDefault();
-    moveDockPanelToManagedGroup(panelID, groupID);
-    clearDockPanelDrag();
-  }
-
-  function dropDockPanelOnTab(event: DragEvent, targetPanelID: SourceDockPanelID) {
-    const panelID = draggedDockPanelID(event);
-    const targetGroupID = dockGroupIDForPanel(sourceDockLayout, targetPanelID);
-    if (
-      !panelID ||
-      panelID === targetPanelID ||
-      !targetGroupID ||
-      !dockPanelMoveTargets(panelID).includes(targetGroupID)
-    ) {
-      clearDockPanelDrag();
-      return;
-    }
-
-    event.preventDefault();
-    const targetPanelIDs = dockGroupPanelIDs(targetGroupID);
-    const targetIndex = targetPanelIDs.indexOf(targetPanelID);
-    const currentIndex = targetPanelIDs.indexOf(panelID);
-    const dropPlacement = dockPanelTabDropPlacement(event);
-    let insertionIndex = targetIndex + (dropPlacement === 'after' ? 1 : 0);
-    if (currentIndex >= 0 && currentIndex < insertionIndex) {
-      insertionIndex -= 1;
-    }
-    moveDockPanelToManagedGroup(panelID, targetGroupID, insertionIndex);
-    clearDockPanelDrag();
-  }
-
-  function clearDockPanelDrag() {
-    draggingDockPanelID = null;
-    dockDropTargetGroupID = null;
-    dockDropTargetPanelID = null;
-    dockDropTargetPanelPlacement = null;
-  }
-
-  function draggedDockPanelID(event: DragEvent): SourceDockPanelID | null {
-    const draggedPanelID =
-      event.dataTransfer?.getData(dockPanelDragDataType) ||
-      event.dataTransfer?.getData('text/plain') ||
-      draggingDockPanelID;
-
-    return managedDockPanelIDs.includes(draggedPanelID as SourceDockPanelID)
-      ? (draggedPanelID as SourceDockPanelID)
-      : null;
-  }
-
   function dockPanelMoveTargets(panelID: SourceDockPanelID): SourceDockGroupID[] {
     switch (panelID) {
       case 'activity':
@@ -10431,7 +11592,7 @@
         return ['right'];
       case 'terminal':
       case 'browser':
-        return ['bottom'];
+        return ['center'];
       case 'editor':
         return ['center'];
     }
@@ -10452,47 +11613,218 @@
     return 'Center';
   }
 
-  function dockGroupShortcutLabel(groupID: SourceDockGroupID, panelID?: SourceDockPanelID) {
-    if (panelID === 'context' && groupID === 'center') return 'T';
-    if (groupID === 'left') return 'L';
-    if (groupID === 'right') return 'R';
-    if (groupID === 'bottom') return 'B';
-    return 'C';
-  }
-
   function dockPanelPlacementSummary(panelID: SourceDockPanelID) {
-    const groupID = dockGroupIDForPanel(sourceDockLayout, panelID);
+    const groupID = dockGroupIDForPanel(dock.layout, panelID);
     if (groupID === null) return 'Hidden';
     return dockGroupLabel(groupID, panelID);
   }
 
-  function selectDockPanel(panelID: SourceDockPanelID) {
-    markSourceLayoutCustom();
-    applySourceDockLayout(activateSourceDockPanel(sourceDockLayout, panelID));
-    if (panelID === 'context') {
-      contextPanelCollapsed = false;
-      persistContextPanelCollapsed(contextPanelCollapsed);
-    }
-    if (panelID === 'insights') {
-      editorInsightCollapsed = false;
-      persistEditorInsightCollapsed(editorInsightCollapsed);
-    }
+  // Dockview emits a trailing onDidLayoutChange AFTER an authored syncLayout
+  // settles. Re-deriving dock.layout from the live group rects at that moment
+  // (syncSourceDockLayoutFromWorkbenchGroups) transiently misclassifies the
+  // freshly-split context+insights group as the center group and folds it into
+  // the editor/terminal group — surfacing the terminal and dropping insights
+  // when the user toggles "Show editor insights". An authored apply already
+  // sets dock.layout, so the read-back is both redundant and harmful while one
+  // is in flight; suppress it briefly (the window covers the trailing emit).
+  let applyingAuthoredDockLayout = false;
+  let applyingAuthoredDockLayoutTimer = 0;
+
+  function suppressDockReadbackDuringAuthoredApply() {
+    applyingAuthoredDockLayout = true;
+    if (applyingAuthoredDockLayoutTimer) window.clearTimeout(applyingAuthoredDockLayoutTimer);
+    applyingAuthoredDockLayoutTimer = window.setTimeout(() => {
+      applyingAuthoredDockLayout = false;
+      applyingAuthoredDockLayoutTimer = 0;
+    }, 160);
   }
 
   function applySourceDockLayout(layout: SourceDockLayout) {
     const normalizedLayout = normalizeSourceDockLayout(layout);
-    sourceDockLayout = normalizedLayout;
+    dock.layout = normalizedLayout;
     syncSourceDockLayoutToWorkspace(normalizedLayout);
+    syncSourceDockviewWorkbenchLayout(normalizedLayout);
+    syncSourceDockviewActivityLayout(normalizedLayout);
+    syncSourceDockviewContextLayout(normalizedLayout);
     syncSourceDockviewInsightsLayout(normalizedLayout);
+    syncSourceDockviewCenterLayout(normalizedLayout);
+    syncSourceDockviewBottomLayout(normalizedLayout);
     persistSourceDockLayout(normalizedLayout);
+  }
+
+  function syncSourceDockviewWorkbenchLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewWorkbenchWorkspace) return;
+
+    suppressDockReadbackDuringAuthoredApply();
+    sourceDockviewWorkbenchWorkspace.syncLayout(layout);
+    scheduleSourceDockviewPanelElementSync();
+    if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  type SourceDockviewGroup = SourceDockviewWorkspace['api']['groups'][number];
+
+  function syncSourceDockLayoutFromWorkbenchGroups(activePanelID: SourceDockPanelID | null = null) {
+    const workspace = sourceDockviewWorkbenchWorkspace;
+    if (!workspace) return;
+
+    const nextLayout = sourceDockLayoutFromDockviewGroups(workspace.api, activePanelID);
+    if (!nextLayout) return;
+
+    dock.layout = nextLayout;
+    syncSourceDockLayoutToWorkspace(nextLayout);
+    persistSourceDockLayout(nextLayout);
+    if (activePanelID === 'terminal' || sourceDockviewWorkbenchOwnsPanel('terminal')) {
+      scheduleEmbeddedTerminalFit();
+    }
+  }
+
+  function sourceDockLayoutFromDockviewGroups(
+    api: SourceDockviewWorkspace['api'],
+    activePanelID: SourceDockPanelID | null
+  ): SourceDockLayout | null {
+    const currentLayout = normalizeSourceDockLayout(dock.layout);
+    const entries = api.groups
+      .map((group) => sourceDockviewGroupEntry(group))
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const editorEntry = entries.find((entry) => entry.panelIDs.includes('editor'));
+    if (!editorEntry) return null;
+
+    const groups = currentLayout.groups.map((group) => ({
+      ...group,
+      panelIDs: [] as SourceDockPanelID[]
+    }));
+    const visiblePanelIDs = new Set<SourceDockPanelID>();
+    const activePanelByGroup: SourceDockLayout['activePanelByGroup'] = {};
+
+    for (const entry of entries) {
+      const groupID = sourceDockGroupIDForDockviewGroup(entry.rect, editorEntry.rect, entry.panelIDs);
+      const targetGroup = groups.find((group) => group.id === groupID);
+      if (!targetGroup) continue;
+
+      targetGroup.panelIDs.push(...entry.panelIDs.filter((panelID) => !visiblePanelIDs.has(panelID)));
+      for (const panelID of entry.panelIDs) {
+        visiblePanelIDs.add(panelID);
+      }
+      targetGroup.size = sourceDockGroupSizeFromDockviewRect(groupID, entry.rect, currentLayout);
+      activePanelByGroup[groupID] = entry.activePanelID ?? activePanelByGroup[groupID];
+    }
+
+    const activeGroupID = activePanelID
+      ? groups.find((group) => group.panelIDs.includes(activePanelID))?.id
+      : null;
+    if (activePanelID && activeGroupID) {
+      activePanelByGroup[activeGroupID] = activePanelID;
+    }
+
+    return normalizeSourceDockLayout({
+      ...currentLayout,
+      preset: 'custom',
+      groups,
+      hiddenPanelIDs: currentLayout.hiddenPanelIDs.filter((panelID) => !visiblePanelIDs.has(panelID)),
+      activePanelByGroup
+    });
+  }
+
+  function sourceDockviewGroupEntry(group: SourceDockviewGroup) {
+    const panelIDs = group.panels
+      .map((panel) => sourceDockviewWorkbenchPanelID(panel.id))
+      .filter((panelID): panelID is SourceDockPanelID => panelID !== null);
+    if (panelIDs.length === 0) return null;
+
+    return {
+      panelIDs,
+      activePanelID: sourceDockviewWorkbenchPanelID(group.activePanel?.id),
+      rect: group.element.getBoundingClientRect()
+    };
+  }
+
+  function sourceDockviewWorkbenchPanelID(value: unknown): SourceDockPanelID | null {
+    return sourceDockviewWorkbenchPanelIDs.includes(value as SourceDockPanelID)
+      ? (value as SourceDockPanelID)
+      : null;
+  }
+
+  function syncSourceDockviewPanelElements() {
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function scheduleSourceDockviewPanelElementSync() {
+    syncSourceDockviewPanelElements();
+    queueMicrotask(syncSourceDockviewPanelElements);
+    if (typeof window !== 'undefined') {
+      window.setTimeout(syncSourceDockviewPanelElements, 0);
+      window.setTimeout(syncSourceDockviewPanelElements, 80);
+    }
+  }
+
+  function sourceDockGroupIDForDockviewGroup(
+    rect: DOMRect,
+    editorRect: DOMRect,
+    panelIDs: SourceDockPanelID[]
+  ): SourceDockGroupID {
+    const tolerance = 8;
+    if (panelIDs.includes('editor')) return 'center';
+    if (rect.right <= editorRect.left + tolerance) return 'left';
+    if (rect.left >= editorRect.right - tolerance) return 'right';
+    if (rect.top >= editorRect.bottom - tolerance) return 'bottom';
+    return 'center';
+  }
+
+  function sourceDockGroupSizeFromDockviewRect(
+    groupID: SourceDockGroupID,
+    rect: DOMRect,
+    layout: SourceDockLayout
+  ) {
+    if (groupID === 'left' || groupID === 'right') return Math.max(1, Math.round(rect.width));
+    if (groupID === 'bottom') return Math.max(1, Math.round(rect.height));
+    return sourceDockGroupSize(layout, groupID);
+  }
+
+  function syncSourceDockviewActivityLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewActivityWorkspace) return;
+
+    sourceDockviewActivityWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function syncSourceDockviewContextLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewContextWorkspace) return;
+
+    sourceDockviewContextWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
   }
 
   function syncSourceDockviewInsightsLayout(layout: SourceDockLayout) {
     if (!sourceDockviewInsightsWorkspace) return;
 
     sourceDockviewInsightsWorkspace.syncLayout(layout);
-    for (const [panelID, element] of sourceDockviewPanelElements) {
-      sourceDockviewInsightsWorkspace.setPanelElement(panelID, element);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function syncSourceDockviewCenterLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewCenterWorkspace) return;
+
+    sourceDockviewCenterWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+    if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function syncSourceDockviewBottomLayout(layout: SourceDockLayout) {
+    if (!sourceDockviewBottomWorkspace) return;
+
+    sourceDockviewBottomWorkspace.syncLayout(layout);
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
     }
   }
 
@@ -10504,9 +11836,9 @@
 
     if (activityGroupID === 'left' || activityGroupID === 'right') {
       sidePanePosition = activityGroupID;
-      sidePaneWidth = clampSidePaneWidth(sourceDockGroupSize(normalizedLayout, activityGroupID));
+      dock.sidePaneWidth = clampSidePaneWidth(sourceDockGroupSize(normalizedLayout, activityGroupID));
       persistSidePanePosition(sidePanePosition);
-      persistSidePaneWidth(sidePaneWidth);
+      persistSidePaneWidth(dock.sidePaneWidth);
     }
 
     contextPanelCollapsed = contextGroupID === null;
@@ -10518,8 +11850,8 @@
         contextPaneHeight = clampContextPaneHeight(contextGroupSize);
         persistContextPaneHeight(contextPaneHeight);
       } else if (contextGroupID === 'left' || contextGroupID === 'right') {
-        contextPaneWidth = clampContextPaneWidth(contextGroupSize);
-        persistContextPaneWidth(contextPaneWidth);
+        dock.contextPaneWidth = clampContextPaneWidth(contextGroupSize);
+        persistContextPaneWidth(dock.contextPaneWidth);
       }
       persistContextPanelPlacement(contextPanelPlacement);
     }
@@ -10545,12 +11877,12 @@
     nextLayout = editorInsightCollapsed
       ? hideSourceDockPanel(nextLayout, 'insights')
       : moveSourceDockPanel(nextLayout, 'insights', 'right');
-    nextLayout = resizeSourceDockGroup(nextLayout, sidePanePosition, sidePaneWidth);
+    nextLayout = resizeSourceDockGroup(nextLayout, sidePanePosition, dock.sidePaneWidth);
     if (!contextPanelCollapsed) {
       nextLayout = resizeSourceDockGroup(
         nextLayout,
         dockGroupForContextPanelPlacement(contextPanelPlacement),
-        contextPanelPlacement === 'bottom' ? contextPaneHeight : contextPaneWidth
+        contextPanelPlacement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
       );
     }
     const contextGroupID = dockGroupIDForPanel(nextLayout, 'context');
@@ -10558,10 +11890,23 @@
     if (!editorInsightCollapsed && insightsGroupID !== null && insightsGroupID !== contextGroupID) {
       nextLayout = resizeSourceDockGroup(nextLayout, insightsGroupID, editorInsightWidth);
     }
+    if (!contextPanelCollapsed && contextGroupID !== null) {
+      nextLayout = activateSourceDockPanel(nextLayout, 'context');
+    }
     return normalizeSourceDockLayout({
       ...nextLayout,
-      preset: sourceLayoutPreset
+      preset: dock.layoutPreset
     });
+  }
+
+  function ensureWorkbenchRightPanels(layout: SourceDockLayout): SourceDockLayout {
+    // Under the unified workbench, Dockview owns panel visibility through its tabs, so the legacy
+    // collapse flags must not hide context/insights — doing so left the right pane empty (only its
+    // icon rail showed). Force both back into the visible right group (moveSourceDockPanel un-hides).
+    if (!useUnifiedWorkbench) return layout;
+    let next = moveSourceDockPanel(layout, 'context', 'right');
+    next = moveSourceDockPanel(next, 'insights', 'right');
+    return next;
   }
 
   function sourceDockLayoutWithWorkspaceViewState(
@@ -10596,12 +11941,12 @@
     const sizesByGroupID: Partial<Record<SourceDockGroupID, number>> = {};
 
     if (activityGroupID === 'left' || activityGroupID === 'right') {
-      sizesByGroupID[activityGroupID] = sidePaneWidth;
+      sizesByGroupID[activityGroupID] = dock.sidePaneWidth;
     }
     if (contextGroupID === 'bottom') {
       sizesByGroupID[contextGroupID] = contextPaneHeight;
     } else if (contextGroupID === 'left' || contextGroupID === 'right') {
-      sizesByGroupID[contextGroupID] = contextPaneWidth;
+      sizesByGroupID[contextGroupID] = dock.contextPaneWidth;
     }
     if (insightsGroupID !== null && insightsGroupID !== contextGroupID) {
       sizesByGroupID[insightsGroupID] = editorInsightWidth;
@@ -10631,19 +11976,11 @@
   }
 
   function dockGroupPanelIDs(groupID: SourceDockGroupID): SourceDockPanelID[] {
-    return normalizeSourceDockLayout(sourceDockLayout).groups.find((group) => group.id === groupID)?.panelIDs ?? [];
-  }
-
-  function dockGroupHasTabs(groupID: SourceDockGroupID) {
-    return dockGroupPanelIDs(groupID).length > 1;
-  }
-
-  function hasDockPanelTabs() {
-    return dockTabGroupIDs.some((groupID) => dockGroupHasTabs(groupID));
+    return normalizeSourceDockLayout(dock.layout).groups.find((group) => group.id === groupID)?.panelIDs ?? [];
   }
 
   function activeDockPanelForGroup(groupID: SourceDockGroupID): SourceDockPanelID | null {
-    const normalizedLayout = normalizeSourceDockLayout(sourceDockLayout);
+    const normalizedLayout = normalizeSourceDockLayout(dock.layout);
     const group = normalizedLayout.groups.find((candidateGroup) => candidateGroup.id === groupID);
     if (!group || group.panelIDs.length === 0) return null;
     const activePanelID = normalizedLayout.activePanelByGroup[groupID];
@@ -10668,7 +12005,7 @@
   }
 
   function shouldRenderDockPanel(panelID: SourceDockPanelID) {
-    const groupID = dockGroupIDForPanel(sourceDockLayout, panelID);
+    const groupID = dockGroupIDForPanel(dock.layout, panelID);
     if (groupID === null) return false;
     if (panelID === 'editor') return true;
     if (groupID === 'center') return true;
@@ -10677,11 +12014,25 @@
   }
 
   function sourceDockPanelVisible(panelID: SourceDockPanelID) {
-    return dockGroupIDForPanel(sourceDockLayout, panelID) !== null;
+    return dockGroupIDForPanel(dock.layout, panelID) !== null;
+  }
+
+  function sourceIntelligencePanelMounted() {
+    // In the unified workbench, Dockview owns the Insights tab; mount its content whenever the
+    // panel is present in the layout, independent of the old `editorInsightCollapsed` rail state
+    // (which otherwise leaves the Insights tab empty under the `code` preset default).
+    if (useUnifiedWorkbench) return sourceDockviewWorkbenchOwnsPanel('insights');
+    return (
+      !editorInsightCollapsed &&
+      sourceDockPanelVisible('insights') &&
+      (shouldRenderDockPanel('insights') ||
+        sourceDockviewWorkbenchOwnsPanel('insights') ||
+        sourceDockviewContextOwnsPanel('insights'))
+    );
   }
 
   function hiddenDockPanelIDs() {
-    return normalizeSourceDockLayout(sourceDockLayout).hiddenPanelIDs.filter((panelID) =>
+    return normalizeSourceDockLayout(dock.layout).hiddenPanelIDs.filter((panelID) =>
       hideableDockPanelIDs.includes(panelID)
     );
   }
@@ -10690,7 +12041,7 @@
     if (!hideableDockPanelIDs.includes(panelID)) return;
 
     showDockPanel(panelID);
-    fileActionStatus = `${dockPanelLabel(panelID)} panel restored`;
+    files.fileActionStatus = `${dockPanelLabel(panelID)} panel restored`;
   }
 
   function dockGroupForContextPanelPlacement(placement: SourceContextPanelPlacement): SourceDockGroupID {
@@ -10726,7 +12077,7 @@
 
   function loadStoredSourceDockviewLayout(
     storageKey: string,
-    panelIDs?: SourceDockPanelID[]
+    panelIDs?: string[]
   ): SerializedDockview | null {
     if (typeof window === 'undefined') return null;
 
@@ -10747,7 +12098,7 @@
 
   function sourceDockviewLayoutOnlyContainsPanels(
     layout: SerializedDockview,
-    panelIDs: SourceDockPanelID[]
+    panelIDs: string[]
   ) {
     const expectedPanelIDs = new Set<string>(panelIDs);
     const storedPanelIDs = Object.keys(layout.panels ?? {});
@@ -10759,9 +12110,82 @@
     );
   }
 
+  function loadStoredSourcePaneviewLayout(
+    storageKey: string,
+    panelIDs: string[]
+  ): SerializedPaneview | null {
+    if (typeof window === 'undefined') return null;
+
+    try {
+      const storedLayout = window.localStorage.getItem(storageKey);
+      if (!storedLayout) return null;
+
+      const parsedLayout = JSON.parse(storedLayout) as SerializedPaneview;
+      if (!sourcePaneviewLayoutOnlyContainsPanels(parsedLayout, panelIDs)) {
+        return null;
+      }
+
+      return parsedLayout;
+    } catch {
+      return null;
+    }
+  }
+
+  function sourcePaneviewLayoutOnlyContainsPanels(
+    layout: SerializedPaneview,
+    panelIDs: string[]
+  ) {
+    const expectedPanelIDs = new Set<string>(panelIDs);
+    const storedPanelIDs = (layout.views ?? []).map((view) => view.data.id);
+
+    return (
+      storedPanelIDs.length > 0 &&
+      storedPanelIDs.every((panelID) => expectedPanelIDs.has(panelID)) &&
+      panelIDs.every((panelID) => storedPanelIDs.includes(panelID))
+    );
+  }
+
   function persistSourceDockviewLayout(storageKey: string, layout: SerializedDockview) {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(storageKey, JSON.stringify(layout));
+  }
+
+  function persistSourcePaneviewLayout(storageKey: string, layout: SerializedPaneview) {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(storageKey, JSON.stringify(layout));
+  }
+
+  function sourceEditorFileTabForPanelID(panelID: SourceEditorFilePanelID): SourceOpenTab | null {
+    const path = sourceEditorFilePathFromPanelID(panelID);
+    return projectOpenSourceTabs.find((tab) => tab.path === path) ?? null;
+  }
+
+  function sourceDockviewWorkbenchHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewWorkbenchHostToken;
+    void initializeSourceDockviewWorkbench(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewWorkbenchHostToken === token) {
+          sourceDockviewWorkbenchHostToken += 1;
+          disposeSourceDockviewWorkbench();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewActivityHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewActivityHostToken;
+    void initializeSourceDockviewActivity(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewActivityHostToken === token) {
+          sourceDockviewActivityHostToken += 1;
+          disposeSourceDockviewActivity();
+        }
+      }
+    };
   }
 
   function sourceDockviewInsightsHostAction(node: HTMLElement) {
@@ -10778,7 +12202,112 @@
     };
   }
 
+  function sourceDockviewContextHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewContextHostToken;
+    void initializeSourceDockviewContext(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewContextHostToken === token) {
+          sourceDockviewContextHostToken += 1;
+          disposeSourceDockviewContext();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewCenterHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewCenterHostToken;
+    void initializeSourceDockviewCenter(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewCenterHostToken === token) {
+          sourceDockviewCenterHostToken += 1;
+          disposeSourceDockviewCenter();
+        }
+      }
+    };
+  }
+
+  function sourceDockviewBottomHostAction(node: HTMLElement) {
+    const token = ++sourceDockviewBottomHostToken;
+    void initializeSourceDockviewBottom(node, token);
+
+    return {
+      destroy() {
+        if (sourceDockviewBottomHostToken === token) {
+          sourceDockviewBottomHostToken += 1;
+          disposeSourceDockviewBottom();
+        }
+      }
+    };
+  }
+
+  function sourceEditorFileDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceEditorFileDockviewHostToken;
+    void initializeSourceEditorFileDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceEditorFileDockviewHostToken === token) {
+          sourceEditorFileDockviewHostToken += 1;
+          disposeSourceEditorFileDockview();
+        }
+      }
+    };
+  }
+
+  function sourceFilesDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceFilesDockviewHostToken;
+    void initializeSourceFilesDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceFilesDockviewHostToken === token) {
+          sourceFilesDockviewHostToken += 1;
+          disposeSourceFilesDockview();
+        }
+      }
+    };
+  }
+
+  function sourceConversationDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceConversationDockviewHostToken;
+    void initializeSourceConversationDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceConversationDockviewHostToken === token) {
+          sourceConversationDockviewHostToken += 1;
+          disposeSourceConversationDockview();
+        }
+      }
+    };
+  }
+
+  function sourceContextCardDockviewHostAction(node: HTMLElement) {
+    const token = ++sourceContextCardDockviewHostToken;
+    void initializeSourceContextCardDockview(node, token);
+
+    return {
+      destroy() {
+        if (sourceContextCardDockviewHostToken === token) {
+          sourceContextCardDockviewHostToken += 1;
+          disposeSourceContextCardDockview();
+        }
+      }
+    };
+  }
+
   function sourceDockviewPanelAction(node: HTMLElement, panelID: SourceDockPanelID) {
+    const handleDockviewLayout = () => {
+      if (panelID === 'terminal') {
+        void ensureEmbeddedTerminalRenderer().then(scheduleEmbeddedTerminalFit);
+      }
+    };
+
+    node.addEventListener('source-dockview-layout', handleDockviewLayout);
     registerSourceDockviewPanelElement(panelID, node);
 
     return {
@@ -10789,9 +12318,478 @@
         registerSourceDockviewPanelElement(panelID, node);
       },
       destroy() {
+        node.removeEventListener('source-dockview-layout', handleDockviewLayout);
         unregisterSourceDockviewPanelElement(panelID, node);
       }
     };
+  }
+
+  function sourceFilesDockviewPanelAction(node: HTMLElement, panelID: SourceFilesPaneID) {
+    registerSourceFilesDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceFilesPaneID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceFilesDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceFilesDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceFilesDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  function sourceConversationDockviewPanelAction(node: HTMLElement, panelID: SourceConversationPaneID) {
+    registerSourceConversationDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceConversationPaneID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceConversationDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceConversationDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceConversationDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  function sourceContextCardDockviewPanelAction(node: HTMLElement, panelID: SourceContextCardDockviewPanelID) {
+    registerSourceContextCardDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceContextCardDockviewPanelID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceContextCardDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceContextCardDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceContextCardDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  function sourceEditorFileDockviewPanelAction(node: HTMLElement, panelID: SourceEditorFilePanelID) {
+    registerSourceEditorFileDockviewPanelElement(panelID, node);
+
+    return {
+      update(nextPanelID: SourceEditorFilePanelID) {
+        if (nextPanelID === panelID) return;
+        unregisterSourceEditorFileDockviewPanelElement(panelID, node);
+        panelID = nextPanelID;
+        registerSourceEditorFileDockviewPanelElement(panelID, node);
+      },
+      destroy() {
+        unregisterSourceEditorFileDockviewPanelElement(panelID, node);
+      }
+    };
+  }
+
+  async function initializeSourceDockviewWorkbench(node: HTMLElement, token: number) {
+    if (!sourceDockviewWorkbenchEnabled) return;
+
+    sourceDockviewWorkbenchReady = false;
+    sourceDockviewWorkbenchError = '';
+
+    await tick();
+    if (token !== sourceDockviewWorkbenchHostToken) return;
+
+    disposeSourceDockviewWorkbench();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: dock.layout,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewWorkbenchStorageKey),
+        onDidLayoutChange: (layout) => {
+          persistSourceDockviewLayout(sourceDockviewWorkbenchStorageKey, layout);
+          if (!applyingAuthoredDockLayout) syncSourceDockLayoutFromWorkbenchGroups();
+          if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelClose: (panelID) => {
+          if (panelID === 'editor') {
+            syncSourceDockviewWorkbenchLayout(dock.layout);
+            files.fileActionStatus = 'Editor tab restored';
+            return;
+          }
+          if (panelID === 'context') {
+            contextPanelCollapsed = true;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'context'));
+            files.fileActionStatus = 'Context panel hidden';
+            return;
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = true;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
+            files.fileActionStatus = 'Insights panel hidden';
+            return;
+          }
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
+          files.fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (!panelID) return;
+          if (panelID === 'context') {
+            contextPanelCollapsed = false;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = false;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+          }
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
+          if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelMove: (panelID, layout) => {
+          persistSourceDockviewLayout(sourceDockviewWorkbenchStorageKey, layout);
+          syncSourceDockLayoutFromWorkbenchGroups(panelID);
+        }
+      });
+
+      if (token !== sourceDockviewWorkbenchHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewWorkbenchWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewWorkbenchResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewWorkbench(node)
+      );
+      sourceDockviewWorkbenchResizeObserver.observe(node);
+      sourceDockviewWorkbenchReady = true;
+      layoutSourceDockviewWorkbench(node);
+    } catch (dockviewError) {
+      sourceDockviewWorkbenchError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview workbench unavailable';
+      sourceDockviewWorkbenchReady = false;
+      disposeSourceDockviewWorkbench();
+    }
+  }
+
+  async function initializeSourceDockviewActivity(node: HTMLElement, token: number) {
+    if (!sourceDockviewActivityEnabled) return;
+
+    sourceDockviewActivityReady = false;
+    sourceDockviewActivityError = '';
+
+    await tick();
+    if (token !== sourceDockviewActivityHostToken) return;
+
+    disposeSourceDockviewActivity();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: dock.layout,
+        ...sourceDockviewActivityPlanOptions,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewActivityStorageKey),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceDockviewActivityStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          if (panelID !== 'activity') return;
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, 'activity'));
+          files.fileActionStatus = 'Activity panel hidden';
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'activity') return;
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
+        }
+      });
+
+      if (token !== sourceDockviewActivityHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewActivityWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewActivityResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewActivity(node)
+      );
+      sourceDockviewActivityResizeObserver.observe(node);
+      sourceDockviewActivityReady = true;
+      layoutSourceDockviewActivity(node);
+    } catch (dockviewError) {
+      sourceDockviewActivityError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview activity dock unavailable';
+      sourceDockviewActivityReady = false;
+      disposeSourceDockviewActivity();
+    }
+  }
+
+  async function initializeSourceEditorFileDockview(node: HTMLElement, token: number) {
+    sourceEditorFileDockviewReady = false;
+    sourceEditorFileDockviewError = '';
+
+    await tick();
+    if (token !== sourceEditorFileDockviewHostToken) return;
+
+    disposeSourceEditorFileDockview();
+
+    if (sourceEditorFileDockviewPanels.length === 0) {
+      sourceEditorFileDockviewReady = true;
+      return;
+    }
+
+    try {
+      const workspace = await createSourceDockviewTabStackWorkspace(node, {
+        panels: sourceEditorFileDockviewPanels,
+        rootPanelID: selectedSourceEditorFilePanelID ?? undefined,
+        storedLayout: loadStoredSourceDockviewLayout(
+          sourceEditorFileDockviewStorageKey,
+          sourceEditorFileDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceEditorFileDockviewStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          const tab = sourceEditorFileTabForPanelID(panelID);
+          if (!tab) return;
+          void closeSourceTabRecord(tab);
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (!panelID) return;
+          const tab = sourceEditorFileTabForPanelID(panelID);
+          if (!tab || tab.path === files.selectedRecord?.path) return;
+          void selectOpenTab(tab);
+        }
+      });
+
+      if (token !== sourceEditorFileDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceEditorFileDockviewWorkspace = workspace;
+      for (const panelID of sourceEditorFileDockviewPanelElements.keys()) {
+        syncSourceEditorFileDockviewPanelElement(panelID);
+      }
+      sourceEditorFileDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceEditorFileDockview(node)
+      );
+      sourceEditorFileDockviewResizeObserver.observe(node);
+      sourceEditorFileDockviewReady = true;
+      layoutSourceEditorFileDockview(node);
+    } catch (dockviewError) {
+      sourceEditorFileDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Editor file tabs unavailable';
+      sourceEditorFileDockviewReady = false;
+      disposeSourceEditorFileDockview();
+    }
+  }
+
+  async function initializeSourceFilesDockview(node: HTMLElement, token: number) {
+    sourceFilesDockviewReady = false;
+    sourceFilesDockviewError = '';
+
+    await tick();
+    if (token !== sourceFilesDockviewHostToken) return;
+
+    disposeSourceFilesDockview();
+
+    try {
+      const workspace = await createSourcePaneviewStackWorkspace(node, {
+        panels: sourceFilesDockviewPanels,
+        storedLayout: loadStoredSourcePaneviewLayout(
+          sourceFilesDockviewStorageKey,
+          sourceFilesDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourcePaneviewLayout(sourceFilesDockviewStorageKey, layout)
+      });
+
+      if (token !== sourceFilesDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceFilesDockviewWorkspace = workspace;
+      for (const panelID of sourceFilesDockviewPanelElements.keys()) {
+        syncSourceFilesDockviewPanelElement(panelID);
+      }
+      sourceFilesDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceFilesDockview(node)
+      );
+      sourceFilesDockviewResizeObserver.observe(node);
+      sourceFilesDockviewReady = true;
+      layoutSourceFilesDockview(node);
+    } catch (dockviewError) {
+      sourceFilesDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Source files panels unavailable';
+      sourceFilesDockviewReady = false;
+      disposeSourceFilesDockview();
+    }
+  }
+
+  async function initializeSourceConversationDockview(node: HTMLElement, token: number) {
+    sourceConversationDockviewReady = false;
+    sourceConversationDockviewError = '';
+
+    await tick();
+    if (token !== sourceConversationDockviewHostToken) return;
+
+    disposeSourceConversationDockview();
+
+    try {
+      const workspace = await createSourcePaneviewStackWorkspace(node, {
+        panels: sourceConversationDockviewPanels,
+        storedLayout: loadStoredSourcePaneviewLayout(
+          sourceConversationDockviewStorageKey,
+          sourceConversationDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourcePaneviewLayout(sourceConversationDockviewStorageKey, layout)
+      });
+
+      if (token !== sourceConversationDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceConversationDockviewWorkspace = workspace;
+      for (const panelID of sourceConversationDockviewPanelElements.keys()) {
+        syncSourceConversationDockviewPanelElement(panelID);
+      }
+      sourceConversationDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceConversationDockview(node)
+      );
+      sourceConversationDockviewResizeObserver.observe(node);
+      sourceConversationDockviewReady = true;
+      layoutSourceConversationDockview(node);
+    } catch (dockviewError) {
+      sourceConversationDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Conversation panels unavailable';
+      sourceConversationDockviewReady = false;
+      disposeSourceConversationDockview();
+    }
+  }
+
+  async function initializeSourceContextCardDockview(node: HTMLElement, token: number) {
+    sourceContextCardDockviewReady = false;
+    sourceContextCardDockviewError = '';
+
+    await tick();
+    if (token !== sourceContextCardDockviewHostToken) return;
+
+    disposeSourceContextCardDockview();
+
+    if (sourceContextCardDockviewPanels.length === 0) {
+      sourceContextCardDockviewReady = true;
+      return;
+    }
+
+    try {
+      const workspace = await createSourcePaneviewStackWorkspace(node, {
+        panels: sourceContextCardDockviewPanels,
+        storedLayout: loadStoredSourcePaneviewLayout(
+          sourceContextCardDockviewStorageKey,
+          sourceContextCardDockviewPanelIDs
+        ),
+        onDidLayoutChange: (layout) =>
+          persistSourcePaneviewLayout(sourceContextCardDockviewStorageKey, layout)
+      });
+
+      if (token !== sourceContextCardDockviewHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceContextCardDockviewWorkspace = workspace;
+      for (const panelID of sourceContextCardDockviewPanelElements.keys()) {
+        syncSourceContextCardDockviewPanelElement(panelID);
+      }
+      sourceContextCardDockviewResizeObserver = new ResizeObserver(() =>
+        layoutSourceContextCardDockview(node)
+      );
+      sourceContextCardDockviewResizeObserver.observe(node);
+      sourceContextCardDockviewReady = true;
+      layoutSourceContextCardDockview(node);
+    } catch (dockviewError) {
+      sourceContextCardDockviewError =
+        dockviewError instanceof Error ? dockviewError.message : 'Context card panels unavailable';
+      sourceContextCardDockviewReady = false;
+      disposeSourceContextCardDockview();
+    }
+  }
+
+  async function initializeSourceDockviewContext(node: HTMLElement, token: number) {
+    if (!sourceDockviewContextEnabled) return;
+
+    sourceDockviewContextReady = false;
+    sourceDockviewContextError = '';
+
+    await tick();
+    if (token !== sourceDockviewContextHostToken) return;
+
+    disposeSourceDockviewContext();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: dock.layout,
+        ...sourceDockviewContextPlanOptions,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewContextStorageKey),
+        onDidLayoutChange: (layout) =>
+          persistSourceDockviewLayout(sourceDockviewContextStorageKey, layout),
+        onDidPanelClose: (panelID) => {
+          if (panelID === 'context') {
+            contextPanelCollapsed = true;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'context'));
+            files.fileActionStatus = 'Context panel hidden';
+            return;
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = true;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+            applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
+            files.fileActionStatus = 'Insights panel hidden';
+          }
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'context' && panelID !== 'insights') return;
+          if (panelID === 'context') {
+            contextPanelCollapsed = false;
+            persistContextPanelCollapsed(contextPanelCollapsed);
+          }
+          if (panelID === 'insights') {
+            editorInsightCollapsed = false;
+            persistEditorInsightCollapsed(editorInsightCollapsed);
+          }
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
+        }
+      });
+
+      if (token !== sourceDockviewContextHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewContextWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewContextResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewContext(node)
+      );
+      sourceDockviewContextResizeObserver.observe(node);
+      sourceDockviewContextReady = true;
+      layoutSourceDockviewContext(node);
+    } catch (dockviewError) {
+      sourceDockviewContextError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview context dock unavailable';
+      sourceDockviewContextReady = false;
+      disposeSourceDockviewContext();
+    }
   }
 
   async function initializeSourceDockviewInsights(node: HTMLElement, token: number) {
@@ -10807,20 +12805,17 @@
 
     try {
       const workspace = await createSourceDockviewWorkspace(node, {
-        layout: sourceDockLayout,
+        layout: dock.layout,
         ...sourceDockviewInsightsPlanOptions,
-        storedLayout: loadStoredSourceDockviewLayout(
-          sourceDockviewInsightsStorageKey,
-          sourceDockviewInsightsPanelIDs
-        ),
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewInsightsStorageKey),
         onDidLayoutChange: (layout) =>
           persistSourceDockviewLayout(sourceDockviewInsightsStorageKey, layout),
         onDidPanelClose: (panelID) => {
           if (panelID !== 'insights') return;
           editorInsightCollapsed = true;
           persistEditorInsightCollapsed(editorInsightCollapsed);
-          applySourceDockLayout(hideSourceDockPanel(sourceDockLayout, 'insights'));
-          fileActionStatus = 'Insights panel hidden';
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, 'insights'));
+          files.fileActionStatus = 'Insights panel hidden';
         }
       });
 
@@ -10830,8 +12825,8 @@
       }
 
       sourceDockviewInsightsWorkspace = workspace;
-      for (const [panelID, element] of sourceDockviewPanelElements) {
-        workspace.setPanelElement(panelID, element);
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
       }
       sourceDockviewInsightsResizeObserver = new ResizeObserver(() =>
         layoutSourceDockviewInsights(node)
@@ -10847,15 +12842,364 @@
     }
   }
 
+  async function initializeSourceDockviewCenter(node: HTMLElement, token: number) {
+    if (!sourceDockviewCenterEnabled) return;
+
+    sourceDockviewCenterReady = false;
+    sourceDockviewCenterError = '';
+
+    await tick();
+    if (token !== sourceDockviewCenterHostToken) return;
+
+    disposeSourceDockviewCenter();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: dock.layout,
+        ...sourceDockviewCenterPlanOptions,
+        storedLayout: null,
+        restoreStoredLayout: false,
+        onDidLayoutChange: (layout) => {
+          persistSourceDockviewLayout(sourceDockviewCenterStorageKey, layout);
+          if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelClose: (panelID) => {
+          if (panelID === 'editor') {
+            syncSourceDockviewCenterLayout(dock.layout);
+            files.fileActionStatus = 'Editor tab restored';
+            return;
+          }
+          if (panelID !== 'terminal' && panelID !== 'browser') return;
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
+          files.fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'editor' && panelID !== 'terminal' && panelID !== 'browser') return;
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
+          if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
+        }
+      });
+
+      if (token !== sourceDockviewCenterHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewCenterWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewCenterResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewCenter(node)
+      );
+      sourceDockviewCenterResizeObserver.observe(node);
+      sourceDockviewCenterReady = true;
+      layoutSourceDockviewCenter(node);
+    } catch (dockviewError) {
+      sourceDockviewCenterError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview center dock unavailable';
+      sourceDockviewCenterReady = false;
+      disposeSourceDockviewCenter();
+    }
+  }
+
+  async function initializeSourceDockviewBottom(node: HTMLElement, token: number) {
+    if (!sourceDockviewBottomEnabled) return;
+
+    sourceDockviewBottomReady = false;
+    sourceDockviewBottomError = '';
+
+    await tick();
+    if (token !== sourceDockviewBottomHostToken) return;
+
+    disposeSourceDockviewBottom();
+
+    try {
+      const workspace = await createSourceDockviewWorkspace(node, {
+        layout: dock.layout,
+        ...sourceDockviewBottomPlanOptions,
+        storedLayout: loadStoredSourceDockviewLayout(sourceDockviewBottomStorageKey),
+        onDidLayoutChange: (layout) => {
+          persistSourceDockviewLayout(sourceDockviewBottomStorageKey, layout);
+          if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();
+        },
+        onDidPanelClose: (panelID) => {
+          if (panelID !== 'terminal' && panelID !== 'browser') return;
+          applySourceDockLayout(hideSourceDockPanel(dock.layout, panelID));
+          files.fileActionStatus = `${dockPanelLabel(panelID)} dock hidden`;
+        },
+        onDidActivePanelChange: (panelID) => {
+          if (panelID !== 'terminal' && panelID !== 'browser') return;
+          dock.layout = activateSourceDockPanel(dock.layout, panelID);
+          persistSourceDockLayout(dock.layout);
+          if (panelID === 'terminal') scheduleEmbeddedTerminalFit();
+        }
+      });
+
+      if (token !== sourceDockviewBottomHostToken) {
+        workspace.dispose();
+        return;
+      }
+
+      sourceDockviewBottomWorkspace = workspace;
+      for (const panelID of sourceDockviewPanelElements.keys()) {
+        syncSourceDockviewPanelElement(panelID);
+      }
+      sourceDockviewBottomResizeObserver = new ResizeObserver(() =>
+        layoutSourceDockviewBottom(node)
+      );
+      sourceDockviewBottomResizeObserver.observe(node);
+      sourceDockviewBottomReady = true;
+      layoutSourceDockviewBottom(node);
+    } catch (dockviewError) {
+      sourceDockviewBottomError =
+        dockviewError instanceof Error ? dockviewError.message : 'Dockview bottom dock unavailable';
+      sourceDockviewBottomReady = false;
+      disposeSourceDockviewBottom();
+    }
+  }
+
   function registerSourceDockviewPanelElement(panelID: SourceDockPanelID, element: HTMLElement) {
     sourceDockviewPanelElements.set(panelID, element);
-    sourceDockviewInsightsWorkspace?.setPanelElement(panelID, element);
+    syncSourceDockviewPanelElement(panelID);
   }
 
   function unregisterSourceDockviewPanelElement(panelID: SourceDockPanelID, element: HTMLElement) {
     if (sourceDockviewPanelElements.get(panelID) !== element) return;
     sourceDockviewPanelElements.delete(panelID);
-    sourceDockviewInsightsWorkspace?.setPanelElement(panelID, null);
+    syncSourceDockviewPanelElement(panelID);
+  }
+
+  function registerSourceFilesDockviewPanelElement(panelID: SourceFilesPaneID, element: HTMLElement) {
+    sourceFilesDockviewPanelElements.set(panelID, element);
+    syncSourceFilesDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceFilesDockviewPanelElement(panelID: SourceFilesPaneID, element: HTMLElement) {
+    if (sourceFilesDockviewPanelElements.get(panelID) !== element) return;
+    sourceFilesDockviewPanelElements.delete(panelID);
+    syncSourceFilesDockviewPanelElement(panelID);
+  }
+
+  function registerSourceConversationDockviewPanelElement(panelID: SourceConversationPaneID, element: HTMLElement) {
+    sourceConversationDockviewPanelElements.set(panelID, element);
+    syncSourceConversationDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceConversationDockviewPanelElement(
+    panelID: SourceConversationPaneID,
+    element: HTMLElement
+  ) {
+    if (sourceConversationDockviewPanelElements.get(panelID) !== element) return;
+    sourceConversationDockviewPanelElements.delete(panelID);
+    syncSourceConversationDockviewPanelElement(panelID);
+  }
+
+  function registerSourceContextCardDockviewPanelElement(
+    panelID: SourceContextCardDockviewPanelID,
+    element: HTMLElement
+  ) {
+    sourceContextCardDockviewPanelElements.set(panelID, element);
+    syncSourceContextCardDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceContextCardDockviewPanelElement(
+    panelID: SourceContextCardDockviewPanelID,
+    element: HTMLElement
+  ) {
+    if (sourceContextCardDockviewPanelElements.get(panelID) !== element) return;
+    sourceContextCardDockviewPanelElements.delete(panelID);
+    syncSourceContextCardDockviewPanelElement(panelID);
+  }
+
+  function registerSourceEditorFileDockviewPanelElement(
+    panelID: SourceEditorFilePanelID,
+    element: HTMLElement
+  ) {
+    sourceEditorFileDockviewPanelElements.set(panelID, element);
+    syncSourceEditorFileDockviewPanelElement(panelID);
+  }
+
+  function unregisterSourceEditorFileDockviewPanelElement(
+    panelID: SourceEditorFilePanelID,
+    element: HTMLElement
+  ) {
+    if (sourceEditorFileDockviewPanelElements.get(panelID) !== element) return;
+    sourceEditorFileDockviewPanelElements.delete(panelID);
+    syncSourceEditorFileDockviewPanelElement(panelID);
+  }
+
+  function syncSourceDockviewPanelElement(panelID: SourceDockPanelID) {
+    const element = sourceDockviewPanelElements.get(panelID) ?? null;
+
+    if (useUnifiedWorkbench) {
+      // Route the panel's existing content root into the unified Task-2 workbench bridge.
+      // Hand the old single-Dockview workbench `null` so the two never fight over the element.
+      unifiedWorkbenchSetPanelElement(panelID, sourceDockPanelVisible(panelID) ? element : null);
+      sourceDockviewWorkbenchWorkspace?.setPanelElement(panelID, null);
+      return;
+    }
+
+    sourceDockviewWorkbenchWorkspace?.setPanelElement(
+      panelID,
+      sourceDockviewWorkbenchOwnsPanel(panelID) ? element : null
+    );
+    if (sourceDockviewWorkbenchEnabled) return;
+
+    const contextOwnsPanel = sourceDockviewContextOwnsPanel(panelID);
+    const centerOwnsPanel = sourceDockviewCenterOwnsPanel(panelID);
+    const bottomOwnsPanel = sourceDockviewBottomOwnsPanel(panelID);
+
+    sourceDockviewActivityWorkspace?.setPanelElement(
+      panelID,
+      panelID === 'activity' && sourceDockviewActivityOwnsPanel(panelID) ? element : null
+    );
+    sourceDockviewContextWorkspace?.setPanelElement(
+      panelID,
+      contextOwnsPanel ? element : null
+    );
+    sourceDockviewInsightsWorkspace?.setPanelElement(
+      panelID,
+      panelID === 'insights' && !contextOwnsPanel ? element : null
+    );
+    sourceDockviewCenterWorkspace?.setPanelElement(
+      panelID,
+      centerOwnsPanel ? element : null
+    );
+    sourceDockviewBottomWorkspace?.setPanelElement(
+      panelID,
+      bottomOwnsPanel ? element : null
+    );
+  }
+
+  function syncAllSourceDockviewPanelElements() {
+    for (const panelID of sourceDockviewPanelElements.keys()) {
+      syncSourceDockviewPanelElement(panelID);
+    }
+  }
+
+  function handleUnifiedWorkbenchOwnershipChange() {
+    if (!useUnifiedWorkbench) return;
+    syncAllSourceDockviewPanelElements();
+    if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function syncSourceFilesDockviewPanelElement(panelID: SourceFilesPaneID) {
+    sourceFilesDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceFilesDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceConversationDockviewPanelElement(panelID: SourceConversationPaneID) {
+    sourceConversationDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceConversationDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceContextCardDockviewPanelElement(panelID: SourceContextCardDockviewPanelID) {
+    sourceContextCardDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceContextCardDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceEditorFileDockviewPanelElement(panelID: SourceEditorFilePanelID) {
+    sourceEditorFileDockviewWorkspace?.setPanelElement(
+      panelID,
+      sourceEditorFileDockviewPanelElements.get(panelID) ?? null
+    );
+  }
+
+  function syncSourceContextCardDockviewPanels() {
+    if (!sourceContextCardDockviewWorkspace) return;
+
+    sourceContextCardDockviewWorkspace.syncPanels(sourceContextCardDockviewPanels);
+    for (const panelID of sourceContextCardDockviewPanelElements.keys()) {
+      syncSourceContextCardDockviewPanelElement(panelID);
+    }
+  }
+
+  function syncSourceEditorFileDockviewPanels() {
+    if (!sourceEditorFileDockviewWorkspace) return;
+
+    sourceEditorFileDockviewWorkspace.syncPanels(
+      sourceEditorFileDockviewPanels,
+      selectedSourceEditorFilePanelID ?? undefined
+    );
+    for (const panelID of sourceEditorFileDockviewPanelElements.keys()) {
+      syncSourceEditorFileDockviewPanelElement(panelID);
+    }
+  }
+
+  function sourceFilesDockviewPanelTitle(panelID: SourceFilesPaneID) {
+    return sourceFilesDockviewPanels.find((panel) => panel.id === panelID)?.title ?? panelID;
+  }
+
+  function sourceConversationDockviewPanelTitle(panelID: SourceConversationPaneID) {
+    return sourceConversationDockviewPanels.find((panel) => panel.id === panelID)?.title ?? panelID;
+  }
+
+  function sourceDockviewWorkbenchOwnsPanel(panelID: SourceDockPanelID) {
+    return sourceDockviewWorkbenchEnabled && sourceDockPanelVisible(panelID);
+  }
+
+  function sourceDockviewActivityOwnsPanel(panelID: SourceDockPanelID) {
+    return sourceDockviewActivityEnabled && panelID === 'activity' && sourceDockPanelVisible('activity');
+  }
+
+  function sourceDockviewContextOwnsPanel(panelID: SourceDockPanelID) {
+    if (!sourceDockviewContextEnabled) return false;
+    if (panelID === 'context') return sourceDockPanelVisible('context');
+    if (panelID !== 'insights') return false;
+
+    const contextGroupID = dockGroupIDForPanel(dock.layout, 'context');
+    const insightsGroupID = dockGroupIDForPanel(dock.layout, 'insights');
+    return contextGroupID !== null && insightsGroupID === contextGroupID;
+  }
+
+  function sourceDockviewCenterOwnsPanel(panelID: SourceDockPanelID) {
+    if (!sourceDockviewCenterEnabled) return false;
+    if (panelID === 'editor') return sourceDockPanelVisible('editor');
+    if (panelID !== 'terminal' && panelID !== 'browser') return false;
+    return sourceDockPanelVisible(panelID);
+  }
+
+  function sourceDockviewBottomOwnsPanel(panelID: SourceDockPanelID) {
+    if (!sourceDockviewBottomEnabled) return false;
+    if (panelID !== 'terminal' && panelID !== 'browser') return false;
+    return false;
+  }
+
+  function runtimeDockPanelRendered() {
+    return false;
+  }
+
+  function layoutSourceDockviewWorkbench(node: HTMLElement) {
+    if (!sourceDockviewWorkbenchWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewWorkbenchWorkspace.api.layout(width, height, true);
+    if (sourceDockviewWorkbenchOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function layoutSourceDockviewActivity(node: HTMLElement) {
+    if (!sourceDockviewActivityWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewActivityWorkspace.api.layout(width, height, true);
+  }
+
+  function layoutSourceDockviewContext(node: HTMLElement) {
+    if (!sourceDockviewContextWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewContextWorkspace.api.layout(width, height, true);
   }
 
   function layoutSourceDockviewInsights(node: HTMLElement) {
@@ -10866,6 +13210,72 @@
     sourceDockviewInsightsWorkspace.api.layout(width, height, true);
   }
 
+  function layoutSourceDockviewCenter(node: HTMLElement) {
+    if (!sourceDockviewCenterWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewCenterWorkspace.api.layout(width, height, true);
+    if (sourceDockviewCenterOwnsPanel('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function layoutSourceDockviewBottom(node: HTMLElement) {
+    if (!sourceDockviewBottomWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceDockviewBottomWorkspace.api.layout(width, height, true);
+    if (sourceDockPanelVisible('terminal')) scheduleEmbeddedTerminalFit();
+  }
+
+  function layoutSourceEditorFileDockview(node: HTMLElement) {
+    if (!sourceEditorFileDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceEditorFileDockviewWorkspace.api.layout(width, height, true);
+  }
+
+  function layoutSourceFilesDockview(node: HTMLElement) {
+    if (!sourceFilesDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceFilesDockviewWorkspace.api.layout(width, height);
+  }
+
+  function layoutSourceConversationDockview(node: HTMLElement) {
+    if (!sourceConversationDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceConversationDockviewWorkspace.api.layout(width, height);
+  }
+
+  function layoutSourceContextCardDockview(node: HTMLElement) {
+    if (!sourceContextCardDockviewWorkspace) return;
+
+    const width = Math.max(1, Math.round(node.clientWidth));
+    const height = Math.max(1, Math.round(node.clientHeight));
+    sourceContextCardDockviewWorkspace.api.layout(width, height);
+  }
+
+  function disposeSourceDockviewWorkbench() {
+    sourceDockviewWorkbenchResizeObserver?.disconnect();
+    sourceDockviewWorkbenchResizeObserver = null;
+    sourceDockviewWorkbenchWorkspace?.dispose();
+    sourceDockviewWorkbenchWorkspace = null;
+    sourceDockviewWorkbenchReady = false;
+  }
+
+  function disposeSourceDockviewActivity() {
+    sourceDockviewActivityResizeObserver?.disconnect();
+    sourceDockviewActivityResizeObserver = null;
+    sourceDockviewActivityWorkspace?.dispose();
+    sourceDockviewActivityWorkspace = null;
+    sourceDockviewActivityReady = false;
+  }
+
   function disposeSourceDockviewInsights() {
     sourceDockviewInsightsResizeObserver?.disconnect();
     sourceDockviewInsightsResizeObserver = null;
@@ -10874,9 +13284,75 @@
     sourceDockviewInsightsReady = false;
   }
 
+  function disposeSourceDockviewContext() {
+    sourceDockviewContextResizeObserver?.disconnect();
+    sourceDockviewContextResizeObserver = null;
+    sourceDockviewContextWorkspace?.dispose();
+    sourceDockviewContextWorkspace = null;
+    sourceDockviewContextReady = false;
+  }
+
+  function disposeSourceDockviewCenter() {
+    sourceDockviewCenterResizeObserver?.disconnect();
+    sourceDockviewCenterResizeObserver = null;
+    sourceDockviewCenterWorkspace?.dispose();
+    sourceDockviewCenterWorkspace = null;
+    sourceDockviewCenterReady = false;
+  }
+
+  function disposeSourceDockviewBottom() {
+    sourceDockviewBottomResizeObserver?.disconnect();
+    sourceDockviewBottomResizeObserver = null;
+    sourceDockviewBottomWorkspace?.dispose();
+    sourceDockviewBottomWorkspace = null;
+    sourceDockviewBottomReady = false;
+  }
+
+  function disposeSourceEditorFileDockview() {
+    sourceEditorFileDockviewResizeObserver?.disconnect();
+    sourceEditorFileDockviewResizeObserver = null;
+    sourceEditorFileDockviewWorkspace?.dispose();
+    sourceEditorFileDockviewWorkspace = null;
+    sourceEditorFileDockviewReady = false;
+  }
+
+  function disposeSourceFilesDockview() {
+    sourceFilesDockviewResizeObserver?.disconnect();
+    sourceFilesDockviewResizeObserver = null;
+    sourceFilesDockviewWorkspace?.dispose();
+    sourceFilesDockviewWorkspace = null;
+    sourceFilesDockviewReady = false;
+  }
+
+  function disposeSourceConversationDockview() {
+    sourceConversationDockviewResizeObserver?.disconnect();
+    sourceConversationDockviewResizeObserver = null;
+    sourceConversationDockviewWorkspace?.dispose();
+    sourceConversationDockviewWorkspace = null;
+    sourceConversationDockviewReady = false;
+  }
+
+  function disposeSourceContextCardDockview() {
+    sourceContextCardDockviewResizeObserver?.disconnect();
+    sourceContextCardDockviewResizeObserver = null;
+    sourceContextCardDockviewWorkspace?.dispose();
+    sourceContextCardDockviewWorkspace = null;
+    sourceContextCardDockviewReady = false;
+  }
+
+  $effect(() => {
+    sourceEditorFileDockviewPanels;
+    selectedSourceEditorFilePanelID;
+    syncSourceEditorFileDockviewPanels();
+  });
+
+  $effect(() => {
+    sourceContextCardDockviewPanels;
+    syncSourceContextCardDockviewPanels();
+  });
+
   function persistDockGroupSize(groupID: SourceDockGroupID, size: number) {
-    sourceDockLayout = resizeSourceDockGroup(sourceDockLayout, groupID, size);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(resizeSourceDockGroup(dock.layout, groupID, size));
   }
 
   function loadStoredSidePanePosition(): SourceSidePanePosition {
@@ -10894,9 +13370,13 @@
     markSourceLayoutCustom();
     sidePanePosition = position;
     persistSidePanePosition(position);
-    sourceDockLayout = moveSourceDockPanel(sourceDockLayout, 'activity', position);
-    sourceDockLayout = resizeSourceDockGroup(sourceDockLayout, position, sidePaneWidth);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      resizeSourceDockGroup(
+        moveSourceDockPanel(dock.layout, 'activity', position),
+        position,
+        dock.sidePaneWidth
+      )
+    );
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
@@ -10956,7 +13436,7 @@
     if (event.button !== 0 || typeof window === 'undefined') return;
 
     const startX = event.clientX;
-    const startWidth = sidePaneWidth;
+    const startWidth = dock.sidePaneWidth;
     let latestRawWidth = startWidth;
     event.preventDefault();
     markSourceLayoutCustom();
@@ -10967,7 +13447,7 @@
         ? moveEvent.clientX - startX
         : startX - moveEvent.clientX;
       latestRawWidth = startWidth + delta;
-      sidePaneWidth = clampSidePaneWidth(latestRawWidth);
+      dock.sidePaneWidth = clampSidePaneWidth(latestRawWidth);
       window.setTimeout(measureFileTreeViewport, 0);
     };
     const finishResize = () => {
@@ -10980,16 +13460,16 @@
       if (finishedSize.state === 'collapsed') {
         persistSidePaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('activity');
-        fileActionStatus = 'Activity pane hidden';
+        files.fileActionStatus = 'Activity pane hidden';
       } else if (finishedSize.state === 'rail') {
-        sidePaneWidth = finishedSize.size;
-        persistSidePaneWidth(sidePaneWidth);
-        persistDockGroupSize(sidePanePosition, sidePaneWidth);
-        fileActionStatus = 'Activity panel collapsed to rail';
+        dock.sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(dock.sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
+        files.fileActionStatus = 'Activity panel collapsed to rail';
       } else {
-        sidePaneWidth = finishedSize.size;
-        persistSidePaneWidth(sidePaneWidth);
-        persistDockGroupSize(sidePanePosition, sidePaneWidth);
+        dock.sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(dock.sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
       }
       window.document.body.classList.remove('resizing-source-pane');
       window.removeEventListener('pointermove', handlePointerMove);
@@ -11003,18 +13483,24 @@
   }
 
   function handleSidePaneResizerKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleActivityPaneRail();
+      return;
+    }
+
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
 
     event.preventDefault();
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
     const signedDirection = sidePanePosition === 'left' ? direction : -direction;
-    if (sidePaneWidth <= sidePaneMinWidth && signedDirection < 0) {
+    if (dock.sidePaneWidth <= sidePaneMinWidth && signedDirection < 0) {
       hideDockPanel('activity');
-      fileActionStatus = 'Activity pane hidden';
+      files.fileActionStatus = 'Activity pane hidden';
       return;
     }
-    const rawNextSidePaneWidth = sidePaneWidth + signedDirection * 24;
+    const rawNextSidePaneWidth = dock.sidePaneWidth + signedDirection * 24;
     if (signedDirection < 0) {
       const finishedSize = finishSourcePanePointerSize(rawNextSidePaneWidth, activityPaneSizingConfig, {
         previousExpandedSize: sidePaneExpandedWidth
@@ -11022,23 +13508,23 @@
       if (finishedSize.state === 'collapsed') {
         persistSidePaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('activity');
-        fileActionStatus = 'Activity pane hidden';
+        files.fileActionStatus = 'Activity pane hidden';
         return;
       }
       if (finishedSize.state === 'rail') {
-        sidePaneWidth = finishedSize.size;
-        persistSidePaneWidth(sidePaneWidth);
-        persistDockGroupSize(sidePanePosition, sidePaneWidth);
-        fileActionStatus = 'Activity panel collapsed to rail';
+        dock.sidePaneWidth = finishedSize.size;
+        persistSidePaneWidth(dock.sidePaneWidth);
+        persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
+        files.fileActionStatus = 'Activity panel collapsed to rail';
         window.setTimeout(measureFileTreeViewport, 0);
         return;
       }
     }
 
     const nextSidePaneWidth = clampSidePaneWidth(rawNextSidePaneWidth);
-    sidePaneWidth = nextSidePaneWidth;
-    persistSidePaneWidth(sidePaneWidth);
-    persistDockGroupSize(sidePanePosition, sidePaneWidth);
+    dock.sidePaneWidth = nextSidePaneWidth;
+    persistSidePaneWidth(dock.sidePaneWidth);
+    persistDockGroupSize(sidePanePosition, dock.sidePaneWidth);
     window.setTimeout(measureFileTreeViewport, 0);
   }
 
@@ -11046,20 +13532,24 @@
     markSourceLayoutCustom();
     contextPanelCollapsed = !contextPanelCollapsed;
     persistContextPanelCollapsed(contextPanelCollapsed);
-    sourceDockLayout = contextPanelCollapsed
-      ? hideSourceDockPanel(sourceDockLayout, 'context')
-      : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
-    persistSourceDockLayout(sourceDockLayout);
+    const contextGroupID = dockGroupForContextPanelPlacement(contextPanelPlacement);
+    const nextLayout = contextPanelCollapsed
+      ? hideSourceDockPanel(dock.layout, 'context')
+      : activateSourceDockPanel(
+          moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
+          'context'
+        );
+    applySourceDockLayout(nextLayout);
   }
 
   function toggleEditorInsightCollapsed() {
     markSourceLayoutCustom();
     editorInsightCollapsed = !editorInsightCollapsed;
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    sourceDockLayout = editorInsightCollapsed
-      ? hideSourceDockPanel(sourceDockLayout, 'insights')
-      : activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
-    persistSourceDockLayout(sourceDockLayout);
+    const nextLayout = editorInsightCollapsed
+      ? hideSourceDockPanel(dock.layout, 'insights')
+      : activateSourceDockPanel(showSourceDockPanel(dock.layout, 'insights'), 'insights');
+    applySourceDockLayout(nextLayout);
   }
 
   function showEditorInsightPanel(panel: SourceIntelligencePanel) {
@@ -11067,30 +13557,9 @@
     sourceIntelligencePanel = panel;
     editorInsightCollapsed = false;
     persistEditorInsightCollapsed(editorInsightCollapsed);
-    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'insights'), 'insights');
-    persistSourceDockLayout(sourceDockLayout);
-  }
-
-  function clearSourceLookupResults() {
-    sourceDefinitionTargets = [];
-    sourceDefinitionQuery = '';
-    sourceDefinitionError = '';
-    sourceDefinitionLoading = false;
-    sourceReferenceTargets = [];
-    sourceReferenceQuery = '';
-    sourceReferenceError = '';
-    sourceReferenceLoading = false;
-    sourceImplementationTargets = [];
-    sourceImplementationQuery = '';
-    sourceImplementationError = '';
-    sourceImplementationLoading = false;
-    sourceTypeDefinitionTargets = [];
-    sourceTypeDefinitionQuery = '';
-    sourceTypeDefinitionError = '';
-    sourceTypeDefinitionLoading = false;
-    if (editorNavPanel === 'definitions' || editorNavPanel === 'references') {
-      closeEditorNavPanel();
-    }
+    applySourceDockLayout(
+      activateSourceDockPanel(showSourceDockPanel(dock.layout, 'insights'), 'insights')
+    );
   }
 
   function isContextCardVisible(cardID: SourceContextCardID) {
@@ -11102,7 +13571,41 @@
   }
 
   function contextCardsTabbed() {
-    return contextPanelMode === 'stack' || contextPanelPlacement === 'side';
+    return contextPanelPresentation.tabbed;
+  }
+
+  function contextCardsStacked() {
+    return contextPanelPresentation.stacked;
+  }
+
+  function contextCardsUsePaneviewStack() {
+    // In the unified workbench the context panel always renders the expanded, Dockview-sized
+    // paneview card stack (Runs / Runtime / Agents / Worktrees / Git) — never the rail or a
+    // single tabbed card — regardless of the old grid/stack mode or placement state.
+    if (useUnifiedWorkbench) return sourceDockviewWorkbenchOwnsPanel('context');
+    return contextCardsTabbed() && (sourceDockviewWorkbenchOwnsPanel('context') || !contextPaneRailOnly());
+  }
+
+  function contextCardsUseRailTabs() {
+    if (useUnifiedWorkbench) return false;
+    return contextCardsTabbed() && !sourceDockviewWorkbenchOwnsPanel('context') && contextPaneRailOnly();
+  }
+
+  function resolveContextPanelPresentation(
+    mode: SourceContextPanelMode,
+    placement: SourceContextPanelPlacement
+  ): SourceContextPanelPresentation {
+    const presentationMode: SourceContextPanelPresentationMode =
+      mode === 'stack' || placement === 'side' ? 'tabs' : 'grid';
+
+    return {
+      requestedMode: mode,
+      placement,
+      presentationMode,
+      stacked: presentationMode !== 'grid',
+      tabbed: presentationMode === 'tabs',
+      singleCard: presentationMode === 'tabs'
+    };
   }
 
   function activeVisibleContextCardID() {
@@ -11112,7 +13615,8 @@
 
   function shouldRenderContextCard(cardID: SourceContextCardID) {
     if (!isContextCardVisible(cardID)) return false;
-    return !contextCardsTabbed() || activeVisibleContextCardID() === cardID;
+    if (contextCardsUsePaneviewStack()) return true;
+    return !contextPanelPresentation.singleCard || activeVisibleContextCardID() === cardID;
   }
 
   function selectActiveContextCard(cardID: SourceContextCardID) {
@@ -11140,9 +13644,17 @@
     if (contextPaneRailOnly()) {
       expandContextPaneFromRail();
     }
-    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistContextPanelCollapsed(contextPanelCollapsed);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      activateSourceDockPanel(
+        moveSourceDockPanel(
+          showSourceDockPanel(dock.layout, 'context'),
+          'context',
+          dockGroupForContextPanelPlacement(contextPanelPlacement)
+        ),
+        'context'
+      )
+    );
   }
 
   function showContextCard(cardID: SourceContextCardID) {
@@ -11155,11 +13667,19 @@
     if (contextPaneRailOnly()) {
       expandContextPaneFromRail();
     }
-    sourceDockLayout = activateSourceDockPanel(showSourceDockPanel(sourceDockLayout, 'context'), 'context');
     persistHiddenContextCards(nextCardIDs);
     persistActiveContextCard(cardID);
     persistContextPanelCollapsed(contextPanelCollapsed);
-    persistSourceDockLayout(sourceDockLayout);
+    applySourceDockLayout(
+      activateSourceDockPanel(
+        moveSourceDockPanel(
+          showSourceDockPanel(dock.layout, 'context'),
+          'context',
+          dockGroupForContextPanelPlacement(contextPanelPlacement)
+        ),
+        'context'
+      )
+    );
   }
 
   function selectContextPanelMode(mode: SourceContextPanelMode) {
@@ -11174,17 +13694,14 @@
     contextPanelCollapsed = false;
     persistContextPanelPlacement(placement);
     persistContextPanelCollapsed(contextPanelCollapsed);
-    sourceDockLayout = moveSourceDockPanel(
-      sourceDockLayout,
-      'context',
-      dockGroupForContextPanelPlacement(placement)
+    const contextGroupID = dockGroupForContextPanelPlacement(placement);
+    applySourceDockLayout(
+      resizeSourceDockGroup(
+        moveSourceDockPanel(showSourceDockPanel(dock.layout, 'context'), 'context', contextGroupID),
+        contextGroupID,
+        placement === 'bottom' ? contextPaneHeight : dock.contextPaneWidth
+      )
     );
-    sourceDockLayout = resizeSourceDockGroup(
-      sourceDockLayout,
-      dockGroupForContextPanelPlacement(placement),
-      placement === 'bottom' ? contextPaneHeight : contextPaneWidth
-    );
-    persistSourceDockLayout(sourceDockLayout);
   }
 
   function loadStoredContextPanelCollapsed() {
@@ -11300,65 +13817,6 @@
     return Math.min(editorInsightMaxWidth, Math.max(editorInsightMinWidth, Math.round(width)));
   }
 
-  function beginEditorInsightResize(event: PointerEvent) {
-    if (event.button !== 0 || typeof window === 'undefined') return;
-
-    const startX = event.clientX;
-    const startWidth = editorInsightWidth;
-    let latestRawWidth = startWidth;
-    event.preventDefault();
-    markSourceLayoutCustom();
-    editorInsightCollapsed = false;
-    persistEditorInsightCollapsed(editorInsightCollapsed);
-    window.document.body.classList.add('resizing-editor-insight');
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      latestRawWidth = startWidth - (moveEvent.clientX - startX);
-      editorInsightWidth = clampEditorInsightWidth(latestRawWidth);
-    };
-    const finishResize = () => {
-      if (latestRawWidth <= editorInsightCollapseThreshold) {
-        hideDockPanel('insights');
-        fileActionStatus = 'Insights pane hidden';
-      } else {
-        persistEditorInsightWidth(editorInsightWidth);
-        const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
-        if (insightsGroupID !== null) {
-          persistDockGroupSize(insightsGroupID, editorInsightWidth);
-        }
-      }
-      window.document.body.classList.remove('resizing-editor-insight');
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', finishResize);
-      window.removeEventListener('pointercancel', finishResize);
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', finishResize);
-    window.addEventListener('pointercancel', finishResize);
-  }
-
-  function handleEditorInsightResizerKeydown(event: KeyboardEvent) {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-
-    event.preventDefault();
-    markSourceLayoutCustom();
-    editorInsightCollapsed = false;
-    persistEditorInsightCollapsed(editorInsightCollapsed);
-    const direction = event.key === 'ArrowLeft' ? 1 : -1;
-    if (editorInsightWidth <= editorInsightMinWidth && direction < 0) {
-      hideDockPanel('insights');
-      fileActionStatus = 'Insights pane hidden';
-      return;
-    }
-    editorInsightWidth = clampEditorInsightWidth(editorInsightWidth + direction * 24);
-    persistEditorInsightWidth(editorInsightWidth);
-    const insightsGroupID = dockGroupIDForPanel(sourceDockLayout, 'insights');
-    if (insightsGroupID !== null) {
-      persistDockGroupSize(insightsGroupID, editorInsightWidth);
-    }
-  }
-
   function loadStoredContextPaneWidth() {
     if (typeof window === 'undefined') return contextPaneDefaultWidth;
 
@@ -11428,7 +13886,7 @@
 
     const startX = event.clientX;
     const startY = event.clientY;
-    const startWidth = contextPaneWidth;
+    const startWidth = dock.contextPaneWidth;
     const startHeight = contextPaneHeight;
     let latestRawSize = contextPanelPlacement === 'bottom' ? startHeight : startWidth;
     event.preventDefault();
@@ -11446,7 +13904,7 @@
       }
 
       latestRawSize = startWidth - (moveEvent.clientX - startX);
-      contextPaneWidth = clampContextPaneWidth(latestRawSize);
+      dock.contextPaneWidth = clampContextPaneWidth(latestRawSize);
     };
     const finishResize = () => {
       const finishedSize = finishSourcePanePointerSize(
@@ -11467,20 +13925,20 @@
           persistContextPaneExpandedWidth(finishedSize.persistedSize);
         }
         hideDockPanel('context');
-        fileActionStatus = 'Context pane hidden';
+        files.fileActionStatus = 'Context pane hidden';
       } else if (contextPanelPlacement === 'side' && finishedSize.state === 'rail') {
-        contextPaneWidth = finishedSize.size;
-        persistContextPaneWidth(contextPaneWidth);
-        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
-        fileActionStatus = 'Context panel collapsed to rail';
+        dock.contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(dock.contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
+        files.fileActionStatus = 'Context panel collapsed to rail';
       } else if (contextPanelPlacement === 'bottom') {
         contextPaneHeight = finishedSize.size;
         persistContextPaneHeight(contextPaneHeight);
         persistDockGroupSize('bottom', contextPaneHeight);
       } else {
-        contextPaneWidth = finishedSize.size;
-        persistContextPaneWidth(contextPaneWidth);
-        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+        dock.contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(dock.contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
       }
       window.document.body.classList.remove(resizingClass);
       window.removeEventListener('pointermove', handlePointerMove);
@@ -11508,7 +13966,7 @@
       if (direction === 0) return;
       if (contextPaneHeight <= contextPaneMinHeight && direction < 0) {
         hideDockPanel('context');
-        fileActionStatus = 'Context pane hidden';
+        files.fileActionStatus = 'Context pane hidden';
         return;
       }
       const rawNextContextPaneHeight = contextPaneHeight + direction * 24;
@@ -11518,7 +13976,7 @@
         });
         if (finishedSize.state === 'collapsed') {
           hideDockPanel('context');
-          fileActionStatus = 'Context pane hidden';
+          files.fileActionStatus = 'Context pane hidden';
           return;
         }
         contextPaneHeight = finishedSize.size;
@@ -11531,12 +13989,12 @@
     }
 
     const direction = event.key === 'ArrowLeft' ? 1 : -1;
-    if (contextPaneWidth <= contextPaneMinWidth && direction < 0) {
+    if (dock.contextPaneWidth <= contextPaneMinWidth && direction < 0) {
       hideDockPanel('context');
-      fileActionStatus = 'Context pane hidden';
+      files.fileActionStatus = 'Context pane hidden';
       return;
     }
-    const rawNextContextPaneWidth = contextPaneWidth + direction * 24;
+    const rawNextContextPaneWidth = dock.contextPaneWidth + direction * 24;
     if (direction < 0) {
       const finishedSize = finishSourcePanePointerSize(rawNextContextPaneWidth, contextPaneWidthSizingConfig, {
         previousExpandedSize: contextPaneExpandedWidth
@@ -11544,34 +14002,56 @@
       if (finishedSize.state === 'collapsed') {
         persistContextPaneExpandedWidth(finishedSize.persistedSize);
         hideDockPanel('context');
-        fileActionStatus = 'Context pane hidden';
+        files.fileActionStatus = 'Context pane hidden';
         return;
       }
       if (finishedSize.state === 'rail') {
-        contextPaneWidth = finishedSize.size;
-        persistContextPaneWidth(contextPaneWidth);
-        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
-        fileActionStatus = 'Context panel collapsed to rail';
+        dock.contextPaneWidth = finishedSize.size;
+        persistContextPaneWidth(dock.contextPaneWidth);
+        persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
+        files.fileActionStatus = 'Context panel collapsed to rail';
         return;
       }
     }
 
     const nextContextPaneWidth = clampContextPaneWidth(rawNextContextPaneWidth);
-    contextPaneWidth = nextContextPaneWidth;
-    persistContextPaneWidth(contextPaneWidth);
-    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), contextPaneWidth);
+    dock.contextPaneWidth = nextContextPaneWidth;
+    persistContextPaneWidth(dock.contextPaneWidth);
+    persistDockGroupSize(dockGroupForContextPanelPlacement(contextPanelPlacement), dock.contextPaneWidth);
   }
 
   function bottomDockPanelVisible() {
-    return shouldRenderDockPanel('terminal') || shouldRenderDockPanel('browser');
+    return sourceDockviewBottomOwnsPanel('terminal') || sourceDockviewBottomOwnsPanel('browser');
   }
 
   function bottomDockHeight() {
-    return clampBottomDockHeight(sourceDockGroupSize(sourceDockLayout, 'bottom'));
+    return clampBottomDockHeight(sourceDockGroupSize(dock.layout, 'bottom'));
+  }
+
+  function bottomDockSizingConfig(): SourcePaneSizingConfig {
+    return {
+      defaultSize: bottomDockDefaultHeight,
+      minSize: bottomDockMinHeight,
+      maxSize: bottomDockAvailableMaxHeight(),
+      collapseThreshold: bottomDockCollapseThreshold
+    };
+  }
+
+  function bottomDockAvailableMaxHeight() {
+    const measuredHeight = Math.max(0, Math.round(sourceWorkspaceHeight));
+    const viewportHeight =
+      measuredHeight > 0
+        ? measuredHeight
+        : typeof window !== 'undefined'
+          ? Math.max(0, Math.round(window.innerHeight))
+          : bottomDockFallbackMaxHeight;
+    const availableHeight = viewportHeight - bottomDockReservedEditorHeight - bottomDockReservedChromeHeight;
+
+    return Math.max(bottomDockMinHeight, Math.round(availableHeight));
   }
 
   function clampBottomDockHeight(height: number) {
-    return clampSourcePaneSize(height, bottomDockSizingConfig);
+    return clampSourcePaneSize(height, bottomDockSizingConfig());
   }
 
   function beginBottomDockResize(event: PointerEvent) {
@@ -11589,11 +14069,11 @@
       persistDockGroupSize('bottom', clampBottomDockHeight(latestRawHeight));
     };
     const finishResize = () => {
-      const finishedSize = finishSourcePanePointerSize(latestRawHeight, bottomDockSizingConfig, {
+      const finishedSize = finishSourcePanePointerSize(latestRawHeight, bottomDockSizingConfig(), {
         previousExpandedSize: startHeight
       });
       if (finishedSize.state === 'collapsed') {
-        let nextLayout = sourceDockLayout;
+        let nextLayout = dock.layout;
         if (sourceDockPanelVisible('terminal')) {
           nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
         }
@@ -11601,7 +14081,7 @@
           nextLayout = hideSourceDockPanel(nextLayout, 'browser');
         }
         applySourceDockLayout(nextLayout);
-        fileActionStatus = 'Bottom dock hidden';
+        files.fileActionStatus = 'Bottom dock hidden';
       } else {
         persistDockGroupSize('bottom', finishedSize.size);
       }
@@ -11623,7 +14103,7 @@
     markSourceLayoutCustom();
     const direction = event.key === 'ArrowUp' ? 1 : -1;
     if (bottomDockHeight() <= bottomDockMinHeight && direction < 0) {
-      let nextLayout = sourceDockLayout;
+      let nextLayout = dock.layout;
       if (sourceDockPanelVisible('terminal')) {
         nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
       }
@@ -11631,16 +14111,16 @@
         nextLayout = hideSourceDockPanel(nextLayout, 'browser');
       }
       applySourceDockLayout(nextLayout);
-      fileActionStatus = 'Bottom dock hidden';
+      files.fileActionStatus = 'Bottom dock hidden';
       return;
     }
     const rawNextBottomDockHeight = bottomDockHeight() + direction * 24;
     if (direction < 0) {
-      const finishedSize = finishSourcePanePointerSize(rawNextBottomDockHeight, bottomDockSizingConfig, {
+      const finishedSize = finishSourcePanePointerSize(rawNextBottomDockHeight, bottomDockSizingConfig(), {
         previousExpandedSize: bottomDockHeight()
       });
       if (finishedSize.state === 'collapsed') {
-        let nextLayout = sourceDockLayout;
+        let nextLayout = dock.layout;
         if (sourceDockPanelVisible('terminal')) {
           nextLayout = hideSourceDockPanel(nextLayout, 'terminal');
         }
@@ -11648,7 +14128,7 @@
           nextLayout = hideSourceDockPanel(nextLayout, 'browser');
         }
         applySourceDockLayout(nextLayout);
-        fileActionStatus = 'Bottom dock hidden';
+        files.fileActionStatus = 'Bottom dock hidden';
         return;
       }
       persistDockGroupSize('bottom', finishedSize.size);
@@ -11692,39 +14172,58 @@
     return parsedRoot.path ? parsedRoot : null;
   }
 
+  // localStorage writes can throw QuotaExceededError: large repos / many cached
+  // projects overflow the browser's ~5-10 MB quota. A persistence failure must
+  // NEVER propagate out of a caller — an unguarded quota throw in the scan path
+  // (persistSourceScanCache) failed the whole scan and sent it into a retry loop
+  // ("Scan failed: The quota has been exceeded."). Swallow + report instead.
+  function safeSetLocalStorageItem(key: string, value: string): boolean {
+    if (typeof window === 'undefined') return false;
+    try {
+      window.localStorage.setItem(key, value);
+      return true;
+    } catch (error) {
+      console.warn(`Source browser: skipped localStorage write for "${key}" (quota exceeded?)`, error);
+      return false;
+    }
+  }
+
   function persistCustomProjectRoots(roots: ProjectRoot[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(customProjectRootsStorageKey, JSON.stringify(roots));
+    safeSetLocalStorageItem(customProjectRootsStorageKey, JSON.stringify(roots));
   }
 
   function persistSelectedProjectID(projectID: string) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(selectedProjectStorageKey, projectID);
+    safeSetLocalStorageItem(selectedProjectStorageKey, projectID);
   }
 
   function persistSelectedSourcePaths(paths: Record<string, string>) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(selectedSourcePathStorageKey, JSON.stringify(paths));
+    safeSetLocalStorageItem(selectedSourcePathStorageKey, JSON.stringify(paths));
   }
 
   function persistSourceScanCache(cache: SourceScanCache) {
     if (typeof window === 'undefined') return;
-    window.localStorage.setItem(sourceScanCacheStorageKey, JSON.stringify(cache));
+    if (safeSetLocalStorageItem(sourceScanCacheStorageKey, JSON.stringify(cache))) return;
+    // The scan cache (file records for up to maxSourceScanCacheEntries projects) is
+    // the largest persisted payload and the one that overflows on big repos. If the
+    // write failed, drop any stale persisted cache so a full quota can never fail or
+    // retry-loop the scan — the index just rebuilds from a fresh scan next load.
+    try {
+      window.localStorage.removeItem(sourceScanCacheStorageKey);
+    } catch {
+      /* best-effort: nothing more we can do if even removeItem fails */
+    }
   }
 
   function persistRecentSourceRecords(recentRecords: SourceRecentRecord[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
+    safeSetLocalStorageItem(recentSourceRecordsStorageKey, JSON.stringify(recentRecords));
   }
 
   function persistOpenSourceTabs(tabs: SourceOpenTab[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(openSourceTabsStorageKey, JSON.stringify(tabs));
+    safeSetLocalStorageItem(openSourceTabsStorageKey, JSON.stringify(tabs));
   }
 
   function persistWorkspaceSnapshots(snapshots: WorkspaceSnapshot[]) {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(snapshotStorageKey, JSON.stringify(snapshots));
+    safeSetLocalStorageItem(snapshotStorageKey, JSON.stringify(snapshots));
   }
 
   function loadStoredActiveWorkspaceSessionKey(): string | null {
@@ -11920,18 +14419,13 @@
     projectFormError = '';
   }
 
-  function saveProject(event: SubmitEvent) {
-    event.preventDefault();
-    void addCustomProjectRoot(projectNameInput, projectPathInput, true);
-  }
-
   function projectRootValidationKey(path: string) {
     return normalizeProjectPath(path);
   }
 
   function rememberProjectRootValidation(validation: ProjectRootValidationResult) {
-    projectRootValidationByPath = {
-      ...projectRootValidationByPath,
+    projectStore.rootValidationByPath = {
+      ...projectStore.rootValidationByPath,
       [projectRootValidationKey(validation.path)]: validation
     };
   }
@@ -11966,7 +14460,7 @@
       const validation = await validateProjectRootFromTauri(project.path);
       if (!validation) {
         if (report) {
-          fileActionStatus = 'Project root validation unavailable in this runtime';
+          files.fileActionStatus = 'Project root validation unavailable in this runtime';
         }
         return null;
       }
@@ -11974,18 +14468,18 @@
       rememberProjectRootValidation(validation);
 
       if (!validation.exists || !validation.isDirectory) {
-        fileActionStatus = validation.message;
+        files.fileActionStatus = validation.message;
         return false;
       }
 
       if (report || !validation.isGitRepository) {
-        fileActionStatus = validation.message;
+        files.fileActionStatus = validation.message;
       }
 
       return validation;
     } catch (validationError) {
       if (report) {
-        fileActionStatus =
+        files.fileActionStatus =
           validationError instanceof Error ? validationError.message : 'Could not validate project root';
       }
       return false;
@@ -11997,7 +14491,7 @@
   async function validateProjectRootBeforeAdd(project: ProjectRoot): Promise<ProjectRootValidationResult | null | false> {
     const validation = await validateProjectRootForProject(project, true);
     if (validation === false) {
-      projectFormError = fileActionStatus || 'Could not validate project root';
+      projectFormError = files.fileActionStatus || 'Could not validate project root';
     }
     return validation;
   }
@@ -12028,22 +14522,22 @@
       return false;
     }
 
-    const nextCustomProjectRoots = mergeProjectRoots([], [...customProjectRoots, nextProject]);
+    const nextCustomProjectRoots = mergeProjectRoots([], [...projectStore.customRoots, nextProject]);
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
-    customProjectRoots = nextCustomProjectRoots;
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
     addingProject = false;
     projectFormError = '';
-    fileActionStatus = sourceOnboardingScanStatus(nextProject);
+    files.fileActionStatus = sourceOnboardingScanStatus(nextProject);
     if (
       validation &&
       !validation.isGitRepository &&
       validation.gitRoot &&
       normalizeProjectPath(validation.gitRoot) === nextProject.path
     ) {
-      fileActionStatus = `Using Git root ${validation.gitRoot}. ${fileActionStatus}`;
+      files.fileActionStatus = `Using Git root ${validation.gitRoot}. ${files.fileActionStatus}`;
     } else if (validation && !validation.isGitRepository) {
-      fileActionStatus = `${validation.message} ${fileActionStatus}`;
+      files.fileActionStatus = `${validation.message} ${files.fileActionStatus}`;
     }
     void activateProject(nextProject, {
       forceScan: true,
@@ -12078,7 +14572,7 @@
     if (!gitRoot) return false;
 
     const normalizedProjectPath = normalizeProjectPath(project.path);
-    const savedCustomProject = customProjectRoots.find(
+    const savedCustomProject = projectStore.customRoots.find(
       (candidate) =>
         candidate.id === project.id ||
         normalizeProjectPath(candidate.path) === normalizedProjectPath
@@ -12095,7 +14589,7 @@
     const nextCustomProjectRoots = mergeProjectRoots(
       [],
       [
-        ...customProjectRoots.filter((candidate) => {
+        ...projectStore.customRoots.filter((candidate) => {
           const candidatePath = normalizeProjectPath(candidate.path);
           return (
             candidate.id !== savedCustomProject.id &&
@@ -12107,19 +14601,19 @@
       ]
     );
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     if (nextSelectedSourcePaths[project.id] && !nextSelectedSourcePaths[repairedProject.id]) {
       nextSelectedSourcePaths[repairedProject.id] = nextSelectedSourcePaths[project.id];
     }
     delete nextSelectedSourcePaths[project.id];
 
-    customProjectRoots = nextCustomProjectRoots;
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.customRoots = nextCustomProjectRoots;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistCustomProjectRoots(nextCustomProjectRoots);
     persistSelectedSourcePaths(nextSelectedSourcePaths);
-    sourceScanCache = removeSourceScanCacheEntries(sourceScanCache, project);
-    persistSourceScanCache(sourceScanCache);
-    fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
+    projectStore.scan.cache = removeSourceScanCacheEntries(projectStore.scan.cache, project);
+    persistSourceScanCache(projectStore.scan.cache);
+    files.fileActionStatus = `Detected nested project root ${project.path}. Scanning Git root ${repairedProject.path}.`;
 
     await activateProject(repairedProject, {
       forceScan: true,
@@ -12140,7 +14634,7 @@
 
     const gitRoot = projectRootGitRootSuggestion(selectedProject, validation);
     if (!gitRoot) {
-      fileActionStatus = `${selectedProject.name} is already using the repository root.`;
+      files.fileActionStatus = `${selectedProject.name} is already using the repository root.`;
       return false;
     }
 
@@ -12159,12 +14653,12 @@
     }
 
     const nextCustomProjectRoots = selectedProjectIsCustom
-      ? customProjectRoots.map((project) => (project.id === selectedProject.id ? nextProject : project))
-      : [...customProjectRoots, nextProject];
+      ? projectStore.customRoots.map((project) => (project.id === selectedProject.id ? nextProject : project))
+      : [...projectStore.customRoots, nextProject];
     const nextProjectOptions = mergeProjectRoots(defaultProjectRoots, nextCustomProjectRoots);
-    customProjectRoots = nextCustomProjectRoots;
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
-    fileActionStatus = `Switched ${selectedProject.name} to Git root ${nextProject.path}.`;
+    files.fileActionStatus = `Switched ${selectedProject.name} to Git root ${nextProject.path}.`;
     void activateProject(nextProject, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
@@ -12176,7 +14670,7 @@
 
   async function repairSelectedProjectOnboarding() {
     const project = selectedProject;
-    fileActionStatus = `Checking ${project.name} project setup`;
+    files.fileActionStatus = `Checking ${project.name} project setup`;
 
     const validation = await validateProjectRootForProject(project, true);
     if (selectedProject.id !== project.id || validation === false) return false;
@@ -12197,7 +14691,7 @@
     addingProject = false;
     projectFormError = '';
     const scanStatus = sourceOnboardingScanStatus(project);
-    fileActionStatus = message ? `${message} ${scanStatus}` : scanStatus;
+    files.fileActionStatus = message ? `${message} ${scanStatus}` : scanStatus;
     void activateProject(project, {
       forceScan: true,
       scanLimit: expandedSourceScanLimit,
@@ -12210,10 +14704,10 @@
     const projects = options.projects ?? projectOptions;
     const activationGeneration = ++projectActivationGeneration;
     const scanLimit = options.scanLimit ?? expandedSourceScanLimit;
-    selectedProjectID = project.id;
+    projectStore.selectedID = project.id;
     persistSelectedProjectID(project.id);
     if (options.clearFileFilter) {
-      query = '';
+      files.query = '';
     }
     if (options.forceScan) {
       resetProjectOnboardingScanState(project);
@@ -12238,13 +14732,17 @@
     void loadProjectWorktrees(project);
     void loadAgentSessions();
     void loadOrchestrationRuns(projects);
+    // Proactively re-point any running language server at the now-active root (debounced,
+    // cancel-in-flight) so its cold re-index warms in the background here, not on the first
+    // file-open under this project (B2.2). The root is validated and non-nested by now.
+    scheduleWarmSourceLspForRoot(project.path);
 
     const sourceSignature = sourceScanCacheSignatureForProject(project);
     const cachedScan =
       options.forceScan || !sourceSignature
         ? null
         : getSourceScanCacheEntry(
-            sourceScanCache,
+            projectStore.scan.cache,
             project,
             scanLimit,
             Date.now(),
@@ -12259,11 +14757,11 @@
       suspiciousThreshold: suspiciousSourceIndexFileThreshold
     });
     if (activationScanPlan.shouldScan) {
-      fileActionStatus = activationScanPlan.status;
+      files.fileActionStatus = activationScanPlan.status;
     }
     const activationScanForcesRefresh = activationScanPlan.shouldScan;
 
-    const scanCompletion = scanProject(project, selectedSourcePaths[project.id], {
+    const scanCompletion = scanProject(project, projectStore.selectedSourcePaths[project.id], {
       force: activationScanForcesRefresh,
       limit: scanLimit,
       preserveSelectedRecord: options.preserveSelectedRecordOnScan
@@ -12274,7 +14772,7 @@
       })
       .catch((activationError) => {
         if (activationGeneration !== projectActivationGeneration) return;
-        fileActionStatus =
+        files.fileActionStatus =
           activationError instanceof Error ? activationError.message : `Could not activate ${project.name}`;
       });
 
@@ -12287,34 +14785,34 @@
     if (!selectedProjectIsCustom) return;
 
     const removedProjectID = selectedProject.id;
-    const nextCustomProjectRoots = customProjectRoots.filter(
+    const nextCustomProjectRoots = projectStore.customRoots.filter(
       (project) => project.id !== removedProjectID
     );
-    customProjectRoots = nextCustomProjectRoots;
+    projectStore.customRoots = nextCustomProjectRoots;
     persistCustomProjectRoots(nextCustomProjectRoots);
 
-    const nextSelectedSourcePaths = { ...selectedSourcePaths };
+    const nextSelectedSourcePaths = { ...projectStore.selectedSourcePaths };
     delete nextSelectedSourcePaths[removedProjectID];
-    selectedSourcePaths = nextSelectedSourcePaths;
+    projectStore.selectedSourcePaths = nextSelectedSourcePaths;
     persistSelectedSourcePaths(nextSelectedSourcePaths);
 
-    const nextRecentSourceRecords = recentSourceRecords.filter(
+    const nextRecentSourceRecords = files.recentRecords.filter(
       (record) => record.projectID !== removedProjectID
     );
-    recentSourceRecords = nextRecentSourceRecords;
+    files.recentRecords = nextRecentSourceRecords;
     persistRecentSourceRecords(nextRecentSourceRecords);
 
-    const nextOpenSourceTabs = openSourceTabs.filter(
+    const nextOpenSourceTabs = files.openTabs.filter(
       (tab) => tab.projectID !== removedProjectID
     );
-    openSourceTabs = nextOpenSourceTabs;
+    files.openTabs = nextOpenSourceTabs;
     persistOpenSourceTabs(nextOpenSourceTabs);
 
-    if (selectedProjectID === removedProjectID) {
+    if (projectStore.selectedID === removedProjectID) {
       const fallbackProject = defaultProjectRoots[0];
-      selectedProjectID = fallbackProject.id;
+      projectStore.selectedID = fallbackProject.id;
       persistSelectedProjectID(fallbackProject.id);
-      query = '';
+      files.query = '';
       void loadProjectGitStatus(fallbackProject);
       void loadGitCommitHistory(fallbackProject);
       void scanProject(fallbackProject, nextSelectedSourcePaths[fallbackProject.id]);
@@ -12328,11 +14826,13 @@
     fileTreeScrollTop = fileTreeElement.scrollTop;
   }
 
-  function measureSourceWorkspaceWidth() {
+  function measureSourceWorkspaceSize() {
     if (typeof window === 'undefined') return;
 
-    const measuredWidth = sourceWorkspaceElement?.clientWidth ?? window.innerWidth - 8;
+    const measuredWidth = sourceWorkspaceElement?.clientWidth ?? window.innerWidth;
+    const measuredHeight = sourceWorkspaceElement?.clientHeight ?? window.innerHeight;
     sourceWorkspaceWidth = Math.max(0, Math.round(measuredWidth));
+    sourceWorkspaceHeight = Math.max(0, Math.round(measuredHeight));
   }
 
   function handleFileTreeScroll(event: Event) {
@@ -12433,17 +14933,17 @@
   }
 
   function isFolderExpanded(node: SourceTreeNode): boolean {
-    return autoExpandFolders || expandedFolderIds.has(node.id);
+    return autoExpandFolders || files.expandedFolderIds.has(node.id);
   }
 
   function toggleFolder(node: SourceTreeNode) {
-    const nextFolderIds = new Set(expandedFolderIds);
+    const nextFolderIds = new Set(files.expandedFolderIds);
     if (nextFolderIds.has(node.id)) {
       nextFolderIds.delete(node.id);
     } else {
       nextFolderIds.add(node.id);
     }
-    expandedFolderIds = nextFolderIds;
+    files.expandedFolderIds = nextFolderIds;
   }
 
   function selectTreeNode(node: SourceTreeNode) {
@@ -12458,8 +14958,8 @@
     let unlistenSourceScanProgress: (() => void) | null = null;
     let unlistenTerminalOutput: (() => void) | null = null;
     void listenToSourceScanProgress((progress) => {
-      if (progress.scanId === activeSourceScanId) {
-        sourceScanProgress = progress;
+      if (progress.scanId === files.scan.activeScanId) {
+        files.scan.progress = progress;
       }
     })
       .then((unlisten) => {
@@ -12546,21 +15046,21 @@
         ) ?? startupWorkspaceSnapshot.project
       : storedProject;
 
-    customProjectRoots = startupCustomProjectRoots;
+    projectStore.customRoots = startupCustomProjectRoots;
     if (!startupSnapshotProjectAlreadyKnown) {
       persistCustomProjectRoots(startupCustomProjectRoots);
     }
-    selectedSourcePaths = storedSelectedSourcePaths;
-    sourceScanCache = storedSourceScanCache;
-    recentSourceRecords = storedRecentSourceRecords;
-    openSourceTabs = storedOpenSourceTabs;
+    projectStore.selectedSourcePaths = storedSelectedSourcePaths;
+    projectStore.scan.cache = storedSourceScanCache;
+    files.recentRecords = storedRecentSourceRecords;
+    files.openTabs = storedOpenSourceTabs;
     workspaceSnapshots = storedWorkspaceSnapshots;
     activeWorkspaceSessionKey = startupWorkspaceSnapshot?.id ?? storedActiveWorkspaceSessionKey;
-    selectedProjectID = startupProject.id;
-    sourceActivityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
+    projectStore.selectedID = startupProject.id;
+    dock.activityMode = migrateSourceLayout ? compactPreset.activityMode : storedSourceActivityMode;
     pasteCleanupMode = storedPasteCleanupMode;
     pasteCleanupHistory = storedPasteCleanupHistory;
-    sourceLayoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
+    dock.layoutPreset = migrateSourceLayout ? compactPreset.id : storedSourceLayoutPreset;
     sourceLayoutPresetOverrides = storedSourceLayoutPresetOverrides;
     sourceFocusRestoreLayout = migrateSourceLayout ? null : storedSourceFocusRestoreLayout;
     sourceChromeCompact = migrateSourceLayout ? compactPreset.chromeCompact : storedSourceChromeCompact;
@@ -12568,13 +15068,13 @@
     browserUrl = storedBrowserDockUrl;
     browserInputUrl = storedBrowserDockUrl;
     sidePanePosition = migrateSourceLayout ? compactPreset.sidePanePosition : storedSidePanePosition;
-    sidePaneWidth = migrateSourceLayout
+    dock.sidePaneWidth = migrateSourceLayout
       ? compactPreset.sidePaneWidth
       : restoreLegacyPaneWidth(storedSidePaneWidth, storedSidePaneExpandedWidth, activityPaneSizingConfig);
     sidePaneExpandedWidth = migrateSourceLayout ? compactPreset.sidePaneWidth : storedSidePaneExpandedWidth;
     editorInsightWidth = migrateSourceLayout ? compactPreset.editorInsightWidth : storedEditorInsightWidth;
     editorInsightCollapsed = migrateSourceLayout ? compactPreset.editorInsightCollapsed : storedEditorInsightCollapsed;
-    contextPaneWidth = restoreLegacyPaneWidth(
+    dock.contextPaneWidth = restoreLegacyPaneWidth(
       storedContextPaneWidth,
       storedContextPaneExpandedWidth,
       contextPaneWidthSizingConfig
@@ -12590,16 +15090,17 @@
       !migrateSourceLayout && storedSourceDockLayout
         ? sourceDockLayoutWithStoredPaneSizes(storedSourceDockLayout)
         : null;
-    sourceDockLayout = restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace();
+    dock.layout = ensureWorkbenchRightPanels(restoredSourceDockLayout ?? sourceDockLayoutFromWorkspace());
     if (!migrateSourceLayout && storedSourceDockLayout) {
-      syncSourceDockLayoutToWorkspace(sourceDockLayout);
+      syncSourceDockLayoutToWorkspace(dock.layout);
     }
     persistSelectedProjectID(startupProject.id);
     if (migrateSourceLayout) {
-      persistSourceLayoutPreset(sourceLayoutPreset);
-      persistSourceActivityMode(sourceActivityMode);
+      clearMigratedSourceDockviewLayouts();
+      persistSourceLayoutPreset(dock.layoutPreset);
+      persistSourceActivityMode(dock.activityMode);
       persistSidePanePosition(sidePanePosition);
-      persistSidePaneWidth(sidePaneWidth);
+      persistSidePaneWidth(dock.sidePaneWidth);
       persistEditorInsightWidth(editorInsightWidth);
       persistEditorInsightCollapsed(editorInsightCollapsed);
       persistContextPanelCollapsed(contextPanelCollapsed);
@@ -12608,12 +15109,13 @@
       persistSourceChromeCompact(sourceChromeCompact);
       persistSourceFocusRestoreLayout(sourceFocusRestoreLayout);
     }
-    persistSourceDockLayout(sourceDockLayout);
+    persistSourceDockLayout(dock.layout);
     persistSourceLayoutVersion();
     window.setTimeout(measureFileTreeViewport, 0);
     void loadEmbeddedTerminalSessions();
+    void loadPlaywrightSessions();
     if (startupWorkspaceSnapshot) {
-      fileActionStatus = `Restoring workspace snapshot: ${startupWorkspaceSnapshot.title}`;
+      files.fileActionStatus = `Restoring workspace snapshot: ${startupWorkspaceSnapshot.title}`;
       void restoreConversationWorkspaceSnapshot(startupWorkspaceSnapshot).then(() =>
         indexProjectsInBackground(startupProjectOptions)
       );
@@ -12639,7 +15141,15 @@
       unlistenSourceScanProgress?.();
       unlistenTerminalOutput?.();
       disposeEmbeddedTerminal();
+      disposeSourceDockviewWorkbench();
+      disposeSourceDockviewActivity();
+      disposeSourceDockviewContext();
       disposeSourceDockviewInsights();
+      disposeSourceDockviewCenter();
+      disposeSourceDockviewBottom();
+      disposeSourceFilesDockview();
+      disposeSourceConversationDockview();
+      disposeSourceContextCardDockview();
     };
   });
 </script>
@@ -12659,98 +15169,158 @@
   class:activity-force-collapsed={activityPaneViewportCollapsed()}
   class:context-force-collapsed={contextPaneViewportCollapsed()}
   class:layout-pressure={sourceWorkspacePlan.overflowSize > 0}
-  style={`--accent: #5ce2cf; --side-pane-width: ${effectiveSidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${effectiveContextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px`}
+  style={`--accent: #5ce2cf; --side-pane-width: ${effectiveSidePaneWidth}px; --editor-insight-width: ${editorInsightWidth}px; --context-pane-width: ${effectiveContextPaneWidth}px; --context-pane-height: ${contextPaneHeight}px; --bottom-dock-height: ${bottomDockHeight()}px${appFontSizeOverridden ? `; --app-font-size: ${settings.appearance.appFontSize}px` : ''}`}
 >
-  {#if effectiveActivityPaneVisible()}
-  <aside class="activity-shell" aria-label="Workspace browser">
+  <SourceDockviewShell
+    shellClass="source-dockview-workbench-shell"
+    hostClass="source-dockview-workbench-host"
+    errorClass="source-dockview-workbench-error"
+    enabled={sourceDockviewWorkbenchEnabled && !useUnifiedWorkbench}
+    ready={sourceDockviewWorkbenchReady}
+    error={sourceDockviewWorkbenchError}
+    hostAction={sourceDockviewWorkbenchHostAction}
+  >
+  {#if sourceDockviewWorkbenchOwnsPanel('activity') || effectiveActivityPaneVisible()}
+  <SourceDockviewShell
+    shellClass="source-dockview-activity-shell"
+    hostClass="source-dockview-activity-host"
+    errorClass="source-dockview-activity-error"
+    enabled={sourceDockviewActivityEnabled}
+    ready={sourceDockviewActivityReady}
+    error={sourceDockviewActivityError}
+    hostAction={sourceDockviewActivityHostAction}
+  >
+  <aside class="activity-shell" aria-label="Workspace browser" use:sourceDockviewPanelAction={'activity'}>
     <nav class="activity-rail" aria-label="Workspace views">
       <button
-        class:active={sourceActivityMode === 'files'}
+        class:active={dock.activityMode === 'files'}
         type="button"
         aria-label="Files"
-        title="Files"
+        title={sourceActivityButtonTitle('files')}
         onclick={() => selectSourceActivityMode('files')}
       >
         <FolderGit2 size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Files</span>
-        <strong>{sourceActivityCount('files')}</strong>
+        {#if sourceActivityBadgeVisible('files')}
+          <strong>{sourceActivityCountLabel('files')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'clipboard'}
+        class:active={dock.activityMode === 'clipboard'}
         type="button"
         aria-label="Clipboard"
-        title="Clipboard"
+        title={sourceActivityButtonTitle('clipboard')}
         onclick={() => selectSourceActivityMode('clipboard')}
       >
         <Copy size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Clipboard</span>
-        <strong>{sourceActivityCount('clipboard')}</strong>
+        {#if sourceActivityBadgeVisible('clipboard')}
+          <strong>{sourceActivityCountLabel('clipboard')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'conversations'}
+        class:active={dock.activityMode === 'conversations'}
         type="button"
         aria-label="Conversations"
-        title="Conversations"
+        title={sourceActivityButtonTitle('conversations')}
         onclick={() => selectSourceActivityMode('conversations')}
       >
         <History size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Conversations</span>
-        <strong>{sourceActivityCount('conversations')}</strong>
+        {#if sourceActivityBadgeVisible('conversations')}
+          <strong>{sourceActivityCountLabel('conversations')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'runs'}
+        class:active={dock.activityMode === 'runs'}
         type="button"
         aria-label="Runs"
-        title="Runs"
+        title={sourceActivityButtonTitle('runs')}
         onclick={() => selectSourceActivityMode('runs')}
       >
         <Network size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Runs</span>
-        <strong>{sourceActivityCount('runs')}</strong>
+        {#if sourceActivityBadgeVisible('runs')}
+          <strong>{sourceActivityCountLabel('runs')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'sessions'}
+        class:active={dock.activityMode === 'sessions'}
         type="button"
         aria-label="Active sessions"
-        title="Active sessions"
+        title={sourceActivityButtonTitle('sessions')}
         onclick={() => selectSourceActivityMode('sessions')}
       >
         <SplitSquareHorizontal size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Active sessions</span>
-        <strong>{sourceActivityCount('sessions')}</strong>
+        {#if sourceActivityBadgeVisible('sessions')}
+          <strong>{sourceActivityCountLabel('sessions')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'agents'}
+        class:active={dock.activityMode === 'agents'}
         type="button"
         aria-label="Agents"
-        title="Agents"
+        title={sourceActivityButtonTitle('agents')}
         onclick={() => selectSourceActivityMode('agents')}
       >
         <Activity size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Agents</span>
-        <strong>{sourceActivityCount('agents')}</strong>
+        {#if sourceActivityBadgeVisible('agents')}
+          <strong>{sourceActivityCountLabel('agents')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'worktrees'}
+        class:active={dock.activityMode === 'worktrees'}
         type="button"
         aria-label="Worktrees"
-        title="Worktrees"
+        title={sourceActivityButtonTitle('worktrees')}
         onclick={() => selectSourceActivityMode('worktrees')}
       >
         <FolderSearch size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Worktrees</span>
-        <strong>{sourceActivityCount('worktrees')}</strong>
+        {#if sourceActivityBadgeVisible('worktrees')}
+          <strong>{sourceActivityCountLabel('worktrees')}</strong>
+        {/if}
       </button>
       <button
-        class:active={sourceActivityMode === 'git'}
+        class:active={dock.activityMode === 'git'}
         type="button"
         aria-label="Git and tasks"
-        title="Git and tasks"
+        title={sourceActivityButtonTitle('git')}
         onclick={() => selectSourceActivityMode('git')}
       >
         <Braces size={19} strokeWidth={1.8} />
         <span class="activity-rail-label">Git and tasks</span>
-        <strong>{sourceActivityCount('git')}</strong>
+        {#if sourceActivityBadgeVisible('git')}
+          <strong>{sourceActivityCountLabel('git')}</strong>
+        {/if}
+      </button>
+      <button
+        class="activity-rail-settings"
+        type="button"
+        data-testid="activity-rail-settings"
+        aria-label="Settings"
+        title="Settings"
+        onclick={() => (settingsOpen = !settingsOpen)}
+      >
+        <Settings size={19} strokeWidth={1.8} />
+        <span class="activity-rail-label">Settings</span>
+      </button>
+      <button
+        class="activity-rail-toggle"
+        type="button"
+        data-testid="activity-rail-toggle"
+        aria-label={activityRailToggleLabel()}
+        title={activityRailToggleLabel()}
+        onclick={toggleActivityPaneRail}
+      >
+        {#if activityRailToggleDirection() === 'left'}
+          <ChevronLeft size={18} strokeWidth={1.9} />
+        {:else}
+          <ChevronRight size={18} strokeWidth={1.9} />
+        {/if}
+        <span class="activity-rail-label">{activityRailToggleLabel()}</span>
       </button>
     </nav>
 
@@ -12765,506 +15335,126 @@
       </div>
     </div>
 
-    <div class="project-controls">
-      <div class="project-row">
-        <select bind:value={selectedProjectID} onchange={handleProjectChange} aria-label="Project">
-          {#each projectOptions as project}
-            <option value={project.id}>{project.name}</option>
-          {/each}
-        </select>
-        <button class="icon-button" type="button" aria-label="Choose project folder" title="Choose project folder" disabled={choosingProjectRoot || projectRootValidating} onclick={chooseProjectRoot}>
-          <Plus size={16} strokeWidth={2} />
-        </button>
-        <button class="icon-button quick-open-trigger" type="button" aria-label="Open source file" title="Open source file" onclick={openQuickOpen}>
-          <Search size={16} strokeWidth={1.9} />
-        </button>
-        <button
-          class="scan-button"
-          type="button"
-          aria-label={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-          title={scanning ? 'Stop source scan' : `Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-          onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
-        >
-          {#if scanning}
-            <X size={15} strokeWidth={2} />
-          {:else}
-            <RefreshCw size={15} strokeWidth={1.8} />
-          {/if}
-          <span>{scanning ? 'Stop' : `Scan ${expandedSourceScanLimitShortLabel}`}</span>
-        </button>
-      </div>
+    <ActivityProjectControls
+      bind:selectedID={projectStore.selectedID}
+      {projectOptions}
+      {selectedProject}
+      {selectedProjectIsCustom}
+      scanning={files.scan.scanning}
+      scanProgress={files.scan.progress}
+      {expandedSourceScanLimit}
+      {expandedSourceScanLimitShortLabel}
+      {sourceScanProgressEventName}
+      setupNoticeText={projectSetupNoticeText()}
+      setupNoticeTitle={projectSetupNoticeTitle()}
+      {addingProject}
+      {projectFormError}
+      {projectRootValidating}
+      {choosingProjectRoot}
+      bind:nameInput={projectNameInput}
+      bind:pathInput={projectPathInput}
+      onSelectProject={handleProjectChange}
+      onRemoveProject={removeSelectedProject}
+      onChooseProjectRoot={chooseProjectRoot}
+      onOpenQuickOpen={openQuickOpen}
+      onToggleScan={() =>
+        files.scan.scanning
+          ? cancelSourceScan()
+          : scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}
+      onSubmitProject={(name, path) => void addCustomProjectRoot(name, path, true)}
+      onCancelAddingProject={cancelAddingProject}
+    />
 
-      <div class="project-path-row">
-        <span title={selectedProject.path}>{selectedProject.path}</span>
-        {#if selectedProjectIsCustom}
-          <button class="icon-button danger" type="button" aria-label="Remove project root" title="Remove project root" onclick={removeSelectedProject}>
-            <Trash2 size={14} strokeWidth={1.9} />
-          </button>
-        {/if}
-      </div>
-      <div class="project-setup-row" title={projectSetupNoticeTitle()} aria-live={scanning ? 'polite' : 'off'}>
-        <span>{projectSetupNoticeText()}</span>
-      </div>
-
-      {#if scanning && sourceScanProgress}
-        <div class="scan-progress" aria-live="polite" data-progress-event={sourceScanProgressEventName}>
-          <span>{sourceScanProgress.matchedFiles.toLocaleString()} files</span>
-          <span>{sourceScanProgress.visitedEntries.toLocaleString()} entries checked</span>
-        </div>
-      {/if}
-
-      {#if addingProject}
-        <form class="project-form" onsubmit={saveProject}>
-          <label>
-            <span>Name</span>
-            <input bind:value={projectNameInput} autocomplete="off" />
-          </label>
-          <label>
-            <span>Path</span>
-            <input bind:value={projectPathInput} autocomplete="off" placeholder="/Users/blackcolours/dev/work/project" />
-          </label>
-          {#if projectFormError}
-            <p class="project-form-error">{projectFormError}</p>
-          {/if}
-          <div class="form-actions">
-            <button class="form-button" type="button" disabled={projectRootValidating} onclick={cancelAddingProject}>
-              <X size={14} strokeWidth={2} />
-              <span>Cancel</span>
-            </button>
-            <button class="form-button primary" type="submit" disabled={projectRootValidating}>
-              <Save size={14} strokeWidth={2} />
-              <span>{projectRootValidating ? 'Checking' : 'Save'}</span>
-            </button>
-          </div>
-        </form>
-      {/if}
-    </div>
-
-    {#if sourceActivityMode === 'files'}
-      <div class="source-browser-stack">
-      <label class="search-box">
-        <Search size={16} strokeWidth={1.8} />
-        <input bind:value={query} placeholder="Filter source files" />
-      </label>
-
-      <form class="global-search-panel" onsubmit={handleGlobalSourceSearchSubmit}>
-        <div class="global-search-box">
-          <Search size={15} strokeWidth={1.8} />
-          <input bind:this={sourceSearchInput} bind:value={sourceSearchQuery} placeholder="Search file contents" />
-          <button
-            class="source-search-submit"
-            type="submit"
-            aria-label="Search source contents"
-            title="Search source contents"
-            disabled={sourceSearchLoading || sourceSearchQuery.trim().length === 0}
-          >
-            {#if sourceSearchLoading}
-              <RefreshCw size={13} strokeWidth={1.8} />
-            {:else}
-              <Search size={13} strokeWidth={1.8} />
-            {/if}
-          </button>
-        </div>
-
-        {#if sourceSearchSummary}
-          <div class="source-search-summary" title={sourceSearchSummary}>{sourceSearchSummary}</div>
-        {/if}
-
-        {#if sourceSearchResults.length > 0}
-          <div class="source-search-results" aria-label="Source content search results">
-            {#each sourceSearchResults as result (`${result.path}:${result.line}:${result.column}`)}
-              <button
-                type="button"
-                title={`${result.relativePath}:${result.line}:${result.column}`}
-                onclick={() => selectSourceSearchResult(result)}
-              >
-                <span>
-                  <strong>{result.fileName}</strong>
-                  <small>{result.relativePath}:{result.line}:{result.column}</small>
-                </span>
-                <code>{result.excerpt}</code>
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </form>
-
-      {#if projectRecentRecords.length > 0}
-        <div class="recent-panel" aria-label="Recent source files">
-          <div class="recent-heading">
-            <span class="recent-heading-icon">
-              <History size={15} strokeWidth={1.8} />
-            </span>
-            <span>Recent</span>
-          </div>
-          <div class="recent-list">
-            {#each projectRecentRecords as recentRecord (recentRecord.path)}
-              <button
-                class:active={recentRecord.path === selectedRecord?.path}
-                type="button"
-                title={recentRecord.relativePath}
-                onclick={() => selectRecentRecord(recentRecord)}
-              >
-                <span class="recent-file-icon">
-                  <FileCode2 size={14} strokeWidth={1.8} />
-                </span>
-                <span>
-                  <strong>{recentRecord.fileName}</strong>
-                  <small>{recentRecord.relativePath}</small>
-                </span>
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <div class="source-list-panel">
-        <div class="tree-panel-header">
-          <div class="tree-heading">
-            <FolderGit2 size={15} strokeWidth={1.8} />
-            <span>{selectedProject.name}</span>
-            <strong>{recordCountLabel}</strong>
-          </div>
-          <div class="scan-summary-row">
-            <div class="scan-summary" title={scanSummaryLabel}>{scanSummaryLabel}</div>
-            <button
-              class="scan-diagnostic-button"
-              type="button"
-              aria-label="Copy source scan diagnostic"
-              title="Copy source scan diagnostic"
-              onclick={copySourceScanDiagnosticBrief}
-            >
-              <Copy size={12} strokeWidth={1.9} />
-            </button>
-          </div>
-          <div class="index-summary" title={selectedProjectIndexSummary}>{selectedProjectIndexSummary}</div>
-          <div
-            class="scan-evidence"
-            data-tone={selectedProjectScanEvidence.tone}
-            title={selectedProjectScanEvidence.detail}
-          >
-            {selectedProjectScanEvidence.label}
-          </div>
-          {#if sourceScanStatsLabel}
-            <div class="scan-stats" title={sourceScanStatsLabel}>{sourceScanStatsLabel}</div>
-          {/if}
-          {#if sourceRuntimeNotice}
-            <div class="scan-runtime-note" title={sourceRuntimeNotice}>
-              <span>{sourceRuntimeNotice}</span>
-              <button
-                type="button"
-                aria-label="Copy Tauri run command"
-                title="Copy Tauri run command"
-                onclick={copyTauriRunCommand}
-              >
-                Tauri
-              </button>
-            </div>
-          {/if}
-          {#if selectedProjectGitRootSuggestion}
-            <div class="scan-root-correction" title={`Detected Git root: ${selectedProjectGitRootSuggestion}`}>
-              <span>
-                <strong>Nested root</strong>
-                Use {formatSourceContextRootLabel(selectedProjectGitRootSuggestion)}
-              </span>
-              <button
-                type="button"
-                aria-label="Use detected Git root"
-                title={selectedProjectGitRootSuggestion}
-                disabled={projectRootValidating || scanning}
-                onclick={useValidatedGitRootForSelectedProject}
-              >
-                Use root
-              </button>
-            </div>
-          {/if}
-          {#if sourceScanHealthNote}
-            <div class="scan-health-note" title={sourceScanHealthNote}>
-              <span>{sourceScanHealthNote}</span>
-              <button
-                type="button"
-                aria-label={`Reset index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`}
-                title={`Reset index and scan up to ${expandedSourceScanLimit.toLocaleString()} files`}
-                onclick={() => resetProjectScanCache(selectedProject)}
-              >
-                Reset
-              </button>
-            </div>
-          {/if}
-          {#if sourceScanRecovery.visible}
-            <div class="scan-recovery-panel" title={sourceScanRecovery.detail}>
-              <span>
-                <strong>{sourceScanRecovery.title}</strong>
-                {sourceScanRecovery.detail}
-              </span>
-              <div class="scan-recovery-actions">
-                <button
-                  type="button"
-                  aria-label="Reset source index"
-                  title="Reset source index"
-                  onclick={() => resetProjectScanCache(selectedProject)}
-                >
-                  <RotateCcw size={12} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Choose project root"
-                  title="Choose project root"
-                  disabled={choosingProjectRoot || projectRootValidating}
-                  onclick={chooseProjectRoot}
-                >
-                  <FolderSearch size={12} strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Copy source scan diagnostic"
-                  title="Copy source scan diagnostic"
-                  onclick={copySourceScanDiagnosticBrief}
-                >
-                  <Copy size={12} strokeWidth={2} />
-                </button>
-              </div>
-            </div>
-          {/if}
-          {#if scanLimitReached && !scanning}
-            <button
-              class="scan-more-button"
-              type="button"
-              aria-label={`Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-              title={`Scan up to ${expandedSourceScanLimit.toLocaleString()} source files`}
-              onclick={() => scanProject(selectedProject, selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })}
-            >
-              <Plus size={13} strokeWidth={2} />
-              <span>Scan {expandedSourceScanLimitShortLabel}</span>
-            </button>
-          {/if}
-        </div>
-
-        <div
-          class="file-tree"
-          bind:this={fileTreeElement}
-          onscroll={handleFileTreeScroll}
-          aria-label="Files in selected project"
-        >
-          {#if scanning && records.length === 0}
-            {#each Array.from({ length: 8 }) as _, index}
-              <div class="tree-skeleton" style={`--line-width: ${index % 3 === 0 ? 72 : index % 2 === 0 ? 54 : 86}%`}></div>
-            {/each}
-          {:else if visibleTreeRows.length === 0}
-            <div class="empty-tree">
-              <FileCode2 size={17} strokeWidth={1.8} />
-              <span>No source files found</span>
-            </div>
-          {:else}
-            <div
-              class="tree-virtual-spacer"
-              aria-hidden="true"
-              style={`--tree-spacer-height: ${virtualizedTreeRows.topSpacerHeight}px`}
-            ></div>
-            {#each virtualizedTreeRows.rows as row, virtualTreeRowIndex (row.node.id)}
-              {@const node = row.node}
-              {@const isFolder = node.file === null}
-              {@const isExpanded = isFolderExpanded(node)}
-              {@const gitStatus = node.file ? gitStatusForSourceRecord(node.file) : null}
-              <button
-                class:active={!isFolder && node.file?.path === selectedRecord?.path}
-                class:folder-row={isFolder}
-                class:file-row={!isFolder}
-                type="button"
-                style={`--tree-level: ${row.level}`}
-                title={node.relativePath}
-                aria-expanded={isFolder ? isExpanded : undefined}
-                data-tree-row-index={virtualizedTreeRows.startIndex + virtualTreeRowIndex}
-                onclick={() => selectTreeNode(node)}
-                onkeydown={(event) => handleTreeRowKeydown(row, event)}
-              >
-                <span class="tree-indent"></span>
-                <span class="tree-chevron">
-                  {#if isFolder}
-                    {#if isExpanded}
-                      <ChevronDown size={13} strokeWidth={2} />
-                    {:else}
-                      <ChevronRight size={13} strokeWidth={2} />
-                    {/if}
-                  {/if}
-                </span>
-                <span class="tree-icon">
-                  {#if isFolder}
-                    {#if isExpanded}
-                      <FolderOpen size={15} strokeWidth={1.8} />
-                    {:else}
-                      <Folder size={15} strokeWidth={1.8} />
-                    {/if}
-                  {:else}
-                    <FileCode2 size={15} strokeWidth={1.8} />
-                  {/if}
-                </span>
-                <strong>{node.name}</strong>
-                {#if gitStatus}
-                  <span class="git-status-badge" title={gitStatus.status}>{gitStatus.badge}</span>
-                {/if}
-                <small>{isFolder ? node.children.length : node.file?.language}</small>
-              </button>
-            {/each}
-            <div
-              class="tree-virtual-spacer"
-              aria-hidden="true"
-              style={`--tree-spacer-height: ${virtualizedTreeRows.bottomSpacerHeight}px`}
-            ></div>
-          {/if}
-        </div>
-      </div>
-      </div>
+    {#if dock.activityMode === 'files'}
+      <ActivityFilesPanel
+        filesPanelAction={sourceFilesDockviewPanelAction}
+        hostAction={sourceFilesDockviewHostAction}
+        dockviewReady={sourceFilesDockviewReady}
+        dockviewError={sourceFilesDockviewError}
+        selectedProject={selectedProject}
+        bind:sourceSearchQuery
+        bind:sourceSearchInput
+        sourceSearchLoading={sourceSearchLoading}
+        sourceSearchSummary={sourceSearchSummary}
+        sourceSearchResults={sourceSearchResults}
+        projectRecentRecords={projectRecentRecords}
+        visibleTreeRows={visibleTreeRows}
+        virtualizedTreeRows={virtualizedTreeRows}
+        bind:fileTreeElement
+        sourceSidebarTreeStatusLabel={sourceSidebarTreeStatusLabel}
+        selectedProjectScanEvidence={selectedProjectScanEvidence}
+        sourceSidebarCompactStatusTitle={sourceSidebarCompactStatusTitle}
+        sourceSidebarIndexStatusLabel={sourceSidebarIndexStatusLabel}
+        sourceSidebarScanMetaLabel={sourceSidebarScanMetaLabel}
+        sourceSidebarScanTelemetryExpanded={sourceSidebarScanTelemetryExpanded}
+        sourceScanStatsLabel={sourceScanStatsLabel}
+        sourceSidebarScanTelemetryLabel={sourceSidebarScanTelemetryLabel}
+        sourceRuntimeNoticeExpanded={sourceRuntimeNoticeExpanded}
+        sourceRuntimeNotice={sourceRuntimeNotice}
+        selectedProjectGitRootSuggestion={selectedProjectGitRootSuggestion}
+        sourceScanHealthNote={sourceScanHealthNote}
+        sourceScanRecovery={sourceScanRecovery}
+        projectRootValidating={projectRootValidating}
+        choosingProjectRoot={choosingProjectRoot}
+        expandedSourceScanLimit={expandedSourceScanLimit}
+        expandedSourceScanLimitShortLabel={expandedSourceScanLimitShortLabel}
+        gitStatusForSourceRecord={gitStatusForSourceRecord}
+        isFolderExpanded={isFolderExpanded}
+        onGlobalSearchSubmit={handleGlobalSourceSearchSubmit}
+        onSelectSearchResult={selectSourceSearchResult}
+        onSelectRecentRecord={selectRecentRecord}
+        onCopyScanDiagnostic={copySourceScanDiagnosticBrief}
+        onCopyTauriRunCommand={copyTauriRunCommand}
+        onUseValidatedGitRoot={useValidatedGitRootForSelectedProject}
+        onResetScanCache={resetProjectScanCache}
+        onChooseProjectRoot={chooseProjectRoot}
+        onScanMore={() => scanProject(selectedProject, files.selectedRecord?.path, { force: true, limit: expandedSourceScanLimit })}
+        onFileTreeScroll={handleFileTreeScroll}
+        onSelectTreeNode={selectTreeNode}
+        onTreeRowKeydown={handleTreeRowKeydown}
+      />
     {:else}
       <div class="activity-panel" aria-label={sourceActivityPanelLabel}>
         <div class="activity-panel-header">
           <div>
             <strong>{sourceActivityPanelLabel}</strong>
-            <span>{sourceActivitySummary(sourceActivityMode)}</span>
+            <span>{sourceActivitySummary(dock.activityMode)}</span>
           </div>
           <button
             class="file-action-button"
             type="button"
             aria-label={`Refresh ${sourceActivityPanelLabel}`}
             title={`Refresh ${sourceActivityPanelLabel}`}
-            disabled={sourceActivityRefreshing(sourceActivityMode)}
-            onclick={() => refreshSourceActivityMode(sourceActivityMode)}
+            disabled={sourceActivityRefreshing(dock.activityMode)}
+            onclick={() => refreshSourceActivityMode(dock.activityMode)}
           >
             <RefreshCw size={14} strokeWidth={1.9} />
           </button>
         </div>
 
-        {#if sourceActivityMode === 'clipboard'}
-          <div class="paste-cleanup-panel">
-            <div class="paste-cleanup-top">
-              <div class="paste-cleanup-toolbar">
-                <label>
-                  <span>Mode</span>
-                  <select bind:value={pasteCleanupMode} onchange={selectPasteCleanupMode} aria-label="Paste cleanup mode">
-                    {#each pasteCleanupModes as mode (mode)}
-                      <option value={mode}>{mode}</option>
-                    {/each}
-                  </select>
-                </label>
-                <button
-                  class="file-action-button"
-                  type="button"
-                  aria-label="Read clipboard"
-                  title="Read clipboard"
-                  disabled={fileActionBusy === 'paste-read'}
-                  onclick={readPasteCleanupClipboard}
-                >
-                  <Copy size={13} strokeWidth={1.9} />
-                  <span>{fileActionBusy === 'paste-read' ? 'Reading' : 'Paste'}</span>
-                </button>
-                <button
-                  class="file-action-button"
-                  type="button"
-                  aria-label="Clear paste cleanup text"
-                  title="Clear paste cleanup text"
-                  disabled={pasteCleanupInput.length === 0}
-                  onclick={clearPasteCleanupInput}
-                >
-                  <X size={13} strokeWidth={1.9} />
-                  <span>Clear</span>
-                </button>
-              </div>
-              {#if visiblePasteCleanupHistory.length > 0}
-                <div class="paste-cleanup-history" aria-label="Paste cleanup history">
-                  {#each visiblePasteCleanupHistory as item (item.id)}
-                    <div class="paste-history-chip" class:reply={item.kind === 'reply'}>
-                      <button
-                        class="paste-history-restore"
-                        type="button"
-                        aria-label={`Restore paste cleanup ${pasteCleanupHistoryKindLabel(item.kind)}`}
-                        title={pasteCleanupHistoryItemTitle(item)}
-                        onclick={() => restorePasteCleanupHistoryItem(item)}
-                      >
-                        <History size={11} strokeWidth={2} />
-                        <span>{pasteCleanupHistoryKindLabel(item.kind)}</span>
-                        <strong>{item.summary}</strong>
-                      </button>
-                      <button
-                        class="paste-history-copy"
-                        type="button"
-                        aria-label={`Copy paste cleanup ${pasteCleanupHistoryKindLabel(item.kind)}`}
-                        title="Copy history item"
-                        onclick={() => copyPasteCleanupHistoryItem(item)}
-                      >
-                        <Copy size={11} strokeWidth={2} />
-                      </button>
-                    </div>
-                  {/each}
-                  <button
-                    class="paste-history-clear"
-                    type="button"
-                    aria-label="Clear paste cleanup history"
-                    title="Clear paste cleanup history"
-                    onclick={clearPasteCleanupHistory}
-                  >
-                    <X size={11} strokeWidth={2} />
-                  </button>
-                </div>
-              {/if}
-            </div>
-            <div class="paste-cleanup-grid">
-              <label>
-                <span>Input</span>
-                <textarea
-                  class="paste-cleanup-textarea"
-                  bind:value={pasteCleanupInput}
-                  aria-label="Paste cleanup input"
-                  spellcheck="true"
-                  placeholder="Paste text to clean"
-                ></textarea>
-              </label>
-              <label>
-                <span>Output</span>
-                <textarea
-                  class="paste-cleanup-textarea"
-                  value={pasteCleanupOutput}
-                  aria-label="Cleaned paste output"
-                  readonly
-                  spellcheck="false"
-                ></textarea>
-              </label>
-              <label>
-                <span>Reply</span>
-                <textarea
-                  class="paste-cleanup-textarea"
-                  bind:value={pasteCleanupReplyDraft}
-                  aria-label="Paste cleanup reply draft"
-                  spellcheck="true"
-                  placeholder="Draft the reply to copy back"
-                ></textarea>
-              </label>
-            </div>
-            <div class="paste-cleanup-footer">
-              <span>Cleaned {pasteCleanupStats} · Reply {pasteCleanupReplyStats}</span>
-              <button
-                class="file-action-button"
-                type="button"
-                aria-label="Copy cleaned paste output"
-                title="Copy cleaned paste output"
-                disabled={pasteCleanupOutput.trim().length === 0 || fileActionBusy === 'paste-copy'}
-                onclick={copyPasteCleanupOutput}
-              >
-                <Copy size={13} strokeWidth={1.9} />
-                <span>{fileActionBusy === 'paste-copy' ? 'Copying' : 'Copy'}</span>
-              </button>
-              <button
-                class="file-action-button"
-                type="button"
-                aria-label="Copy paste reply draft"
-                title="Copy paste reply draft"
-                disabled={pasteCleanupReplyOutput.trim().length === 0 || fileActionBusy === 'paste-reply-copy'}
-                onclick={copyPasteCleanupReplyDraft}
-              >
-                <Copy size={13} strokeWidth={1.9} />
-                <span>{fileActionBusy === 'paste-reply-copy' ? 'Copying' : 'Copy Reply'}</span>
-              </button>
-            </div>
-          </div>
+        {#if dock.activityMode === 'clipboard'}
+          <ActivityClipboardPanel
+            bind:input={pasteCleanupInput}
+            bind:replyDraft={pasteCleanupReplyDraft}
+            bind:mode={pasteCleanupMode}
+            modes={pasteCleanupModes}
+            output={pasteCleanupOutput}
+            stats={pasteCleanupStats}
+            replyOutput={pasteCleanupReplyOutput}
+            replyStats={pasteCleanupReplyStats}
+            history={visiblePasteCleanupHistory}
+            fileActionBusy={files.fileActionBusy}
+            historyKindLabel={pasteCleanupHistoryKindLabel}
+            historyItemTitle={pasteCleanupHistoryItemTitle}
+            onModeChange={selectPasteCleanupMode}
+            onPaste={readPasteCleanupClipboard}
+            onClearInput={clearPasteCleanupInput}
+            onRestoreHistoryItem={restorePasteCleanupHistoryItem}
+            onCopyHistoryItem={copyPasteCleanupHistoryItem}
+            onClearHistory={clearPasteCleanupHistory}
+            onCopyOutput={copyPasteCleanupOutput}
+            onCopyReplyDraft={copyPasteCleanupReplyDraft}
+          />
         {:else}
           <label class="activity-filter-box">
             <Search size={14} strokeWidth={1.9} />
@@ -13274,11 +15464,11 @@
               autocomplete="off"
               spellcheck="false"
               aria-label="Filter workspace activity"
-              placeholder={sourceActivityFilterPlaceholder(sourceActivityMode)}
+              placeholder={sourceActivityFilterPlaceholder(dock.activityMode)}
             />
           </label>
 
-          {#if sourceActivityMode === 'runs'}
+          {#if dock.activityMode === 'runs'}
           <div class="run-ingest-strip" aria-label="Orchestration ingest">
             <input
               bind:value={orchestrationEventFilePath}
@@ -13343,6 +15533,10 @@
                     runMetrics.approvalCount > 0}
                   class:live={orchestrationStatusClass(run.status) === 'live'}
                   title={orchestrationRunTitle(run)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openActivityRowActionMenu('run', run.id);
+                  }}
                 >
                   <div class="run-row-heading">
                     <span class="run-heading-badges">
@@ -13479,75 +15673,139 @@
                       {/each}
                     </div>
                   {/if}
-                  <div class="activity-row-actions" aria-label="Run actions">
+                  <div class="activity-row-actions run-activity-actions row-action-menu-anchor" aria-label="Run actions">
                     <button
                       type="button"
-                      aria-label="Copy run summary"
-                      title="Copy run summary"
-                      onclick={() => copyOrchestrationRunSummary(run)}
+                      aria-label="Run actions"
+                      aria-haspopup="menu"
+                      aria-expanded={activityRowActionMenuOpen('run', run.id)}
+                      title="Run actions"
+                      onclick={() => toggleActivityRowActionMenu('run', run.id)}
                     >
-                      <Activity size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Copy run handoff"
-                      title="Copy run handoff"
-                      onclick={() => copyOrchestrationRunHandoff(run)}
-                    >
-                      <FileCode2 size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy current run activity"
-                      title="Copy current run activity"
-                      onclick={() => copyOrchestrationCurrentActivity(run)}
-                    >
-                      <History size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy run id"
-                      title="Copy run id"
-                      onclick={() => copyActivityCommand(run.id, 'Run id copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    {#if run.taskID}
-                      <button
-                        type="button"
-                        aria-label="Copy run task reference"
-                        title="Copy run task reference"
-                        onclick={() => copyOrchestrationTaskReference(run)}
-                      >
-                        <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                    {#if run.projectPath}
-                      <button
-                        type="button"
-                        aria-label="Open run project path"
-                        title="Open project path"
-                        onclick={() => openActivityPath(run.projectPath)}
-                      >
-                        <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Open run project in terminal"
-                        title="Open project in terminal"
-                        onclick={() => openActivityTerminalPath(run.projectPath)}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+                    {#if activityRowActionMenuOpen('run', run.id)}
+                      <div class="row-action-menu" role="menu" aria-label="Run actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy run summary"
+                          title="Copy run summary"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationRunSummary(run);
+                          }}
+                        >
+                          <Activity size={12} strokeWidth={2} />
+                          <span>Copy summary</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy run handoff"
+                          title="Copy run handoff"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationRunHandoff(run);
+                          }}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                          <span>Copy handoff</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy current run activity"
+                          title="Copy current run activity"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyOrchestrationCurrentActivity(run);
+                          }}
+                        >
+                          <History size={12} strokeWidth={2} />
+                          <span>Copy activity</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy run id"
+                          title="Copy run id"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyActivityCommand(run.id, 'Run id copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy run id</span>
+                        </button>
+                        {#if run.taskID}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy run task reference"
+                            title="Copy run task reference"
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              copyOrchestrationTaskReference(run);
+                            }}
+                          >
+                            <ExternalLink size={12} strokeWidth={2} />
+                            <span>Copy task ref</span>
+                          </button>
+                        {/if}
+                        {#if run.projectPath}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open run project path"
+                            title="Open project path"
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              openActivityPath(run.projectPath);
+                            }}
+                          >
+                            <ExternalLink size={12} strokeWidth={2} />
+                            <span>Open path</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Open run project in terminal"
+                            title="Open project in terminal"
+                            onclick={() => {
+                              closeActivityRowActionMenu();
+                              openActivityTerminalPath(run.projectPath);
+                            }}
+                          >
+                            <Terminal size={12} strokeWidth={2} />
+                            <span>Open terminal</span>
+                          </button>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
               {/each}
             {/if}
           </div>
-        {:else if sourceActivityMode === 'conversations'}
-          <div class="activity-panel-list" aria-label="Conversation list">
-            <section class="workspace-snapshot-section" aria-label="Saved workspace snapshots">
+        {:else if dock.activityMode === 'conversations'}
+          <div class="activity-panel-list conversation-activity-list" aria-label="Conversation list">
+            <SourceDockviewShell
+              shellClass="source-dockview-conversation-shell"
+              hostClass="source-dockview-conversation-host"
+              errorClass="source-dockview-conversation-error"
+              enabled={true}
+              ready={sourceConversationDockviewReady}
+              error={sourceConversationDockviewError}
+              hostAction={sourceConversationDockviewHostAction}
+            >
+            <section
+              id="conversation-saved-pane"
+              class="workspace-snapshot-section conversation-dockview-pane"
+              role="tabpanel"
+              aria-label="Saved workspace snapshots"
+              use:sourceConversationDockviewPanelAction={'saved'}
+            >
               <div class="workspace-snapshot-toolbar">
                 <div>
                   <strong>Saved Workspaces</strong>
@@ -13570,6 +15828,10 @@
                       class="workspace-snapshot-row"
                       class:active={activeWorkspaceSessionKey === snapshot.id}
                       title={workspaceSnapshotRestorePlan(snapshot)}
+                      oncontextmenu={(event) => {
+                        event.preventDefault();
+                        openActivityRowActionMenu('workspace-snapshot', snapshot.id);
+                      }}
                     >
                       <button
                         type="button"
@@ -13586,72 +15848,124 @@
                           </span>
                         </div>
                       </button>
-                      <div class="activity-row-actions" aria-label="Workspace snapshot actions">
+                      <div
+                        class="activity-row-actions workspace-snapshot-actions row-action-menu-anchor"
+                        aria-label="Workspace snapshot actions"
+                      >
                         <button
                           type="button"
-                          aria-label="Resume workspace snapshot in embedded terminal"
-                          title={
-                            readiness.kind === 'missing-worktree'
-                              ? 'Copy missing worktree repair plan'
-                              : snapshot.resumeCommand
-                              ? 'Resume workspace in embedded terminal'
-                              : 'Open workspace shell in embedded terminal'
-                          }
-                          onclick={() => openWorkspaceSnapshotEmbeddedTerminal(snapshot)}
+                          aria-label="Workspace snapshot actions"
+                          aria-haspopup="menu"
+                          aria-expanded={activityRowActionMenuOpen('workspace-snapshot', snapshot.id)}
+                          title="Workspace snapshot actions"
+                          onclick={() => toggleActivityRowActionMenu('workspace-snapshot', snapshot.id)}
                         >
-                          <Terminal size={12} strokeWidth={2} />
+                          <MoreHorizontal size={13} strokeWidth={2} />
                         </button>
-                        <button
-                          type="button"
-                          aria-label="Copy workspace restore plan"
-                          title="Copy restore plan"
-                          onclick={() => copyWorkspaceSnapshotRestorePlan(snapshot)}
-                        >
-                          <FileCode2 size={12} strokeWidth={2} />
-                        </button>
-                        {#if readiness.kind === 'missing-worktree'}
-                          <button
-                            type="button"
-                            aria-label="Copy workspace repair plan"
-                            title={readiness.repairLabel ?? 'Copy repair plan'}
-                            onclick={() => copyWorkspaceSnapshotRepairPlan(snapshot)}
-                          >
-                            <FolderSearch size={12} strokeWidth={2} />
-                          </button>
+                        {#if activityRowActionMenuOpen('workspace-snapshot', snapshot.id)}
+                          <div class="row-action-menu" role="menu" aria-label="Workspace snapshot actions">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Resume workspace snapshot in embedded terminal"
+                              title={
+                                readiness.kind === 'missing-worktree'
+                                  ? 'Copy missing worktree repair plan'
+                                  : snapshot.resumeCommand
+                                  ? 'Resume workspace in embedded terminal'
+                                  : 'Open workspace shell in embedded terminal'
+                              }
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                openConversationWorkspaceSnapshotEmbeddedTerminal(snapshot);
+                              }}
+                            >
+                              <Terminal size={12} strokeWidth={2} />
+                              <span>Resume embedded</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Copy workspace restore plan"
+                              title="Copy restore plan"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                copyWorkspaceSnapshotRestorePlan(snapshot);
+                              }}
+                            >
+                              <FileCode2 size={12} strokeWidth={2} />
+                              <span>Copy restore plan</span>
+                            </button>
+                            {#if readiness.kind === 'missing-worktree'}
+                              <button
+                                type="button"
+                                role="menuitem"
+                                aria-label="Copy workspace repair plan"
+                                title={readiness.repairLabel ?? 'Copy repair plan'}
+                                onclick={() => {
+                                  closeActivityRowActionMenu();
+                                  copyWorkspaceSnapshotRepairPlan(snapshot);
+                                }}
+                              >
+                                <FolderSearch size={12} strokeWidth={2} />
+                                <span>Copy repair plan</span>
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Copy workspace resume command"
+                              title="Copy resume command"
+                              disabled={!snapshot.resumeCommand}
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                copyActivityCommand(snapshot.resumeCommand ?? '', 'Resume command copied');
+                              }}
+                            >
+                              <Copy size={12} strokeWidth={2} />
+                              <span>Copy resume</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Open workspace path"
+                              title="Open workspace path"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                openWorkspaceSnapshotPath(snapshot);
+                              }}
+                            >
+                              <ExternalLink size={12} strokeWidth={2} />
+                              <span>Open path</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Open workspace in terminal"
+                              title="Open workspace in terminal"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                openWorkspaceSnapshotPathTerminal(snapshot);
+                              }}
+                            >
+                              <Terminal size={12} strokeWidth={2} />
+                              <span>Open terminal</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              aria-label="Delete workspace snapshot"
+                              title="Delete workspace snapshot"
+                              onclick={() => {
+                                closeActivityRowActionMenu();
+                                deleteWorkspaceSnapshot(snapshot);
+                              }}
+                            >
+                              <Trash2 size={12} strokeWidth={2} />
+                              <span>Delete snapshot</span>
+                            </button>
+                          </div>
                         {/if}
-                        <button
-                          type="button"
-                          aria-label="Copy workspace resume command"
-                          title="Copy resume command"
-                          disabled={!snapshot.resumeCommand}
-                          onclick={() => copyActivityCommand(snapshot.resumeCommand ?? '', 'Resume command copied')}
-                        >
-                          <Copy size={12} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Open workspace path"
-                          title="Open workspace path"
-                          onclick={() => openWorkspaceSnapshotPath(snapshot)}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Open workspace in terminal"
-                          title="Open workspace in terminal"
-                          onclick={() => openWorkspaceSnapshotPathTerminal(snapshot)}
-                        >
-                          <Terminal size={12} strokeWidth={2} />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Delete workspace snapshot"
-                          title="Delete workspace snapshot"
-                          onclick={() => deleteWorkspaceSnapshot(snapshot)}
-                        >
-                          <Trash2 size={12} strokeWidth={2} />
-                        </button>
                       </div>
                     </div>
                   {/each}
@@ -13661,168 +15975,121 @@
               {/if}
             </section>
 
-            {#if filteredWorkspaceSnapshots.length === 0 && filteredProjectAgentSessions.length === 0}
-              <div class="activity-empty">No conversations</div>
-            {/if}
-            {#if filteredProjectAgentSessions.length > 0}
-              {#each filteredProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'conversation'))}
-                {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-                {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
-                {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-                <div
-                  class="activity-session-row conversation-session-row"
-                  class:active={activeWorkspaceSessionKey === workspaceSnapshotIDForAgentSession(session)}
-                  title={agentSessionResumePlan(session)}
-                >
-                  <button
-                    type="button"
-                    class="conversation-session-open"
-                    aria-label="Open conversation workspace"
-                    onclick={() => openAgentSessionWorkspace(session)}
-                  >
-                    <span class="agent-provider-badge">{session.provider}</span>
-                    <div class="activity-row-main">
-                      <strong>{session.title}</strong>
-                      <small>{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
-                      <small>
-                        {#if session.model}{agentSessionModelLabel(session)} · {/if}{agentSessionActivityLabel(session)}
-                      </small>
-                      {#if sessionReadiness}
-                        <span class={`workspace-snapshot-readiness ${sessionReadiness.tone}`} title={sessionReadiness.detail}>
-                          {sessionReadiness.label} · {sessionReadiness.detail}
-                        </span>
-                      {/if}
-                      <span
-                        class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
-                        aria-label="Recommended session focus action"
-                        title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
-                      >
-                        <em>{sessionFocusLane.label}</em>
-                        <strong>{sessionFocusLane.detail}</strong>
-                      </span>
-                    </div>
-                  </button>
-                  <div class="activity-row-actions" aria-label="Conversation actions">
-                    <button
-                      type="button"
-                      aria-label="Save conversation workspace snapshot"
-                      title="Save workspace snapshot"
-                      onclick={() => captureAgentSessionWorkspaceSnapshot(session)}
-                    >
-                      <Save size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Restore conversation workspace"
-                      title={sessionSnapshot ? 'Restore workspace snapshot' : 'No saved workspace snapshot'}
-                      disabled={!sessionSnapshot}
-                      onclick={() => restoreAgentSessionWorkspaceSnapshot(session)}
-                    >
-                      <RotateCcw size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy conversation workspace restore plan"
-                      title={sessionSnapshot ? 'Copy workspace restore plan' : 'No saved workspace snapshot'}
-                      disabled={!sessionSnapshot}
-                      onclick={() => copyAgentSessionWorkspaceRestorePlan(session)}
-                    >
-                      <FileCode2 size={12} strokeWidth={2} />
-                    </button>
-                    {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
-                      <button
-                        type="button"
-                        aria-label="Copy conversation workspace repair plan"
-                        title={sessionReadiness.repairLabel ?? 'Copy repair plan'}
-                        onclick={() => copyAgentSessionWorkspaceRepairPlan(session)}
-                      >
-                        <FolderSearch size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      aria-label="Copy agent resume command"
-                      title="Copy resume command"
-                      onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    {#if session.projectPath}
-                      <button
-                        type="button"
-                        aria-label="Open agent project path"
-                        title="Open project path"
-                        onclick={() => openActivityPath(session.projectPath ?? '')}
-                      >
-                        <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Resume agent in embedded terminal"
-                        title="Resume in embedded terminal"
-                        onclick={() => resumeAgentSessionEmbeddedTerminal(session)}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                  </div>
-                </div>
-              {/each}
-            {/if}
+            <div
+              id="conversation-active-pane"
+              class="conversation-active-pane conversation-dockview-pane"
+              role="tabpanel"
+              aria-label="Active conversations"
+              use:sourceConversationDockviewPanelAction={'active'}
+            >
+              <ConversationList
+                sessions={filteredConversationAgentSessions}
+                activeKey={activeWorkspaceSessionKey}
+                liveKeys={conversationLiveKeys}
+                keyFor={workspaceSnapshotIDForAgentSession}
+                filter={true}
+                onOpen={switchToConversationWorkspace}
+                onSave={captureAgentSessionWorkspaceSnapshot}
+                onRestore={restoreAgentSessionWorkspaceSnapshot}
+                onRepair={copyAgentSessionWorkspaceRepairPlan}
+                onCopyResume={(session) =>
+                  copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
+              />
+            </div>
+            </SourceDockviewShell>
           </div>
-        {:else if sourceActivityMode === 'sessions'}
+        {:else if dock.activityMode === 'sessions'}
           <div class="activity-panel-list" aria-label="Active session list">
             {#if filteredProjectRuntimeContexts.length === 0}
               <div class="activity-empty">No active sessions</div>
             {:else}
               {#each filteredProjectRuntimeContexts as context (`activity:${context.pid}:${context.port}:${context.cwd}`)}
-                <div class="activity-runtime-row" title={context.cwd}>
+                <div
+                  class="activity-runtime-row"
+                  title={context.cwd}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openActivityRowActionMenu('runtime', `${context.pid}:${context.port}:${context.cwd}`);
+                  }}
+                >
                   <span class="runtime-port">:{context.port}</span>
                   <div class="activity-row-main">
                     <strong>{context.command}</strong>
                     <small>{context.rootLabel} · {context.cwd}</small>
                   </div>
-                  <div class="activity-row-actions" aria-label="Active session actions">
+                  <div class="activity-row-actions runtime-activity-actions row-action-menu-anchor" aria-label="Active session actions">
                     <button
                       type="button"
-                      aria-label="Copy active session command"
-                      title="Copy session command"
-                      onclick={() => copyActivityCommand(`${context.command} ${context.cwd}`, 'Session command copied')}
+                      aria-label="Active session actions"
+                      aria-haspopup="menu"
+                      aria-expanded={activityRowActionMenuOpen('runtime', `${context.pid}:${context.port}:${context.cwd}`)}
+                      title="Active session actions"
+                      onclick={() => toggleActivityRowActionMenu('runtime', `${context.pid}:${context.port}:${context.cwd}`)}
                     >
-                      <Copy size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <a
-                      class="activity-icon-link"
-                      href={runtimeContextUrl(context)}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label="Open active session URL"
-                      title={runtimeContextUrl(context)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </a>
-                    <button
-                      type="button"
-                      aria-label="Open active session path"
-                      title="Open session path"
-                      onclick={() => openActivityPath(context.cwd)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open active session in terminal"
-                      title="Open session in terminal"
-                      onclick={() => openActivityTerminalPath(context.cwd)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
+                    {#if activityRowActionMenuOpen('runtime', `${context.pid}:${context.port}:${context.cwd}`)}
+                      <div class="row-action-menu" role="menu" aria-label="Active session actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy active session command"
+                          title="Copy session command"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            copyActivityCommand(`${context.command} ${context.cwd}`, 'Session command copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy command</span>
+                        </button>
+                        <a
+                          class="row-action-menu-link"
+                          role="menuitem"
+                          href={runtimeContextUrl(context)}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label="Open active session URL"
+                          title={runtimeContextUrl(context)}
+                          onclick={() => closeActivityRowActionMenu()}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open URL</span>
+                        </a>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open active session path"
+                          title="Open session path"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            openActivityPath(context.cwd);
+                          }}
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                          <span>Open path</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open active session in terminal"
+                          title="Open session in terminal"
+                          onclick={() => {
+                            closeActivityRowActionMenu();
+                            openActivityTerminalPath(context.cwd);
+                          }}
+                        >
+                          <Terminal size={12} strokeWidth={2} />
+                          <span>Open terminal</span>
+                        </button>
+                      </div>
+                    {/if}
                   </div>
                 </div>
               {/each}
             {/if}
           </div>
-        {:else if sourceActivityMode === 'agents'}
+        {:else if dock.activityMode === 'agents'}
           <div class="activity-panel-list" aria-label="Agent session list">
             {#if filteredProjectAgentSessions.length === 0}
               <div class="activity-empty">No agents</div>
@@ -13831,15 +16098,21 @@
                 {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
                 {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
                 {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-                <div class="activity-session-row" title={agentSessionResumePlan(session)}>
-                  <span class="agent-provider-badge">{session.provider}</span>
-                  <div class="activity-row-main">
+                <div
+                  class="activity-session-row agent-activity-row"
+                  title={agentSessionResumePlan(session)}
+                  oncontextmenu={(event) => {
+                    event.preventDefault();
+                    openAgentRowActionMenu(session, 'agent');
+                  }}
+                >
+                  <span class="agent-provider-badge" title={agentSessionProviderLabel(session)}>
+                    {agentSessionProviderBadgeLabel(session)}
+                  </span>
+                  <div class="activity-row-main agent-activity-main">
                     <strong>{session.title}</strong>
-                    <small>
-                      {#if session.model}{agentSessionModelLabel(session)} · {/if}
-                      {agentSessionResumeCommand(session)}
-                    </small>
-                    <small>{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
+                    <small class="agent-activity-meta">{agentSessionResumeMetaLabel(session, sessionSnapshot)}</small>
+                    <small class="agent-activity-state">{agentSessionWorkspaceStateLabel(session, sessionSnapshot)}</small>
                     {#if sessionReadiness}
                       <span class={`workspace-snapshot-readiness ${sessionReadiness.tone}`} title={sessionReadiness.detail}>
                         {sessionReadiness.label}
@@ -13858,479 +16131,219 @@
                       <strong>{sessionFocusLane.detail}</strong>
                     </span>
                   </div>
-                  <div class="activity-row-actions" aria-label="Agent actions">
+                  <div class="activity-row-actions agent-activity-actions row-action-menu-anchor" aria-label="Agent actions">
                     <button
                       type="button"
-                      aria-label="Copy agent focus plan"
-                      title={agentSessionWorkspaceReadinessLabel(session)}
-                      onclick={() => copyAgentSessionResumePlan(session)}
+                      aria-label="Agent actions"
+                      aria-haspopup="menu"
+                      aria-expanded={agentRowActionMenuOpen(session, 'agent')}
+                      title="Agent actions"
+                      onclick={() => toggleAgentRowActionMenu(session, 'agent')}
                     >
-                      <FileCode2 size={12} strokeWidth={2} />
+                      <MoreHorizontal size={13} strokeWidth={2} />
                     </button>
-                    <button
-                      type="button"
-                      aria-label="Open agent workspace"
-                      title={sessionSnapshot ? 'Restore agent workspace' : 'Open and save current agent workspace'}
-                      onclick={() => openAgentSessionWorkspace(session)}
-                    >
-                      <RotateCcw size={12} strokeWidth={2} />
-                    </button>
-                    {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
-                      <button
-                        type="button"
-                        aria-label="Copy agent workspace repair plan"
-                        title={sessionReadiness.repairLabel ?? 'Copy repair plan'}
-                        onclick={() => copyAgentSessionWorkspaceRepairPlan(session)}
-                      >
-                        <FolderSearch size={12} strokeWidth={2} />
-                      </button>
-                    {/if}
-                    <button
-                      type="button"
-                      aria-label="Copy agent resume command"
-                      title="Copy resume command"
-                      onclick={() => copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    {#if session.projectPath}
-                      <button
-                        type="button"
-                        aria-label="Reveal agent project path"
-                        title="Reveal project path"
-                        onclick={() => revealActivityPath(session.projectPath ?? '')}
-                      >
-                        <FolderSearch size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Resume agent in terminal"
-                        title="Resume in terminal"
-                        onclick={() => openAgentSessionTerminal(session)}
-                      >
-                        <Terminal size={12} strokeWidth={2} />
-                      </button>
+                    {#if agentRowActionMenuOpen(session, 'agent')}
+                      <div class="row-action-menu" role="menu" aria-label="Agent actions">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy agent focus plan"
+                          title={agentSessionWorkspaceReadinessLabel(session)}
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            copyAgentSessionResumePlan(session);
+                          }}
+                        >
+                          <FileCode2 size={12} strokeWidth={2} />
+                          <span>Copy focus plan</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Open agent workspace"
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            openAgentSessionWorkspace(session);
+                          }}
+                        >
+                          <RotateCcw size={12} strokeWidth={2} />
+                          <span>{sessionSnapshot ? 'Restore workspace' : 'Open workspace'}</span>
+                        </button>
+                        {#if sessionSnapshot && sessionReadiness?.kind === 'missing-worktree'}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Copy agent workspace repair plan"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              copyAgentSessionWorkspaceRepairPlan(session);
+                            }}
+                          >
+                            <FolderSearch size={12} strokeWidth={2} />
+                            <span>Copy repair plan</span>
+                          </button>
+                        {/if}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-label="Copy agent resume command"
+                          onclick={() => {
+                            closeAgentRowActionMenu();
+                            copyActivityCommand(agentSessionResumeCommand(session), 'Resume command copied');
+                          }}
+                        >
+                          <Copy size={12} strokeWidth={2} />
+                          <span>Copy resume command</span>
+                        </button>
+                        {#if session.projectPath}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Reveal agent project path"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              revealActivityPath(session.projectPath ?? '');
+                            }}
+                          >
+                            <FolderSearch size={12} strokeWidth={2} />
+                            <span>Reveal project path</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-label="Resume agent in terminal"
+                            onclick={() => {
+                              closeAgentRowActionMenu();
+                              openAgentSessionTerminal(session);
+                            }}
+                          >
+                            <Terminal size={12} strokeWidth={2} />
+                            <span>Resume in terminal</span>
+                          </button>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
               {/each}
             {/if}
           </div>
-        {:else if sourceActivityMode === 'worktrees'}
+        {:else if dock.activityMode === 'worktrees'}
           <div class="activity-panel-list" aria-label="Worktree list">
             {#if filteredProjectWorktrees.length === 0}
               <div class="activity-empty">No worktrees</div>
             {:else}
-              {#each filteredProjectWorktrees as worktree (`activity:${worktree.path}`)}
-                {@const safety = projectWorktreeSafety(worktree)}
-                {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
-                {@const decisionLane = worktreeDecisionLane(safety)}
-                {@const primaryAction = projectWorktreePrimaryAction(worktree)}
-                {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
-                {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
-                {@const ownerChips = worktreeOwnerChips(worktree, safety)}
-                <div
-                  class="activity-worktree-row"
-                  class:blocked={eligibilityKind === 'blocked'}
-                  class:protected={eligibilityKind === 'protected'}
-                  class:ready={eligibilityKind === 'ready'}
-                  title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
-                >
-                  <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
-                  <div class="activity-row-main worktree-row-main">
-                    <strong>
-                      <span>{worktree.branch}</span>
-                      {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
-                        <a
-                          class="git-task-link"
-                          href={gitTaskUrl(worktree.taskID) ?? ''}
-                          target="_blank"
-                          rel="noreferrer"
-                          aria-label="Open worktree task"
-                        >
-                          {worktree.taskID}
-                        </a>
-                      {/if}
-                    </strong>
-                    <small class="worktree-safety-line">
-                      <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
-                        {decisionLane.label}
-                      </span>
-                      <span>{safety.reason}</span>
-                      {#if safety.activeSessionCount > 0}
-                        <span>
-                          {safety.activeSessionCount}
-                          {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
-                        </span>
-                      {/if}
-                      <span>{projectWorktreeActivityLabel(worktree)}</span>
-                    </small>
-                    <div class="worktree-owner-strip" aria-label="Worktree session ownership">
-                      {#each ownerChips as chip (chip.id)}
-                        <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
-                      {/each}
-                    </div>
-                    <small class="worktree-plan-line" title={cleanupPlan.explanation}>
-                      <span class={`worktree-plan-lane ${cleanupPlan.lane}`}>
-                        {worktreeCleanupPlanLabel(cleanupPlan)}
-                      </span>
-                      <span>{cleanupPlan.explanation}</span>
-                    </small>
-                    <small class="worktree-recommendation">{safety.recommendation}</small>
-                    {#if latestSnapshot}
-                      <button
-                        class="worktree-snapshot-chip"
-                        type="button"
-                        aria-label="Restore latest saved workspace for worktree"
-                        title={worktreeWorkspaceSnapshotTitle(worktree)}
-                        onclick={() => restoreConversationWorkspaceSnapshot(latestSnapshot)}
-                      >
-                        <History size={11} strokeWidth={2} />
-                        <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
-                      </button>
-                    {/if}
-                  </div>
-                  <div class="activity-row-actions" aria-label="Worktree actions">
-                    <button
-                      type="button"
-                      aria-label="Copy worktree cleanup plan"
-                      title="Copy cleanup plan"
-                      onclick={() => copyWorktreeCleanupPlan(worktree)}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      class={`worktree-primary-action ${primaryAction.kind}`}
-                      type="button"
-                      aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
-                      title={primaryAction.title}
-                      disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
-                      onclick={() => runWorktreePrimaryAction(worktree)}
-                    >
-                      {#if primaryAction.kind === 'cleanup'}
-                        <Trash2 size={12} strokeWidth={2} />
-                      {:else if primaryAction.kind === 'backup'}
-                        <Save size={12} strokeWidth={2} />
-                      {:else}
-                        <History size={12} strokeWidth={2} />
-                      {/if}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree in source browser"
-                      title="Open worktree in source browser"
-                      onclick={() => openWorktreeInSourceBrowser(worktree)}
-                    >
-                      <FolderOpen size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Copy worktree path"
-                      title="Copy worktree path"
-                      onclick={() => copyActivityCommand(worktree.path, 'Worktree path copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree path"
-                      title="Open worktree path"
-                      onclick={() => openActivityPath(worktree.path)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree in terminal"
-                      title="Open worktree in terminal"
-                      onclick={() => openActivityTerminalPath(worktree.path)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open worktree in embedded terminal"
-                      title="Open worktree in embedded terminal"
-                      onclick={() => openPathEmbeddedTerminal(worktree.path)}
-                    >
-                      <PanelBottom size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Reveal worktree path"
-                      title="Reveal worktree path"
-                      onclick={() => revealActivityPath(worktree.path)}
-                    >
-                      <FolderSearch size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                </div>
-              {/each}
+              <ActivityWorktreesPanel
+                worktrees={filteredProjectWorktrees}
+                cleanupRunbook={projectWorktreeCleanupRunbook}
+                fileActionBusy={files.fileActionBusy}
+                worktreeSafety={projectWorktreeSafety}
+                cleanupPlan={projectWorktreeCleanupPlan}
+                decisionLane={worktreeDecisionLane}
+                primaryAction={projectWorktreePrimaryAction}
+                eligibilityKind={projectWorktreeEligibilityKind}
+                latestSnapshot={latestWorktreeWorkspaceSnapshot}
+                ownerChips={worktreeOwnerChips}
+                gitTaskUrl={gitTaskUrl}
+                activityLabel={projectWorktreeActivityLabel}
+                cleanupPlanLabel={worktreeCleanupPlanLabel}
+                cleanupPlanReport={formatWorktreeCleanupPlanReport}
+                snapshotTitle={worktreeWorkspaceSnapshotTitle}
+                snapshotLabel={worktreeWorkspaceSnapshotLabel}
+                rowActionMenuOpen={(worktree) => worktreeRowActionMenuOpen(worktree, 'activity')}
+                onCopyRunbook={copyProjectWorktreeCleanupRunbook}
+                onRowContextMenu={(worktree) => openWorktreeRowActionMenu(worktree, 'activity')}
+                onToggleRowActionMenu={(worktree) => toggleWorktreeRowActionMenu(worktree, 'activity')}
+                onCloseRowActionMenu={closeWorktreeRowActionMenu}
+                onCopyCleanupPlan={copyWorktreeCleanupPlan}
+                onRunPrimaryAction={runWorktreePrimaryAction}
+                onOpenInSourceBrowser={openWorktreeInSourceBrowser}
+                onCopyPath={(worktree) => copyActivityCommand(worktree.path, 'Worktree path copied')}
+                onOpenPath={(worktree) => openActivityPath(worktree.path)}
+                onOpenTerminal={(worktree) => openActivityTerminalPath(worktree.path)}
+                onOpenEmbeddedTerminal={(worktree) => openPathEmbeddedTerminal(worktree.path)}
+                onRevealPath={(worktree) => revealActivityPath(worktree.path)}
+                onRestoreSnapshot={restoreConversationWorkspaceSnapshot}
+              />
             {/if}
           </div>
-        {:else if sourceActivityMode === 'git'}
-          <div class="activity-panel-list" aria-label="Git and task list">
-            <div class="git-graph-summary-strip" aria-label="Git graph view model summary" title={selectedProjectGitTaskSearchSummary}>
-              <span>{selectedProjectGitGraphSummary}</span>
-              {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
-                <small>{selectedProjectGitGraph.taskSearchTargets.length} search targets</small>
-              {/if}
-            </div>
-            {#if filteredGitRepositoryRows.length === 0}
-              <div class="activity-empty">No repositories</div>
-            {:else}
-              {#each filteredGitRepositoryRows as row (`activity:${row.id}`)}
-                <div
-                  class="activity-repo-row"
-                  class:dirty={row.dirty.isDirty || row.error}
-                  title={repoDashboardTitle(row)}
-                >
-                  <div class="activity-row-main">
-                    <strong>{row.projectName}</strong>
-                    <small>{row.rootLabel}</small>
-                  </div>
-                  <span class="repo-branch-badge">{row.branchLabel}</span>
-                  {#if row.taskID && repoDashboardTaskUrl(row)}
-                    <a
-                      class="repo-task-link"
-                      href={repoDashboardTaskUrl(row) ?? ''}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {row.taskID}
-                    </a>
-                  {:else}
-                    <span class="repo-branch-badge">{repoDashboardTaskLabel(row)}</span>
-                  {/if}
-                  <small>{repoDashboardDirtyLabel(row)} · {repoDashboardRemoteLabel(row)}</small>
-                  <div class="activity-row-actions" aria-label="Repository actions">
-                    <button
-                      type="button"
-                      aria-label="Copy repository path"
-                      title="Copy repository path"
-                      onclick={() => copyActivityCommand(row.path, 'Repository path copied')}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open repository path"
-                      title="Open repository path"
-                      onclick={() => openActivityPath(row.path)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Open repository in terminal"
-                      title="Open repository in terminal"
-                      onclick={() => openActivityTerminalPath(row.path)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Reveal repository path"
-                      title="Reveal repository path"
-                      onclick={() => revealActivityPath(row.path)}
-                    >
-                      <FolderSearch size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                </div>
-              {/each}
-            {/if}
-
-            {#if selectedProjectGitTaskLedger.length > 0}
-              <div class="activity-subheading">Task ledger</div>
-              {#each selectedProjectGitTaskLedger as row (row.taskID)}
-                {@const ledgerWorktree = row.primaryWorktree}
-                {@const ledgerAction = ledgerWorktree ? projectWorktreePrimaryAction(ledgerWorktree) : null}
-                <div
-                  class={`activity-task-ledger-row ${row.tone}`}
-                  data-task-ledger-id={row.taskID}
-                  tabindex="-1"
-                  title={gitTaskLedgerTitle(row)}
-                >
-                  <div class="activity-row-main">
-                    <strong class="task-ledger-title">
-                      {#if gitTaskUrl(row.taskID)}
-                        <a class="git-task-link" href={gitTaskUrl(row.taskID) ?? ''} target="_blank" rel="noreferrer">
-                          {row.taskID}
-                        </a>
-                      {:else}
-                        <span>{row.taskID}</span>
-                      {/if}
-                      <span>{row.nextAction}</span>
-                    </strong>
-                    <small>{row.sourceSummary} · {row.ownerSummary} · {row.cleanupSummary}</small>
-                  </div>
-                  <div class="activity-task-ledger-chips" aria-label={`${row.taskID} task metadata`}>
-                    {#if row.worktreeCount > 0}
-                      <span class="task-ledger-chip">wt {row.worktreeCount}</span>
-                    {/if}
-                    {#if row.blockedWorktreeCount > 0}
-                      <span class="task-ledger-chip blocked">blocked {row.blockedWorktreeCount}</span>
-                    {/if}
-                    {#if row.readyWorktreeCount > 0}
-                      <span class="task-ledger-chip ready">ready {row.readyWorktreeCount}</span>
-                    {/if}
-                    {#if row.staleCleanWorktreeCount > 0}
-                      <span class="task-ledger-chip stale">stale {row.staleCleanWorktreeCount}</span>
-                    {/if}
-                    {#if row.backupRequiredWorktreeCount > 0}
-                      <span class="task-ledger-chip backup">backup {row.backupRequiredWorktreeCount}</span>
-                    {/if}
-                    {#if row.activeSessionCount > 0}
-                      <span class="task-ledger-chip active">active {row.activeSessionCount}</span>
-                    {/if}
-                    {#if row.savedWorkspaceCount > 0}
-                      <span class="task-ledger-chip saved">saved {row.savedWorkspaceCount}</span>
-                    {/if}
-                    {#if row.runCount > 0}
-                      <span class="task-ledger-chip">runs {row.runCount}</span>
-                    {/if}
-                    {#if row.commitCount > 0}
-                      <span class="task-ledger-chip">commits {row.commitCount}</span>
-                    {/if}
-                  </div>
-                  <div class="activity-row-actions" aria-label="Task ledger actions">
-                    <button
-                      type="button"
-                      aria-label={`Open task reference for ${row.taskID}`}
-                      title="Open task reference"
-                      disabled={!gitTaskUrl(row.taskID)}
-                      onclick={() => openGitTaskReference(row.taskID)}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Copy task ledger for ${row.taskID}`}
-                      title="Copy task ledger"
-                      onclick={() => copyGitTaskLedger(row)}
-                    >
-                      <Copy size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Open worktree for ${row.taskID}`}
-                      title="Open task worktree in source browser"
-                      disabled={!ledgerWorktree}
-                      onclick={() => ledgerWorktree && openWorktreeInSourceBrowser(ledgerWorktree)}
-                    >
-                      <FolderOpen size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      class={ledgerAction ? `worktree-primary-action ${ledgerAction.kind}` : 'worktree-primary-action'}
-                      type="button"
-                      aria-label={`Run worktree action for ${row.taskID}`}
-                      title={ledgerAction?.title ?? 'No worktree action'}
-                      disabled={!ledgerWorktree || (ledgerWorktree ? fileActionBusy === `worktree-primary:${ledgerWorktree.path}` : false)}
-                      onclick={() => ledgerWorktree && runWorktreePrimaryAction(ledgerWorktree)}
-                    >
-                      {#if ledgerAction?.kind === 'cleanup'}
-                        <Trash2 size={12} strokeWidth={2} />
-                      {:else if ledgerAction?.kind === 'backup'}
-                        <Save size={12} strokeWidth={2} />
-                      {:else}
-                        <History size={12} strokeWidth={2} />
-                      {/if}
-                    </button>
-                  </div>
-                </div>
-              {/each}
-            {/if}
-
-            <div class="activity-subheading">Recent commits</div>
-            {#if filteredGitCommitRows.length === 0}
-              <div class="activity-empty">No commits</div>
-            {:else}
-              {#each filteredGitCommitRows.slice(0, 8) as row (row.sha)}
-                {@const entry = gitCommitEntryForRow(row)}
-                <div class="activity-commit-row" title={row.detailLabel}>
-                  <span
-                    class={`git-graph-marker ${row.graphKind}`}
-                    aria-label={row.topologyLabel}
-                    title={row.topologyLabel}
-                  ></span>
-                  <div class="activity-row-main">
-                    <strong>{row.subject}</strong>
-                    <small>{row.shortSha} · {formatGitCommitTime(row.committedAt)}</small>
-                  </div>
-                  <div class="activity-commit-meta">
-                    {#if row.taskID && gitTaskUrl(row.taskID)}
-                      <a
-                        class="git-task-link"
-                        href={gitTaskUrl(row.taskID) ?? ''}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
-                      >
-                        {row.taskID}
-                      </a>
-                    {/if}
-                    <div class="activity-row-actions" aria-label="Commit actions">
-                      <button
-                        type="button"
-                        aria-label="Copy commit SHA"
-                        title="Copy commit SHA"
-                        disabled={!entry}
-                        onclick={() => entry && copyGitCommitSha(entry)}
-                      >
-                        <Copy size={12} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Copy commit summary"
-                        title="Copy commit summary"
-                        disabled={!entry}
-                        onclick={() => entry && copyGitCommitSummary(entry)}
-                      >
-                        <History size={12} strokeWidth={2} />
-                      </button>
-                      {#if row.taskID}
-                        <button
-                          type="button"
-                          aria-label="Copy task reference"
-                          title="Copy task reference"
-                          onclick={() => copyGitTaskReference(row.taskID)}
-                        >
-                          <ExternalLink size={12} strokeWidth={2} />
-                        </button>
-                      {/if}
-                    </div>
-                  </div>
-                </div>
-              {/each}
-            {/if}
-          </div>
+        {:else if dock.activityMode === 'git'}
+          <ActivityGitPanel
+            projectName={selectedProject.name}
+            projectPath={selectedProject.path}
+            selectedRelativePath={files.selectedRecord?.relativePath}
+            fileActionBusy={files.fileActionBusy}
+            bind:commitMessage={gitStore.commitMessage}
+            git={{
+              actionBusy: gitStore.actionBusy,
+              actionStatus: gitStore.actionStatus,
+              actionError: gitStore.actionError,
+              statusLoading: gitStore.statusLoading,
+              statusError: gitStore.statusError,
+              remoteActionDisabled: gitRemoteActionDisabled,
+              commitDisabled: gitCommitDisabled,
+              branchHealth: selectedProjectGitBranchHealth,
+              changedFiles: selectedProjectGitChangedFiles,
+              fileGroups: selectedProjectGitFileGroups,
+              fileGroupSummary: selectedProjectGitFileGroupSummary,
+              repositoryRows: filteredGitRepositoryRows,
+              taskLedger: selectedProjectGitTaskLedger,
+              graph: selectedProjectGitGraph,
+              graphSummary: selectedProjectGitGraphSummary,
+              taskSearchSummary: selectedProjectGitTaskSearchSummary,
+              commitRows: filteredGitCommitRows
+            }}
+            format={{
+              rootLabel: formatSourceContextRootLabel,
+              statusGroupActionLabel: gitStatusGroupActionLabel,
+              statusFileTitle: gitStatusFileTitle,
+              statusFileSummary: gitStatusFileSummary,
+              taskUrl: gitTaskUrl,
+              repoTitle: repoDashboardTitle,
+              repoTaskUrl: repoDashboardTaskUrl,
+              repoTaskLabel: repoDashboardTaskLabel,
+              repoDirtyLabel: repoDashboardDirtyLabel,
+              repoRemoteLabel: repoDashboardRemoteLabel,
+              taskLedgerTitle: gitTaskLedgerTitle,
+              commitTime: formatGitCommitTime,
+              commitEntryForRow: gitCommitEntryForRow,
+              commitTaskSourceLabel: gitGraphCommitTaskSourceLabel,
+              worktreePrimaryAction: projectWorktreePrimaryAction
+            }}
+            actions={{
+              onRefreshStatus: () => loadProjectGitStatus(selectedProject),
+              onRemoteAction: runGitRemoteAction,
+              onCommit: commitGitChanges,
+              onStatusGroupAction: runGitStatusGroupAction,
+              onSelectStatusFile: selectGitStatusFile,
+              onCopyCommand: copyActivityCommand,
+              onOpenPath: openActivityPath,
+              onOpenTerminalPath: openActivityTerminalPath,
+              onRevealPath: revealActivityPath,
+              onOpenTaskReference: openGitTaskReference,
+              onCopyTaskLedger: copyGitTaskLedger,
+              onOpenWorktreeInSourceBrowser: openWorktreeInSourceBrowser,
+              onRunWorktreePrimaryAction: runWorktreePrimaryAction,
+              onCopyCommitSha: copyGitCommitSha,
+              onCopyCommitSummary: copyGitCommitSummary,
+              onCopyTaskReference: copyGitTaskReference,
+              repoRowActionMenuOpen: gitRowActionMenuOpen,
+              onOpenRepoRowActionMenu: openGitRowActionMenu,
+              onToggleRepoRowActionMenu: toggleGitRowActionMenu,
+              onCloseRepoRowActionMenu: closeGitRowActionMenu,
+              commitRowActionMenuOpen: activityRowActionMenuOpen,
+              onOpenCommitRowActionMenu: openActivityRowActionMenu,
+              onToggleCommitRowActionMenu: toggleActivityRowActionMenu,
+              onCloseCommitRowActionMenu: closeActivityRowActionMenu
+            }}
+          />
           {/if}
         {/if}
       </div>
     {/if}
     </div>
   </aside>
-
-  <button
-    class="side-pane-resizer"
-    type="button"
-    aria-label="Resize side pane"
-    title="Resize side pane"
-    onpointerdown={beginSidePaneResize}
-    onkeydown={handleSidePaneResizerKeydown}
-  ></button>
-  {:else if !activityPaneViewportCollapsed()}
-    <button
-      class="activity-restore-button"
-      type="button"
-      aria-label="Show Activity panel"
-      title="Show Activity panel"
-      onclick={() => showDockPanel('activity')}
-    >
-      <PanelLeftOpen size={15} strokeWidth={2} />
-      <span>Activity</span>
-    </button>
+  </SourceDockviewShell>
   {/if}
 
   <section
@@ -14343,7 +16356,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Source Preview</p>
-        <h2 title={sourceContextIdentity.summary}>{preview?.fileName ?? 'No file selected'}</h2>
+        <h2 title={sourceContextIdentity.summary}>{files.preview?.fileName ?? 'No file selected'}</h2>
       </div>
       <div class="topbar-tools">
         <button
@@ -14371,310 +16384,49 @@
             <span>View</span>
           </button>
 
-          {#if viewMenuOpen}
-            <div class="view-menu" role="menu" aria-label="View options">
-              <section class="view-menu-section" aria-label="Workspace layout presets">
-                <span>Layout</span>
-                <div class="view-menu-button-grid">
-                  {#each sourceLayoutPresets as preset (preset.id)}
-                    <button
-                      class:active={sourceLayoutPreset === preset.id}
-                      type="button"
-                      role="menuitem"
-                      aria-label={`Use ${preset.label} layout`}
-                      title={preset.title}
-                      onclick={() => {
-                        applySourceLayoutPreset(preset.id);
-                        closeViewMenu();
-                      }}
-                    >
-                      {preset.label}
-                    </button>
-                  {/each}
-                </div>
-                <div class="view-menu-button-grid two">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-label="Save current layout preset"
-                    title={`Save current arrangement as ${currentSaveableSourceLayoutPreset().label}`}
-                    onclick={() => {
-                      saveSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id);
-                      closeViewMenu();
-                    }}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-label="Reset saved layout preset"
-                    title={`Reset saved ${currentSaveableSourceLayoutPreset().label} layout`}
-                    disabled={!sourceLayoutPresetOverrides[currentSaveableSourceLayoutPreset().id]}
-                    onclick={() => {
-                      resetSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id);
-                      closeViewMenu();
-                    }}
-                  >
-                    Reset
-                  </button>
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  aria-label="Focus editor canvas"
-                  title="Hide context, insights, terminal, and browser"
-                  onclick={() => {
-                    focusSourceEditorLayout();
-                    closeViewMenu();
-                  }}
-                >
-                  Focus editor
-                </button>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  aria-label="Restore layout before focus"
-                  title="Restore the pane arrangement saved before Focus editor"
-                  disabled={!sourceFocusRestoreLayout}
-                  onclick={() => {
-                    restoreSourceLayoutBeforeFocus();
-                    closeViewMenu();
-                  }}
-                >
-                  Restore previous
-                </button>
-                <div class="view-menu-button-grid two">
-                  <button
-                    class:active={sourceChromeCompact}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use compact editor chrome"
-                    onclick={() => {
-                      selectSourceChromeCompact(true);
-                      closeViewMenu();
-                    }}
-                  >
-                    Compact
-                  </button>
-                  <button
-                    class:active={!sourceChromeCompact}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use comfortable editor chrome"
-                    onclick={() => {
-                      selectSourceChromeCompact(false);
-                      closeViewMenu();
-                    }}
-                  >
-                    Comfort
-                  </button>
-                </div>
-              </section>
-
-              <section class="view-menu-section" aria-label="Side pane position">
-                <span>Explorer</span>
-                <div class="view-menu-button-grid two">
-                  <button
-                    class:active={sidePanePosition === 'left'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put side pane on the left"
-                    onclick={() => {
-                      selectSidePanePosition('left');
-                      closeViewMenu();
-                    }}
-                  >
-                    Left
-                  </button>
-                  <button
-                    class:active={sidePanePosition === 'right'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put side pane on the right"
-                    onclick={() => {
-                      selectSidePanePosition('right');
-                      closeViewMenu();
-                    }}
-                  >
-                    Right
-                  </button>
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  class:active={activityPaneRailOnly()}
-                  type="button"
-                  role="menuitem"
-                  aria-label="Collapse explorer to icon rail"
-                  title="Shrink the source browser to the activity icon rail"
-                  disabled={activityPaneRailOnly()}
-                  onclick={() => {
-                    collapseActivityPaneToRail();
-                    closeViewMenu();
-                  }}
-                >
-                  Collapse to icon rail
-                </button>
-              </section>
-
-              <section class="view-menu-section" aria-label="Context card layout">
-                <span>Context</span>
-                <div class="view-menu-button-grid two">
-                  <button
-                    class:active={contextPanelPlacement === 'top'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put context above editor"
-                    onclick={() => {
-                      selectContextPanelPlacement('top');
-                      closeViewMenu();
-                    }}
-                  >
-                    Top
-                  </button>
-                  <button
-                    class:active={contextPanelPlacement === 'side'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put context beside editor"
-                    onclick={() => {
-                      selectContextPanelPlacement('side');
-                      closeViewMenu();
-                    }}
-                  >
-                    Side
-                  </button>
-                  <button
-                    class:active={contextPanelPlacement === 'bottom'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Put context below editor"
-                    onclick={() => {
-                      moveDockPanelToGroup('context', 'bottom');
-                      closeViewMenu();
-                    }}
-                  >
-                    Bottom
-                  </button>
-                  <button
-                    class:active={contextPanelMode === 'grid'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use grid context cards"
-                    onclick={() => {
-                      selectContextPanelMode('grid');
-                      closeViewMenu();
-                    }}
-                  >
-                    Grid
-                  </button>
-                  <button
-                    class:active={contextPanelMode === 'stack'}
-                    type="button"
-                    role="menuitem"
-                    aria-label="Use stacked context cards"
-                    onclick={() => {
-                      selectContextPanelMode('stack');
-                      closeViewMenu();
-                    }}
-                  >
-                    Stack
-                  </button>
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  class:active={contextPaneRailOnly()}
-                  type="button"
-                  role="menuitem"
-                  aria-label="Collapse context to icon rail"
-                  title="Shrink the context cards to the icon rail"
-                  disabled={contextPaneRailOnly()}
-                  onclick={() => {
-                    collapseContextPaneToRail();
-                    closeViewMenu();
-                  }}
-                >
-                  Collapse to icon rail
-                </button>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    toggleContextPanelCollapsed();
-                    closeViewMenu();
-                  }}
-                >
-                  {contextPanelCollapsed ? 'Show context cards' : 'Hide context cards'}
-                </button>
-              </section>
-
-              <section class="view-menu-section dock-panel-manager" aria-label="Dock panels">
-                <span>Panels</span>
-                <div class="dock-panel-manager-list">
-                  {#each managedDockPanelIDs as panelID (panelID)}
-                    <div class="dock-panel-manager-row">
-                      <div>
-                        <strong>{dockPanelLabel(panelID)}</strong>
-                        <small>{dockPanelPlacementSummary(panelID)}</small>
-                      </div>
-                      <div class="dock-panel-manager-actions">
-                        {#if dockPanelCanHide(panelID)}
-                          <button
-                            class:active={sourceDockPanelVisible(panelID)}
-                            type="button"
-                            role="menuitem"
-                            aria-label={`${sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'} ${dockPanelLabel(panelID)} panel`}
-                            onclick={() => toggleDockPanelVisibility(panelID)}
-                          >
-                            {sourceDockPanelVisible(panelID) ? 'Hide' : 'Show'}
-                          </button>
-                        {/if}
-                        {#each dockPanelMoveTargets(panelID) as groupID (groupID)}
-                          <button
-                            class:active={dockGroupIDForPanel(sourceDockLayout, panelID) === groupID}
-                            type="button"
-                            role="menuitem"
-                            aria-label={`Move ${dockPanelLabel(panelID)} to ${dockGroupLabel(groupID, panelID)}`}
-                            disabled={dockGroupIDForPanel(sourceDockLayout, panelID) === groupID}
-                            onclick={() => moveDockPanelToManagedGroup(panelID, groupID)}
-                          >
-                            {dockGroupLabel(groupID, panelID)}
-                          </button>
-                        {/each}
-                      </div>
-                    </div>
-                  {/each}
-                </div>
-                <button
-                  class="view-menu-wide-button"
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    resetSourceDockLayout();
-                    closeViewMenu();
-                  }}
-                >
-                  Reset dock layout
-                </button>
-              </section>
-
-              <label class="view-terminal-picker" title={`Open directories in ${sourceTerminalApp}`}>
-                <span>Terminal</span>
-                <select
-                  bind:value={sourceTerminalApp}
-                  aria-label="Terminal app"
-                  onchange={selectSourceTerminalApp}
-                >
-                  {#each sourceTerminalApps as app (app)}
-                    <option value={app}>{app}</option>
-                  {/each}
-                </select>
-              </label>
-            </div>
-          {/if}
+          <EditorTopbarViewMenu
+            bind:viewMenuOpen
+            bind:terminalApp={sourceTerminalApp}
+            layoutPresets={sourceLayoutPresets}
+            activeLayoutPreset={dock.layoutPreset}
+            layoutPresetOverrides={sourceLayoutPresetOverrides}
+            currentSaveablePreset={currentSaveableSourceLayoutPreset()}
+            focusRestoreLayout={sourceFocusRestoreLayout}
+            chromeCompact={sourceChromeCompact}
+            {sidePanePosition}
+            activityRailOnly={activityPaneRailOnly()}
+            {contextPanelPlacement}
+            {contextPanelMode}
+            contextRailOnly={contextPaneRailOnly()}
+            {contextPanelCollapsed}
+            {managedDockPanelIDs}
+            dockLayout={dock.layout}
+            {dockPanelLabel}
+            {dockPanelPlacementSummary}
+            {dockPanelCanHide}
+            dockPanelVisible={sourceDockPanelVisible}
+            {dockGroupIDForPanel}
+            {dockPanelMoveTargets}
+            {dockGroupLabel}
+            terminalApps={sourceTerminalApps}
+            onApplyPreset={(presetID) => { applySourceLayoutPreset(presetID); closeViewMenu(); }}
+            onSavePresetOverride={() => { saveSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id); closeViewMenu(); }}
+            onResetPresetOverride={() => { resetSourceLayoutPresetOverride(currentSaveableSourceLayoutPreset().id); closeViewMenu(); }}
+            onFocusEditorLayout={() => { focusSourceEditorLayout(); closeViewMenu(); }}
+            onRestoreLayoutBeforeFocus={() => { restoreSourceLayoutBeforeFocus(); closeViewMenu(); }}
+            onResetDockLayout={() => { resetSourceDockLayout(); closeViewMenu(); }}
+            onSelectChromeCompact={(compact) => { selectSourceChromeCompact(compact); closeViewMenu(); }}
+            onSelectSidePanePosition={(position) => { selectSidePanePosition(position); closeViewMenu(); }}
+            onCollapseActivityRail={() => { collapseActivityPaneToRail(); closeViewMenu(); }}
+            onSelectContextPlacement={(placement) => { selectContextPanelPlacement(placement); closeViewMenu(); }}
+            onMoveContextToBottom={() => { moveDockPanelToGroup('context', 'bottom'); closeViewMenu(); }}
+            onSelectContextMode={(mode) => { selectContextPanelMode(mode); closeViewMenu(); }}
+            onCollapseContextRail={() => { collapseContextPaneToRail(); closeViewMenu(); }}
+            onToggleContextCollapsed={() => { toggleContextPanelCollapsed(); closeViewMenu(); }}
+            onToggleDockPanelVisibility={(panelID) => toggleDockPanelVisibility(panelID)}
+            onMoveDockPanelToManagedGroup={(panelID, groupID) => moveDockPanelToManagedGroup(panelID, groupID)}
+            onSelectTerminalApp={selectSourceTerminalApp}
+          />
         </div>
       </div>
     </header>
@@ -14699,2179 +16451,186 @@
     </div>
 
       <div
-        class="dock-panel-tabs"
-        class:empty={!hasDockPanelTabs()}
-        aria-label="Stacked dock panels"
-      >
-        {#each dockTabGroupIDs as groupID (groupID)}
-          {#if dockGroupHasTabs(groupID)}
-            <div class="dock-panel-tab-group" role="tablist" aria-label={`${groupID} dock panels`}>
-              {#each dockGroupPanelIDs(groupID) as panelID (panelID)}
-                <div
-                  class="dock-panel-tab"
-                  class:active={activeDockPanelForGroup(groupID) === panelID}
-                  class:drop-target={dockDropTargetPanelID === panelID}
-                  class:drop-after={dockDropTargetPanelID === panelID && dockDropTargetPanelPlacement === 'after'}
-                  role="presentation"
-                  draggable={dockPanelMoveTargets(panelID).length > 1}
-                  ondragstart={(event) => beginDockPanelDrag(panelID, event)}
-                  ondragenter={(event) => dragOverDockPanelTab(event, panelID)}
-                  ondragover={(event) => dragOverDockPanelTab(event, panelID)}
-                  ondragleave={() => {
-                    if (dockDropTargetPanelID === panelID) dockDropTargetPanelID = null;
-                  }}
-                  ondrop={(event) => dropDockPanelOnTab(event, panelID)}
-                  ondragend={clearDockPanelDrag}
-                >
-                  <button
-                    class="dock-panel-tab-label"
-                    type="button"
-                    role="tab"
-                    aria-selected={activeDockPanelForGroup(groupID) === panelID}
-                    aria-label={`Show ${dockPanelLabel(panelID)} panel`}
-                    onclick={() => selectDockPanel(panelID)}
-                  >
-                    {dockPanelLabel(panelID)}
-                  </button>
-                  {#if dockPanelMoveTargets(panelID).length > 1}
-                    <select
-                      class="dock-panel-tab-move"
-                      aria-label={`Move ${dockPanelLabel(panelID)} panel from tab`}
-                      title={`Move ${dockPanelLabel(panelID)}`}
-                      value={dockGroupIDForPanel(sourceDockLayout, panelID) ?? ''}
-                      onchange={(event) => moveDockPanelFromTab(panelID, event)}
-                    >
-                      {#each dockPanelMoveTargets(panelID) as targetGroupID (targetGroupID)}
-                        <option
-                          value={targetGroupID}
-                          disabled={dockGroupIDForPanel(sourceDockLayout, panelID) === targetGroupID}
-                        >
-                          {dockGroupShortcutLabel(targetGroupID, panelID)}
-                        </option>
-                      {/each}
-                    </select>
-                  {/if}
-                  {#if dockPanelCanHide(panelID)}
-                    <button
-                      class="dock-panel-tab-close"
-                      type="button"
-                      aria-label={`Hide ${dockPanelLabel(panelID)} panel from tab`}
-                      title={`Hide ${dockPanelLabel(panelID)}`}
-                      onclick={() => hideDockPanel(panelID)}
-                    >
-                      <X size={10} strokeWidth={2} />
-                    </button>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/each}
-      </div>
-
-      {#if hiddenDockPanelIDs().length > 0}
-        <div class="hidden-dock-panel-rail" aria-label="Hidden dock panels">
-          {#each hiddenDockPanelIDs() as panelID (panelID)}
-            <button
-              class="hidden-dock-panel-button"
-              type="button"
-              aria-label={`Restore ${dockPanelLabel(panelID)} panel`}
-              title={`Restore ${dockPanelLabel(panelID)} panel`}
-              onclick={() => restoreHiddenDockPanel(panelID)}
-            >
-              {#if panelID === 'activity'}
-                <FolderGit2 size={13} strokeWidth={1.9} />
-              {:else if panelID === 'context'}
-                <Network size={13} strokeWidth={1.9} />
-              {:else if panelID === 'insights'}
-                <Search size={13} strokeWidth={1.9} />
-              {:else if panelID === 'terminal'}
-                <Terminal size={13} strokeWidth={1.9} />
-              {:else}
-                <ExternalLink size={13} strokeWidth={1.9} />
-              {/if}
-              <span>{dockPanelLabel(panelID)}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      {#if draggingDockPanelID}
-        <div
-          class="dock-drop-zones"
-          aria-label={`Dock targets for ${dockPanelLabel(draggingDockPanelID)}`}
-        >
-          {#each dockPanelMoveTargets(draggingDockPanelID) as groupID (groupID)}
-            <button
-              class="dock-drop-zone"
-              class:active={dockDropTargetGroupID === groupID}
-              type="button"
-              ondragenter={(event) => dragOverDockDropZone(event, groupID)}
-              ondragover={(event) => dragOverDockDropZone(event, groupID)}
-              ondragleave={() => (dockDropTargetGroupID = null)}
-              ondrop={(event) => dropDockPanelOnGroup(event, groupID)}
-              onclick={() => {
-                if (!draggingDockPanelID) return;
-                moveDockPanelToManagedGroup(draggingDockPanelID, groupID);
-                clearDockPanelDrag();
-              }}
-            >
-              {dockGroupLabel(groupID, draggingDockPanelID)}
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      <div
       class="workspace-arrangement"
       class:context-top={contextPanelPlacement === 'top' && effectiveContextPaneVisible()}
       class:context-side={contextPanelPlacement === 'side' && effectiveContextPaneVisible()}
       class:context-bottom={contextPanelPlacement === 'bottom' && effectiveContextPaneVisible()}
       class:context-rail-only={contextPaneRailOnly()}
     >
-      {#if effectiveContextPaneVisible()}
-      <div class="workspace-context-column">
-    <div class="context-panel-grid" class:collapsed={contextPanelCollapsed} class:stacked={contextCardsTabbed()}>
-      {#if hiddenContextCardIDs.size > 0}
-        <button class="context-restore-button" type="button" onclick={showAllContextCards}>
-          Show hidden cards
-        </button>
-      {/if}
-      {#if contextCardsTabbed() && visibleContextCards.length > 0}
-        <div class="context-stack-tabs" aria-label="Context card tabs">
-          {#each visibleContextCards as cardID (cardID)}
-            <button
-              class:active={activeContextCard === cardID}
-              type="button"
-              aria-label={`Show ${contextCardLabels[cardID]} context`}
-              title={contextCardLabels[cardID]}
-              onclick={() => selectActiveContextCard(cardID)}
-            >
-              {#if cardID === 'orchestration'}
-                <Activity class="context-card-tab-icon" size={13} strokeWidth={1.9} />
-              {:else if cardID === 'runtime'}
-                <Terminal class="context-card-tab-icon" size={13} strokeWidth={1.9} />
-              {:else if cardID === 'agents'}
-                <Network class="context-card-tab-icon" size={13} strokeWidth={1.9} />
-              {:else if cardID === 'worktrees'}
-                <FolderGit2 class="context-card-tab-icon" size={13} strokeWidth={1.9} />
-              {:else}
-                <History class="context-card-tab-icon" size={13} strokeWidth={1.9} />
-              {/if}
-              <span>{contextCardLabels[cardID]}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-      {#if shouldRenderContextCard('orchestration')}
-      <section class="orchestration-context-panel" aria-label="Orchestration runs">
-        <div class="orchestration-context-header">
-          <div>
-            <strong>Orchestration Runs</strong>
-            <span>{orchestrationRunSummary}</span>
-          </div>
-          <div class="context-card-actions">
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Refresh orchestration runs"
-              title="Refresh orchestration runs"
-              disabled={orchestrationRunsLoading}
-              onclick={() => loadOrchestrationRuns(projectOptions)}
-            >
-              <RefreshCw size={14} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button context-card-close"
-              type="button"
-              aria-label="Hide orchestration runs"
-              title="Hide orchestration runs"
-              onclick={() => hideContextCard('orchestration')}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-        {#if selectedProjectOrchestrationDecisionQueue.length > 0}
-          <div class="orchestration-decision-queue" aria-label="Run decisions needing attention">
-            {#each selectedProjectOrchestrationDecisionQueue as item (item.id)}
-              {@const decisionRun = selectedProjectOrchestrationRuns.find((run) => run.id === item.runID)}
-              {@const decisionHref = item.href ?? gitTaskUrl(item.taskID)}
-              <div
-                class={`orchestration-decision-item ${item.tone}`}
-                title={`${item.runTitle}\n${item.title}${item.summary ? ` - ${item.summary}` : ''}`}
-              >
-                <span>{item.label}</span>
-                <button
-                  type="button"
-                  aria-label={`Focus run decision: ${item.title}`}
-                  disabled={!decisionRun}
-                  onclick={() => {
-                    if (decisionRun) focusOrchestrationRun(decisionRun);
-                  }}
-                >
-                  <strong>{item.title}</strong>
-                  <small>{item.runTitle}{item.agentLabel ? ` · ${item.agentLabel}` : ''}</small>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Copy run decision"
-                  title="Copy run decision"
-                  onclick={() =>
-                    copyActivityCommand(
-                      `${item.label} · ${item.runTitle} · ${item.title}${item.summary ? ` - ${item.summary}` : ''}`,
-                      'Run decision copied'
-                    )}
-                >
-                  <Copy size={11} strokeWidth={2} />
-                </button>
-                {#if decisionHref}
-                  <a href={decisionHref} target="_blank" rel="noreferrer" aria-label={`Open ${item.title}`}>
-                    <ExternalLink size={11} strokeWidth={2} />
-                  </a>
-                {/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-        {#if selectedProjectOrchestrationRuns.length > 0}
-          <div class="orchestration-context-list">
-            {#each selectedProjectOrchestrationRuns.slice(0, 3) as run (run.id)}
-              {@const runMetrics = orchestrationRunMetrics(run)}
-              {@const contextLoopStages = contextOrchestrationLoopStages(runMetrics)}
-              {@const contextLiveDigest = orchestrationLiveDigestItems(run, 3)}
-              <div
-                class="orchestration-context-row"
-                class:bad={orchestrationStatusClass(run.status) === 'bad'}
-                class:attention={orchestrationStatusClass(run.status) === 'attention' ||
-                  runMetrics.attentionCount > 0 ||
-                  runMetrics.approvalCount > 0}
-                class:live={orchestrationStatusClass(run.status) === 'live'}
-                >
-                <div class="orchestration-context-main">
-                  <div class="orchestration-context-title">
-                    <span class={`run-status-badge ${orchestrationStatusClass(run.status)}`}>{run.status}</span>
-                    <strong>{run.title}</strong>
-                    {#if run.taskID && orchestrationRunTaskUrl(run)}
-                      <a
-                        class="git-task-link"
-                        href={orchestrationRunTaskUrl(run) ?? ''}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label="Open context run task"
-                      >
-                        {run.taskID}
-                      </a>
-                    {/if}
-                  </div>
-                  <div class="orchestration-context-meta" title={orchestrationLoopTallyText(runMetrics)}>
-                    <span>{run.phase}</span>
-                    <span>{run.progress}%</span>
-                    <span>{orchestrationLoopTallyText(runMetrics)}</span>
-                  </div>
-                  <small class="orchestration-context-current">{orchestrationCurrentActivity(run)}</small>
-                  {#if contextLiveDigest.length > 0}
-                    <div class="orchestration-context-digest" aria-label="Context live run ingest signals">
-                      {#each contextLiveDigest as item (item.id)}
-                        <span
-                          class={`run-live-digest-chip ${item.tone}`}
-                          title={item.detail ? `${item.title}\n${item.detail}` : item.title}
-                        >
-                          <em>{item.label}</em>
-                          <strong>{item.title}</strong>
-                        </span>
-                      {/each}
-                    </div>
-                  {/if}
-                  <div class="orchestration-context-loop-stages" aria-label="Context run loop stages">
-                    {#each contextLoopStages as stage (stage.id)}
-                      <span class={`context-loop-stage ${stage.tone}`} title={stage.title}>
-                        <em>{stage.label}</em>
-                        <strong>{stage.value}</strong>
-                      </span>
-                    {/each}
-                  </div>
-                </div>
-                <div class="orchestration-context-actions" aria-label="Context run actions">
-                  <button
-                    type="button"
-                    aria-label="Focus context run"
-                    title="Focus run"
-                    onclick={() => focusOrchestrationRun(run)}
-                  >
-                    <Search size={11} strokeWidth={2} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Copy context run handoff"
-                    title="Copy run handoff"
-                    onclick={() => copyOrchestrationRunHandoff(run)}
-                  >
-                    <FileCode2 size={11} strokeWidth={2} />
-                  </button>
-                </div>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="activity-empty compact">
-            {orchestrationRunsLoading
-              ? 'Loading orchestration runs'
-              : `No orchestration runs for ${selectedProject.name}`}
-          </div>
-        {/if}
-      </section>
-      {/if}
-
-      {#if shouldRenderContextCard('runtime')}
-      <section class="runtime-context-panel" aria-label="Runtime contexts">
-        <div class="runtime-context-header">
-          <div>
-            <strong>Runtime Contexts</strong>
-            <span>{runtimeContextSummary}</span>
-          </div>
-          <div class="context-card-actions">
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Refresh runtime contexts"
-              title="Refresh runtime contexts"
-              disabled={runtimeContextsLoading}
-              onclick={() => loadRuntimeContexts(projectOptions)}
-            >
-              <RefreshCw size={14} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button context-card-close"
-              type="button"
-              aria-label="Hide runtime contexts"
-              title="Hide runtime contexts"
-              onclick={() => hideContextCard('runtime')}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-        {#if selectedProjectRuntimeContexts.length > 0}
-          <div class="runtime-context-list">
-            {#each selectedProjectRuntimeContexts as context (`${context.pid}:${context.port}:${context.cwd}`)}
-              <div class="runtime-context-row">
-                <span class="runtime-port">:{context.port}</span>
-                <a
-                  class="runtime-url-link"
-                  href={runtimeContextUrl(context)}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label="Open runtime URL"
-                  title={runtimeContextUrl(context)}
-                >
-                  localhost
-                </a>
-                <strong>{context.command}</strong>
-                <span>{context.rootLabel}</span>
-                <small title={context.cwd}>{context.cwd}</small>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="activity-empty compact">
-            {runtimeContextsLoading
-              ? 'Scanning runtime contexts'
-              : `No runtime contexts for ${selectedProject.name}`}
-          </div>
-        {/if}
-      </section>
-      {/if}
-
-      {#if shouldRenderContextCard('agents')}
-      <section class="agent-session-panel" aria-label="Agent sessions">
-        <div class="agent-session-header">
-          <div>
-            <strong>Agent Sessions</strong>
-            <span>{agentSessionSummary}</span>
-          </div>
-          <div class="context-card-actions">
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Refresh agent sessions"
-              title="Refresh agent sessions"
-              disabled={agentSessionsLoading}
-              onclick={loadAgentSessions}
-            >
-              <RefreshCw size={14} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button context-card-close"
-              type="button"
-              aria-label="Hide agent sessions"
-              title="Hide agent sessions"
-              onclick={() => hideContextCard('agents')}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-        {#if selectedProjectAgentSessions.length > 0}
-          <div class="agent-session-list">
-            {#each selectedProjectAgentSessions as session, index (agentSessionRowKey(session, index, 'context'))}
-              {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-              {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
-              {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-              <div class="agent-session-row" title={agentSessionResumePlan(session)}>
-                <span class="agent-provider-badge">{session.provider}</span>
-                <strong>{session.title}</strong>
-                <span>{agentSessionProjectLabel(session)}</span>
-                {#if session.model}<span>{agentSessionModelLabel(session)}</span>{/if}
-                <small>{agentSessionActivityLabel(session)}</small>
-                <button
-                  type="button"
-                  class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
-                  aria-label="Recommended session focus action"
-                  title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
-                  onclick={() => runAgentSessionFocusLane(session, sessionFocusLane)}
-                >
-                  <em>{sessionFocusLane.label}</em>
-                  <strong>{sessionFocusLane.detail}</strong>
-                </button>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="activity-empty compact">
-            {agentSessionsLoading
-              ? 'Scanning agent sessions'
-              : `No agent sessions for ${selectedProject.name}`}
-          </div>
-        {/if}
-      </section>
-      {/if}
-
-      {#if shouldRenderContextCard('worktrees')}
-      <section class="worktree-context-panel" aria-label="Worktree safety">
-        <div class="worktree-context-header">
-          <div>
-            <strong>Worktree Safety</strong>
-            <span title={projectWorktreeSafetyStats}>{projectWorktreeSummary} · {projectWorktreeCleanupBrief.headline}</span>
-          </div>
-          <div class="context-card-actions">
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Copy worktree cleanup brief"
-              title="Copy cleanup brief"
-              disabled={projectWorktrees.length === 0}
-              onclick={copyProjectWorktreeCleanupBrief}
-            >
-              <Copy size={13} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Copy worktree cleanup script"
-              title="Copy guarded cleanup script"
-              disabled={projectWorktrees.length === 0}
-              onclick={copyProjectWorktreeCleanupScript}
-            >
-              <FileCode2 size={13} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Refresh worktrees"
-              title="Refresh worktrees"
-              disabled={projectWorktreesLoading}
-              onclick={() => loadProjectWorktrees(selectedProject)}
-            >
-              <RefreshCw size={14} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button context-card-close"
-              type="button"
-              aria-label="Hide worktree safety"
-              title="Hide worktree safety"
-              onclick={() => hideContextCard('worktrees')}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-        {#if projectWorktreeDecisionQueue.length > 0}
-          <div class="worktree-decision-queue" aria-label="Worktree cleanup decision queue">
-            {#each projectWorktreeDecisionQueue as group (group.id)}
-              <div class={`worktree-decision-group ${group.id}`}>
-                <div class="worktree-decision-group-header">
-                  <div>
-                    <strong>{group.label}</strong>
-                    <small>{group.summary}</small>
-                  </div>
-                  <span>{group.actionLabel}</span>
-                </div>
-                <div class="worktree-decision-items">
-                  {#each group.entries.slice(0, 3) as entry (entry.worktree.path)}
-                    {@const decisionLane = worktreeDecisionLane(entry.safety)}
-                    {@const cleanupPlan = projectWorktreeCleanupPlan(entry.worktree)}
-                    <div
-                      class="worktree-decision-item"
-                      title={formatWorktreeCleanupPlanReport(entry.worktree, cleanupPlan)}
-                    >
-                      <span class={`worktree-status-badge ${entry.safety.kind}`}>{entry.safety.badge}</span>
-                      <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
-                        {decisionLane.label}
-                      </span>
-                      <div>
-                        <strong>{entry.worktree.branch}</strong>
-                        <small>
-                          {entry.worktree.taskID ?? entry.worktree.repo} · {worktreeCleanupPlanLabel(cleanupPlan)} · {entry.safety.activityLabel}
-                        </small>
-                      </div>
-                      <button
-                        class={`worktree-primary-action ${entry.primaryAction.kind}`}
-                        type="button"
-                        aria-label={`${entry.primaryAction.label} worktree: ${entry.worktree.branch}`}
-                        title={entry.primaryAction.title}
-                        disabled={fileActionBusy === `worktree-primary:${entry.worktree.path}`}
-                        onclick={() => runWorktreePrimaryAction(entry.worktree)}
-                      >
-                        {#if entry.primaryAction.kind === 'cleanup'}
-                          <Trash2 size={11} strokeWidth={2} />
-                        {:else if entry.primaryAction.kind === 'backup'}
-                          <Save size={11} strokeWidth={2} />
-                        {:else}
-                          <History size={11} strokeWidth={2} />
-                        {/if}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Open queued worktree in source browser"
-                        title="Open in source browser"
-                        onclick={() => openWorktreeInSourceBrowser(entry.worktree)}
-                      >
-                        <FolderOpen size={11} strokeWidth={2} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Open queued worktree in embedded terminal"
-                        title="Open embedded terminal"
-                        onclick={() => openPathEmbeddedTerminal(entry.worktree.path)}
-                      >
-                        <PanelBottom size={11} strokeWidth={2} />
-                      </button>
-                    </div>
-                  {/each}
-                  {#if group.entries.length > 3}
-                    <small class="worktree-decision-more">+{group.entries.length - 3} more in the full list</small>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-        {#if projectWorktrees.length > 0}
-          <div class="worktree-context-list">
-            {#each prioritizedProjectWorktrees as worktree (worktree.path)}
-              {@const safety = projectWorktreeSafety(worktree)}
-              {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
-              {@const decisionLane = worktreeDecisionLane(safety)}
-              {@const primaryAction = projectWorktreePrimaryAction(worktree)}
-              {@const eligibilityKind = projectWorktreeEligibilityKind(worktree)}
-              {@const latestSnapshot = latestWorktreeWorkspaceSnapshot(worktree)}
-              {@const ownerChips = worktreeOwnerChips(worktree, safety)}
-              <div
-                class="worktree-context-row"
-                class:blocked={eligibilityKind === 'blocked'}
-                class:protected={eligibilityKind === 'protected'}
-                class:ready={eligibilityKind === 'ready'}
-                title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
-              >
-                <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
-                <span class={`worktree-decision-lane ${decisionLane.tone}`} title={decisionLane.detail}>
-                  {decisionLane.label}
-                </span>
-                <div class="worktree-context-main">
-                  <strong>{worktree.branch}</strong>
-                  <small title={worktree.path}>{worktree.path}</small>
-                  <div class="worktree-owner-strip" aria-label="Worktree session ownership">
-                    {#each ownerChips as chip (chip.id)}
-                      <span class={`worktree-owner-chip ${chip.tone}`} title={chip.title}>{chip.label}</span>
-                    {/each}
-                  </div>
-                </div>
-                <span>{worktree.repo}</span>
-                {#if worktree.taskID && gitTaskUrl(worktree.taskID)}
-                  <a
-                    class="git-task-link"
-                    href={gitTaskUrl(worktree.taskID) ?? ''}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Open worktree task"
-                  >
-                    {worktree.taskID}
-                  </a>
-                {:else}
-                  <span class="worktree-task-empty">no task</span>
-                {/if}
-                <em>
-                  {safety.reason}
-                  {#if safety.activeSessionCount > 0}
-                    · {safety.activeSessionCount}
-                    {safety.activeSessionCount === 1 ? 'session' : 'sessions'}
-                  {/if}
-                  · {projectWorktreeActivityLabel(worktree)}
-                </em>
-                <small class="worktree-plan-line" title={cleanupPlan.explanation}>
-                  <span class={`worktree-plan-lane ${cleanupPlan.lane}`}>
-                    {worktreeCleanupPlanLabel(cleanupPlan)}
-                  </span>
-                  <span>{cleanupPlan.explanation}</span>
-                </small>
-                <small class="worktree-next-check">
-                  <strong>Next</strong>
-                  {worktreeCleanupPlanNextStep(cleanupPlan)}
-                </small>
-                <div class="worktree-context-actions" aria-label="Worktree cleanup actions">
-                  {#if latestSnapshot}
-                    <button
-                      class="worktree-snapshot-chip"
-                      type="button"
-                      aria-label="Restore latest saved workspace for worktree"
-                      title={worktreeWorkspaceSnapshotTitle(worktree)}
-                      onclick={() => restoreConversationWorkspaceSnapshot(latestSnapshot)}
-                    >
-                      <History size={11} strokeWidth={2} />
-                      <span>{worktreeWorkspaceSnapshotLabel(worktree)}</span>
-                    </button>
-                  {/if}
-                  <button
-                    type="button"
-                    aria-label="Copy worktree cleanup plan"
-                    title="Copy cleanup plan"
-                    onclick={() => copyWorktreeCleanupPlan(worktree)}
-                  >
-                    <Copy size={12} strokeWidth={2} />
-                  </button>
-                  <button
-                    class={`worktree-primary-action ${primaryAction.kind}`}
-                    type="button"
-                    aria-label={`${primaryAction.label} worktree: ${worktree.branch}`}
-                    title={primaryAction.title}
-                    disabled={fileActionBusy === `worktree-primary:${worktree.path}`}
-                    onclick={() => runWorktreePrimaryAction(worktree)}
-                  >
-                    {#if primaryAction.kind === 'cleanup'}
-                      <Trash2 size={12} strokeWidth={2} />
-                    {:else if primaryAction.kind === 'backup'}
-                      <Save size={12} strokeWidth={2} />
-                    {:else}
-                      <History size={12} strokeWidth={2} />
-                    {/if}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Open worktree in embedded terminal"
-                    title="Open worktree in embedded terminal"
-                    onclick={() => openPathEmbeddedTerminal(worktree.path)}
-                  >
-                    <PanelBottom size={12} strokeWidth={2} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Open worktree in source browser"
-                    title="Open worktree in source browser"
-                    onclick={() => openWorktreeInSourceBrowser(worktree)}
-                  >
-                    <FolderOpen size={12} strokeWidth={2} />
-                  </button>
-                </div>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="activity-empty compact">
-            {projectWorktreesLoading ? 'Scanning worktrees' : `No worktrees for ${selectedProject.name}`}
-          </div>
-        {/if}
-      </section>
-      {/if}
-
-      {#if shouldRenderContextCard('repo')}
-      <section class="repo-dashboard-panel" aria-label="Repository dashboard">
-        <div class="repo-dashboard-header">
-          <div>
-            <strong>Repo Dashboard</strong>
-            <span>{repoDashboardSummary}</span>
-          </div>
-          <div class="context-card-actions">
-            <button
-              class="file-action-button"
-              type="button"
-              aria-label="Refresh repository dashboard"
-              title="Refresh repository dashboard"
-              disabled={gitRepositorySummariesLoading}
-              onclick={() => loadGitRepositorySummaries(projectOptions)}
-            >
-              <RefreshCw size={14} strokeWidth={1.9} />
-            </button>
-            <button
-              class="file-action-button context-card-close"
-              type="button"
-              aria-label="Hide repository dashboard"
-              title="Hide repository dashboard"
-              onclick={() => hideContextCard('repo')}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-        {#if repositoryDashboardGitGraph.repositories.length > 0}
-          <div class="repo-dashboard-list">
-            {#each repositoryDashboardGitGraph.repositories as row (row.id)}
-              <div
-                class="repo-dashboard-row"
-                class:dirty={row.dirty.isDirty || row.error}
-                title={repoDashboardTitle(row)}
-              >
-                <div class="repo-dashboard-main">
-                  <strong>{row.projectName}</strong>
-                  <small>{row.rootLabel}</small>
-                </div>
-                <span class="repo-branch-badge">{row.branchLabel}</span>
-                <div class="repo-dashboard-metric">
-                  <span>Task</span>
-                  {#if row.taskID && repoDashboardTaskUrl(row)}
-                    <a
-                      class="repo-task-link"
-                      href={repoDashboardTaskUrl(row) ?? ''}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {row.taskID}
-                    </a>
-                  {:else}
-                    <strong>{repoDashboardTaskLabel(row)}</strong>
-                  {/if}
-                </div>
-                <div class="repo-dashboard-metric">
-                  <span>Dirty</span>
-                  <strong>{repoDashboardDirtyLabel(row)}</strong>
-                </div>
-                <em>{repoDashboardRemoteLabel(row)}</em>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="activity-empty compact">
-            {gitRepositorySummariesLoading ? 'Scanning repositories' : 'No repository summaries'}
-          </div>
-        {/if}
-      </section>
-      {/if}
-    </div>
+      {#if sourceDockviewWorkbenchOwnsPanel('context') || effectiveContextPaneVisible()}
+      {#if useUnifiedWorkbench}
+      <!--
+        Unified workbench: render a clean, spacious collapsible-section stack as the context
+        panel content and route it into the Dockview via the same setPanelElement bridge. The
+        legacy grid/stack/rail context markup (the else branch below) is bypassed entirely.
+      -->
+      <div class="workbench-context-host" use:sourceDockviewPanelAction={'context'}>
+        <WorkbenchContextPanel
+          runs={selectedProjectOrchestrationRuns}
+          runsSummary={orchestrationRunSummary}
+          runsLoading={orchestrationRunsLoading}
+          runtimeContexts={selectedProjectRuntimeContexts}
+          runtimeSummary={runtimeContextSummary}
+          runtimeLoading={runtimeContextsLoading}
+          agents={selectedProjectAgentSessions}
+          agentsSummary={agentSessionSummary}
+          agentsLoading={agentSessionsLoading}
+          worktrees={prioritizedProjectWorktrees}
+          worktreesSummary={projectWorktreeSummary}
+          worktreesSafetyStats={projectWorktreeSafetyStats}
+          worktreesLoading={projectWorktreesLoading}
+          repos={selectedProjectRepositorySummaries}
+          reposSummary={repoDashboardSummary}
+          reposLoading={gitStore.repositorySummariesLoading}
+          projectName={selectedProject.name}
+        />
       </div>
-
-      <button
-        class="context-pane-resizer"
-        type="button"
-        aria-label="Resize context pane"
-        title="Resize context pane"
-        onpointerdown={beginContextPaneResize}
-        onkeydown={handleContextPaneResizerKeydown}
-      ></button>
+      {/if}
       {/if}
 
       <div class="workspace-main-column">
-
-    {#if projectOpenSourceTabs.length > 0}
-      <div class="tab-strip" aria-label="Open source files">
-        {#each projectOpenSourceTabs as tab (tab.path)}
-          {@const tabGitStatus = gitStatusForSourceRecord(tab)}
-          <div
-            class="source-tab"
-            class:active={tab.path === selectedRecord?.path}
-            class:dirty={isSourcePathDirty(tab.path)}
-          >
-            <button
-              class="tab-select-button"
-              type="button"
-              aria-label={`Select ${tab.fileName}`}
-              title={tab.relativePath}
-              onclick={() => selectOpenTab(tab)}
+      <SourceDockviewShell
+        shellClass="source-dockview-center-shell"
+        hostClass="source-dockview-center-host"
+        errorClass="source-dockview-center-error"
+        enabled={sourceDockviewCenterEnabled}
+        ready={sourceDockviewCenterReady}
+        error={sourceDockviewCenterError}
+        hostAction={sourceDockviewCenterHostAction}
+      >
+          {#if sourceIntelligencePanelMounted()}
+            <SourceDockviewShell
+              shellClass="source-dockview-insights-parking"
+              hostClass="source-dockview-insights-host"
+              errorClass="source-dockview-insights-error"
+              enabled={sourceDockviewInsightsEnabled}
+              ready={sourceDockviewInsightsReady}
+              error={sourceDockviewInsightsError}
+              hostAction={sourceDockviewInsightsHostAction}
             >
-              <span class="tab-file-icon">
-                <FileCode2 size={14} strokeWidth={1.8} />
-              </span>
-              <span>{tab.fileName}</span>
-              <small>{tab.language}</small>
-              {#if tabGitStatus}
-                <span class="git-status-badge" title={tabGitStatus.status}>{tabGitStatus.badge}</span>
-              {/if}
-              {#if isSourcePathDirty(tab.path)}
-                <span class="tab-dirty-dot" aria-hidden="true"></span>
-              {/if}
-            </button>
-            <button
-              class="tab-close-button"
-              type="button"
-              aria-label={`Close ${tab.fileName}`}
-              title={`Close ${tab.fileName}`}
-              onclick={(event) => closeSourceTab(tab, event)}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-          </div>
-        {/each}
-      </div>
-    {/if}
-
-    {#if preview}
-      <div class="path-row">
-        <span>{preview.relativePath}</span>
-        <strong>
-          {selectedIndex} / {records.length}
-          {#if selectedSourceLine}
-            · line {selectedSourceLine}
-          {/if}
-        </strong>
-      </div>
-    {/if}
-
-    {#if fileActionStatus}
-      <div class="file-action-feedback">{fileActionStatus}</div>
-    {/if}
-
-    {#if error}
-      <div class="inline-error">
-        <Activity size={15} strokeWidth={1.8} />
-        <span>{error}</span>
-      </div>
-    {/if}
-
-    {#if preview}
-      <div class="editor-frame" class:is-loading={loading}>
-        <div class="editor-toolbar" aria-label="Editor controls">
-          <div class="editor-file-state" title={preview.relativePath}>
-            <FileCode2 size={13} strokeWidth={1.8} />
-            <strong>{preview.fileName}</strong>
-            {#if selectedSourceDirty}
-              <span>modified</span>
-            {/if}
-            {#if sourceIntelligenceAvailable}
-              <span
-                class="editor-lsp-state"
-                class:ready={sourceLspStatus?.available}
-                class:unavailable={!sourceLspStatusLoading && !sourceLspStatus?.available}
-                title={sourceLspStatusTitle()}
-              >
-                {sourceLspStatusLabel()}
-              </span>
-            {/if}
-          </div>
-          {#if sourceIntelligenceAvailable}
-            <div class="editor-lsp-recovery-strip" aria-label="Language server recovery actions">
-              <button
-                class="editor-lsp-recovery-action"
-                type="button"
-                aria-label="Retry language server status"
-                title="Retry language server status"
-                disabled={sourceLspStatusLoading}
-                onclick={() => loadSourceLspStatus(preview, selectedProject)}
-              >
-                <RefreshCw size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="editor-lsp-recovery-action"
-                type="button"
-                aria-label="Copy language server status"
-                title="Copy language server status"
-                onclick={copySourceLspStatusReport}
-              >
-                <Copy size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="editor-lsp-recovery-action"
-                type="button"
-                aria-label="Copy language server install command"
-                title="Copy language server install command"
-                disabled={sourceLspStatus?.available || !sourceLspInstallCommand()}
-                onclick={copySourceLspInstallCommand}
-              >
-                <Terminal size={13} strokeWidth={2} />
-              </button>
-            </div>
-          {/if}
-          <div class="editor-menu-anchor">
-            <button
-              class="editor-icon-button"
-              class:active={!editorInsightCollapsed}
-              type="button"
-              aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
-              title={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
-              onclick={toggleEditorInsightCollapsed}
-            >
-              <SplitSquareHorizontal size={14} strokeWidth={2} />
-            </button>
-            <button
-              class="editor-icon-button"
-              type="button"
-              aria-label="Editor actions"
-              aria-haspopup="menu"
-              aria-expanded={editorActionMenuOpen}
-              title="Editor actions"
-              onclick={toggleEditorActionMenu}
-            >
-              <MoreHorizontal size={15} strokeWidth={2} />
-            </button>
-            {#if editorActionMenuOpen}
-              <div class="editor-action-menu" role="menu" aria-label="Editor actions">
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Save source file"
-                  disabled={!selectedSourceDirty || fileActionBusy === 'save'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void saveSelectedSourceFile();
-                  }}
-                >
-                  <Save size={13} strokeWidth={2} />
-                  <span>Save</span>
-                  <kbd>Cmd+S</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Save all source files"
-                  disabled={dirtyProjectSourceRecords.length === 0 || fileActionBusy === 'save-all'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void saveAllDirtySourceFiles();
-                  }}
-                >
-                  <Save size={13} strokeWidth={2} />
-                  <span>Save all</span>
-                  <kbd>{dirtyProjectSourceRecords.length}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Close current source tab"
-                  disabled={!selectedRecord}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void closeSelectedSourceTab();
-                  }}
-                >
-                  <X size={13} strokeWidth={2} />
-                  <span>Close tab</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Close other clean source tabs"
-                  disabled={!selectedRecord || otherCleanProjectOpenSourceTabCount === 0}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void closeOtherCleanSourceTabs();
-                  }}
-                >
-                  <X size={13} strokeWidth={2} />
-                  <span>Close other clean</span>
-                  <kbd>{otherCleanProjectOpenSourceTabCount}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Close all clean source tabs"
-                  disabled={cleanProjectOpenSourceTabCount === 0}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void closeAllCleanSourceTabs();
-                  }}
-                >
-                  <X size={13} strokeWidth={2} />
-                  <span>Close clean tabs</span>
-                  <kbd>{cleanProjectOpenSourceTabCount}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Format source file"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('format');
-                  }}
-                >
-                  <Braces size={13} strokeWidth={2} />
-                  <span>Format</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Rename symbol"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('rename');
-                  }}
-                >
-                  <Braces size={13} strokeWidth={2} />
-                  <span>Rename</span>
-                  <kbd>F2</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Quick fix"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('quick-fix');
-                  }}
-                >
-                  <Activity size={13} strokeWidth={2} />
-                  <span>Quick fix</span>
-                  <kbd>Alt+Enter</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Revert source file"
-                  disabled={!selectedSourceDirty || fileActionBusy === 'save'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    revertSelectedSourceFile();
-                  }}
-                >
-                  <RotateCcw size={13} strokeWidth={2} />
-                  <span>Revert</span>
-                </button>
-                <hr />
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show hover"
-                  disabled={!sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('hover');
-                  }}
-                >
-                  <SplitSquareHorizontal size={13} strokeWidth={2} />
-                  <span>Hover</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Trigger completions"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('completion');
-                  }}
-                >
-                  <Braces size={13} strokeWidth={2} />
-                  <span>Completions</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show signature help"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('signature-help');
-                  }}
-                >
-                  <Activity size={13} strokeWidth={2} />
-                  <span>Signature help</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Go to definition"
-                  disabled={!preview || loading}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('definition');
-                  }}
-                >
-                  <Search size={13} strokeWidth={2} />
-                  <span>Go to definition</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Find references"
-                  disabled={!preview || loading}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('references');
-                  }}
-                >
-                  <Braces size={13} strokeWidth={2} />
-                  <span>Find references</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Find implementations"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('implementation');
-                  }}
-                >
-                  <Network size={13} strokeWidth={2} />
-                  <span>Find implementations</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Go to type definition"
-                  disabled={!preview || loading || !sourceIntelligenceAvailable}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    requestSourceIntelligenceAction('type-definition');
-                  }}
-                >
-                  <FileCode2 size={13} strokeWidth={2} />
-                  <span>Type definition</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label={editorInsightCollapsed ? 'Show editor insights' : 'Hide editor insights'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    toggleEditorInsightCollapsed();
-                  }}
-                >
-                  <SplitSquareHorizontal size={13} strokeWidth={2} />
-                  <span>{editorInsightCollapsed ? 'Show insights' : 'Hide insights'}</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show problems panel"
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    showEditorInsightPanel('problems');
-                  }}
-                >
-                  <Activity size={13} strokeWidth={2} />
-                  <span>Problems</span>
-                  <kbd>{sourceDiagnostics.length}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show symbols panel"
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    showEditorInsightPanel('symbols');
-                  }}
-                >
-                  <FileCode2 size={13} strokeWidth={2} />
-                  <span>Symbols</span>
-                  <kbd>{sourceSymbols.length}</kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-label="Show Git panel"
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    showEditorInsightPanel('git');
-                  }}
-                >
-                  <FolderGit2 size={13} strokeWidth={2} />
-                  <span>Git</span>
-                  <kbd>{selectedSourceGitBadge()}</kbd>
-                </button>
-                <hr />
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={fileActionBusy === 'copy'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void copySelectedPath();
-                  }}
-                >
-                  {#if fileActionStatus === 'Path copied'}
-                    <Check size={13} strokeWidth={2} />
-                  {:else}
-                    <Copy size={13} strokeWidth={2} />
-                  {/if}
-                  <span>Copy path</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={fileActionBusy === 'open'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void openSelectedFile();
-                  }}
-                >
-                  <ExternalLink size={13} strokeWidth={2} />
-                  <span>Open in IDE</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={fileActionBusy === 'reveal'}
-                  onclick={() => {
-                    closeEditorActionMenu();
-                    void revealSelectedFile();
-                  }}
-                >
-                  <FolderSearch size={13} strokeWidth={2} />
-                  <span>Reveal file</span>
-                </button>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-        <div class="editor-local-nav" aria-label="Editor navigation">
-          <button
-            class:active={editorNavPanel === 'problems'}
-            type="button"
-            aria-label="Show editor problems"
-            title={sourceDiagnosticSummary}
-            onclick={() => toggleEditorNavPanel('problems')}
-          >
-            <Activity size={12} strokeWidth={2} />
-            <span>Problems</span>
-            <strong>{sourceDiagnostics.length}</strong>
-          </button>
-          <button
-            class:active={editorNavPanel === 'symbols'}
-            type="button"
-            aria-label="Show editor symbols"
-            title={`${sourceSymbols.length} symbols`}
-            onclick={() => toggleEditorNavPanel('symbols')}
-          >
-            <FileCode2 size={12} strokeWidth={2} />
-            <span>Symbols</span>
-            <strong>{sourceSymbols.length}</strong>
-          </button>
-          <button
-            class:active={editorNavPanel === 'definitions'}
-            type="button"
-            aria-label="Show definition results"
-            title={sourceLookupSummary}
-            onclick={() => toggleEditorNavPanel('definitions')}
-          >
-            <Search size={12} strokeWidth={2} />
-            <span>Defs</span>
-            <strong>{sourceLookupLoading ? '...' : sourceDefinitionNavCount}</strong>
-          </button>
-          <button
-            class:active={editorNavPanel === 'references'}
-            type="button"
-            aria-label="Show reference results"
-            title={sourceReferenceSummary || 'References'}
-            onclick={() => toggleEditorNavPanel('references')}
-          >
-            <Braces size={12} strokeWidth={2} />
-            <span>Refs</span>
-            <strong>{sourceReferenceLoading ? '...' : sourceReferenceTargets.length}</strong>
-          </button>
-        </div>
-
-        {#if editorNavPanel}
-          <div class="editor-nav-drawer" aria-label="Editor navigation drawer">
-            <div class="editor-nav-drawer-header">
-              <strong>
-                {editorNavPanel === 'problems'
-                  ? 'Problems'
-                  : editorNavPanel === 'symbols'
-                    ? 'Symbols'
-                    : editorNavPanel === 'references'
-                      ? 'References'
-                      : 'Definitions'}
-              </strong>
-              <span>
-                {editorNavPanel === 'problems'
-                  ? sourceDiagnosticSummary
-                  : editorNavPanel === 'symbols'
-                    ? `${sourceSymbols.length} symbols`
-                    : editorNavPanel === 'references'
-                      ? sourceReferenceSummary || 'No references yet'
-                      : sourceLookupSummary}
-              </span>
-              <button
-                class="editor-nav-close"
-                type="button"
-                aria-label="Close editor navigation drawer"
-                title="Close"
-                onclick={closeEditorNavPanel}
-              >
-                <X size={12} strokeWidth={2} />
-              </button>
-            </div>
-
-            <div class="editor-nav-list">
-              {#if editorNavPanel === 'problems'}
-                {#if sourceDiagnostics.length === 0}
-                  <div class="intelligence-empty compact">No problems</div>
-                {:else}
-                  {#each sourceDiagnostics as diagnostic, index (`nav:${diagnostic.line}:${diagnostic.column}:${index}`)}
-                    <button
-                      class="intelligence-row diagnostic"
-                      class:error={diagnostic.severity === 'error'}
-                      class:warning={diagnostic.severity === 'warning'}
-                      type="button"
-                      title={diagnostic.message}
-                      onclick={() => selectSourceDiagnostic(diagnostic)}
-                    >
-                      <strong>{diagnostic.severity}</strong>
-                      <span>{diagnostic.message}</span>
-                      <small>{diagnostic.line}:{diagnostic.column}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {:else if editorNavPanel === 'symbols'}
-                {#if sourceSymbols.length === 0}
-                  <div class="intelligence-empty compact">No symbols</div>
-                {:else}
-                  {#each sourceSymbols as symbol (`nav:${symbol.kind}:${symbol.name}:${symbol.line}`)}
-                    <button
-                      class="intelligence-row"
-                      type="button"
-                      title={symbol.detail}
-                      onclick={() => selectSourceSymbol(symbol)}
-                    >
-                      <strong>{symbol.kind}</strong>
-                      <span>{symbol.name}</span>
-                      <small>{symbol.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {:else if editorNavPanel === 'references'}
-                {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
-                  <div class="intelligence-empty compact">No references</div>
-                {:else}
-                  {#each sourceReferenceTargets as target (`nav:${target.path}:${target.line}:${target.column}`)}
-                    <button
-                      class="reference-row"
-                      type="button"
-                      title={target.excerpt}
-                      onclick={() => selectSourceReferenceTarget(target)}
-                    >
-                      <strong>{target.line}:{target.column}</strong>
-                      <span>{target.fileName}</span>
-                      <small>{target.excerpt}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {:else}
-                {#if sourceDefinitionTargets.length === 0 && sourceImplementationTargets.length === 0 && sourceTypeDefinitionTargets.length === 0 && !sourceLookupLoading}
-                  <div class="intelligence-empty compact">No definitions</div>
-                {:else}
-                  {#each sourceDefinitionTargets as target (`nav-definition:${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                  {#each sourceImplementationTargets as target (`nav-implementation:${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceImplementationTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                  {#each sourceTypeDefinitionTargets as target (`nav-type-definition:${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceTypeDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              {/if}
-            </div>
-          </div>
-        {/if}
-
-        <div class="editor-body-grid" class:insights-hidden={editorInsightCollapsed || !shouldRenderDockPanel('insights')}>
-          <div class="editor-canvas">
-            {#key sourcePreviewAppearanceKey}
-              <MonacoSourceEditor
-                {preview}
-                content={selectedSourceDraftContent}
-                editable={true}
-                externalDiagnostics={sourceLspDiagnostics}
-                {loading}
-                targetLine={selectedSourceLine}
-                targetLineRequestId={selectedSourceLineRequestId}
-                intelligenceCommand={sourceIntelligenceCommand}
-                onCodeActionLookup={handleEditorCodeActionLookup}
-                onContentChange={updateSelectedSourceDraft}
-                onCommandPaletteRequest={openCommandPalette}
-                onCompletionLookup={handleEditorCompletionLookup}
-                onDiagnosticsChange={handleEditorDiagnosticsChange}
-                onDefinitionLookup={handleEditorDefinitionLookup}
-                onDocumentHighlightLookup={handleEditorDocumentHighlightLookup}
-                onFormatDocument={handleEditorFormatDocument}
-                onGoToLineRequest={openCurrentFileGoToLine}
-                onHoverLookup={handleEditorHoverLookup}
-                onImplementationLookup={handleEditorImplementationLookup}
-                onInlayHintLookup={handleEditorInlayHintLookup}
-                onNavigateBackRequest={navigateSourceBack}
-                onNavigateForwardRequest={navigateSourceForward}
-                onNextProblemRequest={selectNextSourceDiagnostic}
-                onProblemsRequest={() => openEditorNavPanel('problems')}
-                onPreviousProblemRequest={selectPreviousSourceDiagnostic}
-                onQuickOpenRequest={openQuickOpen}
-                onReferenceLookup={handleEditorReferenceLookup}
-                onRename={handleEditorRename}
-                onSaveRequest={saveSelectedSourceFile}
-                onSemanticTokensLookup={handleEditorSemanticTokensLookup}
-                onSignatureHelpLookup={handleEditorSignatureHelpLookup}
-                onSymbolsRequest={() => openEditorNavPanel('symbols')}
-                onSymbolsChange={handleEditorSymbolsChange}
-                onTypeDefinitionLookup={handleEditorTypeDefinitionLookup}
-                onWorkspaceEditAction={handleEditorWorkspaceEditAction}
+              <GitInsightsPanel
+                panelAction={sourceDockviewPanelAction}
+                selectedRelativePath={files.selectedRecord?.relativePath}
+                commitMessage={gitStore.commitMessage}
+                onCommitMessageChange={(value) => (gitStore.commitMessage = value)}
+                git={{
+                  actionBusy: gitStore.actionBusy,
+                  actionStatus: gitStore.actionStatus,
+                  actionError: gitStore.actionError,
+                  hasStagedChanges: gitHasStagedChanges,
+                  selectedSourceDirty,
+                  pathActionDisabled: selectedGitPathActionDisabled,
+                  unstageDisabled: selectedGitUnstageDisabled,
+                  remoteActionDisabled: gitRemoteActionDisabled,
+                  commitDisabled: gitCommitDisabled,
+                  statusLoading: gitStore.statusLoading,
+                  statusError: gitStore.statusError,
+                  changedFiles: selectedProjectGitChangedFiles,
+                  fileGroups: selectedProjectGitFileGroups,
+                  fileGroupSummary: selectedProjectGitFileGroupSummary,
+                  graph: selectedProjectGitGraph,
+                  commitHistorySummary: gitCommitHistorySummary,
+                  graphSummary: selectedProjectGitGraphSummary,
+                  taskSearchSummary: selectedProjectGitTaskSearchSummary,
+                  branchHealth: selectedProjectGitBranchHealth,
+                  taskIDs: selectedProjectGitTaskIDs,
+                  taskSourceGroups: selectedProjectGitTaskSourceGroups,
+                  selectedCommit: selectedGitCommit,
+                  selectedCommitRow: selectedGitCommitRow,
+                  selectedCommitSha: gitStore.selectedCommitSha,
+                  commitHistoryLoading: gitStore.commitHistoryLoading,
+                  commitHistoryError: gitStore.commitHistoryError,
+                  sourceSummary: selectedSourceGitSummary,
+                  selectedDiff: gitStore.selectedDiff,
+                  selectedDiffLoading: gitStore.selectedDiffLoading,
+                  selectedDiffError: gitStore.selectedDiffError
+                }}
+                format={gitInsightsFormatters}
+                actions={gitInsightsActions}
               />
-            {/key}
-
-            {#if editorInsightCollapsed && editorNavPanel === null && (sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading || sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading || sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading || sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading)}
-              <div class="editor-lookup-popover" aria-label="Editor lookup results">
-                <div class="editor-lookup-header">
-                  <strong>{sourceReferenceQuery ? sourceReferenceSummary : sourceImplementationQuery ? sourceImplementationSummary : sourceTypeDefinitionQuery ? sourceTypeDefinitionSummary : sourceDefinitionSummary}</strong>
-                  <button
-                    class="editor-lookup-close"
-                    type="button"
-                    aria-label="Close lookup results"
-                    title="Close lookup results"
-                    onclick={clearSourceLookupResults}
-                  >
-                    <X size={13} strokeWidth={2} />
-                  </button>
-                </div>
-                <div class="editor-lookup-list">
-                  {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
-                    {#if sourceDefinitionTargets.length === 0 && !sourceDefinitionLoading}
-                      <div class="intelligence-empty">No definition</div>
-                    {:else}
-                      {#each sourceDefinitionTargets as target (`inline:${target.path}:${target.line}:${target.symbolName}`)}
-                        <button
-                          class="definition-row"
-                          type="button"
-                          title={target.detail}
-                          onclick={() => selectSourceDefinitionTarget(target)}
-                        >
-                          <strong>{target.kind}</strong>
-                          <span>{target.symbolName}</span>
-                          <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                  {#if sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading}
-                    {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
-                      <div class="intelligence-empty">No references</div>
-                    {:else}
-                      {#each sourceReferenceTargets as target (`inline:${target.path}:${target.line}:${target.column}`)}
-                        <button
-                          class="reference-row"
-                          type="button"
-                          title={target.excerpt}
-                          onclick={() => selectSourceReferenceTarget(target)}
-                        >
-                          <strong>{target.line}:{target.column}</strong>
-                          <span>{target.fileName}</span>
-                          <small>{target.excerpt}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                  {#if sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading}
-                    {#if sourceImplementationTargets.length === 0 && !sourceImplementationLoading}
-                      <div class="intelligence-empty">No implementations</div>
-                    {:else}
-                      {#each sourceImplementationTargets as target (`inline-implementation:${target.path}:${target.line}:${target.symbolName}`)}
-                        <button
-                          class="definition-row"
-                          type="button"
-                          title={target.detail}
-                          onclick={() => selectSourceImplementationTarget(target)}
-                        >
-                          <strong>{target.kind}</strong>
-                          <span>{target.symbolName}</span>
-                          <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                  {#if sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading}
-                    {#if sourceTypeDefinitionTargets.length === 0 && !sourceTypeDefinitionLoading}
-                      <div class="intelligence-empty">No type definition</div>
-                    {:else}
-                      {#each sourceTypeDefinitionTargets as target (`inline-type-definition:${target.path}:${target.line}:${target.symbolName}`)}
-                        <button
-                          class="definition-row"
-                          type="button"
-                          title={target.detail}
-                          onclick={() => selectSourceTypeDefinitionTarget(target)}
-                        >
-                          <strong>{target.kind}</strong>
-                          <span>{target.symbolName}</span>
-                          <small>{target.relativePath}:{target.line}</small>
-                        </button>
-                      {/each}
-                    {/if}
-                  {/if}
-                </div>
-              </div>
-            {/if}
-          </div>
-
-          {#if !editorInsightCollapsed && shouldRenderDockPanel('insights')}
-            <button
-              class="editor-insight-resizer"
-              type="button"
-              aria-label="Resize editor insights"
-              title="Resize editor insights"
-              onpointerdown={beginEditorInsightResize}
-              onkeydown={handleEditorInsightResizerKeydown}
-            ></button>
-
-            <div
-              class="source-dockview-insights-shell"
-              class:dockview-enabled={sourceDockviewInsightsEnabled}
-              class:dockview-ready={sourceDockviewInsightsReady}
-              class:dockview-error={Boolean(sourceDockviewInsightsError)}
-            >
-              {#if sourceDockviewInsightsEnabled}
-                <div
-                  class="source-dockview-insights-host"
-                  aria-hidden={!sourceDockviewInsightsReady}
-                  use:sourceDockviewInsightsHostAction
-                ></div>
-              {/if}
-              <aside
-                class="source-intelligence-panel"
-                aria-label="Language intelligence"
-                use:sourceDockviewPanelAction={'insights'}
-              >
-            <div class="intelligence-tabs" role="tablist" aria-label="Source insights">
-              <button
-                class:active={sourceIntelligencePanel === 'problems'}
-                type="button"
-                role="tab"
-                aria-selected={sourceIntelligencePanel === 'problems'}
-                onclick={() => sourceIntelligencePanel = 'problems'}
-              >
-                <Activity size={13} strokeWidth={1.9} />
-                <span>Problems</span>
-                <strong>{sourceDiagnostics.length}</strong>
-              </button>
-              <button
-                class:active={sourceIntelligencePanel === 'symbols'}
-                type="button"
-                role="tab"
-                aria-selected={sourceIntelligencePanel === 'symbols'}
-                onclick={() => sourceIntelligencePanel = 'symbols'}
-              >
-                <FileCode2 size={13} strokeWidth={1.9} />
-                <span>Symbols</span>
-                <strong>{sourceSymbols.length}</strong>
-              </button>
-              <button
-                class:active={sourceIntelligencePanel === 'git'}
-                type="button"
-                role="tab"
-                aria-selected={sourceIntelligencePanel === 'git'}
-                onclick={() => sourceIntelligencePanel = 'git'}
-              >
-                <FolderGit2 size={13} strokeWidth={1.9} />
-                <span>Git</span>
-                <strong>{selectedSourceGitBadge()}</strong>
-              </button>
-            </div>
-
-            {#if sourceDefinitionQuery || sourceDefinitionTargets.length > 0 || sourceDefinitionLoading}
-              <div class="definition-results" aria-label="Definition lookup results">
-                <div class="definition-summary">{sourceDefinitionSummary}</div>
-                {#if sourceDefinitionTargets.length === 0 && !sourceDefinitionLoading}
-                  <div class="intelligence-empty">No definition</div>
-                {:else}
-                  {#each sourceDefinitionTargets as target (`${target.path}:${target.line}:${target.symbolName}`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceReferenceQuery || sourceReferenceTargets.length > 0 || sourceReferenceLoading}
-              <div class="reference-results" aria-label="Reference lookup results">
-                <div class="reference-summary">{sourceReferenceSummary}</div>
-                {#if sourceReferenceTargets.length === 0 && !sourceReferenceLoading}
-                  <div class="intelligence-empty">No references</div>
-                {:else}
-                  {#each sourceReferenceTargets as target (`${target.path}:${target.line}:${target.column}`)}
-                    <button
-                      class="reference-row"
-                      type="button"
-                      title={target.excerpt}
-                      onclick={() => selectSourceReferenceTarget(target)}
-                    >
-                      <strong>{target.line}:{target.column}</strong>
-                      <span>{target.fileName}</span>
-                      <small>{target.excerpt}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceImplementationQuery || sourceImplementationTargets.length > 0 || sourceImplementationLoading}
-              <div class="implementation-results" aria-label="Implementation lookup results">
-                <div class="implementation-summary">{sourceImplementationSummary}</div>
-                {#if sourceImplementationTargets.length === 0 && !sourceImplementationLoading}
-                  <div class="intelligence-empty">No implementations</div>
-                {:else}
-                  {#each sourceImplementationTargets as target (`${target.path}:${target.line}:${target.symbolName}:implementation`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceImplementationTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceTypeDefinitionQuery || sourceTypeDefinitionTargets.length > 0 || sourceTypeDefinitionLoading}
-              <div class="type-definition-results" aria-label="Type definition lookup results">
-                <div class="type-definition-summary">{sourceTypeDefinitionSummary}</div>
-                {#if sourceTypeDefinitionTargets.length === 0 && !sourceTypeDefinitionLoading}
-                  <div class="intelligence-empty">No type definition</div>
-                {:else}
-                  {#each sourceTypeDefinitionTargets as target (`${target.path}:${target.line}:${target.symbolName}:type-definition`)}
-                    <button
-                      class="definition-row"
-                      type="button"
-                      title={target.detail}
-                      onclick={() => selectSourceTypeDefinitionTarget(target)}
-                    >
-                      <strong>{target.kind}</strong>
-                      <span>{target.symbolName}</span>
-                      <small>{target.relativePath}:{target.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-
-            {#if sourceIntelligencePanel === 'problems'}
-              <div class="intelligence-summary">{sourceDiagnosticSummary}</div>
-              <div class="intelligence-list">
-                {#if sourceDiagnostics.length === 0}
-                  <div class="intelligence-empty">No problems</div>
-                {:else}
-                  {#each sourceDiagnostics as diagnostic, index (`${diagnostic.line}:${diagnostic.column}:${index}`)}
-                    <button
-                      class="intelligence-row diagnostic"
-                      class:error={diagnostic.severity === 'error'}
-                      class:warning={diagnostic.severity === 'warning'}
-                      type="button"
-                      title={diagnostic.message}
-                      onclick={() => selectSourceDiagnostic(diagnostic)}
-                    >
-                      <strong>{diagnostic.severity}</strong>
-                      <span>{diagnostic.message}</span>
-                      <small>{diagnostic.line}:{diagnostic.column}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {:else if sourceIntelligencePanel === 'git'}
-              <div class="git-diff-panel" aria-label="Selected file Git diff">
-                <details class="git-command-drawer">
-                  <summary>
-                    <span>Commands</span>
-                    <small>{gitActionError || gitActionStatus || (gitHasStagedChanges ? 'staged changes ready' : 'stage, fetch, pull, push')}</small>
-                  </summary>
-                  <div class="git-controls" aria-label="Git working tree controls">
-                  <div class="git-action-row">
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Stage selected source file"
-                      title={selectedSourceDirty ? 'Save the source file before staging it' : 'Stage selected source file'}
-                      disabled={selectedGitPathActionDisabled}
-                      onclick={() => selectedRecord && runGitPathAction('stage', [selectedRecord.relativePath])}
-                    >
-                      <Plus size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'stage' ? 'Staging' : 'Stage'}</span>
-                    </button>
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Unstage selected source file"
-                      title="Unstage selected source file"
-                      disabled={selectedGitUnstageDisabled}
-                      onclick={() => selectedRecord && runGitPathAction('unstage', [selectedRecord.relativePath])}
-                    >
-                      <RotateCcw size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'unstage' ? 'Unstaging' : 'Unstage'}</span>
-                    </button>
-                  </div>
-                  <div class="git-remote-row">
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Fetch selected repository"
-                      title="Fetch selected repository"
-                      disabled={gitRemoteActionDisabled}
-                      onclick={() => runGitRemoteAction('fetch')}
-                    >
-                      <RefreshCw size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'fetch' ? 'Fetching' : 'Fetch'}</span>
-                    </button>
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Pull selected repository"
-                      title="Pull selected repository with fast-forward only"
-                      disabled={gitRemoteActionDisabled}
-                      onclick={() => runGitRemoteAction('pull')}
-                    >
-                      <ChevronDown size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'pull' ? 'Pulling' : 'Pull'}</span>
-                    </button>
-                    <button
-                      class="git-action-button"
-                      type="button"
-                      aria-label="Push selected repository"
-                      title="Push selected repository"
-                      disabled={gitRemoteActionDisabled}
-                      onclick={() => runGitRemoteAction('push')}
-                    >
-                      <ExternalLink size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'push' ? 'Pushing' : 'Push'}</span>
-                    </button>
-                  </div>
-                  <div class="git-commit-row">
-                    <textarea
-                      class="git-commit-input"
-                      bind:value={gitCommitMessage}
-                      aria-label="Git commit message"
-                      placeholder="Commit message"
-                      rows="2"
-                    ></textarea>
-                    <button
-                      class="git-action-button commit"
-                      type="button"
-                      aria-label="Commit staged Git changes"
-                      title="Commit staged Git changes"
-                      disabled={gitCommitDisabled}
-                      onclick={commitGitChanges}
-                    >
-                      <Check size={12} strokeWidth={2} />
-                      <span>{gitActionBusy === 'commit' ? 'Committing' : 'Commit'}</span>
-                    </button>
-                  </div>
-                  {#if gitActionError || gitActionStatus}
-                    <div class:error={Boolean(gitActionError)} class="git-action-message">
-                      {gitActionError || gitActionStatus}
-                    </div>
-                  {/if}
-                  </div>
-                </details>
-                <div class="git-status-list" aria-label="Changed Git files">
-                  {#if projectGitLoading}
-                    <div class="intelligence-empty">Loading changed files</div>
-                  {:else if projectGitError}
-                    <div class="intelligence-empty">{projectGitError}</div>
-                  {:else if selectedProjectGitChangedFiles.length === 0}
-                    <div class="intelligence-empty">No changed files</div>
-                  {:else}
-                    <div class="git-status-overview">{selectedProjectGitFileGroupSummary}</div>
-                    {#each selectedProjectGitFileGroups as group (group.id)}
-                      <section class="git-status-group" aria-label={`${group.label} Git files`}>
-                        <div class="git-status-group-heading">
-                          <strong>{group.label}</strong>
-                          <span>{group.files.length}</span>
-                          <button
-                            type="button"
-                            disabled={gitActionBusy !== ''}
-                            onclick={() => runGitStatusGroupAction(group)}
-                          >
-                            {gitStatusGroupActionLabel(group)}
-                          </button>
-                        </div>
-                        {#each group.files as fileStatus (`${group.id}:${fileStatus.relativePath}`)}
-                          <button
-                            class="git-status-row"
-                            class:selected={selectedRecord?.relativePath === fileStatus.relativePath}
-                            type="button"
-                            title={gitStatusFileTitle(fileStatus)}
-                            onclick={() => selectGitStatusFile(fileStatus)}
-                          >
-                            <strong>{fileStatus.badge}</strong>
-                            <span>{fileStatus.relativePath}</span>
-                            <small>{gitStatusFileSummary(fileStatus)}</small>
-                          </button>
-                        {/each}
-                      </section>
-                    {/each}
-                  {/if}
-                </div>
-                <div class="git-history-panel" aria-label="Git commit history">
-                  <div class="git-history-heading">
-                    <span>History</span>
-                    <small>{gitCommitHistorySummary}</small>
-                  </div>
-                  <div class="git-graph-summary-strip" aria-label="Git graph view model summary" title={selectedProjectGitTaskSearchSummary}>
-                    <span>{selectedProjectGitGraphSummary}</span>
-                    {#if selectedProjectGitGraph.summary.mergeCommitCount > 0}
-                      <small>{selectedProjectGitGraph.summary.mergeCommitCount} merges</small>
-                    {/if}
-                  </div>
-                  <div
-                    class="git-branch-health-strip"
-                    aria-label="Git branch health"
-                    title={selectedProjectGitBranchHealth.detail}
-                  >
-                    {#each selectedProjectGitBranchHealth.chips as chip (`${chip.label}:${chip.value}`)}
-                      <span class={`git-branch-health-chip ${chip.tone}`}>
-                        <strong>{chip.label}</strong>
-                        <span>{chip.value}</span>
-                      </span>
-                    {/each}
-                  </div>
-                  {#if selectedProjectGitTaskIDs.length > 0}
-                    <div class="git-task-trail" aria-label="Git task links">
-                      <span>Tasks</span>
-                      {#each selectedProjectGitTaskIDs as taskID (taskID)}
-                        {#if gitTaskUrl(taskID)}
-                          <a class="git-task-link" href={gitTaskUrl(taskID) ?? ''} target="_blank" rel="noreferrer">
-                            {taskID}
-                          </a>
-                        {:else}
-                          <span class="git-task-link">{taskID}</span>
-                        {/if}
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if selectedProjectGitTaskSourceGroups.length > 0}
-                    <div class="git-task-source-map" aria-label="Git task source map">
-                      {#each selectedProjectGitTaskSourceGroups as group (group.taskID)}
-                        <div class="git-task-source-row" title={group.detailSummary}>
-                          {#if gitTaskUrl(group.taskID)}
-                            <a class="git-task-link" href={gitTaskUrl(group.taskID) ?? ''} target="_blank" rel="noreferrer">
-                              {group.taskID}
-                            </a>
-                          {:else}
-                            <span class="git-task-link">{group.taskID}</span>
-                          {/if}
-                          <small>{group.sourceSummary}</small>
-                          <button
-                            type="button"
-                            aria-label={`Copy task sources for ${group.taskID}`}
-                            title={group.detailSummary}
-                            onclick={() => copyGitTaskSourceGroup(group)}
-                          >
-                            <Copy size={11} strokeWidth={2} />
-                          </button>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if selectedProjectGitGraph.taskSearchTargets.length > 0}
-                    <div class="git-task-search-targets" aria-label="Git task search targets" title={selectedProjectGitTaskSearchSummary}>
-                      <span>Search</span>
-                      {#each selectedProjectGitGraph.taskSearchTargets as target (`${target.kind}:${target.id}`)}
-                        <small>{target.label}: {target.query}</small>
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if selectedGitCommit && selectedGitCommitRow}
-                    <details
-                      class="git-commit-detail-drawer"
-                      aria-label="Selected commit detail"
-                      title={selectedGitCommitRow.detailLabel}
-                    >
-                      <summary class="git-commit-detail-summary">
-                        <span class="git-commit-detail-summary-main">
-                          <strong>{selectedGitCommitRow.subject}</strong>
-                          <small>{selectedGitCommitRow.metaLabel}</small>
-                        </span>
-                        <span class="git-commit-detail-summary-ref">{selectedGitCommitRow.refs.label}</span>
-                      </summary>
-                      <div class="git-commit-detail-body">
-                        <div class="git-commit-detail-facts" aria-label="Selected commit metadata">
-                          <span>
-                            <strong>Commit</strong>
-                            <small>{selectedGitCommitRow.sha}</small>
-                          </span>
-                          <span>
-                            <strong>Refs</strong>
-                            <small>{selectedGitCommitRow.refs.label}</small>
-                          </span>
-                          <span>
-                            <strong>Parents</strong>
-                            <small>{selectedGitCommitRow.parentHint.label}</small>
-                          </span>
-                          {#if selectedGitCommitRow.taskID}
-                            <span>
-                              <strong>Task</strong>
-                              <small>{selectedGitCommitRow.taskID}</small>
-                            </span>
-                          {/if}
-                        </div>
-                        <div class="git-commit-detail-actions" aria-label="Selected commit actions">
-                          <button
-                            type="button"
-                            aria-label="Copy selected commit detail"
-                            title="Copy selected commit detail"
-                            onclick={copySelectedGitCommitDetail}
-                          >
-                            <Copy size={11} strokeWidth={2} />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label="Copy selected commit handoff"
-                            title="Copy selected commit handoff"
-                            onclick={() => copyGitCommitHandoff(selectedGitCommit)}
-                          >
-                            <FileCode2 size={11} strokeWidth={2} />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label="Copy selected commit SHA"
-                            title="Copy selected commit SHA"
-                            onclick={() => copyGitCommitSha(selectedGitCommit)}
-                          >
-                            <History size={11} strokeWidth={2} />
-                          </button>
-                          {#if selectedGitCommitRow.taskID}
-                            {#if gitTaskUrl(selectedGitCommitRow.taskID)}
-                              <button
-                                type="button"
-                                aria-label="Open selected commit task reference"
-                                title="Open selected commit task reference"
-                                onclick={() => openGitTaskReference(selectedGitCommitRow.taskID)}
-                              >
-                                <ExternalLink size={11} strokeWidth={2} />
-                              </button>
-                            {/if}
-                            <button
-                              type="button"
-                              aria-label="Copy selected commit task reference"
-                              title="Copy selected commit task reference"
-                              onclick={() => copyGitTaskReference(selectedGitCommitRow.taskID)}
-                            >
-                              <Copy size={11} strokeWidth={2} />
-                            </button>
-                          {/if}
-                        </div>
-                      </div>
-                    </details>
-                  {/if}
-                  <div class="git-history-list">
-                    {#if gitCommitHistoryLoading}
-                      <div class="intelligence-empty">Loading history</div>
-                    {:else if gitCommitHistoryError}
-                      <div class="intelligence-empty">{gitCommitHistoryError}</div>
-                    {:else if selectedProjectGitGraph.commits.length === 0}
-                      <div class="intelligence-empty">No commits</div>
-                    {:else}
-                      {#each selectedProjectGitGraph.commits as row (row.sha)}
-                        {@const entry = gitCommitEntryForRow(row)}
-                        <div
-                          class={`git-history-row ${row.graphKind}`}
-                          class:selected={selectedGitCommitSha === row.sha}
-                          role="button"
-                          tabindex="0"
-                          title={row.detailLabel}
-                          onclick={() => entry && selectGitCommit(entry)}
-                          onkeydown={(event) => entry && handleGitCommitRowKeydown(event, entry)}
-                        >
-                          <span
-                            class={`git-graph-marker ${row.graphKind}`}
-                            aria-label={row.topologyLabel}
-                            title={row.topologyLabel}
-                          ></span>
-                          <div class="git-history-main">
-                            <strong>{row.subject}</strong>
-                            <small>{row.metaLabel}</small>
-                          </div>
-                          <div class="git-history-meta">
-                            <div class="git-history-badges" aria-label="Commit ownership badges">
-                              {#each row.ownershipBadges as badge (`${badge.tone}:${badge.label}`)}
-                                <span class={`git-history-badge ${badge.tone}`} title={badge.title}>{badge.label}</span>
-                              {/each}
-                            </div>
-                            {#if row.taskID}
-                              {#if gitTaskUrl(row.taskID)}
-                                <a
-                                  class="git-task-link"
-                                  href={gitTaskUrl(row.taskID) ?? ''}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
-                                >
-                                  {row.taskID}
-                                </a>
-                              {:else}
-                                <span
-                                  class="git-task-link"
-                                  title={`Task from ${gitGraphCommitTaskSourceLabel(row) || 'Git metadata'}`}
-                                >{row.taskID}</span>
-                              {/if}
-                            {/if}
-                            <div class="git-history-actions" aria-label="Commit quick actions">
-                              <button
-                                type="button"
-                                aria-label="Copy commit SHA"
-                                title="Copy commit SHA"
-                                disabled={!entry}
-                                onclick={() => entry && copyGitCommitSha(entry)}
-                              >
-                                <Copy size={11} strokeWidth={2} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label="Copy commit summary"
-                                title="Copy commit summary"
-                                disabled={!entry}
-                                onclick={() => entry && copyGitCommitSummary(entry)}
-                              >
-                                <History size={11} strokeWidth={2} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label="Copy commit handoff"
-                                title="Copy commit handoff"
-                                disabled={!entry}
-                                onclick={() => entry && copyGitCommitHandoff(entry)}
-                              >
-                                <FileCode2 size={11} strokeWidth={2} />
-                              </button>
-                              {#if row.taskID}
-                                <button
-                                  type="button"
-                                  aria-label="Copy task reference"
-                                  title="Copy task reference"
-                                  onclick={() => copyGitTaskReference(row.taskID)}
-                                >
-                                  <ExternalLink size={11} strokeWidth={2} />
-                                </button>
-                              {/if}
-                            </div>
-                          </div>
-                        </div>
-                      {/each}
-                    {/if}
-                  </div>
-                </div>
-                <div class="intelligence-summary">{selectedSourceGitSummary}</div>
-                {#if selectedSourceGitDiffLoading}
-                  <div class="intelligence-empty">Loading Git diff</div>
-                {:else if selectedSourceGitDiffError}
-                  <div class="intelligence-empty">{selectedSourceGitDiffError}</div>
-                {:else if selectedSourceGitDiff?.diff}
-                  <pre class="git-diff-block">{selectedSourceGitDiff.diff}</pre>
-                {:else}
-                  <div class="intelligence-empty">No diff for selected file</div>
-                {/if}
-              </div>
-            {:else}
-              <div class="intelligence-summary">{sourceSymbols.length} symbols</div>
-              <div class="intelligence-list">
-                {#if sourceSymbols.length === 0}
-                  <div class="intelligence-empty">No symbols</div>
-                {:else}
-                  {#each sourceSymbols as symbol (`${symbol.kind}:${symbol.name}:${symbol.line}`)}
-                    <button
-                      class="intelligence-row"
-                      type="button"
-                      title={symbol.detail}
-                      onclick={() => selectSourceSymbol(symbol)}
-                    >
-                      <strong>{symbol.kind}</strong>
-                      <span>{symbol.name}</span>
-                      <small>{symbol.line}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-            </aside>
-              {#if sourceDockviewInsightsError}
-                <div class="source-dockview-insights-error" role="status">
-                  {sourceDockviewInsightsError}
-                </div>
-              {/if}
-            </div>
+            </SourceDockviewShell>
           {/if}
-        </div>
-      </div>
-    {:else}
-      <div class="empty-preview">
-        <FileCode2 size={34} strokeWidth={1.55} />
-        <strong>No source file loaded</strong>
-        <span>Scan a project or choose a file from the tree.</span>
-      </div>
-    {/if}
+      <EditorPanel
+        panelAction={sourceDockviewPanelAction}
+        filePanelAction={sourceEditorFileDockviewPanelAction}
+        filePanelID={sourceEditorFilePanelID}
+        fileDockviewReady={sourceEditorFileDockviewReady}
+        fileDockviewError={sourceEditorFileDockviewError}
+        fileDockviewHostAction={sourceEditorFileDockviewHostAction}
+        openTabs={projectOpenSourceTabs}
+        selectedPath={files.selectedRecord?.path}
+        preview={files.preview}
+        draftContent={selectedSourceDraftContent}
+        loading={files.scan.loading}
+        selectedSourceLine={files.selectedSourceLine}
+        selectedSourceLineRequestId={files.selectedSourceLineRequestId}
+        fileActionStatus={files.fileActionStatus}
+        fileActionBusy={files.fileActionBusy}
+        error={error}
+        selectedIndex={selectedIndex}
+        recordCount={files.records.length}
+        selectedProject={selectedProject}
+        isDirty={isSourcePathDirty}
+        selectedDirty={selectedSourceDirty}
+        dirtyCount={dirtyProjectSourceRecords.length}
+        cleanTabCount={cleanProjectOpenSourceTabCount}
+        otherCleanTabCount={otherCleanProjectOpenSourceTabCount}
+        markdownPreviewAvailable={selectedSourceMarkdownPreviewAvailable}
+        displayMode={selectedSourceEditorDisplayMode}
+        appearanceKey={sourcePreviewAppearanceKey}
+        appearanceOverride={editorAppearanceOverride}
+        intelligenceAvailable={sourceIntelligenceAvailable}
+        intelligenceCommand={sourceIntelligenceCommand}
+        lspDiagnostics={sourceLspDiagnostics}
+        lspStatus={sourceLspStatus}
+        lspStatusLoading={sourceLspStatusLoading}
+        lspStatusLabel={sourceLspStatusLabel}
+        lspStatusTitle={sourceLspStatusTitle}
+        lspInstallCommand={sourceLspInstallCommand}
+        gitBadge={selectedSourceGitBadge}
+        insightCollapsed={editorInsightCollapsed}
+        actionMenuOpen={editorActionMenuOpen}
+        monaco={editorMonacoCallbacks}
+        onSelectTab={selectOpenTab}
+        gitStatusForRecord={gitStatusForSourceRecord}
+        onSetDisplayMode={setSelectedSourceEditorDisplayMode}
+        onToggleInsightCollapsed={toggleEditorInsightCollapsed}
+        onToggleActionMenu={toggleEditorActionMenu}
+        onCloseActionMenu={closeEditorActionMenu}
+        onSave={() => void saveSelectedSourceFile()}
+        onSaveAll={() => void saveAllDirtySourceFiles()}
+        onCloseTab={() => void closeSelectedSourceTab()}
+        onCloseOtherClean={() => void closeOtherCleanSourceTabs()}
+        onCloseAllClean={() => void closeAllCleanSourceTabs()}
+        onIntelligenceAction={requestSourceIntelligenceAction}
+        onRevert={revertSelectedSourceFile}
+        onShowInsightPanel={showEditorInsightPanel}
+        onCopyPath={() => void copySelectedPath()}
+        onOpenInIDE={() => void openSelectedFile()}
+        onRevealFile={() => void revealSelectedFile()}
+        onLoadLspStatus={loadSourceLspStatus}
+        onCopyLspReport={copySourceLspStatusReport}
+        onCopyLspInstall={copySourceLspInstallCommand}
+      />
+      </SourceDockviewShell>
 
-      {#if bottomDockPanelVisible()}
-        <button
-          class="bottom-dock-resizer"
-          type="button"
-          aria-label="Resize bottom dock"
-          title="Resize bottom dock"
-          onpointerdown={beginBottomDockResize}
-          onkeydown={handleBottomDockResizerKeydown}
-        ></button>
-      {/if}
+      <div class="source-runtime-panel-stage" aria-hidden="true">
 
-      {#if shouldRenderDockPanel('terminal')}
-        <section class="terminal-launchpad" aria-label="Terminal dock">
+      {#if sourceDockPanelVisible('terminal')}
+        <section class="terminal-launchpad" aria-label="Terminal dock" use:sourceDockviewPanelAction={'terminal'}>
           <header class="terminal-launchpad-header">
-            <div>
-              <Terminal size={14} strokeWidth={2} />
+            <div class="terminal-launchpad-identity">
+              <span class="terminal-launchpad-glyph" aria-hidden="true">
+                <Terminal size={14} strokeWidth={2} />
+              </span>
               <strong>Terminal</strong>
-              <span>{terminalDockSummary()}</span>
+              <span class="terminal-launchpad-status" title={terminalDockSummary()}>
+                {#each terminalDockSummary().split(' · ') as statusSegment, statusIndex (statusIndex)}
+                  <Chip size="xs" tone={/\b(embedded live|active)\b/.test(statusSegment) ? 'live' : 'muted'}>
+                    {statusSegment}
+                  </Chip>
+                {/each}
+              </span>
             </div>
             <div class="terminal-launchpad-actions">
               <label class="terminal-inline-picker" title={`Open commands in ${sourceTerminalApp}`}>
@@ -16887,7 +16646,7 @@
                 type="button"
                 aria-label="Open project shell"
                 title={selectedProject.path}
-                disabled={!selectedProject.path || fileActionBusy === `activity-terminal:${selectedProject.path}`}
+                disabled={!selectedProject.path || files.fileActionBusy === `activity-terminal:${selectedProject.path}`}
                 onclick={() => openActivityTerminalPath(selectedProject.path)}
               >
                 <Terminal size={13} strokeWidth={2} />
@@ -16920,7 +16679,7 @@
                 type="button"
                 aria-label="Fit embedded terminal"
                 title="Fit embedded terminal"
-                onclick={fitEmbeddedTerminal}
+                onclick={scheduleEmbeddedTerminalFit}
               >
                 <RefreshCw size={13} strokeWidth={2} />
               </button>
@@ -16937,8 +16696,8 @@
           </header>
 
           <div class:active={Boolean(embeddedTerminalSession)} class="embedded-terminal-panel" aria-label="Embedded terminal">
-            <div class="embedded-terminal-toolbar">
-              <span>{embeddedTerminalStatusLabel()}</span>
+            <div class="embedded-terminal-toolbar" title={embeddedTerminalStatusLabel()}>
+              <span class="embedded-terminal-meta">{embeddedTerminalStatusLabel()}</span>
               {#if embeddedTerminalSession?.pid}
                 <code>pid {embeddedTerminalSession.pid}</code>
               {/if}
@@ -16949,469 +16708,113 @@
             {/if}
           </div>
 
-          <form class="embedded-terminal-command" onsubmit={submitEmbeddedTerminalCommand}>
-            <Terminal size={13} strokeWidth={2} />
-            <input
-              bind:value={embeddedTerminalCommandDraft}
-              aria-label="Embedded terminal command"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder={embeddedTerminalSession ? 'Run command in active terminal' : 'Run command in project terminal'}
-            />
-            <button
-              type="submit"
-              disabled={
-                !embeddedTerminalCommandDraft.trim() ||
-                embeddedTerminalStarting ||
-                (!embeddedTerminalSession && !selectedProject.path)
-              }
-            >
-              Run
-            </button>
-          </form>
-
-          <div class="terminal-launchpad-grid">
-            <div class="terminal-launchpad-list" aria-label="Embedded terminal sessions">
-              <div class="terminal-launchpad-title">
-                <span>Embedded</span>
-                <strong>{embeddedTerminalSessions.length}</strong>
-              </div>
-              {#if embeddedTerminalSessionsLoading}
-                <div class="terminal-launchpad-empty">Refreshing terminals</div>
-              {:else if embeddedTerminalSessions.length === 0}
-                <div class="terminal-launchpad-empty">No embedded terminals</div>
-              {:else}
-                {#each embeddedTerminalSessions.slice(0, 3) as session (`terminal-session:${session.sessionId}`)}
-                  <div
-                    class:active={embeddedTerminalSession?.sessionId === session.sessionId}
-                    class="terminal-launchpad-row"
-                    title={embeddedTerminalSessionFocusPlan(session)}
-                  >
-                    <span class="runtime-port">PTY</span>
-                    <div>
-                      <strong>{embeddedTerminalSessionTitle(session)}</strong>
-                      <small>{embeddedTerminalSessionMetaLabel(session)}</small>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Attach embedded terminal session"
-                      title="Attach embedded terminal"
-                      disabled={embeddedTerminalSession?.sessionId === session.sessionId}
-                      onclick={() => attachEmbeddedTerminalSession(session)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Close listed embedded terminal session"
-                      title="Close embedded terminal"
-                      onclick={() => closeListedEmbeddedTerminalSession(session)}
-                    >
-                      <X size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-              {#if embeddedTerminalSessionsError}
-                <div class="terminal-launchpad-empty">{embeddedTerminalSessionsError}</div>
-              {/if}
-            </div>
-
-            <div class="terminal-launchpad-list" aria-label="Active terminal contexts">
-              <div class="terminal-launchpad-title">
-                <span>Active</span>
-                <strong>{selectedProjectRuntimeContexts.length}</strong>
-              </div>
-              {#if selectedProjectRuntimeContexts.length === 0}
-                <div class="terminal-launchpad-empty">No active contexts</div>
-              {:else}
-                {#each selectedProjectRuntimeContexts.slice(0, 3) as context (`terminal:${context.pid}:${context.port}:${context.cwd}`)}
-                  <div class="terminal-launchpad-row" title={context.cwd}>
-                    <span class="runtime-port">:{context.port}</span>
-                    <div>
-                      <strong>{context.command}</strong>
-                      <small>{context.rootLabel}</small>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Open active context in embedded terminal"
-                      title="Open context in embedded terminal"
-                      onclick={() => openPathEmbeddedTerminal(context.cwd)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-
-            <div class="terminal-launchpad-list" aria-label="Agent terminal resumes">
-              <div class="terminal-launchpad-title">
-                <span>Agents</span>
-                <strong>{selectedProjectAgentSessions.length}</strong>
-              </div>
-              {#if selectedProjectAgentSessions.length === 0}
-                <div class="terminal-launchpad-empty">No resumable agents</div>
-              {:else}
-                {#each selectedProjectAgentSessions.slice(0, 3) as session, index (agentSessionRowKey(session, index, 'terminal'))}
-                  {@const sessionSnapshot = workspaceSnapshotForAgentSession(session)}
-                  {@const sessionReadiness = sessionSnapshot ? workspaceSnapshotRestoreReadiness(sessionSnapshot) : null}
-                  {@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-                  <div class="terminal-launchpad-row terminal-agent-row" title={agentSessionResumePlan(session)}>
-                    <span class="agent-provider-badge">{session.provider}</span>
-                    <div>
-                      <strong>{session.title}</strong>
-                      <small>{agentSessionProjectLabel(session)} · {sessionReadiness?.label ?? 'No saved workspace'}</small>
-                      <span
-                        class={`agent-session-focus-lane ${sessionFocusLane.tone}`}
-                        aria-label="Recommended session focus action"
-                        title={`${sessionFocusLane.title} · ${sessionFocusLane.detail}`}
-                      >
-                        <em>{sessionFocusLane.label}</em>
-                        <strong>{sessionFocusLane.detail}</strong>
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label={sessionReadiness?.kind === 'missing-worktree'
-                        ? 'Copy terminal agent repair plan'
-                        : 'Copy terminal agent focus plan'}
-                      title={sessionReadiness?.kind === 'missing-worktree'
-                        ? (sessionReadiness.repairLabel ?? 'Copy repair plan')
-                        : agentSessionWorkspaceReadinessLabel(session)}
-                      onclick={() =>
-                        sessionReadiness?.kind === 'missing-worktree'
-                          ? copyAgentSessionWorkspaceRepairPlan(session)
-                          : copyAgentSessionResumePlan(session)}
-                    >
-                      {#if sessionReadiness?.kind === 'missing-worktree'}
-                        <FolderSearch size={12} strokeWidth={2} />
-                      {:else}
-                        <FileCode2 size={12} strokeWidth={2} />
-                      {/if}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Resume agent from terminal dock"
-                      title="Resume agent in embedded terminal"
-                      onclick={() => resumeAgentSessionEmbeddedTerminal(session)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-
-            <div class="terminal-launchpad-list" aria-label="Worktree terminal shortcuts">
-              <div class="terminal-launchpad-title">
-                <span>Worktrees</span>
-                <strong>{projectWorktrees.length}</strong>
-              </div>
-              {#if projectWorktrees.length === 0}
-                <div class="terminal-launchpad-empty">No worktrees</div>
-              {:else}
-                {#each prioritizedProjectWorktrees.slice(0, 3) as worktree (`terminal:${worktree.path}`)}
-                  {@const safety = projectWorktreeSafety(worktree)}
-                  {@const cleanupPlan = projectWorktreeCleanupPlan(worktree)}
-                  <div
-                    class="terminal-launchpad-row"
-                    title={formatWorktreeCleanupPlanReport(worktree, cleanupPlan)}
-                  >
-                    <span class={`worktree-status-badge ${safety.kind}`}>{safety.badge}</span>
-                    <div>
-                      <strong>{worktree.branch}</strong>
-                      <small>{safety.reason}</small>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Open worktree from terminal dock"
-                      title="Open worktree in embedded terminal"
-                      onclick={() => openPathEmbeddedTerminal(worktree.path)}
-                    >
-                      <Terminal size={12} strokeWidth={2} />
-                    </button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-          </div>
         </section>
       {/if}
 
-      {#if shouldRenderDockPanel('browser')}
-        <section class="browser-dock" aria-label="Browser dock">
-          <header class="browser-dock-header">
-            <div class="browser-dock-title">
-              <Network size={14} strokeWidth={2} />
-              <strong>Browser</strong>
-              <span>{activeBrowserUrl || 'No runtime URL'}</span>
-            </div>
-            <div class="browser-dock-actions">
-              <button
-                class="file-action-button icon-only"
-                type="button"
-                aria-label="Reload browser dock"
-                title="Reload browser dock"
-                disabled={!activeBrowserUrl}
-                onclick={reloadBrowserFrame}
-              >
-                <RefreshCw size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="file-action-button icon-only"
-                type="button"
-                aria-label="Open browser URL externally"
-                title="Open browser URL externally"
-                disabled={!activeBrowserUrl}
-                onclick={openBrowserUrlExternal}
-              >
-                <ExternalLink size={13} strokeWidth={2} />
-              </button>
-              <button
-                class="file-action-button icon-only"
-                type="button"
-                aria-label="Hide browser dock"
-                title="Hide browser dock"
-                onclick={() => hideDockPanel('browser')}
-              >
-                <X size={13} strokeWidth={2} />
-              </button>
-            </div>
-          </header>
-
-          <form class="browser-url-form" onsubmit={submitBrowserUrl}>
-            <input
-              bind:value={browserInputUrl}
-              aria-label="Browser dock URL"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="localhost:5177"
-            />
-            <button
-              class="file-action-button"
-              type="submit"
-              disabled={!browserInputUrl.trim()}
-            >
-              <Network size={13} strokeWidth={2} />
-              <span>Open</span>
-            </button>
-          </form>
-
-          {#if selectedProjectRuntimeContexts.length > 0}
-            <div class="browser-runtime-list" aria-label="Browser runtime shortcuts">
-              {#each selectedProjectRuntimeContexts as context (`browser:${context.pid}:${context.port}:${context.cwd}`)}
-                <button
-                  type="button"
-                  class:active={activeBrowserUrl === runtimeContextUrl(context)}
-                  title={runtimeContextUrl(context)}
-                  onclick={() => openRuntimeContextInBrowserDock(context)}
-                >
-                  <span>:{context.port}</span>
-                  <strong>{context.command}</strong>
-                  <small>{context.rootLabel}</small>
-                </button>
-              {/each}
-            </div>
-          {/if}
-
-          {#if browserError}
-            <div class="browser-error">{browserError}</div>
-          {/if}
-
-          {#if activeBrowserUrl}
-            <div class="browser-frame-wrap">
-              {#key `${browserFrameKey}:${activeBrowserUrl}`}
-                <iframe
-                  class="browser-frame"
-                  title="Browser dock preview"
-                  src={activeBrowserUrl}
-                  sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-                  referrerpolicy="no-referrer"
-                ></iframe>
-              {/key}
-            </div>
-          {:else}
-            <div class="browser-empty">Start a runtime or enter a localhost URL.</div>
-          {/if}
-        </section>
+      {#if sourceDockPanelVisible('browser')}
+        <BrowserPanel
+          url={activeBrowserUrl}
+          bind:inputUrl={browserInputUrl}
+          frameKey={browserFrameKey}
+          error={browserError}
+          runtimeContexts={selectedProjectRuntimeContexts}
+          {runtimeContextUrl}
+          panelAction={sourceDockviewPanelAction}
+          onSubmit={submitBrowserUrl}
+          onReload={reloadBrowserFrame}
+          onOpenExternal={openBrowserUrlExternal}
+          onHide={() => hideDockPanel('browser')}
+          onOpenRuntimeContext={openRuntimeContextInBrowserDock}
+        />
       {/if}
+      </div>
       </div>
     </div>
   </section>
+  </SourceDockviewShell>
+
+  {#if useUnifiedWorkbench}
+    <SourceWorkbench
+      layout={dock.layout}
+      bind:setPanelElement={unifiedWorkbenchSetPanelElement}
+      bind:ready={unifiedWorkbenchReady}
+      bind:error={unifiedWorkbenchError}
+      onPanelOwnershipChange={handleUnifiedWorkbenchOwnershipChange}
+    />
+  {/if}
+
+  {#if sourceDockviewWorkbenchEnabled && hiddenDockPanelIDs().length > 0}
+    <HiddenDockRail
+      panelIDs={hiddenDockPanelIDs()}
+      {dockPanelLabel}
+      onRestore={restoreHiddenDockPanel}
+    />
+  {/if}
 </main>
 
-{#if quickOpenVisible}
-  <div class="quick-open-layer">
-    <button
-      class="quick-open-backdrop"
-      type="button"
-      aria-label="Close quick open"
-      onclick={closeQuickOpen}
-    ></button>
-    <div
-      class="quick-open-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Open source file"
-    >
-      <label class="quick-open-search">
-        <span class="quick-open-icon">
-          <Search size={17} strokeWidth={1.8} />
-        </span>
-        <input
-          bind:this={quickOpenInput}
-          bind:value={quickOpenQuery}
-          onkeydown={handleQuickOpenKeydown}
-          placeholder={quickOpenWorkspaceSymbolMode ? 'Search workspace symbols' : 'Open source file'}
-          autocomplete="off"
-        />
-      </label>
+<SettingsPanel bind:open={settingsOpen} />
 
-      <div
-        class="quick-open-results"
-        role="listbox"
-        aria-label={quickOpenWorkspaceSymbolMode ? 'Matching workspace symbols' : 'Matching source files'}
-      >
-        {#if quickOpenWorkspaceSymbolMode}
-          {#if !preview || !sourceIntelligenceAvailable}
-            <div class="quick-open-empty">Open a C# or TypeScript file first</div>
-          {:else if !quickOpenWorkspaceSymbolQuery}
-            <div class="quick-open-empty">Type a symbol name after #</div>
-          {:else if workspaceSymbolLoading}
-            <div class="quick-open-empty">Searching workspace symbols</div>
-          {:else if workspaceSymbolError}
-            <div class="quick-open-empty">{workspaceSymbolError}</div>
-          {:else if workspaceSymbolResults.length === 0}
-            <div class="quick-open-empty">No matching workspace symbols</div>
-          {:else}
-            {#each workspaceSymbolResults as symbol, index (`${symbol.path}:${symbol.line}:${symbol.column}:${symbol.symbolName}`)}
-              <button
-                class:active={index === quickOpenIndex}
-                type="button"
-                role="option"
-                aria-selected={index === quickOpenIndex}
-                title={symbol.detail}
-                onclick={() => chooseQuickOpenWorkspaceSymbol(symbol)}
-              >
-                <span class="quick-open-result-icon">
-                  <FileCode2 size={15} strokeWidth={1.8} />
-                </span>
-                <span>
-                  <strong>{symbol.symbolName}</strong>
-                  <small>{symbol.detail}</small>
-                </span>
-                <em>{symbol.kind}</em>
-              </button>
-            {/each}
-          {/if}
-        {:else if quickOpenResults.length === 0}
-          <div class="quick-open-empty">No matching source files</div>
-        {:else}
-          {#each quickOpenResults as record, index (record.path)}
-            <button
-              class:active={index === quickOpenIndex}
-              type="button"
-              role="option"
-              aria-selected={index === quickOpenIndex}
-              title={record.relativePath}
-              onclick={() => chooseQuickOpenRecord(record)}
-            >
-              <span class="quick-open-result-icon">
-                <FileCode2 size={15} strokeWidth={1.8} />
-              </span>
-              <span>
-                <strong>{record.fileName}</strong>
-                <small>{record.relativePath}</small>
-              </span>
-              <em>{parsedQuickOpenQuery.targetLine ? `line ${parsedQuickOpenQuery.targetLine}` : record.language}</em>
-            </button>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  </div>
+{#if quickOpenVisible}
+  <QuickOpenOverlay
+    bind:this={quickOpenOverlayRef}
+    visible={quickOpenVisible}
+    bind:query={quickOpenQuery}
+    bind:index={quickOpenIndex}
+    fileResults={quickOpenResults}
+    symbolResults={workspaceSymbolResults}
+    symbolMode={quickOpenWorkspaceSymbolMode}
+    symbolQuery={quickOpenWorkspaceSymbolQuery}
+    symbolLoading={workspaceSymbolLoading}
+    symbolError={workspaceSymbolError}
+    symbolsAvailable={!!files.preview && sourceIntelligenceAvailable}
+    targetLine={parsedQuickOpenQuery.targetLine}
+    onKeydown={handleQuickOpenKeydown}
+    onSelectFile={chooseQuickOpenRecord}
+    onSelectSymbol={chooseQuickOpenWorkspaceSymbol}
+    onClose={closeQuickOpen}
+  />
 {/if}
 
 {#if commandPaletteVisible}
-  <div class="command-palette-layer">
-    <button
-      class="command-palette-backdrop"
-      type="button"
-      aria-label="Close command palette"
-      onclick={closeCommandPalette}
-    ></button>
-    <div
-      class="command-palette-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Command palette"
-    >
-      <label class="command-palette-search">
-        <span class="command-palette-icon">
-          <Search size={17} strokeWidth={1.8} />
-        </span>
-        <input
-          bind:this={commandPaletteInput}
-          bind:value={commandPaletteQuery}
-          onkeydown={handleCommandPaletteKeydown}
-          placeholder="Run command"
-          autocomplete="off"
-        />
-        <kbd>Cmd+K</kbd>
-      </label>
-
-      <div class="command-palette-results" role="listbox" aria-label="Matching commands">
-        {#if commandPaletteResults.length === 0}
-          <div class="quick-open-empty">No matching commands</div>
-        {:else}
-          {#each commandPaletteResults as item, index (item.id)}
-            <button
-              class:active={index === commandPaletteIndex}
-              class:disabled={item.disabled}
-              type="button"
-              role="option"
-              aria-selected={index === commandPaletteIndex}
-              disabled={item.disabled}
-              title={item.detail}
-              onclick={() => void runCommandPaletteItem(item)}
-            >
-              <span class="command-palette-result-icon">
-                <MoreHorizontal size={15} strokeWidth={1.8} />
-              </span>
-              <span>
-                <strong>{item.label}</strong>
-                <small>{item.detail}</small>
-              </span>
-            </button>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  </div>
+  <CommandPaletteOverlay
+    visible={commandPaletteVisible}
+    bind:query={commandPaletteQuery}
+    bind:index={commandPaletteIndex}
+    commands={commandPaletteResults}
+    onKeydown={handleCommandPaletteKeydown}
+    onSelect={runCommandPaletteItem}
+    onClose={closeCommandPalette}
+  />
 {/if}
 
 <style>
   .shell {
+    --pane-resizer-size: 0px;
+    --pane-resizer-hit-size: 10px;
+    --bottom-dock-resizer-size: 8px;
+    /* App/chrome font size. When the user has NOT changed it, --app-font-size is
+       left unset and this falls back to --text-md — the exact size the shell
+       already inherited from :root, so the default look is unchanged. When set,
+       UI text scales to taste. */
+    font-size: var(--app-font-size, var(--text-md));
     position: relative;
     display: grid;
-    grid-template-columns: var(--side-pane-width) 6px minmax(0, 1fr);
+    grid-template-columns: var(--side-pane-width) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     gap: 0;
-    width: calc(100vw - 8px);
-    height: calc(100dvh - 8px);
-    min-height: min(520px, calc(100dvh - 8px));
-    margin: 4px auto;
+    width: 100vw;
+    height: 100dvh;
+    min-height: min(520px, 100dvh);
+    margin: 0;
     overflow: hidden;
-    border: 1px solid rgba(231, 238, 235, 0.12);
-    border-radius: 12px;
-    background: rgba(24, 26, 26, 0.92);
-    box-shadow:
-      0 32px 90px rgba(0, 0, 0, 0.32),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border: 0;
+    border-radius: 0;
+    background: #191a21;
+    box-shadow: none;
   }
 
   .shell.side-right {
-    grid-template-columns: minmax(0, 1fr) 6px var(--side-pane-width);
+    grid-template-columns: minmax(0, 1fr) var(--side-pane-width);
   }
 
   .shell.activity-hidden {
@@ -17422,12 +16825,17 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .source-dockview-activity-shell {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
   .shell.activity-rail-only {
-    grid-template-columns: 56px 6px minmax(0, 1fr);
+    grid-template-columns: 56px minmax(0, 1fr);
   }
 
   .shell.side-right.activity-rail-only {
-    grid-template-columns: minmax(0, 1fr) 6px 56px;
+    grid-template-columns: minmax(0, 1fr) 56px;
   }
 
   .shell.activity-hidden .workspace {
@@ -17446,23 +16854,29 @@
   }
 
   .shell.side-right .side-pane-resizer {
+    right: var(--side-pane-width);
+    left: auto;
+    transform: translateX(50%);
+  }
+
+  .shell.side-right .source-dockview-activity-shell {
     grid-column: 2;
     grid-row: 1;
   }
 
   .shell.side-right .activity-shell {
     grid-template-columns: minmax(0, 1fr) 46px;
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
     border-right: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    border-left: 0;
   }
 
   .shell.side-right .activity-rail {
     grid-column: 2;
     grid-row: 1;
     border-right: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.07);
+    border-left: 0;
   }
 
   .shell.side-right .sidebar {
@@ -17472,6 +16886,10 @@
 
   .shell.activity-rail-only .activity-shell {
     grid-template-columns: 46px;
+  }
+
+  .shell.activity-rail-only .source-dockview-activity-shell {
+    min-width: 0;
   }
 
   .shell.activity-rail-only .sidebar {
@@ -17492,8 +16910,8 @@
     grid-template-columns: 46px minmax(0, 1fr);
     min-width: 0;
     overflow: hidden;
-    background: rgba(19, 21, 21, 0.94);
-    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    background: #191a21;
+    border-right: 0;
   }
 
   .activity-rail {
@@ -17505,7 +16923,7 @@
     min-width: 0;
     padding: 10px 4px;
     overflow: hidden;
-    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    border-right: 0;
     background: rgba(9, 12, 12, 0.42);
   }
 
@@ -17534,6 +16952,33 @@
 
   .activity-rail button.active {
     color: #6fdfcf;
+  }
+
+  /* Settings gear sits at the bottom of the rail, just above the collapse
+     control. It claims the free space (margin-top:auto) so both it and the
+     toggle that follows are anchored to the bottom. */
+  .activity-rail button.activity-rail-settings {
+    margin-top: auto;
+  }
+
+  .activity-rail button.activity-rail-toggle {
+    margin-top: auto;
+    color: #6fdfcf;
+    border-color: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.055);
+  }
+
+  /* When the settings gear is present it already consumes the free space, so
+     the toggle should not add a second auto-margin gap above itself. */
+  .activity-rail button.activity-rail-settings + .activity-rail-toggle {
+    margin-top: 0;
+  }
+
+  .activity-rail button.activity-rail-toggle:hover,
+  .activity-rail button.activity-rail-toggle:focus-visible {
+    color: #f2fffc;
+    border-color: rgba(92, 226, 207, 0.38);
+    background: rgba(92, 226, 207, 0.14);
   }
 
   .activity-rail button strong {
@@ -17611,25 +17056,100 @@
   }
 
   .side-pane-resizer {
-    width: 6px;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--side-pane-width);
+    z-index: 18;
+    width: var(--pane-resizer-hit-size);
     min-width: 0;
     padding: 0;
+    touch-action: none;
     cursor: col-resize;
     border: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.045);
-    border-right: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
+    background: transparent;
+    transform: translateX(-50%);
+  }
+
+  .shell.activity-rail-only .side-pane-resizer {
+    left: 56px;
+  }
+
+  .shell.side-right.activity-rail-only .side-pane-resizer {
+    right: 56px;
+    left: auto;
+    transform: translateX(50%);
+  }
+
+  .side-pane-resizer::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 56px;
+    border-radius: 999px;
+    background: rgba(126, 240, 223, 0.58);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.46);
+    content: "";
+    opacity: 0;
+    transform: translate(-50%, -50%);
+    transition:
+      background 140ms ease,
+      height 140ms ease,
+      opacity 140ms ease,
+      width 140ms ease;
+  }
+
+  .context-pane-resizer::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 38px;
+    border-radius: 999px;
+    background: rgba(126, 240, 223, 0.46);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.46);
+    content: "";
+    opacity: 0;
+    transform: translate(-50%, -50%);
+    transition:
+      background 140ms ease,
+      height 140ms ease,
+      opacity 140ms ease,
+      width 140ms ease;
   }
 
   .side-pane-resizer:hover,
   .side-pane-resizer:focus-visible {
     outline: 0;
-    background: rgba(92, 226, 207, 0.18);
+    background: transparent;
+  }
+
+  .side-pane-resizer:hover::after,
+  .side-pane-resizer:focus-visible::after,
+  .context-pane-resizer:hover::after,
+  .context-pane-resizer:focus-visible::after,
+  .bottom-dock-resizer:hover::after,
+  .bottom-dock-resizer:focus-visible::after {
+    background: rgba(223, 253, 248, 0.72);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.56), 0 0 12px rgba(92, 226, 207, 0.22);
+    opacity: 1;
   }
 
   :global(body.resizing-source-pane) {
     cursor: col-resize;
     user-select: none;
+  }
+
+  :global(body.resizing-source-pane) .side-pane-resizer {
+    background: transparent;
+  }
+
+  :global(body.resizing-source-pane) .side-pane-resizer::after {
+    width: 3px;
+    height: 72px;
+    background: rgba(223, 253, 248, 0.86);
+    opacity: 1;
   }
 
   .sidebar {
@@ -17684,20 +17204,6 @@
 
   h2 {
     font-size: 22px;
-  }
-
-  .project-controls {
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-    margin-bottom: 12px;
-  }
-
-  .source-browser-stack {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    overflow: hidden;
   }
 
   .activity-panel {
@@ -17769,193 +17275,6 @@
 
   .activity-filter-box input::placeholder {
     color: #7f8a86;
-  }
-
-  .paste-cleanup-panel {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 10px;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .paste-cleanup-top {
-    display: grid;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .paste-cleanup-toolbar,
-  .paste-cleanup-footer {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .paste-cleanup-toolbar label {
-    display: inline-grid;
-    grid-template-columns: auto minmax(74px, auto);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 30px;
-    padding: 0 8px;
-    color: #9facaa;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .paste-cleanup-toolbar select {
-    min-width: 0;
-    color: #dffdf8;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    font: inherit;
-  }
-
-  .paste-cleanup-history {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .paste-history-chip {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 24px;
-    flex: 1 1 132px;
-    align-items: center;
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid rgba(92, 226, 207, 0.12);
-    border-radius: 7px;
-    background: rgba(92, 226, 207, 0.045);
-  }
-
-  .paste-history-chip.reply {
-    border-color: rgba(216, 170, 85, 0.13);
-    background: rgba(216, 170, 85, 0.045);
-  }
-
-  .paste-history-restore {
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd8d5;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .paste-history-restore span {
-    color: #8fd8cf;
-    font-size: 8px;
-    font-weight: 900;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .paste-history-chip.reply .paste-history-restore span {
-    color: #d8c385;
-  }
-
-  .paste-history-restore strong {
-    min-width: 0;
-    overflow: hidden;
-    color: #dfe8e5;
-    font-size: 10px;
-    font-weight: 780;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .paste-history-copy,
-  .paste-history-clear {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    color: #96a39f;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .paste-history-clear {
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .paste-history-restore:hover,
-  .paste-history-restore:focus-visible,
-  .paste-history-copy:hover,
-  .paste-history-copy:focus-visible,
-  .paste-history-clear:hover,
-  .paste-history-clear:focus-visible {
-    color: #e8f6f2;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .paste-cleanup-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(150px, 1fr) minmax(150px, 1fr);
-    gap: 9px;
-    min-height: 0;
-  }
-
-  .paste-cleanup-grid label {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 5px;
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .paste-cleanup-grid label > span,
-  .paste-cleanup-footer span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 800;
-    text-transform: uppercase;
-  }
-
-  .paste-cleanup-textarea {
-    width: 100%;
-    min-width: 0;
-    min-height: 0;
-    padding: 10px;
-    resize: none;
-    color: #e7ecea;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 8px;
-    outline: 0;
-    background: rgba(0, 0, 0, 0.18);
-    font: 12px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-  }
-
-  .paste-cleanup-textarea:focus {
-    border-color: rgba(92, 226, 207, 0.42);
-    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.08);
-  }
-
-  .paste-cleanup-footer {
-    justify-content: space-between;
   }
 
   .run-ingest-strip {
@@ -18036,6 +17355,34 @@
     padding-right: 3px;
     scrollbar-color: rgba(174, 184, 181, 0.52) rgba(255, 255, 255, 0.045);
     scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .conversation-activity-list {
+    align-content: stretch;
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .conversation-active-pane {
+    display: grid;
+    align-content: start;
+    gap: 7px;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
+    scrollbar-width: thin;
+  }
+
+  .conversation-activity-list .workspace-snapshot-section {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
     scrollbar-width: thin;
   }
 
@@ -18188,10 +17535,7 @@
 
   .activity-session-row,
   .activity-runtime-row,
-  .activity-worktree-row,
-  .activity-repo-row,
-  .activity-run-row,
-  .activity-commit-row {
+  .activity-run-row {
     display: grid;
     align-items: center;
     gap: 8px;
@@ -18209,61 +17553,67 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
-  .activity-worktree-row {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
 
-  .conversation-session-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .conversation-session-row.active {
-    border-color: color-mix(in srgb, var(--accent) 62%, transparent);
-    background: rgba(92, 226, 207, 0.085);
-  }
-
-  .conversation-session-open {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 0;
-    color: inherit;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .conversation-session-open:hover .activity-row-main strong,
-  .conversation-session-open:focus-visible .activity-row-main strong {
-    color: #9cebe0;
-  }
-
-  .conversation-session-open:focus-visible {
-    outline: 1px solid rgba(92, 226, 207, 0.34);
-    outline-offset: 2px;
-  }
-
-  .activity-worktree-row {
+  .agent-activity-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "badge main actions";
     align-items: start;
-    min-height: 58px;
+    gap: 6px 8px;
+    min-height: 76px;
+    overflow: hidden;
     padding: 7px;
   }
 
-  .activity-worktree-row .activity-row-actions {
-    grid-column: 2;
-    justify-content: flex-start;
-    flex-wrap: wrap;
+  .agent-activity-row > .agent-provider-badge {
+    grid-area: badge;
+    align-self: start;
+    max-width: 76px;
   }
 
-  .activity-commit-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+  .agent-activity-main {
+    grid-area: main;
+    gap: 2px;
+    align-content: center;
+    min-width: 0;
+    overflow: hidden;
   }
 
-  .activity-repo-row {
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+  .agent-activity-state {
+    color: #73817c;
+    font-size: 8px;
+  }
+
+  .agent-activity-row .workspace-snapshot-readiness,
+  .agent-activity-row .agent-session-focus-lane {
+    justify-self: start;
+    max-width: 100%;
+  }
+
+  .agent-activity-row .agent-session-focus-lane {
+    min-height: 16px;
+    padding: 0 5px;
+  }
+
+  .agent-activity-row .agent-session-focus-lane strong {
+    display: none;
+  }
+
+  .agent-activity-actions {
+    grid-area: actions;
+    justify-content: flex-end;
+    max-width: 28px;
+    overflow: visible;
+    opacity: 0.46;
+    transition: opacity 120ms ease;
+  }
+
+  .agent-activity-row:hover .agent-activity-actions,
+  .agent-activity-row:focus-within .agent-activity-actions {
+    opacity: 1;
+  }
+
+  .agent-activity-actions button {
+    flex: 0 0 auto;
   }
 
   .activity-run-row {
@@ -18271,18 +17621,8 @@
     gap: 7px;
   }
 
-  .activity-worktree-row.blocked,
-  .activity-run-row.bad,
-  .activity-repo-row.dirty {
+  .activity-run-row.bad {
     background: rgba(216, 170, 85, 0.09);
-  }
-
-  .activity-worktree-row.protected {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .activity-worktree-row.ready {
-    background: rgba(92, 226, 207, 0.06);
   }
 
   .activity-run-row.attention {
@@ -18522,13 +17862,6 @@
     overflow: hidden;
   }
 
-  .orchestration-context-digest {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px;
-    min-width: 0;
-    overflow: hidden;
-  }
 
   .run-live-digest-chip {
     display: inline-grid;
@@ -18545,11 +17878,6 @@
     background: rgba(255, 255, 255, 0.04);
   }
 
-  .orchestration-context-digest .run-live-digest-chip {
-    max-width: 132px;
-    min-height: 18px;
-    padding: 0 5px;
-  }
 
   .run-live-digest-chip em,
   .run-live-digest-chip strong {
@@ -18910,19 +18238,9 @@
     background: rgba(255, 255, 255, 0.12);
   }
 
-  .activity-row-main {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-  }
-
-  .worktree-row-main {
-    gap: 2px;
-  }
-
+  /* .activity-row-main base lives in src/app.css (:global). */
   .activity-row-main strong,
-  .activity-row-main small,
-  .activity-repo-row small {
+  .activity-row-main small {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -18935,308 +18253,17 @@
     font-weight: 790;
   }
 
-  .worktree-row-main strong {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .worktree-row-main strong > span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .activity-row-main small,
-  .activity-repo-row small {
+  .activity-row-main small {
     color: #8d9995;
     font-size: 10px;
     font-weight: 720;
   }
 
-  .worktree-safety-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px 7px;
-    line-height: 1.25;
-  }
-
-  .worktree-safety-line span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-owner-strip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-  }
-
-  .worktree-owner-chip {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    max-width: 96px;
-    height: 17px;
-    padding: 0 6px;
-    overflow: hidden;
-    color: #aeb9b6;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 8px;
-    font-weight: 850;
-    line-height: 17px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-owner-chip.live {
-    color: #071b18;
-    border-color: rgba(92, 226, 207, 0.42);
-    background: #67dfd1;
-  }
-
-  .worktree-owner-chip.saved {
-    color: #8fe7dc;
-    border-color: rgba(92, 226, 207, 0.18);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .worktree-owner-chip.warning {
-    color: #e8c47d;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-owner-chip.muted {
-    color: #8d9995;
-  }
-
-  .worktree-snapshot-chip {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 4px;
-    justify-self: start;
-    max-width: 126px;
-    height: 18px;
-    min-width: 0;
-    padding: 0 6px;
-    color: #8fe7dc;
-    border: 1px solid rgba(92, 226, 207, 0.18);
-    border-radius: 999px;
-    background: rgba(92, 226, 207, 0.08);
-    font-size: 8px;
-    font-weight: 820;
-    cursor: pointer;
-  }
-
-  .worktree-snapshot-chip span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-snapshot-chip:hover,
-  .worktree-snapshot-chip:focus-visible {
-    color: #eafaf7;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.14);
-  }
-
-  .worktree-plan-line {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-    color: #8fbdb6;
-    font-size: 10px;
-    font-weight: 730;
-    line-height: 1.2;
-  }
-
-  .worktree-plan-line > span:last-child {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-plan-lane {
-    display: inline-grid;
-    flex: 0 0 auto;
-    place-items: center;
-    height: 17px;
-    min-width: 42px;
-    padding: 0 6px;
-    border: 1px solid rgba(255, 255, 255, 0.085);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 8px;
-    font-weight: 880;
-    letter-spacing: 0;
-    line-height: 17px;
-    text-transform: uppercase;
-  }
-
-  .worktree-plan-lane.safe-remove {
-    color: #071b18;
-    border-color: rgba(92, 226, 207, 0.42);
-    background: #67dfd1;
-  }
-
-  .worktree-plan-lane.backup-first,
-  .worktree-plan-lane.review-first,
-  .worktree-plan-lane.review-prunable,
-  .worktree-plan-lane.review-saved-workspace,
-  .worktree-plan-lane.review-confirmation {
-    color: #e8c47d;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-plan-lane.blocked-active-session,
-  .worktree-plan-lane.blocked-locked {
-    color: #ffbd9f;
-    border-color: rgba(255, 142, 96, 0.24);
-    background: rgba(255, 142, 96, 0.09);
-  }
-
-  .worktree-plan-lane.blocked-protected,
-  .worktree-plan-lane.keep {
-    color: #aeb9b6;
-  }
-
-  .worktree-recommendation {
-    color: #78837f;
-  }
-
-  .activity-repo-row > small {
-    grid-column: 1 / 4;
-  }
-
-  .activity-task-ledger-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    padding: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .activity-task-ledger-row.blocked {
-    border-color: rgba(216, 170, 85, 0.28);
-    background: rgba(216, 170, 85, 0.055);
-  }
-
-  .activity-task-ledger-row.ready {
-    border-color: rgba(92, 226, 207, 0.24);
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .task-ledger-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .task-ledger-title > span {
-    min-width: 0;
-    overflow: hidden;
-    color: #dce6e3;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .activity-task-ledger-chips {
-    display: inline-flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 3px;
-    max-width: 138px;
-    min-width: 0;
-  }
-
-  .task-ledger-chip {
-    max-width: 72px;
-    height: 18px;
-    padding: 0 6px;
-    overflow: hidden;
-    color: #9ba7a4;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 9px;
-    font-weight: 820;
-    line-height: 18px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .task-ledger-chip.blocked,
-  .task-ledger-chip.active {
-    color: #e6c170;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .task-ledger-chip.ready {
-    color: #7ff0df;
-    border-color: rgba(92, 226, 207, 0.26);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .task-ledger-chip.stale {
-    color: #7ff0df;
-    border-color: rgba(92, 226, 207, 0.22);
-    background: rgba(92, 226, 207, 0.065);
-  }
-
-  .task-ledger-chip.saved {
-    color: #8fe7dc;
-    border-color: rgba(92, 226, 207, 0.18);
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .task-ledger-chip.backup {
-    color: #e6c170;
-    border-color: rgba(216, 170, 85, 0.22);
-    background: rgba(216, 170, 85, 0.075);
-  }
-
-  .activity-commit-meta {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .activity-row-actions {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-  }
-
+  /*
+   * .activity-row-actions / .row-action-menu / .row-action-menu-anchor bases
+   * live in src/app.css (:global). The descendant rules below + the
+   * .activity-panel-list reflow/override rules stay scoped here.
+   */
   .activity-row-actions button,
   .activity-icon-link {
     display: grid;
@@ -19251,20 +18278,120 @@
     cursor: pointer;
   }
 
+  .row-action-menu button {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    align-items: center;
+    justify-content: stretch;
+    gap: 7px;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+  }
+
+  .row-action-menu-link {
+    display: grid;
+    grid-template-columns: 15px minmax(0, 1fr);
+    align-items: center;
+    justify-content: stretch;
+    gap: 7px;
+    width: 100%;
+    height: 26px;
+    padding: 0 7px;
+    color: #cbd3d1;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 730;
+    text-align: left;
+    text-decoration: none;
+  }
+
+  .row-action-menu button:hover:not(:disabled),
+  .row-action-menu button:focus-visible,
+  .row-action-menu-link:hover,
+  .row-action-menu-link:focus-visible {
+    color: #f2f6f5;
+    outline: 0;
+    background: rgba(92, 226, 207, 0.1);
+  }
+
+  .row-action-menu button span,
+  .row-action-menu-link span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-panel-list .conversation-session-row:has(.row-action-menu),
+  .activity-panel-list .agent-activity-row:has(.row-action-menu),
+  .activity-panel-list .workspace-snapshot-row:has(.row-action-menu),
+  .activity-panel-list .activity-runtime-row:has(.row-action-menu) {
+    align-items: start;
+  }
+
+  .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu),
+  .activity-panel-list .run-activity-actions:has(.row-action-menu),
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu),
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu),
+  .activity-panel-list .agent-activity-actions:has(.row-action-menu) {
+    display: contents;
+  }
+
+  .activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu) > button,
+  .activity-panel-list .run-activity-actions:has(.row-action-menu) > button,
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button {
+    justify-self: end;
+  }
+
+  .activity-panel-list .run-activity-actions:has(.row-action-menu) > button {
+    justify-self: end;
+  }
+
+
+  .activity-panel-list .agent-activity-actions:has(.row-action-menu) > button {
+    grid-area: actions;
+    justify-self: end;
+  }
+
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
+  .activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button {
+    grid-column: 2;
+  }
+
+  .activity-panel-list .row-action-menu {
+    position: static;
+    grid-column: 1 / -1;
+    width: 100%;
+    margin-top: -1px;
+  }
+
+
   .activity-row-actions button:disabled {
     opacity: 0.38;
     cursor: default;
   }
 
-  .activity-row-actions button.worktree-primary-action.backup,
-  .worktree-context-actions button.worktree-primary-action.backup {
+  .activity-row-actions button.worktree-primary-action.backup {
     color: #d8aa55;
     border-color: rgba(216, 170, 85, 0.2);
     background: rgba(216, 170, 85, 0.08);
   }
 
-  .activity-row-actions button.worktree-primary-action.cleanup,
-  .worktree-context-actions button.worktree-primary-action.cleanup {
+  .activity-row-actions button.worktree-primary-action.cleanup {
     color: #79eadb;
     border-color: rgba(92, 226, 207, 0.28);
     background: rgba(92, 226, 207, 0.1);
@@ -19305,282 +18432,21 @@
     font-size: 10px;
   }
 
-  .project-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 36px 36px 96px;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    max-width: 100%;
-    margin-bottom: 8px;
-  }
-
-  select,
-  .scan-button,
-  .icon-button,
-  .form-button {
-    height: 36px;
-    min-width: 0;
-    color: #f3f5f4;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 9px;
-    background: rgba(255, 255, 255, 0.055);
-  }
-
   select {
+    height: 36px;
     width: 100%;
-    padding: 0 12px;
+    min-width: 0;
+    padding: 0 var(--space-3);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
     outline: 0;
+    background: var(--color-surface);
   }
 
-  select:focus,
-  .scan-button:focus-visible,
-  .icon-button:focus-visible,
-  .form-button:focus-visible {
-    border-color: rgba(92, 226, 207, 0.58);
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .scan-button {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr);
-    align-items: center;
-    gap: 7px;
-    padding: 0 10px;
-    color: #cbd3d1;
-    font-size: 12px;
-    font-weight: 760;
-    cursor: pointer;
-  }
-
-  .scan-button:disabled {
-    cursor: default;
-    opacity: 0.58;
-  }
-
-  .scan-button span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .icon-button {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    padding: 0;
-    color: #cbd3d1;
-    cursor: pointer;
-  }
-
-  .icon-button:hover {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .icon-button.danger {
-    width: 28px;
-    height: 28px;
-    color: #f1a9a0;
-    border-radius: 8px;
-  }
-
-  .icon-button.danger:hover {
-    background: rgba(225, 109, 93, 0.13);
-  }
-
-  .project-path-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    min-height: 28px;
-    margin-bottom: 2px;
-    color: #818d89;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 650;
-  }
-
-  .project-path-row span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .project-setup-row {
-    display: block;
-    min-height: 18px;
-    margin: -1px 0 4px;
-    color: #96a4a0;
-    font-size: 10px;
-    font-weight: 760;
-    line-height: 1.25;
-  }
-
-  .project-setup-row span {
-    display: block;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-progress {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 10px;
-    min-height: 18px;
-    margin: 4px 0 2px;
-    color: #8fd8cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .scan-progress span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .project-form {
-    display: grid;
-    gap: 8px;
-    padding: 10px;
-    margin-top: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .project-form label {
-    display: grid;
-    gap: 5px;
-  }
-
-  .project-form label span {
-    color: #9aa5a1;
-    font-size: 11px;
-    font-weight: 760;
-  }
-
-  .project-form input {
-    height: 32px;
-    padding: 0 9px;
-    color: #f3f5f4;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    outline: 0;
-    background: rgba(0, 0, 0, 0.18);
-  }
-
-  .project-form input:focus {
-    border-color: rgba(92, 226, 207, 0.58);
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .project-form-error {
-    margin: 0;
-    color: #f1a9a0;
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .form-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-
-  .form-button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr);
-    align-items: center;
-    gap: 6px;
-    padding: 0 9px;
-    color: #cbd3d1;
-    font-size: 12px;
-    font-weight: 760;
-    cursor: pointer;
-  }
-
-  .form-button.primary {
-    color: #071b18;
-    border-color: rgba(111, 223, 207, 0.72);
-    background: #6fdfcf;
-  }
-
-  .form-button span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .search-box {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    height: 38px;
-    padding: 0 12px;
-    margin-bottom: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 9px;
-    color: #9aa5a1;
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .search-box:focus-within {
-    border-color: rgba(92, 226, 207, 0.58);
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .global-search-panel {
-    display: grid;
-    gap: 7px;
-    padding-bottom: 12px;
-    margin-bottom: 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .global-search-box {
-    display: grid;
-    grid-template-columns: 17px minmax(0, 1fr) 30px;
-    align-items: center;
-    gap: 7px;
-    height: 34px;
-    padding: 0 4px 0 10px;
-    color: #9aa5a1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 9px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .global-search-box:focus-within {
-    border-color: rgba(92, 226, 207, 0.48);
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.1);
-  }
-
-  .source-search-submit {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    color: #071b18;
-    border: 0;
-    border-radius: 7px;
-    background: #6fdfcf;
-    cursor: pointer;
-  }
-
-  .source-search-submit:disabled {
-    color: #8d9995;
-    background: rgba(255, 255, 255, 0.08);
-    cursor: default;
+  select:focus {
+    border-color: var(--color-focus);
+    box-shadow: var(--focus-ring);
   }
 
   @container (max-width: 330px) {
@@ -19609,158 +18475,11 @@
       font-size: 14px;
     }
 
-    .project-controls {
-      margin-bottom: 8px;
-    }
-
-    .project-row {
-      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;
-      gap: 5px;
-      margin-bottom: 6px;
-    }
-
-    select,
-    .scan-button,
-    .icon-button,
-    .form-button {
+    select {
       height: 30px;
+      padding: 0 8px;
       border-radius: 8px;
     }
-
-    select {
-      padding: 0 8px;
-    }
-
-    .icon-button {
-      width: 30px;
-    }
-
-    .scan-button {
-      grid-template-columns: 1fr;
-      place-items: center;
-      gap: 0;
-      padding: 0;
-    }
-
-    .scan-button span {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
-    }
-
-    .project-path-row,
-    .project-setup-row {
-      font-size: 9px;
-    }
-
-    .search-box {
-      grid-template-columns: 15px minmax(0, 1fr);
-      gap: 6px;
-      height: 32px;
-      padding: 0 8px;
-      margin-bottom: 8px;
-    }
-
-    .global-search-panel {
-      gap: 5px;
-      padding-bottom: 8px;
-      margin-bottom: 8px;
-    }
-
-    .global-search-box {
-      grid-template-columns: 15px minmax(0, 1fr) 24px;
-      gap: 5px;
-      height: 30px;
-      padding: 0 3px 0 8px;
-    }
-
-    .source-search-submit {
-      width: 22px;
-      height: 22px;
-      border-radius: 6px;
-    }
-  }
-
-  .source-search-summary {
-    min-width: 0;
-    overflow: hidden;
-    color: #8fd8cf;
-    font-size: 10px;
-    font-weight: 760;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .source-search-results {
-    display: grid;
-    gap: 4px;
-    max-height: 184px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
-
-  .source-search-results button {
-    display: grid;
-    gap: 3px;
-    width: 100%;
-    min-width: 0;
-    padding: 7px 8px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.045);
-    cursor: pointer;
-  }
-
-  .source-search-results button:hover {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .source-search-results span {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .source-search-results strong,
-  .source-search-results small,
-  .source-search-results code {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .source-search-results strong {
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .source-search-results small {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .source-search-results code {
-    color: #d7dddb;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
   }
 
   input {
@@ -19776,574 +18495,23 @@
     color: #6f7976;
   }
 
-  .recent-panel {
-    display: grid;
-    gap: 7px;
-    padding-bottom: 12px;
-    margin-bottom: 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  }
-
-  .recent-heading {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    color: #aeb8b5;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .recent-heading-icon,
-  .recent-file-icon {
-    display: grid;
-    place-items: center;
+  .source-sidebar-section {
     min-width: 0;
   }
 
-  .recent-heading-icon {
-    color: #6fdfcf;
-  }
-
-  .recent-list {
-    display: grid;
-    gap: 4px;
-  }
-
-  .recent-list button {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    height: 38px;
-    padding: 0 8px;
-    color: #cbd3d1;
-    text-align: left;
-    border-radius: 8px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .recent-list button:hover,
-  .recent-list button.active {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .recent-file-icon {
-    color: #8d9995;
-  }
-
-  .recent-list button.active .recent-file-icon {
-    color: #6fdfcf;
-  }
-
-  .recent-list span {
-    display: grid;
-    min-width: 0;
-  }
-
-  .recent-list strong,
-  .recent-list small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .recent-list strong {
-    font-size: 12px;
-    line-height: 1.15;
-  }
-
-  .recent-list small {
-    color: #7f8b87;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1.25;
-  }
-
-  .source-list-panel {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .tree-panel-header {
-    min-width: 0;
-  }
-
-  .tree-heading {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-    color: #aeb8b5;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .tree-heading strong {
-    color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-  }
-
-  .scan-summary-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 22px;
-    align-items: center;
-    gap: 5px;
-    margin: -3px 0 7px;
-  }
-
-  .scan-summary {
-    min-width: 0;
-    overflow: hidden;
-    color: #7f8b87;
-    font-size: 10px;
-    font-weight: 720;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-diagnostic-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 20px;
-    border: 1px solid rgba(143, 216, 207, 0.14);
-    border-radius: 5px;
-    padding: 0;
-    background: rgba(143, 216, 207, 0.06);
-    color: #8a9693;
-  }
-
-  .scan-diagnostic-button:hover {
-    border-color: rgba(143, 216, 207, 0.34);
-    background: rgba(143, 216, 207, 0.12);
-    color: #b8d6d1;
-  }
-
-  .index-summary {
-    min-width: 0;
-    margin: -4px 0 4px;
-    overflow: hidden;
-    color: #8fd8cf;
-    font-size: 10px;
-    font-weight: 760;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-evidence {
-    min-width: 0;
-    margin: 0 0 7px;
-    overflow: hidden;
-    color: #6f7b78;
-    font-size: 9.5px;
-    font-weight: 720;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-evidence[data-tone='active'] {
-    color: #8fd8cf;
-  }
-
-  .scan-evidence[data-tone='warning'] {
-    color: #d8cba8;
-  }
-
-  .scan-evidence[data-tone='error'] {
-    color: #ff9a9a;
-  }
-
-  .scan-stats {
-    min-width: 0;
-    margin: -5px 0 8px;
-    overflow: hidden;
-    color: #6f7b78;
-    font-size: 9.5px;
-    font-weight: 720;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-health-note {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    margin: -1px 0 8px;
-    border: 1px solid rgba(216, 170, 85, 0.24);
-    border-radius: 6px;
-    padding: 6px 7px;
-    background: rgba(216, 170, 85, 0.08);
-    color: #d8cba8;
-    font-size: 10px;
-    font-weight: 720;
-    line-height: 1.25;
-  }
-
-  .scan-runtime-note {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    margin: -1px 0 8px;
-    border: 1px solid rgba(143, 216, 207, 0.2);
-    border-radius: 6px;
-    padding: 6px 7px;
-    background: rgba(143, 216, 207, 0.07);
-    color: #a8c8c3;
-    font-size: 10px;
-    font-weight: 720;
-    line-height: 1.25;
-  }
-
-  .scan-runtime-note span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-runtime-note button {
-    height: 20px;
-    border: 1px solid rgba(143, 216, 207, 0.24);
-    border-radius: 5px;
-    padding: 0 7px;
-    background: rgba(143, 216, 207, 0.1);
-    color: #bce8e2;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .scan-root-correction {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    margin: -1px 0 8px;
-    border: 1px solid rgba(216, 170, 85, 0.22);
-    border-radius: 6px;
-    padding: 5px 7px;
-    background: rgba(216, 170, 85, 0.07);
-    color: #d8cba8;
-    font-size: 10px;
-    font-weight: 720;
-    line-height: 1.25;
-  }
-
-  .scan-root-correction span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-root-correction strong {
-    margin-right: 5px;
-    color: #f0c978;
-    font-weight: 840;
-  }
-
-  .scan-root-correction button {
-    height: 20px;
-    border: 1px solid rgba(216, 170, 85, 0.28);
-    border-radius: 5px;
-    padding: 0 7px;
-    background: rgba(216, 170, 85, 0.12);
-    color: #f1d99b;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .scan-root-correction button:hover:not(:disabled) {
-    border-color: rgba(216, 170, 85, 0.44);
-    background: rgba(216, 170, 85, 0.18);
-    color: #ffe5a8;
-  }
-
-  .scan-root-correction button:disabled {
-    opacity: 0.48;
-  }
-
-  .scan-health-note span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-health-note button {
-    height: 20px;
-    border: 1px solid rgba(216, 170, 85, 0.28);
-    border-radius: 5px;
-    padding: 0 7px;
-    background: rgba(216, 170, 85, 0.12);
-    color: #f1d99b;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .scan-recovery-panel {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    margin: -2px 0 8px;
-    border: 1px solid rgba(111, 223, 207, 0.18);
-    border-radius: 6px;
-    padding: 6px 7px;
-    background: rgba(111, 223, 207, 0.07);
-    color: #a8c8c3;
-    font-size: 10px;
-    font-weight: 690;
-    line-height: 1.25;
-  }
-
-  .scan-recovery-panel > span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .scan-recovery-panel strong {
-    margin-right: 6px;
-    color: #6fdfcf;
-    font-weight: 820;
-  }
-
-  .scan-recovery-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .scan-recovery-actions button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 21px;
-    height: 20px;
-    border: 1px solid rgba(143, 216, 207, 0.18);
-    border-radius: 5px;
-    padding: 0;
-    background: rgba(143, 216, 207, 0.08);
-    color: #9fc5bf;
-  }
-
-  .scan-recovery-actions button:hover:not(:disabled) {
-    border-color: rgba(143, 216, 207, 0.38);
-    background: rgba(143, 216, 207, 0.14);
-    color: #d6f2ed;
-  }
-
-  .scan-recovery-actions button:disabled {
-    opacity: 0.44;
-  }
-
-  .scan-more-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 100%;
-    min-height: 24px;
-    margin: 0 0 8px;
-    border: 1px solid rgba(111, 223, 207, 0.22);
-    border-radius: 6px;
-    padding: 0 8px;
-    overflow: hidden;
-    background: rgba(111, 223, 207, 0.09);
-    color: #8fd8cf;
-    font-size: 10px;
-    font-weight: 800;
-    white-space: nowrap;
-  }
-
-  .scan-more-button:hover {
-    border-color: rgba(111, 223, 207, 0.42);
-    background: rgba(111, 223, 207, 0.15);
-  }
-
-  .file-tree {
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    padding: 4px 4px 4px 0;
-    scrollbar-color: rgba(174, 184, 181, 0.58) rgba(255, 255, 255, 0.055);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .file-tree::-webkit-scrollbar {
-    width: 10px;
-  }
-
-  .file-tree::-webkit-scrollbar-track {
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.055);
-  }
-
-  .file-tree::-webkit-scrollbar-thumb {
-    border: 2px solid rgba(19, 21, 21, 0.94);
-    border-radius: 999px;
-    background: rgba(174, 184, 181, 0.58);
-  }
-
-  .file-tree::-webkit-scrollbar-thumb:hover {
-    background: rgba(218, 225, 223, 0.72);
-  }
-
-  .tree-virtual-spacer {
-    height: var(--tree-spacer-height);
-    min-height: var(--tree-spacer-height);
-    pointer-events: none;
-  }
-
-  .file-tree button {
-    display: grid;
-    grid-template-columns: calc(var(--tree-level, 0) * 14px) 14px 18px minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 7px;
-    width: 100%;
-    height: 30px;
-    padding: 0 7px;
-    color: #cbd3d1;
-    text-align: left;
-    border-radius: 7px;
-    background: transparent;
-    transition:
-      background 150ms ease,
-      color 150ms ease,
-      transform 150ms ease;
-  }
-
-  .file-tree button:hover,
-  .file-tree button.active {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .file-tree button:active {
-    transform: translateY(1px);
-  }
-
-  .file-tree button.folder-row {
-    color: #d7dddb;
-    font-weight: 700;
-  }
-
-  .tree-chevron,
-  .tree-icon {
-    display: grid;
-    place-items: center;
-    width: 16px;
-    min-width: 0;
-    color: #8d9995;
-  }
-
-  .tree-icon {
-    color: #5fa7e8;
-  }
-
-  .folder-row .tree-icon {
-    color: #d0a94f;
-  }
-
-  .file-tree strong,
-  .file-tree small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .file-tree strong {
-    font-size: 12px;
-  }
-
-  .file-tree small {
-    color: #7f8b87;
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .file-tree button.file-row small {
-    display: none;
-  }
-
-  .git-status-badge {
-    display: inline-grid;
-    place-items: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    color: #071b18;
-    border-radius: 5px;
-    background: #d8aa55;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 850;
-    line-height: 1;
-  }
-
-  .tree-skeleton {
-    width: var(--line-width);
-    height: 22px;
-    margin: 5px 8px;
-    border-radius: 7px;
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.045));
-    background-size: 180% 100%;
-    animation: shimmer 1.2s ease-in-out infinite;
-  }
-
-  .empty-tree,
-  .empty-preview {
-    display: grid;
-    place-items: center;
-    gap: 8px;
-    min-height: 128px;
-    color: #9aa5a1;
-    text-align: center;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .empty-preview {
-    flex: 1 1 auto;
-    min-height: 520px;
-    border: 1px dashed rgba(255, 255, 255, 0.13);
-    border-radius: 13px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .empty-preview strong {
-    color: #f3f6f5;
-    font-size: 16px;
-  }
-
-  .empty-preview span {
-    color: #9aa5a1;
-    font-weight: 650;
+  .source-sidebar-section.collapsed {
+    flex: 0 0 auto;
   }
 
   .workspace {
     position: relative;
     display: flex;
     flex-direction: column;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
@@ -20445,199 +18613,6 @@
     white-space: nowrap;
   }
 
-  .view-menu-anchor {
-    position: relative;
-    display: inline-grid;
-    place-items: center;
-  }
-
-  .view-menu {
-    position: absolute;
-    z-index: 9;
-    top: calc(100% + 6px);
-    right: 0;
-    display: grid;
-    gap: 8px;
-    width: 270px;
-    min-width: 0;
-    max-height: min(680px, calc(100vh - 104px));
-    overflow-y: auto;
-    padding: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 9px;
-    background: rgba(22, 25, 25, 0.98);
-    box-shadow: 0 20px 54px rgba(0, 0, 0, 0.36);
-    scrollbar-color: rgba(174, 184, 181, 0.52) rgba(255, 255, 255, 0.04);
-    scrollbar-width: thin;
-  }
-
-  .view-menu-section {
-    display: grid;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .view-menu-section > span,
-  .view-terminal-picker > span {
-    color: #7f8b88;
-    font-size: 9px;
-    font-weight: 850;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-  }
-
-  .view-menu-button-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .view-menu-button-grid.two {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .view-menu-button-grid button,
-  .view-menu-wide-button {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    height: 25px;
-    padding: 0 7px;
-    color: #aab6b2;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 10px;
-    font-weight: 820;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .view-menu-button-grid button:hover,
-  .view-menu-button-grid button:focus-visible,
-  .view-menu-wide-button:hover,
-  .view-menu-wide-button:focus-visible {
-    color: #edf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .view-menu-button-grid button.active,
-  .view-menu-wide-button.active {
-    color: #dffdf8;
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  .view-menu-wide-button {
-    width: 100%;
-    justify-content: start;
-  }
-
-  .dock-panel-manager-list {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .dock-panel-manager-row {
-    display: grid;
-    grid-template-columns: minmax(0, 74px) minmax(0, 1fr);
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .dock-panel-manager-row > div:first-child {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .dock-panel-manager-row strong,
-  .dock-panel-manager-row small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .dock-panel-manager-row strong {
-    color: #e8eeec;
-    font-size: 9.5px;
-    font-weight: 850;
-  }
-
-  .dock-panel-manager-row small {
-    color: #7f8b88;
-    font-size: 8.5px;
-    font-weight: 760;
-  }
-
-  .dock-panel-manager-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .dock-panel-manager-actions button {
-    flex: 0 1 auto;
-    min-width: 0;
-    height: 22px;
-    padding: 0 6px;
-    color: #aab6b2;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    font: inherit;
-    font-size: 8.5px;
-    font-weight: 820;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .dock-panel-manager-actions button:hover,
-  .dock-panel-manager-actions button:focus-visible {
-    color: #edf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .dock-panel-manager-actions button.active,
-  .dock-panel-manager-actions button:disabled {
-    color: #dffdf8;
-    background: rgba(92, 226, 207, 0.16);
-    cursor: default;
-  }
-
-  .view-terminal-picker {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding-top: 2px;
-  }
-
-  .view-terminal-picker select {
-    width: 100%;
-    height: 26px;
-    min-width: 0;
-    color: #dffdf8;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 10px;
-    font-weight: 820;
-  }
-
   .context-identity-strip {
     display: flex;
     align-items: center;
@@ -20686,246 +18661,12 @@
     font-weight: 760;
   }
 
-  .dock-panel-tabs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    min-height: 22px;
-    margin: 0 0 5px;
-    overflow: hidden;
-  }
-
-  .workspace.chrome-compact .dock-panel-tabs {
-    min-height: 19px;
-    margin-bottom: 3px;
-  }
-
-  .dock-panel-tabs.empty {
-    height: 0;
-    min-height: 0;
-    margin: 0;
-  }
-
-  .hidden-dock-panel-rail {
-    position: absolute;
-    top: 38px;
-    right: 7px;
-    z-index: 18;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    max-height: calc(100% - 76px);
-    padding: 3px;
-    overflow: auto;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 9px;
-    background: rgba(12, 16, 16, 0.86);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
-    backdrop-filter: blur(14px);
-  }
-
-  .hidden-dock-panel-button {
-    display: inline-grid;
-    place-items: center;
-    grid-template-columns: 20px;
-    min-width: 0;
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    overflow: hidden;
-    color: #aeb8b5;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.04);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .hidden-dock-panel-button span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .hidden-dock-panel-button:hover,
-  .hidden-dock-panel-button:focus-visible {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.32);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .dock-drop-zones {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    min-height: 22px;
-    margin: -2px 0 5px;
-    overflow: hidden;
-  }
-
-  .dock-drop-zone {
-    display: inline-grid;
-    place-items: center;
-    min-width: 54px;
-    height: 22px;
-    padding: 0 8px;
-    color: #aab6b2;
-    border: 1px dashed rgba(92, 226, 207, 0.28);
-    border-radius: 6px;
-    background: rgba(92, 226, 207, 0.055);
-    font-size: 9px;
-    font-weight: 860;
-    cursor: pointer;
-  }
-
-  .dock-drop-zone.active,
-  .dock-drop-zone:hover,
-  .dock-drop-zone:focus-visible {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.58);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.14);
-  }
-
-  .dock-panel-tab-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
-    max-width: 100%;
-    padding: 2px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .dock-panel-tab {
-    display: inline-flex;
-    align-items: center;
-    min-width: 0;
-    height: 18px;
-    overflow: hidden;
-    border-radius: 4px;
-    background: transparent;
-  }
-
-  .workspace.chrome-compact .dock-panel-tab {
-    height: 16px;
-  }
-
-  .dock-panel-tab-label {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    height: 18px;
-    padding: 0 6px;
-    color: #9facaa;
-    border: 0;
-    background: transparent;
-    font: inherit;
-    font-size: 9px;
-    font-weight: 820;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .workspace.chrome-compact .dock-panel-tab-label {
-    height: 16px;
-    padding: 0 5px;
-    font-size: 8.5px;
-  }
-
-  .dock-panel-tab-close {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    height: 18px;
-    width: 17px;
-    padding: 0;
-    color: #9facaa;
-    border: 0;
-    background: transparent;
-    font: inherit;
-    font-size: 9px;
-    font-weight: 820;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0.72;
-  }
-
-  .dock-panel-tab-move {
-    display: inline-block;
-    min-width: 0;
-    height: 18px;
-    width: 18px;
-    padding: 0;
-    color: #9facaa;
-    border: 0;
-    background: rgba(255, 255, 255, 0.03);
-    font: inherit;
-    font-size: 8px;
-    font-weight: 820;
-    line-height: 1;
-    cursor: pointer;
-    opacity: 0.72;
-    appearance: none;
-    text-align: center;
-  }
-
-  .dock-panel-tab-label:hover,
-  .dock-panel-tab-label:focus-visible,
-  .dock-panel-tab-move:hover,
-  .dock-panel-tab-move:focus-visible,
-  .dock-panel-tab-close:hover,
-  .dock-panel-tab-close:focus-visible {
-    color: #eef6f4;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.07);
-  }
-
-  .dock-panel-tab.active {
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  .dock-panel-tab.drop-target {
-    background: rgba(92, 226, 207, 0.09);
-  }
-
-  .dock-panel-tab.drop-target:not(.drop-after) {
-    box-shadow: inset 2px 0 0 #5ce2cf;
-  }
-
-  .dock-panel-tab.drop-target.drop-after {
-    box-shadow: inset -2px 0 0 #5ce2cf;
-  }
-
-  .dock-panel-tab.active .dock-panel-tab-label {
-    color: #dffdf8;
-  }
-
-  .dock-panel-tab.active .dock-panel-tab-close {
-    color: #c9f6ef;
-  }
-
-  .dock-panel-tab.active .dock-panel-tab-move {
-    color: #c9f6ef;
-  }
-
   .workspace-arrangement {
+    position: relative;
     display: grid;
     flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
     grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
@@ -20937,35 +18678,48 @@
   }
 
   .workspace-arrangement.context-side {
-    grid-template-columns: minmax(0, 1fr) 6px var(--context-pane-width);
+    grid-template-columns: minmax(0, 1fr) var(--context-pane-width);
     grid-template-rows: minmax(0, 1fr);
     gap: 0;
   }
 
   .workspace-arrangement.context-side.context-rail-only {
-    grid-template-columns: minmax(0, 1fr) 6px 34px;
+    grid-template-columns: minmax(0, 1fr) 34px;
   }
 
   .workspace-arrangement.context-bottom {
-    grid-template-rows: minmax(0, 1fr) 6px minmax(96px, var(--context-pane-height));
+    grid-template-rows: minmax(0, 1fr) minmax(96px, var(--context-pane-height));
     gap: 0;
   }
 
   .workspace-context-column,
   .workspace-main-column {
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
   }
 
-  .workspace-context-column {
-    display: grid;
-    min-height: 0;
-  }
 
   .workspace-main-column {
     display: flex;
     flex-direction: column;
+  }
+
+  .source-runtime-panel-stage {
+    position: fixed;
+    left: -1px;
+    bottom: -1px;
+    width: 1px;
+    height: 1px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    contain: layout paint;
   }
 
   .workspace-arrangement.context-side .workspace-main-column {
@@ -20973,64 +18727,70 @@
     grid-row: 1;
   }
 
-  .workspace-arrangement.context-side .workspace-context-column {
-    grid-column: 3;
-    grid-row: 1;
-    padding-left: 6px;
-  }
 
   .workspace-arrangement.context-bottom .workspace-main-column {
     grid-column: 1;
     grid-row: 1;
   }
 
-  .workspace-arrangement.context-bottom .workspace-context-column {
-    grid-column: 1;
-    grid-row: 3;
-    min-height: 0;
-    padding-top: 6px;
-  }
 
   .context-pane-resizer {
+    position: absolute;
     display: none;
-    width: 6px;
+    z-index: 18;
+    width: var(--pane-resizer-hit-size);
     min-width: 0;
     padding: 0;
+    touch-action: none;
     cursor: col-resize;
     border: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.045);
-    border-right: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
+    background: transparent;
   }
 
   .workspace-arrangement.context-side .context-pane-resizer {
     display: block;
-    grid-column: 2;
-    grid-row: 1;
+    top: 0;
+    right: var(--context-pane-width);
+    bottom: 0;
+    transform: translateX(50%);
+  }
+
+  .workspace-arrangement.context-side.context-rail-only .context-pane-resizer {
+    right: 34px;
   }
 
   .workspace-arrangement.context-bottom .context-pane-resizer {
     display: block;
-    grid-column: 1;
-    grid-row: 2;
+    right: 0;
+    bottom: var(--context-pane-height);
+    left: 0;
     width: auto;
-    height: 6px;
+    height: var(--pane-resizer-hit-size);
     cursor: row-resize;
-    border-top: 1px solid rgba(255, 255, 255, 0.045);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-    border-left: 0;
-    border-right: 0;
+    border: 0;
+    transform: translateY(50%);
   }
 
   .context-pane-resizer:hover,
   .context-pane-resizer:focus-visible {
     outline: 0;
-    background: rgba(92, 226, 207, 0.18);
+    background: transparent;
+  }
+
+  .workspace-arrangement.context-bottom .context-pane-resizer::after {
+    width: 42px;
+    height: 2px;
   }
 
   :global(body.resizing-context-pane) {
     cursor: col-resize;
     user-select: none;
+  }
+
+  :global(body.resizing-context-pane) .context-pane-resizer::after,
+  :global(body.resizing-context-pane-bottom) .context-pane-resizer::after {
+    background: rgba(223, 253, 248, 0.82);
+    opacity: 1;
   }
 
   :global(body.resizing-context-pane-bottom) {
@@ -21039,23 +18799,39 @@
   }
 
   .bottom-dock-resizer {
-    flex: 0 0 6px;
+    position: relative;
+    flex: 0 0 var(--bottom-dock-resizer-size);
     width: auto;
-    height: 6px;
-    min-height: 6px;
+    height: var(--bottom-dock-resizer-size);
+    min-height: var(--bottom-dock-resizer-size);
     margin: 5px 0 0;
     padding: 0;
+    touch-action: none;
     cursor: row-resize;
     border: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.045);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
+    border-top: 1px solid rgba(92, 226, 207, 0.1);
+    border-bottom: 1px solid rgba(92, 226, 207, 0.1);
+    background: rgba(92, 226, 207, 0.055);
   }
 
   .bottom-dock-resizer:hover,
   .bottom-dock-resizer:focus-visible {
     outline: 0;
-    background: rgba(92, 226, 207, 0.18);
+    background: rgba(92, 226, 207, 0.2);
+  }
+
+  .bottom-dock-resizer::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 68px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(126, 240, 223, 0.58);
+    box-shadow: 0 0 0 1px rgba(7, 21, 20, 0.46);
+    content: "";
+    transform: translate(-50%, -50%);
+    transition: background 140ms ease, width 140ms ease;
   }
 
   :global(body.resizing-bottom-dock) {
@@ -21063,307 +18839,54 @@
     user-select: none;
   }
 
-  .context-panel-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 6px;
+  :global(body.resizing-bottom-dock) .bottom-dock-resizer {
+    background: rgba(92, 226, 207, 0.24);
+  }
+
+  :global(body.resizing-bottom-dock) .bottom-dock-resizer::after {
+    width: 96px;
+    height: 4px;
+    background: rgba(223, 253, 248, 0.86);
+  }
+
+
+  :global(.source-dockview-context-cards-host) {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
-    margin: -2px 0 8px;
-  }
-
-  .context-panel-grid.collapsed {
-    display: none;
-  }
-
-  .context-panel-grid.stacked {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .context-stack-tabs {
-    display: flex;
-    min-width: 0;
-    max-width: 100%;
-    padding: 2px;
-    gap: 2px;
-    overflow-x: auto;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
-    background: rgba(10, 12, 12, 0.34);
-    scrollbar-width: none;
-  }
-
-  .context-stack-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  .context-stack-tabs button {
-    position: relative;
-    display: inline-grid;
-    grid-template-columns: minmax(0, 1fr);
-    place-items: center;
-    min-width: max-content;
-    height: 24px;
-    padding: 0 9px;
-    color: #9da8a5;
-    font: inherit;
-    font-size: 10px;
-    font-weight: 800;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-  }
-
-  .context-card-tab-icon {
-    display: none;
-  }
-
-  .context-stack-tabs button:hover,
-  .context-stack-tabs button:focus-visible {
-    color: #ecf4f2;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .context-stack-tabs button.active {
-    color: #0a1816;
-    background: #67dfd1;
-  }
-
-  .workspace-arrangement.context-side .context-panel-grid {
-    grid-template-columns: 28px minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    align-content: stretch;
-    height: 100%;
-    margin: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .workspace-context-column {
-    padding-right: 3px;
-    padding-left: 3px;
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .context-panel-grid {
-    grid-template-columns: 28px;
-    grid-template-rows: minmax(0, 1fr);
-    gap: 0;
     overflow: hidden;
-    padding-right: 0;
-    scrollbar-gutter: auto;
+    visibility: hidden;
+    contain: layout paint;
   }
 
-  .workspace-arrangement.context-side.context-rail-only .context-restore-button,
-  .workspace-arrangement.context-side.context-rail-only .context-panel-grid > section {
-    display: none;
-  }
 
-  .workspace-arrangement.context-side.context-rail-only .context-stack-tabs {
-    grid-column: 1;
-    grid-row: 1;
-    width: 28px;
-    max-width: 28px;
-    padding: 2px;
-    background: rgba(10, 12, 12, 0.5);
-  }
-
-  .workspace-arrangement.context-side.context-rail-only .context-stack-tabs button {
-    width: 24px;
-    min-width: 24px;
-    height: 24px;
-  }
-
-  .workspace-arrangement.context-side .context-restore-button {
-    grid-column: 1 / -1;
-    grid-row: 1;
-  }
-
-  .workspace-arrangement.context-side .context-stack-tabs {
-    grid-column: 1;
-    grid-row: 2;
-    flex-direction: column;
-    align-items: center;
-    width: 28px;
-    max-width: 28px;
-    height: 100%;
-    max-height: 100%;
-    overflow-x: hidden;
-    overflow-y: auto;
-    border-radius: 6px;
-  }
-
-  .workspace-arrangement.context-side .context-stack-tabs button {
+  :global(.source-dockview-files-shell .source-paneview-panel-host),
+  :global(.source-dockview-conversation-shell .source-paneview-panel-host) {
     display: grid;
-    place-items: center;
-    width: 22px;
-    min-width: 22px;
-    height: 22px;
-    padding: 0;
-  }
-
-  .workspace-arrangement.context-side .context-stack-tabs button span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-
-  .workspace-arrangement.context-side .context-card-tab-icon {
-    display: block;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-panel,
-  .workspace-arrangement.context-side .runtime-context-panel,
-  .workspace-arrangement.context-side .agent-session-panel,
-  .workspace-arrangement.context-side .worktree-context-panel,
-  .workspace-arrangement.context-side .repo-dashboard-panel {
-    grid-column: 2;
-    grid-row: 2;
-    gap: 4px;
-    padding: 5px;
-    overflow: hidden;
-    border-radius: 5px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-header,
-  .workspace-arrangement.context-side .runtime-context-header,
-  .workspace-arrangement.context-side .agent-session-header,
-  .workspace-arrangement.context-side .worktree-context-header,
-  .workspace-arrangement.context-side .repo-dashboard-header {
-    min-height: 22px;
-    gap: 4px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-header strong,
-  .workspace-arrangement.context-side .runtime-context-header strong,
-  .workspace-arrangement.context-side .agent-session-header strong,
-  .workspace-arrangement.context-side .worktree-context-header strong,
-  .workspace-arrangement.context-side .repo-dashboard-header strong {
-    font-size: 10px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-header span,
-  .workspace-arrangement.context-side .runtime-context-header span,
-  .workspace-arrangement.context-side .agent-session-header span,
-  .workspace-arrangement.context-side .worktree-context-header span,
-  .workspace-arrangement.context-side .repo-dashboard-header span {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .context-card-actions {
-    gap: 2px;
-  }
-
-  .workspace-arrangement.context-side .context-card-actions .file-action-button {
-    width: 20px;
-    height: 20px;
-  }
-
-  .workspace-arrangement.context-bottom .context-panel-grid {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    align-content: start;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+    justify-items: stretch;
+    width: 100%;
     height: 100%;
-    margin: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.5) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
+    min-width: 0;
+    min-height: 0;
   }
 
-  .workspace-arrangement.context-side .runtime-context-row,
-  .workspace-arrangement.context-side .agent-session-row,
-  .workspace-arrangement.context-side .worktree-context-row,
-  .workspace-arrangement.context-side .repo-dashboard-row,
-  .workspace-arrangement.context-side .orchestration-context-row {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: start;
-    gap: 3px;
-    padding: 3px 4px;
-    border-radius: 4px;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row {
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row strong {
-    grid-column: 1 / -1;
-  }
-
-  .workspace-arrangement.context-side .runtime-context-row > span:not(.runtime-port),
-  .workspace-arrangement.context-side .runtime-context-row small {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row {
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-  }
-
-  .workspace-arrangement.context-side .agent-session-row > span:not(.agent-provider-badge),
-  .workspace-arrangement.context-side .agent-session-row small {
-    display: none;
-  }
 
   .workspace-arrangement.context-side .agent-session-focus-lane {
-    grid-column: 1 / -1;
+    grid-area: lane;
+    width: 100%;
     min-height: 16px;
     padding: 0 4px;
   }
 
-  .workspace-arrangement.context-side .worktree-context-row {
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: center;
-  }
-
-  .workspace-arrangement.context-side .worktree-context-row > span:not(.worktree-status-badge):not(.worktree-decision-lane),
-  .workspace-arrangement.context-side .worktree-context-row > em,
-  .workspace-arrangement.context-side .worktree-context-row > .git-task-link,
-  .workspace-arrangement.context-side .worktree-task-empty,
-  .workspace-arrangement.context-side .worktree-recommendation,
-  .workspace-arrangement.context-side .worktree-next-check {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .worktree-plan-line {
-    grid-column: 1 / -1;
-  }
-
-  .workspace-arrangement.context-side .worktree-plan-line > span:last-child {
-    display: none;
-  }
-
-  .workspace-arrangement.context-side .worktree-context-actions {
-    grid-column: 1 / -1;
-    flex-wrap: wrap;
-  }
-
-  .workspace-arrangement.context-side .repo-dashboard-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-  }
-
-  .workspace-arrangement.context-side .repo-dashboard-metric {
-    display: none;
-  }
 
   .workspace-arrangement.context-side .orchestration-context-list,
   .workspace-arrangement.context-side .orchestration-decision-queue,
   .workspace-arrangement.context-side .runtime-context-list,
   .workspace-arrangement.context-side .agent-session-list,
-  .workspace-arrangement.context-side .worktree-decision-queue,
-  .workspace-arrangement.context-side .worktree-context-list,
   .workspace-arrangement.context-side .repo-dashboard-list {
     align-content: start;
     align-items: start;
@@ -21371,45 +18894,22 @@
     max-height: none;
   }
 
-  .workspace-arrangement.context-side .orchestration-context-main {
-    gap: 3px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-title {
-    gap: 4px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-meta {
-    gap: 3px;
-    font-size: 7.5px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-current {
-    font-size: 8.5px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-loop-stages {
-    flex-wrap: wrap;
-    max-height: 38px;
-  }
 
   .workspace-arrangement.context-side .context-loop-stage {
     height: 16px;
     padding: 0 4px;
-    font-size: 7.5px;
+    font-size: 9px;
   }
 
   .workspace-arrangement.context-side .runtime-port,
   .workspace-arrangement.context-side .runtime-url-link,
   .workspace-arrangement.context-side .agent-provider-badge,
-  .workspace-arrangement.context-side .worktree-status-badge,
-  .workspace-arrangement.context-side .worktree-decision-lane,
   .workspace-arrangement.context-side .repo-branch-badge,
   .workspace-arrangement.context-side .repo-task-link {
     min-height: 0;
     height: 16px;
     padding: 0 5px;
-    font-size: 8px;
+    font-size: 9px;
   }
 
   .workspace-arrangement.context-side .runtime-url-link,
@@ -21417,186 +18917,6 @@
     justify-self: start;
   }
 
-  .workspace-arrangement.context-side .worktree-context-actions button {
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-  }
-
-  .workspace-arrangement.context-side .worktree-context-actions .worktree-snapshot-chip {
-    max-width: 108px;
-    height: 20px;
-    padding: 0 5px;
-  }
-
-  .workspace-arrangement.context-side .orchestration-context-actions,
-  .workspace-arrangement.context-side .worktree-context-actions {
-    justify-content: start;
-  }
-
-  .orchestration-context-panel,
-  .runtime-context-panel,
-  .agent-session-panel,
-  .worktree-context-panel,
-  .repo-dashboard-panel {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 6px;
-    min-width: 0;
-    min-height: 0;
-    padding: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .orchestration-context-header,
-  .runtime-context-header,
-  .agent-session-header,
-  .worktree-context-header,
-  .repo-dashboard-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .orchestration-context-header div,
-  .runtime-context-header div,
-  .agent-session-header div,
-  .worktree-context-header div,
-  .repo-dashboard-header div {
-    display: grid;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .orchestration-context-header strong,
-  .orchestration-context-header span,
-  .runtime-context-header strong,
-  .runtime-context-header span,
-  .agent-session-header strong,
-  .agent-session-header span,
-  .worktree-context-header strong,
-  .worktree-context-header span,
-  .repo-dashboard-header strong,
-  .repo-dashboard-header span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .orchestration-context-header strong,
-  .runtime-context-header strong,
-  .agent-session-header strong,
-  .worktree-context-header strong,
-  .repo-dashboard-header strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 800;
-  }
-
-  .orchestration-context-header span,
-  .runtime-context-header span,
-  .agent-session-header span,
-  .worktree-context-header span,
-  .repo-dashboard-header span {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 740;
-  }
-
-  .context-card-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .context-card-actions .file-action-button {
-    width: 24px;
-    height: 22px;
-    border-radius: 6px;
-  }
-
-  .context-card-close {
-    color: #8d9995;
-  }
-
-  .context-card-close:hover {
-    color: #f2f6f5;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .context-restore-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 0;
-    height: 24px;
-    padding: 0 8px;
-    color: #8fd8cf;
-    border: 1px solid rgba(92, 226, 207, 0.22);
-    border-radius: 6px;
-    background: rgba(92, 226, 207, 0.08);
-    font-size: 10px;
-    font-weight: 800;
-    cursor: pointer;
-  }
-
-  .orchestration-context-list,
-  .runtime-context-list,
-  .agent-session-list,
-  .worktree-context-list,
-  .repo-dashboard-list {
-    display: grid;
-    gap: 4px;
-    max-height: 96px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
-
-  .runtime-context-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .agent-session-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .worktree-context-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .repo-dashboard-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .orchestration-context-list {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .orchestration-decision-queue {
-    display: grid;
-    gap: 4px;
-    max-height: 82px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
 
   .orchestration-decision-item {
     display: grid;
@@ -21703,270 +19023,6 @@
     background: rgba(216, 170, 85, 0.14);
   }
 
-  .worktree-decision-queue {
-    display: grid;
-    gap: 4px;
-    max-height: 132px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.48) rgba(255, 255, 255, 0.045);
-    scrollbar-width: thin;
-  }
-
-  .worktree-decision-group {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-    padding: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.12);
-  }
-
-  .worktree-decision-group.blocked {
-    border-color: rgba(216, 170, 85, 0.2);
-    background: rgba(216, 170, 85, 0.07);
-  }
-
-  .worktree-decision-group.ready {
-    border-color: rgba(92, 226, 207, 0.18);
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .worktree-decision-group.review,
-  .worktree-decision-group.protected {
-    background: rgba(255, 255, 255, 0.032);
-  }
-
-  .worktree-decision-group-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .worktree-decision-group-header div,
-  .worktree-decision-item div {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .worktree-decision-group-header strong,
-  .worktree-decision-group-header small,
-  .worktree-decision-group-header span,
-  .worktree-decision-item strong,
-  .worktree-decision-item small,
-  .worktree-decision-more {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .worktree-decision-group-header strong {
-    color: #f0f4f3;
-    font-size: 10px;
-    font-weight: 850;
-  }
-
-  .worktree-decision-group-header small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 730;
-  }
-
-  .worktree-decision-group-header span {
-    max-width: 132px;
-    color: #8fbdb6;
-    font-size: 8px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .worktree-decision-items {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .worktree-decision-item {
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr) 20px 20px 20px;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    min-height: 24px;
-    padding: 3px 4px;
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.16);
-  }
-
-  .worktree-decision-item strong {
-    color: #edf4f2;
-    font-size: 10px;
-    font-weight: 800;
-  }
-
-  .worktree-decision-item small,
-  .worktree-decision-more {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 720;
-  }
-
-  .worktree-decision-item button {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .worktree-decision-item button.worktree-primary-action.backup {
-    color: #d8aa55;
-    border-color: rgba(216, 170, 85, 0.22);
-    background: rgba(216, 170, 85, 0.09);
-  }
-
-  .worktree-decision-item button.worktree-primary-action.cleanup {
-    color: #79eadb;
-    border-color: rgba(92, 226, 207, 0.3);
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .worktree-decision-item button:hover,
-  .worktree-decision-item button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.36);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .worktree-decision-item button:disabled {
-    opacity: 0.38;
-    cursor: default;
-  }
-
-  .worktree-decision-more {
-    padding: 1px 4px 0;
-  }
-
-  .orchestration-context-row,
-  .runtime-context-row,
-  .agent-session-row,
-  .worktree-context-row,
-  .repo-dashboard-row {
-    display: grid;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    padding: 5px 6px;
-    color: #cbd3d1;
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.14);
-  }
-
-  .runtime-context-row {
-    grid-template-columns: auto auto minmax(0, 0.8fr) minmax(0, 0.75fr) minmax(0, 1.6fr);
-  }
-
-  .agent-session-row {
-    grid-template-columns:
-      auto minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.78fr) minmax(0, 0.64fr)
-      minmax(0, 0.95fr);
-  }
-
-  .worktree-context-row {
-    grid-template-columns:
-      auto auto minmax(0, 0.9fr) minmax(0, 0.44fr) auto minmax(0, 0.9fr) minmax(0, 1fr)
-      minmax(0, 1fr) auto;
-  }
-
-  .repo-dashboard-row {
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.75fr) minmax(0, 0.7fr) minmax(0, 0.82fr) minmax(0, 0.65fr);
-  }
-
-  .orchestration-context-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .orchestration-context-row.bad {
-    background: rgba(216, 95, 95, 0.1);
-  }
-
-  .orchestration-context-row.attention {
-    background: rgba(216, 170, 85, 0.09);
-  }
-
-  .orchestration-context-row.live {
-    background: rgba(92, 226, 207, 0.055);
-  }
-
-  .orchestration-context-main {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .orchestration-context-title,
-  .orchestration-context-meta,
-  .orchestration-context-loop-stages,
-  .orchestration-context-actions {
-    display: flex;
-    align-items: center;
-    min-width: 0;
-  }
-
-  .orchestration-context-title {
-    gap: 5px;
-  }
-
-  .orchestration-context-title .run-status-badge {
-    flex: 0 0 auto;
-  }
-
-  .orchestration-context-title .git-task-link {
-    flex: 0 0 auto;
-    height: 18px;
-    padding: 0 5px;
-    font-size: 8px;
-  }
-
-  .orchestration-context-meta {
-    gap: 4px;
-    color: #8d9995;
-    font-size: 8px;
-    font-weight: 780;
-    text-transform: uppercase;
-  }
-
-  .orchestration-context-meta span + span::before {
-    content: "·";
-    margin-right: 4px;
-    color: #586560;
-  }
-
-  .orchestration-context-current {
-    color: #aab5b2;
-    font-size: 9px;
-    font-weight: 720;
-  }
-
-  .orchestration-context-loop-stages {
-    gap: 3px;
-    overflow: hidden;
-  }
-
   .context-loop-stage {
     display: inline-grid;
     grid-template-columns: minmax(0, auto) auto;
@@ -22026,47 +19082,6 @@
     font-weight: 900;
   }
 
-  .orchestration-context-actions {
-    align-self: start;
-    gap: 3px;
-  }
-
-  .orchestration-context-actions button {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .orchestration-context-actions button:hover,
-  .orchestration-context-actions button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .worktree-context-row.blocked {
-    background: rgba(216, 170, 85, 0.09);
-  }
-
-  .worktree-context-row.protected {
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .worktree-context-row.ready {
-    background: rgba(92, 226, 207, 0.06);
-  }
-
-  .repo-dashboard-row.dirty {
-    background: rgba(216, 170, 85, 0.09);
-  }
 
   .runtime-port,
   .orchestration-context-main,
@@ -22079,9 +19094,6 @@
   .orchestration-context-row span,
   .orchestration-context-row small,
   .agent-provider-badge,
-  .worktree-status-badge,
-  .worktree-decision-lane,
-  .worktree-plan-lane,
   .repo-branch-badge,
   .runtime-context-row strong,
   .runtime-context-row span,
@@ -22089,13 +19101,6 @@
   .agent-session-row strong,
   .agent-session-row span,
   .agent-session-row small,
-  .worktree-context-row strong,
-  .worktree-context-row span,
-  .worktree-context-row small,
-  .worktree-context-row em,
-  .worktree-context-main,
-  .worktree-context-main strong,
-  .worktree-context-main small,
   .repo-dashboard-main,
   .repo-dashboard-main strong,
   .repo-dashboard-main small,
@@ -22116,129 +19121,23 @@
     font-weight: 820;
   }
 
-  .runtime-url-link {
-    display: inline-grid;
-    place-items: center;
-    height: 22px;
-    padding: 0 7px;
-    color: #7ce5d5;
-    text-decoration: none;
-    white-space: nowrap;
-    border: 1px solid rgba(92, 226, 207, 0.22);
-    border-radius: 999px;
-    background: rgba(92, 226, 207, 0.08);
-    font-size: 10px;
-    font-weight: 850;
-  }
 
   .agent-provider-badge {
     display: inline-grid;
     place-items: center;
     height: 20px;
+    max-width: 64px;
+    min-width: 0;
+    overflow: hidden;
     padding: 0 7px;
     color: #081916;
     border-radius: 999px;
     background: #81d6e4;
     font-size: 10px;
     font-weight: 820;
+    text-overflow: ellipsis;
     text-transform: capitalize;
-  }
-
-  .worktree-status-badge {
-    display: inline-grid;
-    place-items: center;
-    height: 20px;
-    padding: 0 7px;
-    color: #071b18;
-    border-radius: 999px;
-    background: #6fdfcf;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .worktree-status-badge.review {
-    color: #dce5e2;
-    background: rgba(255, 255, 255, 0.14);
-  }
-
-  .worktree-status-badge.protected {
-    color: #dce5e2;
-    background: rgba(255, 255, 255, 0.16);
-  }
-
-  .worktree-status-badge.ready {
-    color: #071b18;
-    background: #6fdfcf;
-  }
-
-  .worktree-status-badge.blocked {
-    color: #211606;
-    background: #d8aa55;
-  }
-
-  .worktree-decision-lane {
-    display: inline-grid;
-    place-items: center;
-    min-width: 0;
-    min-height: 18px;
-    max-width: 92px;
-    padding: 0 6px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 8px;
-    font-weight: 900;
-    line-height: 1;
-    text-transform: uppercase;
-  }
-
-  .worktree-decision-lane.blocked {
-    color: #ffd8a8;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.1);
-  }
-
-  .worktree-decision-lane.backup {
-    color: #f0c979;
-    border-color: rgba(216, 170, 85, 0.24);
-    background: rgba(216, 170, 85, 0.08);
-  }
-
-  .worktree-decision-lane.cleanup {
-    color: #7ce5d5;
-    border-color: rgba(92, 226, 207, 0.25);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .worktree-decision-lane.review {
-    color: #cbd3d1;
-    border-color: rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .worktree-decision-lane.protected {
-    color: #9fa9a6;
-    border-color: rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .worktree-next-check {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: #8fbdb6;
-    font-size: 10px;
-    font-weight: 730;
-  }
-
-  .worktree-next-check strong {
-    flex: 0 0 auto;
-    color: #6fdfcf;
-    font-size: 9px;
-    font-weight: 860;
-    letter-spacing: 0;
-    text-transform: uppercase;
+    white-space: nowrap;
   }
 
   .repo-branch-badge {
@@ -22248,119 +19147,6 @@
     font-weight: 820;
   }
 
-  .worktree-context-row.blocked .worktree-status-badge {
-    color: #211606;
-    background: #d8aa55;
-  }
-
-  .worktree-context-main {
-    display: grid;
-    gap: 2px;
-  }
-
-  .worktree-context-main .worktree-owner-strip {
-    flex-wrap: nowrap;
-    white-space: normal;
-  }
-
-  .runtime-context-row strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .agent-session-row strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .worktree-context-row strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .worktree-task-empty {
-    color: #6f7a76;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .worktree-context-actions {
-    display: inline-flex;
-    justify-content: flex-end;
-    gap: 3px;
-    min-width: 0;
-  }
-
-  .worktree-context-actions button {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .worktree-context-actions .worktree-snapshot-chip {
-    display: inline-flex;
-    width: auto;
-    max-width: 126px;
-    padding: 0 6px;
-  }
-
-  .worktree-context-actions button:hover,
-  .worktree-context-actions button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.36);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .worktree-context-actions button:disabled {
-    opacity: 0.38;
-    cursor: default;
-  }
-
-  .repo-dashboard-main {
-    display: grid;
-    gap: 2px;
-  }
-
-  .repo-dashboard-main strong {
-    color: #f0f4f3;
-    font-size: 11px;
-    font-weight: 780;
-  }
-
-  .repo-dashboard-main small {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 720;
-  }
-
-  .repo-dashboard-metric {
-    display: grid;
-    gap: 2px;
-  }
-
-  .repo-dashboard-metric span {
-    color: #6fdfcf;
-    font-size: 9px;
-    font-weight: 840;
-    text-transform: uppercase;
-  }
-
-  .repo-dashboard-metric strong {
-    color: #cbd3d1;
-    font-size: 10px;
-    font-weight: 760;
-  }
 
   .repo-task-link {
     display: inline-flex;
@@ -22379,19 +19165,6 @@
     white-space: nowrap;
   }
 
-  .runtime-context-row span,
-  .runtime-context-row small,
-  .agent-session-row span,
-  .agent-session-row small,
-  .worktree-context-row span,
-  .worktree-context-row small,
-  .worktree-context-row em,
-  .repo-dashboard-row em {
-    color: #8d9995;
-    font-size: 10px;
-    font-style: normal;
-    font-weight: 720;
-  }
 
   .agent-session-focus-lane {
     display: inline-grid;
@@ -22469,135 +19242,6 @@
     color: #9fb4af;
   }
 
-  .tab-strip {
-    display: flex;
-    gap: 4px;
-    min-width: 0;
-    padding-bottom: 3px;
-    margin: 0 0 6px;
-    overflow-x: auto;
-  }
-
-  .source-tab {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 22px;
-    align-items: center;
-    flex: 0 1 190px;
-    min-width: 132px;
-    max-width: 190px;
-    height: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .source-tab.active {
-    border-color: rgba(92, 226, 207, 0.42);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .source-tab.dirty {
-    border-color: rgba(216, 170, 85, 0.44);
-  }
-
-  .tab-select-button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr) auto 7px;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    height: 100%;
-    padding: 0 5px 0 7px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .tab-file-icon {
-    display: grid;
-    place-items: center;
-    min-width: 0;
-    color: #8d9995;
-  }
-
-  .source-tab.active .tab-file-icon {
-    color: #6fdfcf;
-  }
-
-  .tab-dirty-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-    background: #d8aa55;
-    box-shadow: 0 0 0 2px rgba(216, 170, 85, 0.14);
-  }
-
-  .tab-select-button span,
-  .tab-select-button small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .tab-select-button span {
-    font-size: 11px;
-    font-weight: 760;
-  }
-
-  .tab-select-button small {
-    color: #8d9995;
-    display: none;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .tab-close-button {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    color: #8d9995;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .tab-close-button:hover {
-    color: #f2f6f5;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .tab-select-button:focus-visible,
-  .tab-close-button:focus-visible {
-    outline: 0;
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .path-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 5px;
-    color: #87918e;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-  }
-
-  .path-row span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .path-row strong {
-    color: #cbd3d1;
-  }
-
   .file-actions {
     display: flex;
     align-items: center;
@@ -22605,92 +19249,68 @@
     min-width: 0;
   }
 
-  .file-action-button {
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 28px;
-    color: #b9c5c1;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.045);
-    cursor: pointer;
+  :global(.source-dockview-workbench-shell .editor-frame),
+  :global(.source-dockview-workbench-shell .empty-preview),
+  :global(.source-dockview-workbench-shell .source-dockview-editor-files-shell),
+  :global(.source-dockview-center-shell .editor-frame),
+  :global(.source-dockview-center-shell .empty-preview),
+  :global(.source-dockview-center-shell .source-dockview-editor-files-shell) {
+    height: 100%;
   }
 
-  .file-action-button:hover {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .file-action-button:focus-visible {
-    border-color: rgba(92, 226, 207, 0.58);
-    outline: 0;
-    box-shadow: 0 0 0 3px rgba(92, 226, 207, 0.13);
-  }
-
-  .file-action-button:disabled {
-    cursor: default;
-    opacity: 0.58;
-  }
-
-  .file-action-feedback {
-    margin: -4px 0 10px;
-    color: #7ce5d5;
-    font-size: 11px;
-    font-weight: 750;
-  }
-
-  .inline-error {
-    display: inline-grid;
-    grid-auto-flow: column;
-    align-items: center;
-    gap: 7px;
-    margin-bottom: 12px;
-    color: #f1b8a4;
-    font-size: 12px;
-    font-weight: 650;
-  }
-
-  .editor-frame {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    height: auto;
-    min-width: 0;
+  :global(.source-dockview-workbench-shell .source-dockview-attached-panel.terminal-launchpad),
+  :global(.source-dockview-center-shell .source-dockview-attached-panel.terminal-launchpad) {
+    flex: 1 1 0;
+    align-self: stretch;
+    width: 100%;
+    height: 100% !important;
     min-height: 0;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 8px;
-    background: #17191e;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.07),
-      0 18px 45px rgba(0, 0, 0, 0.2);
+    max-height: none;
+    margin-top: 0;
+  }
+
+  :global(.source-dockview-workbench-shell .embedded-terminal-panel),
+  :global(.source-dockview-workbench-shell .embedded-terminal-host),
+  :global(.source-dockview-center-shell .embedded-terminal-panel),
+  :global(.source-dockview-center-shell .embedded-terminal-host) {
+    height: 100% !important;
+    min-height: 0;
   }
 
   .terminal-launchpad {
     display: grid;
-    flex: 0 0 auto;
+    grid-template-rows: auto minmax(0, 1fr);
+    flex: 1 1 auto;
     gap: 6px;
-    height: min(var(--bottom-dock-height), 55dvh);
+    width: 100%;
+    height: 100%;
     min-width: 0;
-    max-height: min(var(--bottom-dock-height), 55dvh);
-    margin-top: 6px;
+    min-height: 0;
+    max-height: none;
+    margin-top: 0;
     overflow: hidden;
-    padding: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.105);
-    border-radius: 8px;
-    background: rgba(15, 18, 18, 0.92);
+    padding: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+
+  :global(.source-dockview-bottom-shell .terminal-launchpad) {
+    flex: 0 0 auto;
+    height: var(--bottom-dock-height);
+    min-height: 96px;
+    margin-top: 6px;
   }
 
   .terminal-launchpad-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
     min-width: 0;
   }
 
-  .terminal-launchpad-header > div:first-child,
+  .terminal-launchpad-identity,
   .terminal-launchpad-actions,
   .terminal-inline-picker {
     display: inline-flex;
@@ -22698,47 +19318,52 @@
     min-width: 0;
   }
 
-  .terminal-launchpad-header > div:first-child {
-    gap: 6px;
-    color: #dce4e2;
+  .terminal-launchpad-identity {
+    gap: var(--space-2);
+    color: var(--color-text);
   }
 
-  .terminal-launchpad-header strong,
-  .terminal-launchpad-header span,
-  .terminal-launchpad-row strong,
-  .terminal-launchpad-row small {
+  .terminal-launchpad-glyph {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--color-text-2);
+  }
+
+  .terminal-launchpad-identity strong {
+    flex-shrink: 0;
     min-width: 0;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.01em;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .terminal-launchpad-header strong {
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .terminal-launchpad-header span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
+  .terminal-launchpad-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow: hidden;
   }
 
   .terminal-launchpad-actions {
     justify-content: end;
-    gap: 5px;
+    gap: var(--space-2);
   }
 
   .terminal-launchpad-actions .file-action-button {
     display: inline-flex;
     width: auto;
     min-width: 28px;
-    height: 24px;
-    gap: 5px;
-    padding: 0 8px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 820;
+    height: 26px;
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
   }
 
   .terminal-launchpad-actions .file-action-button.icon-only {
@@ -22747,2361 +19372,116 @@
   }
 
   .terminal-inline-picker {
-    gap: 5px;
+    gap: var(--space-1);
   }
 
   .terminal-inline-picker span {
-    color: #7f8b88;
-    font-size: 8px;
-    font-weight: 850;
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
   .terminal-inline-picker select {
     width: 94px;
-    height: 24px;
+    height: 26px;
     min-width: 0;
-    color: #dffdf8;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 10px;
-    font-weight: 820;
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-elevated);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
   }
 
   .embedded-terminal-panel {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 5px;
+    gap: var(--space-1);
     min-width: 0;
-    padding: 6px;
-    border: 1px solid rgba(92, 226, 207, 0.11);
-    border-radius: 7px;
-    background: rgba(8, 11, 11, 0.48);
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--color-elevated);
+    overflow: hidden;
   }
 
   .embedded-terminal-panel.active {
-    border-color: rgba(92, 226, 207, 0.24);
+    box-shadow: inset 0 0 0 1px var(--color-live-bg);
   }
 
   .embedded-terminal-toolbar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     min-width: 0;
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 760;
+    min-height: 24px;
+    padding: 0 var(--space-2);
+    border-bottom: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
   }
 
-  .embedded-terminal-toolbar span {
+  .embedded-terminal-meta {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    letter-spacing: 0.01em;
   }
 
   .embedded-terminal-toolbar code {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
+    color: var(--color-text-3);
+    font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+    font-size: var(--text-xs);
   }
 
   .embedded-terminal-host {
-    height: clamp(96px, calc(var(--bottom-dock-height) - 226px), 360px);
-    min-height: 96px;
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    background: #101414;
+    border: 0;
+    border-radius: 0;
+    background: #282a36;
   }
 
   .embedded-terminal-host :global(.xterm) {
     height: 100%;
-    padding: 6px;
+    padding: 5px 8px 6px;
+    font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
   }
 
   .embedded-terminal-host :global(.xterm-viewport) {
     background: transparent !important;
   }
 
+  .embedded-terminal-host :global(.xterm-screen) {
+    min-height: 100%;
+  }
+
   .embedded-terminal-error {
     min-width: 0;
     overflow: hidden;
     color: #d8aa55;
+    font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
     font-size: 10px;
     font-weight: 760;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .embedded-terminal-command {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 30px;
-    padding: 0 4px 0 8px;
-    border: 1px solid rgba(92, 226, 207, 0.12);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.035);
-    color: #72e2cf;
-  }
-
-  .embedded-terminal-command:focus-within {
-    border-color: rgba(92, 226, 207, 0.38);
-    box-shadow: 0 0 0 2px rgba(92, 226, 207, 0.1);
-  }
-
-  .embedded-terminal-command input {
-    height: 100%;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 720;
-  }
-
-  .embedded-terminal-command button {
-    height: 22px;
-    padding: 0 9px;
-    color: #08201c;
-    border: 0;
-    border-radius: 5px;
-    background: #72e2cf;
-    font-size: 10px;
-    font-weight: 860;
-    cursor: pointer;
-  }
-
-  .embedded-terminal-command button:disabled {
-    color: #78837f;
-    background: rgba(255, 255, 255, 0.08);
-    cursor: default;
-  }
-
-  .terminal-launchpad-grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .terminal-launchpad-list {
-    display: grid;
-    align-content: start;
-    gap: 4px;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .terminal-launchpad-title {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .terminal-launchpad-title strong {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-  }
-
-  .terminal-launchpad-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) 24px;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 4px 5px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .terminal-agent-row {
-    grid-template-columns: auto minmax(0, 1fr) 24px 24px;
-  }
-
-  .terminal-launchpad-row.active {
-    border-color: rgba(92, 226, 207, 0.24);
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .terminal-launchpad-row > div {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .terminal-launchpad-row strong {
-    color: #eef4f2;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .terminal-launchpad-row small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 720;
-  }
-
-  .terminal-launchpad-row button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 22px;
-    color: #72e2cf;
-    border: 1px solid rgba(92, 226, 207, 0.18);
-    border-radius: 5px;
-    background: rgba(92, 226, 207, 0.08);
-  }
-
-  .terminal-launchpad-row button:hover,
-  .terminal-launchpad-row button:focus-visible {
-    outline: 0;
-    background: rgba(92, 226, 207, 0.16);
-  }
-
-  .terminal-launchpad-empty {
-    display: grid;
-    place-items: center;
-    min-height: 30px;
-    color: #798481;
-    border: 1px dashed rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .browser-dock {
-    display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr);
-    flex: 0 0 auto;
-    gap: 6px;
-    height: min(var(--bottom-dock-height), 55dvh);
-    min-width: 0;
-    max-height: min(var(--bottom-dock-height), 55dvh);
-    margin-top: 6px;
-    overflow: hidden;
-    padding: 7px;
-    border: 1px solid rgba(255, 255, 255, 0.105);
-    border-radius: 8px;
-    background: rgba(15, 18, 18, 0.92);
-  }
-
-  .browser-dock-header,
-  .browser-url-form {
-    display: grid;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .browser-dock-header {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .browser-dock-title,
-  .browser-dock-actions {
-    display: inline-flex;
-    align-items: center;
-    min-width: 0;
-  }
-
-  .browser-dock-title {
-    gap: 6px;
-    color: #dce4e2;
-  }
-
-  .browser-dock-title strong,
-  .browser-dock-title span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .browser-dock-title strong {
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .browser-dock-title span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .browser-dock-actions {
-    justify-content: end;
-    gap: 5px;
-  }
-
-  .browser-dock-actions .file-action-button {
-    display: inline-grid;
-    place-items: center;
-    width: 28px;
-    height: 24px;
-    min-width: 28px;
-    padding: 0;
-    border-radius: 6px;
-  }
-
-  .browser-url-form {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .browser-url-form input {
-    width: 100%;
-    height: 28px;
-    min-width: 0;
-    padding: 0 9px;
-    color: #e6efec;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.045);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 720;
-  }
-
-  .browser-url-form input:focus-visible {
-    outline: 1px solid rgba(92, 226, 207, 0.52);
-    outline-offset: 1px;
-  }
-
-  .browser-url-form .file-action-button {
-    display: inline-flex;
-    width: auto;
-    height: 28px;
-    gap: 5px;
-    padding: 0 9px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .browser-runtime-list {
-    display: flex;
-    gap: 5px;
-    min-width: 0;
-    overflow-x: auto;
-    padding-bottom: 2px;
-    scrollbar-width: thin;
-  }
-
-  .browser-runtime-list button {
-    display: inline-grid;
-    grid-template-columns: auto minmax(0, auto) auto;
-    align-items: center;
-    flex: 0 0 auto;
-    gap: 6px;
-    max-width: 220px;
-    height: 26px;
-    min-width: 0;
-    padding: 0 8px;
-    color: #b7c3bf;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .browser-runtime-list button.active {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.28);
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .browser-runtime-list span,
-  .browser-runtime-list small {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .browser-runtime-list strong,
-  .browser-runtime-list small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .browser-runtime-list strong {
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .browser-runtime-list small {
-    max-width: 82px;
-    color: #8d9995;
-  }
-
-  .browser-frame-wrap {
-    min-height: 128px;
-    min-width: 0;
-    height: clamp(128px, calc(var(--bottom-dock-height) - 122px), 520px);
-    overflow: hidden;
-    border: 1px solid rgba(92, 226, 207, 0.11);
-    border-radius: 7px;
-    background: rgba(8, 11, 11, 0.72);
-  }
-
-  .browser-frame {
-    display: block;
-    width: 100%;
-    height: 100%;
-    min-height: 128px;
-    border: 0;
-    background: #101414;
-  }
-
-  .browser-empty,
-  .browser-error {
-    display: grid;
-    place-items: center;
-    min-height: 54px;
-    color: #798481;
-    border: 1px dashed rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .browser-error {
-    min-height: 28px;
-    color: #d8aa55;
-  }
-
-  .editor-toolbar {
-    display: grid;
-    position: relative;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 4px;
-    height: 22px;
-    padding: 0 4px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .editor-file-state {
-    display: inline-grid;
-    grid-template-columns: 14px minmax(0, auto) auto auto;
-    align-items: center;
-    justify-self: start;
-    gap: 4px;
-    min-width: 0;
-    max-width: 100%;
-    height: 18px;
-    padding: 0 2px;
-    color: #cbd3d1;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-  }
-
-  .editor-file-state strong,
-  .editor-file-state span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-file-state strong {
-    font-size: 11px;
-    font-weight: 760;
-  }
-
-  .editor-file-state span {
-    color: #d8aa55;
-    font-size: 9px;
-    font-weight: 820;
-    text-transform: uppercase;
-  }
-
-  .editor-file-state .editor-lsp-state {
-    color: #9fa7a5;
-  }
-
-  .editor-file-state .editor-lsp-state.ready {
-    color: #72e2cf;
-  }
-
-  .editor-file-state .editor-lsp-state.unavailable {
-    color: #d8aa55;
-  }
-
-  .editor-lsp-recovery-strip {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    min-width: 0;
-    height: 20px;
-    padding: 0 2px;
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .editor-lsp-recovery-action {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 18px;
-    padding: 0;
-    color: #9fa9a6;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-lsp-recovery-action:hover:not(:disabled),
-  .editor-lsp-recovery-action:focus-visible {
-    color: #e8f6f3;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .editor-lsp-recovery-action:disabled {
-    cursor: default;
-    opacity: 0.38;
-  }
-
-  .editor-local-nav {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 3px;
-    min-width: 0;
-    height: 24px;
-    padding: 2px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    background: rgba(10, 13, 14, 0.42);
-  }
-
-  .editor-local-nav button {
-    display: inline-grid;
-    grid-template-columns: 13px auto;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    min-width: 0;
-    height: 20px;
-    padding: 0 5px;
-    color: #9ca8a4;
-    border: 1px solid rgba(255, 255, 255, 0.065);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.03);
-    font-size: 10px;
-    font-weight: 800;
-    cursor: pointer;
-  }
-
-  .editor-local-nav button.active {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.32);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .editor-local-nav button:hover,
-  .editor-local-nav button:focus-visible {
-    color: #f1f7f5;
-    border-color: rgba(92, 226, 207, 0.28);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .editor-local-nav strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-local-nav span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  .editor-local-nav strong {
-    color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 860;
-  }
-
-  .editor-nav-drawer {
-    display: grid;
-    grid-template-rows: 28px minmax(0, 1fr);
-    max-height: 190px;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    border-bottom: 1px solid rgba(92, 226, 207, 0.14);
-    background: rgba(14, 18, 18, 0.94);
-  }
-
-  .editor-nav-drawer-header {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) 22px;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 0 6px 0 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  }
-
-  .editor-nav-drawer-header strong,
-  .editor-nav-drawer-header span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-nav-drawer-header strong {
-    color: #eef6f4;
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .editor-nav-drawer-header span {
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
-  }
-
-  .editor-nav-close {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    color: #9fa9a6;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-nav-close:hover,
-  .editor-nav-close:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .editor-nav-list {
-    display: grid;
-    align-content: start;
-    gap: 3px;
-    min-height: 0;
-    min-width: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 5px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .editor-menu-anchor {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .editor-icon-button {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 20px;
-    color: #aeb8b5;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .editor-icon-button:hover,
-  .editor-icon-button:focus-visible {
-    color: #f2f6f5;
-    border-color: rgba(92, 226, 207, 0.4);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .editor-icon-button.active {
-    color: #dffdf8;
-    border-color: rgba(92, 226, 207, 0.32);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .editor-action-menu {
-    position: absolute;
-    z-index: 8;
-    top: calc(100% + 3px);
-    right: 0;
-    display: grid;
-    width: 230px;
-    min-width: 0;
-    padding: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 8px;
-    background: rgba(22, 25, 25, 0.98);
-    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
-  }
-
-  .editor-action-menu button {
-    display: grid;
-    grid-template-columns: 15px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 26px;
-    padding: 0 7px;
-    color: #cbd3d1;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    font-size: 11px;
-    font-weight: 730;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .editor-action-menu button:hover:not(:disabled),
-  .editor-action-menu button:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .editor-action-menu button:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .editor-action-menu span,
-  .editor-action-menu kbd {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-action-menu kbd {
-    color: #8d9995;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .editor-action-menu hr {
-    width: 100%;
-    height: 1px;
-    margin: 4px 0;
-    border: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .editor-body-grid {
-    display: grid;
-    flex: 1 1 auto;
-    grid-template-columns: minmax(0, 1fr) 8px var(--editor-insight-width);
-    min-height: 0;
-  }
-
-  .editor-body-grid.insights-hidden {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .editor-canvas {
-    position: relative;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .editor-insight-resizer {
-    width: 8px;
-    min-width: 0;
-    padding: 0;
-    cursor: col-resize;
-    border: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.045);
-    border-right: 1px solid rgba(255, 255, 255, 0.045);
-    background: rgba(255, 255, 255, 0.025);
-  }
-
-  .editor-insight-resizer:hover,
-  .editor-insight-resizer:focus-visible {
-    outline: 0;
-    background: rgba(92, 226, 207, 0.18);
-  }
-
-  :global(body.resizing-editor-insight) {
-    cursor: col-resize;
-    user-select: none;
-  }
-
-  .source-intelligence-panel {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-    border-left: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(20, 23, 24, 0.86);
-  }
-
-  .source-dockview-insights-shell {
-    position: relative;
-    display: grid;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .source-dockview-insights-host,
-  .source-dockview-insights-shell > .source-intelligence-panel {
-    grid-area: 1 / 1;
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .source-dockview-insights-host {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    visibility: hidden;
-    contain: layout paint;
-  }
-
-  .source-dockview-insights-shell.dockview-ready .source-dockview-insights-host {
-    visibility: visible;
-  }
-
-  .source-dockview-insights-shell.dockview-ready > .source-intelligence-panel {
-    visibility: hidden;
-    pointer-events: none;
-  }
-
-  .source-dockview-insights-shell :global(.source-dockview-panel-host) {
-    display: flex;
-    min-width: 0;
-    min-height: 0;
-    width: 100%;
-    height: 100%;
-  }
-
-  .source-dockview-insights-shell :global(.source-dockview-attached-panel) {
-    width: 100%;
-    height: 100%;
-  }
-
-  .source-dockview-insights-shell :global(.dockview-theme-dark) {
-    --dv-background-color: rgba(20, 23, 24, 0.86);
-    --dv-tabs-and-actions-container-background-color: rgba(18, 20, 21, 0.94);
-    --dv-activegroup-visiblepanel-tab-background-color: rgba(92, 226, 207, 0.12);
-    --dv-activegroup-visiblepanel-tab-color: #dffdf8;
-    --dv-inactivegroup-visiblepanel-tab-background-color: rgba(255, 255, 255, 0.045);
-    --dv-inactivegroup-visiblepanel-tab-color: #aab6b2;
-    --dv-separator-border: rgba(255, 255, 255, 0.08);
-  }
-
-  .source-dockview-insights-error {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
-    z-index: 4;
-    max-width: calc(100% - 16px);
-    overflow: hidden;
-    color: #ffb3a6;
-    border: 1px solid rgba(255, 123, 107, 0.32);
-    border-radius: 6px;
-    background: rgba(42, 21, 19, 0.92);
-    padding: 4px 6px;
-    font-size: 10px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-lookup-popover {
-    position: absolute;
-    right: 12px;
-    bottom: 12px;
-    z-index: 5;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    width: min(520px, calc(100% - 24px));
-    max-height: min(280px, calc(100% - 24px));
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid rgba(92, 226, 207, 0.24);
-    border-radius: 8px;
-    background: rgba(18, 21, 21, 0.96);
-    box-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
-  }
-
-  .editor-lookup-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    padding: 6px 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.075);
-  }
-
-  .editor-lookup-header strong {
-    min-width: 0;
-    overflow: hidden;
-    color: #e4efed;
-    font-size: 11px;
-    font-weight: 820;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .editor-lookup-close {
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    color: #aab6b2;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .editor-lookup-close:hover,
-  .editor-lookup-close:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .editor-lookup-list {
-    display: grid;
-    gap: 4px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 6px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .intelligence-tabs {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-    padding: 6px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  }
-
-  .intelligence-tabs button {
-    display: grid;
-    grid-template-columns: 14px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 5px;
-    height: 24px;
-    min-width: 0;
-    padding: 0 5px;
-    color: #9fa9a6;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 9px;
-    font-weight: 800;
-    cursor: pointer;
-  }
-
-  .intelligence-tabs button.active {
-    color: #f2f6f5;
-    border-color: rgba(92, 226, 207, 0.36);
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .intelligence-tabs span,
-  .intelligence-tabs strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .intelligence-tabs strong {
-    color: #7ce5d5;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-  }
-
-  .intelligence-summary {
-    min-width: 0;
-    padding: 9px 12px;
-    overflow: hidden;
-    color: #8d9995;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: 11px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .intelligence-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 8px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .intelligence-list::-webkit-scrollbar {
-    width: 10px;
-  }
-
-  .intelligence-list::-webkit-scrollbar-track {
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .intelligence-list::-webkit-scrollbar-thumb {
-    border: 2px solid rgba(20, 23, 24, 0.86);
-    border-radius: 999px;
-    background: rgba(174, 184, 181, 0.54);
-  }
-
-  .git-diff-panel {
-    display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .git-command-drawer {
-    flex: 0 0 auto;
-    min-width: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .git-command-drawer summary {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    height: 28px;
-    padding: 0 8px;
-    color: #dce5e2;
-    list-style: none;
-    cursor: pointer;
-    font-size: 10px;
-    font-weight: 840;
-  }
-
-  .git-command-drawer summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .git-command-drawer summary::before {
-    width: 0;
-    height: 0;
-    border-top: 4px solid transparent;
-    border-bottom: 4px solid transparent;
-    border-left: 5px solid #8d9995;
-    content: "";
-  }
-
-  .git-command-drawer[open] summary::before {
-    transform: rotate(90deg);
-  }
-
-  .git-command-drawer summary small {
-    min-width: 0;
-    overflow: hidden;
-    color: #899591;
-    font-size: 9px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-controls {
-    display: grid;
-    flex: 0 0 auto;
-    gap: 5px;
-    padding: 0 6px 6px;
-  }
-
-  .git-action-row,
-  .git-remote-row,
-  .git-commit-row {
-    display: grid;
-    min-width: 0;
-    gap: 5px;
-  }
-
-  .git-action-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .git-remote-row {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .git-commit-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: stretch;
-  }
-
-  .git-action-button {
-    display: grid;
-    grid-template-columns: 13px minmax(0, auto);
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 24px;
-    padding: 0 6px;
-    color: #cfd8d5;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 9px;
-    font-weight: 820;
-    cursor: pointer;
-  }
-
-  .git-action-button.commit {
-    color: #dff8f4;
-    border-color: rgba(92, 226, 207, 0.28);
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .git-action-button:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .git-action-button span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-commit-input {
-    width: 100%;
-    min-width: 0;
-    min-height: 32px;
-    padding: 6px 7px;
-    resize: none;
-    color: #e6ecea;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    outline: none;
-    background: rgba(0, 0, 0, 0.22);
-    font: inherit;
-    font-size: 10px;
-    line-height: 1.3;
-  }
-
-  .git-commit-input:focus {
-    border-color: rgba(92, 226, 207, 0.42);
-  }
-
-  .git-action-message {
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-action-message.error {
-    color: #ff8f8f;
-  }
-
-  .git-status-list {
-    display: grid;
-    flex: 0 0 auto;
-    gap: 5px;
-    max-height: 150px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .git-status-overview {
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 780;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-status-group {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .git-status-group-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 22px;
-    color: #aeb8b5;
-    font-size: 9px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .git-status-group-heading strong,
-  .git-status-group-heading span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-status-group-heading button {
-    min-width: 0;
-    height: 20px;
-    padding: 0 6px;
-    color: #cfd8d5;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 8.5px;
-    font-weight: 820;
-    cursor: pointer;
-    text-transform: none;
-  }
-
-  .git-status-group-heading button:disabled {
-    cursor: default;
-    opacity: 0.48;
-  }
-
-  .git-status-group-heading button:hover:not(:disabled),
-  .git-status-group-heading button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .git-status-row {
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) minmax(0, 76px);
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 5px 7px;
-    color: #cbd3d1;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.035);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .git-status-row.selected {
-    border-color: rgba(92, 226, 207, 0.32);
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .git-status-row strong,
-  .git-status-row span,
-  .git-status-row small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-status-row strong {
-    color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 11px;
-    font-weight: 860;
-  }
-
-  .git-status-row span {
-    font-size: 10px;
-    font-weight: 780;
-  }
-
-  .git-status-row small {
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 760;
-  }
-
-  .git-history-panel {
-    display: grid;
-    flex: 0 0 auto;
-    gap: 6px;
-    min-height: 0;
-    padding: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .git-history-heading {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    color: #e4eae8;
-    font-size: 10px;
-    font-weight: 850;
-  }
-
-  .git-history-heading small {
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 9px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-task-trail {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 8.5px;
-    font-weight: 820;
-  }
-
-  .git-graph-summary-strip,
-  .git-task-search-targets {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 20px;
-    overflow: hidden;
-    padding: 3px 5px;
-    color: #9aa7a3;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.028);
-    font-size: 8.5px;
-    font-weight: 780;
-  }
-
-  .git-graph-summary-strip span,
-  .git-graph-summary-strip small,
-  .git-task-search-targets small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-graph-summary-strip span {
-    flex: 1 1 auto;
-    color: #dce5e2;
-    font-weight: 830;
-  }
-
-  .git-graph-summary-strip small {
-    flex: 0 0 auto;
-    color: #8d9995;
-  }
-
-  .git-task-search-targets {
-    flex-wrap: wrap;
-    overflow: visible;
-  }
-
-  .git-task-trail > span:first-child {
-    flex: 0 0 auto;
-    color: #aeb8b5;
-    text-transform: uppercase;
-  }
-
-  .git-task-search-targets > span:first-child {
-    flex: 0 0 auto;
-    color: #aeb8b5;
-    font-size: 8px;
-    font-weight: 860;
-    text-transform: uppercase;
-  }
-
-  .git-task-search-targets small {
-    max-width: 160px;
-  }
-
-  .git-branch-health-strip {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .git-branch-health-chip {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 22px;
-    padding: 3px 6px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.032);
-  }
-
-  .git-branch-health-chip strong,
-  .git-branch-health-chip span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-branch-health-chip strong {
-    color: #8d9995;
-    font-size: 8px;
-    font-weight: 860;
-    text-transform: uppercase;
-  }
-
-  .git-branch-health-chip span {
-    color: #dce5e2;
-    font-size: 9px;
-    font-weight: 780;
-  }
-
-  .git-branch-health-chip.clean span {
-    color: #72e2cf;
-  }
-
-  .git-branch-health-chip.dirty span {
-    color: #d8aa55;
-  }
-
-  .git-branch-health-chip.warning span {
-    color: #9fd0f0;
-  }
-
-  .git-branch-health-chip.error span {
-    color: #ff8d8d;
-  }
-
-  .git-branch-health-chip.muted span {
-    color: #9fa9a6;
-  }
-
-  .git-task-source-map {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .git-task-source-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    min-height: 24px;
-    padding: 3px 5px;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.028);
-  }
-
-  .git-task-source-row small {
-    min-width: 0;
-    overflow: hidden;
-    color: #9aa7a3;
-    font-size: 8.5px;
-    font-weight: 760;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-task-source-row button {
-    display: grid;
-    place-items: center;
-    width: 19px;
-    height: 19px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 5px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .git-task-source-row button:hover,
-  .git-task-source-row button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .git-commit-detail-drawer {
-    display: grid;
-    gap: 5px;
-    min-width: 0;
-    padding: 0;
-    border: 1px solid rgba(111, 223, 207, 0.18);
-    border-radius: 7px;
-    background: rgba(111, 223, 207, 0.055);
-  }
-
-  .git-commit-detail-drawer[open] {
-    background: rgba(111, 223, 207, 0.07);
-  }
-
-  .git-commit-detail-drawer summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .git-commit-detail-summary {
-    display: grid;
-    grid-template-columns: 10px minmax(0, 1fr) minmax(0, 86px);
-    align-items: center;
-    gap: 6px;
-    min-height: 28px;
-    min-width: 0;
-    padding: 4px 7px;
-    cursor: pointer;
-    list-style: none;
-  }
-
-  .git-commit-detail-summary::before {
-    color: #7f8f8b;
-    font-size: 11px;
-    font-weight: 900;
-    content: ">";
-    transition: transform 140ms ease;
-  }
-
-  .git-commit-detail-drawer[open] .git-commit-detail-summary::before {
-    transform: rotate(90deg);
-  }
-
-  .git-commit-detail-summary-main {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .git-commit-detail-summary-main strong,
-  .git-commit-detail-summary-main small,
-  .git-commit-detail-summary-ref,
-  .git-commit-detail-facts strong,
-  .git-commit-detail-facts small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-commit-detail-summary-main strong {
-    color: #f1f5f4;
-    font-size: 10px;
-    font-weight: 820;
-  }
-
-  .git-commit-detail-summary-main small,
-  .git-commit-detail-summary-ref {
-    color: #8d9995;
-    font-size: 8.5px;
-    font-weight: 760;
-  }
-
-  .git-commit-detail-summary-ref {
-    justify-self: end;
-    max-width: 86px;
-  }
-
-  .git-commit-detail-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 7px;
-    min-width: 0;
-    padding: 0 7px 7px 23px;
-  }
-
-  .git-commit-detail-facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .git-commit-detail-facts span {
-    display: grid;
-    gap: 1px;
-    min-width: 0;
-    padding: 3px 5px;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 5px;
-    background: rgba(0, 0, 0, 0.12);
-  }
-
-  .git-commit-detail-facts strong {
-    color: #9aa7a3;
-    font-size: 7.5px;
-    font-weight: 860;
-    text-transform: uppercase;
-  }
-
-  .git-commit-detail-facts small {
-    color: #dce5e2;
-    font-size: 8.5px;
-    font-weight: 760;
-  }
-
-  .git-commit-detail-actions {
-    display: inline-flex;
-    gap: 3px;
-    min-width: 0;
-  }
-
-  .git-history-list {
-    display: grid;
-    gap: 5px;
-    max-height: 170px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .git-history-row {
-    position: relative;
-    display: grid;
-    grid-template-columns: 14px minmax(0, 1fr) minmax(42px, auto);
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    min-height: 30px;
-    padding: 4px 6px;
-    color: #cfd8d5;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.03);
-    cursor: pointer;
-  }
-
-  .git-history-row.selected {
-    border-color: rgba(111, 223, 207, 0.42);
-    background: rgba(111, 223, 207, 0.095);
-  }
-
-  .git-history-row:focus-visible {
-    outline: 1px solid rgba(111, 223, 207, 0.42);
-    outline-offset: 2px;
-  }
-
-  .git-history-row.head {
-    border-color: rgba(111, 223, 207, 0.3);
-    background: rgba(111, 223, 207, 0.07);
-  }
-
-  .git-history-row.branch {
-    border-color: rgba(132, 201, 222, 0.2);
-  }
-
-  .git-history-row.merge {
-    border-color: rgba(216, 170, 85, 0.24);
-  }
-
-  .git-history-row.root {
-    border-color: rgba(174, 184, 181, 0.18);
-  }
-
-  .git-graph-marker {
-    position: relative;
-    display: grid;
-    place-items: center;
-    width: 14px;
-    height: 22px;
-  }
-
-  .git-graph-marker::before {
-    position: absolute;
-    inset: -8px auto;
-    width: 1px;
-    background: rgba(111, 223, 207, 0.22);
-    content: "";
-  }
-
-  .git-graph-marker::after {
-    z-index: 1;
-    width: 8px;
-    height: 8px;
-    border: 2px solid rgba(111, 223, 207, 0.72);
-    border-radius: 999px;
-    background: #171b1b;
-    content: "";
-  }
-
-  .git-graph-marker.head::before {
-    width: 2px;
-    background: rgba(111, 223, 207, 0.44);
-  }
-
-  .git-graph-marker.head::after {
-    width: 10px;
-    height: 10px;
-    border-color: #6fdfcf;
-    background: #6fdfcf;
-    box-shadow: 0 0 0 3px rgba(111, 223, 207, 0.14);
-  }
-
-  .git-graph-marker.branch::after {
-    border-color: rgba(132, 201, 222, 0.84);
-    background: #171b1b;
-  }
-
-  .git-graph-marker.merge::before {
-    background: linear-gradient(
-      180deg,
-      rgba(216, 170, 85, 0.15),
-      rgba(216, 170, 85, 0.5),
-      rgba(111, 223, 207, 0.2)
-    );
-  }
-
-  .git-graph-marker.merge::after {
-    width: 10px;
-    height: 10px;
-    border-color: rgba(216, 170, 85, 0.9);
-    border-radius: 3px;
-    background: #171b1b;
-  }
-
-  .git-graph-marker.root::before {
-    inset: -8px auto 50%;
-    background: rgba(174, 184, 181, 0.2);
-  }
-
-  .git-graph-marker.root::after {
-    border-color: rgba(174, 184, 181, 0.75);
-    background: rgba(174, 184, 181, 0.2);
-  }
-
-  .git-history-main,
-  .git-history-meta {
-    min-width: 0;
-  }
-
-  .git-history-main {
-    display: grid;
-    gap: 1px;
-  }
-
-  .git-history-main strong,
-  .git-history-main small,
-  .git-ref-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-history-main strong {
-    color: #f1f5f4;
-    font-size: 9.5px;
-    font-weight: 820;
-  }
-
-  .git-history-main small {
-    color: #8d9995;
-    font-size: 8.5px;
-    font-weight: 740;
-  }
-
-  .git-history-meta {
-    display: grid;
-    justify-items: end;
-    gap: 4px;
-    max-width: 112px;
-  }
-
-  .git-history-badges {
-    display: inline-flex;
-    justify-content: flex-end;
-    gap: 3px;
-    max-width: 112px;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  .git-history-badge {
-    max-width: 68px;
-    min-width: 0;
-    overflow: hidden;
-    padding: 1px 5px;
-    color: #aeb8b5;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.035);
-    font-size: 8px;
-    font-weight: 850;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .git-history-badge.head {
-    color: #6fdfcf;
-    border-color: rgba(111, 223, 207, 0.24);
-    background: rgba(111, 223, 207, 0.075);
-  }
-
-  .git-history-badge.upstream {
-    color: #84c9de;
-    border-color: rgba(132, 201, 222, 0.22);
-    background: rgba(132, 201, 222, 0.07);
-  }
-
-  .git-history-badge.task {
-    color: #c8b6ff;
-    border-color: rgba(200, 182, 255, 0.22);
-  }
-
-  .git-history-badge.tag,
-  .git-history-badge.merge {
-    color: #d8aa55;
-    border-color: rgba(216, 170, 85, 0.22);
-  }
-
-  .git-history-actions {
-    position: absolute;
-    top: 50%;
-    right: 5px;
-    display: inline-flex;
-    justify-content: flex-end;
-    gap: 3px;
-    max-width: 112px;
-    padding: 2px;
-    border-radius: 7px;
-    background: color-mix(in srgb, #151a1a 86%, transparent);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-50%);
-    transition: opacity 120ms ease, visibility 120ms ease;
-    visibility: hidden;
-  }
-
-  .git-commit-detail-actions {
-    justify-content: flex-end;
-    max-width: 112px;
-  }
-
-  .git-history-row:hover .git-history-actions,
-  .git-history-row:focus-within .git-history-actions {
-    opacity: 1;
-    pointer-events: auto;
-    visibility: visible;
-  }
-
-  .git-history-actions button,
-  .git-commit-detail-actions button {
-    display: grid;
-    place-items: center;
-    width: 21px;
-    height: 21px;
-    padding: 0;
-    color: #91a19d;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.035);
-    cursor: pointer;
-  }
-
-  .git-history-actions button:hover,
-  .git-history-actions button:focus-visible,
-  .git-commit-detail-actions button:hover,
-  .git-commit-detail-actions button:focus-visible {
-    color: #eaf5f2;
-    border-color: rgba(92, 226, 207, 0.34);
-    outline: 0;
-    background: rgba(92, 226, 207, 0.11);
-  }
-
-  .git-ref-label {
-    max-width: 112px;
-    color: #aeb8b5;
-    font-size: 8.5px;
-    font-weight: 760;
-  }
-
-  .git-task-link {
-    display: inline-flex;
-    align-items: center;
-    max-width: 100%;
-    min-height: 19px;
-    padding: 0 6px;
-    color: #071b18;
-    border-radius: 999px;
-    background: #6fdfcf;
-    font-size: 8.5px;
-    font-weight: 900;
-    line-height: 1;
-    text-decoration: none;
-    white-space: nowrap;
-  }
-
-  .git-diff-block {
-    flex: 1 1 auto;
-    min-height: 0;
-    margin: 8px;
-    padding: 10px;
-    overflow: auto;
-    color: #cfd8d5;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.24);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10.5px;
-    line-height: 1.45;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-    white-space: pre;
-  }
-
-  .intelligence-empty {
-    display: grid;
-    place-items: center;
-    min-height: 126px;
-    color: #75817d;
-    font-size: 12px;
-    font-weight: 750;
-  }
-
-  .intelligence-empty.compact {
-    min-height: 42px;
-    font-size: 10px;
-  }
-
-  .definition-results,
-  .implementation-results,
-  .type-definition-results,
-  .reference-results {
-    flex: 0 0 auto;
-    max-height: 164px;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    padding: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .definition-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .reference-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .implementation-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .type-definition-results {
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-
-  .definition-summary,
-  .implementation-summary,
-  .type-definition-summary,
-  .reference-summary {
-    margin-bottom: 6px;
-    min-width: 0;
-    overflow: hidden;
-    color: #8d9995;
-    font-size: 10px;
-    font-weight: 780;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .intelligence-row,
-  .definition-row,
-  .reference-row {
-    display: grid;
-    grid-template-columns: minmax(68px, auto) minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 7px;
-    width: 100%;
-    min-height: 31px;
-    padding: 5px 7px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    border-radius: 7px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .intelligence-row:hover,
-  .intelligence-row:focus-visible,
-  .definition-row:hover,
-  .definition-row:focus-visible,
-  .reference-row:hover,
-  .reference-row:focus-visible {
-    color: #f2f6f5;
-    outline: 0;
-    background: rgba(92, 226, 207, 0.1);
-  }
-
-  .intelligence-row strong,
-  .intelligence-row span,
-  .intelligence-row small,
-  .definition-row strong,
-  .definition-row span,
-  .definition-row small,
-  .reference-row strong,
-  .reference-row span,
-  .reference-row small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .intelligence-row strong,
-  .definition-row strong,
-  .reference-row strong {
-    color: #8fd8cf;
-    font-size: 10px;
-    font-weight: 850;
-    text-transform: uppercase;
-  }
-
-  .intelligence-row span,
-  .definition-row span,
-  .reference-row span {
-    font-size: 12px;
-    font-weight: 760;
-  }
-
-  .intelligence-row small,
-  .definition-row small,
-  .reference-row small {
-    color: #7f8b87;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 750;
-  }
-
-  .intelligence-row.diagnostic.error strong {
-    color: #f1a9a0;
-  }
-
-  .intelligence-row.diagnostic.warning strong {
-    color: #d8aa55;
-  }
-
-  .quick-open-layer,
-  .command-palette-layer {
-    position: fixed;
-    inset: 0;
-    z-index: 40;
-    display: grid;
-    place-items: start center;
-    padding: 72px 16px 16px;
-  }
-
-  .quick-open-backdrop,
-  .command-palette-backdrop {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    border: 0;
-    background: rgba(7, 9, 10, 0.56);
-    backdrop-filter: blur(10px);
-    cursor: default;
-  }
-
-  .quick-open-panel,
-  .command-palette-panel {
-    position: relative;
-    z-index: 1;
-    width: min(720px, calc(100vw - 32px));
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.13);
-    border-radius: 12px;
-    background: rgba(22, 24, 24, 0.98);
-    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.44);
-  }
-
-  .quick-open-search,
-  .command-palette-search {
-    display: grid;
-    grid-template-columns: 22px minmax(0, 1fr);
-    align-items: center;
-    gap: 10px;
-    height: 50px;
-    padding: 0 14px;
-    color: #9aa5a1;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.045);
-  }
-
-  .command-palette-search {
-    grid-template-columns: 22px minmax(0, 1fr) auto;
-    height: 46px;
-  }
-
-  .quick-open-icon,
-  .quick-open-result-icon,
-  .command-palette-icon,
-  .command-palette-result-icon {
-    display: grid;
-    place-items: center;
-    min-width: 0;
-  }
-
-  .quick-open-icon,
-  .command-palette-icon {
-    color: #6fdfcf;
-  }
-
-  .quick-open-search input,
-  .command-palette-search input {
-    height: 100%;
-    font-size: 15px;
-    font-weight: 700;
-  }
-
-  .command-palette-search kbd {
-    color: #7f8b87;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-    font-size: 10px;
-    font-weight: 800;
-  }
-
-  .quick-open-results,
-  .command-palette-results {
-    display: grid;
-    gap: 3px;
-    max-height: 368px;
-    padding: 7px;
-    overflow: auto;
-  }
-
-  .quick-open-results button,
-  .command-palette-results button {
-    display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    min-width: 0;
-    height: 44px;
-    padding: 0 9px;
-    color: #cbd3d1;
-    text-align: left;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .command-palette-results button {
-    grid-template-columns: 22px minmax(0, 1fr);
-    height: 38px;
-  }
-
-  .quick-open-results button:hover,
-  .quick-open-results button.active,
-  .command-palette-results button:hover:not(:disabled),
-  .command-palette-results button.active {
-    color: #f2f6f5;
-    background: rgba(92, 226, 207, 0.12);
-  }
-
-  .command-palette-results button:disabled {
-    cursor: default;
-    opacity: 0.44;
-  }
-
-  .quick-open-result-icon,
-  .command-palette-result-icon {
-    color: #8d9995;
-  }
-
-  .quick-open-results button.active .quick-open-result-icon,
-  .command-palette-results button.active .command-palette-result-icon {
-    color: #6fdfcf;
-  }
-
-  .quick-open-results button span,
-  .command-palette-results button span {
-    display: grid;
-    min-width: 0;
-  }
-
-  .quick-open-results strong,
-  .quick-open-results small,
-  .command-palette-results strong,
-  .command-palette-results small {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .quick-open-results strong,
-  .command-palette-results strong {
-    font-size: 13px;
-    line-height: 1.15;
-  }
-
-  .command-palette-results strong {
-    font-size: 12px;
-  }
-
-  .quick-open-results small,
-  .quick-open-results em,
-  .command-palette-results small {
-    color: #7f8b87;
-    font-size: 10px;
-    font-style: normal;
-    font-weight: 760;
-  }
-
-  .quick-open-empty {
-    display: grid;
-    place-items: center;
-    min-height: 112px;
-    color: #9aa5a1;
-    font-size: 13px;
-    font-weight: 700;
-  }
-
-  @keyframes shimmer {
-    from {
-      background-position: 100% 0;
-    }
-    to {
-      background-position: -80% 0;
-    }
-  }
-
-  @media (max-width: 1380px) {
-    .workspace-arrangement.context-side:not(.context-rail-only) {
-      grid-template-columns: minmax(0, 1fr) 6px 34px;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .workspace-context-column {
-      padding-right: 3px;
-      padding-left: 3px;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid {
-      grid-template-columns: 28px;
-      grid-template-rows: minmax(0, 1fr);
-      gap: 0;
-      overflow: hidden;
-      padding-right: 0;
-      scrollbar-gutter: auto;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-restore-button,
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-panel-grid > section {
-      display: none;
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs {
-      grid-column: 1;
-      grid-row: 1;
-      width: 28px;
-      max-width: 28px;
-      padding: 2px;
-      background: rgba(10, 12, 12, 0.5);
-    }
-
-    .workspace-arrangement.context-side:not(.context-rail-only) .context-stack-tabs button {
-      width: 24px;
-      min-width: 24px;
-      height: 24px;
-    }
   }
 
   @media (max-width: 1120px) {
     .shell:not(.activity-hidden) {
-      grid-template-columns: 56px 6px minmax(0, 1fr);
+      grid-template-columns: 56px minmax(0, 1fr);
     }
 
     .shell.side-right:not(.activity-hidden) {
-      grid-template-columns: minmax(0, 1fr) 6px 56px;
+      grid-template-columns: minmax(0, 1fr) 56px;
     }
 
     .shell:not(.activity-hidden) .activity-shell {
@@ -25121,10 +19501,10 @@
 
     .shell {
       grid-template-columns: 1fr;
-      width: calc(100vw - 20px);
+      width: 100vw;
       height: auto;
-      min-height: calc(100dvh - 20px);
-      margin: 10px;
+      min-height: 100dvh;
+      margin: 0;
     }
 
     .shell.side-right {
@@ -25217,21 +19597,8 @@
       grid-template-columns: auto minmax(0, 1fr);
     }
 
-    .worktree-context-row {
-      grid-template-columns: auto minmax(0, 1fr);
-    }
-
     .repo-dashboard-row {
       grid-template-columns: minmax(0, 1fr);
-    }
-
-    .editor-frame {
-      height: 520px;
-    }
-
-    .terminal-launchpad-grid {
-      grid-template-columns: 1fr;
-      overflow-y: auto;
     }
 
     .terminal-launchpad-header {
@@ -25242,20 +19609,6 @@
     .terminal-launchpad-actions {
       justify-content: start;
       overflow-x: auto;
-    }
-
-    .editor-body-grid {
-      grid-template-columns: 1fr;
-      grid-template-rows: minmax(0, 1fr) 148px;
-    }
-
-    .editor-insight-resizer {
-      display: none;
-    }
-
-    .source-intelligence-panel {
-      border-left: 0;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
     }
   }
 </style>
