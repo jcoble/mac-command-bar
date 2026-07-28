@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -8,9 +8,23 @@ use std::path::{Path, PathBuf};
 const CLAUDE_GENERIC_SESSION_TITLE: &str = "Claude session";
 const CLAUDE_SESSION_FILE_LIMIT: usize = 512;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
+/// How far into a transcript to look for the entrypoint that launched it. The
+/// field rides on every `user`, `assistant` and `attachment` record, so it turns
+/// up early; across 1091 transcripts here 64 KB reaches it in 1050 of them, and
+/// the rest are kept and settled when the file is parsed in full.
+const CLAUDE_SESSION_LAUNCH_PROBE_BYTES: usize = 64 * 1024;
+const CODEX_GENERIC_SESSION_TITLE: &str = "Codex session";
+const CODEX_UNTITLED_INDEX_TITLE: &str = "Untitled Codex session";
 const CODEX_SESSION_FILE_LIMIT: usize = 512;
-const CODEX_SESSION_HEAD_BYTES: usize = 64 * 1024;
+/// The first user message of a Codex session sits behind the opening metadata
+/// record, which carries the whole system prompt and can run past 40 KB. On this
+/// machine 256 KB reaches the first typed prompt in 59 of 67 top-level sessions;
+/// the rest fall back to whatever the tail window offers.
+const CODEX_SESSION_HEAD_BYTES: usize = 256 * 1024;
 const CODEX_SESSION_TAIL_BYTES: usize = 256 * 1024;
+/// Enough to hold the opening `session_meta` line whole. Measured across 687
+/// rollout files: median 27 KB, largest 44 KB.
+const CODEX_SESSION_META_PROBE_BYTES: usize = 64 * 1024;
 const CMUX_SESSION_RESULT_HEADROOM: usize = 256;
 const AGENT_SESSION_RESULT_LIMIT: usize =
     CODEX_SESSION_FILE_LIMIT + CLAUDE_SESSION_FILE_LIMIT + CMUX_SESSION_RESULT_HEADROOM;
@@ -54,14 +68,42 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     };
 
     let mut records = Vec::new();
+
+    // Sort the rollout files into "the user started this" and "Codex spawned
+    // this for itself" in one pass, keeping the ids of the second kind. Dropping
+    // sub-agent threads here, BEFORE the file budget, is for the same reason the
+    // Claude path drops its subagents first: they outnumber the user's own
+    // sessions nine to one, so a budget applied first would evict the sessions
+    // the rail exists to show.
+    let mut codex_files = Vec::new();
+    let mut codex_subagent_ids = HashSet::new();
+    for file in jsonl_files(&home.join(".codex/sessions")) {
+        match codex_rollout_thread_marker(&file) {
+            Some(marker) if marker.spawned_by_codex => codex_subagent_ids.extend(marker.id),
+            // No marker, or nothing readable: keep the file. Older Codex builds
+            // predate the field, and losing a session is the worse mistake.
+            _ => codex_files.push(file),
+        }
+    }
+
+    // Codex eventually moves a thread's rollout file into `archived_sessions`
+    // but leaves its index row behind, so for those threads the archive is the
+    // only evidence left of what kind of thread it was.
+    for file in jsonl_files(&home.join(".codex/archived_sessions")) {
+        if let Some(marker) = codex_rollout_thread_marker(&file) {
+            if marker.spawned_by_codex {
+                codex_subagent_ids.extend(marker.id);
+            }
+        }
+    }
+
     let mut codex_records = Vec::new();
     let codex_index = home.join(".codex/session_index.jsonl");
     if let Ok(contents) = fs::read_to_string(codex_index) {
         codex_records.extend(parse_codex_index_jsonl(&contents));
     }
+    codex_records = drop_codex_subagent_sessions(codex_records, &codex_subagent_ids);
 
-    let codex_sessions = home.join(".codex/sessions");
-    let mut codex_files = jsonl_files(&codex_sessions);
     codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     let mut codex_metadata = Vec::new();
     for file in codex_files.into_iter().take(CODEX_SESSION_FILE_LIMIT) {
@@ -82,9 +124,11 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     let claude_projects = home.join(".claude/projects");
     let mut files = jsonl_files(&claude_projects);
-    // Drop subagent transcripts BEFORE the file budget is applied: they
-    // outnumber real sessions on a busy machine and would otherwise evict them.
+    // Drop subagent transcripts and helper runs BEFORE the file budget is
+    // applied: they outnumber real sessions on a busy machine and would
+    // otherwise evict them.
     files.retain(|file| !is_claude_subagent_transcript_path(file));
+    files.retain(|file| !claude_transcript_file_is_agent_launched(file));
     files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     for file in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
         let project_path = file
@@ -130,7 +174,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
             let title = value
                 .get("thread_name")
                 .and_then(Value::as_str)
-                .unwrap_or("Untitled Codex session")
+                .unwrap_or(CODEX_UNTITLED_INDEX_TITLE)
                 .to_string();
             let last_activity = value
                 .get("updated_at")
@@ -153,6 +197,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
 
 pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
     let mut records: Vec<AgentSessionRecord> = Vec::new();
+    let mut first_prompts: HashMap<String, String> = HashMap::new();
 
     for value in input
         .lines()
@@ -163,6 +208,9 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 let Some(payload) = value.get("payload") else {
                     continue;
                 };
+                if is_codex_subagent_meta(payload) {
+                    return Vec::new();
+                }
                 let Some(id) = payload.get("id").and_then(Value::as_str) else {
                     continue;
                 };
@@ -181,7 +229,7 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 let record = AgentSessionRecord {
                     provider: "codex".to_string(),
                     id: id.to_string(),
-                    title: "Codex session".to_string(),
+                    title: CODEX_GENERIC_SESSION_TITLE.to_string(),
                     description: None,
                     model: model_from_value(payload),
                     project_path: cwd,
@@ -220,6 +268,12 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 );
             }
             Some("response_item") => {
+                if let (Some(record), Some(prompt)) =
+                    (records.last(), codex_user_prompt_text(&value))
+                {
+                    first_prompts.entry(record.id.clone()).or_insert(prompt);
+                }
+
                 let cwd = codex_response_item_workdir(&value);
                 let description = codex_response_item_description(&value);
                 if cwd.is_none() && description.is_none() {
@@ -235,7 +289,168 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
         }
     }
 
+    for record in records.iter_mut() {
+        record.title = codex_display_title(
+            &record.title,
+            first_prompts.get(&record.id).map(String::as_str),
+        );
+    }
+
     records
+}
+
+/// Codex spawns its own helper threads and writes each one as a rollout file
+/// next to the user's, so nine of every ten files under `~/.codex/sessions` are
+/// threads nobody opened. The opening `session_meta` record says which it is:
+/// a helper carries `thread_source: "subagent"`, and/or a `source` object whose
+/// only key is `subagent` (a session the user started has `source` as a plain
+/// string — `cli`, `vscode`, `exec`).
+///
+/// Verified 2026-07-28 across 687 rollout files on this machine: 619 helper
+/// threads, 68 sessions the user started, and the two markers disagreed on a
+/// single file — so both are checked and either one is enough.
+///
+/// A file with neither marker is kept. Older Codex versions predate the field
+/// (15 files here), and losing one of the user's sessions is worse than listing
+/// a helper thread.
+fn is_codex_subagent_meta(payload: &Value) -> bool {
+    if payload.get("thread_source").and_then(Value::as_str) == Some("subagent") {
+        return true;
+    }
+
+    payload
+        .get("source")
+        .and_then(Value::as_object)
+        .is_some_and(|source| source.contains_key("subagent"))
+}
+
+/// What a rollout file's opening metadata record says about its thread. The id
+/// can be missing while the verdict is still known, so the two are separate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadMarker {
+    pub id: Option<String>,
+    pub spawned_by_codex: bool,
+}
+
+/// Read from a bounded head, so the scan can sort the files before it spends
+/// its read budget on them.
+fn codex_rollout_thread_marker(path: &Path) -> Option<CodexThreadMarker> {
+    let head = read_head_utf8(path, CODEX_SESSION_META_PROBE_BYTES).ok()?;
+    codex_rollout_head_thread_marker(&head)
+}
+
+/// `None` when the head holds no readable metadata record — a truncated line, a
+/// file that opens with something else, an empty file. The caller keeps those.
+pub fn codex_rollout_head_thread_marker(head: &str) -> Option<CodexThreadMarker> {
+    let line = head.lines().next()?;
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+
+    let payload = value.get("payload")?;
+    Some(CodexThreadMarker {
+        id: payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        spawned_by_codex: is_codex_subagent_meta(payload),
+    })
+}
+
+pub fn codex_rollout_head_is_subagent_thread(head: &str) -> bool {
+    codex_rollout_head_thread_marker(head).is_some_and(|marker| marker.spawned_by_codex)
+}
+
+/// Index rows naming threads Codex spawned for itself.
+///
+/// `~/.codex/session_index.jsonl` is a flat list of id, name and timestamp with
+/// nothing in it saying what kind of thread a row describes, so the rollout
+/// files are the only evidence — and the index is read whole, with none of the
+/// filtering the rollout files get. On this machine 119 of its 330 rows are
+/// sub-agent threads, 117 of them already archived, and every one of those was
+/// reaching the rail under a plausible name ("Audit inventory gaps", "Review
+/// mobile steppers") that gave the user no way to tell it apart from their own
+/// work.
+///
+/// A row whose thread has no rollout file left anywhere is kept: 150 of them
+/// here, all genuinely the user's, and absence of evidence is not evidence.
+pub fn drop_codex_subagent_sessions(
+    records: Vec<AgentSessionRecord>,
+    subagent_ids: &HashSet<String>,
+) -> Vec<AgentSessionRecord> {
+    records
+        .into_iter()
+        .filter(|record| !subagent_ids.contains(&record.id))
+        .collect()
+}
+
+/// The first thing the user actually typed. Codex opens every session with
+/// machine-written turns sent as the user — the repository's `AGENTS.md`, the
+/// environment block, the plugin list, the file list — and each has a shape we
+/// can recognise, so the title comes from the first turn that is none of them.
+fn codex_user_prompt_text(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    if payload.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+
+    let text = payload.get("content").and_then(value_to_text)?;
+    let text = text.trim();
+    if text.is_empty() || CODEX_INJECTED_PROMPT_PREFIXES.iter().any(|prefix| text.starts_with(prefix)) {
+        return None;
+    }
+
+    Some(compact_text(text, 140))
+}
+
+/// Openings that mean Codex wrote this turn, not the user. `<` covers every
+/// tagged block it injects (`<environment_context>`, `<recommended_plugins>`,
+/// `<user_shell_command>`); the two headings are the repository instructions
+/// and the attached-file list.
+const CODEX_INJECTED_PROMPT_PREFIXES: &[&str] = &[
+    "<",
+    "# AGENTS.md instructions",
+    "# Files mentioned by the user",
+];
+
+/// A Codex rollout file carries no title of its own, so a rail built from these
+/// files alone reads as hundreds of rows all saying "Codex session". The first
+/// typed prompt is the only description of the session in the file, so it
+/// becomes the title; the generic label survives only when the scanned window
+/// held no typed prompt at all.
+fn codex_display_title(derived: &str, first_prompt: Option<&str>) -> String {
+    if derived != CODEX_GENERIC_SESSION_TITLE {
+        return derived.to_string();
+    }
+
+    match first_prompt {
+        Some(prompt) => compact_text(prompt, 60),
+        None => CODEX_GENERIC_SESSION_TITLE.to_string(),
+    }
+}
+
+fn is_generic_codex_title(title: &str) -> bool {
+    title == CODEX_GENERIC_SESSION_TITLE || title == CODEX_UNTITLED_INDEX_TITLE
+}
+
+/// One Codex session can be described twice: the index file may name it, and
+/// the rollout file offers the opening prompt. Whichever record looks newer is
+/// beside the point — a placeholder must never displace a real title, and the
+/// index name describes the whole session where the prompt only opens it, so
+/// the title already in hand wins when both are real.
+fn better_codex_title(existing: String, candidate: String) -> String {
+    if !is_generic_codex_title(&existing) {
+        return existing;
+    }
+    if !is_generic_codex_title(&candidate) {
+        return candidate;
+    }
+
+    existing
 }
 
 fn update_latest_codex_record(
@@ -382,10 +597,12 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
-        // One sidechain entry condemns the whole transcript: a subagent file is
-        // sidechain end to end, so anything already collected from it is a
-        // subagent's turn, not a resumable session.
-        if is_claude_sidechain_entry(&value) {
+        // One such entry condemns the whole transcript: these files are what
+        // they are end to end, so anything already collected from one is an
+        // agent's turn, not a session the user can resume. Both checks answer
+        // the same question — "is this a top-level session?" — from different
+        // evidence: a subagent's sidechain flag, or a helper's entrypoint.
+        if is_claude_sidechain_entry(&value) || is_claude_agent_launched_entry(&value) {
             return Vec::new();
         }
 
@@ -474,6 +691,71 @@ fn is_claude_subagent_transcript_path(path: &Path) -> bool {
 /// a live machine: 1177 sidechain files, all of them pure, zero mixed files.
 fn is_claude_sidechain_entry(value: &Value) -> bool {
     value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+}
+
+/// Entrypoint values that mean "a program started this run, not the user".
+/// Prefixes, so a future `sdk-node` is covered without a code change; adding a
+/// new family is a one-line edit here.
+const AGENT_LAUNCH_ENTRYPOINT_PREFIXES: &[&str] = &["sdk"];
+
+/// Helper-agent transcripts — a team lead's dispatched teammates, and any other
+/// SDK-driven run — land flat in the same project directory as the user's own
+/// sessions, with `isSidechain: false`, `userType: "external"` and no agent name
+/// anywhere, so neither discriminator above sees them. What they do carry is how
+/// they were launched: every `user`, `assistant` and `attachment` record repeats
+/// an `entrypoint`, and a programmatic run is always `sdk-…` (`sdk-cli`,
+/// `sdk-py`) where a session the user typed into is `cli` or `claude-vscode`.
+///
+/// Verified 2026-07-28 across 1073 transcripts on this machine: every one of the
+/// 888 dispatched helper runs was `sdk-…`, every human session was `cli` or
+/// `claude-vscode`, and no transcript ever mixed the two families. 1072 of the
+/// 1073 carry the field within the 256 KB tail this scanner reads.
+///
+/// This deliberately replaces the "does the first message read like a dispatch
+/// prompt?" idea: the user's real sessions often open with pasted logs and
+/// instruction-shaped text, and the scanner reads a tail window that usually
+/// does not even contain the first message.
+fn is_agent_launch_entrypoint(entrypoint: &str) -> bool {
+    AGENT_LAUNCH_ENTRYPOINT_PREFIXES
+        .iter()
+        .any(|prefix| entrypoint.starts_with(prefix))
+}
+
+/// Reads that entrypoint off one transcript line. A line without the field says
+/// nothing either way — older transcripts predate it — so it is not evidence of
+/// a helper and the transcript is kept.
+fn is_claude_agent_launched_entry(value: &Value) -> bool {
+    value
+        .get("entrypoint")
+        .and_then(Value::as_str)
+        .is_some_and(is_agent_launch_entrypoint)
+}
+
+/// The same question asked of a file instead of a parsed record, so the scan can
+/// skip helper runs before it spends its read budget on them.
+///
+/// Excluding them at parse time was never enough. A batch of API work can write
+/// hundreds of transcripts in an afternoon — 880 of the 1091 here came from one
+/// document-extraction job, all in a temporary directory — and the scan reads
+/// only the newest 512 files. Sorted by modification time, that batch pushed the
+/// user's own sessions out of the scan entirely: 6 of 24 survived. Nothing was
+/// wrong with the rule; it just ran too late to matter.
+///
+/// Reads a bounded head rather than the whole file. Anything unreadable, or
+/// whose entrypoint sits past the probe, is kept and settled when the file is
+/// parsed in full — the same direction to fail as every other check here.
+fn claude_transcript_file_is_agent_launched(path: &Path) -> bool {
+    let Ok(head) = read_head_utf8(path, CLAUDE_SESSION_LAUNCH_PROBE_BYTES) else {
+        return false;
+    };
+
+    claude_transcript_head_is_agent_launched(&head)
+}
+
+pub fn claude_transcript_head_is_agent_launched(head: &str) -> bool {
+    head.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|value| is_claude_agent_launched_entry(&value))
 }
 
 /// Claude Code records its own generated session title on a `type: "ai-title"`
@@ -570,7 +852,10 @@ fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String>
 }
 
 fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
+    let previous_title = existing.title.clone();
+    let candidate_title = candidate.title.clone();
     merge_agent_session_record(existing, candidate);
+    existing.title = better_codex_title(previous_title, candidate_title);
 }
 
 fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
@@ -1207,6 +1492,304 @@ mod tests {
         "\n",
         r#"{"parentUuid":"1","isSidechain":true,"agentId":"a0a5","type":"assistant","sessionId":"S2","timestamp":"2026-07-28T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Structured output provided successfully"}]}}"#,
     );
+
+    /// A helper-agent transcript as Claude Code actually writes it: flat in the
+    /// project directory, `isSidechain: false`, `userType: "external"`, no agent
+    /// name anywhere — identical to a real session except for the entrypoint
+    /// that launched it.
+    const HELPER_AGENT_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","promptSource":"sdk","sessionId":"S4","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T11:00:00Z","message":{"role":"user","content":"You are implementing Task 1 of the v2-base plan."}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","sessionId":"S4","timestamp":"2026-07-28T11:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Reading the brief."}]}}"#,
+    );
+
+    /// A REAL session that opens with pasted log output. The user does this
+    /// often, and it is why the filter reads the entrypoint rather than
+    /// guessing from the shape of the first message: nothing about this text
+    /// distinguishes it from a machine-authored dispatch prompt.
+    const REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"cli","promptSource":"typed","sessionId":"S5","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T12:00:00Z","message":{"role":"user","content":"You are seeing this in the console:\n[vite] hmr update /src/routes/next/+page.svelte\nERROR  Cannot read properties of undefined (reading 'api')\n    at mount (chunk-QK6X.js:14:9)\nReview this change and tell me why. Your final message should name the file."}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S5","timestamp":"2026-07-28T12:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"That mount is running before the store exists."}]}}"#,
+    );
+
+    /// A hook-spawned security reviewer, the exact text Claude Code writes:
+    /// "Review this change for security vulnerabilities" followed by the file
+    /// list and the diff. 186 of these exist here and every one is `sdk-py`.
+    const SECURITY_REVIEW_AGENT_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-py","promptSource":"sdk","sessionId":"S7","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T13:00:00Z","message":{"role":"user","content":"Review this change for security vulnerabilities.\n\nChanged files (you may Read these and any other file in the repo):\n  - tauri-svelte-preview/src/lib/shell/terminalService.ts\n\nUnified diff (only + lines are new):"}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"entrypoint":"sdk-py","sessionId":"S7","timestamp":"2026-07-28T13:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"No vulnerabilities found."}]}}"#,
+    );
+
+    /// A REAL session resumed after running out of context. Claude Code opens it
+    /// with a machine-written summary, so it reads exactly like a dispatch
+    /// prompt — and this one is 22770 lines of the user's own work.
+    const REAL_SESSION_RESUMED_FROM_A_SUMMARY_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"cli","sessionId":"S8","cwd":"/Users/dev/work/EdiPlatform","timestamp":"2026-07-28T14:00:00Z","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Primary Request and Intent:\n   Make the rule-extraction pipeline leaner and faster."}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S8","timestamp":"2026-07-28T14:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Picking up where that left off."}]}}"#,
+    );
+
+    /// A thread Codex spawned for itself. Both markers are present, as they are
+    /// on 618 of the 619 helper threads on this machine.
+    const CODEX_SUBAGENT_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-07-28T17:24:36.972Z","type":"session_meta","payload":{"id":"019fa9c1","parent_thread_id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"subagent","agent_role":"executor","source":{"subagent":{"parent_thread_id":"019fa964","depth":1}}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-07-28T17:25:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement the year simulation runner."}]}}"#,
+    );
+
+    /// A session the user started in the terminal. `source` is a plain string,
+    /// and the first two turns are the ones Codex writes for itself before the
+    /// user has typed anything.
+    const CODEX_TOP_LEVEL_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#,
+        "\n",
+        r##"{"timestamp":"2026-07-28T16:42:18.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/dev/work/rental-management\n\n<INSTRUCTIONS>\nEvery reply MUST open with a plain-English summary.\n</INSTRUCTIONS>"}]}}"##,
+        "\n",
+        r#"{"timestamp":"2026-07-28T16:42:19.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/dev/work/rental-management</cwd>\n</environment_context>"}]}}"#,
+        "\n",
+        r#"{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please plan out an entire year of scans and entries for the 2027 simulation."}]}}"#,
+    );
+
+    /// An older Codex build that wrote no thread marker at all.
+    const CODEX_UNMARKED_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-04-14T13:53:07.000Z","type":"session_meta","payload":{"id":"019d8d20","cwd":"/Users/dev/work/EdiPlatform","originator":"codex_cli_rs","source":"unknown"}}"#,
+        "\n",
+        r#"{"timestamp":"2026-04-14T13:54:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Help me trace where the 810 mapping loses the invoice date."}]}}"#,
+    );
+
+    #[test]
+    fn codex_scan_excludes_threads_codex_spawned_for_itself() {
+        // Either marker on its own is enough — they disagreed on one real file.
+        assert!(codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"thread_source":"subagent","source":"vscode"}}"#
+        ));
+        assert!(codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"depth":1}}}}"#
+        ));
+
+        // A session the user started: `source` is a plain string, not an object.
+        assert!(!codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"thread_source":"user","source":"cli"}}"#
+        ));
+        // No marker, unreadable, or not a metadata line at all: keep the file.
+        assert!(!codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"source":"unknown"}}"#
+        ));
+        assert!(!codex_rollout_head_is_subagent_thread("{\"type\":\"sessi"));
+        assert!(!codex_rollout_head_is_subagent_thread(""));
+
+        assert_eq!(
+            parse_codex_rollout_jsonl(CODEX_SUBAGENT_ROLLOUT_JSONL),
+            Vec::new()
+        );
+
+        let records = parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "019fa964");
+
+        // Older rollouts predate the marker. Keep them: losing a session the
+        // user wants back is worse than listing a helper thread.
+        let records = parse_codex_rollout_jsonl(CODEX_UNMARKED_ROLLOUT_JSONL);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "019d8d20");
+    }
+
+    /// The index file names sub-agent threads as plausibly as it names the
+    /// user's own — "Audit inventory gaps", "Review mobile steppers" — so the
+    /// name is no help at all and the rollout files have to answer.
+    #[test]
+    fn codex_index_rows_are_dropped_when_a_rollout_proves_them_helper_threads() {
+        // The id travels with the verdict, so an archived helper thread can be
+        // recognised from its rollout file and struck off the index.
+        let marker = codex_rollout_head_thread_marker(CODEX_SUBAGENT_ROLLOUT_JSONL).unwrap();
+        assert_eq!(marker.id.as_deref(), Some("019fa9c1"));
+        assert!(marker.spawned_by_codex);
+
+        let marker = codex_rollout_head_thread_marker(CODEX_TOP_LEVEL_ROLLOUT_JSONL).unwrap();
+        assert_eq!(marker.id.as_deref(), Some("019fa964"));
+        assert!(!marker.spawned_by_codex);
+
+        // A metadata record with no id still answers the question it can.
+        let marker = codex_rollout_head_thread_marker(
+            r#"{"type":"session_meta","payload":{"thread_source":"subagent"}}"#,
+        )
+        .unwrap();
+        assert_eq!(marker.id, None);
+        assert!(marker.spawned_by_codex);
+
+        // Nothing readable: no verdict either way.
+        assert_eq!(codex_rollout_head_thread_marker("{\"type\":\"sessi"), None);
+        assert_eq!(codex_rollout_head_thread_marker(""), None);
+
+        let index = parse_codex_index_jsonl(concat!(
+            r#"{"id":"019fa9c1","thread_name":"Audit inventory gaps","updated_at":"2026-07-28T17:24:00.000000Z"}"#,
+            "\n",
+            r#"{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-28T16:42:00.000000Z"}"#,
+            "\n",
+            r#"{"id":"019c230d","thread_name":"Document EDI flow review","updated_at":"2026-03-13T21:48:02.611673Z"}"#,
+        ));
+        assert_eq!(index.len(), 3);
+
+        let helper_threads = HashSet::from(["019fa9c1".to_string()]);
+        let kept = drop_codex_subagent_sessions(index, &helper_threads);
+
+        // The helper thread goes. The session the user started stays, and so
+        // does the one whose rollout file is gone from disk entirely — no
+        // evidence is not evidence.
+        assert_eq!(
+            kept.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+            vec!["019fa964", "019c230d"]
+        );
+    }
+
+    #[test]
+    fn codex_titles_come_from_the_first_prompt_the_user_typed() {
+        let records = parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL);
+        assert_eq!(
+            records[0].title,
+            "Please plan out an entire year of scans and entries for the…"
+        );
+
+        // The repository instructions and the environment block are written by
+        // Codex, not the user, so neither may become the title.
+        assert!(!records[0].title.contains("AGENTS.md"));
+        assert!(!records[0].title.contains("environment_context"));
+
+        // Nothing typed inside the scanned window leaves the generic label.
+        let meta_only = r#"{"type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev","source":"cli"}}"#;
+        assert_eq!(
+            parse_codex_rollout_jsonl(meta_only)[0].title,
+            CODEX_GENERIC_SESSION_TITLE
+        );
+
+        // The index file names some sessions. That name must survive a merge
+        // with the rollout file whichever record carries the later timestamp.
+        let index = parse_codex_index_jsonl(
+            r#"{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-28T16:00:00.000000Z"}"#,
+        );
+        let merged =
+            merge_codex_session_metadata(index, parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL));
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].title, "Year simulation planning");
+
+        // And an unnamed index row must not overwrite a real rollout title.
+        let index = parse_codex_index_jsonl(
+            r#"{"id":"019fa964","updated_at":"2026-07-29T16:00:00.000000Z"}"#,
+        );
+        let merged =
+            merge_codex_session_metadata(index, parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL));
+        assert_eq!(
+            merged[0].title,
+            "Please plan out an entire year of scans and entries for the…"
+        );
+    }
+
+    #[test]
+    fn claude_scan_excludes_helper_agent_transcripts() {
+        // The entrypoint is the whole rule: `sdk-*` launched it programmatically.
+        assert!(is_agent_launch_entrypoint("sdk-cli"));
+        assert!(is_agent_launch_entrypoint("sdk-py"));
+        assert!(!is_agent_launch_entrypoint("cli"));
+        assert!(!is_agent_launch_entrypoint("claude-vscode"));
+        assert!(!is_agent_launch_entrypoint(""));
+
+        assert_eq!(
+            parse_claude_jsonl(HELPER_AGENT_JSONL, "/Users/dev/work/mac-command-bar"),
+            Vec::new()
+        );
+
+        // A real session that opens with pasted log output and the very phrases
+        // a dispatch prompt uses ("You are ", "Review this change", "Your final
+        // message") must survive. Excluding one of the user's own sessions is
+        // strictly worse than listing a helper.
+        let records = parse_claude_jsonl(
+            REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL,
+            "/Users/dev/work/mac-command-bar",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "S5");
+
+        // Older transcripts predate the field. Keep them: a missing entrypoint
+        // is not evidence of a helper, and the cost of guessing wrong is losing
+        // a session the user wanted.
+        let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "S1");
+    }
+
+    /// The shape that flooded the rail: an API job's transcripts, hundreds of
+    /// them, written into a temporary directory. Every record carries the
+    /// launch entrypoint — but the opening records do not, so the probe has to
+    /// read past them.
+    const API_BATCH_JOB_JSONL: &str = concat!(
+        r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-27T15:25:58.319Z","sessionId":"S6","content":"Extract the fields below from the following document text."}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-07-27T15:25:58.319Z","sessionId":"S6"}"#,
+        "\n",
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","promptSource":"sdk","sessionId":"S6","cwd":"/private/var/folders/rp/T","timestamp":"2026-07-27T15:25:59.000Z","message":{"role":"user","content":"You are a friendly assistant for extracting rental documents."}}"#,
+    );
+
+    /// Locks in why there is no "does this read like a dispatch prompt?" rule.
+    ///
+    /// The security reviewers that fill the rail are launched programmatically
+    /// like every other helper, so the entrypoint already answers for them —
+    /// checked here at both the probe and the parse. Guessing from the text
+    /// instead would cost real sessions: the second fixture opens with a
+    /// machine-written summary and IS the user's own work, and the third opens
+    /// with the words "Review this change" typed by the user.
+    #[test]
+    fn claude_scan_reads_how_a_run_was_launched_not_what_it_says() {
+        assert!(claude_transcript_head_is_agent_launched(
+            SECURITY_REVIEW_AGENT_JSONL
+        ));
+        assert_eq!(
+            parse_claude_jsonl(SECURITY_REVIEW_AGENT_JSONL, "/Users/dev/work/mac-command-bar"),
+            Vec::new()
+        );
+
+        for (fixture, id) in [
+            (REAL_SESSION_RESUMED_FROM_A_SUMMARY_JSONL, "S8"),
+            (REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL, "S5"),
+        ] {
+            assert!(!claude_transcript_head_is_agent_launched(fixture));
+            let records = parse_claude_jsonl(fixture, "/Users/dev/work/EdiPlatform");
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].id, id);
+        }
+    }
+
+    #[test]
+    fn claude_scan_skips_helper_runs_before_the_file_budget() {
+        // Reading past the opening records is the whole point: the launch
+        // entrypoint appears only once the first real turn is written.
+        assert!(claude_transcript_head_is_agent_launched(API_BATCH_JOB_JSONL));
+        assert!(claude_transcript_head_is_agent_launched(HELPER_AGENT_JSONL));
+
+        // A session the user typed into, and one old enough to carry no
+        // entrypoint at all, both stay in the scan.
+        assert!(!claude_transcript_head_is_agent_launched(
+            REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL
+        ));
+        assert!(!claude_transcript_head_is_agent_launched(REAL_SESSION_JSONL));
+
+        // A head cut mid-line, and one holding nothing but the opening records,
+        // are both kept — the parse of the full file settles them.
+        assert!(!claude_transcript_head_is_agent_launched(
+            r#"{"type":"user","entrypoint":"sdk-c"#
+        ));
+        assert!(!claude_transcript_head_is_agent_launched(
+            r#"{"type":"queue-operation","operation":"enqueue","sessionId":"S6"}"#
+        ));
+        assert!(!claude_transcript_head_is_agent_launched(""));
+
+        // And the rule the probe applies is the one the parse applies.
+        assert_eq!(
+            parse_claude_jsonl(API_BATCH_JOB_JSONL, "/private/var/folders/rp/T"),
+            Vec::new()
+        );
+    }
 
     #[test]
     fn claude_scan_excludes_subagent_sidechain_transcripts() {

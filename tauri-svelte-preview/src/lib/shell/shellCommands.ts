@@ -22,6 +22,8 @@ import { registerCommands } from './palette/commandRegistry.ts';
 export interface ShellCommandHooks {
   /** Bring a center tab to the front (its id in the tab roster). */
   showPanel(id: string): void;
+  /** Unfold the Source control section of the left column. */
+  expandSourceControl(): void;
 }
 
 /** Register the panel actions. Calling it again replaces them, never doubles. */
@@ -44,8 +46,8 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
     {
       id: 'show-git',
       label: 'Show source control',
-      detail: 'Bring the changed files and recent commits to the front',
-      perform: () => hooks.showPanel('git')
+      detail: 'Open the source control section of the left column',
+      perform: () => hooks.expandSourceControl()
     },
     {
       id: 'show-browser',

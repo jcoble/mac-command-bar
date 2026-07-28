@@ -50,6 +50,14 @@
    * it adds nothing to the page — and the real module arrives in
    * `ensureCodeEditor`.
    */
+  interface Props {
+    /** Called when an open-file request has become a real open, so the shell can
+     * bring this panel's tab to the front. The panel itself stays unaware of the
+     * tab area — it just says a file arrived. */
+    onFileOpened?: () => void;
+  }
+  let { onFileOpened }: Props = $props();
+
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
   let editorLoadError = $state<string | null>(null);
@@ -133,9 +141,11 @@
    * the strip, and by "jump to definition" landing in another file. Opening a
    * file IS a user action, so it may load even if the panel has not been shown
    * yet; that is also what marks the editor as in use.
+   *
+   * Returns whether the file was actually taken on — a blank path opens nothing.
    */
-  function openPath(path: string, line?: number | null): void {
-    if (!path.trim()) return;
+  function openPath(path: string, line?: number | null): boolean {
+    if (!path.trim()) return false;
     activateEditor();
     const record = sourceRecordFromPath(editorState.projectRoot, path);
     const entry = openEditorFile(record);
@@ -143,10 +153,13 @@
     syncIntelligenceWithActiveFile();
     void ensureCodeEditor();
     if (needsRead(entry)) void readFileIntoEditor(record);
+    return true;
   }
 
   function handleOpenFileRequest(request: OpenFileRequest): void {
-    openPath(request.path, request.line);
+    // Only once the file is in the strip. The read runs after this and may still
+    // fail — the tab is the right place to show that, so it stays in front.
+    if (openPath(request.path, request.line)) onFileOpened?.();
   }
 
   function selectOpenFile(path: string): void {

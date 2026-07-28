@@ -20,10 +20,12 @@
     "test:worktree-cleanup-runbook": "node --experimental-strip-types scripts/worktreeCleanupRunbook.test.mjs",
     "test:worktree-safety": "node --experimental-strip-types scripts/worktreeSafety.test.mjs",
     "test:local-source-fs": "node --experimental-strip-types scripts/localSourceFs.test.mjs",
+    "test:session-scan-filter": "node --experimental-strip-types scripts/sessionScanFilter.test.mjs",
     "test:live-terminals": "node --experimental-strip-types scripts/liveConversationTerminals.test.mjs",
     "test:owned-sessions": "node --experimental-strip-types scripts/ownedSessions.test.mjs",
     "test:next-terminal-service": "node --experimental-strip-types scripts/nextTerminalService.test.mjs",
     "test:layout-storage": "node --experimental-strip-types scripts/layoutStorage.test.mjs",
+    "test:pane-layout": "node --experimental-strip-types scripts/paneLayout.test.mjs",
     "test:source-dock-layout": "node --experimental-strip-types scripts/sourceDockLayout.test.mjs",
     "test:source-dockview": "node --experimental-strip-types scripts/sourceDockviewWorkspace.test.mjs",
     "test:source-pane-sizing": "node --experimental-strip-types scripts/sourcePaneSizing.test.mjs",
@@ -51,7 +53,10 @@
     "test:normalize-browser-url": "node --experimental-strip-types scripts/normalizeBrowserUrl.test.mjs",
     "test:command-registry": "node --experimental-strip-types scripts/commandRegistry.test.mjs",
     "test:next-tokens": "node --experimental-strip-types scripts/nextTokens.test.mjs",
-    "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs"
+    "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs",
+    "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
+    "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.mjs",
+    "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",

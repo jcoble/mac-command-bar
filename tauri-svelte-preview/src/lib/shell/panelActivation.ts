@@ -19,9 +19,22 @@
  *    session loads stay switched off until `allowSessionLoads()` is called,
  *    which the page does when start-up has finished.
  *
- * After that, loading is driven by two user actions only: bringing a tab to the
- * front, and picking a session. A panel that has never been shown never loads,
- * and changing session re-loads only the panels the user has actually opened.
+ * After that, loading is driven by user actions only: bringing a tab to the
+ * front, picking a session, and bringing source control into view. A panel that
+ * has never been shown never loads, and changing session re-loads only the
+ * panels the user has actually opened.
+ *
+ * Source control is the one panel that is neither a tab nor always on screen.
+ * It lives in the left column's Source control view, which is one of four the
+ * activity bar switches between, and the shell does not open on it. So it
+ * follows the same principle by a third route — it loads when you can actually
+ * see it. Picking a session loads it only while it is in view, and bringing it
+ * into view loads it if a session is already picked. Out of view it costs
+ * nothing; in view it is never stale.
+ *
+ * What counts as "in view" is not decided here — the left column knows both
+ * halves of it (which view is open, and whether the pane inside is folded) and
+ * reports the answer as one yes or no.
  */
 
 /** A project folder, in the shape the backend's project-scoped commands want. */
@@ -57,13 +70,21 @@ export interface PanelActivation {
   panelShown(id: string): void;
   /** The user picked a session in the rail. */
   sessionPicked(): void;
+  /** Source control came into view, or went out of it. Report where it stands
+   * now; the left column reports it once at start-up too, so this is never
+   * guesswork. */
+  sourceControlVisible(visible: boolean): void;
   /** Which panels have loaded at least once — for tests and for the report. */
   loadedPanels(): string[];
 }
 
 /** Center tabs that have something to load. "session" is the terminal: it is
- * owned by the page's own start-up and must never be re-loaded from here. */
-const LOADABLE_PANELS = new Set(['editor', 'git', 'browser']);
+ * owned by the page's own start-up and must never be re-loaded from here.
+ *
+ * Source control is deliberately absent: it is a view of the left column now,
+ * not a tab, so nothing ever brings it to the front. Its own rule is in
+ * `loadSourceControl` below. */
+const LOADABLE_PANELS = new Set(['editor', 'browser']);
 
 export function createPanelActivation(
   activators: PanelActivators,
@@ -73,16 +94,32 @@ export function createPanelActivation(
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
   let sessionPanelsShown = false;
+  /** Can the user see source control right now? */
+  let sourceControlInView = false;
+  /** The folder source control was last loaded for, or `null` if it never has
+   * been. `''` is a real value here — it means "loaded, for no folder". */
+  let gitLoadedFor: string | null = null;
 
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
     if (id === 'editor') activators.editor(root || null);
-    else if (id === 'git') activators.git(root || null);
     else if (id === 'browser') activators.browser();
   };
 
+  /** Point source control at this folder. A session with no folder still calls
+   * it, which is what tells the panel there is no repository to show. */
+  const loadSourceControl = (selection: ProjectSelection): void => {
+    const root = selection.root.trim();
+    gitLoadedFor = root;
+    activators.git(root || null);
+  };
+
+  /** The panels that come with the session the user just picked: the file tree,
+   * the context cards, and — only while it is in view — source control. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
-    if (selection.root.trim()) activators.explorer(selection.root.trim());
+    const root = selection.root.trim();
+    if (root) activators.explorer(root);
+    if (sourceControlInView) loadSourceControl(selection);
     activators.context({ root: selection.root, projects: selection.projects });
   };
 
@@ -111,9 +148,23 @@ export function createPanelActivation(
       for (const id of shownPanels) loadPanel(id, selection);
     },
 
+    sourceControlVisible(visible: boolean): void {
+      sourceControlInView = visible;
+      // Looking away loads nothing, and neither does looking at it before a
+      // session has been picked — there is no folder to read yet, and the pick
+      // that follows will load it.
+      if (!visible || !sessionPanelsShown) return;
+      const selection = readSelection();
+      // Already showing this folder: coming back to it is not a reason to read
+      // the repository again.
+      if (gitLoadedFor === selection.root.trim()) return;
+      loadSourceControl(selection);
+    },
+
     loadedPanels(): string[] {
       const loaded = [...shownPanels];
       if (sessionPanelsShown) loaded.push('explorer', 'context');
+      if (gitLoadedFor !== null) loaded.push('git');
       return loaded;
     }
   };

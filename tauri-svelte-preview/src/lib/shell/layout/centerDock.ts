@@ -7,6 +7,7 @@
 import {
   createDockview,
   themeDracula,
+  type AddPanelPositionOptions,
   type DockviewApi,
   type GroupPanelPartInitParameters,
   type IContentRenderer
@@ -26,6 +27,14 @@ export interface CenterPanelSpec {
   id: string;
   title: string;
   element: HTMLElement;
+  /**
+   * Which side of the default layout this panel opens on: `'conversation'` (the
+   * left group, where the user talks to the session) or `'display'` (the right
+   * group, where results are shown). Only read when the dock is built from
+   * scratch — once the user has dragged tabs around, the stored layout wins.
+   * Defaults to `'conversation'`.
+   */
+  group?: 'conversation' | 'display';
 }
 
 export interface CenterDockOptions {
@@ -106,12 +115,19 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     createComponent: createRenderer
   });
 
-  const addPanelFor = (panel: CenterPanelSpec): void => {
+  /**
+   * Add one roster panel. With no `position` dockview puts it in whichever group
+   * is active (and makes a group if the dock is empty) — that is what a re-add
+   * after an accidental close wants, and it is the fallback whenever there is no
+   * existing panel to anchor against.
+   */
+  const addPanelFor = (panel: CenterPanelSpec, position?: AddPanelPositionOptions): void => {
     api.addPanel({
       id: panel.id,
       title: panel.title,
       component: COMPONENT,
-      params: { panelId: panel.id }
+      params: { panelId: panel.id },
+      position
     });
   };
 
@@ -124,10 +140,35 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * `addPanel`'s own duplicate guard, so what we test is what dockview does. */
   const panelById = (id: string) => api.panels.find((panel) => panel.id === id);
 
+  /**
+   * The layout a fresh dock opens with: the conversation panels on the left, the
+   * display panels stacked as tabs in a second group to their right. Both sides
+   * may be empty — a roster that is all conversation just never opens the second
+   * group, and one that is all display opens a single group with no anchor to
+   * sit beside (asking dockview to position against a panel that does not exist
+   * yet throws, so that case adds the first panel with no position at all).
+   */
   const buildDefault = (): void => {
-    for (const panel of options.panels) addPanelFor(panel);
-    const first = options.panels[0];
-    if (first) panelById(first.id)?.api.setActive();
+    const conversation = options.panels.filter((panel) => panel.group !== 'display');
+    const display = options.panels.filter((panel) => panel.group === 'display');
+    for (const panel of conversation) addPanelFor(panel);
+
+    const anchor = conversation[0];
+    const [leadDisplay, ...stackedDisplay] = display;
+    if (leadDisplay) {
+      addPanelFor(
+        leadDisplay,
+        anchor ? { referencePanel: anchor.id, direction: 'right' } : undefined
+      );
+      for (const panel of stackedDisplay) {
+        addPanelFor(panel, { referencePanel: leadDisplay.id, direction: 'within' });
+      }
+    }
+
+    // Every add above made its own panel the active one, so the last display tab
+    // is showing. Hand focus back to the front of the roster.
+    const opening = anchor ?? leadDisplay;
+    if (opening) panelById(opening.id)?.api.setActive();
   };
 
   /**

@@ -23,9 +23,11 @@ function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** A session's project folder: the project it was opened for, else its cwd. */
+/** A session's working folder: its cwd (the worktree checkout) first, else the
+ * project it was opened for. The cwd is where the session's files and branch
+ * actually live — a worktree session pointed at projectPath shows the WRONG tree. */
 function folderFor(session: { projectPath: string | null; cwd: string }): string {
-  return (session.projectPath ?? session.cwd ?? '').trim();
+  return session.cwd.trim() || (session.projectPath ?? '').trim();
 }
 
 /**

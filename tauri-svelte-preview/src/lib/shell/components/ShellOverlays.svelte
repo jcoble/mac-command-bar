@@ -24,6 +24,13 @@
   let { onResetLayout, onRescanSessions, message }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
+
+  /** Open the settings dialog from outside — the gear on the activity bar is
+   * over in the left column, and the dialog lives here. Same shape as
+   * `SettingsHost`'s own `open()`, one layer out. */
+  export function openSettings(): void {
+    settingsHost?.open();
+  }
 </script>
 
 <PalettePanel

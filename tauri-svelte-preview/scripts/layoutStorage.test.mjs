@@ -5,6 +5,7 @@ import {
   clearLayout,
   gridPanelIds,
   dockPanelIds,
+  paneviewPanelIds,
   panelSetMatches
 } from '../src/lib/shell/layout/layoutStorage.ts';
 
@@ -87,6 +88,84 @@ function memoryStorage(initial = {}) {
   const dock = { panels: { session: {}, editor: {}, browser: {} }, grid: {} };
   assert.deepEqual([...dockPanelIds(dock)].sort(), ['browser', 'editor', 'session']);
   assert.deepEqual([...dockPanelIds({ grid: {} })], [], 'missing panels -> empty');
+}
+
+// paneviewPanelIds reads SerializedPaneview.views[].data.id.
+//
+// This is the exact object dockview-core 6.6.1 writes: `PaneviewComponent.toJSON`
+// (paneviewComponent.js:281-307) builds `{ size, views: [...] }`, and each view is
+// `{ size, data, minimumSize, maximumSize, headerSize, expanded }` where `data` is
+// `PaneviewPanel.toJSON()` (paneviewPanel.js:240-243, over basePanelView.js:145-153)
+// = `{ id, component, params?, headerComponent, title }`. Note the serialized names
+// are `minimumSize`/`maximumSize`/`expanded`, while the ADD options are spelled
+// `minimumBodySize`/`maximumBodySize`/`isExpanded` — the two shapes do not match.
+{
+  const paneview = {
+    size: 800,
+    views: [
+      {
+        size: 240,
+        data: {
+          id: 'sessions',
+          component: 'pane',
+          params: { paneId: 'sessions' },
+          headerComponent: undefined,
+          title: 'Sessions'
+        },
+        minimumSize: undefined,
+        maximumSize: undefined,
+        headerSize: 22,
+        expanded: true
+      },
+      {
+        size: 22,
+        data: { id: 'files', component: 'pane', params: { paneId: 'files' }, title: 'Files' },
+        headerSize: 22,
+        expanded: false
+      },
+      {
+        size: 300,
+        data: {
+          id: 'source-control',
+          component: 'pane',
+          params: { paneId: 'source-control' },
+          title: 'Source Control'
+        },
+        headerSize: 22,
+        expanded: true
+      }
+    ]
+  };
+  assert.deepEqual(
+    [...paneviewPanelIds(paneview)].sort(),
+    ['files', 'sessions', 'source-control'],
+    'ids come out whether the pane is open or collapsed'
+  );
+
+  assert.deepEqual([...paneviewPanelIds({})], [], 'no views key -> empty, no throw');
+  assert.deepEqual([...paneviewPanelIds(null)], [], 'null -> empty, no throw');
+  assert.deepEqual([...paneviewPanelIds('nonsense')], [], 'not an object -> empty, no throw');
+  assert.deepEqual(
+    [...paneviewPanelIds({ size: 800, views: { sessions: {} } })],
+    [],
+    'views must be an array, not a record -> empty'
+  );
+  assert.deepEqual([...paneviewPanelIds({ views: [] })], [], 'no views -> empty');
+  assert.deepEqual(
+    [...paneviewPanelIds({ views: [{ size: 10 }, { size: 10, data: null }, { data: {} }] })],
+    [],
+    'views with no usable data -> empty, no throw'
+  );
+  assert.deepEqual(
+    [...paneviewPanelIds({ views: [{ data: { id: 7 } }, { data: { id: 'files' } }] })],
+    ['files'],
+    'a non-string id is skipped, the good one still comes through'
+  );
+  assert.deepEqual(
+    [...paneviewPanelIds({ views: [{ data: { id: 'files' } }, { data: { id: 'files' } }] })],
+    ['files'],
+    'duplicate ids collapse to one'
+  );
 }
 
 // panelSetMatches: exact set equality, order-independent

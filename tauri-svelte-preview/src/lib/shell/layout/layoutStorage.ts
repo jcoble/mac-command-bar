@@ -15,7 +15,13 @@ export interface LayoutStorage {
 }
 
 export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout';
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout';
+/**
+ * Bumped to `-v2` when the center dock stopped being one group of tabs and
+ * became a conversation group beside a display group. A layout saved under the
+ * old key describes a shape the shell no longer builds, so it is left where it
+ * is (harmless, unread) rather than restored into the new world.
+ */
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v2';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {
@@ -74,6 +80,27 @@ export function dockPanelIds(serialized: unknown): Set<string> {
   const panels = (serialized as { panels?: unknown } | null)?.panels;
   if (!panels || typeof panels !== 'object') return new Set();
   return new Set(Object.keys(panels));
+}
+
+/**
+ * Pane ids inside a `SerializedPaneview` (dockview-core 6.6.1 shape:
+ * `{ size, views: [{ size, expanded?, data: { id, component, title, … } }] }`).
+ * Collapsed panes are in `views` exactly like open ones, so this returns the
+ * whole stack either way. Malformed input yields an empty set — the caller then
+ * rebuilds from defaults.
+ */
+export function paneviewPanelIds(serialized: unknown): Set<string> {
+  const ids = new Set<string>();
+  const views = (serialized as { views?: unknown } | null)?.views;
+  if (!Array.isArray(views)) return ids;
+  for (const view of views) {
+    if (!view || typeof view !== 'object') continue;
+    const data = (view as { data?: unknown }).data;
+    if (!data || typeof data !== 'object') continue;
+    const id = (data as { id?: unknown }).id;
+    if (typeof id === 'string') ids.add(id);
+  }
+  return ids;
 }
 
 /** True when `ids` is EXACTLY `expected` (both directions, order-free). */

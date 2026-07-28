@@ -18,7 +18,6 @@
   import ContextPanel from '$lib/shell/components/ContextPanel.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
-  import GitPanel from '$lib/shell/components/GitPanel.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
@@ -56,10 +55,11 @@
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
-  let frameControls: {
-    resetLayout: () => void;
-    showCenterPanel: (id: string) => void;
-  } | null = null;
+  let frameControls: { resetLayout(): void; showCenterPanel(id: string): void } | null = null;
+  /** The left column's own controls; it builds after the frame does. */
+  let sidebarControls: { resetLayout(): void; expandSourceControl(): void } | null = null;
+  /** The overlay layer, for opening the settings dialog it owns. */
+  let overlays: { openSettings(): void } | null = null;
   let refitScheduled = false;
   /** Its own state, NOT `rail.error`: ShellFrame mounts before this page's
    * start-up, and `scanRail` clears `rail.error` — which would erase a mount
@@ -68,7 +68,17 @@
 
   /** Palette actions for the panels. Pure bookkeeping — nothing runs until the
    * user picks one — so it belongs here at component init, not in an effect. */
-  registerShellCommands({ showPanel: (id) => frameControls?.showCenterPanel(id) });
+  registerShellCommands({
+    showPanel: (id) => frameControls?.showCenterPanel(id),
+    expandSourceControl: () => sidebarControls?.expandSourceControl()
+  });
+
+  /** "Reset layout" means ALL of it: the grid regions, the center tabs, and the
+   * left column, which remembers its section sizes under its own key. */
+  function resetLayout(): void {
+    frameControls?.resetLayout();
+    sidebarControls?.resetLayout();
+  }
 
   /** Coalesce dockview's layout bursts into one refit per frame. */
   function scheduleRefit(): void {
@@ -250,6 +260,10 @@
         // context cards would never load again. From here, a session being
         // selected is the user's doing and those panels may follow it.
         if (!disposed) shellPanels.allowSessionLoads();
+        // A session re-attached during start-up was "picked" before the gate was
+        // open, so its pick was ignored. Repeat it now that loads are allowed, or
+        // a reload comes back with empty panes until the user clicks a session.
+        if (!disposed && rail.activeOwnedId !== null) shellPanels.sessionPicked();
       }
     })();
 
@@ -275,32 +289,26 @@
   <ShellSidebar
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
     scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeOwned}
-    onRescan={scanRail}
+    onRescan={scanRail} onReady={(controls) => (sidebarControls = controls)}
+    onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
+    onOpenSettings={() => overlays?.openSettings()}
   />
 {/snippet}
-{#snippet contextArea()}
-  <ContextPanel />
-{/snippet}
-{#snippet dockArea()}
-  <DockPanel onReset={() => frameControls?.resetLayout()} />
-{/snippet}
+{#snippet contextArea()}<ContextPanel />{/snippet}
+{#snippet dockArea()}<DockPanel onReset={resetLayout} />{/snippet}
 {#snippet sessionArea()}
   <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
 {/snippet}
 {#snippet editorArea()}
-  <EditorPanel />
+  <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
+  <EditorPanel onFileOpened={() => frameControls?.showCenterPanel('editor')} />
 {/snippet}
-{#snippet gitArea()}
-  <GitPanel />
-{/snippet}
-{#snippet browserArea()}
-  <BrowserPanel />
-{/snippet}
+{#snippet browserArea()}<BrowserPanel />{/snippet}
 
 <main class="next-shell">
   <ShellFrame
     rail={railArea} context={contextArea} dock={dockArea}
-    center={{ session: sessionArea, editor: editorArea, git: gitArea, browser: browserArea }}
+    center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}
     onReady={(controls) => {
@@ -314,7 +322,8 @@
   />
 
   <ShellOverlays
-    onResetLayout={() => frameControls?.resetLayout()}
+    bind:this={overlays}
+    onResetLayout={resetLayout}
     onRescanSessions={scanRail}
     message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
   />
