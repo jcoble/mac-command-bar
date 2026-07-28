@@ -81,8 +81,20 @@ export type TerminalService = {
    * Works for a TOMBSTONE too (`owned.state === 'exited'` with a
    * `ptySessionId`): the backend keeps an exited session's scrollback readable,
    * so the view is built and then marked terminated.
+   *
+   * `size` is the PTY's REAL geometry, straight off the backend's
+   * `TerminalSessionInfo`. Pass it: on a reload only ONE view is visible, and
+   * every other host is `display: none`, so `fit()` cannot measure and the view
+   * would sit at xterm's 80x24 default while the scrollback it is about to
+   * replay was wrapped at the PTY's true width. The size is applied BEFORE the
+   * hydrating write, and it also seeds the resize gatekeeper so the first
+   * `show()` of an unchanged-size view costs no backend call at all.
    */
-  adoptExisting(owned: OwnedSession, host: HTMLElement): Promise<boolean>;
+  adoptExisting(
+    owned: OwnedSession,
+    host: HTMLElement,
+    size?: { cols: number; rows: number } | null
+  ): Promise<boolean>;
   /** Make one owned session's terminal the visible one. */
   show(ownedId: string): void;
   /**
@@ -154,6 +166,24 @@ export function createTerminalService(opts: {
    */
   const ptyByOwned = new Map<string, string>();
   /**
+   * ptySessionId -> ownedId. The exact inverse of `ptyByOwned`, kept because
+   * the exit path needs it: `setPty` runs BEFORE any view exists, so a PTY
+   * whose view failed to build (or was never built) is still resolvable here
+   * when its `terminated` payload lands. Resolving that only through the
+   * manager's `keyForSession` silently dropped those tombstones — the rail row
+   * stayed "live" over a dead process, forever.
+   */
+  const ownedByPty = new Map<string, string>();
+  /**
+   * ptySessionId -> the LAST (cols,rows) this service sent to the backend, as
+   * `"<cols>x<rows>"`. The single resize gatekeeper: `showView` fits the view
+   * on every switch and the fit reports geometry unconditionally, so switching
+   * between two same-sized terminals used to cost one redundant
+   * `resize_terminal_session` per switch. Seeded from the PTY's real size at
+   * start/adopt, so even the FIRST show of an unchanged view is free.
+   */
+  const lastSizeByPty = new Map<string, string>();
+  /**
    * sessionId -> scrollback, populated for the duration of ONE `adoptExisting`
    * call. The manager's `readScrollback` dep is synchronous, so the async read
    * has to land here before `ensureView` runs; the entry is dropped right after.
@@ -165,6 +195,13 @@ export function createTerminalService(opts: {
    * `ensureView` is about to invoke.
    */
   let creatingFor: string | null = null;
+  /**
+   * The exact grid the view being constructed must adopt, applied the instant
+   * it exists and therefore BEFORE `ensureView` hydrates it from scrollback.
+   * That ordering is the whole point: sizing after the write would re-wrap
+   * text that was already laid out at the wrong width.
+   */
+  let creatingSize: { cols: number; rows: number } | null = null;
   let unlisten: (() => void) | null = null;
   let attaching: Promise<void> | null = null;
 
@@ -179,7 +216,35 @@ export function createTerminalService(opts: {
         ptyByOwned.delete(otherOwned);
       }
     }
+    const previousPty = ptyByOwned.get(ownedId);
+    if (previousPty != null && previousPty !== ptyId) {
+      ownedByPty.delete(previousPty);
+      lastSizeByPty.delete(previousPty);
+    }
     ptyByOwned.set(ownedId, ptyId);
+    ownedByPty.set(ptyId, ownedId);
+  }
+
+  /** Forget everything keyed by `ptyId`. Called when a session stops being ours. */
+  function forgetPty(ptyId: string): void {
+    ownedByPty.delete(ptyId);
+    lastSizeByPty.delete(ptyId);
+    scrollbackCache.delete(ptyId);
+  }
+
+  /**
+   * The ONE place a backend resize is issued. Skips the call when the PTY is
+   * already at `(cols, rows)` — the manager fits on every `showView`, so
+   * without this a switch between two same-sized terminals costs a pointless
+   * IPC round trip each time.
+   */
+  function resizePty(ptyId: string, cols: number, rows: number): void {
+    const next = `${cols}x${rows}`;
+    if (lastSizeByPty.get(ptyId) === next) {
+      return;
+    }
+    lastSizeByPty.set(ptyId, next);
+    void backend.resize(ptyId, cols, rows);
   }
 
   const manager = createLiveConversationTerminals({
@@ -191,7 +256,7 @@ export function createTerminalService(opts: {
       // Input is routed by ownedId, resolved to a PTY id at KEYSTROKE time: the
       // view outlives any single PTY (restart mints a new id), so capturing the
       // id here would send later keystrokes to a dead session.
-      return createView(host, {
+      const view = createView(host, {
         onData(data: string): void {
           const ptyId = ptyByOwned.get(ownedId);
           if (ptyId) {
@@ -201,19 +266,28 @@ export function createTerminalService(opts: {
         onResize(cols: number, rows: number): void {
           const ptyId = ptyByOwned.get(ownedId);
           if (ptyId) {
-            void backend.resize(ptyId, cols, rows);
+            resizePty(ptyId, cols, rows);
           }
         }
       });
+      // Size it here — inside `createTerminal`, i.e. before `ensureView` gets
+      // the chance to write the saved scrollback into it.
+      if (creatingSize && view.resize) {
+        view.resize(creatingSize.cols, creatingSize.rows);
+      }
+      return view;
     },
     writeSession: (sessionId: string, data: string): void => {
       void backend.write(sessionId, data);
     },
     resizeSession: (): void => {
-      // Intentionally empty: `showView` calls `view.fit()` immediately before
-      // this, and fit reports the new geometry through `onResize` above — which
-      // already issues the backend resize with real cols/rows. This dep only
-      // gets a sessionId, so re-sending here would be a duplicate guess.
+      // Intentionally empty, and it MUST stay that way. `showView` calls
+      // `view.fit()` immediately before this, and fit reports the real geometry
+      // through the `onResize` hook above, which funnels into `resizePty` — the
+      // single gatekeeper. This dep only receives a sessionId (no cols/rows),
+      // so anything it sent would be a guess AND a second call for one switch.
+      // The gatekeeper would swallow a duplicate anyway; keeping this empty
+      // means there is exactly one code path that can talk to the backend.
     },
     readScrollback: (sessionId: string): string | null =>
       scrollbackCache.get(sessionId) ?? null
@@ -222,14 +296,20 @@ export function createTerminalService(opts: {
   /** Run `ensureView` with `key` visible to the `createTerminal` closure. */
   function ensureViewFor(
     ownedId: string,
-    options: { host: HTMLElement; sessionId?: string | null }
+    options: {
+      host: HTMLElement;
+      sessionId?: string | null;
+      size?: { cols: number; rows: number } | null;
+    }
   ): TerminalView {
     creatingFor = ownedId;
+    creatingSize = options.size ?? null;
     let view: TerminalView;
     try {
-      view = manager.ensureView(ownedId, options);
+      view = manager.ensureView(ownedId, { host: options.host, sessionId: options.sessionId });
     } finally {
       creatingFor = null;
+      creatingSize = null;
     }
     // The manager auto-shows only the FIRST view, and `showView` only hides
     // views that ALREADY exist — so a view created while another session is
@@ -261,10 +341,19 @@ export function createTerminalService(opts: {
         if (!payload.terminated) {
           return;
         }
-        const ownedId = manager.keyForSession(payload.sessionId);
+        // Resolve through THIS service's map first: it is written in
+        // `startOwned`/`adoptExisting` before a view can possibly exist, so a
+        // PTY that died before (or without) its view was built still reports
+        // its exit. The manager is the fallback for the same reason it is the
+        // fallback everywhere — it only knows sessions that got a view.
+        const ownedId =
+          ownedByPty.get(payload.sessionId) ?? manager.keyForSession(payload.sessionId);
         if (ownedId == null) {
           return;
         }
+        // The PTY is gone: its geometry memo must not survive to suppress a
+        // resize if this ownedId is later restarted onto a new session id.
+        lastSizeByPty.delete(payload.sessionId);
         manager.markTerminated(ownedId);
         // The view and its scrollback stay on screen; flipping session STATE is
         // the store's job (this service only reports the exit).
@@ -290,9 +379,13 @@ export function createTerminalService(opts: {
       return null;
     }
 
-    // Map BEFORE the view exists so the very first keystroke can already route.
+    // Map BEFORE the view exists so the very first keystroke can already route
+    // — and so an exit that beats the view still finds its owned session.
     setPty(owned.ownedId, info.sessionId);
-    ensureViewFor(owned.ownedId, { host });
+    // Seed the gatekeeper with the size the backend actually opened the PTY at,
+    // so a fit that agrees with it sends nothing.
+    lastSizeByPty.set(info.sessionId, `${info.cols}x${info.rows}`);
+    ensureViewFor(owned.ownedId, { host, size: { cols: info.cols, rows: info.rows } });
     // Bind immediately: output for this sessionId starts arriving on the shared
     // listener the moment the process spawns, and an unbound session is dropped.
     manager.bindSession(owned.ownedId, info.sessionId);
@@ -304,12 +397,21 @@ export function createTerminalService(opts: {
     return info.sessionId;
   }
 
-  async function adoptExisting(owned: OwnedSession, host: HTMLElement): Promise<boolean> {
+  async function adoptExisting(
+    owned: OwnedSession,
+    host: HTMLElement,
+    size?: { cols: number; rows: number } | null
+  ): Promise<boolean> {
     const ptyId = owned.ptySessionId;
     if (!ptyId) {
       // Nothing survived: the caller has to `startOwned` instead.
       return false;
     }
+
+    const usableSize =
+      size != null && size.cols > 0 && size.rows > 0
+        ? { cols: Math.trunc(size.cols), rows: Math.trunc(size.rows) }
+        : null;
 
     const scrollback = await backend.readScrollback(ptyId);
     if (scrollback) {
@@ -317,9 +419,16 @@ export function createTerminalService(opts: {
     }
     try {
       setPty(owned.ownedId, ptyId);
+      if (usableSize) {
+        // The PTY is ALREADY this size — record it before anything can fit, so
+        // the first show of an unchanged view issues no backend resize.
+        lastSizeByPty.set(ptyId, `${usableSize.cols}x${usableSize.rows}`);
+      }
       // `sessionId` here makes the manager hydrate the new view from the cache
-      // above (its readScrollback dep is synchronous, hence the staging map).
-      ensureViewFor(owned.ownedId, { host, sessionId: ptyId });
+      // above (its readScrollback dep is synchronous, hence the staging map);
+      // `size` is applied to the view first, so the replay wraps at the same
+      // width the PTY wrote it at even though this host may be hidden.
+      ensureViewFor(owned.ownedId, { host, sessionId: ptyId, size: usableSize });
       manager.bindSession(owned.ownedId, ptyId);
       if (owned.state === 'exited') {
         // A tombstone: the PTY is gone but the backend still holds its final
@@ -355,6 +464,9 @@ export function createTerminalService(opts: {
     const ptyId = mapped ?? (hintUsable ? ptySessionIdHint : null);
     // Drop the mapping first so a concurrent close can't double-kill the PTY.
     ptyByOwned.delete(ownedId);
+    if (mapped) {
+      forgetPty(mapped);
+    }
     manager.closeView(ownedId);
     // Read the successor BEFORE the awaited close: the manager already picked
     // and showed it inside `closeView`, and the caller must adopt that choice
@@ -382,6 +494,11 @@ export function createTerminalService(opts: {
     unlisten = null;
     manager.disposeAll();
     ptyByOwned.clear();
+    ownedByPty.clear();
+    // The PTYs live on but the VIEWS do not: the next mount rebuilds them from
+    // scratch, and a remembered size would suppress the resize that new view
+    // legitimately needs.
+    lastSizeByPty.clear();
     scrollbackCache.clear();
   }
 

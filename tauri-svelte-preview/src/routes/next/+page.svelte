@@ -2,16 +2,12 @@
   /**
    * /next — the Slice 1 shell orchestrator.
    *
-   * Thin by construction: it owns NO terminal state (that is `terminalService`)
-   * and NO rail state (that is `sessionRailStore`). It wires the two together
-   * and performs IO **only inside explicit functions** — never in an `$effect`.
+   * Thin by construction: NO terminal state (that is `terminalService`), NO rail
+   * state (`sessionRailStore`); IO **only in explicit functions**, no `$effect`.
    * Launch IO is deliberately tiny (the constitution's rule): list surviving
    * PTYs, reconcile them against the stored owned sessions, re-attach them
    * (live ones AND tombstones), scan for resumable agents. No LSP, no git, no
-   * source scan. Two easy-to-miss ordering obligations: `hydrateOwned` runs
-   * AFTER `reconcileOwnedSessions` (it persists exactly what it is given), and
-   * `startOwned`'s returned PTY id is written back with `updateOwnedSession` —
-   * reload re-attach reads it out of localStorage.
+   * source scan. Ordering: `hydrateOwned` runs AFTER `reconcileOwnedSessions`.
    */
   import { onMount, tick } from 'svelte';
 
@@ -37,13 +33,16 @@
     type AgentSession
   } from '$lib/tauriSource';
 
-  /**
-   * Hosts land before the service is ready (TerminalSurface mounts them from the
-   * store, the service finishes async init later): parked here, drained later.
-   */
+  /** Hosts mount before the service finishes async init: parked here, drained later. */
   const pendingHosts = new Map<string, HTMLElement>();
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
   const awaitingReattach = new Set<string>();
+  /**
+   * ptySessionId -> the PTY's REAL grid, from the launch `backend.list()`, fed
+   * to `adoptExisting`: a survivor re-attached into a HIDDEN host cannot be
+   * measured, so without it the view keeps 80x24 and the replay wraps wrong.
+   */
+  const livePtySizes = new Map<string, { cols: number; rows: number }>();
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
@@ -105,7 +104,8 @@
     const host = pendingHosts.get(ownedId);
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
     if (!host || !session) return;
-    const attached = await service.adoptExisting(session, host);
+    const size = session.ptySessionId ? (livePtySizes.get(session.ptySessionId) ?? null) : null;
+    const attached = await service.adoptExisting(session, host, size);
     if (!attached) {
       updateOwnedSession(ownedId, { state: 'exited', ptySessionId: null });
       return;
@@ -142,12 +142,10 @@
 
   /**
    * EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
-   * rejects — it reports `{ successor, error }` — so even a failed backend
-   * close hands back the terminal the manager left visible instead of blanking
-   * the surface behind the opaque empty-state overlay. The row is dropped
-   * either way (view + PTY mapping are already gone; keeping it would only make
-   * it undismissable), and `removeOwnedSession` clears `activeOwnedId` when it
-   * was this row — so the overlay is truthful if no successor is adopted.
+   * rejects — it reports `{ successor, error }` — so even a failed close hands
+   * back the terminal the manager left visible instead of blanking the surface
+   * behind the empty-state overlay. The row is dropped either way (view + PTY
+   * mapping are already gone; keeping it would only make it undismissable).
    */
   async function closeOwned(ownedId: string): Promise<void> {
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
@@ -186,10 +184,11 @@
         // Rail hydration — the ONLY launch IO (constitution).
         const live = (await backend.list()) ?? [];
         if (disposed) return;
+        for (const i of live) livePtySizes.set(i.sessionId, { cols: i.cols, rows: i.rows });
         const { owned, reattachable } = reconcileOwnedSessions(loadStoredOwned(), live);
         // Tombstones (exited, backend record still there) are re-attached too:
-        // that renders their final scrollback AND registers the PTY id, so
-        // dismissing the row reaps it. Live survivors first, so one wins focus.
+        // that renders their final scrollback AND registers the PTY id, so the
+        // row reaps it on dismiss. Live survivors first, so one wins focus.
         const attachable = [
           ...reattachable,
           ...owned.filter((entry) => entry.state === 'exited' && entry.ptySessionId)
@@ -215,6 +214,7 @@
       service = null;
       pendingHosts.clear();
       awaitingReattach.clear();
+      livePtySizes.clear();
     };
   });
 </script>

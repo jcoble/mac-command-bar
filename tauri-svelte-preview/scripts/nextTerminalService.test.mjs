@@ -5,14 +5,35 @@ import { createTerminalService } from '../src/lib/shell/terminalService.ts';
  * Spy TerminalView — every method appends to the shared `log` so a test can
  * assert on the exact IO the service performed. No xterm, no DOM.
  */
-function makeView(log, name) {
-  return {
+function makeView(log, name, opts = {}) {
+  // `cols`/`rows` mirror a real xterm grid: `resize` sets it outright (works
+  // while hidden), `fit` adopts whatever the host measures — which the test
+  // supplies as `fitTo`, defaulting to "the grid never changes".
+  const view = {
+    cols: 80,
+    rows: 24,
     write: (d) => log.push([name, 'write', d]),
-    fit: () => log.push([name, 'fit']),
+    fit: () => {
+      const fitTo = opts.fitTo ?? null;
+      if (fitTo) {
+        view.cols = fitTo.cols;
+        view.rows = fitTo.rows;
+      }
+      log.push([name, 'fit', view.cols, view.rows]);
+      opts.hooks?.onResize(view.cols, view.rows);
+    },
     focus: () => log.push([name, 'focus']),
     setVisible: (v) => log.push([name, 'visible', v]),
     dispose: () => log.push([name, 'dispose'])
   };
+  if (opts.noResize !== true) {
+    view.resize = (cols, rows) => {
+      view.cols = cols;
+      view.rows = rows;
+      log.push([name, 'resize', cols, rows]);
+    };
+  }
+  return view;
 }
 
 /**
@@ -363,6 +384,170 @@ const ownedA = {
   const again = await svc.closeOwned('a');
   assert.equal(log.filter((e) => e[0] === 'close').length, before, 'no retry, no double-kill');
   assert.equal(again.error, null, 'and a no-op close reports no error');
+}
+
+{
+  // F1: a PTY whose VIEW could not be built must still report its exit.
+  // `setPty` runs before `ensureViewFor`, so the service knows the owner even
+  // when the manager never got a record — resolving the exit only through the
+  // manager left the rail row "live" over a dead process, forever.
+  const log = [];
+  const { backend, emit } = makeBackend(log);
+  const exits = [];
+  const svc = createTerminalService({
+    backend,
+    createView: () => {
+      throw new Error('xterm failed to open');
+    },
+    onExit: (ownedId, payload) => exits.push([ownedId, payload.exitCode])
+  });
+  await svc.attach();
+  await assert.rejects(
+    () => svc.startOwned({ ...ownedA, ownedId: 'orphan', resumeCommand: null }, {}),
+    /xterm failed to open/,
+    'a view that cannot be built still surfaces the failure to the caller'
+  );
+  emit({ sessionId: 'pty-1', data: '', terminated: true, exitCode: 3, signal: null });
+  assert.deepEqual(exits, [['orphan', 3]], 'the exit is reported from the service PTY map');
+
+  // ...and once the session is closed, its PTY is nobody's business again.
+  await svc.closeOwned('orphan');
+  emit({ sessionId: 'pty-1', data: '', terminated: true, exitCode: 3, signal: null });
+  assert.equal(exits.length, 1, 'a closed session does not report a late exit');
+}
+
+{
+  // F2: switching between two SAME-SIZED views must cost zero backend calls.
+  // `showView` fits on every switch and the fit reports geometry every time, so
+  // an ungated hook spent one `resize_terminal_session` per switch forever.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const views = new Map();
+  // Every host measures the SAME pane — the steady state a user switching back
+  // and forth actually lives in. Mutating it later simulates a window resize.
+  const pane = { cols: 120, rows: 40 };
+  const svc = createTerminalService({
+    backend,
+    createView: (host, hooks) => {
+      const name = `g${views.size + 1}`;
+      const view = makeView(log, name, { hooks, fitTo: pane });
+      views.set(name, view);
+      return view;
+    }
+  });
+  await svc.attach();
+  await svc.startOwned({ ...ownedA, ownedId: 'a', resumeCommand: null }, {});
+  await svc.startOwned({ ...ownedA, ownedId: 'b', resumeCommand: null }, {});
+  svc.show('a');
+  svc.show('b');
+  const settled = log.filter((e) => e[0] === 'resize').length;
+  // Each PTY opened at 96x28 and the pane is 120x40, so exactly one resize per
+  // session is legitimate — after that the size is known.
+  assert.equal(settled, 2, 'one resize per session while its size actually changes');
+
+  const before = log.length;
+  svc.show('a');
+  svc.show('b');
+  svc.show('a');
+  svc.show('b');
+  assert.equal(
+    log.slice(before).filter((e) => e[0] === 'resize').length,
+    0,
+    'steady-state switching between same-sized views issues NO backend resize'
+  );
+  assert.ok(
+    log.slice(before).some((e) => e[1] === 'fit'),
+    'the views are still fitted — the gate is on the backend call, not on fit'
+  );
+  assert.equal(
+    log.slice(before).filter((e) => e[0] === 'write' || e[0] === 'close' || e[0] === 'start')
+      .length,
+    0,
+    'and a switch performs no other backend IO'
+  );
+
+  // A pane that GENUINELY changes size still reaches the backend.
+  pane.cols = 100;
+  pane.rows = 30;
+  const beforeGrow = log.length;
+  svc.show('a');
+  assert.deepEqual(
+    log.slice(beforeGrow).filter((e) => e[0] === 'resize'),
+    [['resize', 'pty-1', 100, 30]],
+    'a real geometry change is not swallowed by the gatekeeper'
+  );
+}
+
+{
+  // F3: a survivor re-attached into a HIDDEN host must be sized to the PTY's
+  // real grid BEFORE its scrollback is written, or the replay wraps at 80 cols.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({
+    backend,
+    createView: (host, hooks) => makeView(log, 'hidden', { hooks })
+  });
+  await svc.attach();
+  await svc.adoptExisting(
+    { ...ownedA, ownedId: 'r', ptySessionId: 'pty-live' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  const order = log.filter((e) => e[0] === 'hidden').map((e) => e[1]);
+  assert.deepEqual(
+    order.slice(0, 2),
+    ['resize', 'write'],
+    'the view is sized BEFORE the hydrating write — order is the whole fix'
+  );
+  assert.deepEqual(
+    log.find((e) => e[0] === 'hidden' && e[1] === 'resize'),
+    ['hidden', 'resize', 146, 46],
+    'and it is sized to the PTY geometry the backend reported'
+  );
+
+  // The PTY is already that size, so showing it later costs nothing.
+  const before = log.length;
+  svc.show('r');
+  assert.equal(
+    log.slice(before).filter((e) => e[0] === 'resize').length,
+    0,
+    'the adopted size seeds the gatekeeper: the first show is free'
+  );
+}
+
+{
+  // F3b: no size, or a view with no `resize` method, must still work — the
+  // TerminalView member is OPTIONAL, so neither may throw.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({
+    backend,
+    createView: () => makeView(log, 'plain', { noResize: true })
+  });
+  await svc.attach();
+  const ok = await svc.adoptExisting(
+    { ...ownedA, ownedId: 'p', ptySessionId: 'pty-live' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  assert.equal(ok, true, 'a view without resize() still adopts');
+  assert.ok(
+    log.some((e) => e[0] === 'plain' && e[1] === 'write' && e[2] === 'OLD OUTPUT'),
+    'and is still hydrated'
+  );
+
+  const log2 = [];
+  const second = makeBackend(log2);
+  const svc2 = createTerminalService({
+    backend: second.backend,
+    createView: () => makeView(log2, 'nosize')
+  });
+  await svc2.attach();
+  await svc2.adoptExisting({ ...ownedA, ownedId: 'q', ptySessionId: 'pty-live' }, {});
+  assert.ok(
+    !log2.some((e) => e[0] === 'nosize' && e[1] === 'resize'),
+    'no size supplied = no forced resize'
+  );
 }
 
 console.log('terminalService tests passed');

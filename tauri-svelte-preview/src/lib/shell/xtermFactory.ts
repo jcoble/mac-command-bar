@@ -189,6 +189,20 @@ export function makeTerminalView(
       hooks.onResize(terminal.cols, terminal.rows);
     },
 
+    resize(cols: number, rows: number): void {
+      // Works while the host is `display: none` — xterm's own resize does not
+      // measure the DOM, which is exactly why this exists alongside `fit()`.
+      // A hidden host has zero width, so `fit()` silently leaves the grid at
+      // 80x24 and replayed scrollback wraps at the wrong column.
+      if (disposed || !Number.isFinite(cols) || !Number.isFinite(rows)) return;
+      if (cols < 1 || rows < 1) return;
+      try {
+        terminal.resize(Math.trunc(cols), Math.trunc(rows));
+      } catch {
+        // Bad geometry from a stale backend record: keep the current grid.
+      }
+    },
+
     focus(): void {
       terminal.focus();
     },

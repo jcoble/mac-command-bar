@@ -21,6 +21,17 @@ export type TerminalView = {
   fit(): void;
   focus(): void;
   setVisible(visible: boolean): void;
+  /**
+   * OPTIONAL: force the view's grid to an exact size, independent of its host's
+   * measured geometry. `fit()` cannot do this — it measures the DOM, so a view
+   * whose host is hidden (zero-sized) keeps the default 80x24 and any replayed
+   * scrollback wraps at the wrong width. The owner uses this to match a
+   * surviving PTY's real cols/rows BEFORE hydrating it.
+   *
+   * Optional by design: the manager never calls it, and a view that cannot
+   * resize independently simply omits it.
+   */
+  resize?(cols: number, rows: number): void;
   dispose(): void;
 };
 
