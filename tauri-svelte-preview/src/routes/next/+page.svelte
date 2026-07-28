@@ -1,18 +1,32 @@
 <script lang="ts">
   /**
-   * /next — the Slice 1 shell orchestrator. Thin by construction: NO terminal
-   * state (`terminalService`), NO rail state (`sessionRailStore`); IO **only in
-   * explicit functions**, no `$effect`. Launch IO is tiny by rule: list surviving
-   * PTYs, reconcile them against the stored owned sessions, re-attach them (live
-   * AND tombstones), scan for resumable agents. No LSP, no git, no source scan.
-   * `hydrateOwned` runs AFTER `reconcileOwnedSessions`.
+   * /next — the shell orchestrator. Thin by construction: it owns the terminal
+   * sessions and nothing else. Every other panel brings its own state and its
+   * own loader; this page only says which project they are pointed at and when
+   * they may start — see `shellPanels.ts` and `panelActivation.ts`.
+   *
+   * IO lives **only in explicit functions**, never in an `$effect`. Launch IO is
+   * still just the rail: list surviving PTYs, reconcile them against the stored
+   * owned sessions, re-attach them (live AND tombstones), scan for resumable
+   * agents. `hydrateOwned` runs AFTER `reconcileOwnedSessions`.
    */
   import { onMount, tick } from 'svelte';
 
-  import SessionRail from '$lib/shell/components/SessionRail.svelte';
+  import '$lib/shell/styles/nextTokens.css';
+
+  import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
+  import ContextPanel from '$lib/shell/components/ContextPanel.svelte';
+  import DockPanel from '$lib/shell/components/DockPanel.svelte';
+  import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
+  import GitPanel from '$lib/shell/components/GitPanel.svelte';
+  import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
+  import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
+  import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
   import TerminalSurface from '$lib/shell/components/TerminalSurface.svelte';
-  import { countInvoke, invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
+  import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
+  import { registerShellCommands } from '$lib/shell/shellCommands';
+  import { shellPanels } from '$lib/shell/shellPanels';
   import {
     addOwnedSession,
     hydrateOwned,
@@ -42,6 +56,29 @@
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
+  let frameControls: {
+    resetLayout: () => void;
+    showCenterPanel: (id: string) => void;
+  } | null = null;
+  let refitScheduled = false;
+  /** Its own state, NOT `rail.error`: ShellFrame mounts before this page's
+   * start-up, and `scanRail` clears `rail.error` — which would erase a mount
+   * failure on every launch and leave a blank shell with no message. */
+  let layoutError = $state<string | null>(null);
+
+  /** Palette actions for the panels. Pure bookkeeping — nothing runs until the
+   * user picks one — so it belongs here at component init, not in an effect. */
+  registerShellCommands({ showPanel: (id) => frameControls?.showCenterPanel(id) });
+
+  /** Coalesce dockview's layout bursts into one refit per frame. */
+  function scheduleRefit(): void {
+    if (refitScheduled) return;
+    refitScheduled = true;
+    requestAnimationFrame(() => {
+      refitScheduled = false;
+      service?.refit();
+    });
+  }
 
   function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -114,6 +151,10 @@
   async function selectOwned(ownedId: string): Promise<void> {
     setActiveOwned(ownedId);
     service?.show(ownedId);
+    // Point the file tree, the context cards and any tab the user has already
+    // opened at this session's project. Ignored while start-up is still
+    // re-attaching sessions, so a reload still loads nothing on its own.
+    shellPanels.sessionPicked();
   }
 
   /** EXPLICIT IO: adopt a scanned session, spawn its PTY, replay the resume command. */
@@ -204,6 +245,11 @@
         }
       } catch (error) {
         if (!disposed) rail.error = `shell start-up failed: ${describeError(error)}`;
+      } finally {
+        // Launch is over — including when it failed, or the file tree and the
+        // context cards would never load again. From here, a session being
+        // selected is the user's doing and those panels may follow it.
+        if (!disposed) shellPanels.allowSessionLoads();
       }
     })();
 
@@ -223,78 +269,66 @@
   <title>CommandBar · next</title>
 </svelte:head>
 
+<!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
+     shadow the imported `rail` store and break every `rail.owned` read. -->
+{#snippet railArea()}
+  <ShellSidebar
+    owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
+    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeOwned}
+    onRescan={scanRail}
+  />
+{/snippet}
+{#snippet contextArea()}
+  <ContextPanel />
+{/snippet}
+{#snippet dockArea()}
+  <DockPanel onReset={() => frameControls?.resetLayout()} />
+{/snippet}
+{#snippet sessionArea()}
+  <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
+{/snippet}
+{#snippet editorArea()}
+  <EditorPanel />
+{/snippet}
+{#snippet gitArea()}
+  <GitPanel />
+{/snippet}
+{#snippet browserArea()}
+  <BrowserPanel />
+{/snippet}
+
 <main class="next-shell">
-  <aside class="next-rail">
-    <SessionRail
-      owned={rail.owned}
-      available={rail.available}
-      activeOwnedId={rail.activeOwnedId}
-      scanning={rail.scanning}
-      onSelect={selectOwned}
-      onAdopt={adopt}
-      onClose={closeOwned}
-      onRescan={scanRail}
-    />
-  </aside>
+  <ShellFrame
+    rail={railArea} context={contextArea} dock={dockArea}
+    center={{ session: sessionArea, editor: editorArea, git: gitArea, browser: browserArea }}
+    onSessionPanelLayout={scheduleRefit}
+    onCenterPanelShown={(id) => shellPanels.panelShown(id)}
+    onReady={(controls) => {
+      frameControls = controls;
+      // One timer tick later: the tab area announces the tab it restored
+      // through a microtask, and those all arrive before any timer. Waiting
+      // means a restored tab loads nothing, while a real click still does.
+      setTimeout(() => shellPanels.allowPanelLoads(), 0);
+    }}
+    onError={(message) => (layoutError = `layout failed: ${message}`)}
+  />
 
-  <section class="next-main">
-    <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
-  </section>
-
-  {#if rail.error}
-    <footer class="next-error">{rail.error}</footer>
-  {/if}
-
-  {#if import.meta.env.DEV}
-    <footer class="invoke-counter">invokes: {invokeCounts.total} (+{invokeCounts.input} input)</footer>
-  {/if}
+  <ShellOverlays
+    onResetLayout={() => frameControls?.resetLayout()}
+    onRescanSessions={scanRail}
+    message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
+  />
 </main>
 
 <style>
+  /* ShellFrame owns the geometry now, but it still needs a definite height to
+     measure against — at 0x0 the grid mounts and renders nothing. */
   .next-shell {
     position: relative;
-    display: grid;
-    grid-template-columns: 264px 1fr;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
     background: #101014;
     color: #d8d8e0;
-  }
-
-  .next-rail {
-    min-width: 0;
-    border-right: 1px solid #22222c;
-    overflow: hidden;
-  }
-
-  .next-main {
-    min-width: 0;
-    height: 100%;
-    overflow: hidden;
-  }
-
-  .next-error,
-  .invoke-counter {
-    position: absolute;
-    bottom: 8px;
-    border-radius: 5px;
-    font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
-    padding: 3px 8px;
-    pointer-events: none;
-  }
-
-  .next-error {
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(255, 85, 85, 0.16);
-    color: #ff9d9d;
-  }
-
-  .invoke-counter {
-    right: 10px;
-    background: rgba(16, 16, 20, 0.82);
-    color: #6d6d7d;
   }
 </style>

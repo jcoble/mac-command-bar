@@ -79,6 +79,19 @@ const fakeHost = (id) => ({ __host: id });
   assert.equal(manager.hasView('zzz'), false);
 }
 
+// --- viewFor hands back an EXISTING view and never builds one ---
+{
+  const harness = createHarness();
+  const { manager } = harness;
+  assert.equal(manager.viewFor('a'), null, 'viewFor is null before the view exists');
+  assert.equal(harness.createCalls, 0, 'and asking must not build one');
+  const view = manager.ensureView('a', { host: fakeHost('a') });
+  assert.equal(manager.viewFor('a'), view, 'viewFor returns the view ensureView created');
+  assert.equal(harness.createCalls, 1, 'and still creates nothing of its own');
+  manager.closeView('a');
+  assert.equal(manager.viewFor('a'), null, 'a closed key has no view again');
+}
+
 // --- first view created becomes active when none is active ---
 {
   const { manager } = createHarness();

@@ -816,4 +816,79 @@ const ownedA = {
   );
 }
 
+{
+  // S2-1: refit() is safe to call at ANY time. The layout frame wires it to a
+  // ResizeObserver, which fires while the shell is still starting up, after the
+  // last session is closed, and once more on teardown — none of which may
+  // throw, create a view, or reach the backend.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'never') });
+  assert.doesNotThrow(() => svc.refit(), 'refit before attach does nothing');
+  await svc.attach();
+  assert.doesNotThrow(() => svc.refit(), 'refit with no session does nothing');
+  assert.ok(!log.some((e) => e[0] === 'never'), 'refit never creates a view');
+  assert.equal(log.filter((e) => e[0] === 'resize').length, 0, 'and never talks to the backend');
+
+  await svc.startOwned({ ...ownedA, ownedId: 'a', resumeCommand: null }, {});
+  svc.dispose();
+  const after = log.length;
+  assert.doesNotThrow(() => svc.refit(), 'refit after dispose does nothing');
+  assert.equal(log.slice(after).length, 0, 'a disposed service performs no IO at all');
+}
+
+{
+  // S2-2: refit() re-measures the ACTIVE view and nothing else, and a fit that
+  // reports the geometry the PTY already has is swallowed by the same resize
+  // gate every other fit goes through — so a resize storm cannot reach the
+  // backend no matter how often the observer fires.
+  const log = [];
+  const { backend } = makeBackend(log);
+  // The mock backend opens every PTY at 96x28, so a pane of exactly that size
+  // is the steady state: refitting there changes nothing worth sending.
+  const pane = { cols: 96, rows: 28 };
+  let created = 0;
+  const svc = createTerminalService({
+    backend,
+    createView: (_host, hooks) => makeView(log, `r${(created += 1)}`, { hooks, fitTo: pane })
+  });
+  await svc.attach();
+  await svc.startOwned({ ...ownedA, ownedId: 'a', resumeCommand: null }, {});
+  await svc.startOwned({ ...ownedA, ownedId: 'b', resumeCommand: null }, {});
+  svc.show('a');
+
+  const before = log.length;
+  svc.refit();
+  const since = log.slice(before);
+  assert.deepEqual(
+    since.filter((e) => e[0] === 'r1'),
+    [['r1', 'fit', 96, 28]],
+    'the active view is refitted, and only refitted'
+  );
+  assert.equal(since.filter((e) => e[0] === 'r2').length, 0, 'the hidden view is left alone');
+  assert.equal(
+    since.filter((e) => e[0] === 'resize').length,
+    0,
+    'unchanged geometry: the gate swallows the resize'
+  );
+
+  // A pane that GENUINELY changed size still reaches the backend — exactly once.
+  pane.cols = 100;
+  pane.rows = 30;
+  const beforeGrow = log.length;
+  svc.refit();
+  svc.refit();
+  assert.deepEqual(
+    log.slice(beforeGrow).filter((e) => e[0] === 'resize'),
+    [['resize', 'pty-1', 100, 30]],
+    'one backend resize for a real change; the repeat refit sends nothing'
+  );
+  assert.equal(
+    log.slice(beforeGrow).filter((e) => e[0] === 'write' || e[0] === 'start' || e[0] === 'close')
+      .length,
+    0,
+    'and a refit performs no other backend IO'
+  );
+}
+
 console.log('terminalService tests passed');

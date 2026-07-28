@@ -69,6 +69,13 @@ export type LiveConversationTerminalRecord = {
 
 export type LiveConversationTerminals = {
   ensureView(key: string, opts: EnsureViewOptions): TerminalView;
+  /**
+   * The EXISTING view for `key`, or `null` when there is none. Read-only on
+   * purpose: unlike `ensureView` it never builds a view, so a caller that just
+   * wants to talk to a terminal that is already on screen cannot accidentally
+   * conjure one for a key that has none.
+   */
+  viewFor(key: string): TerminalView | null;
   showView(key: string): void;
   activeKey(): string | null;
   liveKeys(): string[];
@@ -159,6 +166,10 @@ export function createLiveConversationTerminals(
     }
 
     return view;
+  }
+
+  function viewFor(key: string): TerminalView | null {
+    return records.get(key)?.view ?? null;
   }
 
   function showView(key: string): void {
@@ -293,6 +304,7 @@ export function createLiveConversationTerminals(
 
   return {
     ensureView,
+    viewFor,
     showView,
     activeKey,
     liveKeys,

@@ -1,0 +1,225 @@
+<script lang="ts">
+  /**
+   * PalettePanel.svelte — the command palette host for /next.
+   *
+   * It owns only the palette's own state (shown/hidden, search text, highlighted
+   * row) and the keyboard shortcuts that open it. The rows come from the shared
+   * action list in `commandRegistry.ts`, and the drawing is done by the existing
+   * `CommandPaletteOverlay`, reused unchanged.
+   *
+   * It is a page-level overlay, not a dock panel: it renders nothing at all while
+   * closed, does no work until the user opens it, and never calls the backend. The
+   * only actions it can run are the ones other parts of the shell have registered.
+   *
+   * Shortcuts: Cmd+K (Ctrl+K) and Cmd+Shift+P (Ctrl+Shift+P) open it, Escape closes
+   * it. Arrow keys move the highlight, Enter runs the highlighted action.
+   */
+  import { onDestroy } from 'svelte';
+
+  import CommandPaletteOverlay from '$lib/components/overlays/CommandPaletteOverlay.svelte';
+  import {
+    filterCommands,
+    registerCommands,
+    runPaletteCommand,
+    type PaletteCommandRow
+  } from '$lib/shell/palette/commandRegistry';
+
+  interface Props {
+    /** Put every panel back to its starting position. Omitted: the row is greyed out. */
+    onResetLayout?: () => void;
+    /** Look again for agent sessions that can be taken over. */
+    onRescanSessions?: () => void | Promise<void>;
+    /** Open the settings dialog. */
+    onOpenSettings?: () => void;
+  }
+
+  let { onResetLayout, onRescanSessions, onOpenSettings }: Props = $props();
+
+  let visible = $state(false);
+  let query = $state('');
+  let index = $state(0);
+  /** Bumped on every open so the rows are read from the action list again — other
+   *  panels may have added actions since the last time the palette was open. */
+  let openCount = $state(0);
+  /** Shown briefly when a chosen action fails; the palette itself is gone by then. */
+  let failure = $state<string | null>(null);
+
+  /** The rows for the current search. Nothing is computed while the palette is closed. */
+  let rows = $derived.by<PaletteCommandRow[]>(() => {
+    void openCount; // re-read the action list on every open
+    if (!visible) return [];
+    return filterCommands(query);
+  });
+
+  /** The highlight can never point past the end of a shrinking result list. */
+  let activeIndex = $derived(Math.min(index, Math.max(0, rows.length - 1)));
+
+  function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /** Show the palette with an empty search. Safe to call when it is already open. */
+  export function open(): void {
+    visible = true;
+    query = '';
+    index = 0;
+    failure = null;
+    openCount += 1;
+  }
+
+  export function close(): void {
+    visible = false;
+    query = '';
+    index = 0;
+  }
+
+  async function choose(row: PaletteCommandRow): Promise<void> {
+    if (row.disabled) return;
+    close();
+    try {
+      await runPaletteCommand(row);
+    } catch (error) {
+      failure = `${row.label} did not finish: ${describeError(error)}`;
+    }
+  }
+
+  /** The overlay hands back the row it drew; find ours again by id and run it. */
+  function chooseById(id: string): Promise<void> {
+    const row = rows.find((candidate) => candidate.id === id);
+    return row ? choose(row) : Promise.resolve();
+  }
+
+  /** Arrow/Enter/Escape handling for the search field. */
+  function handleKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      index = Math.min(activeIndex + 1, Math.max(0, rows.length - 1));
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      index = Math.max(activeIndex - 1, 0);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const row = rows[activeIndex];
+      if (row && !row.disabled) void choose(row);
+    }
+  }
+
+  /** The open shortcuts, kept the same as the old shell's. */
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+
+    if ((event.metaKey || event.ctrlKey) && (key === 'k' || (event.shiftKey && key === 'p'))) {
+      event.preventDefault();
+      open();
+      return;
+    }
+
+    // Escape also closes the palette when the focus has drifted off its input.
+    if (visible && event.key === 'Escape') {
+      event.preventDefault();
+      close();
+    }
+  }
+
+  // The three actions the shell itself offers. They are registered once, under one
+  // name, so mounting the palette twice would still leave a single copy of each.
+  const removeShellCommands = registerCommands('shell', [
+    {
+      id: 'reset-layout',
+      label: 'Reset layout',
+      detail: 'Put every panel back to its starting position',
+      disabled: () => onResetLayout == null,
+      perform: () => onResetLayout?.()
+    },
+    {
+      id: 'rescan-sessions',
+      label: 'Look for agent sessions',
+      detail: 'Check again for agent sessions you can take over',
+      disabled: () => onRescanSessions == null,
+      perform: () => onRescanSessions?.()
+    },
+    {
+      id: 'open-settings',
+      label: 'Open settings',
+      detail: 'Fonts, terminal and appearance',
+      disabled: () => onOpenSettings == null,
+      perform: () => onOpenSettings?.()
+    }
+  ]);
+
+  onDestroy(removeShellCommands);
+</script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
+
+{#if visible}
+  <CommandPaletteOverlay
+    {visible}
+    bind:query
+    index={activeIndex}
+    commands={rows}
+    onKeydown={handleKeydown}
+    onSelect={(item) => void chooseById(item.id)}
+    onClose={close}
+  />
+{/if}
+
+{#if failure}
+  <div class="palette-failure" role="status">
+    <span>{failure}</span>
+    <button type="button" onclick={() => (failure = null)}>Dismiss</button>
+  </div>
+{/if}
+
+<style>
+  /* Shown after the palette has closed, so it is styled on its own in the /next
+     palette rather than inside the reused overlay. */
+  .palette-failure {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(560px, calc(100vw - 32px));
+    padding: 6px 8px 6px 12px;
+    border: 1px solid #22222c;
+    border-radius: 7px;
+    background: #17171d;
+    color: #d8d8e0;
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+  }
+
+  .palette-failure button {
+    flex: none;
+    padding: 2px 8px;
+    border: 1px solid #22222c;
+    border-radius: 5px;
+    background: transparent;
+    color: #6d6d7d;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .palette-failure button:hover {
+    color: #d8d8e0;
+    border-color: #3a3a48;
+  }
+</style>

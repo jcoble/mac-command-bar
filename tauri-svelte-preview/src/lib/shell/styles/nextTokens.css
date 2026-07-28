@@ -1,0 +1,122 @@
+/* ============================================================
+ * nextTokens.css — the /next shell's colors, expressed in the
+ * SAME token names the shared UI kit already reads.
+ *
+ * WHY THIS FILE EXISTS
+ * The shared components (Dialog, Tabs, Select, Slider, Switch,
+ * Button — and therefore SettingsPanel) are painted entirely
+ * from the `--color-*` / `--shadow-*` names defined in
+ * `src/lib/styles/tokens.css`. That file is loaded for the whole
+ * app and carries the OLD shell's palette (#17191e greys), which
+ * is shared with the old page and must not change. So instead of
+ * restyling those components, this file re-points the same names
+ * at the /next palette wherever the /next shell is on screen.
+ * Drop a shared component into /next and it comes out in the
+ * /next colors with no edits.
+ *
+ * WHERE IT APPLIES (both selectors are needed)
+ *   .next-shell               — the shell element and everything
+ *                               rendered inside it.
+ *   :root:has(.next-shell)    — the whole document while the /next
+ *                               shell is mounted. Dialogs, menus
+ *                               and popovers from bits-ui are moved
+ *                               ("portaled") to the end of <body>,
+ *                               OUTSIDE .next-shell, so a rule
+ *                               scoped to .next-shell alone would
+ *                               never reach the settings dialog.
+ *                               /next and the old page are separate
+ *                               routes and never mounted together,
+ *                               so this cannot recolor the old shell.
+ * The two are written as one `:is(...)` list on purpose: `:is()`
+ * quietly drops any part a browser does not understand, so on an
+ * engine without `:has()` the `.next-shell` part still works.
+ *
+ * SCOPE: colors and elevation only. Spacing, font sizes, weights
+ * and radii are identical in both shells and keep coming from
+ * tokens.css — this file deliberately does not restate them.
+ * Every name below already exists in tokens.css; nothing new is
+ * invented here.
+ * ============================================================ */
+
+:is(:root:has(.next-shell), .next-shell) {
+  /* ------------------------------------------------------------------
+   * Background layers — the /next shell's three depths.
+   *   bg      the shell backdrop, same value the /next page and the
+   *           dock already paint with (#101014).
+   *   surface a raised sheet: panel bodies, the active dock tab
+   *           (#17171d, matching the dock's active-tab color).
+   *   elevated one step above a sheet: hover fills, pressed rows.
+   *           Sits between surface and border so a hover reads on
+   *           both. Derived for /next; the old palette used a
+   *           translucent white, which washes out on near-black.
+   * ------------------------------------------------------------------ */
+  --color-bg:       #101014;
+  --color-surface:  #17171d;
+  --color-elevated: #1f1f27;
+
+  /* ------------------------------------------------------------------
+   * Text hierarchy — primary, secondary, and the faint third tier
+   * used for hints and disabled labels.
+   * ------------------------------------------------------------------ */
+  --color-text:   #d8d8e0;
+  --color-text-2: #6d6d7d;
+  --color-text-3: #4c4c5a;
+
+  /* ------------------------------------------------------------------
+   * Accent, hairlines and the focus tint.
+   * Accent and focus are carried over unchanged from tokens.css —
+   * the mint reads well on near-black and keeps one accent across
+   * both shells. The hairline is the /next border (#22222c), the
+   * same line the dock draws between groups.
+   * ------------------------------------------------------------------ */
+  --color-accent: #4bf3c8;
+  --color-border: #22222c;
+  --color-focus:  rgba(75, 243, 200, 0.45);
+
+  /* ------------------------------------------------------------------
+   * Status tones — copied unchanged from tokens.css so a running
+   * session, a passing check and a failure look the same in both
+   * shells. Only the idle tone is nudged brighter: a 12% white on
+   * #101014 is nearly invisible.
+   * ------------------------------------------------------------------ */
+  --color-live:      #4bf3c8;
+  --color-good:      #8bdc9b;
+  --color-bad:       #ff6d91;
+  --color-attention: #ffd493;
+  --color-idle:      rgba(255, 255, 255, 0.16);
+
+  /* ------------------------------------------------------------------
+   * Derived color — text printed on top of the accent, plus the
+   * translucent status fills. Copied unchanged from tokens.css;
+   * they are tints of the status tones above and land correctly on
+   * the darker background without adjustment.
+   * ------------------------------------------------------------------ */
+  --color-on-accent:     #0e1013;
+  --color-live-bg:       rgba(75, 243, 200, 0.12);
+  --color-good-bg:       rgba(139, 220, 155, 0.12);
+  --color-bad-bg:        rgba(255, 109, 145, 0.12);
+  --color-bad-bg-strong: rgba(255, 109, 145, 0.20);
+  --color-attention-bg:  rgba(255, 212, 147, 0.12);
+
+  /* ------------------------------------------------------------------
+   * Focus ring — same shorthand as tokens.css, restated here so it
+   * picks up the /next focus tint above.
+   * ------------------------------------------------------------------ */
+  --focus-ring: 0 0 0 2px var(--color-focus);
+
+  /* ------------------------------------------------------------------
+   * Elevation — drop shadows and the dimming layer behind a dialog.
+   * Deepened over tokens.css: on a #101014 backdrop the old shadows
+   * are invisible and a dialog looks pasted on rather than lifted.
+   * ------------------------------------------------------------------ */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-md:
+    0 4px 16px rgba(0, 0, 0, 0.55),
+    0 1px 4px rgba(0, 0, 0, 0.4);
+  --shadow-lg:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-thumb:    0 1px 4px rgba(0, 0, 0, 0.5);
+  --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --color-scrim:     rgba(0, 0, 0, 0.62);
+}

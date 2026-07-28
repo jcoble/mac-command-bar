@@ -98,6 +98,11 @@ export type TerminalService = {
   /** Make one owned session's terminal the visible one. */
   show(ownedId: string): void;
   /**
+   * Re-measure the VISIBLE terminal after its pane changed size. Safe to call
+   * at any time — before `attach`, with no session on screen, after `dispose`.
+   */
+  refit(): void;
+  /**
    * Close a PTY and drop its view. The ONLY path that kills a session.
    *
    * `ptySessionIdHint` is the caller's stored `ptySessionId`, used ONLY when
@@ -597,6 +602,30 @@ export function createTerminalService(opts: {
     manager.showView(ownedId);
   }
 
+  /**
+   * Re-measure the VISIBLE terminal against its host and, when the grid really
+   * changed, send exactly one resize to its PTY. The layout calls this whenever
+   * a pane is resized (a dragged divider, a window resize), which can fire many
+   * times a second — that is safe because `fit()` reports the new geometry
+   * through the same `onResize` hook every other fit uses, and `resizePty`
+   * drops anything that matches the size the PTY is already at.
+   *
+   * Hidden terminals are deliberately left alone: their host has no size to
+   * measure, and `show()` fits them on the way back in. Doing nothing is always
+   * a valid outcome here — no visible terminal means no work, and no view is
+   * ever created.
+   */
+  function refit(): void {
+    if (disposed) {
+      return;
+    }
+    const activeOwnedId = manager.activeKey();
+    if (activeOwnedId == null) {
+      return;
+    }
+    manager.viewFor(activeOwnedId)?.fit();
+  }
+
   async function closeOwned(
     ownedId: string,
     ptySessionIdHint?: string | null
@@ -659,5 +688,5 @@ export function createTerminalService(opts: {
     scrollbackCache.clear();
   }
 
-  return { attach, startOwned, adoptExisting, show, closeOwned, dispose };
+  return { attach, startOwned, adoptExisting, show, refit, closeOwned, dispose };
 }
