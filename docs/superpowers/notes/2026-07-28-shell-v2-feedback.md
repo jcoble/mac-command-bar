@@ -99,3 +99,24 @@ already does with sessions/PTYs/orchestration events).
 Captured as tasks (MacCommandBar project) alongside this note; TSK-344 (VS Code-style git
 panel) updated rather than duplicated. The minimize-to-edge task from earlier today also
 belongs to this batch.
+
+## Post-batch additions (same day)
+
+- **Stack runner** (start-dev.sh-style stacks, process states) — captured, High.
+- **Code formatting** in the editor (backend + Monaco provider exist; wiring task captured).
+- **File-type icons** (appended to the theme task — icon themes are VSIX tier 1).
+- **Problems panel** (build errors + LSP diagnostics; bottom dock's first tenant) — captured.
+- **DB browser** — explicit later, Low, captured.
+- **PRs #1 and #2 merged to main** during this review; next branch: `tsk-759-762-v2-base`.
+
+## Scanner-filter evidence (for TSK-762's top-level-only work)
+
+Probed this project's transcript dir (`~/.claude/projects/-Users-blackcolours-dev-work-mac-command-bar/`):
+helper/teammate session files carry `isSidechain: false` and `userType: "external"` — identical to
+real user sessions, and NO `agentName`/`agentId`/`slug` field appears anywhere in them. The existing
+sidechain filter therefore cannot catch them. Leads for the filter, in order of promise:
+(1) helper transcripts' first `type:"user"` message is a machine-authored dispatch prompt
+("You are the implementer for…", "Review this change for…", report-file paths) while real sessions
+start with human text — a first-user-message heuristic; (2) real sessions observed starting with a
+`type:"last-prompt"` record vs helpers starting with `queue-operation` (small sample, verify);
+(3) check ~/.claude sidecar/index files for parent-session linkage before trusting either heuristic.
