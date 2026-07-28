@@ -1,0 +1,274 @@
+/**
+ * paneStack.ts — the /next left rail's stack of collapsible sections (one
+ * dockview Paneview). DOM-only: zero backend IO, zero Svelte imports.
+ *
+ * Same teleport contract as `frame.ts` and `centerDock.ts`: every section's
+ * body is a Svelte-owned element that this module MOVES into a dockview-owned
+ * host div, and hands back to its original parent ("parking") whenever the pane
+ * that held it dies while the shell lives on. dockview never renders or
+ * disposes app DOM.
+ */
+import { createPaneview, type IPanePart, type PaneviewApi } from 'dockview-core';
+
+// The sibling import carries its `.ts` extension because
+// `scripts/paneLayout.test.mjs` loads this module through node's own resolver,
+// which does not fill an extension in the way the bundler does.
+import {
+  clearLayout,
+  loadLayout,
+  paneviewPanelIds,
+  panelSetMatches,
+  saveLayout,
+  type LayoutStorage
+} from './layoutStorage.ts';
+
+export interface PaneSpec {
+  id: string;
+  /** Label drawn in dockview's built-in pane header. */
+  title: string;
+  /** Svelte-owned element, teleported into the pane body. */
+  element: HTMLElement;
+  /**
+   * Initial height of the whole pane in px — header row included — used only
+   * when there is no stored layout. dockview measures panes, not bodies, so a
+   * collapsed pane sits at its header height whatever this says.
+   */
+  size: number;
+  /** Start open? (default true) */
+  expanded?: boolean;
+}
+
+export interface PaneStackOptions {
+  storage: LayoutStorage;
+  /** Caller-owned storage key; this module has no key of its own. */
+  storageKey: string;
+  panes: PaneSpec[];
+  onLayoutPersisted?: (ok: boolean) => void;
+}
+
+export interface PaneStack {
+  api: PaneviewApi;
+  resetLayout(): void;
+  layout(width: number, height: number): void;
+  dispose(): void;
+}
+
+const COMPONENT = 'pane';
+const PERSIST_DEBOUNCE_MS = 250;
+
+/**
+ * Is this stored layout safe to restore into a stack of exactly `paneIds`?
+ *
+ * Exported so it can be tested without a DOM. The `views` array check is not
+ * belt-and-braces: `PaneviewComponent.fromJSON` disposes the live paneview
+ * BEFORE it reads `views`, so handing it a layout whose `views` is missing or
+ * is an object throws with the component already torn down and nothing left to
+ * rebuild into. Everything unusable has to be rejected before the call.
+ */
+export function canRestorePaneLayout(stored: unknown, paneIds: Iterable<string>): boolean {
+  if (!stored || typeof stored !== 'object') return false;
+  if (!Array.isArray((stored as { views?: unknown }).views)) return false;
+  return panelSetMatches(paneviewPanelIds(stored), paneIds);
+}
+
+export function createPaneStack(container: HTMLElement, options: PaneStackOptions): PaneStack {
+  const specs = new Map(options.panes.map((pane) => [pane.id, pane]));
+  /** Where each body element goes back to when its pane dies. */
+  const parking = new Map(
+    options.panes.map((pane) => [pane.id, pane.element.parentElement as HTMLElement | null])
+  );
+  let synchronizingDepth = 0;
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  /**
+   * A Paneview body part is a plain object, not a subclass: `createComponent`
+   * returns an `IPanePart` and dockview wraps it in its own `PaneFramework`
+   * panel (unlike the Gridview in `frame.ts`, which wants a `GridviewPanel`).
+   */
+  const createBodyPart = (): IPanePart => {
+    const element = document.createElement('div');
+    element.className = 'pane-body-host';
+    let paneId: string | null = null;
+    return {
+      element,
+      init(parameters): void {
+        const candidate = parameters.params?.paneId;
+        if (typeof candidate !== 'string' || !specs.has(candidate)) return;
+        paneId = candidate;
+        const content = specs.get(candidate)!.element;
+        if (content.parentElement !== element) element.replaceChildren(content);
+      },
+      update(): void {},
+      dispose(): void {
+        if (disposed || !paneId) return;
+        // Pane gone while the shell lives on: hand the body back to its
+        // Svelte-owned parking node so nothing app-owned dies with dockview.
+        const content = specs.get(paneId)?.element;
+        const home = parking.get(paneId) ?? null;
+        if (content && home && content.parentElement !== home) home.appendChild(content);
+      }
+    };
+  };
+
+  const api = createPaneview(container, {
+    className: 'shell-pane-stack',
+    createComponent: createBodyPart
+  });
+
+  const addPaneFor = (pane: PaneSpec): void => {
+    api.addPanel({
+      id: pane.id,
+      component: COMPONENT,
+      title: pane.title,
+      params: { paneId: pane.id },
+      size: pane.size,
+      // The add option is spelled `isExpanded`; the SERIALIZED field is
+      // `expanded`. Setting it here is enough — a pane built collapsed reports
+      // a maximum size of just its header, so there is no second step and no
+      // collapse animation on start-up.
+      isExpanded: pane.expanded !== false
+    });
+  };
+
+  const buildDefault = (): void => {
+    for (const pane of options.panes) addPaneFor(pane);
+  };
+
+  /**
+   * Empty the stack WITHOUT `api.clear()`.
+   *
+   * `PaneviewComponent.clear()` disposes its inner `Paneview`, and that dispose
+   * detaches the container div the panes live in — but nothing ever builds a
+   * replacement, so every pane added afterwards renders into a node that is no
+   * longer on the page. (`fromJSON` gets away with calling it because it then
+   * constructs a fresh `Paneview` itself; a plain clear-then-rebuild does not.)
+   * Removing panes one at a time leaves the component intact and fires each
+   * body part's `dispose`, which is what returns the bodies to parking.
+   */
+  const removeAllPanes = (): void => {
+    for (const panel of [...api.panels]) {
+      try {
+        api.removePanel(panel);
+      } catch {
+        // A pane that refuses to go is left in place; the rebuild below skips
+        // nothing else, and "Reset layout" can be pressed again.
+      }
+    }
+  };
+
+  /**
+   * Run a programmatic layout mutation with persistence suppressed.
+   *
+   * The Paneview's own emitters are synchronous, so most of what this block
+   * causes lands before it returns — but `fromJSON` re-fires its "pane added"
+   * events from a `setTimeout(…, 0)`, and the resize watcher it shares with the
+   * rest of dockview reports through a `requestAnimationFrame`. Releasing the
+   * guard on a timer rather than synchronously covers all three: the release is
+   * scheduled after any timer the mutation itself queued, and a microtask
+   * cannot outlive it either.
+   *
+   * Resize-driven changes deliberately fall outside the guard: they report a
+   * finished layout the user asked for, which is what we want written.
+   */
+  const runSynchronized = (fn: () => void): void => {
+    synchronizingDepth += 1;
+    try {
+      fn();
+    } finally {
+      setTimeout(() => {
+        if (synchronizingDepth > 0) synchronizingDepth -= 1;
+      }, 0);
+    }
+  };
+
+  /**
+   * Size the stack to its container BEFORE anything is restored or built, for
+   * the same reason as the grid in `frame.ts` — and here it is load-bearing
+   * twice over: `fromJSON` reads the component's current width and height and
+   * lays the restored panes out at exactly those numbers, so restoring into a
+   * 0 x 0 stack squashes every pane to nothing.
+   *
+   * A container with no size yet is skipped rather than forced: dockview's own
+   * resize watcher delivers the first real layout, and `persistSoon` refuses to
+   * write a stack that has never had a real size.
+   */
+  const layoutToContainer = (): void => {
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    if (width > 0 && height > 0) api.layout(width, height);
+  };
+
+  layoutToContainer();
+
+  runSynchronized(() => {
+    const stored = loadLayout<object>(options.storage, options.storageKey);
+    if (canRestorePaneLayout(stored, specs.keys())) {
+      try {
+        api.fromJSON(stored as never);
+        return;
+      } catch {
+        // Half-restored: drop the layout that did this so the next launch
+        // starts clean, then rebuild what we can here and now.
+        clearLayout(options.storage, options.storageKey);
+        removeAllPanes();
+      }
+    }
+    buildDefault();
+  });
+
+  const persistSoon = (): void => {
+    if (synchronizingDepth > 0 || disposed) return;
+    if (persistTimer !== null) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      if (disposed) return;
+      // Never store a stack measured at zero: the pane sizes in it are
+      // meaningless and the next launch would restore from them.
+      if (api.width <= 0 || api.height <= 0) return;
+      let ok = false;
+      try {
+        // `toJSON` runs inside the guard too: a stack in an unexpected state
+        // can throw from it, and an unhandled throw in here kills the timer.
+        ok = saveLayout(options.storage, options.storageKey, api.toJSON());
+      } catch {
+        ok = false;
+      }
+      options.onLayoutPersisted?.(ok);
+    }, PERSIST_DEBOUNCE_MS);
+  };
+
+  /**
+   * One listener covers sizes AND open/closed. Opening or closing a pane calls
+   * `PaneviewPanel.setExpanded`, which fires its expansion event, which the
+   * `Paneview` forwards as a layout change — so `onDidLayoutChange` already
+   * carries every collapse, and `toJSON` writes each pane's `expanded` flag.
+   * Subscribing to the panes' own expansion events as well would only persist
+   * the same thing twice.
+   */
+  const changeListener = api.onDidLayoutChange(persistSoon);
+
+  return {
+    api,
+    resetLayout(): void {
+      clearLayout(options.storage, options.storageKey);
+      runSynchronized(() => {
+        removeAllPanes();
+        buildDefault();
+      });
+      // The guard above is still up — it releases on a timer — so ask for the
+      // persist on the timer after it. Callbacks with the same delay run in the
+      // order they were scheduled, and the release was scheduled first.
+      setTimeout(persistSoon, 0);
+    },
+    layout(width: number, height: number): void {
+      api.layout(width, height);
+    },
+    dispose(): void {
+      disposed = true; // body-part dispose() no-ops: page teardown owns the DOM now
+      if (persistTimer !== null) clearTimeout(persistTimer);
+      changeListener.dispose();
+      api.dispose();
+    }
+  };
+}

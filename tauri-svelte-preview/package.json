@@ -25,6 +25,7 @@
     "test:owned-sessions": "node --experimental-strip-types scripts/ownedSessions.test.mjs",
     "test:next-terminal-service": "node --experimental-strip-types scripts/nextTerminalService.test.mjs",
     "test:layout-storage": "node --experimental-strip-types scripts/layoutStorage.test.mjs",
+    "test:pane-layout": "node --experimental-strip-types scripts/paneLayout.test.mjs",
     "test:source-dock-layout": "node --experimental-strip-types scripts/sourceDockLayout.test.mjs",
     "test:source-dockview": "node --experimental-strip-types scripts/sourceDockviewWorkspace.test.mjs",
     "test:source-pane-sizing": "node --experimental-strip-types scripts/sourcePaneSizing.test.mjs",

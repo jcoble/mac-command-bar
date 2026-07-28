@@ -76,6 +76,27 @@ export function dockPanelIds(serialized: unknown): Set<string> {
   return new Set(Object.keys(panels));
 }
 
+/**
+ * Pane ids inside a `SerializedPaneview` (dockview-core 6.6.1 shape:
+ * `{ size, views: [{ size, expanded?, data: { id, component, title, … } }] }`).
+ * Collapsed panes are in `views` exactly like open ones, so this returns the
+ * whole stack either way. Malformed input yields an empty set — the caller then
+ * rebuilds from defaults.
+ */
+export function paneviewPanelIds(serialized: unknown): Set<string> {
+  const ids = new Set<string>();
+  const views = (serialized as { views?: unknown } | null)?.views;
+  if (!Array.isArray(views)) return ids;
+  for (const view of views) {
+    if (!view || typeof view !== 'object') continue;
+    const data = (view as { data?: unknown }).data;
+    if (!data || typeof data !== 'object') continue;
+    const id = (data as { id?: unknown }).id;
+    if (typeof id === 'string') ids.add(id);
+  }
+  return ids;
+}
+
 /** True when `ids` is EXACTLY `expected` (both directions, order-free). */
 export function panelSetMatches(ids: Iterable<string>, expected: Iterable<string>): boolean {
   const a = new Set(ids);
