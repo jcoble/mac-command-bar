@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defineConfig, type Plugin } from 'vite';
 
 import {
+  countLocalSourceReferences,
   findLocalSourceDefinitions,
   findLocalSourceReferences,
   readLocalSourceFile,
@@ -102,6 +103,17 @@ function createLocalSourceBridgeMiddleware() {
             )
           );
           break;
+        case '/__mcb/source/reference-counts':
+          sendJSON(
+            response,
+            200,
+            await countLocalSourceReferences(
+              String(body.root ?? ''),
+              stringsFromBody(body.symbolNames),
+              numberOrNull(body.deadlineMs)
+            )
+          );
+          break;
         default:
           sendJSON(response, 404, { error: 'Unknown source bridge route' });
           break;
@@ -138,6 +150,10 @@ function sendJSON(response: ServerResponse, statusCode: number, body: unknown) {
 
 function sourceRecordsFromBody(value: unknown): SourceRecord[] {
   return Array.isArray(value) ? (value as SourceRecord[]) : [];
+}
+
+function stringsFromBody(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry) => typeof entry === 'string') : [];
 }
 
 function stringOrNull(value: unknown): string | null {

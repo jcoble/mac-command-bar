@@ -46,6 +46,7 @@
     "test:open-file-bus": "node --experimental-strip-types scripts/openFileBus.test.mjs",
     "test:source-record-from-path": "node --experimental-strip-types scripts/sourceRecordFromPath.test.mjs",
     "test:editor-store": "node --experimental-strip-types scripts/editorStore.test.mjs",
+    "test:reference-count-batcher": "node --experimental-strip-types scripts/referenceCountBatcher.test.mjs",
     "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.mjs",
     "test:parse-unified-diff": "node --experimental-strip-types scripts/parseUnifiedDiff.test.mjs",
     "test:context-store": "node --experimental-strip-types scripts/contextStore.test.mjs",
