@@ -41,6 +41,7 @@ export type TerminalStartRequest = {
   shell?: string | null;
   cols?: number | null;
   rows?: number | null;
+  ownedId?: string | null;
 };
 
 export type TerminalSessionInfo = {

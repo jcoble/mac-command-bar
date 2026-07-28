@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Runtime};
@@ -17,6 +18,7 @@ pub struct TerminalStartRequest {
     pub shell: Option<String>,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    pub owned_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,6 +98,16 @@ pub fn start_terminal_session<R: Runtime>(
     command.env("FORCE_COLOR", "3");
     command.env("COLORFGBG", "15;0");
     command.env_remove("NO_COLOR");
+    // Correlates the spawned agent process (and any hook files it writes) back to
+    // the CommandBar-owned session. Borrowed from CMUX's CMUX_WORKSPACE_ID.
+    if let Some(owned_id) = request
+        .owned_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.env("COMMANDBAR_SESSION_ID", owned_id);
+    }
 
     let child = pair
         .slave
@@ -438,8 +450,11 @@ fn default_terminal_shell() -> String {
         })
 }
 
+static TERMINAL_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn new_terminal_session_id() -> String {
-    format!("term-{}-{}", std::process::id(), timestamp_millis())
+    let seq = TERMINAL_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("term-{}-{}-{seq}", std::process::id(), timestamp_millis())
 }
 
 fn timestamp_millis() -> u128 {
@@ -557,6 +572,7 @@ mod tests {
                 shell: Some("/bin/sh".to_string()),
                 cols: Some(80),
                 rows: Some(20),
+                owned_id: None,
             },
         )
         .expect("terminal session should start");
