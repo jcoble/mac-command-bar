@@ -8,9 +8,18 @@ use std::path::{Path, PathBuf};
 const CLAUDE_GENERIC_SESSION_TITLE: &str = "Claude session";
 const CLAUDE_SESSION_FILE_LIMIT: usize = 512;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
+const CODEX_GENERIC_SESSION_TITLE: &str = "Codex session";
+const CODEX_UNTITLED_INDEX_TITLE: &str = "Untitled Codex session";
 const CODEX_SESSION_FILE_LIMIT: usize = 512;
-const CODEX_SESSION_HEAD_BYTES: usize = 64 * 1024;
+/// The first user message of a Codex session sits behind the opening metadata
+/// record, which carries the whole system prompt and can run past 40 KB. On this
+/// machine 256 KB reaches the first typed prompt in 59 of 67 top-level sessions;
+/// the rest fall back to whatever the tail window offers.
+const CODEX_SESSION_HEAD_BYTES: usize = 256 * 1024;
 const CODEX_SESSION_TAIL_BYTES: usize = 256 * 1024;
+/// Enough to hold the opening `session_meta` line whole. Measured across 687
+/// rollout files: median 27 KB, largest 44 KB.
+const CODEX_SESSION_META_PROBE_BYTES: usize = 64 * 1024;
 const CMUX_SESSION_RESULT_HEADROOM: usize = 256;
 const AGENT_SESSION_RESULT_LIMIT: usize =
     CODEX_SESSION_FILE_LIMIT + CLAUDE_SESSION_FILE_LIMIT + CMUX_SESSION_RESULT_HEADROOM;
@@ -62,6 +71,11 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     let codex_sessions = home.join(".codex/sessions");
     let mut codex_files = jsonl_files(&codex_sessions);
+    // Drop sub-agent threads BEFORE the file budget, for the same reason the
+    // Claude path drops its subagents first: they outnumber the user's own
+    // sessions nine to one here, so a budget applied first would evict the
+    // sessions the rail exists to show.
+    codex_files.retain(|file| !codex_rollout_file_is_subagent_thread(file));
     codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     let mut codex_metadata = Vec::new();
     for file in codex_files.into_iter().take(CODEX_SESSION_FILE_LIMIT) {
@@ -130,7 +144,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
             let title = value
                 .get("thread_name")
                 .and_then(Value::as_str)
-                .unwrap_or("Untitled Codex session")
+                .unwrap_or(CODEX_UNTITLED_INDEX_TITLE)
                 .to_string();
             let last_activity = value
                 .get("updated_at")
@@ -153,6 +167,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
 
 pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
     let mut records: Vec<AgentSessionRecord> = Vec::new();
+    let mut first_prompts: HashMap<String, String> = HashMap::new();
 
     for value in input
         .lines()
@@ -163,6 +178,9 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 let Some(payload) = value.get("payload") else {
                     continue;
                 };
+                if is_codex_subagent_meta(payload) {
+                    return Vec::new();
+                }
                 let Some(id) = payload.get("id").and_then(Value::as_str) else {
                     continue;
                 };
@@ -181,7 +199,7 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 let record = AgentSessionRecord {
                     provider: "codex".to_string(),
                     id: id.to_string(),
-                    title: "Codex session".to_string(),
+                    title: CODEX_GENERIC_SESSION_TITLE.to_string(),
                     description: None,
                     model: model_from_value(payload),
                     project_path: cwd,
@@ -220,6 +238,12 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 );
             }
             Some("response_item") => {
+                if let (Some(record), Some(prompt)) =
+                    (records.last(), codex_user_prompt_text(&value))
+                {
+                    first_prompts.entry(record.id.clone()).or_insert(prompt);
+                }
+
                 let cwd = codex_response_item_workdir(&value);
                 let description = codex_response_item_description(&value);
                 if cwd.is_none() && description.is_none() {
@@ -235,7 +259,132 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
         }
     }
 
+    for record in records.iter_mut() {
+        record.title = codex_display_title(
+            &record.title,
+            first_prompts.get(&record.id).map(String::as_str),
+        );
+    }
+
     records
+}
+
+/// Codex spawns its own helper threads and writes each one as a rollout file
+/// next to the user's, so nine of every ten files under `~/.codex/sessions` are
+/// threads nobody opened. The opening `session_meta` record says which it is:
+/// a helper carries `thread_source: "subagent"`, and/or a `source` object whose
+/// only key is `subagent` (a session the user started has `source` as a plain
+/// string — `cli`, `vscode`, `exec`).
+///
+/// Verified 2026-07-28 across 687 rollout files on this machine: 619 helper
+/// threads, 68 sessions the user started, and the two markers disagreed on a
+/// single file — so both are checked and either one is enough.
+///
+/// A file with neither marker is kept. Older Codex versions predate the field
+/// (15 files here), and losing one of the user's sessions is worse than listing
+/// a helper thread.
+fn is_codex_subagent_meta(payload: &Value) -> bool {
+    if payload.get("thread_source").and_then(Value::as_str) == Some("subagent") {
+        return true;
+    }
+
+    payload
+        .get("source")
+        .and_then(Value::as_object)
+        .is_some_and(|source| source.contains_key("subagent"))
+}
+
+/// Same question asked of a file instead of a parsed record, so the scan can
+/// skip helper threads before it spends its read budget on them. The opening
+/// line is the metadata record; anything we cannot read or parse is kept.
+fn codex_rollout_file_is_subagent_thread(path: &Path) -> bool {
+    let Ok(head) = read_head_utf8(path, CODEX_SESSION_META_PROBE_BYTES) else {
+        return false;
+    };
+
+    codex_rollout_head_is_subagent_thread(&head)
+}
+
+pub fn codex_rollout_head_is_subagent_thread(head: &str) -> bool {
+    let Some(line) = head.lines().next() else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return false;
+    }
+
+    value.get("payload").is_some_and(is_codex_subagent_meta)
+}
+
+/// The first thing the user actually typed. Codex opens every session with
+/// machine-written turns sent as the user — the repository's `AGENTS.md`, the
+/// environment block, the plugin list, the file list — and each has a shape we
+/// can recognise, so the title comes from the first turn that is none of them.
+fn codex_user_prompt_text(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    if payload.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+
+    let text = payload.get("content").and_then(value_to_text)?;
+    let text = text.trim();
+    if text.is_empty() || CODEX_INJECTED_PROMPT_PREFIXES.iter().any(|prefix| text.starts_with(prefix)) {
+        return None;
+    }
+
+    Some(compact_text(text, 140))
+}
+
+/// Openings that mean Codex wrote this turn, not the user. `<` covers every
+/// tagged block it injects (`<environment_context>`, `<recommended_plugins>`,
+/// `<user_shell_command>`); the two headings are the repository instructions
+/// and the attached-file list.
+const CODEX_INJECTED_PROMPT_PREFIXES: &[&str] = &[
+    "<",
+    "# AGENTS.md instructions",
+    "# Files mentioned by the user",
+];
+
+/// A Codex rollout file carries no title of its own, so a rail built from these
+/// files alone reads as hundreds of rows all saying "Codex session". The first
+/// typed prompt is the only description of the session in the file, so it
+/// becomes the title; the generic label survives only when the scanned window
+/// held no typed prompt at all.
+fn codex_display_title(derived: &str, first_prompt: Option<&str>) -> String {
+    if derived != CODEX_GENERIC_SESSION_TITLE {
+        return derived.to_string();
+    }
+
+    match first_prompt {
+        Some(prompt) => compact_text(prompt, 60),
+        None => CODEX_GENERIC_SESSION_TITLE.to_string(),
+    }
+}
+
+fn is_generic_codex_title(title: &str) -> bool {
+    title == CODEX_GENERIC_SESSION_TITLE || title == CODEX_UNTITLED_INDEX_TITLE
+}
+
+/// One Codex session can be described twice: the index file may name it, and
+/// the rollout file offers the opening prompt. Whichever record looks newer is
+/// beside the point — a placeholder must never displace a real title, and the
+/// index name describes the whole session where the prompt only opens it, so
+/// the title already in hand wins when both are real.
+fn better_codex_title(existing: String, candidate: String) -> String {
+    if !is_generic_codex_title(&existing) {
+        return existing;
+    }
+    if !is_generic_codex_title(&candidate) {
+        return candidate;
+    }
+
+    existing
 }
 
 fn update_latest_codex_record(
@@ -610,7 +759,10 @@ fn cmux_resume_commands(agent: &str, id: &str, cwd: Option<&str>) -> Vec<String>
 }
 
 fn merge_codex_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
+    let previous_title = existing.title.clone();
+    let candidate_title = candidate.title.clone();
     merge_agent_session_record(existing, candidate);
+    existing.title = better_codex_title(previous_title, candidate_title);
 }
 
 fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: AgentSessionRecord) {
@@ -1267,6 +1419,113 @@ mod tests {
         "\n",
         r#"{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S5","timestamp":"2026-07-28T12:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"That mount is running before the store exists."}]}}"#,
     );
+
+    /// A thread Codex spawned for itself. Both markers are present, as they are
+    /// on 618 of the 619 helper threads on this machine.
+    const CODEX_SUBAGENT_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-07-28T17:24:36.972Z","type":"session_meta","payload":{"id":"019fa9c1","parent_thread_id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"subagent","agent_role":"executor","source":{"subagent":{"parent_thread_id":"019fa964","depth":1}}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-07-28T17:25:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement the year simulation runner."}]}}"#,
+    );
+
+    /// A session the user started in the terminal. `source` is a plain string,
+    /// and the first two turns are the ones Codex writes for itself before the
+    /// user has typed anything.
+    const CODEX_TOP_LEVEL_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#,
+        "\n",
+        r##"{"timestamp":"2026-07-28T16:42:18.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/dev/work/rental-management\n\n<INSTRUCTIONS>\nEvery reply MUST open with a plain-English summary.\n</INSTRUCTIONS>"}]}}"##,
+        "\n",
+        r#"{"timestamp":"2026-07-28T16:42:19.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/dev/work/rental-management</cwd>\n</environment_context>"}]}}"#,
+        "\n",
+        r#"{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please plan out an entire year of scans and entries for the 2027 simulation."}]}}"#,
+    );
+
+    /// An older Codex build that wrote no thread marker at all.
+    const CODEX_UNMARKED_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-04-14T13:53:07.000Z","type":"session_meta","payload":{"id":"019d8d20","cwd":"/Users/dev/work/EdiPlatform","originator":"codex_cli_rs","source":"unknown"}}"#,
+        "\n",
+        r#"{"timestamp":"2026-04-14T13:54:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Help me trace where the 810 mapping loses the invoice date."}]}}"#,
+    );
+
+    #[test]
+    fn codex_scan_excludes_threads_codex_spawned_for_itself() {
+        // Either marker on its own is enough — they disagreed on one real file.
+        assert!(codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"thread_source":"subagent","source":"vscode"}}"#
+        ));
+        assert!(codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"depth":1}}}}"#
+        ));
+
+        // A session the user started: `source` is a plain string, not an object.
+        assert!(!codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"thread_source":"user","source":"cli"}}"#
+        ));
+        // No marker, unreadable, or not a metadata line at all: keep the file.
+        assert!(!codex_rollout_head_is_subagent_thread(
+            r#"{"type":"session_meta","payload":{"source":"unknown"}}"#
+        ));
+        assert!(!codex_rollout_head_is_subagent_thread("{\"type\":\"sessi"));
+        assert!(!codex_rollout_head_is_subagent_thread(""));
+
+        assert_eq!(
+            parse_codex_rollout_jsonl(CODEX_SUBAGENT_ROLLOUT_JSONL),
+            Vec::new()
+        );
+
+        let records = parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "019fa964");
+
+        // Older rollouts predate the marker. Keep them: losing a session the
+        // user wants back is worse than listing a helper thread.
+        let records = parse_codex_rollout_jsonl(CODEX_UNMARKED_ROLLOUT_JSONL);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "019d8d20");
+    }
+
+    #[test]
+    fn codex_titles_come_from_the_first_prompt_the_user_typed() {
+        let records = parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL);
+        assert_eq!(
+            records[0].title,
+            "Please plan out an entire year of scans and entries for the…"
+        );
+
+        // The repository instructions and the environment block are written by
+        // Codex, not the user, so neither may become the title.
+        assert!(!records[0].title.contains("AGENTS.md"));
+        assert!(!records[0].title.contains("environment_context"));
+
+        // Nothing typed inside the scanned window leaves the generic label.
+        let meta_only = r#"{"type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev","source":"cli"}}"#;
+        assert_eq!(
+            parse_codex_rollout_jsonl(meta_only)[0].title,
+            CODEX_GENERIC_SESSION_TITLE
+        );
+
+        // The index file names some sessions. That name must survive a merge
+        // with the rollout file whichever record carries the later timestamp.
+        let index = parse_codex_index_jsonl(
+            r#"{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-28T16:00:00.000000Z"}"#,
+        );
+        let merged =
+            merge_codex_session_metadata(index, parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL));
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].title, "Year simulation planning");
+
+        // And an unnamed index row must not overwrite a real rollout title.
+        let index = parse_codex_index_jsonl(
+            r#"{"id":"019fa964","updated_at":"2026-07-29T16:00:00.000000Z"}"#,
+        );
+        let merged =
+            merge_codex_session_metadata(index, parse_codex_rollout_jsonl(CODEX_TOP_LEVEL_ROLLOUT_JSONL));
+        assert_eq!(
+            merged[0].title,
+            "Please plan out an entire year of scans and entries for the…"
+        );
+    }
 
     #[test]
     fn claude_scan_excludes_helper_agent_transcripts() {

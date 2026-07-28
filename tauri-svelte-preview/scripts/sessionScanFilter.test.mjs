@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 
-import { isAgentLaunchEntrypoint, parseClaudeJsonl } from '../src/lib/server/localSourceFs.ts';
+import {
+  codexRolloutHeadIsSubagentThread,
+  isAgentLaunchEntrypoint,
+  mergeCodexSessionMetadata,
+  parseClaudeJsonl,
+  parseCodexIndexJsonl,
+  parseCodexRolloutJsonl
+} from '../src/lib/server/localSourceFs.ts';
 
 /**
  * Bridge parity for the Rust scanner's "is this a top-level session?" rule
@@ -67,5 +74,109 @@ assert.equal(noEntrypoint.length, 1);
 assert.equal(noEntrypoint[0].id, 'S1');
 
 assert.deepEqual(parseClaudeJsonl(subagentJsonl, projectPath), []);
+
+/**
+ * A thread Codex spawned for itself. Both markers are present, as they are on
+ * 618 of the 619 helper threads on this machine.
+ */
+const codexSubagentRolloutJsonl = [
+  '{"timestamp":"2026-07-28T17:24:36.972Z","type":"session_meta","payload":{"id":"019fa9c1","parent_thread_id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"subagent","agent_role":"executor","source":{"subagent":{"parent_thread_id":"019fa964","depth":1}}}}',
+  '{"timestamp":"2026-07-28T17:25:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Implement the year simulation runner."}]}}'
+].join('\n');
+
+/**
+ * A session the user started in the terminal. `source` is a plain string, and
+ * the first two turns are the ones Codex writes for itself before the user has
+ * typed anything.
+ */
+const codexTopLevelRolloutJsonl = [
+  '{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}',
+  '{"timestamp":"2026-07-28T16:42:18.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/dev/work/rental-management\\n\\n<INSTRUCTIONS>\\nEvery reply MUST open with a plain-English summary.\\n</INSTRUCTIONS>"}]}}',
+  '{"timestamp":"2026-07-28T16:42:19.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\\n  <cwd>/Users/dev/work/rental-management</cwd>\\n</environment_context>"}]}}',
+  '{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please plan out an entire year of scans and entries for the 2027 simulation."}]}}'
+].join('\n');
+
+/** An older Codex build that wrote no thread marker at all. */
+const codexUnmarkedRolloutJsonl = [
+  '{"timestamp":"2026-04-14T13:53:07.000Z","type":"session_meta","payload":{"id":"019d8d20","cwd":"/Users/dev/work/EdiPlatform","originator":"codex_cli_rs","source":"unknown"}}',
+  '{"timestamp":"2026-04-14T13:54:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Help me trace where the 810 mapping loses the invoice date."}]}}'
+].join('\n');
+
+// Either marker on its own is enough — they disagreed on one real file.
+assert.equal(
+  codexRolloutHeadIsSubagentThread(
+    '{"type":"session_meta","payload":{"thread_source":"subagent","source":"vscode"}}'
+  ),
+  true
+);
+assert.equal(
+  codexRolloutHeadIsSubagentThread(
+    '{"type":"session_meta","payload":{"source":{"subagent":{"depth":1}}}}'
+  ),
+  true
+);
+
+// A session the user started: `source` is a plain string, not an object.
+assert.equal(
+  codexRolloutHeadIsSubagentThread(
+    '{"type":"session_meta","payload":{"thread_source":"user","source":"cli"}}'
+  ),
+  false
+);
+// No marker, unreadable, or not a metadata line at all: keep the file.
+assert.equal(
+  codexRolloutHeadIsSubagentThread('{"type":"session_meta","payload":{"source":"unknown"}}'),
+  false
+);
+assert.equal(codexRolloutHeadIsSubagentThread('{"type":"sessi'), false);
+assert.equal(codexRolloutHeadIsSubagentThread(''), false);
+
+assert.deepEqual(parseCodexRolloutJsonl(codexSubagentRolloutJsonl), []);
+
+const codexTopLevel = parseCodexRolloutJsonl(codexTopLevelRolloutJsonl);
+assert.equal(codexTopLevel.length, 1);
+assert.equal(codexTopLevel[0].id, '019fa964');
+
+// Older rollouts predate the marker. Keep them: losing a session the user wants
+// back is worse than listing a helper thread.
+const codexUnmarked = parseCodexRolloutJsonl(codexUnmarkedRolloutJsonl);
+assert.equal(codexUnmarked.length, 1);
+assert.equal(codexUnmarked[0].id, '019d8d20');
+
+// The repository instructions and the environment block are written by Codex,
+// not the user, so neither may become the title.
+assert.equal(
+  codexTopLevel[0].title,
+  'Please plan out an entire year of scans and entries for the...'
+);
+
+// Nothing typed inside the scanned window leaves the generic label.
+assert.equal(
+  parseCodexRolloutJsonl(
+    '{"type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev","source":"cli"}}'
+  )[0].title,
+  'Codex session'
+);
+
+// The index file names some sessions. That name must survive a merge with the
+// rollout file whichever record carries the later timestamp.
+assert.equal(
+  mergeCodexSessionMetadata(
+    parseCodexIndexJsonl(
+      '{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-28T16:00:00.000000Z"}'
+    ),
+    parseCodexRolloutJsonl(codexTopLevelRolloutJsonl)
+  )[0].title,
+  'Year simulation planning'
+);
+
+// And an unnamed index row must not overwrite a real rollout title.
+assert.equal(
+  mergeCodexSessionMetadata(
+    parseCodexIndexJsonl('{"id":"019fa964","updated_at":"2026-07-29T16:00:00.000000Z"}'),
+    parseCodexRolloutJsonl(codexTopLevelRolloutJsonl)
+  )[0].title,
+  'Please plan out an entire year of scans and entries for the...'
+);
 
 console.log('session scan filter tests passed');

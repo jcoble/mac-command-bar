@@ -24,9 +24,22 @@ const maxSkippedDirectorySamples = 16;
 const claudeGenericSessionTitle = 'Claude session';
 const claudeSessionFileLimit = 512;
 const claudeSessionTailBytes = 256 * 1024;
+const codexGenericSessionTitle = 'Codex session';
+const codexUntitledIndexTitle = 'Untitled Codex session';
 const codexSessionFileLimit = 512;
-const codexSessionHeadBytes = 64 * 1024;
+/**
+ * The first user message of a Codex session sits behind the opening metadata
+ * record, which carries the whole system prompt and can run past 40 KB. On this
+ * machine 256 KB reaches the first typed prompt in 59 of 67 top-level sessions;
+ * the rest fall back to whatever the tail window offers.
+ */
+const codexSessionHeadBytes = 256 * 1024;
 const codexSessionTailBytes = 256 * 1024;
+/**
+ * Enough to hold the opening `session_meta` line whole. Measured across 687
+ * rollout files: median 27 KB, largest 44 KB.
+ */
+const codexSessionMetaProbeBytes = 64 * 1024;
 const cmuxSessionResultHeadroom = 256;
 const agentSessionResultLimit =
   claudeSessionFileLimit + codexSessionFileLimit + cmuxSessionResultHeadroom;
@@ -119,9 +132,15 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
     codexRecords.push(...parseCodexIndexJsonl(codexIndexContents));
   }
 
-  const codexFiles = await sortFilesByModifiedDesc(
-    await jsonlFiles(path.join(homePath, '.codex', 'sessions'))
-  );
+  // Drop sub-agent threads BEFORE the file budget, for the same reason the
+  // Claude path drops its subagents first: they outnumber the user's own
+  // sessions nine to one here, so a budget applied first would evict the
+  // sessions the rail exists to show.
+  const codexRollouts: string[] = [];
+  for (const filePath of await jsonlFiles(path.join(homePath, '.codex', 'sessions'))) {
+    if (!(await codexRolloutFileIsSubagentThread(filePath))) codexRollouts.push(filePath);
+  }
+  const codexFiles = await sortFilesByModifiedDesc(codexRollouts);
   const codexMetadata: LocalAgentSessionRecord[] = [];
   for (const filePath of codexFiles.slice(0, codexSessionFileLimit)) {
     const contents = await readHeadAndTailUtf8(
@@ -170,7 +189,7 @@ async function findGitRoot(root: string): Promise<string | null> {
   }
 }
 
-function parseCodexIndexJsonl(input: string): LocalAgentSessionRecord[] {
+export function parseCodexIndexJsonl(input: string): LocalAgentSessionRecord[] {
   return parseJsonLines(input).flatMap((value) => {
     const id = optionalString(value.id);
     if (!id) return [];
@@ -179,7 +198,7 @@ function parseCodexIndexJsonl(input: string): LocalAgentSessionRecord[] {
       {
         provider: 'codex',
         id,
-        title: optionalString(value.thread_name) ?? 'Untitled Codex session',
+        title: optionalString(value.thread_name) ?? codexUntitledIndexTitle,
         description: null,
         model: modelFromValue(value),
         projectPath: null,
@@ -190,27 +209,29 @@ function parseCodexIndexJsonl(input: string): LocalAgentSessionRecord[] {
   });
 }
 
-function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[] {
+export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[] {
   const records: LocalAgentSessionRecord[] = [];
+  const firstPrompts = new Map<string, string>();
 
   for (const value of parseJsonLines(input)) {
     const type = optionalString(value.type);
     if (type === 'session_meta') {
       const payload = objectValue(value.payload);
+      if (payload && isCodexSubagentMeta(payload)) return [];
       const id = optionalString(payload?.id);
       if (!payload || !id) continue;
 
       const record: LocalAgentSessionRecord = {
         provider: 'codex',
         id,
-        title: 'Codex session',
+        title: codexGenericSessionTitle,
         description: null,
         model: modelFromValue(payload),
         projectPath: optionalString(payload.cwd),
         lastActivity: optionalString(value.timestamp) ?? optionalString(payload.timestamp),
         resumeCommands: [`codex resume ${id}`]
       };
-      upsertAgentSessionRecord(records, record);
+      upsertCodexSessionRecord(records, record);
       continue;
     }
 
@@ -228,6 +249,10 @@ function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[] {
     }
 
     if (type === 'response_item') {
+      const latest = records[records.length - 1];
+      const prompt = codexUserPromptText(value);
+      if (latest && prompt && !firstPrompts.has(latest.id)) firstPrompts.set(latest.id, prompt);
+
       const cwd = codexResponseItemWorkdir(value);
       const description = codexResponseItemDescription(value);
       if (!cwd && !description) continue;
@@ -235,7 +260,130 @@ function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[] {
     }
   }
 
+  for (const record of records) {
+    record.title = codexDisplayTitle(record.title, firstPrompts.get(record.id) ?? null);
+  }
+
   return records;
+}
+
+/**
+ * Codex spawns its own helper threads and writes each one as a rollout file next
+ * to the user's, so nine of every ten files under `~/.codex/sessions` are threads
+ * nobody opened. The opening `session_meta` record says which it is: a helper
+ * carries `thread_source: "subagent"`, and/or a `source` object whose only key is
+ * `subagent` (a session the user started has `source` as a plain string — `cli`,
+ * `vscode`, `exec`).
+ *
+ * Verified 2026-07-28 across 687 rollout files on this machine: 619 helper
+ * threads, 68 sessions the user started, and the two markers disagreed on a
+ * single file — so both are checked and either one is enough.
+ *
+ * A file with neither marker is kept. Older Codex versions predate the field (15
+ * files here), and losing one of the user's sessions is worse than listing a
+ * helper thread.
+ */
+function isCodexSubagentMeta(payload: Record<string, unknown>) {
+  if (optionalString(payload.thread_source) === 'subagent') return true;
+
+  const source = objectValue(payload.source);
+  return source ? 'subagent' in source : false;
+}
+
+/**
+ * Same question asked of a file instead of a parsed record, so the scan can skip
+ * helper threads before it spends its read budget on them. The opening line is
+ * the metadata record; anything we cannot read or parse is kept.
+ */
+async function codexRolloutFileIsSubagentThread(filePath: string) {
+  const head = await readHeadUtf8(filePath, codexSessionMetaProbeBytes).catch(() => '');
+  return codexRolloutHeadIsSubagentThread(head);
+}
+
+export function codexRolloutHeadIsSubagentThread(head: string) {
+  const line = head.split(/\r?\n/, 1)[0];
+  const value = parseJsonObject(line ?? '');
+  if (!value || optionalString(value.type) !== 'session_meta') return false;
+
+  const payload = objectValue(value.payload);
+  return payload ? isCodexSubagentMeta(payload) : false;
+}
+
+/**
+ * The first thing the user actually typed. Codex opens every session with
+ * machine-written turns sent as the user — the repository's `AGENTS.md`, the
+ * environment block, the plugin list, the file list — and each has a shape we can
+ * recognise, so the title comes from the first turn that is none of them.
+ */
+function codexUserPromptText(value: Record<string, unknown>) {
+  const payload = objectValue(value.payload);
+  if (!payload || optionalString(payload.type) !== 'message') return null;
+  if (optionalString(payload.role) !== 'user') return null;
+
+  const text = valueToText(payload.content)?.trim();
+  if (!text) return null;
+  if (codexInjectedPromptPrefixes.some((prefix) => text.startsWith(prefix))) return null;
+
+  return compactText(text, 140);
+}
+
+/**
+ * Openings that mean Codex wrote this turn, not the user. `<` covers every tagged
+ * block it injects (`<environment_context>`, `<recommended_plugins>`,
+ * `<user_shell_command>`); the two headings are the repository instructions and
+ * the attached-file list.
+ */
+const codexInjectedPromptPrefixes = [
+  '<',
+  '# AGENTS.md instructions',
+  '# Files mentioned by the user'
+];
+
+/**
+ * A Codex rollout file carries no title of its own, so a rail built from these
+ * files alone reads as hundreds of rows all saying "Codex session". The first
+ * typed prompt is the only description of the session in the file, so it becomes
+ * the title; the generic label survives only when the scanned window held no
+ * typed prompt at all.
+ */
+function codexDisplayTitle(derived: string, firstPrompt: string | null) {
+  if (derived !== codexGenericSessionTitle) return derived;
+  return firstPrompt ? compactText(firstPrompt, 60) : codexGenericSessionTitle;
+}
+
+function isGenericCodexTitle(title: string) {
+  return title === codexGenericSessionTitle || title === codexUntitledIndexTitle;
+}
+
+/**
+ * One Codex session can be described twice: the index file may name it, and the
+ * rollout file offers the opening prompt. Whichever record looks newer is beside
+ * the point — a placeholder must never displace a real title, and the index name
+ * describes the whole session where the prompt only opens it, so the title
+ * already in hand wins when both are real.
+ */
+function betterCodexTitle(existing: string, candidate: string) {
+  if (!isGenericCodexTitle(existing)) return existing;
+  if (!isGenericCodexTitle(candidate)) return candidate;
+  return existing;
+}
+
+function upsertCodexSessionRecord(
+  records: LocalAgentSessionRecord[],
+  record: LocalAgentSessionRecord
+) {
+  const existing = records.find(
+    (candidate) => candidate.provider === record.provider && candidate.id === record.id
+  );
+  if (!existing) {
+    records.push(record);
+    return;
+  }
+
+  const previousTitle = existing.title;
+  const candidateTitle = record.title;
+  mergeAgentSessionRecord(existing, record);
+  existing.title = betterCodexTitle(previousTitle, candidateTitle);
 }
 
 function updateLatestCodexRecord(
@@ -280,12 +428,12 @@ function codexResponseItemDescription(value: Record<string, unknown>) {
   return text ? compactText(text, 140) : null;
 }
 
-function mergeCodexSessionMetadata(
+export function mergeCodexSessionMetadata(
   indexed: LocalAgentSessionRecord[],
   metadata: LocalAgentSessionRecord[]
 ) {
   for (const record of metadata) {
-    upsertAgentSessionRecord(indexed, record);
+    upsertCodexSessionRecord(indexed, record);
   }
   return indexed;
 }
@@ -1222,6 +1370,18 @@ async function readTailUtf8(filePath: string, maxBytes: number) {
     const start = Math.max(0, fileStats.size - maxBytes);
     const buffer = Buffer.alloc(fileStats.size - start);
     await handle.read(buffer, 0, buffer.length, start);
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readHeadUtf8(filePath: string, maxBytes: number) {
+  const handle = await open(filePath, 'r');
+  try {
+    const fileStats = await handle.stat();
+    const buffer = Buffer.alloc(Math.min(fileStats.size, maxBytes));
+    await handle.read(buffer, 0, buffer.length, 0);
     return buffer.toString('utf8');
   } finally {
     await handle.close();
