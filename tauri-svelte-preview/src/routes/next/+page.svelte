@@ -47,6 +47,10 @@
   let disposed = false;
   let frameControls: { resetLayout: () => void } | null = null;
   let refitScheduled = false;
+  /** Its own state, NOT `rail.error`: ShellFrame mounts before this page's
+   * start-up, and `scanRail` clears `rail.error` — which would erase a mount
+   * failure on every launch and leave a blank shell with no message. */
+  let layoutError = $state<string | null>(null);
 
   /** Coalesce dockview's layout bursts into one refit per frame. */
   function scheduleRefit(): void {
@@ -269,11 +273,11 @@
     center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
     onSessionPanelLayout={scheduleRefit}
     onReady={(controls) => (frameControls = controls)}
-    onError={(message) => (rail.error = `layout failed: ${message}`)}
+    onError={(message) => (layoutError = `layout failed: ${message}`)}
   />
 
-  {#if rail.error}
-    <footer class="next-error">{rail.error}</footer>
+  {#if layoutError || rail.error}
+    <footer class="next-error">{[layoutError, rail.error].filter(Boolean).join('; ')}</footer>
   {/if}
 
   {#if import.meta.env.DEV}

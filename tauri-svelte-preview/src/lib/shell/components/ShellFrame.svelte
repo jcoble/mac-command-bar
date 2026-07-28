@@ -82,8 +82,9 @@
 
 <div class="shell-frame" class:ready bind:this={gridHost}></div>
 
-<!-- Parking stage: content lives here until (and unless) dockview claims it.
-     1px off-screen, hidden, layout-contained — the old shell's proven pattern. -->
+<!-- Parking stage: content lives here until (and unless) dockview claims it, and
+     whenever a panel hands it back. Not rendered at all, so nothing parked here
+     can be measured — see the note on `.parking-stage` in the styles below. -->
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={railSlot}>{@render rail()}</div>
   <div class="slot slot-center-dock" bind:this={centerSlot}></div>
@@ -105,15 +106,14 @@
     visibility: visible;
   }
 
+  /* `display: none`, NOT a 1px hidden box: parked content must be UNMEASURABLE.
+     A 1px stage still has a size, and a terminal parked in one measures its host
+     at zero — xterm's fit addon clamps that to 2 columns by 1 row and resizes the
+     real PTY to it, reflowing the agent's screen. With `display: none` the
+     computed height is `auto`, the fit addon proposes NaN and returns without
+     touching the grid. Content renders normally the moment it is moved out. */
   .parking-stage {
-    position: fixed;
-    left: -1px;
-    bottom: -1px;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    visibility: hidden;
-    contain: layout paint;
+    display: none;
   }
 
   /* Teleported slots and hosts must fill whatever cell they land in. */
