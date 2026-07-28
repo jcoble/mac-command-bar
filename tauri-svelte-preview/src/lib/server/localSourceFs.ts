@@ -10,6 +10,7 @@ import {
   type SourceDefinitionTarget,
   type SourcePreview,
   type SourceRecord,
+  type SourceReferenceCountResult,
   type SourceReferenceTarget,
   type SourceScanStats,
   type SourceScanResult,
@@ -933,6 +934,73 @@ export async function findLocalSourceReferences(
 ): Promise<SourceReferenceTarget[]> {
   const previews = await readLocalSourcePreviews(records);
   return findSourceReferenceTargets(previews, symbolName, limit);
+}
+
+/**
+ * The browser preview's answer to the desktop app's batched margin counts:
+ * count how many lines mention each symbol, reading the project once for all of
+ * them, and give up when the time budget runs out.
+ */
+export async function countLocalSourceReferences(
+  root: string,
+  symbolNames: string[],
+  deadlineMs: number | null
+): Promise<SourceReferenceCountResult> {
+  const startedAt = Date.now();
+  const budgetMs = Math.min(Math.max(deadlineMs ?? 400, 1), 10_000);
+  const names = normalizedReferenceCountSymbols(symbolNames);
+  const counts: Record<string, number> = {};
+  for (const name of names) counts[name] = 0;
+
+  if (names.length === 0) {
+    return { counts, approximate: false, scannedFiles: 0, elapsedMs: Date.now() - startedAt };
+  }
+
+  const scan = await scanLocalSourceFiles({ root, query: null, limit: null });
+  const patterns = names.map(
+    (name) => [name, new RegExp(`\\b${escapeRegExpValue(name)}\\b`)] as const
+  );
+  let approximate = scan.stats?.collectionLimitReached === true;
+  let scannedFiles = 0;
+
+  for (const record of scan.records) {
+    if (Date.now() - startedAt >= budgetMs) {
+      approximate = true;
+      break;
+    }
+
+    if (record.byteCount > maxPreviewBytes) continue;
+    const content = await readFile(record.path, 'utf8').catch(() => null);
+    if (content === null) continue;
+    scannedFiles += 1;
+
+    for (const line of content.split(/\r\n|\r|\n/)) {
+      for (const [name, pattern] of patterns) {
+        if (pattern.test(line)) counts[name] += 1;
+      }
+    }
+  }
+
+  return { counts, approximate, scannedFiles, elapsedMs: Date.now() - startedAt };
+}
+
+function escapeRegExpValue(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizedReferenceCountSymbols(symbolNames: string[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  for (const symbolName of symbolNames) {
+    const trimmed = symbolName.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    names.push(trimmed);
+    if (names.length >= 256) break;
+  }
+
+  return names;
 }
 
 async function readLocalSourcePreviews(records: SourceRecord[]): Promise<SourcePreview[]> {

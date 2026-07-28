@@ -19,8 +19,11 @@
  *  - **Nothing runs on import.** The first backend call of any kind happens
  *    when the user opens a file.
  *
- * The reference-count budget below is load-bearing and is copied verbatim —
- * see `countReferencesForCodeLens`.
+ * The reference-count budgets below are load-bearing — see
+ * `countReferencesForCodeLens`. They no longer match the old shell's: the
+ * margin counts there asked the backend once per symbol and were switched off
+ * entirely on any project over 1500 files, which is why big projects showed no
+ * counts at all. Here every symbol on screen is counted in one pass.
  */
 import {
   previewFromContent,
@@ -37,6 +40,7 @@ import {
   type SourceSignatureHelp
 } from '../../sourceData.ts';
 import {
+  countSourceReferencesFromTauri,
   findSourceDefinitionsFromTauri,
   findSourceLspCompletionsFromTauri,
   findSourceLspDefinitionsFromTauri,
@@ -47,14 +51,14 @@ import {
   findSourceLspSemanticTokensFromTauri,
   findSourceLspSignatureHelpFromTauri,
   findSourceReferencesFromTauri,
-  isNativeTauriRuntime,
   readSourceFromTauri
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { activateEditor } from './editorStore.svelte.ts';
+import { createCountMemory, createReferenceCountBatcher } from './referenceCountBatcher.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
-// ── Budgets (ported verbatim from the old shell) ──────────────────────────────
+// ── Budgets (from the old shell, except where the margin counts changed) ─────
 
 /** Most definitions one lookup will return. */
 export const maxSourceDefinitionResults = 20;
@@ -70,14 +74,25 @@ export const maxSourceCompletionResults = 50;
  */
 export const codeLensReferenceCountTimeoutMs = 700;
 /**
- * Above this many scanned files the plain-text fallback for a margin count is
- * skipped on the desktop app: it reads file contents across the whole index,
- * which for a large project means re-reading the project per symbol (the
- * other half of that freeze). The language server owns big projects. In the
- * browser preview the fallback resolves in memory, so it stays — dropping it
- * there made every count disappear once already.
+ * Monaco resolves margin counts one symbol at a time, as each one scrolls into
+ * view. Instead of asking the backend per symbol, the first request opens a
+ * window this long and every count asked for during it travels in one request.
  */
-export const maxCodeLensNativeReferenceScanRecords = 1500;
+export const codeLensReferenceCountBatchWindowMs = 50;
+/**
+ * The most time that one request may spend reading the project before it
+ * answers with whatever it counted so far. A ceiling, not a wait — a project
+ * of about four thousand files is counted in roughly 400ms and answers then.
+ * Nothing on screen is blocked while it runs.
+ */
+export const codeLensReferenceCountDeadlineMs = 1_500;
+/**
+ * How long a counted number stays good for. Project-wide counts move when
+ * files elsewhere change, which is not something typing in the open file does
+ * — so counts must NOT be thrown away on every keystroke. That is what used to
+ * leave the margin blank while a big project was being typed in.
+ */
+export const codeLensReferenceCountCacheMs = 30_000;
 
 // ── The shapes Monaco hands us ────────────────────────────────────────────────
 
@@ -262,9 +277,55 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
   }
 
+  // ── Margin counts: one project pass for every symbol on screen ─────────────
+
+  /**
+   * The two tiers remember their counts separately, because they count
+   * different things: the language server answers about the one symbol at that
+   * one spot, while the project pass answers about a name wherever it appears.
+   * Under one key a number would change as the reader typed.
+   */
+  const lensReferenceCounts = createCountMemory({ cacheMs: codeLensReferenceCountCacheMs });
+  const referenceCountBatcher = createReferenceCountBatcher({
+    windowMs: codeLensReferenceCountBatchWindowMs,
+    cacheMs: codeLensReferenceCountCacheMs,
+    maxCount: maxSourceReferenceResults,
+    countReferences(symbolNames: string[]) {
+      if (!projectRoot) return Promise.resolve(null);
+      countInvoke('count_source_references');
+      return countSourceReferencesFromTauri(
+        projectRoot,
+        symbolNames,
+        codeLensReferenceCountDeadlineMs
+      );
+    }
+  });
+
+  /**
+   * A count from the language server belongs to one spot in one file, so it is
+   * remembered by that spot. Line and column shift as text is inserted above,
+   * which costs a re-count for the symbols below the edit — the project pass
+   * covers those in the meantime.
+   */
+  function lensCountKey(request: SourceLookupRequest): string {
+    return `${activePreview?.path ?? ''}::${request.line}:${request.column}:${request.symbolName}`;
+  }
+
+  function forgetReferenceCounts(): void {
+    lensReferenceCounts.forget();
+    referenceCountBatcher.forget();
+  }
+
   /**
    * The "N references" number drawn above a symbol. Returns `null` for
    * "unknown", which draws nothing at all — better than a wrong number.
+   *
+   * The project pass is started first and the language server is given its
+   * turn while that runs, so the number that appears is the language server's
+   * when it is quick enough and the project pass's otherwise. Before this, a
+   * big project got no number at all: the language server was usually cold,
+   * and the only other tier was barred from projects this size because it read
+   * the whole project once per symbol.
    */
   async function countReferencesForCodeLens(
     request: SourceLookupRequest
@@ -272,24 +333,23 @@ export function createSourceIntelligence(): SourceIntelligence {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return null;
 
+    const remembered = lensReferenceCounts.get(lensCountKey(request));
+    if (remembered !== undefined) return remembered;
+
+    const projectCount = referenceCountBatcher.count(symbolName);
+
     if (activePreview && languageIntelligenceAvailable()) {
       const lspTargets = await raceCountTimeout(
         lspReferences(request),
         codeLensReferenceCountTimeoutMs
       );
-      if (lspTargets) return lspTargets.length;
+      if (lspTargets) {
+        lensReferenceCounts.remember(lensCountKey(request), lspTargets.length);
+        return lspTargets.length;
+      }
     }
 
-    if (isNativeTauriRuntime() && records.length > maxCodeLensNativeReferenceScanRecords) {
-      return null;
-    }
-
-    try {
-      const nativeTargets = await nativeReferences(symbolName);
-      return nativeTargets ? nativeTargets.length : null;
-    } catch {
-      return null;
-    }
+    return projectCount;
   }
 
   /**
@@ -443,8 +503,10 @@ export function createSourceIntelligence(): SourceIntelligence {
         nextProjectRoot && nextProjectRoot.trim().length > 0 ? nextProjectRoot : null;
       if (normalized === projectRoot) return;
       projectRoot = normalized;
-      // Files remembered under the old project must not answer for the new one.
+      // Files and counts remembered under the old project must not answer for
+      // the new one.
       externalPreviewCache.clear();
+      forgetReferenceCounts();
     },
     setActivePreview(preview: SourcePreview | null): void {
       activePreview = preview;
@@ -455,12 +517,16 @@ export function createSourceIntelligence(): SourceIntelligence {
     },
     setRecords(nextRecords: SourceRecord[]): void {
       records = nextRecords;
+      // A fresh scan means files moved, so the counts taken from them are no
+      // longer trustworthy.
+      forgetReferenceCounts();
     },
     invalidatePreview(path: string): void {
       externalPreviewCache.delete(path);
     },
     invalidateAllPreviews(): void {
       externalPreviewCache.clear();
+      forgetReferenceCounts();
     },
     get projectRoot(): string | null {
       return projectRoot;

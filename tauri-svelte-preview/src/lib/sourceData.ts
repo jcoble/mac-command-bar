@@ -60,6 +60,24 @@ export type SourceReferenceTarget = SourceRecord & {
   excerpt: string;
 };
 
+/**
+ * How many lines mention each of several symbols, counted in one pass over the
+ * project. This is what the "N references" numbers in the editor margin are
+ * built from — they ask about every symbol in the open file at once instead of
+ * running one project-wide search per symbol.
+ *
+ * `approximate` is true when the pass stopped early because it ran out of its
+ * time budget. Symbols it did reach are still worth showing; a zero for a
+ * symbol it may never have reached means "not counted", so the margin draws
+ * nothing rather than a wrong "0 references".
+ */
+export type SourceReferenceCountResult = {
+  counts: Record<string, number>;
+  approximate: boolean;
+  scannedFiles: number;
+  elapsedMs: number;
+};
+
 export type SourceLspStatus = {
   language: SourceLanguage;
   languageID: string;

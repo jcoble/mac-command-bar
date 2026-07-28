@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
 use orchestration::{
@@ -24,6 +25,20 @@ const DEFAULT_SOURCE_DEFINITION_LIMIT: usize = 20;
 const MAX_SOURCE_DEFINITION_LIMIT: usize = 100;
 const DEFAULT_SOURCE_REFERENCE_LIMIT: usize = 50;
 const MAX_SOURCE_REFERENCE_LIMIT: usize = 200;
+/// How long one batched margin-count request may spend before it answers with
+/// whatever it has counted so far. This is a ceiling, not a wait: a pass that
+/// finishes early answers early. A four-thousand-file C# and TypeScript
+/// project measures around 400ms in a release build, so this leaves room for a
+/// cold disk before giving up on the rest.
+const DEFAULT_REFERENCE_COUNT_DEADLINE_MS: u64 = 1_500;
+const MAX_REFERENCE_COUNT_DEADLINE_MS: u64 = 10_000;
+/// Most symbols one batched margin-count request may ask about. The editor
+/// draws at most 120 margin counts per file, so this leaves room to spare.
+const MAX_REFERENCE_COUNT_SYMBOLS: usize = 256;
+/// Most cores one counting pass will use. The pass is bounded by how fast the
+/// disk hands over files, so beyond a handful of readers there is nothing left
+/// to win — and the rest of the machine has work to do.
+const MAX_REFERENCE_COUNT_WORKERS: usize = 8;
 const MAX_SOURCE_SCAN_SKIPPED_DIRECTORY_SAMPLES: usize = 16;
 const DEFAULT_GIT_HISTORY_LIMIT: usize = 24;
 const MAX_GIT_HISTORY_LIMIT: usize = 80;
@@ -47,6 +62,21 @@ struct SourceScanResult {
     limit: usize,
     truncated: bool,
     stats: SourceScanStats,
+}
+
+/// How many lines mention each requested symbol, across the whole project.
+///
+/// `approximate` is true when the count stopped early — either the deadline ran
+/// out or the project has more files than one walk collects. An approximate
+/// result is still worth drawing for symbols that were found, but a zero in an
+/// approximate result means "not seen yet", not "nowhere in the project".
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceReferenceCountResult {
+    counts: HashMap<String, u32>,
+    approximate: bool,
+    scanned_files: usize,
+    elapsed_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -389,6 +419,10 @@ impl SourceScanRegistry {
 struct SourceScanCancellation {
     cancelled: Arc<AtomicBool>,
     progress: Option<Arc<dyn Fn(SourceScanStats) + Send + Sync>>,
+    /// When set, the walk stops itself at this moment even if nobody cancelled
+    /// it. Only the batched margin-count walk uses this; the file-list scan the
+    /// user watches runs to completion.
+    deadline: Option<Instant>,
 }
 
 impl SourceScanCancellation {
@@ -399,11 +433,20 @@ impl SourceScanCancellation {
         Self {
             cancelled,
             progress,
+            deadline: None,
         }
     }
 
     fn none() -> Self {
         Self::new(Arc::new(AtomicBool::new(false)), None)
+    }
+
+    fn until(deadline: Instant) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            progress: None,
+            deadline: Some(deadline),
+        }
     }
 
     #[cfg(test)]
@@ -418,10 +461,15 @@ impl SourceScanCancellation {
 
     fn ensure_active(&self) -> Result<(), String> {
         if self.cancelled.load(Ordering::Relaxed) {
-            Err("Source scan cancelled".to_string())
-        } else {
-            Ok(())
+            return Err("Source scan cancelled".to_string());
         }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err("Source scan ran out of time".to_string());
+        }
+        Ok(())
     }
 
     fn report_progress(&self, progress: SourceScanStats) {
@@ -657,6 +705,27 @@ async fn find_source_references(
     })
     .await
     .map_err(|error| format!("Source reference task failed: {error}"))?
+}
+
+/// Count, in one pass over the project, how many lines mention each of the
+/// given symbols.
+///
+/// This exists because the margin counts above every symbol in a file used to
+/// ask one question per symbol, each of which re-read the whole project and
+/// carried the entire file list across the bridge. One hundred and twenty of
+/// those at once is what froze the editor. Here the file list never leaves the
+/// backend and the project is read once for all of the symbols together.
+#[tauri::command]
+async fn count_source_references(
+    root: String,
+    symbol_names: Vec<String>,
+    deadline_ms: Option<u64>,
+) -> Result<SourceReferenceCountResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        count_source_references_sync(PathBuf::from(root), symbol_names, deadline_ms)
+    })
+    .await
+    .map_err(|error| format!("Source reference count task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1679,6 +1748,299 @@ fn is_source_token_boundary(line: &str, start: usize, end: usize) -> bool {
 
 fn is_source_identifier_character(character: char) -> bool {
     character == '_' || character.is_ascii_alphanumeric()
+}
+
+fn is_source_identifier_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+/// The symbols one counting pass is looking for, arranged so that a file can be
+/// checked for all of them at once.
+///
+/// Ordinary symbol names are plain identifiers, so they are matched by pulling
+/// each identifier out of a line and looking it up — one pass over the text no
+/// matter how many symbols were asked about. A name with punctuation in it
+/// (rare, but nothing stops the editor asking) cannot be found that way and
+/// falls back to searching the line for it directly.
+struct ReferenceCountPlan<'a> {
+    names: &'a [String],
+    identifiers: HashMap<&'a str, usize>,
+    searched: Vec<(usize, &'a str)>,
+}
+
+impl<'a> ReferenceCountPlan<'a> {
+    fn new(names: &'a [String]) -> Self {
+        let mut identifiers = HashMap::new();
+        let mut searched = Vec::new();
+
+        for (index, name) in names.iter().enumerate() {
+            if name.bytes().all(is_source_identifier_byte) {
+                identifiers.insert(name.as_str(), index);
+            } else {
+                searched.push((index, name.as_str()));
+            }
+        }
+
+        Self {
+            names,
+            identifiers,
+            searched,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
+/// Running totals for one counting pass.
+///
+/// A line that mentions a symbol twice still counts once, which is what the
+/// reference list the margin count replaces would have reported. `seen_on_line`
+/// remembers, per symbol, the last line that already counted for it; line
+/// numbers keep climbing across files so there is nothing to reset.
+struct ReferenceCountTally {
+    counts: Vec<u32>,
+    seen_on_line: Vec<u64>,
+    lines_read: u64,
+}
+
+impl ReferenceCountTally {
+    fn new(symbol_count: usize) -> Self {
+        Self {
+            counts: vec![0; symbol_count],
+            seen_on_line: vec![0; symbol_count],
+            lines_read: 0,
+        }
+    }
+
+    fn record(&mut self, symbol_index: usize, line_id: u64) {
+        if self.seen_on_line[symbol_index] == line_id {
+            return;
+        }
+        self.seen_on_line[symbol_index] = line_id;
+        self.counts[symbol_index] = self.counts[symbol_index].saturating_add(1);
+    }
+}
+
+fn count_source_references_sync(
+    root: PathBuf,
+    symbol_names: Vec<String>,
+    deadline_ms: Option<u64>,
+) -> Result<SourceReferenceCountResult, String> {
+    let started = Instant::now();
+    let metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read source root metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Source root is not a directory".to_string());
+    }
+
+    let names = normalized_reference_count_symbols(symbol_names);
+    if names.is_empty() {
+        return Ok(SourceReferenceCountResult {
+            counts: HashMap::new(),
+            approximate: false,
+            scanned_files: 0,
+            elapsed_ms: elapsed_millis(started),
+        });
+    }
+
+    let budget = Duration::from_millis(
+        deadline_ms
+            .unwrap_or(DEFAULT_REFERENCE_COUNT_DEADLINE_MS)
+            .clamp(1, MAX_REFERENCE_COUNT_DEADLINE_MS),
+    );
+    let deadline = started + budget;
+
+    // Walking the project here rather than accepting a file list from the
+    // caller is the point: the list is thousands of entries and used to be
+    // serialized across the bridge once per symbol.
+    let collection_limit = source_collection_limit(DEFAULT_SOURCE_LIST_LIMIT);
+    let mut records = Vec::new();
+    let mut walk_progress = SourceScanWalkProgress::default();
+    let walk = collect_source_files(
+        &root,
+        &root,
+        collection_limit,
+        None,
+        &mut records,
+        &SourceScanCancellation::until(deadline),
+        &mut walk_progress,
+    );
+    let mut approximate = walk.is_err() || records.len() >= collection_limit;
+
+    let plan = ReferenceCountPlan::new(&names);
+    let pass = count_reference_lines_across_files(&records, &plan, deadline);
+    approximate = approximate || pass.ran_out_of_time;
+
+    let counts = names
+        .iter()
+        .cloned()
+        .zip(pass.counts)
+        .collect::<HashMap<String, u32>>();
+
+    Ok(SourceReferenceCountResult {
+        counts,
+        approximate,
+        scanned_files: pass.scanned_files,
+        elapsed_ms: elapsed_millis(started),
+    })
+}
+
+struct ReferenceCountPass {
+    counts: Vec<u32>,
+    scanned_files: usize,
+    ran_out_of_time: bool,
+}
+
+/// Read every file once and count all of the symbols in it, spread across the
+/// machine's cores.
+///
+/// Reading the files is most of the cost — around three quarters of it on a
+/// four-thousand-file project — and it is the part that parallelizes cleanly:
+/// each file is counted on its own, and the per-file totals add up. Every
+/// worker keeps its own tally so nothing is shared while the pass runs.
+fn count_reference_lines_across_files(
+    records: &[SourceRecord],
+    plan: &ReferenceCountPlan,
+    deadline: Instant,
+) -> ReferenceCountPass {
+    let worker_count = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .clamp(1, MAX_REFERENCE_COUNT_WORKERS);
+    let next_record = std::sync::atomic::AtomicUsize::new(0);
+    let ran_out_of_time = AtomicBool::new(false);
+    let mut counts = vec![0u32; plan.len()];
+    let mut scanned_files = 0;
+
+    std::thread::scope(|scope| {
+        let workers = (0..worker_count)
+            .map(|_| {
+                let next_record = &next_record;
+                let ran_out_of_time = &ran_out_of_time;
+                scope.spawn(move || {
+                    let mut tally = ReferenceCountTally::new(plan.len());
+                    let mut scanned = 0;
+
+                    loop {
+                        let index = next_record.fetch_add(1, Ordering::Relaxed);
+                        let Some(record) = records.get(index) else {
+                            break;
+                        };
+                        // Reading one file costs far more than reading the
+                        // clock, so this checks on every file rather than
+                        // overshooting the deadline by a batch of them.
+                        if Instant::now() >= deadline {
+                            ran_out_of_time.store(true, Ordering::Relaxed);
+                            break;
+                        }
+
+                        if record.byte_count > MAX_PREVIEW_BYTES {
+                            continue;
+                        }
+                        let Ok(bytes) = std::fs::read(&record.path) else {
+                            continue;
+                        };
+                        scanned += 1;
+                        count_reference_lines(&String::from_utf8_lossy(&bytes), plan, &mut tally);
+                    }
+
+                    (tally.counts, scanned)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            let (worker_counts, worker_scanned) = worker
+                .join()
+                .unwrap_or_else(|_| (vec![0; plan.len()], 0usize));
+            for (total, counted) in counts.iter_mut().zip(worker_counts) {
+                *total = total.saturating_add(counted);
+            }
+            scanned_files += worker_scanned;
+        }
+    });
+
+    ReferenceCountPass {
+        counts,
+        scanned_files,
+        ran_out_of_time: ran_out_of_time.load(Ordering::Relaxed),
+    }
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Trim, drop blanks and repeats, and keep the request to a sane size.
+fn normalized_reference_count_symbols(symbol_names: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+
+    for symbol_name in symbol_names {
+        let trimmed = symbol_name.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        names.push(trimmed.to_string());
+        if names.len() >= MAX_REFERENCE_COUNT_SYMBOLS {
+            break;
+        }
+    }
+
+    names
+}
+
+fn count_reference_lines(content: &str, plan: &ReferenceCountPlan, tally: &mut ReferenceCountTally) {
+    for line in content.lines() {
+        tally.lines_read += 1;
+        let line_id = tally.lines_read;
+
+        if !plan.identifiers.is_empty() {
+            let bytes = line.as_bytes();
+            let mut index = 0;
+            while index < bytes.len() {
+                if !is_source_identifier_byte(bytes[index]) {
+                    index += 1;
+                    continue;
+                }
+
+                let start = index;
+                while index < bytes.len() && is_source_identifier_byte(bytes[index]) {
+                    index += 1;
+                }
+                if let Some(&symbol_index) = plan.identifiers.get(&line[start..index]) {
+                    tally.record(symbol_index, line_id);
+                }
+            }
+        }
+
+        for &(symbol_index, symbol_name) in &plan.searched {
+            if find_case_sensitive_source_reference_column(line, symbol_name).is_some() {
+                tally.record(symbol_index, line_id);
+            }
+        }
+    }
+}
+
+/// Like `find_source_reference_column`, but without lowercasing the line first.
+/// Margin counts run over the whole project, and lowercasing every line was
+/// allocating a fresh copy of the project's text as it went.
+fn find_case_sensitive_source_reference_column(line: &str, symbol_name: &str) -> Option<usize> {
+    let mut search_start = 0;
+
+    while search_start < line.len() {
+        let relative_index = line[search_start..].find(symbol_name)?;
+        let index = search_start + relative_index;
+        let end_index = index + symbol_name.len();
+        if is_source_token_boundary(line, index, end_index) {
+            return Some(index);
+        }
+        search_start = end_index;
+    }
+
+    None
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -4202,6 +4564,7 @@ fn main() {
             search_source_files,
             find_source_definitions,
             find_source_references,
+            count_source_references,
             read_source_lsp_status,
             list_source_lsp_statuses,
             warm_source_lsp_for_root,
@@ -6206,6 +6569,198 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reference_counts_answer_every_symbol_from_one_walk() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/FormatResolver.cs"),
+            [
+                "public sealed class FormatResolver",
+                "{",
+                "    private readonly FormatDetector _detector;",
+                // Two mentions on one line still count as one, matching the
+                // reference list this count stands in for.
+                "    private readonly FormatDetector _other = new FormatDetector();",
+                "    private readonly FormatDetectorFactory _factory;",
+                "}",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/FormatDetector.cs"),
+            ["public sealed class FormatDetector", "{", "}"].join("\n"),
+        )
+        .unwrap();
+        // Skipped by the walk, so its mentions must not be counted.
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/index.ts"),
+            "export const FormatDetector = 1;",
+        )
+        .unwrap();
+
+        let result = count_source_references_sync(
+            root.clone(),
+            vec![
+                "FormatDetector".to_string(),
+                "FormatResolver".to_string(),
+                "MissingSymbol".to_string(),
+            ],
+            Some(5_000),
+        )
+        .unwrap();
+
+        assert!(!result.approximate);
+        assert_eq!(result.scanned_files, 2);
+        assert_eq!(result.counts.get("FormatDetector"), Some(&3));
+        assert_eq!(result.counts.get("FormatResolver"), Some(&1));
+        assert_eq!(result.counts.get("MissingSymbol"), Some(&0));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reference_counts_are_case_sensitive() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Sample.cs"),
+            ["var formatdetector = 1;", "var FormatDetector = 2;"].join("\n"),
+        )
+        .unwrap();
+
+        let result = count_source_references_sync(
+            root.clone(),
+            vec!["FormatDetector".to_string()],
+            Some(5_000),
+        )
+        .unwrap();
+
+        assert_eq!(result.counts.get("FormatDetector"), Some(&1));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reference_counts_stop_at_the_deadline_and_say_so() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        for index in 0..120 {
+            std::fs::write(
+                root.join(format!("File{index}.cs")),
+                "var formatDetector = new FormatDetector();\n".repeat(400),
+            )
+            .unwrap();
+        }
+
+        let result =
+            count_source_references_sync(root.clone(), vec!["FormatDetector".to_string()], Some(1))
+                .unwrap();
+
+        assert!(result.approximate);
+        assert!(result.scanned_files < 120);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reference_counts_ignore_blank_and_repeated_symbols() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Sample.cs"), "var detector = new Detector();").unwrap();
+
+        let result = count_source_references_sync(
+            root.clone(),
+            vec![
+                "  Detector  ".to_string(),
+                "Detector".to_string(),
+                "   ".to_string(),
+            ],
+            Some(5_000),
+        )
+        .unwrap();
+
+        assert_eq!(result.counts.len(), 1);
+        assert_eq!(result.counts.get("Detector"), Some(&1));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Not part of the normal suite: it reads a real, large checkout. Run it by
+    /// hand when the margin-count budget is in question:
+    ///
+    /// ```text
+    /// cargo test --release --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml \
+    ///   reference_count_pass_over_a_large_project -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn reference_count_pass_over_a_large_project() {
+        let root = PathBuf::from(
+            std::env::var("MCB_REFERENCE_COUNT_BENCH_ROOT")
+                .unwrap_or_else(|_| "/Users/blackcolours/dev/work/EdiPlatform".to_string()),
+        );
+        if !root.is_dir() {
+            eprintln!("skipping: {} is not a directory", root.display());
+            return;
+        }
+
+        let symbol_names = (0..120)
+            .map(|index| format!("BenchmarkSymbol{index}"))
+            .collect::<Vec<_>>();
+
+        {
+            let started = Instant::now();
+            let mut records = Vec::new();
+            let _ = collect_source_files(
+                &root,
+                &root,
+                source_collection_limit(DEFAULT_SOURCE_LIST_LIMIT),
+                None,
+                &mut records,
+                &SourceScanCancellation::none(),
+                &mut SourceScanWalkProgress::default(),
+            );
+            eprintln!(
+                "walk only: {} files in {} ms",
+                records.len(),
+                started.elapsed().as_millis()
+            );
+
+            let started = Instant::now();
+            let mut bytes_read = 0usize;
+            for record in &records {
+                if record.byte_count > MAX_PREVIEW_BYTES {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(&record.path) {
+                    bytes_read += bytes.len();
+                }
+            }
+            eprintln!(
+                "read only: {} MB in {} ms",
+                bytes_read / 1_000_000,
+                started.elapsed().as_millis()
+            );
+        }
+
+        // First pass warms the file cache; the second is the number that matters.
+        for attempt in 1..=2 {
+            let started = Instant::now();
+            let result =
+                count_source_references_sync(root.clone(), symbol_names.clone(), Some(600_000))
+                    .unwrap();
+            eprintln!(
+                "pass {attempt}: {} files in {} ms (approximate: {})",
+                result.scanned_files,
+                started.elapsed().as_millis(),
+                result.approximate
+            );
+        }
     }
 
     fn unique_temp_root() -> PathBuf {

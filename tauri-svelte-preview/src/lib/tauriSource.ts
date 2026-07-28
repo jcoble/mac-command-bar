@@ -14,6 +14,7 @@ import type {
   SourceLspStatus,
   SourcePreview,
   SourceRecord,
+  SourceReferenceCountResult,
   SourceReferenceTarget,
   SourceRenameResult,
   SourceScanResult,
@@ -1124,6 +1125,36 @@ export async function findSourceReferencesFromTauri(
     records,
     symbolName,
     limit
+  });
+}
+
+/**
+ * Count how many lines mention each of `symbolNames`, across the whole project
+ * under `root`, in one pass.
+ *
+ * Deliberately takes no file list: the backend walks the project itself. The
+ * margin counts used to send the entire scanned file list across the bridge
+ * once per symbol, and with a hundred-odd symbols on screen that alone was
+ * enough to lock up the app.
+ */
+export async function countSourceReferencesFromTauri(
+  root: string,
+  symbolNames: string[],
+  deadlineMs?: number
+): Promise<SourceReferenceCountResult | null> {
+  if (!isTauriRuntime()) {
+    return postLocalSourceBridge<SourceReferenceCountResult>('reference-counts', {
+      root,
+      symbolNames,
+      deadlineMs: deadlineMs ?? null
+    });
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceReferenceCountResult>('count_source_references', {
+    root,
+    symbolNames,
+    deadlineMs: deadlineMs ?? null
   });
 }
 
