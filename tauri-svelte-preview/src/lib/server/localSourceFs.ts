@@ -326,16 +326,18 @@ function parseCmuxHookSessionsJson(agent: string, input: string): LocalAgentSess
   });
 }
 
-function parseClaudeJsonl(input: string, projectPath: string): LocalAgentSessionRecord[] {
+export function parseClaudeJsonl(input: string, projectPath: string): LocalAgentSessionRecord[] {
   const records: LocalAgentSessionRecord[] = [];
   const aiTitles = new Map<string, string>();
   const firstPrompts = new Map<string, string>();
 
   for (const value of parseJsonLines(input)) {
-    // One sidechain entry condemns the whole transcript: a subagent file is
-    // sidechain end to end, so anything already collected from it is a
-    // subagent's turn, not a resumable session.
-    if (isClaudeSidechainEntry(value)) return [];
+    // One such entry condemns the whole transcript: these files are what they
+    // are end to end, so anything already collected from one is an agent's
+    // turn, not a session the user can resume. Both checks answer the same
+    // question — "is this a top-level session?" — from different evidence: a
+    // subagent's sidechain flag, or a helper's entrypoint.
+    if (isClaudeSidechainEntry(value) || isClaudeAgentLaunchedEntry(value)) return [];
 
     const aiTitle = claudeAiTitle(value);
     if (aiTitle) aiTitles.set(aiTitle[0], aiTitle[1]); // a later line is the newer title
@@ -393,6 +395,46 @@ function isClaudeSubagentTranscriptPath(filePath: string) {
  */
 function isClaudeSidechainEntry(value: Record<string, unknown>) {
   return value.isSidechain === true;
+}
+
+/**
+ * Entrypoint values that mean "a program started this run, not the user".
+ * Prefixes, so a future `sdk-node` is covered without a code change; adding a
+ * new family is a one-line edit here.
+ */
+const agentLaunchEntrypointPrefixes = ['sdk'];
+
+/**
+ * Helper-agent transcripts — a team lead's dispatched teammates, and any other
+ * SDK-driven run — land flat in the same project directory as the user's own
+ * sessions, with `isSidechain: false`, `userType: "external"` and no agent name
+ * anywhere, so neither discriminator above sees them. What they do carry is how
+ * they were launched: every `user`, `assistant` and `attachment` record repeats
+ * an `entrypoint`, and a programmatic run is always `sdk-…` (`sdk-cli`,
+ * `sdk-py`) where a session the user typed into is `cli` or `claude-vscode`.
+ *
+ * Verified 2026-07-28 across 1073 transcripts on this machine: every one of the
+ * 888 dispatched helper runs was `sdk-…`, every human session was `cli` or
+ * `claude-vscode`, and no transcript ever mixed the two families. 1072 of the
+ * 1073 carry the field within the 256 KB tail this scanner reads.
+ *
+ * This deliberately replaces the "does the first message read like a dispatch
+ * prompt?" idea: the user's real sessions often open with pasted logs and
+ * instruction-shaped text, and the scanner reads a tail window that usually
+ * does not even contain the first message.
+ */
+export function isAgentLaunchEntrypoint(entrypoint: string) {
+  return agentLaunchEntrypointPrefixes.some((prefix) => entrypoint.startsWith(prefix));
+}
+
+/**
+ * Reads that entrypoint off one transcript line. A line without the field says
+ * nothing either way — older transcripts predate it — so it is not evidence of
+ * a helper and the transcript is kept.
+ */
+function isClaudeAgentLaunchedEntry(value: Record<string, unknown>) {
+  const entrypoint = optionalString(value.entrypoint);
+  return entrypoint ? isAgentLaunchEntrypoint(entrypoint) : false;
 }
 
 /**

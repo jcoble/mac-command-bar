@@ -382,10 +382,12 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
-        // One sidechain entry condemns the whole transcript: a subagent file is
-        // sidechain end to end, so anything already collected from it is a
-        // subagent's turn, not a resumable session.
-        if is_claude_sidechain_entry(&value) {
+        // One such entry condemns the whole transcript: these files are what
+        // they are end to end, so anything already collected from one is an
+        // agent's turn, not a session the user can resume. Both checks answer
+        // the same question — "is this a top-level session?" — from different
+        // evidence: a subagent's sidechain flag, or a helper's entrypoint.
+        if is_claude_sidechain_entry(&value) || is_claude_agent_launched_entry(&value) {
             return Vec::new();
         }
 
@@ -474,6 +476,44 @@ fn is_claude_subagent_transcript_path(path: &Path) -> bool {
 /// a live machine: 1177 sidechain files, all of them pure, zero mixed files.
 fn is_claude_sidechain_entry(value: &Value) -> bool {
     value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+}
+
+/// Entrypoint values that mean "a program started this run, not the user".
+/// Prefixes, so a future `sdk-node` is covered without a code change; adding a
+/// new family is a one-line edit here.
+const AGENT_LAUNCH_ENTRYPOINT_PREFIXES: &[&str] = &["sdk"];
+
+/// Helper-agent transcripts — a team lead's dispatched teammates, and any other
+/// SDK-driven run — land flat in the same project directory as the user's own
+/// sessions, with `isSidechain: false`, `userType: "external"` and no agent name
+/// anywhere, so neither discriminator above sees them. What they do carry is how
+/// they were launched: every `user`, `assistant` and `attachment` record repeats
+/// an `entrypoint`, and a programmatic run is always `sdk-…` (`sdk-cli`,
+/// `sdk-py`) where a session the user typed into is `cli` or `claude-vscode`.
+///
+/// Verified 2026-07-28 across 1073 transcripts on this machine: every one of the
+/// 888 dispatched helper runs was `sdk-…`, every human session was `cli` or
+/// `claude-vscode`, and no transcript ever mixed the two families. 1072 of the
+/// 1073 carry the field within the 256 KB tail this scanner reads.
+///
+/// This deliberately replaces the "does the first message read like a dispatch
+/// prompt?" idea: the user's real sessions often open with pasted logs and
+/// instruction-shaped text, and the scanner reads a tail window that usually
+/// does not even contain the first message.
+fn is_agent_launch_entrypoint(entrypoint: &str) -> bool {
+    AGENT_LAUNCH_ENTRYPOINT_PREFIXES
+        .iter()
+        .any(|prefix| entrypoint.starts_with(prefix))
+}
+
+/// Reads that entrypoint off one transcript line. A line without the field says
+/// nothing either way — older transcripts predate it — so it is not evidence of
+/// a helper and the transcript is kept.
+fn is_claude_agent_launched_entry(value: &Value) -> bool {
+    value
+        .get("entrypoint")
+        .and_then(Value::as_str)
+        .is_some_and(is_agent_launch_entrypoint)
 }
 
 /// Claude Code records its own generated session title on a `type: "ai-title"`
@@ -1207,6 +1247,59 @@ mod tests {
         "\n",
         r#"{"parentUuid":"1","isSidechain":true,"agentId":"a0a5","type":"assistant","sessionId":"S2","timestamp":"2026-07-28T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Structured output provided successfully"}]}}"#,
     );
+
+    /// A helper-agent transcript as Claude Code actually writes it: flat in the
+    /// project directory, `isSidechain: false`, `userType: "external"`, no agent
+    /// name anywhere — identical to a real session except for the entrypoint
+    /// that launched it.
+    const HELPER_AGENT_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","promptSource":"sdk","sessionId":"S4","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T11:00:00Z","message":{"role":"user","content":"You are implementing Task 1 of the v2-base plan."}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"userType":"external","entrypoint":"sdk-cli","sessionId":"S4","timestamp":"2026-07-28T11:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Reading the brief."}]}}"#,
+    );
+
+    /// A REAL session that opens with pasted log output. The user does this
+    /// often, and it is why the filter reads the entrypoint rather than
+    /// guessing from the shape of the first message: nothing about this text
+    /// distinguishes it from a machine-authored dispatch prompt.
+    const REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"userType":"external","entrypoint":"cli","promptSource":"typed","sessionId":"S5","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T12:00:00Z","message":{"role":"user","content":"You are seeing this in the console:\n[vite] hmr update /src/routes/next/+page.svelte\nERROR  Cannot read properties of undefined (reading 'api')\n    at mount (chunk-QK6X.js:14:9)\nReview this change and tell me why. Your final message should name the file."}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"entrypoint":"cli","sessionId":"S5","timestamp":"2026-07-28T12:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"That mount is running before the store exists."}]}}"#,
+    );
+
+    #[test]
+    fn claude_scan_excludes_helper_agent_transcripts() {
+        // The entrypoint is the whole rule: `sdk-*` launched it programmatically.
+        assert!(is_agent_launch_entrypoint("sdk-cli"));
+        assert!(is_agent_launch_entrypoint("sdk-py"));
+        assert!(!is_agent_launch_entrypoint("cli"));
+        assert!(!is_agent_launch_entrypoint("claude-vscode"));
+        assert!(!is_agent_launch_entrypoint(""));
+
+        assert_eq!(
+            parse_claude_jsonl(HELPER_AGENT_JSONL, "/Users/dev/work/mac-command-bar"),
+            Vec::new()
+        );
+
+        // A real session that opens with pasted log output and the very phrases
+        // a dispatch prompt uses ("You are ", "Review this change", "Your final
+        // message") must survive. Excluding one of the user's own sessions is
+        // strictly worse than listing a helper.
+        let records = parse_claude_jsonl(
+            REAL_SESSION_STARTING_WITH_A_PASTED_LOG_JSONL,
+            "/Users/dev/work/mac-command-bar",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "S5");
+
+        // Older transcripts predate the field. Keep them: a missing entrypoint
+        // is not evidence of a helper, and the cost of guessing wrong is losing
+        // a session the user wanted.
+        let records = parse_claude_jsonl(REAL_SESSION_JSONL, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "S1");
+    }
 
     #[test]
     fn claude_scan_excludes_subagent_sidechain_transcripts() {
