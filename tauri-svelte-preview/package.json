@@ -56,6 +56,7 @@
     "test:next-tokens": "node --experimental-strip-types scripts/nextTokens.test.mjs",
     "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs",
     "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
+    "test:session-workspaces": "node --experimental-strip-types scripts/sessionWorkspaces.test.mjs",
     "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.mjs",
     "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs"
   },

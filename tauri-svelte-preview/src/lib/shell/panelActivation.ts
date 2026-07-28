@@ -66,6 +66,10 @@ export interface PanelActivation {
   allowPanelLoads(): void;
   /** Start honouring session picks (once start-up has finished). */
   allowSessionLoads(): void;
+  /** Whether a session pick would be honoured right now. The page asks before
+   * re-opening a session's files, so start-up re-attaching a terminal cannot
+   * make the editor read files while everything else is still switched off. */
+  loadsAllowed(): boolean;
   /** A center tab came to the front. */
   panelShown(id: string): void;
   /** The user picked a session in the rail. */
@@ -130,6 +134,10 @@ export function createPanelActivation(
 
     allowSessionLoads(): void {
       sessionLoadsAllowed = true;
+    },
+
+    loadsAllowed(): boolean {
+      return sessionLoadsAllowed;
     },
 
     panelShown(id: string): void {

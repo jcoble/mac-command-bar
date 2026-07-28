@@ -258,4 +258,17 @@ function selection(root, projects = []) {
   assert.deepEqual(panels.loadedPanels(), ['editor'], 'still one opened tab');
 }
 
+// Anything that wants to know whether a session pick would be honoured can ask.
+// The page uses it to keep start-up from re-opening a session's files before
+// launch is over; opening tabs is a different gate and does not answer for it.
+{
+  const { activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  assert.equal(panels.loadsAllowed(), false, 'session picks are ignored during launch');
+  panels.allowPanelLoads();
+  assert.equal(panels.loadsAllowed(), false, 'opening tabs says nothing about session picks');
+  panels.allowSessionLoads();
+  assert.equal(panels.loadsAllowed(), true, 'launch is over, so a pick is the user speaking');
+}
+
 console.log('panelActivation: all tests passed');
