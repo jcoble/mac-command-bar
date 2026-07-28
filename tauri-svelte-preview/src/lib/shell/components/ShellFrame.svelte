@@ -14,14 +14,29 @@
 
   interface Props {
     rail: Snippet;
-    center: { session: Snippet; editor: Snippet; browser: Snippet };
+    center: { session: Snippet; editor: Snippet; git: Snippet; browser: Snippet };
     context: Snippet;
     dock: Snippet;
     onSessionPanelLayout?: () => void;
-    onReady?: (controls: { resetLayout: () => void }) => void;
+    /** A center tab came to the front. Fires for the dock's own start-up
+     * announcements too — see the note in `centerDock.ts`. */
+    onCenterPanelShown?: (id: string) => void;
+    onReady?: (controls: {
+      resetLayout: () => void;
+      showCenterPanel: (id: string) => void;
+    }) => void;
     onError?: (message: string) => void;
   }
-  let { rail, center, context, dock, onSessionPanelLayout, onReady, onError }: Props = $props();
+  let {
+    rail,
+    center,
+    context,
+    dock,
+    onSessionPanelLayout,
+    onCenterPanelShown,
+    onReady,
+    onError
+  }: Props = $props();
 
   let gridHost: HTMLElement;
   let railSlot: HTMLElement;
@@ -30,6 +45,7 @@
   let dockSlot: HTMLElement;
   let sessionSlot: HTMLElement;
   let editorSlot: HTMLElement;
+  let gitSlot: HTMLElement;
   let browserSlot: HTMLElement;
 
   let frame: Frame | null = null;
@@ -48,11 +64,13 @@
         panels: [
           { id: 'session', title: 'Session', element: sessionSlot },
           { id: 'editor', title: 'Editor', element: editorSlot },
+          { id: 'git', title: 'Source control', element: gitSlot },
           { id: 'browser', title: 'Browser', element: browserSlot }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
-        }
+        },
+        onPanelActivated: (id) => onCenterPanelShown?.(id)
       });
       frame.layout(gridHost.clientWidth, gridHost.clientHeight);
       observer = new ResizeObserver(() => {
@@ -64,7 +82,8 @@
         resetLayout: () => {
           frame?.resetLayout();
           centerDock?.resetLayout();
-        }
+        },
+        showCenterPanel: (id: string) => centerDock?.activatePanel(id)
       });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : String(error));
@@ -92,6 +111,7 @@
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
+  <div class="slot" bind:this={gitSlot}>{@render center.git()}</div>
   <div class="slot" bind:this={browserSlot}>{@render center.browser()}</div>
 </div>
 

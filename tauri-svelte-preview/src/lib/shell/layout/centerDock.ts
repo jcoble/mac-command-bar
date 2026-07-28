@@ -32,6 +32,15 @@ export interface CenterDockOptions {
   storage: LayoutStorage;
   panels: CenterPanelSpec[];
   onPanelLayout?: (id: string) => void;
+  /**
+   * The tab the user is looking at changed. Dockview delivers this through a
+   * microtask, so the events caused by building or restoring the dock arrive
+   * shortly after `createCenterDock` returns — a listener that loads data must
+   * ignore those and start honouring the signal one timer tick later. See the
+   * note on `runSynchronized` below for why a microtask cannot be told apart
+   * from a real click any other way.
+   */
+  onPanelActivated?: (id: string) => void;
   onLayoutPersisted?: (ok: boolean) => void;
 }
 
@@ -237,7 +246,11 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
   const listeners = [
     api.onDidLayoutChange(persistSoon),
-    api.onDidRemovePanel((panel) => keepRosterPanel(panel.id))
+    api.onDidRemovePanel((panel) => keepRosterPanel(panel.id)),
+    api.onDidActivePanelChange((panel) => {
+      if (disposed || !panel) return;
+      options.onPanelActivated?.(panel.id);
+    })
   ];
 
   return {

@@ -216,7 +216,9 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
     }
 
     if (line.startsWith('diff --git ')) {
-      ensureSection(section?.label ?? '');
+      // Stay in whatever section we are already in (`ensureSection` with the
+      // same label reuses it); start an unlabeled one only when there is none.
+      if (section === null) ensureSection('');
       continue;
     }
     if (line.startsWith('--- ')) {

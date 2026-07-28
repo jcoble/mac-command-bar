@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict';
+
+import { createPanelActivation } from '../src/lib/shell/panelActivation.ts';
+
+/** Records every loader call so a test can say exactly what ran. */
+function recorder() {
+  const calls = [];
+  return {
+    calls,
+    activators: {
+      editor: (root) => calls.push(['editor', root]),
+      git: (root) => calls.push(['git', root]),
+      browser: () => calls.push(['browser', null]),
+      explorer: (root) => calls.push(['explorer', root]),
+      context: (selection) => calls.push(['context', selection.root])
+    }
+  };
+}
+
+function selection(root, projects = []) {
+  return { root, projects };
+}
+
+// Launch: the dock announcing a restored tab, and start-up re-attaching a
+// session, must both load nothing at all.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.panelShown('git');
+  panels.panelShown('editor');
+  panels.sessionPicked();
+  assert.deepEqual(calls, [], 'nothing loads before the shell says launch is over');
+  assert.deepEqual(panels.loadedPanels(), [], 'and nothing counts as opened');
+}
+
+// A tab brought to the front after launch loads that tab, and only that tab.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.panelShown('git');
+  assert.deepEqual(calls, [['git', '/repo/one']], 'only the tab the user opened loads');
+  panels.panelShown('browser');
+  assert.deepEqual(calls.at(-1), ['browser', null], 'the browser panel takes no project');
+  assert.deepEqual(panels.loadedPanels(), ['git', 'browser']);
+}
+
+// The terminal tab is never re-loaded from here, and an unknown id is ignored.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.panelShown('session');
+  panels.panelShown('something-else');
+  assert.deepEqual(calls, [], 'the terminal tab and unknown tabs load nothing');
+}
+
+// With no session picked yet, a tab still opens — with no project.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(''));
+  panels.allowPanelLoads();
+  panels.panelShown('editor');
+  panels.panelShown('git');
+  assert.deepEqual(calls, [
+    ['editor', null],
+    ['git', null]
+  ]);
+}
+
+// Picking a session loads the two side panels...
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  assert.deepEqual(calls, [
+    ['explorer', '/repo/one'],
+    ['context', '/repo/one']
+  ]);
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context']);
+}
+
+// ...and a session with no project folder still loads the context cards, which
+// are machine-wide, but has no folder to list files from.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(''));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  assert.deepEqual(calls, [['context', '']], 'no folder means no file listing');
+}
+
+// Changing session re-points the tabs the user has opened, and leaves the rest.
+{
+  let root = '/repo/one';
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(root));
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.panelShown('git');
+  calls.length = 0;
+
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.deepEqual(calls, [
+    ['explorer', '/repo/two'],
+    ['context', '/repo/two'],
+    ['git', '/repo/two']
+  ]);
+  assert.ok(
+    !calls.some(([name]) => name === 'editor'),
+    'a tab the user never opened is not loaded by a session change'
+  );
+}
+
+// The two gates are independent: opening tabs is allowed while start-up is
+// still finishing, and picking a session then still works.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.panelShown('editor');
+  panels.sessionPicked();
+  assert.deepEqual(calls, [['editor', '/repo/one']], 'session picks are still switched off');
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  assert.deepEqual(calls.slice(1), [
+    ['explorer', '/repo/one'],
+    ['context', '/repo/one'],
+    ['editor', '/repo/one']
+  ]);
+}
+
+// A repeated tab activation is passed on every time: the loaders are the ones
+// that decide a repeat costs nothing, and this keeps a retry after a failure
+// possible.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.panelShown('git');
+  panels.panelShown('git');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(panels.loadedPanels(), ['git'], 'still one opened tab');
+}
+
+console.log('panelActivation: all tests passed');

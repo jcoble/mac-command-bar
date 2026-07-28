@@ -41,7 +41,17 @@
     "tauri:dev:attach": "tauri dev --config src-tauri/tauri.dev.attach.conf.json",
     "tauri:dev:next": "tauri dev --config src-tauri/tauri.dev.next.conf.json",
     "tauri:build": "tauri build",
-    "test:open-file-bus": "node --experimental-strip-types scripts/openFileBus.test.mjs"
+    "test:open-file-bus": "node --experimental-strip-types scripts/openFileBus.test.mjs",
+    "test:source-record-from-path": "node --experimental-strip-types scripts/sourceRecordFromPath.test.mjs",
+    "test:editor-store": "node --experimental-strip-types scripts/editorStore.test.mjs",
+    "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.mjs",
+    "test:parse-unified-diff": "node --experimental-strip-types scripts/parseUnifiedDiff.test.mjs",
+    "test:context-store": "node --experimental-strip-types scripts/contextStore.test.mjs",
+    "test:explorer": "node --experimental-strip-types scripts/explorerStore.test.mjs",
+    "test:normalize-browser-url": "node --experimental-strip-types scripts/normalizeBrowserUrl.test.mjs",
+    "test:command-registry": "node --experimental-strip-types scripts/commandRegistry.test.mjs",
+    "test:next-tokens": "node --experimental-strip-types scripts/nextTokens.test.mjs",
+    "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",
