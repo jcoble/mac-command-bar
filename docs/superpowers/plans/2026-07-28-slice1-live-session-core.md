@@ -885,3 +885,13 @@ sessions correctly (views pre-sized to PTY geometry + one repaint nudge), 16MB s
 20k-line views. Four fix rounds during verification: 73b3f58 (exit chain, switch cost, hidden-view
 geometry), 4042a87 (subagent-transcript filtering, 3-tier titles, honest HUD labels), 3f3c94c
 (input bucket, repaint nudge), e7a8479 (16MB scrollback, amortized trim, kill-then-remove close).
+
+## Deferred items carried out of Slice 1 (triaged fine-to-defer by the final review)
+
+- Old-shell scan cache holds ~1.8M chars of localStorage; quota failures now surface on the rail but the cache itself needs the spec's cache lane.
+- Scrollback trim cuts are not ANSI-aware (repaint nudge covers it); tombstones pin up to 16MB each until dismissed; scrollback IPC ships the full ring though the client replays 4MB.
+- No eviction/hibernate for idle hidden views (~20MB/view at 20k lines) — that is the spec's Hibernate/LRU lane.
+- TS/Rust scanner parity nits: ellipsis char differs; TS decodeClaudeProjectDir splits dashes naively vs Rust filesystem probe (bridge-only).
+- Small vestiges: unused SerializeAddon in xtermFactory (intended for the cold path); persist() success boolean unread; page-loop re-attach catch mostly shadowed by the registerHost path; rail.error is single-slot.
+- Notion task: adopt-from-rail should not auto-run the resume command (confirm / type-without-Enter).
+- Parked branch `wip/old-shell-rewrite-2026-07-28`: ~3.8k-line uncommitted old-shell rewrite of unknown provenance, preserved for quarrying.
