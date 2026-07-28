@@ -22,6 +22,8 @@ import { registerCommands } from './palette/commandRegistry.ts';
 export interface ShellCommandHooks {
   /** Bring a center tab to the front (its id in the tab roster). */
   showPanel(id: string): void;
+  /** Unfold the Source control section of the left column. */
+  expandSourceControl(): void;
 }
 
 /** Register the panel actions. Calling it again replaces them, never doubles. */
@@ -41,9 +43,12 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       detail: 'Bring the code you have open to the front',
       perform: () => hooks.showPanel('editor')
     },
-    // 'show-git' was removed when source control moved into the left column —
-    // there is no center tab for it to surface any more. It returns as
-    // "expand the Source control section" once the sidebar exposes that control.
+    {
+      id: 'show-git',
+      label: 'Show source control',
+      detail: 'Open the source control section of the left column',
+      perform: () => hooks.expandSourceControl()
+    },
     {
       id: 'show-browser',
       label: 'Show the browser',

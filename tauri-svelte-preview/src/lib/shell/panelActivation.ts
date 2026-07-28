@@ -19,9 +19,17 @@
  *    session loads stay switched off until `allowSessionLoads()` is called,
  *    which the page does when start-up has finished.
  *
- * After that, loading is driven by two user actions only: bringing a tab to the
- * front, and picking a session. A panel that has never been shown never loads,
- * and changing session re-loads only the panels the user has actually opened.
+ * After that, loading is driven by user actions only: bringing a tab to the
+ * front, picking a session, and opening the Source control section of the left
+ * column. A panel that has never been shown never loads, and changing session
+ * re-loads only the panels the user has actually opened.
+ *
+ * Source control is the one panel that is neither a tab nor always on screen:
+ * it is a section of the left column that can be folded away, and it starts
+ * folded. So it follows the same principle by a third route — it loads when you
+ * can actually see it. Picking a session loads it only while the section is
+ * open, and opening the section loads it if a session is already picked. A
+ * folded section costs nothing; an open one is never stale.
  */
 
 /** A project folder, in the shape the backend's project-scoped commands want. */
@@ -57,6 +65,10 @@ export interface PanelActivation {
   panelShown(id: string): void;
   /** The user picked a session in the rail. */
   sessionPicked(): void;
+  /** The Source control section of the left column was opened or folded away.
+   * Report the state it is in now; the left column reports it once when it is
+   * built too, so this is never guesswork. */
+  sourceControlExpanded(expanded: boolean): void;
   /** Which panels have loaded at least once — for tests and for the report. */
   loadedPanels(): string[];
 }
@@ -65,9 +77,8 @@ export interface PanelActivation {
  * owned by the page's own start-up and must never be re-loaded from here.
  *
  * Source control is deliberately absent: it is a section of the left column
- * now, not a tab, so nothing ever brings it to the front. It loads with the
- * file tree and the context cards when a session is picked — see
- * `loadSessionPanels` below. */
+ * now, not a tab, so nothing ever brings it to the front. Its own rule is in
+ * `loadSourceControl` below. */
 const LOADABLE_PANELS = new Set(['editor', 'browser']);
 
 export function createPanelActivation(
@@ -78,6 +89,11 @@ export function createPanelActivation(
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
   let sessionPanelsShown = false;
+  /** Is the Source control section of the left column open right now? */
+  let sourceControlOpen = false;
+  /** The folder source control was last loaded for, or `null` if it never has
+   * been. `''` is a real value here — it means "loaded, for no folder". */
+  let gitLoadedFor: string | null = null;
 
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
@@ -85,14 +101,21 @@ export function createPanelActivation(
     else if (id === 'browser') activators.browser();
   };
 
-  /** The panels of the left column, which are all on screen at once, plus the
-   * context cards. Source control is here rather than in `loadPanel` because
-   * it has no tab to be brought to the front any more; a session with no folder
-   * still calls it, which is what tells it there is no repository to show. */
+  /** Point source control at this folder. A session with no folder still calls
+   * it, which is what tells the panel there is no repository to show. */
+  const loadSourceControl = (selection: ProjectSelection): void => {
+    const root = selection.root.trim();
+    gitLoadedFor = root;
+    activators.git(root || null);
+  };
+
+  /** The panels that are on screen with the session the user just picked: the
+   * file tree, the context cards, and — only while its section is open —
+   * source control. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
     if (root) activators.explorer(root);
-    activators.git(root || null);
+    if (sourceControlOpen) loadSourceControl(selection);
     activators.context({ root: selection.root, projects: selection.projects });
   };
 
@@ -121,9 +144,23 @@ export function createPanelActivation(
       for (const id of shownPanels) loadPanel(id, selection);
     },
 
+    sourceControlExpanded(expanded: boolean): void {
+      sourceControlOpen = expanded;
+      // Folding the section away loads nothing, and neither does opening it
+      // before a session has been picked — there is no folder to read yet, and
+      // the pick that follows will load it.
+      if (!expanded || !sessionPanelsShown) return;
+      const selection = readSelection();
+      // Already showing this folder: re-opening the section is not a reason to
+      // read the repository again.
+      if (gitLoadedFor === selection.root.trim()) return;
+      loadSourceControl(selection);
+    },
+
     loadedPanels(): string[] {
       const loaded = [...shownPanels];
-      if (sessionPanelsShown) loaded.push('explorer', 'git', 'context');
+      if (sessionPanelsShown) loaded.push('explorer', 'context');
+      if (gitLoadedFor !== null) loaded.push('git');
       return loaded;
     }
   };

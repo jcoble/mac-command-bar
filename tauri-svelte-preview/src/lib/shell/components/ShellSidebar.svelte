@@ -11,12 +11,18 @@
    * the bodies simply stay parked and this component says so in its place —
    * nothing crashes and nothing is lost.
    *
-   * No backend IO here. The Source control body loads only when
-   * `shellPanels.sessionPicked()` runs its loader, which happens when the user
-   * picks a session, not when this stack mounts.
+   * No backend IO here, and this component never loads anything itself. What it
+   * does do is REPORT: it hands the page a way to reset the column, and it says
+   * whenever the Source control section is opened or folded away, because that
+   * is what decides when source control is allowed to read the repository (see
+   * `panelActivation.ts`).
    */
   import 'dockview-core/dist/styles/dockview.css';
   import { onMount, type ComponentProps } from 'svelte';
+  // dockview re-exports its disposable under a prefixed name to avoid clashing
+  // with the one most codebases already have; the plain `IDisposable` is not
+  // part of its public surface.
+  import type { DockviewIDisposable } from 'dockview-core';
 
   import { createPaneStack, type PaneStack } from '$lib/shell/layout/paneStack';
 
@@ -25,7 +31,18 @@
   import PanelPlaceholder from './PanelPlaceholder.svelte';
   import SessionRail from './SessionRail.svelte';
 
-  let railProps: ComponentProps<typeof SessionRail> = $props();
+  /** The section whose open/folded state gates a backend loader. */
+  const SOURCE_CONTROL = 'source-control';
+
+  interface Props extends ComponentProps<typeof SessionRail> {
+    /** The column's controls, handed over once the stack is built. Never called
+     * if building failed — there would be nothing behind them. */
+    onReady?: (controls: { resetLayout(): void; expandSourceControl(): void }) => void;
+    /** The Source control section's state: once when the stack is built (a
+     * remembered layout may have left it open), then on every change. */
+    onSourceControlExpanded?: (expanded: boolean) => void;
+  }
+  let { onReady, onSourceControlExpanded, ...railProps }: Props = $props();
 
   let host: HTMLElement;
   let sessionsSlot: HTMLElement;
@@ -38,6 +55,31 @@
 
   onMount(() => {
     let stack: PaneStack | null = null;
+    /** Subscription to the Source control section's own expansion event. */
+    let expansionListener: DockviewIDisposable | null = null;
+
+    /**
+     * Re-subscribe to the Source control section and report where it stands.
+     *
+     * Called again after a reset on purpose: a reset removes every pane and
+     * builds new ones, so the panel this was listening to no longer exists and
+     * the new one starts folded again. Listening to the stack as a whole would
+     * not do — `onDidLayoutChange` fires for every drag of every divider, and
+     * the page would re-ask the same question dozens of times per resize.
+     */
+    const watchSourceControl = (): void => {
+      expansionListener?.dispose();
+      expansionListener = null;
+      const pane = stack?.api.getPanel(SOURCE_CONTROL);
+      if (!pane) {
+        onSourceControlExpanded?.(false);
+        return;
+      }
+      expansionListener = pane.api.onDidExpansionChange((event) =>
+        onSourceControlExpanded?.(event.isExpanded)
+      );
+      onSourceControlExpanded?.(pane.api.isExpanded);
+    };
 
     /**
      * Build only once the column has a real size.
@@ -58,7 +100,7 @@
             { id: 'sessions', title: 'Sessions', element: sessionsSlot, size: 260 },
             { id: 'files', title: 'Files', element: filesSlot, size: 240 },
             {
-              id: 'source-control',
+              id: SOURCE_CONTROL,
               title: 'Source control',
               element: sourceControlSlot,
               size: 220,
@@ -74,6 +116,19 @@
           ]
         });
         ready = true;
+        watchSourceControl();
+        onReady?.({
+          resetLayout: (): void => {
+            stack?.resetLayout();
+            // The panes are new objects now, and the section is folded again.
+            watchSourceControl();
+          },
+          expandSourceControl: (): void => {
+            // Unfolding fires the section's own expansion event, so the page
+            // hears about this exactly the way it hears about a header click.
+            stack?.api.getPanel(SOURCE_CONTROL)?.api.setExpanded(true);
+          }
+        });
       } catch (error) {
         stackError = error instanceof Error ? error.message : String(error);
       }
@@ -93,6 +148,8 @@
 
     return () => {
       observer.disconnect();
+      expansionListener?.dispose();
+      expansionListener = null;
       stack?.dispose();
       stack = null;
     };

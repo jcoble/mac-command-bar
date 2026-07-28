@@ -80,37 +80,104 @@ function selection(root, projects = []) {
   ]);
 }
 
-// Picking a session loads the panels that are on screen with it: the file tree,
-// source control, and the context cards.
+// Picking a session loads the panels that are on screen with it. The Source
+// control section starts folded away, so it is NOT one of them.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
   panels.allowSessionLoads();
+  panels.sessionPicked();
+  assert.deepEqual(
+    calls,
+    [
+      ['explorer', '/repo/one'],
+      ['context', '/repo/one']
+    ],
+    'a folded Source control section costs nothing on a pick'
+  );
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context']);
+}
+
+// Opening the Source control section after a session is picked loads it once,
+// for the folder that session is in. Folding and re-opening does not read the
+// repository again.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  calls.length = 0;
+
+  panels.sourceControlExpanded(true);
+  assert.deepEqual(calls, [['git', '/repo/one']], 'opening the section loads it');
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context', 'git']);
+
+  panels.sourceControlExpanded(false);
+  panels.sourceControlExpanded(true);
+  assert.equal(calls.length, 1, 're-opening the same folder reads nothing again');
+}
+
+// Opening the section BEFORE any session is picked loads nothing — there is no
+// folder to read yet. The pick that follows is what loads it.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.sourceControlExpanded(true);
+  assert.deepEqual(calls, [], 'an open section with no session picked loads nothing');
+  assert.deepEqual(panels.loadedPanels(), []);
+
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/one'],
     ['git', '/repo/one'],
     ['context', '/repo/one']
   ]);
-  assert.deepEqual(panels.loadedPanels(), ['explorer', 'git', 'context']);
 }
 
-// ...and a session with no project folder still loads the context cards, which
-// are machine-wide, and still tells source control there is no repository — but
-// has no folder to list files from.
+// Nothing about the section can load anything before launch is over, however it
+// is opened and whatever order the two arrive in.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.sourceControlExpanded(true);
+  panels.sessionPicked();
+  panels.sourceControlExpanded(true);
+  assert.deepEqual(calls, [], 'launch loads nothing, section open or not');
+}
+
+// With the section open, changing session re-points it along with the file tree
+// and the context cards.
+{
+  let root = '/repo/one';
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(root));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  panels.sourceControlExpanded(true);
+  calls.length = 0;
+
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.deepEqual(calls, [
+    ['explorer', '/repo/two'],
+    ['git', '/repo/two'],
+    ['context', '/repo/two']
+  ]);
+}
+
+// A session with no project folder still loads the context cards, which are
+// machine-wide, but has no folder to list files from. With the section open it
+// still tells source control there is no repository to show.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection(''));
   panels.allowSessionLoads();
   panels.sessionPicked();
-  assert.deepEqual(
-    calls,
-    [
-      ['git', null],
-      ['context', '']
-    ],
-    'no folder means no file listing'
-  );
+  assert.deepEqual(calls, [['context', '']], 'no folder means no file listing');
+
+  panels.sourceControlExpanded(true);
+  assert.deepEqual(calls.at(-1), ['git', null], 'and no repository either');
 }
 
 // Changing session re-points the tabs the user has opened, and leaves the rest.
@@ -127,7 +194,6 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/two'],
-    ['git', '/repo/two'],
     ['context', '/repo/two'],
     ['editor', '/repo/two']
   ]);
@@ -150,7 +216,6 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls.slice(1), [
     ['explorer', '/repo/one'],
-    ['git', '/repo/one'],
     ['context', '/repo/one'],
     ['editor', '/repo/one']
   ]);
