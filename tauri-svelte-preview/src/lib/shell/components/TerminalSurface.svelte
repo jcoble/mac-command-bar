@@ -59,10 +59,22 @@
     ></div>
   {/each}
 
+  <!--
+    The second case is the one that matters: a session whose terminal was closed
+    has no host left, and the manager has no view to show for it, so whichever
+    terminal was last on screen would simply stay there — live, focused, and
+    belonging to a DIFFERENT session. The overlay is `inset: 0`, so it covers it
+    and says what actually happened.
+  -->
   {#if activeOwnedId === null}
     <div class="surface-empty">
       <p>No session selected.</p>
       <p class="hint">Pick a session in the rail, or resume one to start a terminal.</p>
+    </div>
+  {:else if !hosted.some((session) => session.ownedId === activeOwnedId)}
+    <div class="surface-empty">
+      <p>This session’s terminal is closed.</p>
+      <p class="hint">The transcript is still on disk; the session stays on your list.</p>
     </div>
   {/if}
 </div>

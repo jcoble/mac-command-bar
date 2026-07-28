@@ -186,9 +186,14 @@
 
   /** Removing is the one action nothing undoes, so it is asked about first. The
    * sentence says what survives, because the worry it answers is losing the
-   * conversation rather than the row. */
+   * conversation rather than the row — and it says what does NOT survive when
+   * that is true, because removing a session whose process is still going ends
+   * it, and this is the only warning the user gets. */
   function confirmRemove(session: OwnedSession): void {
-    const question = `Remove "${rowName(session)}" from your sessions? The transcript stays on disk.`;
+    const running = session.state !== 'exited';
+    const question = running
+      ? `Remove "${rowName(session)}" from your sessions? Its terminal is still running and will be closed. The transcript stays on disk.`
+      : `Remove "${rowName(session)}" from your sessions? The transcript stays on disk.`;
     if (typeof window !== 'undefined' && !window.confirm(question)) return;
     onRemove(session.ownedId);
   }
@@ -251,7 +256,10 @@
   taskId?: string | null;
   pullRequest?: string | null;
 })}
-  {#each chips(values) as chip (chip)}
+  <!-- Keyed by position, not by text: these are three fixed slots, and a branch
+       named after its task puts the same word in two of them — a duplicate key
+       there would throw and take the whole rail down. -->
+  {#each chips(values) as chip, slot (slot)}
     <span class="badge chip" title={chip}>{chip}</span>
   {/each}
 {/snippet}

@@ -293,10 +293,16 @@
     // The PTY id is cleared with the state: it names a process that is gone, and
     // leaving it stored would have the next launch try to re-attach to it.
     updateOwnedSession(ownedId, { state: 'exited', ptySessionId: null });
-    // Picked BEFORE the await: adopt it only while it still exists.
+    // Picked BEFORE the await: adopt it only while it still exists. It goes
+    // through `selectOwned` like every other session change, and the order is
+    // what makes that safe: `rail.activeOwnedId` is still the session whose
+    // terminal just closed, so the tabs and tree on screen are saved as ITS
+    // workspace, and only then does the successor's own state come back.
+    // Pointing the rail at the successor directly saved this session's files
+    // into the successor's record on the next switch.
     const successor = result?.successor ?? null;
     if (successor !== null && rail.owned.some((entry) => entry.ownedId === successor)) {
-      setActiveOwned(successor);
+      await selectOwned(successor);
     }
   }
 
