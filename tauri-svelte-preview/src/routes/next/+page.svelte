@@ -292,7 +292,8 @@
   <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
 {/snippet}
 {#snippet editorArea()}
-  <EditorPanel />
+  <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
+  <EditorPanel onFileOpened={() => frameControls?.showCenterPanel('editor')} />
 {/snippet}
 {#snippet gitArea()}
   <GitPanel />
