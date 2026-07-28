@@ -65,12 +65,22 @@ things you'd expect from an IDE crossed with the Codex app.
 3. **Slice 2 — Walking skeleton**, immediately after. The single Gridview-rooted Dockview frame:
    left rail, center tabs, right context, bottom dock — with shallow editor / git / browser panel
    slots. From here on, everything lands as a feature on a stable frame.
-4. **Feature lanes on the skeleton**, in priority order:
+4. **The parallel wave.** Once slices 1–2 are proven, plan and implement a large batch of the
+   remaining system **at once**, decomposed into maximally parallelizable, file-disjoint lanes
+   (one plan, many agents, one lane per file/subsystem). Candidate lanes, highest priority first:
    1. **Code reading** — Monaco + LSP go-to-def / peek references / find refs / code lens
       (tree-sitter nav index plan feeds this). The #1 IDE requirement.
    2. Git panel (VS Code-style source control).
    3. Browser panel.
    4. Settings & theming (tokens, live-apply Monaco/xterm appearance).
+   5. File tree / explorer, markdown preview, command palette, right-context panels — anything
+      that hangs off the skeleton without touching another lane's files.
+
+   Parallelism rules: lanes must be **file-disjoint** (the skeleton's panel/module seams are the
+   contract); shared seams (stores, tokens, panel registry) are frozen interfaces during the wave;
+   each lane carries its own perf gate + audit-then-adopt check; heavy builds/tests stay
+   sequenced (a couple at a time, never a swarm — cargo/vite builds serialized per the global
+   resource rules).
 
 ## Carried-over invariants (from the live-agent-sessions spec — still binding)
 
@@ -91,8 +101,10 @@ scratchpad; rebrand; mobile; multi-window.
 
 ## Risks
 
-- **Rewrite gravity:** the skeleton tempts breadth-first porting. Mitigation: slices 1–2 are the only
-  structural work; everything else must arrive as an independent feature lane with its own perf gate.
+- **Rewrite gravity:** breadth-first porting before the frame is solid. Mitigation: slices 1–2 are
+  the only structural work and are strictly sequential; the wide parallel wave starts **only after
+  the skeleton is proven**. Within the wave, the risk inverts to lane collisions — mitigated by the
+  file-disjoint rule and frozen shared interfaces.
 - **Reimporting the disease** via reused `$lib` modules. Mitigation: the autopsy checklist + the
   audit-then-adopt rule.
 - **Two shells in one project** (old route + new route) briefly doubles surface. Mitigation: old
