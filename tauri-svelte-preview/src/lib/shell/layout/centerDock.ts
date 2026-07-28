@@ -106,10 +106,19 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     });
   };
 
+  /** Panel-id lookup. `api.getPanel(id)` also does this correctly — but the
+   * naming is INVERTED between dockview's layers (`DockviewApi.getPanel` calls
+   * the component's `getGroupPanel`, while `DockviewApi.getGroup` calls the
+   * component's `getPanel`, which looks up groups), and that trap has already
+   * produced one confident misreading in each direction during review. The
+   * explicit form below is the exact body of `getGroupPanel` and of
+   * `addPanel`'s own duplicate guard, so what we test is what dockview does. */
+  const panelById = (id: string) => api.panels.find((panel) => panel.id === id);
+
   const buildDefault = (): void => {
     for (const panel of options.panels) addPanelFor(panel);
     const first = options.panels[0];
-    if (first) api.getPanel(first.id)?.api.setActive();
+    if (first) panelById(first.id)?.api.setActive();
   };
 
   /**
@@ -122,7 +131,13 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * previous version of this guard never suppressed anything. Releasing it on a
    * timer instead is what makes it real: the whole microtask queue (including
    * microtasks queued by other microtasks) drains before any timer callback
-   * runs, so every event this block causes arrives while the guard is still up.
+   * runs, so every event delivered that way lands while the guard is still up.
+   *
+   * That covers the microtask channel only, which is the one a programmatic
+   * mutation uses. Resize-driven changes are delivered separately, through a
+   * `requestAnimationFrame` inside dockview's own resize watcher, and those
+   * deliberately fall outside the guard: they report a finished layout the user
+   * asked for, which is exactly what we want written.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
@@ -153,8 +168,16 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     setTimeout(() => {
       readding.delete(id);
       const spec = specs.get(id);
-      if (disposed || synchronizingDepth > 0 || !spec || api.getPanel(id)) return;
-      addPanelFor(spec);
+      // Duplicate-add guard: tests the exact condition `addPanel` itself
+      // throws on (see the `panelById` note above).
+      if (disposed || synchronizingDepth > 0 || !spec || panelById(id)) return;
+      try {
+        addPanelFor(spec);
+      } catch {
+        // Nothing here can recover a dock that refuses the panel, and an
+        // uncaught throw in a timer callback goes nowhere useful. The tab stays
+        // shut; "Reset layout" rebuilds the roster.
+      }
     }, 0);
   };
 
@@ -220,7 +243,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   return {
     api,
     activatePanel(id: string): void {
-      api.getPanel(id)?.api.setActive();
+      panelById(id)?.api.setActive();
     },
     resetLayout(): void {
       clearLayout(options.storage, CENTER_LAYOUT_KEY);

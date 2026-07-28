@@ -120,7 +120,13 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
    * previous version of this guard never suppressed anything. Releasing it on a
    * timer instead is what makes it real: the whole microtask queue (including
    * microtasks queued by other microtasks) drains before any timer callback
-   * runs, so every event this block causes arrives while the guard is still up.
+   * runs, so every event delivered that way lands while the guard is still up.
+   *
+   * That covers the microtask channel only, which is the one a programmatic
+   * mutation uses. Resize-driven changes are delivered separately, through a
+   * `requestAnimationFrame` inside dockview's own resize watcher, and those
+   * deliberately fall outside the guard: they report a finished layout the user
+   * asked for, which is exactly what we want written.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
