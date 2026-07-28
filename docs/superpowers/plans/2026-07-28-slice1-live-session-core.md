@@ -872,3 +872,16 @@ Hibernate / idle-timer / LRU cap N (lifecycle beyond Live/Background/exited), wo
 
 - Spec coverage: terminal.rs no-kill-on-reload → frontend `dispose()` semantics (Task 6) since research showed the backend never killed PTYs — the kill lived in old `disposeEmbeddedTerminal`; tombstones → Task 1; COMMANDBAR_SESSION_ID → Task 2; feedSession + bind-before-feed → Task 6; Owned/Resume rail + identity normalization → Tasks 4/7/8; WebGL release on hidden → Task 5; reload-survive → Tasks 6/8/9.
 - Known accepted gap: a few ms of output between `start()` resolving and `bindSession()` can be dropped for a brand-new PTY (shell banner only; scrollback replay on adopt covers the reload path). Documented here deliberately — do not "fix" it with reset+replay, that is the old corruption bug.
+
+---
+
+## Verified live — 2026-07-28
+
+All Slice 1 success criteria confirmed by the user in the running Tauri app (`/next` route):
+adopt from rail (instant shells after zshrc fix), instant faithful switching (0 backend calls per
+switch; focus-report keystrokes shown as a separate "input" bucket), hidden sessions keep
+progressing, exit → finished tombstone with readable final output, webview reload re-attaches all
+sessions correctly (views pre-sized to PTY geometry + one repaint nudge), 16MB scrollback with
+20k-line views. Four fix rounds during verification: 73b3f58 (exit chain, switch cost, hidden-view
+geometry), 4042a87 (subagent-transcript filtering, 3-tier titles, honest HUD labels), 3f3c94c
+(input bucket, repaint nudge), e7a8479 (16MB scrollback, amortized trim, kill-then-remove close).
