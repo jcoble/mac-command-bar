@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 
-import { groupSessions } from '../src/lib/shell/sessionGroups.ts';
+import {
+  groupSessions,
+  groupToggleKey,
+  isGroupExpanded,
+  RAIL_GROUPS_STORAGE_KEY,
+  readGroupExpansion,
+  rememberGroupToggle,
+  RESUME_GROUP_ROW_CAP,
+  sessionGroupPath,
+  visibleGroupItems,
+  writeGroupExpansion
+} from '../src/lib/shell/sessionGroups.ts';
 
 /** An owned-session record with only the fields the grouping reads. */
 function owned(title, { projectPath = null, cwd = '' } = {}) {
@@ -184,6 +195,130 @@ function shapeOf(groups) {
 {
   const result = groupSessions([], [], '');
   assert.deepEqual(result, { owned: [], available: [] });
+}
+
+// The group key a session lands under is the same one the expansion rules take.
+{
+  assert.equal(sessionGroupPath('/Users/me/dev/mac-command-bar'), '/Users/me/dev/mac-command-bar');
+  assert.equal(sessionGroupPath('  '), '');
+  assert.equal(sessionGroupPath(null), '');
+}
+
+// Nothing chosen yet: everything the rail already owns is open, and everything
+// offered for resume is closed apart from the project on screen.
+{
+  const base = { remembered: {}, activeProjectPath: '/repo/one', searching: false };
+  assert.equal(isGroupExpanded({ ...base, list: 'owned', path: '/repo/one' }), true);
+  assert.equal(isGroupExpanded({ ...base, list: 'owned', path: '/repo/two' }), true);
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/one' }), true);
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/two' }), false);
+}
+
+// With no session on screen, every Resume heading starts closed — including the
+// one holding sessions with no folder, whose key is the empty string.
+{
+  const base = { remembered: {}, activeProjectPath: null, searching: false };
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/one' }), false);
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '' }), false);
+  assert.equal(isGroupExpanded({ ...base, list: 'owned', path: '' }), true);
+}
+
+// The user's own choice beats both defaults, in both directions.
+{
+  const remembered = {
+    [groupToggleKey('resume', '/repo/two')]: true,
+    [groupToggleKey('owned', '/repo/one')]: false
+  };
+  const base = { remembered, activeProjectPath: '/repo/one', searching: false };
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/two' }), true);
+  assert.equal(isGroupExpanded({ ...base, list: 'owned', path: '/repo/one' }), false);
+}
+
+// The two lists remember the same project folder separately.
+{
+  assert.notEqual(groupToggleKey('owned', '/repo/one'), groupToggleKey('resume', '/repo/one'));
+  const remembered = { [groupToggleKey('owned', '/repo/one')]: false };
+  const base = { remembered, activeProjectPath: null, searching: false };
+  assert.equal(isGroupExpanded({ ...base, list: 'owned', path: '/repo/one' }), false);
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/one' }), false);
+}
+
+// A search opens everything: a match hidden under a closed heading would make
+// the search box look broken.
+{
+  const remembered = { [groupToggleKey('resume', '/repo/two')]: false };
+  const base = { remembered, activeProjectPath: null, searching: true };
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/two' }), true);
+  assert.equal(isGroupExpanded({ ...base, list: 'resume', path: '/repo/three' }), true);
+}
+
+// A choice that matches the default is forgotten rather than stored, so the
+// remembered set only ever holds headings the user argued with.
+{
+  assert.deepEqual(rememberGroupToggle({}, 'resume:/repo/one', true, false), {
+    'resume:/repo/one': true
+  });
+  assert.deepEqual(rememberGroupToggle({}, 'resume:/repo/one', false, false), {});
+  assert.deepEqual(
+    rememberGroupToggle({ 'resume:/repo/one': true }, 'resume:/repo/one', false, false),
+    {}
+  );
+
+  // And it does not mutate what it was given.
+  const before = { 'owned:/repo/one': false };
+  assert.deepEqual(rememberGroupToggle(before, 'owned:/repo/one', true, true), {});
+  assert.deepEqual(before, { 'owned:/repo/one': false });
+}
+
+// An open heading stops after the cap and reports how many it is holding back.
+{
+  const rows = ['a', 'b', 'c', 'd', 'e'];
+  assert.deepEqual(visibleGroupItems(rows, 3, false), {
+    shown: ['a', 'b', 'c'],
+    hiddenCount: 2
+  });
+  assert.deepEqual(visibleGroupItems(rows, 3, true), { shown: rows, hiddenCount: 0 });
+  assert.deepEqual(visibleGroupItems(rows, 5, false), { shown: rows, hiddenCount: 0 });
+  assert.deepEqual(visibleGroupItems(rows, 9, false), { shown: rows, hiddenCount: 0 });
+  assert.deepEqual(visibleGroupItems([], 3, false), { shown: [], hiddenCount: 0 });
+  assert.deepEqual(visibleGroupItems(rows, 0, false), { shown: rows, hiddenCount: 0 });
+  assert.equal(RESUME_GROUP_ROW_CAP, 8);
+}
+
+// Storage round-trips, and anything unreadable comes back as no choices made
+// rather than as a throw into the rail.
+{
+  const store = new Map();
+  const storage = {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, value),
+    removeItem: (key) => store.delete(key)
+  };
+
+  assert.deepEqual(readGroupExpansion(storage), {});
+  assert.equal(writeGroupExpansion(storage, { 'resume:/repo/one': true }), true);
+  assert.equal(store.get(RAIL_GROUPS_STORAGE_KEY), '{"resume:/repo/one":true}');
+  assert.deepEqual(readGroupExpansion(storage), { 'resume:/repo/one': true });
+
+  store.set(RAIL_GROUPS_STORAGE_KEY, 'not json at all');
+  assert.deepEqual(readGroupExpansion(storage), {});
+
+  store.set(RAIL_GROUPS_STORAGE_KEY, '["resume:/repo/one"]');
+  assert.deepEqual(readGroupExpansion(storage), {});
+
+  // Entries that are not booleans are dropped; the rest still load.
+  store.set(RAIL_GROUPS_STORAGE_KEY, '{"a":true,"b":"yes","c":false}');
+  assert.deepEqual(readGroupExpansion(storage), { a: true, c: false });
+
+  // A full storage refuses the write and says so, instead of throwing.
+  const fullStorage = {
+    getItem: () => null,
+    setItem: () => {
+      throw new Error('QuotaExceededError');
+    },
+    removeItem: () => {}
+  };
+  assert.equal(writeGroupExpansion(fullStorage, { a: true }), false);
 }
 
 console.log('sessionGroups: all tests passed');

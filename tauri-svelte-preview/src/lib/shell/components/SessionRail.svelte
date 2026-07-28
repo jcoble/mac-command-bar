@@ -12,15 +12,33 @@
    * composite are accepted, so the rail stays correct whichever form an adopt
    * path stored).
    *
-   * Rows are arranged under one heading per project folder, and the search box
-   * at the top narrows both lists at once. Both of those are decided by
-   * `sessionGroups.ts`, which is pure and has its own test; this file only
-   * draws what it returns. The search text is the rail's own state and is
-   * deliberately NOT reported to the page — narrowing what you can see costs
-   * nothing and loads nothing.
+   * Rows are arranged under one heading per project folder, the search box at
+   * the top narrows both lists at once, and each heading opens and closes. All
+   * of that is decided by `sessionGroups.ts`, which is pure and has its own
+   * test; this file only draws what it returns. The search text is the rail's
+   * own state and is deliberately NOT reported to the page — narrowing what you
+   * can see costs nothing and loads nothing.
+   *
+   * Which headings the user has opened or closed is read from and written to
+   * `localStorage` here, in the click handler that changed it. That is the one
+   * thing this file touches outside its own props, and it is deliberately not
+   * an `$effect`: nothing is watched, nothing reloads, and a storage that
+   * refuses the write costs only the arrangement on the next launch.
    */
   import type { OwnedSession, OwnedSessionState } from '$lib/shell/ownedSessions';
-  import { groupSessions } from '$lib/shell/sessionGroups';
+  import {
+    groupSessions,
+    groupToggleKey,
+    isGroupExpanded,
+    readGroupExpansion,
+    rememberGroupToggle,
+    RESUME_GROUP_ROW_CAP,
+    sessionGroupPath,
+    visibleGroupItems,
+    writeGroupExpansion,
+    type GroupExpansion,
+    type SessionList
+  } from '$lib/shell/sessionGroups';
   import type { AgentSession } from '$lib/tauriSource';
 
   interface Props {
@@ -73,6 +91,45 @@
   let query = $state('');
 
   const grouped = $derived(groupSessions(owned, resumable, query));
+  const searching = $derived(query.trim().length > 0);
+
+  /** Headings the user has opened or closed by hand, restored from last time. */
+  let remembered = $state<GroupExpansion>(
+    typeof window === 'undefined' ? {} : readGroupExpansion(window.localStorage)
+  );
+
+  /** Headings whose "Show N more" has been clicked. Not remembered: every visit
+   * starts short again, which is the point of the cap. */
+  let expandedRows = $state<Record<string, boolean>>({});
+
+  /** The project folder of the session on screen — the one heading the Resume
+   * list opens on its own. Grouped the same way its rows are, so the two keys
+   * are comparable. */
+  const activeProjectPath = $derived.by(() => {
+    const active = owned.find((session) => session.ownedId === activeOwnedId);
+    if (!active) return null;
+    return sessionGroupPath(active.projectPath ?? active.cwd);
+  });
+
+  function expanded(list: SessionList, path: string): boolean {
+    return isGroupExpanded({ list, path, remembered, activeProjectPath, searching });
+  }
+
+  /** A click flips how the heading sits with no search running. While a search
+   * is open every heading is open regardless, so toggling against what is on
+   * screen would record the opposite of what the user meant. */
+  function toggleGroup(list: SessionList, path: string) {
+    const settled = (from: GroupExpansion) =>
+      isGroupExpanded({ list, path, remembered: from, activeProjectPath, searching: false });
+
+    remembered = rememberGroupToggle(
+      remembered,
+      groupToggleKey(list, path),
+      !settled(remembered),
+      settled({})
+    );
+    if (typeof window !== 'undefined') writeGroupExpansion(window.localStorage, remembered);
+  }
 
   function countIn<T>(groups: { items: T[] }[]): number {
     return groups.reduce((total, group) => total + group.items.length, 0);
@@ -94,12 +151,20 @@
   }
 </script>
 
-<!-- One heading per project, drawn the same way for both lists. -->
-{#snippet projectHead(name: string, path: string, count: number)}
-  <div class="project-head" title={path || 'Sessions with no project folder'}>
+<!-- One heading per project, drawn the same way for both lists. Clicking it
+     opens or closes the rows underneath. -->
+{#snippet projectHead(list: SessionList, name: string, path: string, count: number)}
+  <button
+    type="button"
+    class="project-head"
+    aria-expanded={expanded(list, path)}
+    title={path || 'Sessions with no project folder'}
+    onclick={() => toggleGroup(list, path)}
+  >
+    <span class="chevron" aria-hidden="true">{expanded(list, path) ? '▾' : '▸'}</span>
     <span class="project-name">{name}</span>
     <span class="project-count">{count}</span>
-  </div>
+  </button>
 {/snippet}
 
 <div class="rail">
@@ -125,7 +190,8 @@
     {:else}
       {#each grouped.owned as group (group.path)}
         <div class="project">
-          {@render projectHead(group.name, group.path, group.items.length)}
+          {@render projectHead('owned', group.name, group.path, group.items.length)}
+          {#if expanded('owned', group.path)}
           <ul class="rows">
             {#each group.items as session (session.ownedId)}
               <li class="row" class:active={session.ownedId === activeOwnedId}>
@@ -160,6 +226,7 @@
               </li>
             {/each}
           </ul>
+          {/if}
         </div>
       {/each}
     {/if}
@@ -179,10 +246,16 @@
       <p class="empty">Nothing to resume matches “{query.trim()}”.</p>
     {:else}
       {#each grouped.available as group (group.path)}
+        {@const visible = visibleGroupItems(
+          group.items,
+          RESUME_GROUP_ROW_CAP,
+          expandedRows[group.path] === true
+        )}
         <div class="project">
-          {@render projectHead(group.name, group.path, group.items.length)}
+          {@render projectHead('resume', group.name, group.path, group.items.length)}
+          {#if expanded('resume', group.path)}
           <ul class="rows">
-            {#each group.items as session (`${session.provider}:${session.id}`)}
+            {#each visible.shown as session (`${session.provider}:${session.id}`)}
               <li class="row">
                 <button
                   type="button"
@@ -203,7 +276,19 @@
                 </button>
               </li>
             {/each}
+            {#if visible.hiddenCount > 0}
+              <li class="row more">
+                <button
+                  type="button"
+                  class="row-main more-main"
+                  onclick={() => (expandedRows = { ...expandedRows, [group.path]: true })}
+                >
+                  Show {visible.hiddenCount} more
+                </button>
+              </li>
+            {/if}
           </ul>
+          {/if}
         </div>
       {/each}
     {/if}
@@ -266,18 +351,43 @@
   }
 
   /* Quieter than the section heading above it: a project is a divider inside a
-     list, not a second heading competing with "Sessions". */
+     list, not a second heading competing with "Sessions". It is a button
+     because clicking it opens and closes the rows, but it must not look like
+     one sitting among them. */
   .project-head {
+    width: 100%;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
     padding: 3px 8px 4px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
     color: #6d6d7d;
+    font: inherit;
     font-size: 10px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .project-head:hover {
+    background: #17171d;
+    color: #9a9aad;
+  }
+
+  .chevron {
+    flex: 0 0 auto;
+    width: 8px;
+    color: #4c4c5a;
+  }
+
+  .project-head:hover .chevron {
+    color: #9a9aad;
   }
 
   .project-name {
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -286,6 +396,18 @@
   .project-count {
     flex: 0 0 auto;
     color: #4c4c5a;
+  }
+
+  /* The row that offers the rest of a long project. Reads as a row so it lands
+     where the eye already is, but carries no dot and no badge. */
+  .more-main {
+    color: #7b7b8c;
+    font-size: 11px;
+    padding-left: 23px;
+  }
+
+  .row.more:hover .more-main {
+    color: #d8d8e0;
   }
 
   h2 {
