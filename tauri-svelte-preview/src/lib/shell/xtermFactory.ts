@@ -196,7 +196,13 @@ export function makeTerminalView(
     setVisible(visible: boolean): void {
       if (disposed) return;
       if (visible) {
-        host.style.display = '';
+        // `'block'`, NEVER `''`: hosts are rendered with an inline
+        // `display: none` (TerminalSurface) precisely so that a host which
+        // never receives a view — or a view created while another is active —
+        // stays hidden. Clearing the inline value would fall back to the
+        // stylesheet default (visible) and the host, being `inset: 0`, would
+        // cover the active terminal.
+        host.style.display = 'block';
         acquireWebgl();
       } else {
         releaseWebgl();

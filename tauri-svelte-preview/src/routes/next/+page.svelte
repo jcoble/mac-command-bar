@@ -7,15 +7,12 @@
    * and performs IO **only inside explicit functions** — never in an `$effect`.
    *
    * Launch IO is deliberately tiny (the constitution's rule): list the surviving
-   * PTYs, reconcile them against the stored owned sessions, re-attach the ones
-   * that are still alive, and scan for resumable agent sessions. No LSP, no git,
-   * no source scan.
-   *
-   * Two ordering obligations that are easy to get wrong and impossible to see:
-   *  - `hydrateOwned` runs AFTER `reconcileOwnedSessions` (hydrate persists
-   *    exactly what it is given, so it must be given the reconciled list).
-   *  - after `startOwned` resolves, its returned PTY id is written back with
-   *    `updateOwnedSession` — reload re-attach reads it out of localStorage.
+   * PTYs, reconcile them against the stored owned sessions, re-attach them (live
+   * ones AND tombstones), and scan for resumable agent sessions. No LSP, no git,
+   * no source scan. Two easy-to-miss ordering obligations: `hydrateOwned` runs
+   * AFTER `reconcileOwnedSessions` (it persists exactly what it is given), and
+   * `startOwned`'s returned PTY id is written back with `updateOwnedSession` —
+   * reload re-attach reads it out of localStorage.
    */
   import { onMount, tick } from 'svelte';
 
@@ -57,18 +54,30 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  /** EXPLICIT IO: scan for resumable agent sessions (Tauri first, bridge fallback). */
+  /**
+   * EXPLICIT IO: scan for resumable agent sessions (Tauri first, bridge second).
+   * The native scan THROWS outside Tauri — `??` alone loses the bridge fallback.
+   */
   async function scanRail(): Promise<void> {
     if (rail.scanning) return;
     rail.scanning = true;
     rail.error = null;
+    let nativeError: string | null = null;
     try {
       countInvoke('list_agent_sessions');
-      const sessions =
-        (await listAgentSessionsFromTauri()) ?? (await listAgentSessionsFromLocalBridge()) ?? [];
-      if (!disposed) setAvailable(sessions);
+      let sessions: AgentSession[] | null = null;
+      try {
+        sessions = await listAgentSessionsFromTauri();
+      } catch (error) {
+        nativeError = describeError(error);
+      }
+      sessions ??= await listAgentSessionsFromLocalBridge();
+      if (disposed) return;
+      setAvailable(sessions ?? []);
+      // Surface the native failure only if the bridge produced nothing either.
+      if (sessions === null && nativeError) rail.error = `session scan failed: ${nativeError}`;
     } catch (error) {
-      if (!disposed) rail.error = `session scan failed: ${describeError(error)}`;
+      if (!disposed) rail.error = `session scan failed: ${nativeError ?? describeError(error)}`;
     } finally {
       rail.scanning = false;
     }
@@ -136,14 +145,26 @@
     await selectOwned(owned.ownedId);
   }
 
-  /** EXPLICIT IO: the ONLY path that kills a PTY. */
+  /**
+   * EXPLICIT IO: the ONLY path that kills a PTY. The row is dropped even when
+   * the backend close rejects (the view and PTY mapping are already gone, so
+   * keeping the row would only make it undismissable) and the error goes to
+   * `rail.error`. The successor comes FROM the service — the view the manager
+   * already showed — so the store never picks a different one and shows twice.
+   */
   async function closeOwned(ownedId: string): Promise<void> {
+    const session = rail.owned.find((entry) => entry.ownedId === ownedId);
     pendingHosts.delete(ownedId);
     awaitingReattach.delete(ownedId);
-    await service?.closeOwned(ownedId);
+    let successor: string | null = null;
+    try {
+      successor = (await service?.closeOwned(ownedId, session?.ptySessionId ?? null)) ?? null;
+    } catch (error) {
+      rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(error)}`;
+    }
     removeOwnedSession(ownedId);
-    const next = rail.owned.find((entry) => entry.state !== 'exited');
-    if (rail.activeOwnedId === null && next) await selectOwned(next.ownedId);
+    // `null` = no view left visible, so the empty-state overlay tells the truth.
+    setActiveOwned(successor);
   }
 
   onMount(() => {
@@ -166,11 +187,17 @@
         const live = (await backend.list()) ?? [];
         if (disposed) return;
         const { owned, reattachable } = reconcileOwnedSessions(loadStoredOwned(), live);
-        // Claim the survivors BEFORE the hosts can mount, so `registerHost`
-        // never races past a re-attach that has not been queued yet.
-        for (const session of reattachable) awaitingReattach.add(session.ownedId);
+        // Tombstones (exited, backend record still there) are re-attached too:
+        // that renders their final scrollback AND registers the PTY id, so
+        // dismissing the row reaps it. Live survivors first, so one wins focus.
+        const attachable = [
+          ...reattachable,
+          ...owned.filter((entry) => entry.state === 'exited' && entry.ptySessionId)
+        ];
+        // Claim them BEFORE the hosts mount, or `registerHost` races past.
+        for (const session of attachable) awaitingReattach.add(session.ownedId);
         hydrateOwned(owned);
-        for (const session of reattachable) {
+        for (const session of attachable) {
           await hostFor(session.ownedId);
           await reattachIfPending(session.ownedId);
         }

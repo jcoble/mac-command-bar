@@ -63,12 +63,27 @@ export type TerminalService = {
   attach(): Promise<void>;
   /** Spawn a PTY for `owned`, mount its view on `host`, replay the resume command. */
   startOwned(owned: OwnedSession, host: HTMLElement): Promise<string | null>;
-  /** Re-attach to a PTY that survived a reload, hydrating saved scrollback. */
+  /**
+   * Re-attach to a PTY that survived a reload, hydrating saved scrollback.
+   * Works for a TOMBSTONE too (`owned.state === 'exited'` with a
+   * `ptySessionId`): the backend keeps an exited session's scrollback readable,
+   * so the view is built and then marked terminated.
+   */
   adoptExisting(owned: OwnedSession, host: HTMLElement): Promise<boolean>;
   /** Make one owned session's terminal the visible one. */
   show(ownedId: string): void;
-  /** Close a PTY and drop its view. The ONLY path that kills a session. */
-  closeOwned(ownedId: string): Promise<void>;
+  /**
+   * Close a PTY and drop its view. The ONLY path that kills a session.
+   *
+   * `ptySessionIdHint` is the caller's stored `ptySessionId`, used ONLY when
+   * this service has no mapping for `ownedId` (a session whose view was never
+   * built — dismissing it must still reap the backend tombstone).
+   *
+   * Returns the `ownedId` the manager left VISIBLE afterwards, or `null` when
+   * no view remains, so the caller's active-session state can agree with the
+   * manager instead of picking a different successor and showing it twice.
+   */
+  closeOwned(ownedId: string, ptySessionIdHint?: string | null): Promise<string | null>;
   /** Unlisten + drop all views. NEVER closes a PTY. */
   dispose(): void;
 };
@@ -195,11 +210,20 @@ export function createTerminalService(opts: {
     options: { host: HTMLElement; sessionId?: string | null }
   ): TerminalView {
     creatingFor = ownedId;
+    let view: TerminalView;
     try {
-      return manager.ensureView(ownedId, options);
+      view = manager.ensureView(ownedId, options);
     } finally {
       creatingFor = null;
     }
+    // The manager auto-shows only the FIRST view, and `showView` only hides
+    // views that ALREADY exist — so a view created while another session is
+    // active is never told to hide. Say it explicitly: anything that is not the
+    // active key must be invisible the moment it exists.
+    if (manager.activeKey() !== ownedId) {
+      view.setVisible(false);
+    }
+    return view;
   }
 
   async function attach(): Promise<void> {
@@ -282,6 +306,13 @@ export function createTerminalService(opts: {
       // above (its readScrollback dep is synchronous, hence the staging map).
       ensureViewFor(owned.ownedId, { host, sessionId: ptyId });
       manager.bindSession(owned.ownedId, ptyId);
+      if (owned.state === 'exited') {
+        // A tombstone: the PTY is gone but the backend still holds its final
+        // scrollback (Task 1). The view exists so that output stays readable —
+        // it must never look live, and `setPty` above is what lets a later
+        // `closeOwned` reap the backend record.
+        manager.markTerminated(owned.ownedId);
+      }
     } finally {
       scrollbackCache.delete(ptyId);
     }
@@ -292,15 +323,35 @@ export function createTerminalService(opts: {
     manager.showView(ownedId);
   }
 
-  async function closeOwned(ownedId: string): Promise<void> {
-    const ptyId = ptyByOwned.get(ownedId);
+  async function closeOwned(
+    ownedId: string,
+    ptySessionIdHint?: string | null
+  ): Promise<string | null> {
+    // No mapping means no view was ever built for this session (e.g. an exited
+    // one that was dismissed before its host mounted). Fall back to the
+    // caller's stored id so the backend record is still reaped — but only if no
+    // OTHER owned session currently holds it, or we would kill their PTY.
+    const mapped = ptyByOwned.get(ownedId) ?? null;
+    const hintUsable =
+      mapped === null &&
+      ptySessionIdHint != null &&
+      ptySessionIdHint !== '' &&
+      !Array.from(ptyByOwned.values()).includes(ptySessionIdHint);
+    const ptyId = mapped ?? (hintUsable ? ptySessionIdHint : null);
     // Drop the mapping first so a concurrent close can't double-kill the PTY.
     ptyByOwned.delete(ownedId);
     manager.closeView(ownedId);
+    // Read the successor BEFORE the awaited close: the manager already picked
+    // and showed it inside `closeView`, and the caller must adopt that choice
+    // rather than show a different one.
+    const successor = manager.activeKey();
     if (ptyId) {
       scrollbackCache.delete(ptyId);
+      // A rejection propagates (the caller reports it); the view and the
+      // mapping are already gone, so the service stays consistent either way.
       await backend.close(ptyId);
     }
+    return successor;
   }
 
   function dispose(): void {

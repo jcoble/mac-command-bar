@@ -21,12 +21,16 @@ function makeView(log, name) {
  */
 function makeBackend(log) {
   let listener = null;
+  // Each start mints a FRESH id (pty-1, pty-2, ...) so a test can hold several
+  // sessions at once without them colliding in the service's 1:1 map.
+  let minted = 0;
   return {
     backend: {
       start: async (req) => {
         log.push(['start', req]);
+        minted += 1;
         return {
-          sessionId: 'pty-1',
+          sessionId: `pty-${minted}`,
           cwd: req.cwd,
           shell: '/bin/zsh',
           cols: 96,
@@ -204,6 +208,117 @@ const ownedA = {
   // The ownedId -> ptyId entry is gone: a second close is a no-op on the backend.
   await svc.closeOwned('c');
   assert.equal(log.filter((e) => e[0] === 'close').length, 1, 'stale map entries are cleaned');
+}
+
+{
+  // C1: the manager auto-shows only the FIRST view and only hides views that
+  // already exist, so a view created while another session is active would
+  // never be told to hide — and its `inset: 0` host would cover the active
+  // terminal. The service makes the hide explicit; assert it here.
+  const log = [];
+  const { backend } = makeBackend(log);
+  let created = 0;
+  const svc = createTerminalService({
+    backend,
+    createView: () => makeView(log, `v${(created += 1)}`)
+  });
+  await svc.attach();
+  await svc.startOwned({ ...ownedA, ownedId: 'a', resumeCommand: null }, {});
+  assert.ok(
+    log.some((e) => e[0] === 'v1' && e[1] === 'visible' && e[2] === true),
+    'the first view is shown'
+  );
+
+  await svc.startOwned({ ...ownedA, ownedId: 'b', resumeCommand: null }, {});
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'v2' && e[1] === 'visible'),
+    [['v2', 'visible', false]],
+    'a view created while another is active is hidden the moment it exists'
+  );
+  assert.ok(
+    !log.some((e) => e[0] === 'v1' && e[1] === 'visible' && e[2] === false),
+    'and the active view is left alone'
+  );
+
+  await svc.adoptExisting({ ...ownedA, ownedId: 'c', ptySessionId: 'pty-9' }, {});
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'v3' && e[1] === 'visible'),
+    [['v3', 'visible', false]],
+    'an adopted view gets the same treatment'
+  );
+}
+
+{
+  // I5: a TOMBSTONE (exited, but the backend still holds the record) adopts
+  // like any survivor — its final scrollback renders — and dismissing it reaps
+  // the backend session instead of leaking it.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'tomb') });
+  await svc.attach();
+  const ok = await svc.adoptExisting(
+    { ...ownedA, ownedId: 't', ptySessionId: 'pty-dead', state: 'exited' },
+    {}
+  );
+  assert.equal(ok, true, 'a tombstone re-attaches');
+  assert.ok(
+    log.some((e) => e[0] === 'tomb' && e[1] === 'write' && e[2] === 'OLD OUTPUT'),
+    'the tombstone view is hydrated from the surviving scrollback'
+  );
+  const successor = await svc.closeOwned('t');
+  assert.ok(
+    log.some((e) => e[0] === 'close' && e[1] === 'pty-dead'),
+    'dismissing a tombstone closes the backend session'
+  );
+  assert.equal(successor, null, 'nothing is left to show');
+}
+
+{
+  // I5b: dismissing a session whose view was never built still reaps its
+  // backend record, using the caller's stored ptySessionId as a hint — but a
+  // hint that belongs to a DIFFERENT owned session is ignored.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'viewH') });
+  await svc.attach();
+  await svc.closeOwned('ghost', 'pty-ghost');
+  assert.ok(
+    log.some((e) => e[0] === 'close' && e[1] === 'pty-ghost'),
+    'the hint closes a PTY the service never mapped'
+  );
+  await svc.startOwned({ ...ownedA, ownedId: 'owner', resumeCommand: null }, {});
+  await svc.closeOwned('impostor', 'pty-1');
+  assert.equal(
+    log.filter((e) => e[0] === 'close' && e[1] === 'pty-1').length,
+    0,
+    "a hint pointing at another session's live PTY is refused"
+  );
+}
+
+{
+  // I6: closeOwned reports the successor the MANAGER chose and showed (the
+  // most-recently-inserted survivor), so the caller cannot pick a different one
+  // and end up showing/fitting/focusing a second terminal per close.
+  const log = [];
+  const { backend } = makeBackend(log);
+  let created = 0;
+  const svc = createTerminalService({
+    backend,
+    createView: () => makeView(log, `s${(created += 1)}`)
+  });
+  await svc.attach();
+  for (const ownedId of ['a', 'b', 'c']) {
+    await svc.startOwned({ ...ownedA, ownedId, resumeCommand: null }, {});
+  }
+  svc.show('a');
+  const first = await svc.closeOwned('a');
+  assert.equal(first, 'c', 'the successor is the most-recently-inserted survivor');
+  assert.ok(
+    log.some((e) => e[0] === 's3' && e[1] === 'visible' && e[2] === true),
+    'and it is the view the manager actually showed'
+  );
+  assert.equal(await svc.closeOwned('c'), 'b', 'the next close reports the next survivor');
+  assert.equal(await svc.closeOwned('b'), null, 'no views left = no successor');
 }
 
 console.log('terminalService tests passed');

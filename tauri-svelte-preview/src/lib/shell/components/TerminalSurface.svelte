@@ -42,7 +42,21 @@
 
 <div class="surface">
   {#each hosted as session (session.ownedId)}
-    <div class="term-host" data-owned-id={session.ownedId} use:host={session.ownedId}></div>
+    <!--
+      Hosts start HIDDEN (inline `display: none`) and only the manager turns one
+      on, via `view.setVisible(true)` -> `host.style.display = 'block'`. Two bugs
+      this closes: a view created while another one is already active is never
+      told to hide (so its `inset: 0` host would cover the active terminal), and
+      a host that never gets a view at all (an exited session whose PTY died
+      while the app was closed) would sit on top as a transparent click-blocker.
+      The attribute is static, so Svelte never re-applies it over the manager.
+    -->
+    <div
+      class="term-host"
+      style="display: none"
+      data-owned-id={session.ownedId}
+      use:host={session.ownedId}
+    ></div>
   {/each}
 
   {#if activeOwnedId === null}
