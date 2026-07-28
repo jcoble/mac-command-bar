@@ -129,7 +129,13 @@ export function makeTerminalView(
     fontWeight: 500,
     fontWeightBold: 760,
     lineHeight: appearance.lineHeight,
-    scrollback: 8000,
+    // The view's own history, in lines. Raised from 8000 once the backend ring
+    // grew to 16 MB — 8000 lines was the new bottleneck, silently discarding
+    // most of a replayed long session. RAM tradeoff: xterm holds roughly
+    // cols x 8 bytes per line, so ~20 MB per view at 120 cols, and EVERY view
+    // pays it including the hidden ones (this shell keeps one view per owned
+    // session alive across switches).
+    scrollback: 20000,
     theme: { ...DRACULA_THEME }
   });
 

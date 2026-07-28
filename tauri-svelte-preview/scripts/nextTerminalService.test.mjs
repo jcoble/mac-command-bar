@@ -55,6 +55,9 @@ function makeBackend(log) {
   // When set, backend.close REJECTS with it (a dead IPC channel, a PTY the OS
   // already reaped, ...) — the case that used to lose the successor.
   let closeError = null;
+  // What readScrollback hands back. Overridable so a test can exercise the
+  // replay-tail cap with a scrollback bigger than the view could ever hold.
+  let scrollback = 'OLD OUTPUT';
   return {
     backend: {
       start: async (req) => {
@@ -88,7 +91,7 @@ function makeBackend(log) {
       },
       readScrollback: async (id) => {
         log.push(['readScrollback', id]);
-        return 'OLD OUTPUT';
+        return scrollback;
       },
       list: async () => [],
       listen: async (h) => {
@@ -104,6 +107,9 @@ function makeBackend(log) {
     listening: () => listener !== null,
     failClose: (error) => {
       closeError = error;
+    },
+    setScrollback: (value) => {
+      scrollback = value;
     }
   };
 }
@@ -700,6 +706,40 @@ const ownedA = {
     0,
     'and an exit during the delay cancels it too'
   );
+}
+
+{
+  // F6: the backend ring is 16 MB but the view keeps 20000 lines, so a replay
+  // is capped to the 4 MB TAIL before it ever reaches the view.
+  const CAP = 4 * 1024 * 1024;
+  const log = [];
+  const { backend, setScrollback } = makeBackend(log);
+  const big = 'A'.repeat(5 * 1024 * 1024) + 'TAIL-SENTINEL';
+  setScrollback(big);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'viewBig') });
+  await svc.attach();
+  await svc.adoptExisting({ ...ownedA, ownedId: 'big', ptySessionId: 'pty-big' }, {});
+  const written = log.find((e) => e[0] === 'viewBig' && e[1] === 'write')?.[2];
+  assert.equal(written?.length, CAP, 'the replay is capped at 4 MB');
+  assert.ok(written.endsWith('TAIL-SENTINEL'), 'and it is the TAIL that survives');
+  assert.ok(big.endsWith(written), 'the replay is an exact suffix of the scrollback');
+  svc.dispose();
+
+  // ...and a cut that would land between the halves of a surrogate pair drops
+  // the orphaned low half instead of writing a lone unpaired code unit.
+  const log2 = [];
+  const { backend: backend2, setScrollback: setScrollback2 } = makeBackend(log2);
+  // len = 2*CAP + 2, so the raw slice point (len - CAP) lands on an ODD offset
+  // inside the emoji run — i.e. on a low surrogate.
+  setScrollback2('B' + '\u{1F600}'.repeat(CAP) + 'C');
+  const svc2 = createTerminalService({ backend: backend2, createView: () => makeView(log2, 'v2') });
+  await svc2.attach();
+  await svc2.adoptExisting({ ...ownedA, ownedId: 'pair', ptySessionId: 'pty-pair' }, {});
+  const written2 = log2.find((e) => e[0] === 'v2' && e[1] === 'write')?.[2];
+  assert.equal(written2?.length, CAP - 1, 'the orphaned low surrogate is dropped');
+  assert.equal(written2.charCodeAt(0), 0xd83d, 'the replay starts on a HIGH surrogate');
+  assert.ok(written2.endsWith('\u{1F600}C'), 'and still ends at the true tail');
+  svc2.dispose();
 }
 
 console.log('terminalService tests passed');

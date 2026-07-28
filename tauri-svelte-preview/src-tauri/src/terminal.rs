@@ -9,7 +9,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Runtime};
 
 pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
-const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 256 * 1024;
+/// Per-session scrollback ring held by the backend. 16 MB is enough to survive a
+/// genuinely long agent run (256 KB was ~2 minutes of a chatty build), and it is
+/// the backend that has to hold it: a hidden view holds nothing, so a re-attach
+/// can only replay what lives here.
+const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Hysteresis floor. Once the cap is exceeded, ONE drain takes the buffer down to
+/// this — 75% of the cap — instead of shaving off exactly the overflow. Trimming
+/// to the cap would make every subsequent 8 KB read memmove the whole 16 MB; this
+/// way the O(n) drain amortizes over ~4 MB of output.
+const TERMINAL_SCROLLBACK_TRIM_TO_BYTES: usize = TERMINAL_SCROLLBACK_MAX_BYTES / 4 * 3;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,19 +265,7 @@ pub fn close_terminal_session(
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(false);
     };
-    let Some(handle) = registry.remove(session_id)? else {
-        return Ok(false);
-    };
-    if !handle.info.exited {
-        let mut killer = handle
-            .killer
-            .lock()
-            .map_err(|_| "Terminal killer lock poisoned".to_string())?;
-        if let Err(error) = killer.kill() {
-            return Err(format!("Failed to kill terminal session: {error}"));
-        }
-    }
-    Ok(true)
+    registry.kill_and_remove(session_id)
 }
 
 impl TerminalRegistry {
@@ -281,12 +278,34 @@ impl TerminalRegistry {
         Ok(())
     }
 
-    fn remove(&self, session_id: &str) -> Result<Option<TerminalSessionHandle>, String> {
+    /// Kill the child, THEN unregister it — both under one registry lock.
+    ///
+    /// The ordering is the point. Removing first and killing after meant a failed
+    /// kill returned `Err` on a session that no longer existed: the child was
+    /// still running but its id was gone, so nothing could list it, close it
+    /// again, or reap it. Killing first means the only way a handle leaves the
+    /// registry is a kill that actually succeeded (or a tombstone, which has no
+    /// child left to kill — see `spawn_terminal_waiter`). On failure the caller
+    /// gets the `Err` AND the session stays closable.
+    fn kill_and_remove(&self, session_id: &str) -> Result<bool, String> {
         let mut sessions = self
             .inner
             .lock()
             .map_err(|_| "Terminal session registry is unavailable".to_string())?;
-        Ok(sessions.remove(session_id))
+        let Some(handle) = sessions.get(session_id) else {
+            return Ok(false);
+        };
+        if !handle.info.exited {
+            let mut killer = handle
+                .killer
+                .lock()
+                .map_err(|_| "Terminal killer lock poisoned".to_string())?;
+            if let Err(error) = killer.kill() {
+                return Err(format!("Failed to kill terminal session: {error}"));
+            }
+        }
+        sessions.remove(session_id);
+        Ok(true)
     }
 
     fn mark_exited(
@@ -354,13 +373,17 @@ fn append_terminal_scrollback(scrollback: &mut String, data: &str) {
         return;
     }
 
-    let excess_bytes = scrollback.len() - TERMINAL_SCROLLBACK_MAX_BYTES;
-    let trim_index = scrollback
-        .char_indices()
-        .map(|(index, _)| index)
-        .find(|index| *index >= excess_bytes)
-        .unwrap_or(scrollback.len());
-    scrollback.drain(..trim_index);
+    // Jump STRAIGHT to the target byte index and nudge forward at most 3 bytes
+    // onto a UTF-8 char boundary. The old code walked `char_indices()` from the
+    // front of the whole buffer on every over-cap append — O(cap) per 8 KB read,
+    // which at a 16 MB cap is not survivable. `is_char_boundary` is O(1), and
+    // nudging forward can only ever shorten the result, so the post-trim length
+    // is always <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES.
+    let mut drain_end = scrollback.len() - TERMINAL_SCROLLBACK_TRIM_TO_BYTES;
+    while !scrollback.is_char_boundary(drain_end) {
+        drain_end += 1;
+    }
+    scrollback.drain(..drain_end);
 }
 
 fn spawn_terminal_waiter<R: Runtime>(
@@ -497,17 +520,54 @@ mod tests {
         append_terminal_scrollback(&mut scrollback, "hello");
         append_terminal_scrollback(&mut scrollback, " 世界");
 
-        assert!(scrollback.ends_with(" 世界"));
-        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
+        assert_eq!(scrollback, "hello 世界", "nothing is trimmed below the cap");
 
         append_terminal_scrollback(
             &mut scrollback,
             &"x".repeat(TERMINAL_SCROLLBACK_MAX_BYTES + 1024),
         );
 
-        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_MAX_BYTES);
+        // Hysteresis: one over-cap append drains all the way down to the 75%
+        // floor, so the next few MB of output cost no drain at all.
+        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
         assert!(scrollback.is_char_boundary(0));
         assert!(scrollback.ends_with('x'));
+    }
+
+    #[test]
+    fn terminal_scrollback_never_trims_below_the_cap() {
+        let mut scrollback = String::new();
+        append_terminal_scrollback(
+            &mut scrollback,
+            &"y".repeat(TERMINAL_SCROLLBACK_MAX_BYTES - 8),
+        );
+        append_terminal_scrollback(&mut scrollback, "12345678");
+        assert_eq!(
+            scrollback.len(),
+            TERMINAL_SCROLLBACK_MAX_BYTES,
+            "landing exactly ON the cap is not an over-cap append"
+        );
+
+        append_terminal_scrollback(&mut scrollback, "9");
+        assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
+        assert!(scrollback.ends_with("123456789"), "the TAIL is what survives");
+    }
+
+    #[test]
+    fn terminal_scrollback_trim_lands_on_a_char_boundary() {
+        // Every byte of the buffer is inside a 3-byte char, and the 1..=3 byte
+        // tail shifts the raw drain index through all three residues mod 3 — so
+        // one of these iterations targets a byte that is NOT a char boundary.
+        // `String::drain` panics on a non-boundary, and `starts_with('世')`
+        // catches a boundary that is merely valid but wrong.
+        for tail_bytes in 1..=3 {
+            let mut scrollback = "世".repeat(TERMINAL_SCROLLBACK_MAX_BYTES / 3 + 16);
+            append_terminal_scrollback(&mut scrollback, &"a".repeat(tail_bytes));
+
+            assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
+            assert!(scrollback.starts_with('世'), "trim split a multibyte char");
+            assert!(scrollback.ends_with('a'));
+        }
     }
 
     #[test]

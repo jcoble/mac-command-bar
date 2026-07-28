@@ -171,6 +171,34 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
   };
 }
 
+/**
+ * How much of a re-attached session's scrollback is actually replayed into the
+ * view, in UTF-16 code units.
+ *
+ * The backend ring now holds up to 16 MB, but the view keeps only 20000 lines
+ * (see `xtermFactory`). Everything older than that tail is parsed by xterm —
+ * escape sequences and all — purely to be dropped off the top of its own
+ * buffer. 4 MB is a deliberate over-estimate of what 20000 lines can hold
+ * (~200 bytes/line), so the cap costs nothing visible and bounds the worst-case
+ * re-attach at a quarter of the ring.
+ */
+const REPLAY_TAIL_MAX_CHARS = 4 * 1024 * 1024;
+
+/**
+ * The tail of `scrollback` that can plausibly fill a view, at most
+ * `REPLAY_TAIL_MAX_CHARS`. Slicing by code unit can land between the halves of
+ * a surrogate pair, so a leading LOW surrogate — the orphaned second half — is
+ * dropped rather than written as a lone unpaired unit.
+ */
+function replayTail(scrollback: string): string {
+  if (scrollback.length <= REPLAY_TAIL_MAX_CHARS) {
+    return scrollback;
+  }
+  const tail = scrollback.slice(-REPLAY_TAIL_MAX_CHARS);
+  const first = tail.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? tail.slice(1) : tail;
+}
+
 export function createTerminalService(opts: {
   backend: TerminalBackend;
   createView: (host: HTMLElement, hooks: TerminalViewHooks) => TerminalView;
@@ -279,9 +307,11 @@ export function createTerminalService(opts: {
    * Force the TUI attached to `ptyId` to repaint its whole frame, shortly after
    * a re-attach has replayed its scrollback.
    *
-   * Why this exists: the backend caps scrollback at 256 KB and trims from the
-   * FRONT on a CHARACTER boundary, not an ANSI-sequence boundary. A session with
-   * a lot of output therefore replays starting mid-escape, so the terminal
+   * Why this exists: the backend caps scrollback at 16 MB and trims from the
+   * FRONT on a CHARACTER boundary, not an ANSI-sequence boundary (and
+   * `replayTail` above then takes the last 4 MB of that, on a code-unit
+   * boundary). A session with enough output to hit either cut therefore replays
+   * starting mid-escape, so the terminal
    * re-renders garbage — and a replay can never rebuild a live full-screen frame
    * anyway (the bytes that drew claude's input box scrolled out of the buffer
    * long ago; only the program can draw it again).
@@ -512,7 +542,8 @@ export function createTerminalService(opts: {
 
     const scrollback = await backend.readScrollback(ptyId);
     if (scrollback) {
-      scrollbackCache.set(ptyId, scrollback);
+      // Only the tail: the ring is 16 MB, the view keeps 20000 lines.
+      scrollbackCache.set(ptyId, replayTail(scrollback));
     }
     try {
       setPty(owned.ownedId, ptyId);
