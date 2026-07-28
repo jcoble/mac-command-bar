@@ -26,7 +26,7 @@ function selection(root, projects = []) {
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
-  panels.panelShown('git');
+  panels.panelShown('browser');
   panels.panelShown('editor');
   panels.sessionPicked();
   assert.deepEqual(calls, [], 'nothing loads before the shell says launch is over');
@@ -38,11 +38,11 @@ function selection(root, projects = []) {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
   panels.allowPanelLoads();
-  panels.panelShown('git');
-  assert.deepEqual(calls, [['git', '/repo/one']], 'only the tab the user opened loads');
+  panels.panelShown('editor');
+  assert.deepEqual(calls, [['editor', '/repo/one']], 'only the tab the user opened loads');
   panels.panelShown('browser');
   assert.deepEqual(calls.at(-1), ['browser', null], 'the browser panel takes no project');
-  assert.deepEqual(panels.loadedPanels(), ['git', 'browser']);
+  assert.deepEqual(panels.loadedPanels(), ['editor', 'browser']);
 }
 
 // The terminal tab is never re-loaded from here, and an unknown id is ignored.
@@ -55,20 +55,33 @@ function selection(root, projects = []) {
   assert.deepEqual(calls, [], 'the terminal tab and unknown tabs load nothing');
 }
 
+// Source control is a section of the left column, not a tab: nothing can bring
+// it to the front, so a tab activation named "git" loads nothing and does not
+// count as an opened tab either.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.panelShown('git');
+  assert.deepEqual(calls, [], 'source control has no tab to be shown');
+  assert.deepEqual(panels.loadedPanels(), []);
+}
+
 // With no session picked yet, a tab still opens — with no project.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection(''));
   panels.allowPanelLoads();
   panels.panelShown('editor');
-  panels.panelShown('git');
+  panels.panelShown('browser');
   assert.deepEqual(calls, [
     ['editor', null],
-    ['git', null]
+    ['browser', null]
   ]);
 }
 
-// Picking a session loads the two side panels...
+// Picking a session loads the panels that are on screen with it: the file tree,
+// source control, and the context cards.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
@@ -76,19 +89,28 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/one'],
+    ['git', '/repo/one'],
     ['context', '/repo/one']
   ]);
-  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context']);
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'git', 'context']);
 }
 
 // ...and a session with no project folder still loads the context cards, which
-// are machine-wide, but has no folder to list files from.
+// are machine-wide, and still tells source control there is no repository — but
+// has no folder to list files from.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection(''));
   panels.allowSessionLoads();
   panels.sessionPicked();
-  assert.deepEqual(calls, [['context', '']], 'no folder means no file listing');
+  assert.deepEqual(
+    calls,
+    [
+      ['git', null],
+      ['context', '']
+    ],
+    'no folder means no file listing'
+  );
 }
 
 // Changing session re-points the tabs the user has opened, and leaves the rest.
@@ -98,18 +120,19 @@ function selection(root, projects = []) {
   const panels = createPanelActivation(activators, () => selection(root));
   panels.allowPanelLoads();
   panels.allowSessionLoads();
-  panels.panelShown('git');
+  panels.panelShown('editor');
   calls.length = 0;
 
   root = '/repo/two';
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/two'],
+    ['git', '/repo/two'],
     ['context', '/repo/two'],
-    ['git', '/repo/two']
+    ['editor', '/repo/two']
   ]);
   assert.ok(
-    !calls.some(([name]) => name === 'editor'),
+    !calls.some(([name]) => name === 'browser'),
     'a tab the user never opened is not loaded by a session change'
   );
 }
@@ -127,6 +150,7 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls.slice(1), [
     ['explorer', '/repo/one'],
+    ['git', '/repo/one'],
     ['context', '/repo/one'],
     ['editor', '/repo/one']
   ]);
@@ -139,10 +163,10 @@ function selection(root, projects = []) {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
   panels.allowPanelLoads();
-  panels.panelShown('git');
-  panels.panelShown('git');
+  panels.panelShown('editor');
+  panels.panelShown('editor');
   assert.equal(calls.length, 2);
-  assert.deepEqual(panels.loadedPanels(), ['git'], 'still one opened tab');
+  assert.deepEqual(panels.loadedPanels(), ['editor'], 'still one opened tab');
 }
 
 console.log('panelActivation: all tests passed');

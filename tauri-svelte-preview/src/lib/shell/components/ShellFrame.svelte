@@ -14,7 +14,7 @@
 
   interface Props {
     rail: Snippet;
-    center: { session: Snippet; editor: Snippet; git: Snippet; browser: Snippet };
+    center: { session: Snippet; editor: Snippet; browser: Snippet };
     context: Snippet;
     dock: Snippet;
     onSessionPanelLayout?: () => void;
@@ -45,7 +45,6 @@
   let dockSlot: HTMLElement;
   let sessionSlot: HTMLElement;
   let editorSlot: HTMLElement;
-  let gitSlot: HTMLElement;
   let browserSlot: HTMLElement;
 
   let frame: Frame | null = null;
@@ -61,11 +60,14 @@
       });
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
+        // The session is what you talk to, so it opens on its own on the left;
+        // the editor and the browser are where you look at the result, so they
+        // open stacked together on the right. Source control is not here at
+        // all any more — it is a section of the left column.
         panels: [
           { id: 'session', title: 'Session', element: sessionSlot },
-          { id: 'editor', title: 'Editor', element: editorSlot },
-          { id: 'git', title: 'Source control', element: gitSlot },
-          { id: 'browser', title: 'Browser', element: browserSlot }
+          { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
+          { id: 'browser', title: 'Browser', element: browserSlot, group: 'display' }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
@@ -111,7 +113,6 @@
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
-  <div class="slot" bind:this={gitSlot}>{@render center.git()}</div>
   <div class="slot" bind:this={browserSlot}>{@render center.browser()}</div>
 </div>
 

@@ -18,7 +18,6 @@
   import ContextPanel from '$lib/shell/components/ContextPanel.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
-  import GitPanel from '$lib/shell/components/GitPanel.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
@@ -295,9 +294,6 @@
   <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
   <EditorPanel onFileOpened={() => frameControls?.showCenterPanel('editor')} />
 {/snippet}
-{#snippet gitArea()}
-  <GitPanel />
-{/snippet}
 {#snippet browserArea()}
   <BrowserPanel />
 {/snippet}
@@ -305,7 +301,7 @@
 <main class="next-shell">
   <ShellFrame
     rail={railArea} context={contextArea} dock={dockArea}
-    center={{ session: sessionArea, editor: editorArea, git: gitArea, browser: browserArea }}
+    center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}
     onReady={(controls) => {

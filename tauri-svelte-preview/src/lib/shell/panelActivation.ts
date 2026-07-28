@@ -62,8 +62,13 @@ export interface PanelActivation {
 }
 
 /** Center tabs that have something to load. "session" is the terminal: it is
- * owned by the page's own start-up and must never be re-loaded from here. */
-const LOADABLE_PANELS = new Set(['editor', 'git', 'browser']);
+ * owned by the page's own start-up and must never be re-loaded from here.
+ *
+ * Source control is deliberately absent: it is a section of the left column
+ * now, not a tab, so nothing ever brings it to the front. It loads with the
+ * file tree and the context cards when a session is picked — see
+ * `loadSessionPanels` below. */
+const LOADABLE_PANELS = new Set(['editor', 'browser']);
 
 export function createPanelActivation(
   activators: PanelActivators,
@@ -77,12 +82,17 @@ export function createPanelActivation(
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
     if (id === 'editor') activators.editor(root || null);
-    else if (id === 'git') activators.git(root || null);
     else if (id === 'browser') activators.browser();
   };
 
+  /** The panels of the left column, which are all on screen at once, plus the
+   * context cards. Source control is here rather than in `loadPanel` because
+   * it has no tab to be brought to the front any more; a session with no folder
+   * still calls it, which is what tells it there is no repository to show. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
-    if (selection.root.trim()) activators.explorer(selection.root.trim());
+    const root = selection.root.trim();
+    if (root) activators.explorer(root);
+    activators.git(root || null);
     activators.context({ root: selection.root, projects: selection.projects });
   };
 
@@ -113,7 +123,7 @@ export function createPanelActivation(
 
     loadedPanels(): string[] {
       const loaded = [...shownPanels];
-      if (sessionPanelsShown) loaded.push('explorer', 'context');
+      if (sessionPanelsShown) loaded.push('explorer', 'git', 'context');
       return loaded;
     }
   };
