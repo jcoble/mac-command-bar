@@ -23,15 +23,27 @@
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
   import TerminalSurface from '$lib/shell/components/TerminalSurface.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
+  import { editorState, resetEditorState } from '$lib/shell/editor/editorStore.svelte';
+  import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
+  import { requestOpenFile } from '$lib/shell/openFileBus';
   import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
+  import {
+    captureWorkspace,
+    pruneWorkspaces,
+    readWorkspaces,
+    writeWorkspaces,
+    type SessionWorkspaceSnapshot
+  } from '$lib/shell/sessionWorkspaces';
   import { registerShellCommands } from '$lib/shell/shellCommands';
   import { shellPanels } from '$lib/shell/shellPanels';
   import {
     addOwnedSession,
+    completeOwnedSession,
     hydrateOwned,
     loadStoredOwned,
     rail,
     removeOwnedSession,
+    reopenOwnedSession,
     setActiveOwned,
     setAvailable,
     updateOwnedSession
@@ -52,6 +64,17 @@
    * `adoptExisting`: a HIDDEN host cannot be measured, so without it a survivor's
    * view keeps 80x24 and wraps its replay wrong. */
   const livePtySizes = new Map<string, { cols: number; rows: number }>();
+
+  /** What each session had open, by owned id. Read once at start-up, then kept
+   * in step by `snapshotWorkspace` — the editor and the file tree are one of
+   * each for the whole shell, so this is what keeps two sessions in the same
+   * repository from overwriting each other's tabs. */
+  let workspaces: Record<string, SessionWorkspaceSnapshot> = {};
+  /** True only while `restoreWorkspace` is replaying a session's files. The
+   * editor asks to come to the front for every file opened, which is right for a
+   * click and wrong here: switching session must not pull the user off the
+   * terminal they were watching. */
+  let restoringWorkspace = false;
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
@@ -158,13 +181,77 @@
     if (rail.activeOwnedId === null) await selectOwned(ownedId);
   }
 
+  /** Remember the editor tabs and file tree this session is leaving behind.
+   * Stored straight away: a reload can come at any moment, and the write is a
+   * few hundred bytes. */
+  function snapshotWorkspace(ownedId: string): void {
+    workspaces = {
+      ...workspaces,
+      [ownedId]: captureWorkspace({
+        openFiles: editorState.openFiles,
+        activePath: editorState.activePath,
+        expandedFolderIds: explorer.expandedFolderIds,
+        selectedPath: explorer.selectedPath,
+        scrollTop: explorer.scrollTop
+      })
+    };
+    writeWorkspaces(window.localStorage, workspaces);
+  }
+
+  /**
+   * Put back the editor tabs and file tree this session had.
+   *
+   * The files go back through the same "open this file" request the explorer
+   * uses, in strip order, with the file that was showing asked for last so it is
+   * the one left in front. The tree's state is assigned directly, AFTER
+   * `sessionPicked` has pointed the explorer at the project: listing the same
+   * folder again does nothing, and a scan of a different folder never closes
+   * folders the user had open. A highlighted file that no longer exists loses
+   * its highlight when that scan lands, which is the right answer.
+   */
+  function restoreWorkspace(ownedId: string): void {
+    // Start-up re-attaching a session picks it, which is indistinguishable from
+    // a click. Replaying files then would read files before launch is over; the
+    // end of start-up calls this itself once the gate is open.
+    if (!shellPanels.loadsAllowed()) return;
+    // Every restore starts from an empty editor. A session that has never had a
+    // file open gets one, and that emptiness is the whole point: it is the other
+    // session's tabs not being there.
+    resetEditorState();
+    const snapshot = workspaces[ownedId];
+    if (!snapshot) return;
+
+    restoringWorkspace = true;
+    try {
+      for (const path of snapshot.openPaths) requestOpenFile({ path });
+      if (snapshot.activePath) requestOpenFile({ path: snapshot.activePath });
+    } finally {
+      restoringWorkspace = false;
+    }
+    explorer.expandedFolderIds = new Set(snapshot.expandedFolderIds);
+    selectPath(snapshot.selectedPath);
+    setScrollTop(snapshot.scrollTop);
+  }
+
   async function selectOwned(ownedId: string): Promise<void> {
+    const previous = rail.activeOwnedId;
+    const switching = previous !== ownedId;
+    // Save the session being left BEFORE anything points the panels elsewhere.
+    // Gated the same way as the restore below: during start-up the panels are
+    // still empty, and saving that emptiness would overwrite the tabs the
+    // session actually had (rows are clickable for seconds while the first
+    // scan runs — including the close button, which switches sessions too).
+    if (switching && previous !== null && shellPanels.loadsAllowed()) snapshotWorkspace(previous);
     setActiveOwned(ownedId);
     service?.show(ownedId);
     // Point the file tree, the context cards and any tab the user has already
     // opened at this session's project. Ignored while start-up is still
     // re-attaching sessions, so a reload still loads nothing on its own.
     shellPanels.sessionPicked();
+    // Clicking the session you are already on changes nothing. Putting the
+    // stored record back here would throw away every file opened since the last
+    // switch, which is the opposite of what a click on your own row means.
+    if (switching) restoreWorkspace(ownedId);
   }
 
   /** EXPLICIT IO: adopt a scanned session, spawn its PTY, replay the resume command. */
@@ -188,23 +275,62 @@
     await selectOwned(owned.ownedId);
   }
 
-  /** EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
+  /**
+   * EXPLICIT IO: the ONLY path that kills a PTY. `service.closeOwned` never
    * rejects — it reports `{ successor, error }` — so a failed close still hands
-   * back the terminal the manager left visible. The row is dropped either way. */
-  async function closeOwned(ownedId: string): Promise<void> {
+   * back the terminal the manager left visible.
+   *
+   * The SESSION survives this. Closing a terminal ends the process and its
+   * screen; it does not end the piece of work, which stays on the list as a
+   * finished row until the user marks it done and removes it. `removeSession`
+   * is the only thing that takes a row off the list.
+   */
+  async function closeTerminal(ownedId: string): Promise<void> {
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
-    pendingHosts.delete(ownedId);
+    // The row is staying, so its host stays mounted and stays claimed; only the
+    // re-attach that is now pointless is dropped.
     awaitingReattach.delete(ownedId);
     const result = await service?.closeOwned(ownedId, session?.ptySessionId ?? null);
     if (result?.error) {
       rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(result.error)}`;
     }
-    removeOwnedSession(ownedId);
-    // Picked BEFORE the await: adopt it only while it still exists.
+    // The PTY id is cleared with the state: it names a process that is gone, and
+    // leaving it stored would have the next launch try to re-attach to it.
+    updateOwnedSession(ownedId, { state: 'exited', ptySessionId: null });
+    // Picked BEFORE the await: adopt it only while it still exists. It goes
+    // through `selectOwned` like every other session change, and the order is
+    // what makes that safe: `rail.activeOwnedId` is still the session whose
+    // terminal just closed, so the tabs and tree on screen are saved as ITS
+    // workspace, and only then does the successor's own state come back.
+    // Pointing the rail at the successor directly saved this session's files
+    // into the successor's record on the next switch.
     const successor = result?.successor ?? null;
     if (successor !== null && rail.owned.some((entry) => entry.ownedId === successor)) {
-      setActiveOwned(successor);
+      await selectOwned(successor);
     }
+  }
+
+  /**
+   * EXPLICIT IO: take a session off the list for good. The transcript on disk is
+   * untouched; only CommandBar's record of it goes.
+   *
+   * The close runs every time, not just for a session that is still running. A
+   * session whose process ended on its own keeps both its terminal on screen and
+   * its record in the backend, and dropping the row is the last chance to clear
+   * either — the row is what the ids were reachable through.
+   */
+  async function removeSession(ownedId: string): Promise<void> {
+    await closeTerminal(ownedId);
+    pendingHosts.delete(ownedId);
+    awaitingReattach.delete(ownedId);
+    removeOwnedSession(ownedId);
+    // The row is gone, so the tabs and tree it remembered go with it — pruning
+    // against what is left also clears anything an earlier build orphaned.
+    workspaces = pruneWorkspaces(
+      workspaces,
+      rail.owned.map((entry) => entry.ownedId)
+    );
+    writeWorkspaces(window.localStorage, workspaces);
   }
 
   onMount(() => {
@@ -236,6 +362,13 @@
         // Claim them BEFORE the hosts mount, or `registerHost` races past.
         for (const session of attachable) awaitingReattach.add(session.ownedId);
         hydrateOwned(owned);
+        // The per-session tabs and tree state, read once. Sessions that did not
+        // survive the reconcile take their records with them.
+        workspaces = pruneWorkspaces(
+          readWorkspaces(window.localStorage),
+          owned.map((entry) => entry.ownedId)
+        );
+        writeWorkspaces(window.localStorage, workspaces);
         // One survivor's failure must cost neither the others their re-attach nor
         // the Resume group its scan: collect, keep going, report once.
         const failed: string[] = [];
@@ -264,10 +397,27 @@
         // open, so its pick was ignored. Repeat it now that loads are allowed, or
         // a reload comes back with empty panes until the user clicks a session.
         if (!disposed && rail.activeOwnedId !== null) shellPanels.sessionPicked();
+        // Same story for the files that session had open: the pick that would
+        // have restored them happened before the gate opened, so a reload would
+        // otherwise come back with an empty editor.
+        if (!disposed && rail.activeOwnedId !== null) restoreWorkspace(rail.activeOwnedId);
       }
     })();
 
+    /** Remember the session on screen when the page goes away. Leaving the
+     * window is not a session switch, so nothing else would have saved it, and a
+     * reload would come back to an empty editor. `pagehide` is the event
+     * browsers still fire for both a reload and a close. */
+    const saveOnLeaving = (): void => {
+      if (rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
+    };
+    window.addEventListener('pagehide', saveOnLeaving);
+
     return () => {
+      window.removeEventListener('pagehide', saveOnLeaving);
+      // Navigating away inside the app ends here instead, and it is the same
+      // last chance to remember what the session on screen had open.
+      if (!disposed && rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
       disposed = true;
       // dispose() drops views + the listener ONLY. Every PTY survives.
       service?.dispose();
@@ -288,7 +438,9 @@
 {#snippet railArea()}
   <ShellSidebar
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
-    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeOwned}
+    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
+    onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
+    onReopen={reopenOwnedSession} onRemove={removeSession}
     onRescan={scanRail} onReady={(controls) => (sidebarControls = controls)}
     onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
     onOpenSettings={() => overlays?.openSettings()}
@@ -300,8 +452,14 @@
   <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
 {/snippet}
 {#snippet editorArea()}
-  <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
-  <EditorPanel onFileOpened={() => frameControls?.showCenterPanel('editor')} />
+  <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight.
+       Except while a session's files are being put back — that is not a request for anything, and
+       it must not drag the user off the terminal they were watching. -->
+  <EditorPanel
+    onFileOpened={() => {
+      if (!restoringWorkspace) frameControls?.showCenterPanel('editor');
+    }}
+  />
 {/snippet}
 {#snippet browserArea()}<BrowserPanel />{/snippet}
 

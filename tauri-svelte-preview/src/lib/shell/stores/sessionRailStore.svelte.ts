@@ -137,6 +137,22 @@ export function updateOwnedSession(ownedId: string, patch: Partial<OwnedSession>
   }
 }
 
+/**
+ * Mark a session done. The caller supplies the clock so this stays testable and
+ * the store keeps no notion of "now".
+ *
+ * Being done is only ever the user saying so, and it costs the session nothing:
+ * its terminal keeps running, and `reopenOwnedSession` puts it straight back.
+ */
+export function completeOwnedSession(ownedId: string, when: Date): void {
+  updateOwnedSession(ownedId, { completedAt: when.toISOString() });
+}
+
+/** Put a done session back on the working list. */
+export function reopenOwnedSession(ownedId: string): void {
+  updateOwnedSession(ownedId, { completedAt: null });
+}
+
 /** Drop an owned session. Clears `activeOwnedId` when it was the active one. */
 export function removeOwnedSession(ownedId: string): void {
   rail.owned = rail.owned.filter((session) => session.ownedId !== ownedId);

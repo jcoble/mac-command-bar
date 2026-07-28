@@ -339,6 +339,10 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             project_path: Some("/repo".to_string()),
             last_activity: Some("2026-06-09T01:00:00Z".to_string()),
             resume_commands: vec!["claude --resume abc".to_string()],
+            branch_hint: None,
+            task_id: None,
+            pull_request_hint: None,
+            source_label: None,
         },
         AgentSessionRecord {
             provider: "claude".to_string(),
@@ -352,6 +356,10 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
                 "claude --resume abc".to_string(),
                 "cd /repo/worktree && claude --resume abc".to_string(),
             ],
+            branch_hint: None,
+            task_id: None,
+            pull_request_hint: None,
+            source_label: None,
         },
     ]);
 

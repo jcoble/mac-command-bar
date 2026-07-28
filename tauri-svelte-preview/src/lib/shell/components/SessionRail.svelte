@@ -19,6 +19,14 @@
    * own state and is deliberately NOT reported to the page — narrowing what you
    * can see costs nothing and loads nothing.
    *
+   * The sessions CommandBar owns are split into Working and Done, and which side
+   * a session sits on is the USER's answer (`completedAt`), never the process's:
+   * an agent that stopped running is still work in progress until it is marked
+   * done, and a session marked done may still have a terminal running. That is
+   * also why a row has two separate destructive-looking buttons — closing the
+   * terminal ends the process and keeps the row, removing takes the row away —
+   * and why removing is only offered once a session is done.
+   *
    * Which headings the user has opened or closed is read from and written to
    * `localStorage` here, in the click handler that changed it. That is the one
    * thing this file touches outside its own props, and it is deliberately not
@@ -38,6 +46,7 @@
     visibleGroupItems,
     writeGroupExpansion,
     type GroupExpansion,
+    type SessionGroup,
     type SessionList
   } from '$lib/shell/sessionGroups';
   import type { AgentSession } from '$lib/tauriSource';
@@ -55,8 +64,14 @@
     onSelect(ownedId: string): void;
     /** Resume a scanned session (adopt + start a PTY). */
     onAdopt(session: AgentSession): void;
-    /** Close a live session's PTY, or dismiss an exited row. */
+    /** End a session's terminal process. The session itself stays on the list. */
     onClose(ownedId: string): void;
+    /** Move a session to Done. */
+    onComplete(ownedId: string): void;
+    /** Move a done session back to Working. */
+    onReopen(ownedId: string): void;
+    /** Take a session off the list for good. Only reachable from a done row. */
+    onRemove(ownedId: string): void;
     /** Re-run the agent-session scan. */
     onRescan(): void;
   }
@@ -69,6 +84,9 @@
     onSelect,
     onAdopt,
     onClose,
+    onComplete,
+    onReopen,
+    onRemove,
     onRescan
   }: Props = $props();
 
@@ -91,7 +109,22 @@
   /** What the search box holds. Empty means "show everything". */
   let query = $state('');
 
-  const grouped = $derived(groupSessions(owned, resumable, query));
+  /** Sessions the user has not marked done yet. */
+  const working = $derived(owned.filter((session) => session.completedAt === null));
+
+  /** Sessions the user marked done, most recently finished first. `filter` has
+   * already made a new array, so sorting it in place disturbs nothing. */
+  const done = $derived(
+    owned
+      .filter((session) => session.completedAt !== null)
+      .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''))
+  );
+
+  // Grouped separately so a project heading appears under whichever subsection
+  // actually has rows for it. The scanned list is grouped with the Working pass
+  // only — there is one Resume section and it belongs to neither subsection.
+  const grouped = $derived(groupSessions(working, resumable, query));
+  const groupedDone = $derived(groupSessions(done, [], query));
   const searching = $derived(query.trim().length > 0);
 
   /** Headings the user has opened or closed by hand, restored from last time. */
@@ -146,6 +179,37 @@
     return state;
   }
 
+  /** What a row is called in a button's label and in the confirmation. */
+  function rowName(session: OwnedSession): string {
+    return session.title || session.ownedId.slice(0, 8);
+  }
+
+  /** Removing is the one action nothing undoes, so it is asked about first. The
+   * sentence says what survives, because the worry it answers is losing the
+   * conversation rather than the row — and it says what does NOT survive when
+   * that is true, because removing a session whose process is still going ends
+   * it, and this is the only warning the user gets. */
+  function confirmRemove(session: OwnedSession): void {
+    const running = session.state !== 'exited';
+    const question = running
+      ? `Remove "${rowName(session)}" from your sessions? Its terminal is still running and will be closed. The transcript stays on disk.`
+      : `Remove "${rowName(session)}" from your sessions? The transcript stays on disk.`;
+    if (typeof window !== 'undefined' && !window.confirm(question)) return;
+    onRemove(session.ownedId);
+  }
+
+  /** The branch, task and pull request the scanner worked out for a row, in the
+   * order they answer "where is this work?": which branch, which task, which
+   * pull request. Anything the scanner did not find is left out rather than
+   * drawn empty — a chip is only worth its space when it says something. */
+  function chips(
+    values: { branch?: string | null; taskId?: string | null; pullRequest?: string | null }
+  ): string[] {
+    return [values.branch, values.taskId, values.pullRequest].filter(
+      (value): value is string => typeof value === 'string' && value.length > 0
+    );
+  }
+
   function providerLabel(session: AgentSession): string {
     const provider = session.provider.toLowerCase();
     return provider.startsWith('cmux-') ? `cmux · ${provider.slice('cmux-'.length)}` : provider;
@@ -184,6 +248,117 @@
   </button>
 {/snippet}
 
+<!-- The branch, task and pull request behind a row, drawn the same way for both
+     lists. A long branch name is cut short on screen and kept whole in the
+     tooltip, so a row stays one line however it was named. -->
+{#snippet metaChips(values: {
+  branch?: string | null;
+  taskId?: string | null;
+  pullRequest?: string | null;
+})}
+  <!-- Keyed by position, not by text: these are three fixed slots, and a branch
+       named after its task puts the same word in two of them — a duplicate key
+       there would throw and take the whole rail down. -->
+  {#each chips(values) as chip, slot (slot)}
+    <span class="badge chip" title={chip}>{chip}</span>
+  {/each}
+{/snippet}
+
+<!-- "Working" / "Done". Reads like the section heading above it, set in from the
+     edge so it is plainly a division WITHIN Sessions rather than a rival to it. -->
+{#snippet subsectionHead(label: string, count: number)}
+  <div class="subsection-head">
+    <h3>{label}</h3>
+    <span class="count">{count}</span>
+  </div>
+{/snippet}
+
+<!-- The rows of one subsection, under one heading per project folder. `isDone`
+     is the only difference between the two: it decides which pair of buttons a
+     row offers. -->
+{#snippet ownedProjects(groups: SessionGroup<OwnedSession>[], isDone: boolean)}
+  {#each groups as group (group.path)}
+    <div class="project">
+      {@render projectHead(
+        'owned',
+        group.name,
+        group.parentProject,
+        group.path,
+        group.items.length
+      )}
+      {#if expanded('owned', group.path)}
+        <ul class="rows">
+          {#each group.items as session (session.ownedId)}
+            <li class="row" class:active={session.ownedId === activeOwnedId}>
+              <button
+                type="button"
+                class="row-main"
+                onclick={() => onSelect(session.ownedId)}
+                title={session.cwd || session.title}
+              >
+                <span class="dot" data-state={session.state} aria-hidden="true"></span>
+                <span class="row-text">
+                  <span class="row-title">{rowName(session)}</span>
+                  <span class="row-meta">
+                    <span class="badge">{agentLabel(session)}</span>
+                    {@render metaChips(session)}
+                    {#if session.state === 'exited'}
+                      <span class="finished">{stateLabel(session.state)}</span>
+                    {/if}
+                  </span>
+                </span>
+              </button>
+              {#if isDone}
+                <button
+                  type="button"
+                  class="row-act"
+                  aria-label={`reopen ${rowName(session)} — put it back under Working`}
+                  title="Reopen"
+                  onclick={() => onReopen(session.ownedId)}
+                >
+                  ↩
+                </button>
+                <button
+                  type="button"
+                  class="row-act danger"
+                  aria-label={`remove ${rowName(session)} from this list`}
+                  title="Remove from this list"
+                  onclick={() => confirmRemove(session)}
+                >
+                  ✕
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="row-act"
+                  aria-label={`mark ${rowName(session)} done`}
+                  title="Mark done"
+                  onclick={() => onComplete(session.ownedId)}
+                >
+                  ✓
+                </button>
+                <!-- Nothing left to close once the process has ended, and the
+                     row says so with its finished badge. -->
+                {#if session.state !== 'exited'}
+                  <button
+                    type="button"
+                    class="row-act danger"
+                    aria-label={`close the terminal for ${rowName(session)}`}
+                    title="Close the terminal"
+                    onclick={() => onClose(session.ownedId)}
+                  >
+                    ✕
+                  </button>
+                {/if}
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+  {/each}
+{/snippet}
+
 <div class="rail">
   <div class="search">
     <input
@@ -197,61 +372,23 @@
   <section class="group">
     <header class="group-head">
       <h2>Sessions</h2>
-      <span class="count">{countIn(grouped.owned)}</span>
+      <span class="count">{countIn(grouped.owned) + countIn(groupedDone.owned)}</span>
     </header>
 
     {#if owned.length === 0}
       <p class="empty">No sessions yet — resume one below.</p>
-    {:else if grouped.owned.length === 0}
+    {:else if grouped.owned.length === 0 && groupedDone.owned.length === 0}
       <p class="empty">No session matches “{query.trim()}”.</p>
     {:else}
-      {#each grouped.owned as group (group.path)}
-        <div class="project">
-          {@render projectHead(
-            'owned',
-            group.name,
-            group.parentProject,
-            group.path,
-            group.items.length
-          )}
-          {#if expanded('owned', group.path)}
-            <ul class="rows">
-              {#each group.items as session (session.ownedId)}
-                <li class="row" class:active={session.ownedId === activeOwnedId}>
-                  <button
-                    type="button"
-                    class="row-main"
-                    onclick={() => onSelect(session.ownedId)}
-                    title={session.cwd || session.title}
-                  >
-                    <span class="dot" data-state={session.state} aria-hidden="true"></span>
-                    <span class="row-text">
-                      <span class="row-title">{session.title || session.ownedId.slice(0, 8)}</span>
-                      <span class="row-meta">
-                        <span class="badge">{agentLabel(session)}</span>
-                        {#if session.state === 'exited'}
-                          <span class="finished">{stateLabel(session.state)}</span>
-                        {/if}
-                      </span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    class="row-close"
-                    aria-label={session.state === 'exited'
-                      ? `dismiss ${session.title}`
-                      : `close ${session.title}`}
-                    title={session.state === 'exited' ? 'dismiss' : 'close'}
-                    onclick={() => onClose(session.ownedId)}
-                  >
-                    ✕
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </div>
-      {/each}
+      {#if grouped.owned.length > 0}
+        {@render subsectionHead('Working', countIn(grouped.owned))}
+        {@render ownedProjects(grouped.owned, false)}
+      {/if}
+      <!-- Nobody needs to be told they have finished nothing yet. -->
+      {#if groupedDone.owned.length > 0}
+        {@render subsectionHead('Done', countIn(groupedDone.owned))}
+        {@render ownedProjects(groupedDone.owned, true)}
+      {/if}
     {/if}
   </section>
 
@@ -298,6 +435,11 @@
                       <span class="row-title">{session.title || session.id}</span>
                       <span class="row-meta">
                         <span class="badge">{providerLabel(session)}</span>
+                        {@render metaChips({
+                          branch: session.branchHint,
+                          taskId: session.taskId,
+                          pullRequest: session.pullRequestHint
+                        })}
                         {#if when}
                           <span class="stamp" title={exactLocalTime(session.lastActivity)}>
                             {when}
@@ -459,13 +601,34 @@
     color: #d8d8e0;
   }
 
-  h2 {
+  h2,
+  h3 {
     margin: 0;
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
     color: #7b7b8c;
+  }
+
+  /* Dimmer than "Sessions" and set in from the edge: Working and Done divide
+     that section, they do not compete with it. */
+  .subsection-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 4px 4px 8px;
+  }
+
+  .subsection-head h3 {
+    color: #5d5d6b;
+  }
+
+  /* The gap a subsection heading needs above it once rows have already been
+     drawn. The first one sits directly under "Sessions" and needs none. */
+  .subsection-head:not(:first-of-type) {
+    margin-top: 14px;
   }
 
   .count {
@@ -559,6 +722,9 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
+    /* More detail than a narrow rail can hold is cut off at the row's edge
+       rather than widening it. */
+    overflow: hidden;
   }
 
   .badge {
@@ -569,6 +735,22 @@
     letter-spacing: 0.04em;
     padding: 1px 5px;
     white-space: nowrap;
+  }
+
+  /* The branch, task and pull request. Same size and shape as the agent badge
+     beside them — these are the things the user scans a rail for, so they are
+     not allowed to shrink — and outlined rather than filled so the row still
+     reads as one badge followed by its details. A long branch name gives way
+     first and is cut with an ellipsis; the tooltip still has all of it. */
+  .chip {
+    flex: 0 1 auto;
+    min-width: 0;
+    border: 1px solid #33333f;
+    background: transparent;
+    color: #8a8a9c;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 24ch;
   }
 
   .finished,
@@ -618,24 +800,33 @@
     }
   }
 
-  .row-close {
+  /* The row's own buttons. Out of sight until the row is pointed at or a
+     button is tabbed to, so a rail of twenty sessions is a list of titles
+     rather than a wall of icons. */
+  .row-act {
     flex: 0 0 auto;
     border: 0;
     border-radius: 6px;
     background: transparent;
     color: #5d5d6b;
     font-size: 11px;
-    padding: 0 8px;
+    padding: 0 6px;
     cursor: pointer;
     opacity: 0;
   }
 
-  .row:hover .row-close,
-  .row-close:focus-visible {
+  .row:hover .row-act,
+  .row-act:focus-visible {
     opacity: 1;
   }
 
-  .row-close:hover {
+  .row-act:hover {
+    color: #d8d8e0;
+  }
+
+  /* Ending a process and dropping a row both cost something that is not coming
+     back on its own, so both say so before they are clicked. */
+  .row-act.danger:hover {
     color: #ff5555;
   }
 

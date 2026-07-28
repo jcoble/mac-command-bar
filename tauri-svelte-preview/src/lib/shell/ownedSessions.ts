@@ -22,6 +22,27 @@ export type OwnedSession = {
   nativeSessionId: string | null;
   ptySessionId: string | null;
   state: OwnedSessionState;
+  /**
+   * When the user marked this session done, as an ISO stamp; `null` while it is
+   * still being worked on.
+   *
+   * Deliberately NOT touched by anything that happens to the terminal. A process
+   * exiting says the terminal is over, not that the work is; a session whose
+   * agent has finished is still on the list until the user says otherwise, and a
+   * session marked done can still be running. Only the user's "Mark done" and
+   * "Reopen" write this field.
+   */
+  completedAt: string | null;
+  /**
+   * What the scanner worked out about the session — the branch it is on, the
+   * task it belongs to, the pull request it opened. Copied off the scanned
+   * record when the session is adopted so a row keeps showing them afterwards,
+   * and `null` whenever the scanner found nothing or the session was started
+   * here rather than found on disk.
+   */
+  branch: string | null;
+  taskId: string | null;
+  pullRequest: string | null;
 };
 
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'gemini', 'opencode'];
@@ -53,6 +74,10 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     nativeSessionId: record.id,
     ptySessionId: null,
     state: 'background',
+    completedAt: null,
+    branch: isNonEmptyString(record.branchHint) ? record.branchHint : null,
+    taskId: isNonEmptyString(record.taskId) ? record.taskId : null,
+    pullRequest: isNonEmptyString(record.pullRequestHint) ? record.pullRequestHint : null,
   };
 }
 
@@ -74,6 +99,10 @@ export function createFreshSession(
     nativeSessionId: null,
     ptySessionId: null,
     state: 'background',
+    completedAt: null,
+    branch: null,
+    taskId: null,
+    pullRequest: null,
   };
 }
 
@@ -125,6 +154,14 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       nativeSessionId: isNonEmptyString(candidate.nativeSessionId) ? candidate.nativeSessionId : null,
       ptySessionId: isNonEmptyString(candidate.ptySessionId) ? candidate.ptySessionId : null,
       state,
+      // Sessions saved before this field existed have no value here at all, and
+      // that reads exactly like "not done" — which is the right answer for them.
+      completedAt: isNonEmptyString(candidate.completedAt) ? candidate.completedAt : null,
+      // Same story here: a session saved before the scanner sent these, or one
+      // the scanner had nothing to say about, simply shows no chips.
+      branch: isNonEmptyString(candidate.branch) ? candidate.branch : null,
+      taskId: isNonEmptyString(candidate.taskId) ? candidate.taskId : null,
+      pullRequest: isNonEmptyString(candidate.pullRequest) ? candidate.pullRequest : null,
     });
   }
   return result;

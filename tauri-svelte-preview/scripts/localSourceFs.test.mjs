@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  deriveAgentSessionMetadata,
   readLocalSourceFile,
   scanLocalAgentSessions,
   scanLocalSourceFiles,
@@ -378,6 +379,131 @@ try {
     assert.equal(fallbacks.find((session) => session.id === 'S6').title, 'Claude session');
   } finally {
     await rm(longPrompt, { recursive: true, force: true });
+  }
+
+  // --- The branch, task and pull request a session belongs to ----------------
+  // These are the same fixture strings the Rust scanner's tests use. Both
+  // scanners feed the same rail, so a row must read the same whichever one
+  // filled it in, and anything that drifts here shows up as a chip that appears
+  // in the app but not in the web preview.
+  {
+    const derived = deriveAgentSessionMetadata({
+      provider: 'codex',
+      id: '019e',
+      title:
+        'TSK-127 branch cdx/tsk-127-agent-session-metadata PR #42 https://github.com/acme/mac-command-bar/pull/42',
+      description: null,
+      model: null,
+      projectPath: '/Users/blackcolours/dev/work/mac-command-bar',
+      lastActivity: null,
+      resumeCommands: ['codex resume 019e']
+    });
+    assert.equal(derived.taskId, 'TSK-127');
+    assert.equal(derived.branchHint, 'cdx/tsk-127-agent-session-metadata');
+    assert.equal(derived.pullRequestHint, 'PR #42');
+    assert.equal(derived.sourceLabel, 'Codex · mac-command-bar');
+
+    // A worktree is named for its task, so the folder answers when the title
+    // does not — and everything it cannot answer stays empty.
+    const fromFolder = deriveAgentSessionMetadata({
+      provider: 'codex',
+      id: '019e',
+      title: 'Claude session',
+      description: null,
+      model: null,
+      projectPath: '/Users/blackcolours/dev/work/worktrees/EdiPlatform/tsk-128-runtime-audit',
+      lastActivity: null,
+      resumeCommands: ['codex resume 019e']
+    });
+    assert.equal(fromFolder.taskId, 'TSK-128');
+    assert.equal(fromFolder.branchHint, null);
+    assert.equal(fromFolder.pullRequestHint, null);
+    assert.equal(fromFolder.sourceLabel, 'Codex · tsk-128-runtime-audit');
+  }
+
+  {
+    // The edges each helper has, pinned so a rewrite on either side is caught.
+    const hints = (title) =>
+      deriveAgentSessionMetadata({
+        provider: 'cmux-claude',
+        id: 'x',
+        title,
+        description: null,
+        model: null,
+        projectPath: null,
+        lastActivity: null,
+        resumeCommands: []
+      });
+
+    // The word has to stand on its own, and quotes around the name come off.
+    assert.equal(hints('branch: `tsk-9-fix`').branchHint, 'tsk-9-fix');
+    assert.equal(hints('branch=release/2.1').branchHint, 'release/2.1');
+    assert.equal(hints('rebranch main').branchHint, null);
+    // Punctuation is not a branch name.
+    assert.equal(hints('branch: ---').branchHint, null);
+    // A task id is the word plus digits, in any of the shapes people write it.
+    assert.equal(hints('worktrees/tsk-788-session-workspaces').taskId, 'TSK-788');
+    assert.equal(hints('TSK#42 done').taskId, 'TSK-42');
+    assert.equal(hints('tsk-abc').taskId, null);
+    assert.equal(hints('worktsk-9').taskId, null);
+    // A pull request link counts even when nobody wrote the words.
+    assert.equal(
+      hints('see https://github.com/acme/repo/pull/7).').pullRequestHint,
+      'PR #7'
+    );
+    assert.equal(hints('approved, nothing to merge').pullRequestHint, null);
+    assert.equal(hints('pull request 108 is green').pullRequestHint, 'PR #108');
+    // Nothing at all to say: no chips, and the label still says who and where.
+    const bare = hints('Untitled Codex session');
+    assert.equal(bare.branchHint, null);
+    assert.equal(bare.taskId, null);
+    assert.equal(bare.pullRequestHint, null);
+    assert.equal(bare.sourceLabel, 'CMUX Claude · Untitled Codex session');
+  }
+
+  const codexHome = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
+  try {
+    await mkdir(join(codexHome, '.codex', 'sessions'), { recursive: true });
+    await writeFile(
+      join(codexHome, '.codex', 'sessions', 'rollout-019fa964.jsonl'),
+      jsonl(
+        {
+          timestamp: '2026-07-28T16:42:17.000Z',
+          type: 'session_meta',
+          payload: {
+            id: '019fa964',
+            cwd: '/Users/dev/work/mac-command-bar',
+            originator: 'codex-tui',
+            thread_source: 'user',
+            source: 'cli'
+          }
+        },
+        {
+          timestamp: '2026-07-28T16:42:30.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'tsk-788 on branch tsk-788-session-workspaces, PR #12'
+              }
+            ]
+          }
+        }
+      ),
+      'utf8'
+    );
+
+    const [scanned] = await scanLocalAgentSessions(codexHome);
+    assert.equal(scanned.id, '019fa964');
+    assert.equal(scanned.taskId, 'TSK-788');
+    assert.equal(scanned.branchHint, 'tsk-788-session-workspaces');
+    assert.equal(scanned.pullRequestHint, 'PR #12');
+    assert.equal(scanned.sourceLabel, 'Codex · mac-command-bar');
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
   }
 } finally {
   await rm(root, { recursive: true, force: true });

@@ -4,5 +4,17 @@
     "beforeDevCommand": "",
     "devUrl": "http://127.0.0.1:5177/next",
     "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "MacCommandBar",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ]
   }
 }
