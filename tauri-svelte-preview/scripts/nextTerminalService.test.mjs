@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { createTerminalService } from '../src/lib/shell/terminalService.ts';
+import {
+  createTerminalService,
+  isTerminalInputCommand,
+  tauriTerminalBackend
+} from '../src/lib/shell/terminalService.ts';
+
+/** Let a scheduled one-shot (and the microtasks it queues) actually run. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 /**
  * Spy TerminalView — every method appends to the shared `log` so a test can
@@ -547,6 +554,151 @@ const ownedA = {
   assert.ok(
     !log2.some((e) => e[0] === 'nosize' && e[1] === 'resize'),
     'no size supplied = no forced resize'
+  );
+}
+
+{
+  // F4: the dev HUD's headline must EXCLUDE interactive PTY input. `claude`
+  // enables DECSET 1004 focus reporting, so xterm legitimately writes
+  // `\x1b[I` / `\x1b[O` on every focus change — one `write_terminal_session` per
+  // session switch, forever, exactly like a keystroke. Counting those as
+  // backend chatter made the HUD read "+1 invoke per switch" and look like a
+  // storm. Typing does the same thing.
+  assert.equal(
+    isTerminalInputCommand('write_terminal_session'),
+    true,
+    'a PTY write is interactive input, not shell overhead'
+  );
+  for (const command of [
+    'start_terminal_session',
+    'resize_terminal_session',
+    'close_terminal_session',
+    'read_terminal_session_scrollback',
+    'list_terminal_sessions',
+    'listen:terminal_output',
+    'list_agent_sessions',
+    'bridge:agent-sessions'
+  ]) {
+    assert.equal(isTerminalInputCommand(command), false, `${command} belongs in the headline`);
+  }
+
+  // ...and it is keyed on the name the production wrapper ACTUALLY counts, so
+  // the two cannot drift apart. (Outside Tauri these resolve without any IPC.)
+  const counted = [];
+  const wrapped = tauriTerminalBackend((command) => counted.push(command));
+  await wrapped.write('pty-1', '[O');
+  assert.deepEqual(counted, ['write_terminal_session'], 'a write counts under that exact name');
+  await wrapped.resize('pty-1', 80, 24);
+  assert.deepEqual(
+    counted.map(isTerminalInputCommand),
+    [true, false],
+    'the write lands in the input bucket and the resize in the headline'
+  );
+}
+
+{
+  // F5: after a live re-attach, the replayed scrollback cannot rebuild a
+  // full-screen TUI frame (the backend trims its 256 KB buffer mid-escape, and
+  // the bytes that drew the input box are long gone) — so the service nudges the
+  // PTY's size down a row and straight back, and the program repaints itself.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({
+    backend,
+    createView: (_host, hooks) => makeView(log, 'live', { hooks }),
+    repaintNudgeMs: 5
+  });
+  await svc.attach();
+  await svc.adoptExisting(
+    { ...ownedA, ownedId: 'n', ptySessionId: 'pty-live' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  assert.equal(
+    log.filter((e) => e[0] === 'resize').length,
+    0,
+    'the nudge is scheduled, not fired inline — the TUI has to be reading first'
+  );
+
+  await settle();
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'resize'),
+    [
+      ['resize', 'pty-live', 146, 45],
+      ['resize', 'pty-live', 146, 46]
+    ],
+    'exactly ONE nudge: down a row, then straight back to the real geometry'
+  );
+
+  const after = log.length;
+  await settle();
+  svc.show('n');
+  assert.equal(
+    log.slice(after).filter((e) => e[0] === 'resize').length,
+    0,
+    'it fires once, and leaves the gate holding the size the PTY really is'
+  );
+}
+
+{
+  // F5b: a TOMBSTONE gets no nudge — there is no process left to signal.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({
+    backend,
+    createView: (_host, hooks) => makeView(log, 'dead', { hooks }),
+    repaintNudgeMs: 5
+  });
+  await svc.attach();
+  await svc.adoptExisting(
+    { ...ownedA, ownedId: 'd', ptySessionId: 'pty-dead', state: 'exited' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  await settle();
+  assert.equal(
+    log.filter((e) => e[0] === 'resize').length,
+    0,
+    'an exited session is never resized'
+  );
+}
+
+{
+  // F5c: a close (or an exit, or dispose) that beats the timer CANCELS it —
+  // nudging a PTY nobody owns any more would be IO from a dead shell.
+  const log = [];
+  const { backend, emit } = makeBackend(log);
+  const svc = createTerminalService({
+    backend,
+    createView: (_host, hooks) => makeView(log, 'gone', { hooks }),
+    repaintNudgeMs: 5
+  });
+  await svc.attach();
+  await svc.adoptExisting(
+    { ...ownedA, ownedId: 'c', ptySessionId: 'pty-live' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  await svc.closeOwned('c');
+  await settle();
+  assert.equal(
+    log.filter((e) => e[0] === 'resize').length,
+    0,
+    'a close before the nudge fires cancels it'
+  );
+
+  // Same for a PTY that exits during the delay.
+  await svc.adoptExisting(
+    { ...ownedA, ownedId: 'x', ptySessionId: 'pty-exiting' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  emit({ sessionId: 'pty-exiting', data: '', terminated: true, exitCode: 0, signal: null });
+  await settle();
+  assert.equal(
+    log.filter((e) => e[0] === 'resize').length,
+    0,
+    'and an exit during the delay cancels it too'
   );
 }
 

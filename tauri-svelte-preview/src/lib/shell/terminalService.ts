@@ -116,6 +116,25 @@ export type TerminalService = {
 };
 
 /**
+ * Backend commands that carry INTERACTIVE TERMINAL INPUT rather than shell
+ * overhead: bytes the terminal owes the program on the other end of the PTY.
+ *
+ * `write_terminal_session` is the only one. It is issued for a keystroke, a
+ * paste, the resume command — and, because a full-screen TUI (`claude`) enables
+ * DECSET 1004 focus reporting, for the `\x1b[I` / `\x1b[O` xterm sends on every
+ * focus change. One per session switch is therefore CORRECT and unsuppressable
+ * (suppressing it would lie to the agent about focus); it just must not be
+ * counted as backend chatter. Lives here, next to the names it classifies, so
+ * the HUD cannot drift out of sync with the command the backend actually calls.
+ */
+const TERMINAL_INPUT_COMMANDS: ReadonlySet<string> = new Set(['write_terminal_session']);
+
+/** True when `command` is interactive PTY input (see `TERMINAL_INPUT_COMMANDS`). */
+export function isTerminalInputCommand(command: string): boolean {
+  return TERMINAL_INPUT_COMMANDS.has(command);
+}
+
+/**
  * Wrap the Tauri terminal commands 1:1, reporting each call to `count` so the
  * dev HUD can show how much IPC the shell actually does.
  */
@@ -156,8 +175,17 @@ export function createTerminalService(opts: {
   backend: TerminalBackend;
   createView: (host: HTMLElement, hooks: TerminalViewHooks) => TerminalView;
   onExit?(ownedId: string, payload: TerminalOutputPayload): void;
+  /**
+   * How long after a live re-attach the repaint nudge fires, in ms. Injectable
+   * ONLY so the test does not have to sleep; production takes the default. It
+   * must be long enough for the replayed scrollback to have been written and
+   * the TUI to be reading the PTY again, and short enough that the user does
+   * not stare at a broken frame.
+   */
+  repaintNudgeMs?: number;
 }): TerminalService {
   const { backend, createView, onExit } = opts;
+  const repaintNudgeMs = opts.repaintNudgeMs ?? 220;
 
   /**
    * ownedId -> ptySessionId. The service's own routing table: `ownedId` is the
@@ -190,6 +218,12 @@ export function createTerminalService(opts: {
    */
   const scrollbackCache = new Map<string, string>();
   /**
+   * ptySessionId -> the pending post-re-attach repaint nudge (see
+   * `scheduleRepaintNudge`). Held so a close/exit/dispose that beats the timer
+   * can cancel it instead of resizing a PTY nobody owns any more.
+   */
+  const nudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
    * The ownedId whose view is currently being constructed. `createTerminal` is
    * `(host) => view` with no key, so this hands the key to the closure that
    * `ensureView` is about to invoke.
@@ -218,8 +252,7 @@ export function createTerminalService(opts: {
     }
     const previousPty = ptyByOwned.get(ownedId);
     if (previousPty != null && previousPty !== ptyId) {
-      ownedByPty.delete(previousPty);
-      lastSizeByPty.delete(previousPty);
+      forgetPty(previousPty);
     }
     ptyByOwned.set(ownedId, ptyId);
     ownedByPty.set(ptyId, ownedId);
@@ -227,9 +260,71 @@ export function createTerminalService(opts: {
 
   /** Forget everything keyed by `ptyId`. Called when a session stops being ours. */
   function forgetPty(ptyId: string): void {
+    cancelRepaintNudge(ptyId);
     ownedByPty.delete(ptyId);
     lastSizeByPty.delete(ptyId);
     scrollbackCache.delete(ptyId);
+  }
+
+  /** Drop any pending repaint nudge for `ptyId`. Safe to call for an unknown id. */
+  function cancelRepaintNudge(ptyId: string): void {
+    const timer = nudgeTimers.get(ptyId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      nudgeTimers.delete(ptyId);
+    }
+  }
+
+  /**
+   * Force the TUI attached to `ptyId` to repaint its whole frame, shortly after
+   * a re-attach has replayed its scrollback.
+   *
+   * Why this exists: the backend caps scrollback at 256 KB and trims from the
+   * FRONT on a CHARACTER boundary, not an ANSI-sequence boundary. A session with
+   * a lot of output therefore replays starting mid-escape, so the terminal
+   * re-renders garbage — and a replay can never rebuild a live full-screen frame
+   * anyway (the bytes that drew claude's input box scrolled out of the buffer
+   * long ago; only the program can draw it again).
+   *
+   * So ask the program: resize to (cols, rows - 1) and straight back. The PTY
+   * delivers SIGWINCH twice, and a full-screen TUI redraws its entire frame —
+   * input box included — over the corrupted replay. Two backend calls, once, at
+   * re-attach time.
+   *
+   * Deliberately NOT routed through `resizePty`: the two calls are redundant by
+   * design and the gate exists to suppress exactly that. The gate's memo is left
+   * holding `cols x rows` — which is both where the PTY starts and where it ends
+   * — so a later `fit()` at that size still sends nothing.
+   */
+  function scheduleRepaintNudge(ptyId: string, cols: number, rows: number): void {
+    cancelRepaintNudge(ptyId);
+    const settled = `${cols}x${rows}`;
+    const timer = setTimeout(() => {
+      nudgeTimers.delete(ptyId);
+      // Bail if the PTY stopped being ours (closed, exited, re-mapped) or if its
+      // geometry has moved on since: a REAL resize already delivered a SIGWINCH
+      // of its own, and re-asserting the stale size would fight the live one.
+      if (ownedByPty.get(ptyId) == null || lastSizeByPty.get(ptyId) !== settled) {
+        return;
+      }
+      const nudged = rows > 1 ? rows - 1 : rows + 1;
+      void (async () => {
+        try {
+          await backend.resize(ptyId, cols, nudged);
+          // Re-check between the two: a close in the gap must not be followed by
+          // a resize, and leaving the PTY one row short would be worse than not
+          // nudging at all.
+          if (ownedByPty.get(ptyId) == null) {
+            return;
+          }
+          await backend.resize(ptyId, cols, rows);
+        } catch {
+          // Best effort: a failed nudge costs a stale frame, never a broken
+          // session, and there is nobody to report it to.
+        }
+      })();
+    }, repaintNudgeMs);
+    nudgeTimers.set(ptyId, timer);
   }
 
   /**
@@ -352,8 +447,10 @@ export function createTerminalService(opts: {
           return;
         }
         // The PTY is gone: its geometry memo must not survive to suppress a
-        // resize if this ownedId is later restarted onto a new session id.
+        // resize if this ownedId is later restarted onto a new session id, and a
+        // pending repaint nudge has nothing left to talk to.
         lastSizeByPty.delete(payload.sessionId);
+        cancelRepaintNudge(payload.sessionId);
         manager.markTerminated(ownedId);
         // The view and its scrollback stay on screen; flipping session STATE is
         // the store's job (this service only reports the exit).
@@ -440,6 +537,12 @@ export function createTerminalService(opts: {
     } finally {
       scrollbackCache.delete(ptyId);
     }
+    // Only a LIVE PTY gets the nudge: a tombstone has no process to signal, and
+    // without the PTY's real geometry there is nothing safe to nudge back TO
+    // (guessing would leave the gate holding a size the PTY never had).
+    if (owned.state !== 'exited' && usableSize) {
+      scheduleRepaintNudge(ptyId, usableSize.cols, usableSize.rows);
+    }
     return true;
   }
 
@@ -492,6 +595,12 @@ export function createTerminalService(opts: {
     // `adoptExisting` picks them back up on the next mount.
     unlisten?.();
     unlisten = null;
+    // A nudge scheduled by a view this teardown is about to destroy has no
+    // audience — and firing it after an unmount would be IO from a dead shell.
+    for (const timer of nudgeTimers.values()) {
+      clearTimeout(timer);
+    }
+    nudgeTimers.clear();
     manager.disposeAll();
     ptyByOwned.clear();
     ownedByPty.clear();

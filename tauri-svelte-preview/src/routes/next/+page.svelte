@@ -246,7 +246,7 @@
   {/if}
 
   {#if import.meta.env.DEV}
-    <footer class="invoke-counter">invokes: {invokeCounts.total}</footer>
+    <footer class="invoke-counter">invokes: {invokeCounts.total} (+{invokeCounts.input} input)</footer>
   {/if}
 </main>
 
