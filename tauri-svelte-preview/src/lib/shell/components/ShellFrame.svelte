@@ -160,6 +160,13 @@
     box-shadow: none;
   }
 
+  /* Every center tab is permanent this slice (a close is undone on the next
+     tick to protect the live terminal), so showing a close button would be a
+     lie. Remove this rule when closable tabs become real. */
+  .shell-frame :global(.shell-center-dock .dv-default-tab-action) {
+    display: none;
+  }
+
   /* sizing chain — without this, dockview panels collapse in flex/grid parents */
   .shell-frame :global(.dv-dockview),
   .shell-frame :global(.dv-gridview),
