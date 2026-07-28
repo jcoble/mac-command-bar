@@ -15,7 +15,13 @@ export interface LayoutStorage {
 }
 
 export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout';
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout';
+/**
+ * Bumped to `-v2` when the center dock stopped being one group of tabs and
+ * became a conversation group beside a display group. A layout saved under the
+ * old key describes a shape the shell no longer builds, so it is left where it
+ * is (harmless, unread) rather than restored into the new world.
+ */
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v2';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {
