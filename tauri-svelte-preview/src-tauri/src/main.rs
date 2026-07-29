@@ -970,6 +970,19 @@ async fn read_source_lsp_diagnostics(
 }
 
 #[tauri::command]
+async fn list_source_lsp_diagnostics_for_root(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<Vec<lsp::SourceLspDiagnostic>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.list_diagnostics_for_root(PathBuf::from(root))
+    })
+    .await
+    .map_err(|error| format!("Source LSP project diagnostics task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
         .await
@@ -4676,6 +4689,7 @@ fn main() {
             find_source_lsp_hover,
             find_source_lsp_symbols,
             read_source_lsp_diagnostics,
+            list_source_lsp_diagnostics_for_root,
             project_git_status,
             read_source_git_diff,
             stage_git_paths,
@@ -4771,6 +4785,125 @@ mod tests {
         for (command, args) in cases {
             assert_eq!(playwright_process_label(command, args), None, "{args}");
         }
+    }
+
+    #[test]
+    fn lsp_diagnostics_remember_which_file_they_came_from() {
+        let message = serde_json::json!({
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///repo/src/App.ts",
+                "diagnostics": [{
+                    "range": { "start": { "line": 4, "character": 2 } },
+                    "severity": 1,
+                    "message": "Cannot find name 'valu'.",
+                    "source": "ts"
+                }]
+            }
+        });
+
+        let diagnostics = lsp::diagnostics_from_message(&message, "file:///repo/src/App.ts");
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path.as_deref(), Some("/repo/src/App.ts"));
+        assert_eq!(diagnostics[0].line, 5);
+        assert_eq!(diagnostics[0].column, 3);
+        assert_eq!(diagnostics[0].severity, "error");
+    }
+
+    #[test]
+    fn lsp_diagnostics_for_root_collect_every_file_inside_that_root() {
+        let inside_root = PathBuf::from("/repo");
+        let other_root = PathBuf::from("/elsewhere");
+
+        let sessions = vec![
+            (
+                inside_root.clone(),
+                HashMap::from([
+                    (
+                        "file:///repo/src/Later.ts".to_string(),
+                        vec![lsp::SourceLspDiagnostic::for_test(
+                            "warning",
+                            "Unused import.",
+                            2,
+                            1,
+                            Some("/repo/src/Later.ts"),
+                        )],
+                    ),
+                    (
+                        "file:///repo/src/App.ts".to_string(),
+                        vec![
+                            lsp::SourceLspDiagnostic::for_test(
+                                "error",
+                                "Second on the same file.",
+                                9,
+                                4,
+                                Some("/repo/src/App.ts"),
+                            ),
+                            lsp::SourceLspDiagnostic::for_test(
+                                "error",
+                                "First on the same file.",
+                                3,
+                                1,
+                                Some("/repo/src/App.ts"),
+                            ),
+                        ],
+                    ),
+                ]),
+            ),
+            (
+                other_root.clone(),
+                HashMap::from([(
+                    "file:///elsewhere/src/Other.ts".to_string(),
+                    vec![lsp::SourceLspDiagnostic::for_test(
+                        "error",
+                        "Belongs to another project.",
+                        1,
+                        1,
+                        Some("/elsewhere/src/Other.ts"),
+                    )],
+                )]),
+            ),
+        ];
+
+        let collected = lsp::collect_diagnostics_for_root(&sessions, &inside_root);
+
+        assert_eq!(collected.len(), 3);
+        // Grouped by file, then in the order they appear down the file, so a problems
+        // list can render them without sorting again.
+        assert_eq!(collected[0].path.as_deref(), Some("/repo/src/App.ts"));
+        assert_eq!(collected[0].message, "First on the same file.");
+        assert_eq!(collected[1].path.as_deref(), Some("/repo/src/App.ts"));
+        assert_eq!(collected[1].message, "Second on the same file.");
+        assert_eq!(collected[2].path.as_deref(), Some("/repo/src/Later.ts"));
+        assert!(collected
+            .iter()
+            .all(|diagnostic| diagnostic.message != "Belongs to another project."));
+
+        // A root nobody has diagnostics for reports an empty list, not an error.
+        assert!(
+            lsp::collect_diagnostics_for_root(&sessions, &PathBuf::from("/nothing")).is_empty()
+        );
+        assert!(lsp::collect_diagnostics_for_root(&[], &inside_root).is_empty());
+    }
+
+    #[test]
+    fn lsp_diagnostics_for_root_do_not_match_a_sibling_with_the_same_name_prefix() {
+        let sessions = vec![(
+            PathBuf::from("/repo-backup"),
+            HashMap::from([(
+                "file:///repo-backup/src/App.ts".to_string(),
+                vec![lsp::SourceLspDiagnostic::for_test(
+                    "error",
+                    "Different repository.",
+                    1,
+                    1,
+                    Some("/repo-backup/src/App.ts"),
+                )],
+            )]),
+        )];
+
+        assert!(lsp::collect_diagnostics_for_root(&sessions, &PathBuf::from("/repo")).is_empty());
     }
 
     #[test]
