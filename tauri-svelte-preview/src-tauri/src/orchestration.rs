@@ -8,6 +8,8 @@ use crate::RuntimeContextProject;
 const ORCHESTRATION_SCHEMA_VERSION: u16 = 1;
 const ORCHESTRATION_EVENT_STORE_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
 const ORCHESTRATION_EVENT_STORE_FILE: &str = "orchestration-events.jsonl";
+/// Set this to 1 to see the made-up sample runs on a machine that has never recorded one.
+const DEMO_ORCHESTRATION_RUNS_ENV: &str = "MCB_DEMO_RUNS";
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -176,13 +178,41 @@ pub(crate) fn list_orchestration_runs_sync(
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<OrchestrationRun>, String> {
     let events = read_orchestration_events()?;
-    let mut runs = reduce_orchestration_events(events);
-    if runs.is_empty() {
-        runs = demo_orchestration_runs(projects);
-    }
+    let recorded = reduce_orchestration_events(events);
+    let mut runs = orchestration_runs_or_samples(
+        recorded,
+        projects,
+        demo_orchestration_runs_requested(
+            std::env::var(DEMO_ORCHESTRATION_RUNS_ENV).ok().as_deref(),
+        ),
+    );
 
     sort_orchestration_runs(&mut runs);
     Ok(runs)
+}
+
+/// What the runs list shows. Real recorded runs always win.
+///
+/// When nothing has been recorded, the answer is an empty list — a machine that has never
+/// run anything should say so. The made-up sample runs are only produced for someone who
+/// explicitly asked to see the card populated, because runs that look real but never
+/// happened are worse than an empty card.
+fn orchestration_runs_or_samples(
+    recorded: Vec<OrchestrationRun>,
+    projects: Vec<RuntimeContextProject>,
+    samples_requested: bool,
+) -> Vec<OrchestrationRun> {
+    if !recorded.is_empty() || !samples_requested {
+        return recorded;
+    }
+
+    demo_orchestration_runs(projects)
+}
+
+/// The sample runs are switched on by setting MCB_DEMO_RUNS to exactly 1. Anything else,
+/// including the variable being unset or empty, leaves them off.
+fn demo_orchestration_runs_requested(value: Option<&str>) -> bool {
+    value.map(str::trim) == Some("1")
 }
 
 pub(crate) fn record_orchestration_event_sync(
@@ -1058,6 +1088,59 @@ fn unix_epoch_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn demo_projects() -> Vec<RuntimeContextProject> {
+        vec![RuntimeContextProject {
+            id: "mac-command-bar".to_string(),
+            name: "MacCommandBar".to_string(),
+            path: "/repo".to_string(),
+        }]
+    }
+
+    #[test]
+    fn no_recorded_runs_means_an_empty_list_not_made_up_runs() {
+        let runs = orchestration_runs_or_samples(Vec::new(), demo_projects(), false);
+
+        assert!(
+            runs.is_empty(),
+            "a machine that has never recorded a run shows nothing, not invented runs"
+        );
+    }
+
+    #[test]
+    fn sample_runs_appear_only_when_they_were_explicitly_asked_for() {
+        let runs = orchestration_runs_or_samples(Vec::new(), demo_projects(), true);
+
+        assert!(!runs.is_empty());
+        assert!(runs
+            .iter()
+            .all(|run| run.project_name == "MacCommandBar" || run.project_name.is_empty()));
+    }
+
+    #[test]
+    fn real_runs_are_never_replaced_by_samples() {
+        let real = reduce_orchestration_events(
+            parse_orchestration_events_jsonl(
+                r#"{"schemaVersion":1,"id":"evt-1","runId":"run-real","timestamp":"2026-06-10T10:00:00Z","kind":"run.created","status":"running","title":"A real run","projectID":"mac-command-bar","projectName":"MacCommandBar","projectPath":"/repo","rootLabel":"main checkout"}"#,
+            )
+            .unwrap(),
+        );
+
+        let runs = orchestration_runs_or_samples(real, demo_projects(), true);
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, "run-real");
+    }
+
+    #[test]
+    fn sample_runs_are_requested_by_setting_the_switch_to_one() {
+        assert!(demo_orchestration_runs_requested(Some("1")));
+        assert!(demo_orchestration_runs_requested(Some(" 1 ")));
+        assert!(!demo_orchestration_runs_requested(None));
+        assert!(!demo_orchestration_runs_requested(Some("")));
+        assert!(!demo_orchestration_runs_requested(Some("0")));
+        assert!(!demo_orchestration_runs_requested(Some("true")));
+    }
 
     #[test]
     fn orchestration_events_reduce_to_run_timeline() {
