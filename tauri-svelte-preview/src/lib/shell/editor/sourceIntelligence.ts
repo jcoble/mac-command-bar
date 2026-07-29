@@ -16,7 +16,10 @@
  *    that answered from bundled demo files; /next never invents results. The
  *    one exception is the "N references" margin count, which uses the backend
  *    scan alone and never asks the language server — see
- *    `countReferencesForCodeLens` for why.
+ *    `countReferencesForCodeLens` for why. The first tier also has a stopwatch
+ *    on it: a language server that has not answered within
+ *    `languageServerLookupDeadlineMs` is left behind and the plain-text answer
+ *    is shown instead.
  *  - **Every backend call is counted** with `countInvoke('<command name>')`
  *    immediately before it, so the dev counter tells the truth.
  *  - **Nothing runs on import.** The first backend call of any kind happens
@@ -89,6 +92,20 @@ export const codeLensReferenceCountDeadlineMs = 1_500;
  * leave the margin blank while a big project was being typed in.
  */
 export const codeLensReferenceCountCacheMs = 30_000;
+/**
+ * How long the language server gets to answer a "find references" or "go to
+ * definition" click before the plain-text search answers instead.
+ *
+ * The language server's answer is the better one — it knows which `Send` you
+ * clicked — so it is used whenever it arrives in time. But a cold C# server
+ * loading a large solution does not answer for tens of seconds, and waiting on
+ * it left the editor saying "Finding references…" for half a minute. The
+ * plain-text search over the scanned files comes back in a moment and is the
+ * only answer the web preview has ever had, which is why the same click there
+ * has always felt instant. One second is long enough for a warm server to win
+ * and short enough that a cold one is never waited on.
+ */
+export const languageServerLookupDeadlineMs = 1_000;
 
 // ── The shapes Monaco hands us ────────────────────────────────────────────────
 
@@ -141,6 +158,31 @@ export interface SourceIntelligence {
   readonly projectRoot: string | null;
   /** The callbacks to spread onto `MonacoSourceEditor`. */
   readonly callbacks: SourceIntelligenceCallbacks;
+}
+
+/**
+ * Wait for a lookup, but only for so long: answers `null` once `deadlineMs` has
+ * passed, so the caller can fall back to something faster.
+ *
+ * Nothing here can stop the lookup it gave up on — it keeps running in the
+ * backend and its answer is simply dropped. Both of its endings are handled, so
+ * a slow lookup that fails long after everyone stopped caring cannot surface as
+ * an unhandled rejection.
+ */
+function answerOrGiveUp<T>(lookup: Promise<T | null>, deadlineMs: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const giveUp = setTimeout(() => resolve(null), deadlineMs);
+    lookup.then(
+      (answer) => {
+        clearTimeout(giveUp);
+        resolve(answer);
+      },
+      () => {
+        clearTimeout(giveUp);
+        resolve(null);
+      }
+    );
+  });
 }
 
 /**
@@ -231,7 +273,10 @@ export function createSourceIntelligence(): SourceIntelligence {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return [];
     try {
-      const lspTargets = await lspDefinitions(request);
+      const lspTargets = await answerOrGiveUp(
+        lspDefinitions(request),
+        languageServerLookupDeadlineMs
+      );
       if (lspTargets?.length) return lspTargets;
       return (await nativeDefinitions(symbolName)) ?? [];
     } catch {
@@ -243,7 +288,10 @@ export function createSourceIntelligence(): SourceIntelligence {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return [];
     try {
-      const lspTargets = await lspReferences(request);
+      const lspTargets = await answerOrGiveUp(
+        lspReferences(request),
+        languageServerLookupDeadlineMs
+      );
       if (lspTargets?.length) return lspTargets;
       return (await nativeReferences(symbolName)) ?? [];
     } catch {
