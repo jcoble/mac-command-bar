@@ -81,7 +81,8 @@ function selection(root, projects = []) {
 }
 
 // Picking a session loads the panels that come with it. The shell does not open
-// on the Source control view, so source control is NOT one of them.
+// on the Source control view or the Context view, so neither of those is one of
+// them.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection('/repo/one'));
@@ -89,13 +90,10 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(
     calls,
-    [
-      ['explorer', '/repo/one'],
-      ['context', '/repo/one']
-    ],
-    'source control out of view costs nothing on a pick'
+    [['explorer', '/repo/one']],
+    'a view nobody is looking at costs nothing on a pick'
   );
-  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context']);
+  assert.deepEqual(panels.loadedPanels(), ['explorer']);
 }
 
 // Bringing source control into view after a session is picked loads it once, for
@@ -110,11 +108,102 @@ function selection(root, projects = []) {
 
   panels.sourceControlVisible(true);
   assert.deepEqual(calls, [['git', '/repo/one']], 'bringing it into view loads it');
-  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context', 'git']);
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'git']);
 
   panels.sourceControlVisible(false);
   panels.sourceControlVisible(true);
   assert.equal(calls.length, 1, 'coming back to the same folder reads nothing again');
+}
+
+// The context cards follow the same rule: they are a view of the tool column,
+// and they read the machine only while you can see them.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  calls.length = 0;
+
+  panels.contextVisible(true);
+  assert.deepEqual(calls, [['context', '/repo/one']], 'opening the context view loads the cards');
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'context']);
+
+  panels.contextVisible(false);
+  panels.contextVisible(true);
+  assert.equal(calls.length, 1, 'coming back to the same folder reads nothing again');
+}
+
+// Opening the context view BEFORE any session is picked loads nothing — there is
+// nothing to point the cards at yet. The pick that follows is what loads them.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.contextVisible(true);
+  assert.deepEqual(calls, [], 'the context view open with no session picked loads nothing');
+  assert.deepEqual(panels.loadedPanels(), []);
+
+  panels.sessionPicked();
+  assert.deepEqual(calls, [
+    ['explorer', '/repo/one'],
+    ['context', '/repo/one']
+  ]);
+}
+
+// Nothing about the context view can load anything before launch is over.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.contextVisible(true);
+  panels.sessionPicked();
+  panels.contextVisible(true);
+  assert.deepEqual(calls, [], 'launch loads nothing, in view or not');
+}
+
+// With the context view open, changing session re-points the cards; with it
+// closed, a session change costs nothing and coming back reads the new folder.
+{
+  let root = '/repo/one';
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(root));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  panels.contextVisible(true);
+  calls.length = 0;
+
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.deepEqual(calls, [
+    ['explorer', '/repo/two'],
+    ['context', '/repo/two']
+  ]);
+
+  panels.contextVisible(false);
+  calls.length = 0;
+  root = '/repo/three';
+  panels.sessionPicked();
+  assert.ok(
+    !calls.some(([name]) => name === 'context'),
+    'a session change while the context view is closed reads nothing'
+  );
+  panels.contextVisible(true);
+  assert.deepEqual(calls.at(-1), ['context', '/repo/three'], 'coming back reads the new folder');
+}
+
+// The two visible-only views are independent: opening one does not load the
+// other.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  calls.length = 0;
+
+  panels.sourceControlVisible(true);
+  assert.deepEqual(calls, [['git', '/repo/one']], 'source control alone');
+  panels.contextVisible(true);
+  assert.deepEqual(calls.at(-1), ['context', '/repo/one'], 'the context cards alone');
+  assert.deepEqual(panels.loadedPanels(), ['explorer', 'git', 'context']);
 }
 
 // Bringing it into view BEFORE any session is picked loads nothing — there is no
@@ -130,8 +219,7 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/one'],
-    ['git', '/repo/one'],
-    ['context', '/repo/one']
+    ['git', '/repo/one']
   ]);
 }
 
@@ -147,7 +235,7 @@ function selection(root, projects = []) {
 }
 
 // With source control in view, changing session re-points it along with the file
-// tree and the context cards.
+// tree.
 {
   let root = '/repo/one';
   const { calls, activators } = recorder();
@@ -161,8 +249,7 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/two'],
-    ['git', '/repo/two'],
-    ['context', '/repo/two']
+    ['git', '/repo/two']
   ]);
 }
 
@@ -190,18 +277,21 @@ function selection(root, projects = []) {
   assert.deepEqual(calls.at(-1), ['git', '/repo/two'], 'coming back reads the new folder');
 }
 
-// A session with no project folder still loads the context cards, which are
-// machine-wide, but has no folder to list files from. In view it still tells
-// source control there is no repository to show.
+// A session with no project folder has no folder to list files from. In view,
+// source control is still told there is no repository to show, and the context
+// cards still load — they are machine-wide, not folder-wide.
 {
   const { calls, activators } = recorder();
   const panels = createPanelActivation(activators, () => selection(''));
   panels.allowSessionLoads();
   panels.sessionPicked();
-  assert.deepEqual(calls, [['context', '']], 'no folder means no file listing');
+  assert.deepEqual(calls, [], 'no folder means no file listing');
 
   panels.sourceControlVisible(true);
   assert.deepEqual(calls.at(-1), ['git', null], 'and no repository either');
+
+  panels.contextVisible(true);
+  assert.deepEqual(calls.at(-1), ['context', ''], 'the cards still have a machine to look at');
 }
 
 // Changing session re-points the tabs the user has opened, and leaves the rest.
@@ -218,7 +308,6 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls, [
     ['explorer', '/repo/two'],
-    ['context', '/repo/two'],
     ['editor', '/repo/two']
   ]);
   assert.ok(
@@ -240,7 +329,6 @@ function selection(root, projects = []) {
   panels.sessionPicked();
   assert.deepEqual(calls.slice(1), [
     ['explorer', '/repo/one'],
-    ['context', '/repo/one'],
     ['editor', '/repo/one']
   ]);
 }

@@ -14,7 +14,18 @@ export interface LayoutStorage {
   removeItem(key: string): void;
 }
 
-export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout';
+/**
+ * Bumped to `-v2` when the shell's regions were rearranged: the sessions list
+ * took a column of its own down the left, every tool view moved to a column on
+ * the right, and the icon strip moved to the far right edge. A layout saved
+ * under the old key describes four regions that no longer exist by those names,
+ * with the sizes and the left-to-right order of the old arrangement. There is
+ * no honest way to translate one into the other — the old layout says nothing
+ * about how wide the user wants two columns that were never there — so it is
+ * not migrated. It is left where it is, harmless and unread, and the new
+ * arrangement starts from its defaults.
+ */
+export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v2';
 /**
  * Bumped to `-v2` when the center dock stopped being one group of tabs and
  * became a conversation group beside a display group. A layout saved under the

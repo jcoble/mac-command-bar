@@ -18,10 +18,11 @@
      exactly as it does today, so this file must never reach that route. */
   import '$lib/shell/styles/next.css';
 
+  import ActivityBar from '$lib/shell/components/ActivityBar.svelte';
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
-  import ContextPanel from '$lib/shell/components/ContextPanel.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
+  import SessionRail from '$lib/shell/components/SessionRail.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
@@ -29,6 +30,7 @@
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { editorState, resetEditorState } from '$lib/shell/editor/editorStore.svelte';
   import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
+  import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
   import {
@@ -83,8 +85,16 @@
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
   let frameControls: { resetLayout(): void; showCenterPanel(id: string): void } | null = null;
-  /** The left column's own controls; it builds after the frame does. */
-  let sidebarControls: { resetLayout(): void; expandSourceControl(): void } | null = null;
+  /** The tool column's own controls; it builds after the frame does. */
+  let sidebarControls: {
+    resetLayout(): void;
+    expandSourceControl(): void;
+    selectView(id: SidebarViewId): void;
+  } | null = null;
+  /** Which tool view is open. The column decides it and says so; the page holds
+   * the answer only because the icon strip that draws it is a separate region
+   * of the frame, on the far right edge. */
+  let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
   /** The overlay layer, for opening the settings dialog it owns. */
   let overlays: { openSettings(): void } | null = null;
   let refitScheduled = false;
@@ -100,8 +110,9 @@
     expandSourceControl: () => sidebarControls?.expandSourceControl()
   });
 
-  /** "Reset layout" means ALL of it: the grid regions, the center tabs, and the
-   * left column, which remembers its section sizes under its own key. */
+  /** "Reset layout" means ALL of it: the grid regions (so both side columns go
+   * back to their default widths), the center tabs, and the tool column, which
+   * remembers its section sizes and its open view under its own keys. */
   function resetLayout(): void {
     frameControls?.resetLayout();
     sidebarControls?.resetLayout();
@@ -439,18 +450,30 @@
 
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
      shadow the imported `rail` store and break every `rail.owned` read. -->
-{#snippet railArea()}
-  <ShellSidebar
+{#snippet sessionsArea()}
+  <SessionRail
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
     scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
     onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
     onReopen={reopenOwnedSession} onRemove={removeSession}
-    onRescan={scanRail} onReady={(controls) => (sidebarControls = controls)}
+    onRescan={scanRail}
+  />
+{/snippet}
+{#snippet toolsArea()}
+  <ShellSidebar
+    onReady={(controls) => (sidebarControls = controls)}
+    onActiveViewChange={(id) => (activeView = id)}
     onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
+    onContextVisible={(visible) => shellPanels.contextVisible(visible)}
+  />
+{/snippet}
+{#snippet activityArea()}
+  <ActivityBar
+    activeId={activeView}
+    onSelect={(id) => sidebarControls?.selectView(id)}
     onOpenSettings={() => overlays?.openSettings()}
   />
 {/snippet}
-{#snippet contextArea()}<ContextPanel />{/snippet}
 {#snippet dockArea()}<DockPanel onReset={resetLayout} />{/snippet}
 {#snippet sessionArea()}
   <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
@@ -469,7 +492,7 @@
 
 <main class="next-shell">
   <ShellFrame
-    rail={railArea} context={contextArea} dock={dockArea}
+    sessions={sessionsArea} tools={toolsArea} activity={activityArea} dock={dockArea}
     center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}

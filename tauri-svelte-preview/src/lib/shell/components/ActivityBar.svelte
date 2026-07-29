@@ -1,14 +1,15 @@
 <script lang="ts">
   /**
-   * ActivityBar.svelte — the slim icon strip down the left edge. One icon per
-   * view; clicking one opens that view in the column beside it. The gear at the
-   * bottom is not a view — it opens the settings dialog.
+   * ActivityBar.svelte — the slim icon strip down the far right edge of the
+   * shell. One icon per view; clicking one opens that view in the tool column
+   * to its left. The gear at the bottom is not a view — it opens the settings
+   * dialog.
    *
    * PRESENTATIONAL ONLY: no state, no IO, no knowledge of what a view contains.
    * The roster comes from `sidebarViews.ts` so the ids here and the ids the
    * column builds hosts for cannot drift apart.
    */
-  import { Files, GitBranch, Layers, MessagesSquare, Settings } from '@lucide/svelte';
+  import { Activity, Files, GitBranch, Layers, Settings } from '@lucide/svelte';
 
   import { SIDEBAR_VIEWS, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
 
@@ -21,11 +22,11 @@
 
   /** Icon per view. Keyed by id so adding a view to the roster without an icon
    * is a type error rather than a blank button. */
-  const ICONS: Record<SidebarViewId, typeof MessagesSquare> = {
-    sessions: MessagesSquare,
+  const ICONS: Record<SidebarViewId, typeof Files> = {
     explorer: Files,
     'source-control': GitBranch,
-    worktrees: Layers
+    worktrees: Layers,
+    context: Activity
   };
 </script>
 
@@ -70,7 +71,9 @@
     height: 100%;
     padding: 6px 0;
     background: #0c0c10;
-    border-right: 1px solid #22222c;
+    /* The strip is on the outer edge now, so its hairline faces the column it
+       opens rather than the middle of the shell. */
+    border-left: 1px solid #22222c;
     user-select: none;
   }
 
@@ -102,15 +105,17 @@
     color: #e6e6ee;
   }
 
-  /* The teal edge marking the open view — the same accent the pane dividers use. */
+  /* The teal edge marking the open view — the same accent the pane dividers
+     use. On the outer edge, so it does not sit on top of the hairline that
+     separates the strip from the column it opens. */
   .icon-button.active::before {
     content: '';
     position: absolute;
-    left: 0;
+    right: 0;
     top: 6px;
     bottom: 6px;
     width: 2px;
-    border-radius: 0 2px 2px 0;
+    border-radius: 2px 0 0 2px;
     background: #4bf3c8;
   }
 

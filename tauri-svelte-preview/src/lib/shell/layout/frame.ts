@@ -1,6 +1,8 @@
 /**
- * frame.ts — the /next shell's Gridview root (left rail / center / right
- * context / bottom dock). DOM-only: zero backend IO, zero Svelte imports.
+ * frame.ts — the /next shell's Gridview root. Left to right: the sessions
+ * column, the center dock, the tool views, and the icon strip on the far right
+ * edge; the bottom dock sits under the center only. DOM-only: zero backend IO,
+ * zero Svelte imports.
  *
  * Teleport contract: every region's content is a Svelte-owned element that
  * this module MOVES into a dockview-owned host div. dockview never renders or
@@ -25,11 +27,18 @@ import {
   type LayoutStorage
 } from './layoutStorage';
 
-export type ShellRegionId = 'rail' | 'center' | 'context' | 'dock';
+export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'activity' | 'dock';
 
-const REGION_IDS: readonly ShellRegionId[] = ['rail', 'center', 'context', 'dock'];
+const REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools', 'activity', 'dock'];
 const COMPONENT = 'shell-region';
 const PERSIST_DEBOUNCE_MS = 250;
+
+/** Width of the icon strip, in px. Matches the strip's own CSS width — one
+ * icon button wide and no wider. */
+const ACTIVITY_STRIP_WIDTH = 44;
+/** What the two side columns open at, in px, before anyone drags a divider. */
+const SESSIONS_WIDTH = 300;
+const TOOLS_WIDTH = 320;
 
 export interface ShellFrameOptions {
   storage: LayoutStorage;
@@ -82,26 +91,58 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     createComponent: ({ id, name }) => new TeleportGridPanel(id, name, adopt)
   });
 
+  /** Ask one region for a width. A region that will not take it keeps the width
+   * it has: a default layout a few pixels off is not worth failing a launch. */
+  const setRegionWidth = (id: ShellRegionId, width: number): void => {
+    try {
+      api.getPanel(id)?.api.setSize({ width });
+    } catch {
+      // nothing to do — the arrangement is still usable
+    }
+  };
+
   /** The default arrangement; also the fallback whenever restore is unusable. */
   const buildDefault = (): void => {
     api.addPanel({ id: 'center', component: COMPONENT });
+    // The left side belongs to the sessions list and nothing else.
     api.addPanel({
-      id: 'rail',
+      id: 'sessions',
       component: COMPONENT,
       position: { direction: 'left', referencePanel: 'center' },
-      size: 264,
-      minimumWidth: 200,
-      maximumWidth: 480
-    });
-    api.addPanel({
-      id: 'context',
-      component: COMPONENT,
-      position: { direction: 'right', referencePanel: 'center' },
-      size: 300,
+      size: SESSIONS_WIDTH,
       minimumWidth: 220,
       maximumWidth: 560
     });
-    // Below CENTER only: the dock spans the middle column, not the rails.
+    // The icon strip that picks which tool view is open, hard against the right
+    // edge of the window. Its width is fixed — the same number as its minimum
+    // and its maximum — so the divider beside it cannot be dragged and a window
+    // resize leaves it exactly one icon wide.
+    //
+    // It is added BEFORE the tool column even though it ends up outside it. A
+    // new region takes its width out of the region it is added against, so
+    // adding the strip against the tool column would have carved the strip out
+    // of the 320px the column is meant to have. Adding both against the center
+    // instead — the strip first, then the column, which lands between them —
+    // takes both widths out of the middle, where there is room to spare.
+    api.addPanel({
+      id: 'activity',
+      component: COMPONENT,
+      position: { direction: 'right', referencePanel: 'center' },
+      size: ACTIVITY_STRIP_WIDTH,
+      minimumWidth: ACTIVITY_STRIP_WIDTH,
+      maximumWidth: ACTIVITY_STRIP_WIDTH
+    });
+    // Every tool view — files, source control, worktrees, context — shares one
+    // column on the right, and only one of them is open at a time.
+    api.addPanel({
+      id: 'tools',
+      component: COMPONENT,
+      position: { direction: 'right', referencePanel: 'center' },
+      size: TOOLS_WIDTH,
+      minimumWidth: 240,
+      maximumWidth: 640
+    });
+    // Below CENTER only: the dock spans the middle column, not the side columns.
     api.addPanel({
       id: 'dock',
       component: COMPONENT,
@@ -109,6 +150,17 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       size: 180,
       minimumHeight: 96
     });
+    // Say the two side widths again, now that every region exists.
+    //
+    // The dock above is what makes this necessary: putting it under the middle
+    // turns the middle from one region into a column of two, and dockview does
+    // that by lifting the middle out of the row and putting it back. The width
+    // it gave up goes round the other regions on the way out and comes back
+    // unevenly — in practice the tool column ends up squashed to its minimum and
+    // the sessions column keeps the difference. Asking for the two widths once
+    // the arrangement is finished settles them where they were meant to be.
+    setRegionWidth('sessions', SESSIONS_WIDTH);
+    setRegionWidth('tools', TOOLS_WIDTH);
   };
 
   /**
