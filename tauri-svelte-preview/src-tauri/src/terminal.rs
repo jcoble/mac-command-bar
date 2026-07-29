@@ -28,6 +28,10 @@ pub struct TerminalStartRequest {
     pub cols: Option<u16>,
     pub rows: Option<u16>,
     pub owned_id: Option<String>,
+    /// Give this a command line and the session runs that one command and exits, so the
+    /// caller gets a real exit code. Leave it out and the session is the interactive
+    /// shell it has always been.
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +79,7 @@ pub fn start_terminal_session<R: Runtime>(
 ) -> Result<TerminalSessionInfo, String> {
     let cwd = terminal_cwd_from_request(&request.cwd)?;
     let shell = terminal_shell_from_request(request.shell);
+    let run_command = terminal_command_from_request(request.command);
     let size = terminal_size_from_request(request.cols, request.rows);
     let session_id = new_terminal_session_id();
     let started_at = timestamp_millis();
@@ -84,19 +89,8 @@ pub fn start_terminal_session<R: Runtime>(
         .openpty(size)
         .map_err(|error| format!("Could not open terminal pty: {error}"))?;
     let mut command = CommandBuilder::new(&shell);
-    // Spawn as a LOGIN shell so the embedded terminal loads the user's full
-    // environment (PATH from ~/.zprofile, /etc/zprofile path_helper, and
-    // Homebrew/pnpm/nvm/cargo shims) exactly like Terminal.app / iTerm / Warp.
-    // A plain PTY shell is interactive but NOT a login shell, so login-only
-    // PATH entries are missing and agent CLIs (codex/claude/gemini) fail with
-    // "command not found" when a conversation tries to resume.
-    if let Some(shell_name) = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|name| name.to_str())
-    {
-        if matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish") {
-            command.arg("-l");
-        }
+    for arg in terminal_shell_args(&shell, run_command.as_deref()) {
+        command.arg(arg);
     }
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
@@ -423,6 +417,48 @@ fn terminal_size_from_request(cols: Option<u16>, rows: Option<u16>) -> PtySize {
     }
 }
 
+/// A command made of nothing but spaces is the same as asking for no command, so the
+/// session falls back to the ordinary interactive shell instead of running an empty line.
+fn terminal_command_from_request(command: Option<String>) -> Option<String> {
+    command
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// The flags the shell is started with.
+///
+/// Every session asks for a LOGIN shell so the embedded terminal loads the user's full
+/// environment (PATH from ~/.zprofile, /etc/zprofile path_helper, and Homebrew/pnpm/nvm/
+/// cargo shims) exactly like Terminal.app / iTerm / Warp. A plain PTY shell is interactive
+/// but NOT a login shell, so login-only PATH entries are missing and agent CLIs
+/// (codex/claude/gemini) fail with "command not found" when a conversation tries to resume.
+/// Only shells known to accept `-l` are given it.
+///
+/// With a command to run, `-c <command>` is added: the shell runs that one line and exits,
+/// which is how a stack run gets a real exit code instead of a prompt sitting there.
+fn terminal_shell_args(shell: &str, run_command: Option<&str>) -> Vec<String> {
+    let mut args = Vec::new();
+
+    let is_login_capable = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|shell_name| {
+            matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish")
+        });
+    if is_login_capable {
+        args.push("-l".to_string());
+    }
+
+    if let Some(run_command) = run_command {
+        args.push("-c".to_string());
+        args.push(run_command.to_string());
+    }
+
+    args
+}
+
 fn terminal_shell_from_request(shell: Option<String>) -> String {
     shell
         .as_deref()
@@ -494,6 +530,43 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn terminal_without_a_command_still_starts_an_interactive_login_shell() {
+        assert_eq!(
+            terminal_shell_args("/bin/zsh", None),
+            vec!["-l".to_string()]
+        );
+        assert_eq!(
+            terminal_shell_args("/bin/bash", None),
+            vec!["-l".to_string()]
+        );
+        // A shell we do not recognise is started exactly as it was before: no extra flags.
+        assert!(terminal_shell_args("/usr/local/bin/nu", None).is_empty());
+    }
+
+    #[test]
+    fn terminal_with_a_command_runs_it_in_a_login_shell_and_then_exits() {
+        assert_eq!(
+            terminal_shell_args("/bin/zsh", Some("pnpm test")),
+            vec!["-l".to_string(), "-c".to_string(), "pnpm test".to_string()]
+        );
+        // An unrecognised shell still gets the command, just without the login flag.
+        assert_eq!(
+            terminal_shell_args("/usr/local/bin/nu", Some("pnpm test")),
+            vec!["-c".to_string(), "pnpm test".to_string()]
+        );
+    }
+
+    #[test]
+    fn terminal_treats_a_blank_command_as_no_command_at_all() {
+        assert_eq!(terminal_command_from_request(None), None);
+        assert_eq!(terminal_command_from_request(Some("   ".to_string())), None);
+        assert_eq!(
+            terminal_command_from_request(Some("  pnpm test  ".to_string())),
+            Some("pnpm test".to_string())
+        );
+    }
+
+    #[test]
     fn terminal_size_clamps_to_safe_bounds() {
         let low = terminal_size_from_request(Some(1), Some(1));
         assert_eq!(low.cols, 20);
@@ -550,7 +623,10 @@ mod tests {
 
         append_terminal_scrollback(&mut scrollback, "9");
         assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
-        assert!(scrollback.ends_with("123456789"), "the TAIL is what survives");
+        assert!(
+            scrollback.ends_with("123456789"),
+            "the TAIL is what survives"
+        );
     }
 
     #[test]
@@ -633,6 +709,7 @@ mod tests {
                 cols: Some(80),
                 rows: Some(20),
                 owned_id: None,
+                command: None,
             },
         )
         .expect("terminal session should start");

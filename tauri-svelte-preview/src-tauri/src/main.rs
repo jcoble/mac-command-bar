@@ -211,6 +211,17 @@ struct SourceGitDiff {
     is_binary: bool,
 }
 
+/// One file touched by one commit. Same three fields the working-copy status list
+/// shows for a file, so a commit's file list and the changed-files list render the
+/// same way.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitFileChange {
+    relative_path: String,
+    status: String,
+    badge: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ProjectWorktree {
@@ -959,6 +970,19 @@ async fn read_source_lsp_diagnostics(
 }
 
 #[tauri::command]
+async fn list_source_lsp_diagnostics_for_root(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<Vec<lsp::SourceLspDiagnostic>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.list_diagnostics_for_root(PathBuf::from(root))
+    })
+    .await
+    .map_err(|error| format!("Source LSP project diagnostics task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
     tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
         .await
@@ -1030,6 +1054,64 @@ async fn read_git_commit_history(
     .map_err(|error| format!("Git history task failed: {error}"))?
 }
 
+/// What this build of the backend can do, by name.
+///
+/// The frontend needs this because some additions are new ARGUMENTS on commands that
+/// already existed. Tauri quietly drops a payload key a command does not declare, so an
+/// older desktop build handed `force: true` runs the ordinary safe removal and reports
+/// success — there is no unknown-command error to catch and nothing else to test. Asking
+/// for this list first is the only way to know before offering the button.
+///
+/// Anything added here is a promise: check the name before offering the feature, and treat
+/// this command being missing as "none of these are available".
+const BACKEND_CAPABILITIES: [&str; 4] = [
+    // `remove_project_worktree` accepts `force`.
+    "worktreeForceRemove",
+    // `kill_playwright_session` stops one process group.
+    "playwrightSessionKill",
+    // `list_source_lsp_diagnostics_for_root` reads a whole project's diagnostics.
+    "lspDiagnosticsForRoot",
+    // `start_terminal_session` accepts `command` and exits with its code.
+    "terminalCommandSpawn",
+];
+
+fn backend_capabilities() -> Vec<String> {
+    BACKEND_CAPABILITIES
+        .iter()
+        .map(|capability| capability.to_string())
+        .collect()
+}
+
+#[tauri::command]
+async fn read_backend_capabilities() -> Result<Vec<String>, String> {
+    Ok(backend_capabilities())
+}
+
+#[tauri::command]
+async fn read_git_commit_files(
+    root: String,
+    sha: String,
+) -> Result<Vec<GitCommitFileChange>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_git_commit_files_sync(PathBuf::from(root), sha)
+    })
+    .await
+    .map_err(|error| format!("Git commit file list task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_git_commit_file_diff(
+    root: String,
+    sha: String,
+    relative_path: String,
+) -> Result<SourceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_git_commit_file_diff_sync(PathBuf::from(root), sha, relative_path)
+    })
+    .await
+    .map_err(|error| format!("Git commit file diff task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, String> {
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
@@ -1041,9 +1123,12 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
 async fn remove_project_worktree(
     root: String,
     path: String,
+    force: Option<bool>,
 ) -> Result<ProjectWorktreeActionResult, String> {
+    // Leaving `force` out keeps the safe remove that refuses to lose work.
+    let force = force.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        remove_project_worktree_sync(PathBuf::from(root), PathBuf::from(path))
+        remove_project_worktree_sync(PathBuf::from(root), PathBuf::from(path), force)
     })
     .await
     .map_err(|error| format!("Worktree remove task failed: {error}"))?
@@ -1091,6 +1176,13 @@ async fn list_playwright_sessions() -> Result<Vec<PlaywrightSessionInfo>, String
     tauri::async_runtime::spawn_blocking(list_playwright_sessions_sync)
         .await
         .map_err(|error| format!("Playwright session scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn kill_playwright_session(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kill_playwright_session_sync(pgid))
+        .await
+        .map_err(|error| format!("Playwright session cleanup task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2301,6 +2393,122 @@ fn read_git_commit_history_sync(
     }
 }
 
+fn read_git_commit_files_sync(
+    root: PathBuf,
+    sha: String,
+) -> Result<Vec<GitCommitFileChange>, String> {
+    validate_git_root(&root)?;
+    let sha = validate_git_commit_id(&sha)?;
+
+    let output = run_git_text(&root, &["show", "--name-status", "--format=", sha.as_str()])?;
+    Ok(parse_git_commit_file_changes(&output))
+}
+
+fn read_git_commit_file_diff_sync(
+    root: PathBuf,
+    sha: String,
+    relative_path: String,
+) -> Result<SourceGitDiff, String> {
+    validate_git_root(&root)?;
+    let relative_path = validate_git_relative_paths(&[relative_path])?
+        .into_iter()
+        .next()
+        .expect("one validated path");
+    let sha = validate_git_commit_id(&sha)?;
+
+    let name_status = run_git_text(
+        &root,
+        &[
+            "show",
+            "--name-status",
+            "--format=",
+            sha.as_str(),
+            "--",
+            relative_path.as_str(),
+        ],
+    )?;
+    let status = parse_git_commit_file_changes(&name_status)
+        .into_iter()
+        .next()
+        .map(|change| change.status)
+        .unwrap_or_default();
+
+    // `--format=` drops the commit header, so what comes back is only the patch —
+    // the same text shape the working-copy diff returns, readable by the same parser.
+    let diff = run_git_text(
+        &root,
+        &[
+            "show",
+            "--no-ext-diff",
+            "--format=",
+            sha.as_str(),
+            "--",
+            relative_path.as_str(),
+        ],
+    )?;
+    let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
+    let status = if status.is_empty() && !diff.is_empty() {
+        "modified".to_string()
+    } else if status.is_empty() {
+        "clean".to_string()
+    } else {
+        status
+    };
+
+    Ok(SourceGitDiff {
+        relative_path,
+        status,
+        diff,
+        is_binary,
+    })
+}
+
+/// `git show --name-status --format=` prints one tab-separated line per file:
+/// a status letter (renames and copies add a similarity number, and a second path)
+/// then the path. A merge commit prints nothing here, which reads as an empty list.
+fn parse_git_commit_file_changes(output: &str) -> Vec<GitCommitFileChange> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status_field = fields.next()?.trim();
+            let status_code = status_field.chars().next()?;
+            // For a rename or a copy git prints the old path then the new one; the
+            // file lives at the last path, so that is the one we report.
+            let relative_path = fields.last().map(str::trim).unwrap_or_default();
+            if relative_path.is_empty() {
+                return None;
+            }
+
+            Some(GitCommitFileChange {
+                relative_path: normalize_git_status_path(relative_path),
+                status: git_status_name(status_code).to_string(),
+                badge: git_status_badge(status_code, ' ').to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Commit ids reach git as a bare argument, so anything that could be read as an
+/// option (or as a shell-ish path) is refused instead of forwarded.
+fn validate_git_commit_id(sha: &str) -> Result<String, String> {
+    let trimmed = sha.trim();
+    let is_safe = !trimmed.is_empty()
+        && !trimmed.starts_with('-')
+        && trimmed.len() <= 200
+        && trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '.' | '/' | '^' | '~')
+        });
+
+    if is_safe {
+        Ok(trimmed.to_string())
+    } else {
+        Err("Git commit id must be a plain commit id or ref name".to_string())
+    }
+}
+
 fn validate_git_root(root: &Path) -> Result<(), String> {
     let metadata = std::fs::metadata(root)
         .map_err(|error| format!("Could not read Git root metadata: {error}"))?;
@@ -2534,9 +2742,15 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
     )
 }
 
+/// `force = false` is the everyday remove: it refuses anything that would lose work.
+/// `force = true` is the "I know, delete it anyway" remove: it unlocks the worktree if
+/// it is locked, deletes it even when files are uncommitted or commits are unmerged, and
+/// reports in the returned message exactly what went away. Neither mode will ever touch
+/// the primary checkout.
 fn remove_project_worktree_sync(
     root: PathBuf,
     path: PathBuf,
+    force: bool,
 ) -> Result<ProjectWorktreeActionResult, String> {
     validate_git_root(&root)?;
 
@@ -2565,14 +2779,27 @@ fn remove_project_worktree_sync(
         })
         .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
 
-    if worktree.is_locked {
-        return Err("Refusing to remove locked worktree".to_string());
+    // Comparing the path against the root that was passed only catches "remove the repo you
+    // asked through". Ask through a linked worktree FOR the primary checkout and those two
+    // paths differ, so that check waves it through. `git worktree list --porcelain` always
+    // prints the main working tree first, so that is the answer that actually holds.
+    if worktrees
+        .first()
+        .is_some_and(|main_working_tree| main_working_tree.path == worktree.path)
+    {
+        return Err("Refusing to remove the primary checkout".to_string());
     }
-    if worktree.is_dirty {
-        return Err("Refusing to remove dirty worktree".to_string());
-    }
-    if worktree.has_unmerged_commits {
-        return Err("Refusing to remove worktree with unmerged commits".to_string());
+
+    if !force {
+        if worktree.is_locked {
+            return Err("Refusing to remove locked worktree".to_string());
+        }
+        if worktree.is_dirty {
+            return Err("Refusing to remove dirty worktree".to_string());
+        }
+        if worktree.has_unmerged_commits {
+            return Err("Refusing to remove worktree with unmerged commits".to_string());
+        }
     }
     if worktree.is_prunable {
         run_git_text(&root, &["worktree", "prune"])?;
@@ -2589,6 +2816,43 @@ fn remove_project_worktree_sync(
     }
 
     let worktree_path = worktree.path.clone();
+
+    if force {
+        // Count what is about to be destroyed BEFORE destroying it, so the message can
+        // name it. After the remove there is nothing left to look at.
+        let dirty_file_count = project_worktree_dirty_file_count(&worktree_path);
+        let was_dirty = worktree.is_dirty;
+        let had_unmerged_commits = worktree.has_unmerged_commits;
+        let unlocked_reason = worktree.is_locked.then(|| {
+            worktree
+                .locked_reason
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        });
+
+        if unlocked_reason.is_some() {
+            run_git_text(&root, &["worktree", "unlock", worktree_path.as_str()])?;
+        }
+        run_git_text(
+            &root,
+            &["worktree", "remove", "--force", worktree_path.as_str()],
+        )?;
+        run_git_text(&root, &["worktree", "prune"])?;
+
+        return Ok(ProjectWorktreeActionResult {
+            message: describe_forced_worktree_removal(
+                &worktree.branch,
+                dirty_file_count,
+                was_dirty,
+                had_unmerged_commits,
+                unlocked_reason.as_deref(),
+            ),
+            worktrees: list_project_worktrees_sync(root)?,
+        });
+    }
+
     run_git_text(&root, &["worktree", "remove", worktree_path.as_str()])?;
     run_git_text(&root, &["worktree", "prune"])?;
 
@@ -2783,6 +3047,93 @@ fn project_worktree_delete_eligibility(
     } else {
         "requires-confirmation".to_string()
     }
+}
+
+/// Plain sentences describing what a forced removal actually threw away, so the person
+/// who clicked the button can read the consequence rather than decode a status code.
+/// `dirty_file_count` is `None` when git could not be asked how much was there. That is NOT
+/// the same as zero, and it must never be reported as "nothing was lost" — the removal has
+/// already happened by the time this runs. `was_dirty` is what the worktree listing said a
+/// moment earlier, and it is believed over a count of zero when the two disagree.
+fn describe_forced_worktree_removal(
+    branch: &str,
+    dirty_file_count: Option<usize>,
+    was_dirty: bool,
+    had_unpushed_commits: bool,
+    unlocked_reason: Option<&str>,
+) -> String {
+    let mut message = format!("Force removed worktree {branch}.");
+
+    match dirty_file_count {
+        Some(count) if count > 0 => {
+            let noun = if count == 1 { "file" } else { "files" };
+            message.push_str(&format!(
+                " Deleted {count} {noun} with changes that were never committed."
+            ));
+        }
+        // Counted zero, but the listing had already seen changes — the count is the one
+        // that is wrong, so say what is known and admit the number is not.
+        _ if was_dirty => {
+            message.push_str(
+                " Deleted files with changes that were never committed; they could not be counted before the removal.",
+            );
+        }
+        Some(_) => {
+            message.push_str(" It had no uncommitted changes.");
+        }
+        // Nothing could be read at all, so promising a clean worktree would be a guess.
+        None => {
+            message.push_str(
+                " Could not check for uncommitted changes before the removal, so anything not committed is gone.",
+            );
+        }
+    }
+
+    // The check behind this is "does this branch have commits that are on no remote", so
+    // the sentence says that and nothing wider.
+    if had_unpushed_commits {
+        message.push_str(" Deleted commits on this branch that were never pushed to a remote.");
+    }
+
+    if let Some(reason) = unlocked_reason {
+        if reason.trim().is_empty() {
+            message.push_str(" Unlocked it first; it was locked with no reason given.");
+        } else {
+            message.push_str(&format!(
+                " Unlocked it first; it was locked because: {}.",
+                reason.trim()
+            ));
+        }
+    }
+
+    message
+}
+
+/// How many files in the worktree have changes git has not been told to keep — the
+/// number a forced removal is about to delete for good.
+/// How many files in the worktree have changes that were never committed, or `None` when
+/// git could not answer — a stale `.git` file, an index lock, a folder that moved. The
+/// caller is about to destroy this worktree and then tell someone what was in it, so a
+/// failed count must NOT come back looking like a confident zero.
+fn project_worktree_dirty_file_count(path: &str) -> Option<usize> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            path,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ])
+        .output();
+    output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
 }
 
 fn project_worktree_is_dirty(path: &str) -> bool {
@@ -3355,6 +3706,57 @@ fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
         || std::thread::sleep(std::time::Duration::from_millis(800)),
         list_playwright_sessions_sync,
     )
+}
+
+fn kill_playwright_session_sync(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
+    let sessions = list_playwright_sessions_sync()?;
+    kill_playwright_session_with(
+        sessions,
+        pgid,
+        signal_process,
+        || std::thread::sleep(std::time::Duration::from_millis(800)),
+        list_playwright_sessions_sync,
+    )
+}
+
+/// Stops ONE Playwright process group, the same polite-then-forceful way the
+/// stop-everything command does. The group has to be one this app just listed as a
+/// Playwright session; anything else is refused, so this can never be used to stop an
+/// arbitrary process by number.
+fn kill_playwright_session_with<SignalProcess, SleepAfterTerm, ListSessions>(
+    sessions: Vec<PlaywrightSessionInfo>,
+    pgid: i32,
+    signal_process: SignalProcess,
+    sleep_after_term: SleepAfterTerm,
+    list_sessions: ListSessions,
+) -> Result<PlaywrightCleanupResult, String>
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
+    SleepAfterTerm: FnOnce(),
+    ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let session = select_playwright_session(sessions, pgid)?;
+    kill_playwright_sessions_with(
+        vec![session],
+        signal_process,
+        sleep_after_term,
+        list_sessions,
+    )
+}
+
+fn select_playwright_session(
+    sessions: Vec<PlaywrightSessionInfo>,
+    pgid: i32,
+) -> Result<PlaywrightSessionInfo, String> {
+    let matched = u32::try_from(pgid).ok().and_then(|pgid| {
+        sessions
+            .into_iter()
+            .find(|session| session.pgid == pgid && !session.pids.is_empty())
+    });
+
+    matched.ok_or_else(|| {
+        format!("No Playwright session is running in process group {pgid}, so nothing was stopped")
+    })
 }
 
 fn kill_playwright_sessions_with<SignalProcess, SleepAfterTerm, ListSessions>(
@@ -4319,6 +4721,7 @@ fn main() {
         .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            read_backend_capabilities,
             list_source_files,
             cancel_source_scan,
             validate_project_root,
@@ -4353,6 +4756,7 @@ fn main() {
             find_source_lsp_hover,
             find_source_lsp_symbols,
             read_source_lsp_diagnostics,
+            list_source_lsp_diagnostics_for_root,
             project_git_status,
             read_source_git_diff,
             stage_git_paths,
@@ -4362,6 +4766,8 @@ fn main() {
             pull_git_repository,
             push_git_repository,
             read_git_commit_history,
+            read_git_commit_files,
+            read_git_commit_file_diff,
             list_project_worktrees,
             remove_project_worktree,
             archive_project_worktree,
@@ -4369,6 +4775,7 @@ fn main() {
             list_agent_sessions,
             list_runtime_contexts,
             list_playwright_sessions,
+            kill_playwright_session,
             kill_playwright_sessions,
             list_orchestration_runs,
             record_orchestration_event,
@@ -4444,6 +4851,236 @@ mod tests {
 
         for (command, args) in cases {
             assert_eq!(playwright_process_label(command, args), None, "{args}");
+        }
+    }
+
+    #[test]
+    fn lsp_diagnostics_remember_which_file_they_came_from() {
+        let message = serde_json::json!({
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///repo/src/App.ts",
+                "diagnostics": [{
+                    "range": { "start": { "line": 4, "character": 2 } },
+                    "severity": 1,
+                    "message": "Cannot find name 'valu'.",
+                    "source": "ts"
+                }]
+            }
+        });
+
+        let diagnostics = lsp::diagnostics_from_message(&message, "file:///repo/src/App.ts");
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path.as_deref(), Some("/repo/src/App.ts"));
+        assert_eq!(diagnostics[0].line, 5);
+        assert_eq!(diagnostics[0].column, 3);
+        assert_eq!(diagnostics[0].severity, "error");
+    }
+
+    #[test]
+    fn lsp_diagnostics_for_root_collect_every_file_inside_that_root() {
+        let inside_root = PathBuf::from("/repo");
+        let other_root = PathBuf::from("/elsewhere");
+
+        let sessions = vec![
+            (
+                inside_root.clone(),
+                HashMap::from([
+                    (
+                        "file:///repo/src/Later.ts".to_string(),
+                        vec![lsp::SourceLspDiagnostic::for_test(
+                            "warning",
+                            "Unused import.",
+                            2,
+                            1,
+                            Some("/repo/src/Later.ts"),
+                        )],
+                    ),
+                    (
+                        "file:///repo/src/App.ts".to_string(),
+                        vec![
+                            lsp::SourceLspDiagnostic::for_test(
+                                "error",
+                                "Second on the same file.",
+                                9,
+                                4,
+                                Some("/repo/src/App.ts"),
+                            ),
+                            lsp::SourceLspDiagnostic::for_test(
+                                "error",
+                                "First on the same file.",
+                                3,
+                                1,
+                                Some("/repo/src/App.ts"),
+                            ),
+                        ],
+                    ),
+                ]),
+            ),
+            (
+                other_root.clone(),
+                HashMap::from([(
+                    "file:///elsewhere/src/Other.ts".to_string(),
+                    vec![lsp::SourceLspDiagnostic::for_test(
+                        "error",
+                        "Belongs to another project.",
+                        1,
+                        1,
+                        Some("/elsewhere/src/Other.ts"),
+                    )],
+                )]),
+            ),
+        ];
+
+        let collected = lsp::collect_diagnostics_for_root(&sessions, &inside_root);
+
+        assert_eq!(collected.len(), 3);
+        // Grouped by file, then in the order they appear down the file, so a problems
+        // list can render them without sorting again.
+        assert_eq!(collected[0].path.as_deref(), Some("/repo/src/App.ts"));
+        assert_eq!(collected[0].message, "First on the same file.");
+        assert_eq!(collected[1].path.as_deref(), Some("/repo/src/App.ts"));
+        assert_eq!(collected[1].message, "Second on the same file.");
+        assert_eq!(collected[2].path.as_deref(), Some("/repo/src/Later.ts"));
+        assert!(collected
+            .iter()
+            .all(|diagnostic| diagnostic.message != "Belongs to another project."));
+
+        // A root nobody has diagnostics for reports an empty list, not an error.
+        assert!(
+            lsp::collect_diagnostics_for_root(&sessions, &PathBuf::from("/nothing")).is_empty()
+        );
+        assert!(lsp::collect_diagnostics_for_root(&[], &inside_root).is_empty());
+    }
+
+    #[test]
+    fn lsp_diagnostics_for_root_do_not_match_a_sibling_with_the_same_name_prefix() {
+        let sessions = vec![(
+            PathBuf::from("/repo-backup"),
+            HashMap::from([(
+                "file:///repo-backup/src/App.ts".to_string(),
+                vec![lsp::SourceLspDiagnostic::for_test(
+                    "error",
+                    "Different repository.",
+                    1,
+                    1,
+                    Some("/repo-backup/src/App.ts"),
+                )],
+            )]),
+        )];
+
+        assert!(lsp::collect_diagnostics_for_root(&sessions, &PathBuf::from("/repo")).is_empty());
+    }
+
+    #[test]
+    fn kill_playwright_session_only_signals_the_group_that_was_asked_for() {
+        let sessions = vec![
+            PlaywrightSessionInfo {
+                pgid: 100,
+                label: "Playwright CLI server".to_string(),
+                pids: vec![101, 102],
+                processes: Vec::new(),
+            },
+            PlaywrightSessionInfo {
+                pgid: 200,
+                label: "Playwright MCP server".to_string(),
+                pids: vec![201],
+                processes: Vec::new(),
+            },
+        ];
+        let mut signals = Vec::new();
+
+        let result = kill_playwright_session_with(
+            sessions,
+            200,
+            |pid, signal| {
+                signals.push((pid, signal.to_string()));
+                Ok(())
+            },
+            || {},
+            || Ok(Vec::new()),
+        )
+        .unwrap();
+
+        // Only the requested group is touched; the other session's pids are never signalled.
+        assert_eq!(signals, vec![(201, "TERM".to_string())]);
+        assert_eq!(result.terminated_pgids, vec![200]);
+        assert_eq!(result.terminated_pids, vec![201]);
+        assert!(result.failed_pgids.is_empty());
+        assert_eq!(result.sessions.len(), 1);
+        assert_eq!(result.sessions[0].pgid, 200);
+    }
+
+    #[test]
+    fn kill_playwright_session_escalates_to_kill_when_term_leaves_it_running() {
+        let sessions = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![101, 102],
+            processes: Vec::new(),
+        }];
+        let survivors = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![102],
+            processes: Vec::new(),
+        }];
+        let mut signals = Vec::new();
+
+        kill_playwright_session_with(
+            sessions,
+            100,
+            |pid, signal| {
+                signals.push((pid, signal.to_string()));
+                Ok(())
+            },
+            || {},
+            || Ok(survivors.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            signals,
+            vec![
+                (101, "TERM".to_string()),
+                (102, "TERM".to_string()),
+                (102, "KILL".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn kill_playwright_session_refuses_a_group_that_is_not_a_listed_playwright_session() {
+        let sessions = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![101],
+            processes: Vec::new(),
+        }];
+
+        for unlisted in [200, 0, -1, 1] {
+            let mut signals = Vec::new();
+            let error = kill_playwright_session_with(
+                sessions.clone(),
+                unlisted,
+                |pid, signal| {
+                    signals.push((pid, signal.to_string()));
+                    Ok(())
+                },
+                || {},
+                || Ok(Vec::new()),
+            )
+            .unwrap_err();
+
+            assert!(
+                error.contains("Playwright"),
+                "unexpected message for {unlisted}: {error}"
+            );
+            assert!(
+                signals.is_empty(),
+                "nothing may be signalled for {unlisted}"
+            );
         }
     }
 
@@ -5937,7 +6574,7 @@ mod tests {
             ],
         );
 
-        let result = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap();
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone(), false).unwrap();
 
         assert!(result.message.contains("Removed worktree"));
         assert!(!sibling.exists());
@@ -5983,7 +6620,7 @@ mod tests {
         assert!(missing.delete_eligibility.contains("prunable"));
         let missing_path = PathBuf::from(&missing.path);
 
-        let result = remove_project_worktree_sync(root.clone(), missing_path).unwrap();
+        let result = remove_project_worktree_sync(root.clone(), missing_path, false).unwrap();
 
         assert!(result.message.contains("Pruned missing worktree metadata"));
         assert!(!result
@@ -6027,7 +6664,7 @@ mod tests {
             ],
         );
 
-        let error = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap_err();
+        let error = remove_project_worktree_sync(root.clone(), sibling.clone(), false).unwrap_err();
 
         assert!(error.contains("locked worktree"));
         assert!(sibling.exists());
@@ -6064,10 +6701,252 @@ mod tests {
         );
         std::fs::write(sibling.join("dirty.txt"), "keep me\n").unwrap();
 
-        let error = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap_err();
+        let error = remove_project_worktree_sync(root.clone(), sibling.clone(), false).unwrap_err();
 
         assert!(error.contains("dirty worktree"));
         assert!(sibling.exists());
+
+        run_git_for_test(
+            &root,
+            &["worktree", "remove", "--force", sibling.to_str().unwrap()],
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn forced_worktree_removal_message_says_what_was_destroyed() {
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-clean", Some(0), false, false, None),
+            "Force removed worktree cdx/tsk-127-clean. It had no uncommitted changes."
+        );
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-one", Some(1), true, false, None),
+            "Force removed worktree cdx/tsk-127-one. Deleted 1 file with changes that were never committed."
+        );
+        assert_eq!(
+            describe_forced_worktree_removal(
+                "cdx/tsk-127-all",
+                Some(3),
+                true,
+                true,
+                Some("agent running")
+            ),
+            "Force removed worktree cdx/tsk-127-all. Deleted 3 files with changes that were never committed. Deleted commits on this branch that were never pushed to a remote. Unlocked it first; it was locked because: agent running."
+        );
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-locked", Some(0), false, false, Some("")),
+            "Force removed worktree cdx/tsk-127-locked. It had no uncommitted changes. Unlocked it first; it was locked with no reason given."
+        );
+    }
+
+    #[test]
+    fn forced_worktree_removal_never_claims_nothing_was_lost_when_it_could_not_look() {
+        // The count failed but the listing already knew there were changes: say that,
+        // rather than reporting a zero the count never actually established.
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-blind", None, true, false, None),
+            "Force removed worktree cdx/tsk-127-blind. Deleted files with changes that were never committed; they could not be counted before the removal."
+        );
+        // The count disagrees with what the listing said. Same answer: do not claim zero.
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-disagree", Some(0), true, false, None),
+            "Force removed worktree cdx/tsk-127-disagree. Deleted files with changes that were never committed; they could not be counted before the removal."
+        );
+        // Neither check could look. Do not promise the worktree was clean.
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-unknown", None, false, false, None),
+            "Force removed worktree cdx/tsk-127-unknown. Could not check for uncommitted changes before the removal, so anything not committed is gone."
+        );
+    }
+
+    #[test]
+    fn worktree_dirty_file_count_is_unknown_when_git_cannot_answer() {
+        let missing = unique_temp_root();
+
+        assert_eq!(
+            project_worktree_dirty_file_count(missing.to_str().unwrap()),
+            None,
+            "a path git cannot read reports unknown, not a confident zero"
+        );
+
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "README.md"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        assert_eq!(
+            project_worktree_dirty_file_count(root.to_str().unwrap()),
+            Some(0)
+        );
+
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+        std::fs::write(root.join("README.md"), "changed\n").unwrap();
+
+        assert_eq!(
+            project_worktree_dirty_file_count(root.to_str().unwrap()),
+            Some(2)
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_deletes_a_dirty_sibling_and_says_so() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-force-dirty",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(sibling.join("dirty.txt"), "never committed\n").unwrap();
+        std::fs::write(sibling.join("src/App.ts"), "export const value = 2;\n").unwrap();
+
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone(), true).unwrap();
+
+        assert_eq!(
+            result.message,
+            // This fixture repo has no remote, so the branch's commit counts as never
+            // pushed and the message says so alongside the uncommitted file count.
+            "Force removed worktree cdx/tsk-127-force-dirty. Deleted 2 files with changes that were never committed. Deleted commits on this branch that were never pushed to a remote."
+        );
+        assert!(!sibling.exists());
+        assert!(!result
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.branch == "cdx/tsk-127-force-dirty"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_unlocks_a_locked_sibling_first() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-force-locked",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "agent running",
+                sibling.to_str().unwrap(),
+            ],
+        );
+
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone(), true).unwrap();
+
+        assert!(
+            result
+                .message
+                .contains("Unlocked it first; it was locked because: agent running."),
+            "unexpected message: {}",
+            result.message
+        );
+        assert!(!sibling.exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_still_refuses_the_primary_checkout() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        let error = remove_project_worktree_sync(root.clone(), root.clone(), true).unwrap_err();
+
+        assert!(
+            error.contains("primary checkout"),
+            "unexpected message: {error}"
+        );
+        assert!(root.join("src/App.ts").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_refuses_the_primary_checkout_reached_through_a_sibling() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-sneak",
+                sibling.to_str().unwrap(),
+            ],
+        );
+
+        // Ask through the LINKED worktree for the primary checkout. The two paths differ,
+        // so comparing them to each other proves nothing; the answer has to come from the
+        // repository's own list of worktrees, whose first entry is the main working tree.
+        let error = remove_project_worktree_sync(sibling.clone(), root.clone(), true).unwrap_err();
+
+        assert!(
+            error.contains("primary checkout"),
+            "unexpected message: {error}"
+        );
+        assert!(root.join("src/App.ts").exists());
+        assert!(sibling.exists());
+
+        // The same refusal without force, so neither path depends on the other.
+        let error = remove_project_worktree_sync(sibling.clone(), root.clone(), false).unwrap_err();
+        assert!(
+            error.contains("primary checkout"),
+            "unexpected message: {error}"
+        );
 
         run_git_for_test(
             &root,
@@ -6530,6 +7409,120 @@ mod tests {
                 result.approximate
             );
         }
+    }
+
+    #[test]
+    fn backend_capabilities_name_every_addition_the_frontend_cannot_otherwise_detect() {
+        // Pinned on purpose. Each name is a promise the frontend checks before it offers a
+        // feature, so quietly renaming one turns that feature off in the app instead of
+        // failing loudly.
+        assert_eq!(
+            backend_capabilities(),
+            vec![
+                "worktreeForceRemove".to_string(),
+                "playwrightSessionKill".to_string(),
+                "lspDiagnosticsForRoot".to_string(),
+                "terminalCommandSpawn".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_commit_file_changes_parse_name_status_lines_with_status_badges() {
+        let output =
+            "M\tsrc/App.ts\nA\tsrc/New.ts\nD\tsrc/Old.ts\nR100\tsrc/Old.ts\tsrc/Renamed.ts\n";
+
+        let changes = parse_git_commit_file_changes(output);
+
+        assert_eq!(changes.len(), 4);
+        assert_eq!(changes[0].relative_path, "src/App.ts");
+        assert_eq!(changes[0].status, "modified");
+        assert_eq!(changes[0].badge, "M");
+        assert_eq!(changes[1].relative_path, "src/New.ts");
+        assert_eq!(changes[1].status, "added");
+        assert_eq!(changes[1].badge, "A");
+        assert_eq!(changes[2].relative_path, "src/Old.ts");
+        assert_eq!(changes[2].status, "deleted");
+        assert_eq!(changes[2].badge, "D");
+        // A rename reports the path the file ended up at, the way the status panel does.
+        assert_eq!(changes[3].relative_path, "src/Renamed.ts");
+        assert_eq!(changes[3].status, "renamed");
+        assert_eq!(changes[3].badge, "R");
+    }
+
+    #[test]
+    fn git_commit_file_reads_refuse_option_shaped_commit_ids_and_absolute_paths() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let error =
+            read_git_commit_files_sync(root.clone(), "--upload-pack=evil".to_string()).unwrap_err();
+        assert!(error.contains("commit id"), "unexpected message: {error}");
+
+        let error = read_git_commit_file_diff_sync(
+            root.clone(),
+            "HEAD".to_string(),
+            "/etc/passwd".to_string(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("relative repo paths"),
+            "unexpected message: {error}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_commit_files_and_diff_read_one_commit() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "."]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        std::fs::write(root.join("src/App.ts"), "export const value = 2;\n").unwrap();
+        std::fs::write(root.join("src/Added.ts"), "export const added = true;\n").unwrap();
+        std::fs::remove_file(root.join("README.md")).unwrap();
+        run_git_for_test(&root, &["add", "-A"]);
+        run_git_for_test(&root, &["commit", "-m", "second"]);
+
+        let history = read_git_commit_history_sync(root.clone(), Some(1)).unwrap();
+        let sha = history[0].sha.clone();
+
+        let mut files = read_git_commit_files_sync(root.clone(), sha.clone()).unwrap();
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].relative_path, "README.md");
+        assert_eq!(files[0].status, "deleted");
+        assert_eq!(files[0].badge, "D");
+        assert_eq!(files[1].relative_path, "src/Added.ts");
+        assert_eq!(files[1].status, "added");
+        assert_eq!(files[1].badge, "A");
+        assert_eq!(files[2].relative_path, "src/App.ts");
+        assert_eq!(files[2].status, "modified");
+        assert_eq!(files[2].badge, "M");
+
+        let diff =
+            read_git_commit_file_diff_sync(root.clone(), sha, "src/App.ts".to_string()).unwrap();
+
+        assert_eq!(diff.relative_path, "src/App.ts");
+        assert_eq!(diff.status, "modified");
+        assert!(!diff.is_binary);
+        assert!(diff.diff.contains("--- a/src/App.ts"));
+        assert!(diff.diff.contains("+export const value = 2;"));
+        assert!(diff.diff.contains("-export const value = 1;"));
+        // The commit subject line never leaks into the patch text, so the same unified
+        // diff parser the working-copy diff uses can read this one.
+        assert!(!diff.diff.contains("second"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_root() -> PathBuf {

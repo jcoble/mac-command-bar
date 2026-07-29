@@ -152,11 +152,34 @@ pub(crate) struct SourceLspSemanticToken {
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceLspDiagnostic {
-    severity: String,
-    message: String,
-    line: usize,
-    column: usize,
-    source: Option<String>,
+    pub(crate) severity: String,
+    pub(crate) message: String,
+    pub(crate) line: usize,
+    pub(crate) column: usize,
+    pub(crate) source: Option<String>,
+    /// Which file the language server was complaining about. The per-file read already
+    /// knows the answer, but a whole-project list has to carry it on every row.
+    pub(crate) path: Option<String>,
+}
+
+impl SourceLspDiagnostic {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        severity: &str,
+        message: &str,
+        line: usize,
+        column: usize,
+        path: Option<&str>,
+    ) -> Self {
+        SourceLspDiagnostic {
+            severity: severity.to_string(),
+            message: message.to_string(),
+            line,
+            column,
+            source: None,
+            path: path.map(str::to_string),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -885,6 +908,30 @@ impl SourceLspRegistry {
         Ok(warmed)
     }
 
+    /// Every diagnostic the running language servers currently hold for files under
+    /// `root`. Nothing is requested from a server here — this reads what has already
+    /// been published, so a project with no warm server simply reports nothing.
+    pub(crate) fn list_diagnostics_for_root(
+        &self,
+        root: PathBuf,
+    ) -> Result<Vec<SourceLspDiagnostic>, String> {
+        let snapshot: Vec<Arc<Mutex<SourceLspSession>>> = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            sessions.values().map(Arc::clone).collect()
+        };
+
+        let mut per_session = Vec::with_capacity(snapshot.len());
+        for session in snapshot {
+            let guard = lock_lsp_session(&session)?;
+            per_session.push((guard.root.clone(), guard.diagnostics_by_uri.clone()));
+        }
+
+        Ok(collect_diagnostics_for_root(&per_session, &root))
+    }
+
     /// Number of live language-server sessions in the registry (test introspection only).
     #[cfg(test)]
     fn session_count(&self) -> Result<usize, String> {
@@ -1203,7 +1250,7 @@ impl SourceLspSession {
         if response.get("error").is_some() {
             return None;
         }
-        let diagnostics = diagnostics_from_pull_result(response.get("result")?);
+        let diagnostics = diagnostics_from_pull_result(response.get("result")?, file_uri);
         if !diagnostics.is_empty() {
             self.diagnostics_by_uri
                 .insert(file_uri.to_string(), diagnostics.clone());
@@ -1339,10 +1386,7 @@ impl Drop for SourceLspSession {
 
 /// Spawn a language server child under `root`, attach a stdout reader thread, and run the
 /// LSP `initialize`/`initialized` handshake. Shared by initial session start and re-point.
-fn spawn_lsp_child(
-    server: &ResolvedLspServer,
-    root: &Path,
-) -> Result<SpawnedLspChild, String> {
+fn spawn_lsp_child(server: &ResolvedLspServer, root: &Path) -> Result<SpawnedLspChild, String> {
     if !root.is_dir() {
         return Err("Project root is not a directory".to_string());
     }
@@ -2060,7 +2104,10 @@ fn lsp_documentation_from_value(value: Option<&Value>) -> String {
     }
 }
 
-fn diagnostics_from_message(message: &Value, file_uri: &str) -> Vec<SourceLspDiagnostic> {
+pub(crate) fn diagnostics_from_message(
+    message: &Value,
+    file_uri: &str,
+) -> Vec<SourceLspDiagnostic> {
     if message.get("method").and_then(Value::as_str) != Some("textDocument/publishDiagnostics") {
         return Vec::new();
     }
@@ -2078,23 +2125,69 @@ fn diagnostics_from_message(message: &Value, file_uri: &str) -> Vec<SourceLspDia
         .map(|diagnostics| {
             diagnostics
                 .iter()
-                .filter_map(lsp_diagnostic_from_value)
+                .filter_map(|value| lsp_diagnostic_from_value(value, file_uri))
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn diagnostics_from_pull_result(result: &Value) -> Vec<SourceLspDiagnostic> {
+fn diagnostics_from_pull_result(result: &Value, file_uri: &str) -> Vec<SourceLspDiagnostic> {
     result
         .get("items")
         .and_then(Value::as_array)
         .map(|diagnostics| {
             diagnostics
                 .iter()
-                .filter_map(lsp_diagnostic_from_value)
+                .filter_map(|value| lsp_diagnostic_from_value(value, file_uri))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Every file with diagnostics under `root`, flattened into one list ordered by file and
+/// then by position in the file, so a problems list can render it straight through.
+/// A file whose location cannot be read from its URI falls back to the root the language
+/// server for it is pointed at.
+pub(crate) fn collect_diagnostics_for_root(
+    sessions: &[(PathBuf, HashMap<String, Vec<SourceLspDiagnostic>>)],
+    root: &Path,
+) -> Vec<SourceLspDiagnostic> {
+    let mut collected = Vec::new();
+    for (session_root, diagnostics_by_uri) in sessions {
+        for (file_uri, diagnostics) in diagnostics_by_uri {
+            let file_path = file_uri_to_path(file_uri);
+            let belongs = match file_path.as_deref() {
+                Some(path) => lsp_path_is_within(path, root),
+                None => lsp_path_is_within(session_root, root),
+            };
+            if !belongs {
+                continue;
+            }
+
+            for diagnostic in diagnostics {
+                let mut diagnostic = diagnostic.clone();
+                if diagnostic.path.is_none() {
+                    diagnostic.path = file_path.as_deref().map(|path| path.display().to_string());
+                }
+                collected.push(diagnostic);
+            }
+        }
+    }
+
+    collected.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then(left.line.cmp(&right.line))
+            .then(left.column.cmp(&right.column))
+            .then(left.message.cmp(&right.message))
+    });
+    collected
+}
+
+/// True when `path` is `root` itself or sits inside it. Compares whole path segments, so
+/// `/repo-backup` is never mistaken for something inside `/repo`.
+fn lsp_path_is_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
 }
 
 fn diagnostic_uri_from_message(message: &Value) -> Option<String> {
@@ -2108,7 +2201,7 @@ fn diagnostic_uri_from_message(message: &Value) -> Option<String> {
         .map(|uri| uri.to_string())
 }
 
-fn lsp_diagnostic_from_value(value: &Value) -> Option<SourceLspDiagnostic> {
+fn lsp_diagnostic_from_value(value: &Value, file_uri: &str) -> Option<SourceLspDiagnostic> {
     let range = value.get("range")?;
     let start = range.get("start")?;
     let line = start.get("line")?.as_u64()? as usize + 1;
@@ -2127,6 +2220,7 @@ fn lsp_diagnostic_from_value(value: &Value) -> Option<SourceLspDiagnostic> {
             .get("source")
             .and_then(Value::as_str)
             .map(|source| source.to_string()),
+        path: file_uri_to_path(file_uri).map(|path| path.display().to_string()),
     })
 }
 
@@ -2795,9 +2889,7 @@ fn lsp_search_path_env() -> Option<OsString> {
 /// fall back to the inherited PATH plus the hardcoded toolchain dirs above.
 fn login_shell_path() -> Option<String> {
     static LOGIN_SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
-    LOGIN_SHELL_PATH
-        .get_or_init(probe_login_shell_path)
-        .clone()
+    LOGIN_SHELL_PATH.get_or_init(probe_login_shell_path).clone()
 }
 
 /// Spawn the user's login shell (`$SHELL -lc 'printf %s $PATH'`) and capture its PATH.
@@ -2809,7 +2901,9 @@ fn probe_login_shell_path() -> Option<String> {
     let shell = env::var("SHELL")
         .ok()
         .filter(|value| !value.trim().is_empty())?;
-    let shell_name = Path::new(&shell).file_name().and_then(|name| name.to_str())?;
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())?;
     if !matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish") {
         return None;
     }
@@ -2937,7 +3031,11 @@ mod tests {
         // contain no duplicates and round-trip through env::join_paths.
         let paths = command_search_paths();
         let deduped = dedupe_paths(paths.clone());
-        assert_eq!(paths.len(), deduped.len(), "search paths must already be deduped");
+        assert_eq!(
+            paths.len(),
+            deduped.len(),
+            "search paths must already be deduped"
+        );
         assert!(
             lsp_search_path_env().is_some(),
             "combined search path must join into a valid PATH env value"
@@ -3774,7 +3872,10 @@ mod tests {
         tsx_preview.language = "tsx".to_string();
         let key_tsx =
             SourceLspSessionKey::from_preview(&tsx_preview, &request_root_a).expect("tsx key");
-        assert_eq!(key_a, key_tsx, "ts and tsx must share the typescript server");
+        assert_eq!(
+            key_a, key_tsx,
+            "ts and tsx must share the typescript server"
+        );
     }
 
     #[test]
@@ -3845,6 +3946,7 @@ mod tests {
                     line: 5,
                     column: 9,
                     source: Some("typescript".to_string()),
+                    path: Some("/tmp/App.ts".to_string()),
                 },
                 SourceLspDiagnostic {
                     severity: "hint".to_string(),
@@ -3852,6 +3954,7 @@ mod tests {
                     line: 8,
                     column: 3,
                     source: None,
+                    path: Some("/tmp/App.ts".to_string()),
                 }
             ]
         );
@@ -3876,13 +3979,14 @@ mod tests {
         });
 
         assert_eq!(
-            diagnostics_from_pull_result(&result),
+            diagnostics_from_pull_result(&result, "file:///tmp/App.ts"),
             vec![SourceLspDiagnostic {
                 severity: "warning".to_string(),
                 message: "Type mismatch.".to_string(),
                 line: 3,
                 column: 13,
                 source: Some("typescript".to_string()),
+                path: Some("/tmp/App.ts".to_string()),
             }]
         );
     }
@@ -4145,21 +4249,22 @@ mod tests {
     #[test]
     fn reuses_one_server_across_roots_and_repoints_per_language() {
         if resolve_server_for_language("typescript").is_none() {
-            eprintln!(
-                "skipping LSP dedupe smoke: typescript-language-server not found"
-            );
+            eprintln!("skipping LSP dedupe smoke: typescript-language-server not found");
             return;
         }
 
         let registry = SourceLspRegistry::default();
-        let make_root = |label: &str, symbol: &str| -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
+        let make_root = |label: &str,
+                         symbol: &str|
+         -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
             let root = unique_lsp_temp_root(label);
             std::fs::write(
                 root.join("tsconfig.json"),
                 r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
             )
             .unwrap();
-            let content = format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
+            let content =
+                format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
             let file_path = root.join("App.ts");
             std::fs::write(&file_path, &content).unwrap();
             let preview = SourceLspPreview {
@@ -4264,14 +4369,17 @@ mod tests {
         }
 
         let registry = SourceLspRegistry::default();
-        let make_root = |label: &str, symbol: &str| -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
+        let make_root = |label: &str,
+                         symbol: &str|
+         -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
             let root = unique_lsp_temp_root(label);
             std::fs::write(
                 root.join("tsconfig.json"),
                 r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
             )
             .unwrap();
-            let content = format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
+            let content =
+                format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
             let file_path = root.join("App.ts");
             std::fs::write(&file_path, &content).unwrap();
             let preview = SourceLspPreview {
