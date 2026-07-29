@@ -102,6 +102,8 @@
     resetLayout(): void;
     showCenterPanel(id: string): void;
     setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
+    setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
+    regionWidth(id: ShellRegionId): number | null;
   } | null = null;
   /** The tool column's own controls; it builds after the frame does. */
   let sidebarControls: {
@@ -681,10 +683,32 @@
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}
     onReady={(controls) => {
       frameControls = controls;
-      // A column that was left folded up is 52px wide, and the region it lives
-      // in has just been built (or restored) at whatever width it last had.
-      // Say the width once, here, where the frame first exists.
-      if (sessionsCollapsed) applySessionsWidth(true);
+      // Say what the sessions column is, once, here, where the frame first
+      // exists — in BOTH cases, not only the folded one.
+      //
+      // Two separate things remember the column: the stored grid layout, which
+      // carries its width AND the limits it may be dragged between, and the
+      // fold flag under its own key. They are written at different moments —
+      // the flag straight away, the grid a quarter of a second later — so a
+      // reload in between leaves the flag saying "open" and the grid still
+      // holding the folded 52px with its minimum and maximum both pinned there.
+      // Saying nothing in the open case is what let that stand: the column came
+      // back as an unreadable 52px sliver whose divider could not be dragged,
+      // with the button that would unfold it clipped out of reach.
+      if (sessionsCollapsed) {
+        applySessionsWidth(true);
+      } else {
+        controls.setRegionLimits('sessions', {
+          minimumWidth: SESSIONS_MIN_WIDTH,
+          maximumWidth: SESSIONS_MAX_WIDTH
+        });
+        // Only rescue a column that came back narrower than it is allowed to
+        // be. Any other width is one the user dragged, and it survives.
+        const restored = controls.regionWidth('sessions');
+        if (restored !== null && restored < SESSIONS_MIN_WIDTH) {
+          controls.setRegionWidth('sessions', SESSIONS_WIDTH);
+        }
+      }
       // One timer tick later: the tab area announces the tab it restored
       // through a microtask, and those all arrive before any timer. Waiting
       // means a restored tab loads nothing, while a real click still does.

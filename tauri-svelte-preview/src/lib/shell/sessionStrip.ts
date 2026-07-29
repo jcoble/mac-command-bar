@@ -90,8 +90,13 @@ export function readSessionsCollapsed(storage: LayoutStorage): boolean {
   return loadLayout<unknown>(storage, SESSIONS_COLLAPSED_KEY) === true;
 }
 
-/** False means the write was refused (a full storage). The column carries on:
- * the cost is only that the next launch opens it. */
+/** False means the write was refused (a full storage). The column carries on;
+ * the next launch simply reads the column as open. That is only the whole story
+ * because the page re-states the open column's width limits on restore — the
+ * stored grid layout remembers the folded 52px lock as well, and without that
+ * re-statement a refused write here came back as a column stuck at strip width
+ * with the expanded markup crammed into it. See `onReady` in
+ * `src/routes/next/+page.svelte`. */
 export function writeSessionsCollapsed(storage: LayoutStorage, collapsed: boolean): boolean {
   return saveLayout(storage, SESSIONS_COLLAPSED_KEY, collapsed);
 }

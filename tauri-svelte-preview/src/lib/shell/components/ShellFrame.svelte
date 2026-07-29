@@ -36,6 +36,11 @@
       /** Give one region a width — how a column asks to be folded up or
        * opened out. See `setRegionWidth` in `frame.ts`. */
       setRegionWidth: (id: ShellRegionId, width: number, limits?: RegionWidthLimits) => void;
+      /** Say what a region may be dragged to without moving it. See
+       * `setRegionLimits` in `frame.ts`. */
+      setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
+      /** How wide a region is right now, or null if the frame is gone. */
+      regionWidth: (id: ShellRegionId) => number | null;
     }) => void;
     onError?: (message: string) => void;
   }
@@ -106,7 +111,9 @@
           centerDock?.resetLayout();
         },
         showCenterPanel: (id: string) => centerDock?.activatePanel(id),
-        setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits)
+        setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
+        setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
+        regionWidth: (id) => frame?.regionWidth(id) ?? null
       });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : String(error));

@@ -77,6 +77,21 @@ export interface ShellFrame {
    * be clamped back to 220.
    */
   setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
+  /**
+   * Say what a region may be dragged to, without touching the width it has.
+   *
+   * A stored layout carries each region's limits as well as its width, so a
+   * layout written while a column was folded restores the column locked at
+   * strip width — minimum and maximum both 52px, which is also a divider that
+   * cannot be dragged. That is right while the column is meant to be folded and
+   * wrong the moment it is not, and the two facts are stored separately and can
+   * disagree. This is how the page says "open, and draggable again" on restore
+   * while leaving a width the user chose alone.
+   */
+  setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
+  /** How wide a region is right now, or null if there is no such region. Used
+   * to tell a width the user dragged from one restored below its own minimum. */
+  regionWidth(id: ShellRegionId): number | null;
   layout(width: number, height: number): void;
   dispose(): void;
 }
@@ -134,6 +149,25 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       panel.api.setSize({ width });
     } catch {
       // nothing to do — the arrangement is still usable
+    }
+  };
+
+  /** Say what a region may be dragged to and nothing else. Same tolerance as
+   * `setRegionWidth`: a region that will not take it keeps what it has. */
+  const setRegionLimits = (id: ShellRegionId, limits: RegionWidthLimits): void => {
+    try {
+      api.getPanel(id)?.api.setConstraints(limits);
+    } catch {
+      // nothing to do — the arrangement is still usable
+    }
+  };
+
+  /** How wide a region is right now, or null if it is not there. */
+  const regionWidth = (id: ShellRegionId): number | null => {
+    try {
+      return api.getPanel(id)?.api.width ?? null;
+    } catch {
+      return null;
     }
   };
 
@@ -289,6 +323,8 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   return {
     api,
     setRegionWidth,
+    setRegionLimits,
+    regionWidth,
     resetLayout(): void {
       clearLayout(options.storage, GRID_LAYOUT_KEY);
       runSynchronized(() => {
