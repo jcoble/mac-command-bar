@@ -175,6 +175,17 @@ export type AgentSession = {
   taskId?: string | null;
   pullRequestHint?: string | null;
   sourceLabel?: string | null;
+  /**
+   * How many turns of the conversation the scanner saw, and the last one of
+   * them, already written as the row shows it (`You: …` / `Agent: …`).
+   *
+   * The count is a floor, not a total: the scanner reads a bounded window of
+   * each transcript, so a long session reports the turns inside that window and
+   * no more. Optional like the hints above — a scanner that found no
+   * conversation leaves them out, and a row then shows neither.
+   */
+  messageCount?: number | null;
+  latestTurnPreview?: string | null;
 };
 
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;

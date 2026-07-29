@@ -43,6 +43,18 @@ export type OwnedSession = {
   branch: string | null;
   taskId: string | null;
   pullRequest: string | null;
+  /**
+   * How many turns of the conversation the scanner saw, and the last one of them
+   * already written as the row shows it (`You: …` / `Agent: …`). Copied off the
+   * scanned record when the session is adopted, so the row keeps showing them
+   * afterwards.
+   *
+   * The count is a floor, not a total — the scanner reads a bounded window of
+   * each transcript. `null` whenever the scanner found no conversation, or the
+   * session was started here rather than found on disk.
+   */
+  messageCount: number | null;
+  latestTurnPreview: string | null;
 };
 
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'gemini', 'opencode'];
@@ -78,6 +90,8 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     branch: isNonEmptyString(record.branchHint) ? record.branchHint : null,
     taskId: isNonEmptyString(record.taskId) ? record.taskId : null,
     pullRequest: isNonEmptyString(record.pullRequestHint) ? record.pullRequestHint : null,
+    messageCount: isTurnCount(record.messageCount) ? record.messageCount : null,
+    latestTurnPreview: isNonEmptyString(record.latestTurnPreview) ? record.latestTurnPreview : null,
   };
 }
 
@@ -103,6 +117,8 @@ export function createFreshSession(
     branch: null,
     taskId: null,
     pullRequest: null,
+    messageCount: null,
+    latestTurnPreview: null,
   };
 }
 
@@ -112,6 +128,15 @@ export function serializeOwnedSessions(sessions: OwnedSession[]): string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * A count of turns worth showing: a whole number, at least one. Zero is nothing
+ * to say rather than something to print, so a row shows no count at all instead
+ * of "0 messages".
+ */
+function isTurnCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
@@ -162,6 +187,10 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       branch: isNonEmptyString(candidate.branch) ? candidate.branch : null,
       taskId: isNonEmptyString(candidate.taskId) ? candidate.taskId : null,
       pullRequest: isNonEmptyString(candidate.pullRequest) ? candidate.pullRequest : null,
+      messageCount: isTurnCount(candidate.messageCount) ? candidate.messageCount : null,
+      latestTurnPreview: isNonEmptyString(candidate.latestTurnPreview)
+        ? candidate.latestTurnPreview
+        : null,
     });
   }
   return result;
