@@ -75,6 +75,11 @@
   const pendingHosts = new Map<string, HTMLElement>();
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
   const awaitingReattach = new Set<string>();
+  /** Sessions with a restart already under way. Added before the first await, so
+   * a second click on "Start again" cannot get past it while the first click is
+   * still waiting on the backend — two starts for one row would leave two agents
+   * resuming the same conversation, with only one of them reachable. */
+  const restarting = new Set<string>();
   /** ptySessionId -> the PTY's REAL grid (launch `backend.list()`), fed to
    * `adoptExisting`: a HIDDEN host cannot be measured, so without it a survivor's
    * view keeps 80x24 and wraps its replay wrong. */
@@ -366,13 +371,40 @@
    * which is why the agent picks the conversation up where it left off. A
    * session started here rather than found on disk has no resume command and
    * gets a plain shell back.
+   *
+   * Only one restart per row can be in flight. The row keeps reading "finished"
+   * — and so keeps offering the button — for as long as the first click is
+   * waiting on the backend, so without the `restarting` guard a double-click
+   * would spawn two terminals for one session. The second would replace the
+   * first in the service's bookkeeping while the first process kept running,
+   * leaving two agents appending to the same transcript and only one of them
+   * showing up anywhere the user could reach it.
    */
   async function restartOwned(ownedId: string): Promise<void> {
-    if (!service || disposed) return;
+    // Checked and claimed before the first await, so a second click cannot slip
+    // through the window the first one opens.
+    if (!service || disposed || restarting.has(ownedId)) return;
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
     // Only a finished session can be started again; a running one already is.
     if (!session || session.state !== 'exited') return;
     const label = session.title || ownedId;
+    restarting.add(ownedId);
+
+    /**
+     * Put the terminal the manager promoted back on screen. Closing a view
+     * makes another session's view visible and `closeOwned` reports which one;
+     * every other caller adopts that answer. On the paths below that never
+     * reach `selectOwned(ownedId)` this is the only thing standing between the
+     * user and another session's scrollback sitting under this session's title.
+     */
+    const adoptSuccessor = async (successor: string | null): Promise<void> => {
+      if (successor === null) return;
+      if (!rail.owned.some((entry) => entry.ownedId === successor)) return;
+      await selectOwned(successor);
+    };
+
+    /** Whoever the first close promoted, kept where every exit can see it. */
+    let successor: string | null = null;
 
     try {
       // The old terminal is over: drop its view and let the backend forget the
@@ -383,7 +415,8 @@
       // means the backend could not tidy away something that is already dead,
       // and the session is about to get a working terminal regardless.
       awaitingReattach.delete(ownedId);
-      await service.closeOwned(ownedId, session.ptySessionId);
+      const closed = await service.closeOwned(ownedId, session.ptySessionId);
+      successor = closed?.successor ?? null;
 
       // Say the row is running BEFORE asking for a terminal host: the terminal
       // surface only keeps a host on screen for a session it believes has a
@@ -396,6 +429,7 @@
       if (!host) {
         updateOwnedSession(ownedId, { state: 'exited' });
         rail.error = `no terminal host for "${label}"`;
+        await adoptSuccessor(successor);
         return;
       }
       // `startOwned` reads the folder and the resume command off this record;
@@ -404,8 +438,22 @@
       if (!ptySessionId) {
         updateOwnedSession(ownedId, { state: 'exited' });
         rail.error = `could not start "${label}" again: no new terminal opened`;
+        await adoptSuccessor(successor);
         return;
       }
+
+      // Ask again what the row says now. The moment it read "running" its Close
+      // and Remove buttons came back, and either of them could have been used
+      // while the terminal was still starting. Neither could reach this PTY —
+      // it did not exist yet — so adopting it here would put back a session the
+      // user has just closed, or attach a live process to a row that is gone.
+      const current = rail.owned.find((entry) => entry.ownedId === ownedId);
+      if (!current || current.state === 'exited') {
+        const closedAgain = await service.closeOwned(ownedId, ptySessionId);
+        await adoptSuccessor(closedAgain?.successor ?? null);
+        return;
+      }
+
       // Persist the new PTY id: reload re-attach reads it back out of storage.
       updateOwnedSession(ownedId, { ptySessionId, state: 'live' });
       await selectOwned(ownedId);
@@ -413,7 +461,14 @@
       // The row goes back to finished rather than sitting there claiming to be
       // running: nothing started, and the card's buttons must still offer this.
       updateOwnedSession(ownedId, { state: 'exited' });
-      if (!disposed) rail.error = `could not start "${label}" again: ${describeError(error)}`;
+      if (!disposed) {
+        rail.error = `could not start "${label}" again: ${describeError(error)}`;
+        // Same reason as the early returns above: the close at the top of this
+        // function already put someone else's terminal on screen.
+        await adoptSuccessor(successor);
+      }
+    } finally {
+      restarting.delete(ownedId);
     }
   }
 
