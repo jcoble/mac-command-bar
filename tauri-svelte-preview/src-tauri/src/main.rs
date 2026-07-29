@@ -1054,6 +1054,39 @@ async fn read_git_commit_history(
     .map_err(|error| format!("Git history task failed: {error}"))?
 }
 
+/// What this build of the backend can do, by name.
+///
+/// The frontend needs this because some additions are new ARGUMENTS on commands that
+/// already existed. Tauri quietly drops a payload key a command does not declare, so an
+/// older desktop build handed `force: true` runs the ordinary safe removal and reports
+/// success — there is no unknown-command error to catch and nothing else to test. Asking
+/// for this list first is the only way to know before offering the button.
+///
+/// Anything added here is a promise: check the name before offering the feature, and treat
+/// this command being missing as "none of these are available".
+const BACKEND_CAPABILITIES: [&str; 4] = [
+    // `remove_project_worktree` accepts `force`.
+    "worktreeForceRemove",
+    // `kill_playwright_session` stops one process group.
+    "playwrightSessionKill",
+    // `list_source_lsp_diagnostics_for_root` reads a whole project's diagnostics.
+    "lspDiagnosticsForRoot",
+    // `start_terminal_session` accepts `command` and exits with its code.
+    "terminalCommandSpawn",
+];
+
+fn backend_capabilities() -> Vec<String> {
+    BACKEND_CAPABILITIES
+        .iter()
+        .map(|capability| capability.to_string())
+        .collect()
+}
+
+#[tauri::command]
+async fn read_backend_capabilities() -> Result<Vec<String>, String> {
+    Ok(backend_capabilities())
+}
+
 #[tauri::command]
 async fn read_git_commit_files(
     root: String,
@@ -4688,6 +4721,7 @@ fn main() {
         .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            read_backend_capabilities,
             list_source_files,
             cancel_source_scan,
             validate_project_root,
@@ -7375,6 +7409,22 @@ mod tests {
                 result.approximate
             );
         }
+    }
+
+    #[test]
+    fn backend_capabilities_name_every_addition_the_frontend_cannot_otherwise_detect() {
+        // Pinned on purpose. Each name is a promise the frontend checks before it offers a
+        // feature, so quietly renaming one turns that feature off in the app instead of
+        // failing loudly.
+        assert_eq!(
+            backend_capabilities(),
+            vec![
+                "worktreeForceRemove".to_string(),
+                "playwrightSessionKill".to_string(),
+                "lspDiagnosticsForRoot".to_string(),
+                "terminalCommandSpawn".to_string(),
+            ]
+        );
     }
 
     #[test]
