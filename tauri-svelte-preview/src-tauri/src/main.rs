@@ -1133,6 +1133,13 @@ async fn list_playwright_sessions() -> Result<Vec<PlaywrightSessionInfo>, String
 }
 
 #[tauri::command]
+async fn kill_playwright_session(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kill_playwright_session_sync(pgid))
+        .await
+        .map_err(|error| format!("Playwright session cleanup task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn kill_playwright_sessions() -> Result<PlaywrightCleanupResult, String> {
     tauri::async_runtime::spawn_blocking(kill_playwright_sessions_sync)
         .await
@@ -3622,6 +3629,57 @@ fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
     )
 }
 
+fn kill_playwright_session_sync(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
+    let sessions = list_playwright_sessions_sync()?;
+    kill_playwright_session_with(
+        sessions,
+        pgid,
+        signal_process,
+        || std::thread::sleep(std::time::Duration::from_millis(800)),
+        list_playwright_sessions_sync,
+    )
+}
+
+/// Stops ONE Playwright process group, the same polite-then-forceful way the
+/// stop-everything command does. The group has to be one this app just listed as a
+/// Playwright session; anything else is refused, so this can never be used to stop an
+/// arbitrary process by number.
+fn kill_playwright_session_with<SignalProcess, SleepAfterTerm, ListSessions>(
+    sessions: Vec<PlaywrightSessionInfo>,
+    pgid: i32,
+    signal_process: SignalProcess,
+    sleep_after_term: SleepAfterTerm,
+    list_sessions: ListSessions,
+) -> Result<PlaywrightCleanupResult, String>
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
+    SleepAfterTerm: FnOnce(),
+    ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let session = select_playwright_session(sessions, pgid)?;
+    kill_playwright_sessions_with(
+        vec![session],
+        signal_process,
+        sleep_after_term,
+        list_sessions,
+    )
+}
+
+fn select_playwright_session(
+    sessions: Vec<PlaywrightSessionInfo>,
+    pgid: i32,
+) -> Result<PlaywrightSessionInfo, String> {
+    let matched = u32::try_from(pgid).ok().and_then(|pgid| {
+        sessions
+            .into_iter()
+            .find(|session| session.pgid == pgid && !session.pids.is_empty())
+    });
+
+    matched.ok_or_else(|| {
+        format!("No Playwright session is running in process group {pgid}, so nothing was stopped")
+    })
+}
+
 fn kill_playwright_sessions_with<SignalProcess, SleepAfterTerm, ListSessions>(
     sessions: Vec<PlaywrightSessionInfo>,
     mut signal_process: SignalProcess,
@@ -4636,6 +4694,7 @@ fn main() {
             list_agent_sessions,
             list_runtime_contexts,
             list_playwright_sessions,
+            kill_playwright_session,
             kill_playwright_sessions,
             list_orchestration_runs,
             record_orchestration_event,
@@ -4711,6 +4770,117 @@ mod tests {
 
         for (command, args) in cases {
             assert_eq!(playwright_process_label(command, args), None, "{args}");
+        }
+    }
+
+    #[test]
+    fn kill_playwright_session_only_signals_the_group_that_was_asked_for() {
+        let sessions = vec![
+            PlaywrightSessionInfo {
+                pgid: 100,
+                label: "Playwright CLI server".to_string(),
+                pids: vec![101, 102],
+                processes: Vec::new(),
+            },
+            PlaywrightSessionInfo {
+                pgid: 200,
+                label: "Playwright MCP server".to_string(),
+                pids: vec![201],
+                processes: Vec::new(),
+            },
+        ];
+        let mut signals = Vec::new();
+
+        let result = kill_playwright_session_with(
+            sessions,
+            200,
+            |pid, signal| {
+                signals.push((pid, signal.to_string()));
+                Ok(())
+            },
+            || {},
+            || Ok(Vec::new()),
+        )
+        .unwrap();
+
+        // Only the requested group is touched; the other session's pids are never signalled.
+        assert_eq!(signals, vec![(201, "TERM".to_string())]);
+        assert_eq!(result.terminated_pgids, vec![200]);
+        assert_eq!(result.terminated_pids, vec![201]);
+        assert!(result.failed_pgids.is_empty());
+        assert_eq!(result.sessions.len(), 1);
+        assert_eq!(result.sessions[0].pgid, 200);
+    }
+
+    #[test]
+    fn kill_playwright_session_escalates_to_kill_when_term_leaves_it_running() {
+        let sessions = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![101, 102],
+            processes: Vec::new(),
+        }];
+        let survivors = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![102],
+            processes: Vec::new(),
+        }];
+        let mut signals = Vec::new();
+
+        kill_playwright_session_with(
+            sessions,
+            100,
+            |pid, signal| {
+                signals.push((pid, signal.to_string()));
+                Ok(())
+            },
+            || {},
+            || Ok(survivors.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            signals,
+            vec![
+                (101, "TERM".to_string()),
+                (102, "TERM".to_string()),
+                (102, "KILL".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn kill_playwright_session_refuses_a_group_that_is_not_a_listed_playwright_session() {
+        let sessions = vec![PlaywrightSessionInfo {
+            pgid: 100,
+            label: "Playwright CLI server".to_string(),
+            pids: vec![101],
+            processes: Vec::new(),
+        }];
+
+        for unlisted in [200, 0, -1, 1] {
+            let mut signals = Vec::new();
+            let error = kill_playwright_session_with(
+                sessions.clone(),
+                unlisted,
+                |pid, signal| {
+                    signals.push((pid, signal.to_string()));
+                    Ok(())
+                },
+                || {},
+                || Ok(Vec::new()),
+            )
+            .unwrap_err();
+
+            assert!(
+                error.contains("Playwright"),
+                "unexpected message for {unlisted}: {error}"
+            );
+            assert!(
+                signals.is_empty(),
+                "nothing may be signalled for {unlisted}"
+            );
         }
     }
 
