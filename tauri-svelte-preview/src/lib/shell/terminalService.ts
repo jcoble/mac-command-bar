@@ -37,6 +37,7 @@ import {
   type TerminalSessionInfo,
   type TerminalStartRequest
 } from '../tauriSource.ts';
+import { hasBackendCapability } from './backendCapabilities.ts';
 
 /**
  * The PTY transport, injected so the service can be tested without Tauri.
@@ -71,11 +72,36 @@ export type TerminalViewHooks = {
   onResize(cols: number, rows: number): void;
 };
 
+/** The name the desktop app answers with when it can spawn a single command. */
+export const TERMINAL_COMMAND_SPAWN_CAPABILITY = 'terminalCommandSpawn';
+
+export type StartOwnedOptions = {
+  /** Run the session's resume command AS the session, rather than typing it
+   * into a shell. See `startOwned`. */
+  runCommandDirectly?: boolean;
+};
+
 export type TerminalService = {
   /** Register the ONE backend output listener. Safe to call repeatedly. */
   attach(): Promise<void>;
-  /** Spawn a PTY for `owned`, mount its view on `host`, replay the resume command. */
-  startOwned(owned: OwnedSession, host: HTMLElement): Promise<string | null>;
+  /**
+   * Spawn a PTY for `owned`, mount its view on `host`, replay the resume command.
+   *
+   * `runCommandDirectly` changes HOW the resume command is run. Off (the
+   * default, and what every agent session uses) the command is typed into a
+   * fresh interactive shell, so the shell is still there when the agent quits.
+   * On, the session IS the command: the backend spawns `shell -lc <command>`,
+   * the session ends when the command does, and the exit code belongs to the
+   * command instead of the shell around it. That is what a stack run needs —
+   * "the dev server crashed" and "you closed the shell" are the same event
+   * otherwise. A desktop build too old to run a command this way falls back to
+   * typing it, which is what the shell did before.
+   */
+  startOwned(
+    owned: OwnedSession,
+    host: HTMLElement,
+    options?: StartOwnedOptions
+  ): Promise<string | null>;
   /**
    * Re-attach to a PTY that survived a reload, hydrating saved scrollback.
    * Works for a TOMBSTONE too (`owned.state === 'exited'` with a
@@ -516,9 +542,25 @@ export function createTerminalService(opts: {
     }
   }
 
-  async function startOwned(owned: OwnedSession, host: HTMLElement): Promise<string | null> {
+  async function startOwned(
+    owned: OwnedSession,
+    host: HTMLElement,
+    options: StartOwnedOptions = {}
+  ): Promise<string | null> {
     const hadView = manager.hasView(owned.ownedId);
-    const info = await backend.start({ cwd: owned.cwd, ownedId: owned.ownedId });
+    // Only a caller that asked for it, and only a desktop build that can do it.
+    // An old build drops the field and opens a plain shell without saying so, so
+    // asking outright is the only way to know which of the two happened — and
+    // the answer decides whether the command still has to be typed in below.
+    const runsAsCommand =
+      Boolean(options.runCommandDirectly) &&
+      Boolean(owned.resumeCommand) &&
+      (await hasBackendCapability(TERMINAL_COMMAND_SPAWN_CAPABILITY));
+    const info = await backend.start({
+      cwd: owned.cwd,
+      ownedId: owned.ownedId,
+      command: runsAsCommand ? owned.resumeCommand : null
+    });
     if (!info) {
       // Never leave a half-built view behind for a session that has no PTY.
       if (!hadView && manager.hasView(owned.ownedId)) {
@@ -538,7 +580,9 @@ export function createTerminalService(opts: {
     // listener the moment the process spawns, and an unbound session is dropped.
     manager.bindSession(owned.ownedId, info.sessionId);
 
-    if (owned.resumeCommand) {
+    // The session that IS the command is already running it; typing it again
+    // would run it twice.
+    if (owned.resumeCommand && !runsAsCommand) {
       await backend.write(info.sessionId, `${owned.resumeCommand}\r`);
     }
 
