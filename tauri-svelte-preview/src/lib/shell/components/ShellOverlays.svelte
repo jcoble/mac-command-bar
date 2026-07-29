@@ -9,6 +9,8 @@
    * shortcut and would fight over the seeded actions), which is why it lives
    * here and not inside a panel.
    */
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
@@ -41,7 +43,18 @@
 <SettingsHost bind:this={settingsHost} />
 
 {#if message}
-  <footer class="next-error">{message}</footer>
+  <!-- Something went wrong, said once, along the bottom edge. Announced to
+       screen readers, and see-through to the mouse so it can never swallow a
+       click meant for the shell underneath. -->
+  <footer
+    role="alert"
+    class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center
+           gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1
+           text-[12px] leading-[1.4] text-destructive"
+  >
+    <TriangleAlert class="size-3.5 shrink-0" aria-hidden="true" />
+    <span>{message}</span>
+  </footer>
 {/if}
 
 {#if import.meta.env.DEV}
@@ -49,27 +62,19 @@
 {/if}
 
 <style>
-  .next-error,
+  /* Development-only readout of how many backend calls the shell has made.
+     Deliberately not part of the shared component set: it is a debugging
+     instrument, not chrome, and it never ships to a user. */
   .invoke-counter {
     position: absolute;
     bottom: 8px;
+    right: 10px;
     border-radius: 5px;
+    background: rgba(16, 16, 20, 0.82);
+    color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
     font-size: 10px;
     padding: 3px 8px;
     pointer-events: none;
-  }
-
-  .next-error {
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(255, 85, 85, 0.16);
-    color: #ff9d9d;
-  }
-
-  .invoke-counter {
-    right: 10px;
-    background: rgba(16, 16, 20, 0.82);
-    color: #6d6d7d;
   }
 </style>

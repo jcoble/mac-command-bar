@@ -1,17 +1,18 @@
 <!--
-  SettingsHost.svelte — puts the existing settings dialog on the /next shell.
+  SettingsHost.svelte — puts the settings dialog on the /next shell.
 
   It owns three things and nothing else:
-    1. the /next color file, so the dialog (and every other shared
-       component used inside /next) paints in the /next palette;
+    1. the /next stylesheets, so the dialog (and everything else rendered
+       inside /next) paints in the /next palette;
     2. the open/closed state of the dialog;
     3. loading the dialog itself, which only happens the first time
        someone asks for it.
 
-  The settings surface is `$lib/SettingsPanel.svelte`, reused unchanged.
-  It is pulled in on demand rather than with the rest of the shell so
-  that starting the app costs nothing for a screen most launches never
-  show. Nothing here reads or writes the backend.
+  The settings surface is `$lib/shell/components/SettingsDialog.svelte` — the
+  /next shell's own, built from the shadcn components. It is pulled in on
+  demand rather than with the rest of the shell so that starting the app costs
+  nothing for a screen most launches never show. Nothing here reads or writes
+  the backend.
 
   Usage:
     <script>
@@ -22,14 +23,17 @@
     <button onclick={() => settingsHost.open()}>Settings</button>
 -->
 <script lang="ts">
-  /* The /next palette. Imported here so that anything mounting this host
-     gets the right colors even before the page imports the file itself. */
+  /* The /next palette, and the Tailwind + shadcn variables built from it.
+     Imported here so that anything mounting this host gets the right colors
+     even before the page imports the files itself. */
   import '$lib/shell/styles/nextTokens.css';
+  import '$lib/shell/styles/next.css';
 
   /** The real settings surface, referred to by type only — no load yet. */
-  type SettingsPanelComponent = (typeof import('$lib/SettingsPanel.svelte'))['default'];
+  type SettingsDialogComponent =
+    (typeof import('$lib/shell/components/SettingsDialog.svelte'))['default'];
 
-  let SettingsPanel = $state<SettingsPanelComponent | null>(null);
+  let SettingsDialog = $state<SettingsDialogComponent | null>(null);
   let dialogOpen = $state(false);
   let loadFailure = $state<string | null>(null);
   /** Guards a second open() while the first load is still in flight. */
@@ -41,15 +45,15 @@
    */
   export function open(): void {
     loadFailure = null;
-    if (SettingsPanel) {
+    if (SettingsDialog) {
       dialogOpen = true;
       return;
     }
     if (loading) return;
     loading = true;
-    import('$lib/SettingsPanel.svelte')
+    import('$lib/shell/components/SettingsDialog.svelte')
       .then((module) => {
-        SettingsPanel = module.default;
+        SettingsDialog = module.default;
         dialogOpen = true;
       })
       .catch((error: unknown) => {
@@ -71,31 +75,18 @@
   }
 </script>
 
-{#if SettingsPanel}
-  <SettingsPanel bind:open={dialogOpen} />
+{#if SettingsDialog}
+  <SettingsDialog bind:open={dialogOpen} />
 {/if}
 
 {#if loadFailure}
-  <div class="settings-host-error" role="alert">
+  <!-- Only ever seen if the settings screen fails to load — a silent no-op
+       button would be worse than a one-line explanation. -->
+  <div
+    role="alert"
+    class="fixed bottom-3 left-1/2 z-[200] max-w-[480px] -translate-x-1/2 rounded-md border
+           border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[12px] text-destructive"
+  >
     Settings could not be opened: {loadFailure}
   </div>
 {/if}
-
-<style>
-  /* Only ever seen if the settings screen fails to load — a silent
-     no-op button would be worse than a one-line explanation. */
-  .settings-host-error {
-    position: fixed;
-    bottom: 12px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 200;
-    max-width: 480px;
-    padding: 6px 12px;
-    border-radius: var(--radius-sm);
-    background: var(--color-bad-bg);
-    color: var(--color-bad);
-    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-    font-size: var(--text-sm);
-  }
-</style>

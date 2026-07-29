@@ -1,13 +1,13 @@
 /**
- * nextTokens.test.mjs — checks the /next color file against the components
- * that will read it.
+ * nextTokens.test.mjs — checks the /next color file against the files that
+ * read it.
  *
- * The settings dialog is painted entirely from custom property names
+ * The /next shell is painted entirely from custom property names
  * (`--color-text`, `--shadow-lg`, ...). If the /next color file misses one,
  * that one value silently falls back to the old shell's palette and the
- * dialog comes out two-tone. These checks read the actual component files,
- * collect every name they use, and prove the /next file covers the ones it
- * is responsible for.
+ * screen comes out two-tone. These checks read the actual files, collect
+ * every name they use, and prove the /next file covers the ones it is
+ * responsible for.
  *
  * Run: node --experimental-strip-types scripts/nextTokens.test.mjs
  */
@@ -22,16 +22,21 @@ const read = (relativePath) => readFileSync(resolve(projectRoot, relativePath), 
 const NEXT_TOKENS_PATH = 'src/lib/shell/styles/nextTokens.css';
 const SHARED_TOKENS_PATH = 'src/lib/styles/tokens.css';
 const SETTINGS_HOST_PATH = 'src/lib/shell/components/SettingsHost.svelte';
+const NEXT_STYLESHEET_PATH = 'src/lib/shell/styles/next.css';
 
-/** Every file whose styling ends up inside the settings dialog. */
+/**
+ * Every file whose styling ends up inside the settings dialog.
+ *
+ * `next.css` is the big one: it defines the library components' color names
+ * (`--background`, `--primary`, ...) FROM the token names below, so every
+ * token it reads has to exist. The two shell files read a couple of tokens
+ * directly for the parts the library has no name for.
+ */
 const CONSUMER_PATHS = [
-  'src/lib/SettingsPanel.svelte',
-  'src/lib/components/Dialog.svelte',
-  'src/lib/components/Tabs.svelte',
-  'src/lib/components/Select.svelte',
-  'src/lib/components/Slider.svelte',
-  'src/lib/components/Switch.svelte',
-  'src/lib/components/Button.svelte'
+  NEXT_STYLESHEET_PATH,
+  'src/lib/shell/components/SettingsDialog.svelte',
+  'src/lib/shell/components/SettingsHost.svelte',
+  'src/lib/shell/components/ShellOverlays.svelte'
 ];
 
 const nextTokensSource = read(NEXT_TOKENS_PATH);
@@ -149,17 +154,33 @@ for (const rule of sharedRules) {
 
 // ── Every name the settings dialog reads resolves ─────────────────────────
 {
+  /** @returns {Set<string>} every `--name:` a file DEFINES. */
+  const readDefinedNames = (css) => {
+    const defined = new Set();
+    for (const match of stripComments(css).matchAll(/(?:^|[{;\s])(--[a-zA-Z0-9-]+)\s*:/g)) {
+      defined.add(match[1]);
+    }
+    return defined;
+  };
+
+  // `next.css` both defines and reads names. The ones it defines are the
+  // library's own slots (`--background`, `--primary`, ...) and belong to that
+  // file, not to the token files, so they are not ours to look up here.
+  const suppliedByNextStylesheet = readDefinedNames(read(NEXT_STYLESHEET_PATH));
+
   const used = new Set();
   for (const path of CONSUMER_PATHS) {
     for (const name of readUsedTokens(read(path))) {
       // `--bits-*` names are supplied at runtime by the bits-ui library
-      // (menu width, available height); they are not ours to define.
-      if (name.startsWith('--bits-')) continue;
+      // (menu width, available height) and `--tw-*` by Tailwind; neither is
+      // ours to define.
+      if (name.startsWith('--bits-') || name.startsWith('--tw-')) continue;
+      if (suppliedByNextStylesheet.has(name)) continue;
       used.add(name);
     }
   }
 
-  assert.ok(used.size > 20, 'expected the dialog to read a real set of names');
+  assert.ok(used.size >= 10, 'expected the dialog to read a real set of names');
 
   for (const name of used) {
     assert.ok(
@@ -174,7 +195,7 @@ for (const rule of sharedRules) {
     (name) =>
       name.startsWith('--color-') || name.startsWith('--shadow-') || name === '--focus-ring'
   );
-  assert.ok(colorish.length >= 12, 'expected a substantial set of color names');
+  assert.ok(colorish.length >= 10, 'expected a substantial set of color names');
   for (const name of colorish) {
     assert.ok(
       nextTokens.has(name),
@@ -187,9 +208,12 @@ for (const rule of sharedRules) {
   // /next file must NOT restate them, or they drift apart silently.
   const layoutish = [...used].filter(
     (name) =>
-      name.startsWith('--space-') || name.startsWith('--text-') || name.startsWith('--weight-')
+      name.startsWith('--space-') ||
+      name.startsWith('--text-') ||
+      name.startsWith('--weight-') ||
+      name.startsWith('--radius-')
   );
-  assert.ok(layoutish.length > 0, 'expected spacing and type names to be in use');
+  assert.ok(layoutish.length > 0, 'expected spacing, type or radius names to be in use');
   for (const name of layoutish) {
     assert.ok(
       !nextTokens.has(name),
@@ -206,8 +230,17 @@ for (const rule of sharedRules) {
     'SettingsHost must pull in the /next colors'
   );
   assert.ok(
-    host.includes("import('$lib/SettingsPanel.svelte')"),
-    'SettingsHost must load the existing settings panel on demand'
+    host.includes("import '$lib/shell/styles/next.css'"),
+    'SettingsHost must pull in the Tailwind + shadcn variables too'
+  );
+  assert.ok(
+    host.includes("import('$lib/shell/components/SettingsDialog.svelte')"),
+    'SettingsHost must load the settings dialog on demand'
+  );
+  assert.ok(
+    !host.includes('$lib/components/Dialog.svelte'),
+    'the /next settings dialog is built from $lib/components/ui, not the old ' +
+      'shell’s shared widgets'
   );
   assert.ok(
     /export function open\(\): void/.test(host),
