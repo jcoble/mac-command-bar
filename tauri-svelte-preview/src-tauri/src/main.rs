@@ -2746,6 +2746,17 @@ fn remove_project_worktree_sync(
         })
         .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
 
+    // Comparing the path against the root that was passed only catches "remove the repo you
+    // asked through". Ask through a linked worktree FOR the primary checkout and those two
+    // paths differ, so that check waves it through. `git worktree list --porcelain` always
+    // prints the main working tree first, so that is the answer that actually holds.
+    if worktrees
+        .first()
+        .is_some_and(|main_working_tree| main_working_tree.path == worktree.path)
+    {
+        return Err("Refusing to remove the primary checkout".to_string());
+    }
+
     if !force {
         if worktree.is_locked {
             return Err("Refusing to remove locked worktree".to_string());
@@ -2777,6 +2788,7 @@ fn remove_project_worktree_sync(
         // Count what is about to be destroyed BEFORE destroying it, so the message can
         // name it. After the remove there is nothing left to look at.
         let dirty_file_count = project_worktree_dirty_file_count(&worktree_path);
+        let was_dirty = worktree.is_dirty;
         let had_unmerged_commits = worktree.has_unmerged_commits;
         let unlocked_reason = worktree.is_locked.then(|| {
             worktree
@@ -2800,6 +2812,7 @@ fn remove_project_worktree_sync(
             message: describe_forced_worktree_removal(
                 &worktree.branch,
                 dirty_file_count,
+                was_dirty,
                 had_unmerged_commits,
                 unlocked_reason.as_deref(),
             ),
@@ -3005,25 +3018,42 @@ fn project_worktree_delete_eligibility(
 
 /// Plain sentences describing what a forced removal actually threw away, so the person
 /// who clicked the button can read the consequence rather than decode a status code.
+/// `dirty_file_count` is `None` when git could not be asked how much was there. That is NOT
+/// the same as zero, and it must never be reported as "nothing was lost" — the removal has
+/// already happened by the time this runs. `was_dirty` is what the worktree listing said a
+/// moment earlier, and it is believed over a count of zero when the two disagree.
 fn describe_forced_worktree_removal(
     branch: &str,
-    dirty_file_count: usize,
+    dirty_file_count: Option<usize>,
+    was_dirty: bool,
     had_unpushed_commits: bool,
     unlocked_reason: Option<&str>,
 ) -> String {
     let mut message = format!("Force removed worktree {branch}.");
 
-    if dirty_file_count > 0 {
-        let noun = if dirty_file_count == 1 {
-            "file"
-        } else {
-            "files"
-        };
-        message.push_str(&format!(
-            " Deleted {dirty_file_count} {noun} with changes that were never committed."
-        ));
-    } else {
-        message.push_str(" It had no uncommitted changes.");
+    match dirty_file_count {
+        Some(count) if count > 0 => {
+            let noun = if count == 1 { "file" } else { "files" };
+            message.push_str(&format!(
+                " Deleted {count} {noun} with changes that were never committed."
+            ));
+        }
+        // Counted zero, but the listing had already seen changes — the count is the one
+        // that is wrong, so say what is known and admit the number is not.
+        _ if was_dirty => {
+            message.push_str(
+                " Deleted files with changes that were never committed; they could not be counted before the removal.",
+            );
+        }
+        Some(_) => {
+            message.push_str(" It had no uncommitted changes.");
+        }
+        // Nothing could be read at all, so promising a clean worktree would be a guess.
+        None => {
+            message.push_str(
+                " Could not check for uncommitted changes before the removal, so anything not committed is gone.",
+            );
+        }
     }
 
     // The check behind this is "does this branch have commits that are on no remote", so
@@ -3048,7 +3078,11 @@ fn describe_forced_worktree_removal(
 
 /// How many files in the worktree have changes git has not been told to keep — the
 /// number a forced removal is about to delete for good.
-fn project_worktree_dirty_file_count(path: &str) -> usize {
+/// How many files in the worktree have changes that were never committed, or `None` when
+/// git could not answer — a stale `.git` file, an index lock, a folder that moved. The
+/// caller is about to destroy this worktree and then tell someone what was in it, so a
+/// failed count must NOT come back looking like a confident zero.
+fn project_worktree_dirty_file_count(path: &str) -> Option<usize> {
     let output = Command::new("git")
         .args([
             "-C",
@@ -3067,7 +3101,6 @@ fn project_worktree_dirty_file_count(path: &str) -> usize {
                 .filter(|line| !line.trim().is_empty())
                 .count()
         })
-        .unwrap_or(0)
 }
 
 fn project_worktree_is_dirty(path: &str) -> bool {
@@ -6649,21 +6682,82 @@ mod tests {
     #[test]
     fn forced_worktree_removal_message_says_what_was_destroyed() {
         assert_eq!(
-            describe_forced_worktree_removal("cdx/tsk-127-clean", 0, false, None),
+            describe_forced_worktree_removal("cdx/tsk-127-clean", Some(0), false, false, None),
             "Force removed worktree cdx/tsk-127-clean. It had no uncommitted changes."
         );
         assert_eq!(
-            describe_forced_worktree_removal("cdx/tsk-127-one", 1, false, None),
+            describe_forced_worktree_removal("cdx/tsk-127-one", Some(1), true, false, None),
             "Force removed worktree cdx/tsk-127-one. Deleted 1 file with changes that were never committed."
         );
         assert_eq!(
-            describe_forced_worktree_removal("cdx/tsk-127-all", 3, true, Some("agent running")),
+            describe_forced_worktree_removal(
+                "cdx/tsk-127-all",
+                Some(3),
+                true,
+                true,
+                Some("agent running")
+            ),
             "Force removed worktree cdx/tsk-127-all. Deleted 3 files with changes that were never committed. Deleted commits on this branch that were never pushed to a remote. Unlocked it first; it was locked because: agent running."
         );
         assert_eq!(
-            describe_forced_worktree_removal("cdx/tsk-127-locked", 0, false, Some("")),
+            describe_forced_worktree_removal("cdx/tsk-127-locked", Some(0), false, false, Some("")),
             "Force removed worktree cdx/tsk-127-locked. It had no uncommitted changes. Unlocked it first; it was locked with no reason given."
         );
+    }
+
+    #[test]
+    fn forced_worktree_removal_never_claims_nothing_was_lost_when_it_could_not_look() {
+        // The count failed but the listing already knew there were changes: say that,
+        // rather than reporting a zero the count never actually established.
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-blind", None, true, false, None),
+            "Force removed worktree cdx/tsk-127-blind. Deleted files with changes that were never committed; they could not be counted before the removal."
+        );
+        // The count disagrees with what the listing said. Same answer: do not claim zero.
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-disagree", Some(0), true, false, None),
+            "Force removed worktree cdx/tsk-127-disagree. Deleted files with changes that were never committed; they could not be counted before the removal."
+        );
+        // Neither check could look. Do not promise the worktree was clean.
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-unknown", None, false, false, None),
+            "Force removed worktree cdx/tsk-127-unknown. Could not check for uncommitted changes before the removal, so anything not committed is gone."
+        );
+    }
+
+    #[test]
+    fn worktree_dirty_file_count_is_unknown_when_git_cannot_answer() {
+        let missing = unique_temp_root();
+
+        assert_eq!(
+            project_worktree_dirty_file_count(missing.to_str().unwrap()),
+            None,
+            "a path git cannot read reports unknown, not a confident zero"
+        );
+
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "README.md"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        assert_eq!(
+            project_worktree_dirty_file_count(root.to_str().unwrap()),
+            Some(0)
+        );
+
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+        std::fs::write(root.join("README.md"), "changed\n").unwrap();
+
+        assert_eq!(
+            project_worktree_dirty_file_count(root.to_str().unwrap()),
+            Some(2)
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6775,6 +6869,55 @@ mod tests {
         );
         assert!(root.join("src/App.ts").exists());
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_refuses_the_primary_checkout_reached_through_a_sibling() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-sneak",
+                sibling.to_str().unwrap(),
+            ],
+        );
+
+        // Ask through the LINKED worktree for the primary checkout. The two paths differ,
+        // so comparing them to each other proves nothing; the answer has to come from the
+        // repository's own list of worktrees, whose first entry is the main working tree.
+        let error = remove_project_worktree_sync(sibling.clone(), root.clone(), true).unwrap_err();
+
+        assert!(
+            error.contains("primary checkout"),
+            "unexpected message: {error}"
+        );
+        assert!(root.join("src/App.ts").exists());
+        assert!(sibling.exists());
+
+        // The same refusal without force, so neither path depends on the other.
+        let error = remove_project_worktree_sync(sibling.clone(), root.clone(), false).unwrap_err();
+        assert!(
+            error.contains("primary checkout"),
+            "unexpected message: {error}"
+        );
+
+        run_git_for_test(
+            &root,
+            &["worktree", "remove", "--force", sibling.to_str().unwrap()],
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
