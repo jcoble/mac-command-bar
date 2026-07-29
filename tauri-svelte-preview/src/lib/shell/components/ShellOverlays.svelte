@@ -50,7 +50,7 @@
     role="alert"
     class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center
            gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1
-           text-[12px] leading-[1.4] text-destructive"
+           text-[13px] leading-[1.4] text-destructive"
   >
     <TriangleAlert class="size-3.5 shrink-0" aria-hidden="true" />
     <span>{message}</span>

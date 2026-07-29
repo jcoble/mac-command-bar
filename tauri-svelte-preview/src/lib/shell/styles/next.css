@@ -88,6 +88,40 @@
 @custom-variant dark (&:where(:root, :root *));
 
 /* ------------------------------------------------------------------
+ * `data-checked:`, `data-open:` and friends, taught the spelling the
+ * component library actually writes.
+ *
+ * THE PROBLEM. The components under `src/lib/components/ui` were
+ * copied from a registry written against a newer bits-ui, which marks
+ * a control's state with its own attribute: `data-checked`,
+ * `data-open`, `data-active`. The version this app is pinned to
+ * (bits-ui 2.18.1) writes ONE attribute with the state as its value
+ * instead — `data-state="checked"`, `data-state="open"`,
+ * `data-state="active"`. Out of the box Tailwind reads a bare
+ * `data-checked:` prefix as "does this element carry an attribute
+ * literally named data-checked", which is never true here, so every
+ * rule behind those prefixes was dead: the settings switches did not
+ * move or change colour when toggled, and nothing marked which
+ * settings tab was open.
+ *
+ * THE FIX. Redefine those five names so each one matches BOTH
+ * spellings. New components copied from the registry then work as
+ * written, and a component that uses the presence form (the slider
+ * thumb's own `data-active`, for instance) keeps working too.
+ *
+ * If you vendor another component, check the attributes it styles
+ * against the pinned bits-ui before trusting them; this is the second
+ * mismatch of exactly this kind (the first was `data-horizontal` /
+ * `data-vertical`, fixed by rewriting them to `data-[orientation=…]`
+ * in the components themselves).
+ * ------------------------------------------------------------------ */
+@custom-variant data-checked (&[data-state='checked'], &[data-checked]);
+@custom-variant data-unchecked (&[data-state='unchecked'], &[data-unchecked]);
+@custom-variant data-active (&[data-state='active'], &[data-active]);
+@custom-variant data-open (&[data-state='open'], &[data-open]);
+@custom-variant data-closed (&[data-state='closed'], &[data-closed]);
+
+/* ------------------------------------------------------------------
  * The shadcn color names, pointed at this app's tokens.
  *
  * `inline` means Tailwind writes the token straight into each class

@@ -85,7 +85,7 @@
   <div
     role="alert"
     class="fixed bottom-3 left-1/2 z-[200] max-w-[480px] -translate-x-1/2 rounded-md border
-           border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[12px] text-destructive"
+           border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[13px] text-destructive"
   >
     Settings could not be opened: {loadFailure}
   </div>
