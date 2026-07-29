@@ -550,7 +550,10 @@ mod tests {
 
         append_terminal_scrollback(&mut scrollback, "9");
         assert!(scrollback.len() <= TERMINAL_SCROLLBACK_TRIM_TO_BYTES);
-        assert!(scrollback.ends_with("123456789"), "the TAIL is what survives");
+        assert!(
+            scrollback.ends_with("123456789"),
+            "the TAIL is what survives"
+        );
     }
 
     #[test]

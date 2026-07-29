@@ -211,6 +211,17 @@ struct SourceGitDiff {
     is_binary: bool,
 }
 
+/// One file touched by one commit. Same three fields the working-copy status list
+/// shows for a file, so a commit's file list and the changed-files list render the
+/// same way.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitFileChange {
+    relative_path: String,
+    status: String,
+    badge: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ProjectWorktree {
@@ -1028,6 +1039,31 @@ async fn read_git_commit_history(
     })
     .await
     .map_err(|error| format!("Git history task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_git_commit_files(
+    root: String,
+    sha: String,
+) -> Result<Vec<GitCommitFileChange>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_git_commit_files_sync(PathBuf::from(root), sha)
+    })
+    .await
+    .map_err(|error| format!("Git commit file list task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_git_commit_file_diff(
+    root: String,
+    sha: String,
+    relative_path: String,
+) -> Result<SourceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_git_commit_file_diff_sync(PathBuf::from(root), sha, relative_path)
+    })
+    .await
+    .map_err(|error| format!("Git commit file diff task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2298,6 +2334,122 @@ fn read_git_commit_history_sync(
         Ok(output) => parse_git_commit_history(&output),
         Err(error) if error.contains("does not have any commits") => Ok(Vec::new()),
         Err(error) => Err(error),
+    }
+}
+
+fn read_git_commit_files_sync(
+    root: PathBuf,
+    sha: String,
+) -> Result<Vec<GitCommitFileChange>, String> {
+    validate_git_root(&root)?;
+    let sha = validate_git_commit_id(&sha)?;
+
+    let output = run_git_text(&root, &["show", "--name-status", "--format=", sha.as_str()])?;
+    Ok(parse_git_commit_file_changes(&output))
+}
+
+fn read_git_commit_file_diff_sync(
+    root: PathBuf,
+    sha: String,
+    relative_path: String,
+) -> Result<SourceGitDiff, String> {
+    validate_git_root(&root)?;
+    let relative_path = validate_git_relative_paths(&[relative_path])?
+        .into_iter()
+        .next()
+        .expect("one validated path");
+    let sha = validate_git_commit_id(&sha)?;
+
+    let name_status = run_git_text(
+        &root,
+        &[
+            "show",
+            "--name-status",
+            "--format=",
+            sha.as_str(),
+            "--",
+            relative_path.as_str(),
+        ],
+    )?;
+    let status = parse_git_commit_file_changes(&name_status)
+        .into_iter()
+        .next()
+        .map(|change| change.status)
+        .unwrap_or_default();
+
+    // `--format=` drops the commit header, so what comes back is only the patch —
+    // the same text shape the working-copy diff returns, readable by the same parser.
+    let diff = run_git_text(
+        &root,
+        &[
+            "show",
+            "--no-ext-diff",
+            "--format=",
+            sha.as_str(),
+            "--",
+            relative_path.as_str(),
+        ],
+    )?;
+    let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
+    let status = if status.is_empty() && !diff.is_empty() {
+        "modified".to_string()
+    } else if status.is_empty() {
+        "clean".to_string()
+    } else {
+        status
+    };
+
+    Ok(SourceGitDiff {
+        relative_path,
+        status,
+        diff,
+        is_binary,
+    })
+}
+
+/// `git show --name-status --format=` prints one tab-separated line per file:
+/// a status letter (renames and copies add a similarity number, and a second path)
+/// then the path. A merge commit prints nothing here, which reads as an empty list.
+fn parse_git_commit_file_changes(output: &str) -> Vec<GitCommitFileChange> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status_field = fields.next()?.trim();
+            let status_code = status_field.chars().next()?;
+            // For a rename or a copy git prints the old path then the new one; the
+            // file lives at the last path, so that is the one we report.
+            let relative_path = fields.last().map(str::trim).unwrap_or_default();
+            if relative_path.is_empty() {
+                return None;
+            }
+
+            Some(GitCommitFileChange {
+                relative_path: normalize_git_status_path(relative_path),
+                status: git_status_name(status_code).to_string(),
+                badge: git_status_badge(status_code, ' ').to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Commit ids reach git as a bare argument, so anything that could be read as an
+/// option (or as a shell-ish path) is refused instead of forwarded.
+fn validate_git_commit_id(sha: &str) -> Result<String, String> {
+    let trimmed = sha.trim();
+    let is_safe = !trimmed.is_empty()
+        && !trimmed.starts_with('-')
+        && trimmed.len() <= 200
+        && trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '_' | '-' | '.' | '/' | '^' | '~')
+        });
+
+    if is_safe {
+        Ok(trimmed.to_string())
+    } else {
+        Err("Git commit id must be a plain commit id or ref name".to_string())
     }
 }
 
@@ -4362,6 +4514,8 @@ fn main() {
             pull_git_repository,
             push_git_repository,
             read_git_commit_history,
+            read_git_commit_files,
+            read_git_commit_file_diff,
             list_project_worktrees,
             remove_project_worktree,
             archive_project_worktree,
@@ -6530,6 +6684,104 @@ mod tests {
                 result.approximate
             );
         }
+    }
+
+    #[test]
+    fn git_commit_file_changes_parse_name_status_lines_with_status_badges() {
+        let output =
+            "M\tsrc/App.ts\nA\tsrc/New.ts\nD\tsrc/Old.ts\nR100\tsrc/Old.ts\tsrc/Renamed.ts\n";
+
+        let changes = parse_git_commit_file_changes(output);
+
+        assert_eq!(changes.len(), 4);
+        assert_eq!(changes[0].relative_path, "src/App.ts");
+        assert_eq!(changes[0].status, "modified");
+        assert_eq!(changes[0].badge, "M");
+        assert_eq!(changes[1].relative_path, "src/New.ts");
+        assert_eq!(changes[1].status, "added");
+        assert_eq!(changes[1].badge, "A");
+        assert_eq!(changes[2].relative_path, "src/Old.ts");
+        assert_eq!(changes[2].status, "deleted");
+        assert_eq!(changes[2].badge, "D");
+        // A rename reports the path the file ended up at, the way the status panel does.
+        assert_eq!(changes[3].relative_path, "src/Renamed.ts");
+        assert_eq!(changes[3].status, "renamed");
+        assert_eq!(changes[3].badge, "R");
+    }
+
+    #[test]
+    fn git_commit_file_reads_refuse_option_shaped_commit_ids_and_absolute_paths() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        let error =
+            read_git_commit_files_sync(root.clone(), "--upload-pack=evil".to_string()).unwrap_err();
+        assert!(error.contains("commit id"), "unexpected message: {error}");
+
+        let error = read_git_commit_file_diff_sync(
+            root.clone(),
+            "HEAD".to_string(),
+            "/etc/passwd".to_string(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("relative repo paths"),
+            "unexpected message: {error}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_commit_files_and_diff_read_one_commit() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+        std::fs::write(root.join("README.md"), "initial\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "."]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        std::fs::write(root.join("src/App.ts"), "export const value = 2;\n").unwrap();
+        std::fs::write(root.join("src/Added.ts"), "export const added = true;\n").unwrap();
+        std::fs::remove_file(root.join("README.md")).unwrap();
+        run_git_for_test(&root, &["add", "-A"]);
+        run_git_for_test(&root, &["commit", "-m", "second"]);
+
+        let history = read_git_commit_history_sync(root.clone(), Some(1)).unwrap();
+        let sha = history[0].sha.clone();
+
+        let mut files = read_git_commit_files_sync(root.clone(), sha.clone()).unwrap();
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].relative_path, "README.md");
+        assert_eq!(files[0].status, "deleted");
+        assert_eq!(files[0].badge, "D");
+        assert_eq!(files[1].relative_path, "src/Added.ts");
+        assert_eq!(files[1].status, "added");
+        assert_eq!(files[1].badge, "A");
+        assert_eq!(files[2].relative_path, "src/App.ts");
+        assert_eq!(files[2].status, "modified");
+        assert_eq!(files[2].badge, "M");
+
+        let diff =
+            read_git_commit_file_diff_sync(root.clone(), sha, "src/App.ts".to_string()).unwrap();
+
+        assert_eq!(diff.relative_path, "src/App.ts");
+        assert_eq!(diff.status, "modified");
+        assert!(!diff.is_binary);
+        assert!(diff.diff.contains("--- a/src/App.ts"));
+        assert!(diff.diff.contains("+export const value = 2;"));
+        assert!(diff.diff.contains("-export const value = 1;"));
+        // The commit subject line never leaks into the patch text, so the same unified
+        // diff parser the working-copy diff uses can read this one.
+        assert!(!diff.diff.contains("second"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn unique_temp_root() -> PathBuf {

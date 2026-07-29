@@ -1339,10 +1339,7 @@ impl Drop for SourceLspSession {
 
 /// Spawn a language server child under `root`, attach a stdout reader thread, and run the
 /// LSP `initialize`/`initialized` handshake. Shared by initial session start and re-point.
-fn spawn_lsp_child(
-    server: &ResolvedLspServer,
-    root: &Path,
-) -> Result<SpawnedLspChild, String> {
+fn spawn_lsp_child(server: &ResolvedLspServer, root: &Path) -> Result<SpawnedLspChild, String> {
     if !root.is_dir() {
         return Err("Project root is not a directory".to_string());
     }
@@ -2795,9 +2792,7 @@ fn lsp_search_path_env() -> Option<OsString> {
 /// fall back to the inherited PATH plus the hardcoded toolchain dirs above.
 fn login_shell_path() -> Option<String> {
     static LOGIN_SHELL_PATH: OnceLock<Option<String>> = OnceLock::new();
-    LOGIN_SHELL_PATH
-        .get_or_init(probe_login_shell_path)
-        .clone()
+    LOGIN_SHELL_PATH.get_or_init(probe_login_shell_path).clone()
 }
 
 /// Spawn the user's login shell (`$SHELL -lc 'printf %s $PATH'`) and capture its PATH.
@@ -2809,7 +2804,9 @@ fn probe_login_shell_path() -> Option<String> {
     let shell = env::var("SHELL")
         .ok()
         .filter(|value| !value.trim().is_empty())?;
-    let shell_name = Path::new(&shell).file_name().and_then(|name| name.to_str())?;
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())?;
     if !matches!(shell_name, "zsh" | "bash" | "sh" | "dash" | "ksh" | "fish") {
         return None;
     }
@@ -2937,7 +2934,11 @@ mod tests {
         // contain no duplicates and round-trip through env::join_paths.
         let paths = command_search_paths();
         let deduped = dedupe_paths(paths.clone());
-        assert_eq!(paths.len(), deduped.len(), "search paths must already be deduped");
+        assert_eq!(
+            paths.len(),
+            deduped.len(),
+            "search paths must already be deduped"
+        );
         assert!(
             lsp_search_path_env().is_some(),
             "combined search path must join into a valid PATH env value"
@@ -3774,7 +3775,10 @@ mod tests {
         tsx_preview.language = "tsx".to_string();
         let key_tsx =
             SourceLspSessionKey::from_preview(&tsx_preview, &request_root_a).expect("tsx key");
-        assert_eq!(key_a, key_tsx, "ts and tsx must share the typescript server");
+        assert_eq!(
+            key_a, key_tsx,
+            "ts and tsx must share the typescript server"
+        );
     }
 
     #[test]
@@ -4145,21 +4149,22 @@ mod tests {
     #[test]
     fn reuses_one_server_across_roots_and_repoints_per_language() {
         if resolve_server_for_language("typescript").is_none() {
-            eprintln!(
-                "skipping LSP dedupe smoke: typescript-language-server not found"
-            );
+            eprintln!("skipping LSP dedupe smoke: typescript-language-server not found");
             return;
         }
 
         let registry = SourceLspRegistry::default();
-        let make_root = |label: &str, symbol: &str| -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
+        let make_root = |label: &str,
+                         symbol: &str|
+         -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
             let root = unique_lsp_temp_root(label);
             std::fs::write(
                 root.join("tsconfig.json"),
                 r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
             )
             .unwrap();
-            let content = format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
+            let content =
+                format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
             let file_path = root.join("App.ts");
             std::fs::write(&file_path, &content).unwrap();
             let preview = SourceLspPreview {
@@ -4264,14 +4269,17 @@ mod tests {
         }
 
         let registry = SourceLspRegistry::default();
-        let make_root = |label: &str, symbol: &str| -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
+        let make_root = |label: &str,
+                         symbol: &str|
+         -> (PathBuf, SourceLspPreview, SourceLspLookupRequest) {
             let root = unique_lsp_temp_root(label);
             std::fs::write(
                 root.join("tsconfig.json"),
                 r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ESNext"}}"#,
             )
             .unwrap();
-            let content = format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
+            let content =
+                format!("export function {symbol}(name: string): string {{\n  return name;\n}}\n");
             let file_path = root.join("App.ts");
             std::fs::write(&file_path, &content).unwrap();
             let preview = SourceLspPreview {
