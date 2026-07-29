@@ -4,6 +4,7 @@ import {
   groupSessions,
   groupToggleKey,
   isGroupExpanded,
+  projectLabel,
   RAIL_GROUPS_STORAGE_KEY,
   readGroupExpansion,
   rememberGroupToggle,
@@ -267,6 +268,24 @@ function shapeOf(groups) {
   assert.equal(sessionGroupPath('/Users/me/dev/mac-command-bar'), '/Users/me/dev/mac-command-bar');
   assert.equal(sessionGroupPath('  '), '');
   assert.equal(sessionGroupPath(null), '');
+}
+
+// A card that is not under a heading says which project it belongs to, and it
+// gets that name from the same place the headings do.
+{
+  assert.deepEqual(projectLabel('/Users/me/dev/mac-command-bar'), {
+    name: 'mac-command-bar',
+    parentProject: null
+  });
+  assert.deepEqual(projectLabel('/Users/me/dev/worktrees/EdiPlatform/tsk-670-role'), {
+    name: 'tsk-670-role',
+    parentProject: 'EdiPlatform'
+  });
+  assert.deepEqual(
+    projectLabel(null),
+    { name: 'Other', parentProject: null },
+    'a session with no folder is called what its heading would be called'
+  );
 }
 
 // Nothing chosen yet: everything the rail already owns is open, and everything

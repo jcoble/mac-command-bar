@@ -10,7 +10,12 @@
   import { onMount, type Snippet } from 'svelte';
 
   import { createCenterDock, type CenterDock } from '$lib/shell/layout/centerDock';
-  import { createShellFrame, type ShellFrame as Frame } from '$lib/shell/layout/frame';
+  import {
+    createShellFrame,
+    type RegionWidthLimits,
+    type ShellFrame as Frame,
+    type ShellRegionId
+  } from '$lib/shell/layout/frame';
 
   interface Props {
     /** The left column: the sessions list, and nothing else. */
@@ -28,6 +33,9 @@
     onReady?: (controls: {
       resetLayout: () => void;
       showCenterPanel: (id: string) => void;
+      /** Give one region a width — how a column asks to be folded up or
+       * opened out. See `setRegionWidth` in `frame.ts`. */
+      setRegionWidth: (id: ShellRegionId, width: number, limits?: RegionWidthLimits) => void;
     }) => void;
     onError?: (message: string) => void;
   }
@@ -97,7 +105,8 @@
           frame?.resetLayout();
           centerDock?.resetLayout();
         },
-        showCenterPanel: (id: string) => centerDock?.activatePanel(id)
+        showCenterPanel: (id: string) => centerDock?.activatePanel(id),
+        setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits)
       });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : String(error));

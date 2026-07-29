@@ -116,6 +116,23 @@ export function sessionGroupPath(path: string | null | undefined): string {
   return projectOf(path).path;
 }
 
+/**
+ * What a project folder is CALLED — the same name a heading would show, for a
+ * row that is not under one.
+ *
+ * Your own sessions are listed as cards under Working and Done rather than
+ * under a heading per folder, so each card says which project it belongs to
+ * itself. It is the same answer the headings use, from the same function, so
+ * the two lists never disagree about what a folder is called.
+ */
+export function projectLabel(path: string | null | undefined): {
+  name: string;
+  parentProject: string | null;
+} {
+  const { name, parentProject } = projectOf(path);
+  return { name, parentProject };
+}
+
 /** Which of the rail's two lists a heading belongs to. */
 export type SessionList = 'owned' | 'resume';
 

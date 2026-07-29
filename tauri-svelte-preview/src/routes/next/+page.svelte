@@ -22,7 +22,7 @@
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
-  import SessionRail from '$lib/shell/components/SessionRail.svelte';
+  import SessionsColumn from '$lib/shell/components/SessionsColumn.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
@@ -30,6 +30,14 @@
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { editorState, resetEditorState } from '$lib/shell/editor/editorStore.svelte';
   import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
+  import {
+    SESSIONS_MAX_WIDTH,
+    SESSIONS_MIN_WIDTH,
+    SESSIONS_STRIP_WIDTH,
+    SESSIONS_WIDTH,
+    type RegionWidthLimits,
+    type ShellRegionId
+  } from '$lib/shell/layout/frame';
   import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
@@ -40,6 +48,7 @@
     writeWorkspaces,
     type SessionWorkspaceSnapshot
   } from '$lib/shell/sessionWorkspaces';
+  import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
   import { registerShellCommands } from '$lib/shell/shellCommands';
   import { shellPanels } from '$lib/shell/shellPanels';
   import {
@@ -84,7 +93,11 @@
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
-  let frameControls: { resetLayout(): void; showCenterPanel(id: string): void } | null = null;
+  let frameControls: {
+    resetLayout(): void;
+    showCenterPanel(id: string): void;
+    setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
+  } | null = null;
   /** The tool column's own controls; it builds after the frame does. */
   let sidebarControls: {
     resetLayout(): void;
@@ -110,12 +123,46 @@
     expandSourceControl: () => sidebarControls?.expandSourceControl()
   });
 
+  /**
+   * Is the sessions column folded up to a strip? The PAGE owns this rather
+   * than the column, because folding is a WIDTH: the column says it wants to
+   * fold, and the frame is what actually makes the region 52px wide.
+   *
+   * Read once here, at component init — an explicit read, not an effect.
+   */
+  let sessionsCollapsed = $state(
+    typeof window === 'undefined' ? false : readSessionsCollapsed(window.localStorage)
+  );
+
+  /** Tell the frame how wide the sessions column is now. The limits go with
+   * the width: folded, the column is fixed at strip width so the divider
+   * beside it cannot be dragged; open, it can be dragged again. */
+  function applySessionsWidth(collapsed: boolean): void {
+    frameControls?.setRegionWidth(
+      'sessions',
+      collapsed ? SESSIONS_STRIP_WIDTH : SESSIONS_WIDTH,
+      collapsed
+        ? { minimumWidth: SESSIONS_STRIP_WIDTH, maximumWidth: SESSIONS_STRIP_WIDTH }
+        : { minimumWidth: SESSIONS_MIN_WIDTH, maximumWidth: SESSIONS_MAX_WIDTH }
+    );
+  }
+
+  /** Fold the sessions column up, or open it out. Remembered under its own
+   * key so the next launch comes back the way it was left. */
+  function collapseSessions(collapsed: boolean): void {
+    sessionsCollapsed = collapsed;
+    writeSessionsCollapsed(window.localStorage, collapsed);
+    applySessionsWidth(collapsed);
+  }
+
   /** "Reset layout" means ALL of it: the grid regions (so both side columns go
    * back to their default widths), the center tabs, and the tool column, which
-   * remembers its section sizes and its open view under its own keys. */
+   * remembers its section sizes and its open view under its own keys. A folded
+   * sessions column is part of that arrangement, so it opens out too. */
   function resetLayout(): void {
     frameControls?.resetLayout();
     sidebarControls?.resetLayout();
+    if (sessionsCollapsed) collapseSessions(false);
   }
 
   /** Coalesce dockview's layout bursts into one refit per frame. */
@@ -451,12 +498,13 @@
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
      shadow the imported `rail` store and break every `rail.owned` read. -->
 {#snippet sessionsArea()}
-  <SessionRail
+  <SessionsColumn
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
-    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
+    scanning={rail.scanning} collapsed={sessionsCollapsed}
+    onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
     onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
     onReopen={reopenOwnedSession} onRemove={removeSession}
-    onRescan={scanRail}
+    onRescan={scanRail} onCollapse={collapseSessions}
   />
 {/snippet}
 {#snippet toolsArea()}
@@ -498,6 +546,10 @@
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}
     onReady={(controls) => {
       frameControls = controls;
+      // A column that was left folded up is 52px wide, and the region it lives
+      // in has just been built (or restored) at whatever width it last had.
+      // Say the width once, here, where the frame first exists.
+      if (sessionsCollapsed) applySessionsWidth(true);
       // One timer tick later: the tab area announces the tab it restored
       // through a microtask, and those all arrive before any timer. Waiting
       // means a restored tab loads nothing, while a real click still does.

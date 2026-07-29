@@ -37,8 +37,19 @@ const PERSIST_DEBOUNCE_MS = 250;
  * icon button wide and no wider. */
 const ACTIVITY_STRIP_WIDTH = 44;
 /** What the two side columns open at, in px, before anyone drags a divider. */
-const SESSIONS_WIDTH = 300;
+export const SESSIONS_WIDTH = 300;
 const TOOLS_WIDTH = 320;
+
+/** How narrow and how wide the sessions column may be dragged while it is
+ * open. Exported because the page puts these back when the column is unfolded
+ * — folding it replaces them with a fixed width. */
+export const SESSIONS_MIN_WIDTH = 220;
+export const SESSIONS_MAX_WIDTH = 560;
+
+/** The width of the sessions column folded up: one icon-sized cell per
+ * session and nothing else. Fixed the same way the icon strip is, so the
+ * divider beside a folded column cannot be dragged. */
+export const SESSIONS_STRIP_WIDTH = 52;
 
 export interface ShellFrameOptions {
   storage: LayoutStorage;
@@ -46,9 +57,26 @@ export interface ShellFrameOptions {
   onLayoutPersisted?: (ok: boolean) => void;
 }
 
+/** How narrow and how wide a region may be dragged. Both optional: leaving one
+ * out keeps whatever limit the region already has. */
+export interface RegionWidthLimits {
+  minimumWidth?: number;
+  maximumWidth?: number;
+}
+
 export interface ShellFrame {
   api: GridviewApi;
   resetLayout(): void;
+  /**
+   * Give one region a width, optionally changing what it may be dragged to.
+   *
+   * This is how a column asks to be folded up or opened out: the width a
+   * region takes is the grid's business, not the column's, so nothing hides
+   * content behind a CSS width of its own. The limits are applied first —
+   * asking for 52px while the region's own minimum is still 220 would simply
+   * be clamped back to 220.
+   */
+  setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
   layout(width: number, height: number): void;
   dispose(): void;
 }
@@ -91,11 +119,19 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     createComponent: ({ id, name }) => new TeleportGridPanel(id, name, adopt)
   });
 
-  /** Ask one region for a width. A region that will not take it keeps the width
-   * it has: a default layout a few pixels off is not worth failing a launch. */
-  const setRegionWidth = (id: ShellRegionId, width: number): void => {
+  /** Ask one region for a width, and for what it may be dragged to. A region
+   * that will not take it keeps the width it has: a default layout a few pixels
+   * off is not worth failing a launch. */
+  const setRegionWidth = (
+    id: ShellRegionId,
+    width: number,
+    limits?: RegionWidthLimits
+  ): void => {
     try {
-      api.getPanel(id)?.api.setSize({ width });
+      const panel = api.getPanel(id);
+      if (!panel) return;
+      if (limits) panel.api.setConstraints(limits);
+      panel.api.setSize({ width });
     } catch {
       // nothing to do — the arrangement is still usable
     }
@@ -110,8 +146,8 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       component: COMPONENT,
       position: { direction: 'left', referencePanel: 'center' },
       size: SESSIONS_WIDTH,
-      minimumWidth: 220,
-      maximumWidth: 560
+      minimumWidth: SESSIONS_MIN_WIDTH,
+      maximumWidth: SESSIONS_MAX_WIDTH
     });
     // The icon strip that picks which tool view is open, hard against the right
     // edge of the window. Its width is fixed — the same number as its minimum
@@ -252,6 +288,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
 
   return {
     api,
+    setRegionWidth,
     resetLayout(): void {
       clearLayout(options.storage, GRID_LAYOUT_KEY);
       runSynchronized(() => {
