@@ -47,12 +47,17 @@
     commitFilesState?: GitCommitFilesState;
     /** Can this page change the repository? Defaults to "only in the desktop app". */
     canWrite?: boolean;
+    /** A file's changes were just picked. The panes have no idea where the diff
+     * is drawn — the shell mounts `GitDiffView` as a tab of its own — so this is
+     * how they ask for it to be brought to the front. */
+    onShowDiff?: () => void;
   }
   let {
     service = defaultService,
     commitFiles = defaultCommitFilesService,
     commitFilesState = defaultCommitFilesState,
-    canWrite = canChangeRepository()
+    canWrite = canChangeRepository(),
+    onShowDiff
   }: Props = $props();
 
   const panel = $derived(service.state);
@@ -85,7 +90,13 @@
       This folder is not a git repository.
     </p>
   {:else}
-    <ChangesPane {panel} {service} {canWrite} readOnlyReason={READ_ONLY_IN_BROWSER_MESSAGE} />
-    <GraphPane {panel} {service} {commitFiles} files={commitFilesState} />
+    <ChangesPane
+      {panel}
+      {service}
+      {canWrite}
+      readOnlyReason={READ_ONLY_IN_BROWSER_MESSAGE}
+      {onShowDiff}
+    />
+    <GraphPane {panel} {service} {commitFiles} files={commitFilesState} {onShowDiff} />
   {/if}
 </div>

@@ -11,27 +11,48 @@
    */
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
+  import NewSessionHost from './newSession/NewSessionHost.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
+  import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
 
   interface Props {
     /** Put every panel back where it started. */
     onResetLayout: () => void;
     /** Look for agent sessions again. */
     onRescanSessions: () => void | Promise<void>;
+    /** Start the session the new-session dialog described. */
+    onStartNewSession: (request: NewSessionRequest) => void | Promise<void>;
+    /** The folders the sessions on the rail are running in, so the project
+     * picker knows about projects nobody added by hand. */
+    newSessionRoots: string[];
     /** One line describing whatever has gone wrong, or null when all is well. */
     message: string | null;
   }
-  let { onResetLayout, onRescanSessions, message }: Props = $props();
+  let {
+    onResetLayout,
+    onRescanSessions,
+    onStartNewSession,
+    newSessionRoots,
+    message
+  }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
+  let newSessionHost: { open: (input?: { sessionRoots?: string[] }) => void } | null = null;
 
   /** Open the settings dialog from outside — the gear on the activity bar is
    * over in the left column, and the dialog lives here. Same shape as
    * `SettingsHost`'s own `open()`, one layer out. */
   export function openSettings(): void {
     settingsHost?.open();
+  }
+
+  /** Open the new-session dialog from outside. Both ways in reach the same
+   * instance: the "New session" button in the sessions column, and the palette
+   * command the page registers. */
+  export function openNewSession(): void {
+    newSessionHost?.open({ sessionRoots: newSessionRoots });
   }
 </script>
 
@@ -41,6 +62,7 @@
   onOpenSettings={() => settingsHost?.open()}
 />
 <SettingsHost bind:this={settingsHost} />
+<NewSessionHost bind:this={newSessionHost} onStart={onStartNewSession} />
 
 {#if message}
   <!-- Something went wrong, said once, along the bottom edge. Announced to

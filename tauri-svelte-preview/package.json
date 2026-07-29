@@ -61,7 +61,16 @@
     "test:session-strip": "node --experimental-strip-types scripts/sessionStrip.test.mjs",
     "test:session-workspaces": "node --experimental-strip-types scripts/sessionWorkspaces.test.mjs",
     "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.mjs",
-    "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs"
+    "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs",
+    "test:git-graph-lanes": "node --experimental-strip-types scripts/gitGraphLanes.test.mjs",
+    "test:git-bridge": "node --experimental-strip-types scripts/gitBridge.test.mjs",
+    "test:git-commit-files": "node --experimental-strip-types scripts/gitCommitFiles.test.mjs",
+    "test:worktree-manager": "node --experimental-strip-types scripts/worktreeManager.test.mjs",
+    "test:stack-store": "node --experimental-strip-types scripts/stackStore.test.mjs",
+    "test:playwright-store": "node --experimental-strip-types scripts/playwrightStore.test.mjs",
+    "test:new-session-flow": "node --experimental-strip-types scripts/newSessionFlow.test.mjs",
+    "test:theme-registry": "node --experimental-strip-types scripts/themeRegistry.test.mjs",
+    "test:problems-store": "node --experimental-strip-types scripts/problemsStore.test.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",

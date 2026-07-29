@@ -3,6 +3,7 @@ import tailwindcss from '@tailwindcss/vite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defineConfig, type Plugin } from 'vite';
 
+import { gitBridgePlugin } from './src/lib/server/gitBridge';
 import {
   countLocalSourceReferences,
   findLocalSourceDefinitions,
@@ -173,7 +174,11 @@ export default defineConfig({
   // Tailwind only ever compiles `src/lib/shell/styles/next.css`, which only the
   // /next route imports. The old shell never loads that file, so adding the
   // plugin here cannot change how the old page renders.
-  plugins: [localSourceBridgePlugin(), tailwindcss(), sveltekit()],
+  //
+  // The git bridge lets the source-control panel READ a repository from a
+  // browser tab, so the panes and the commit graph can be looked at without the
+  // desktop app. It cannot change a repository — see `src/lib/server/gitBridge.ts`.
+  plugins: [gitBridgePlugin(), localSourceBridgePlugin(), tailwindcss(), sveltekit()],
   server: {
     host: '127.0.0.1',
     port: 5177,

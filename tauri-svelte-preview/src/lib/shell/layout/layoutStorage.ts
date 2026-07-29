@@ -28,11 +28,14 @@ export interface LayoutStorage {
 export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v2';
 /**
  * Bumped to `-v2` when the center dock stopped being one group of tabs and
- * became a conversation group beside a display group. A layout saved under the
- * old key describes a shape the shell no longer builds, so it is left where it
- * is (harmless, unread) rather than restored into the new world.
+ * became a conversation group beside a display group, and to `-v3` when the
+ * Diff tab joined the display group. A stored layout is only restored when its
+ * tabs are exactly the tabs the shell now builds, so without the bump every
+ * existing install would keep its three-tab arrangement and the Diff tab would
+ * never appear. Layouts saved under either older key are left where they are,
+ * harmless and unread.
  */
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v2';
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v3';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {

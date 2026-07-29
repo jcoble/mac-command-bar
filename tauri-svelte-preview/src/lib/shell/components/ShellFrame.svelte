@@ -20,7 +20,7 @@
   interface Props {
     /** The left column: the sessions list, and nothing else. */
     sessions: Snippet;
-    center: { session: Snippet; editor: Snippet; browser: Snippet };
+    center: { session: Snippet; editor: Snippet; browser: Snippet; diff: Snippet };
     /** The right column: whichever tool view the icon strip has open. */
     tools: Snippet;
     /** The icon strip on the far right edge, which picks that view. */
@@ -65,6 +65,7 @@
   let sessionSlot: HTMLElement;
   let editorSlot: HTMLElement;
   let browserSlot: HTMLElement;
+  let diffSlot: HTMLElement;
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
@@ -86,13 +87,15 @@
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
         // The session is what you talk to, so it opens on its own on the left;
-        // the editor and the browser are where you look at the result, so they
-        // open stacked together on the right. Source control is not here at
-        // all any more — it is a section of the left column.
+        // the editor, the browser and the diff are where you look at the
+        // result, so they open stacked together on the right. Source control
+        // itself is not here at all — it is a view of the tool column — but the
+        // changes it shows are, because a diff wants the width of the middle.
         panels: [
           { id: 'session', title: 'Session', element: sessionSlot },
           { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
-          { id: 'browser', title: 'Browser', element: browserSlot, group: 'display' }
+          { id: 'browser', title: 'Browser', element: browserSlot, group: 'display' },
+          { id: 'diff', title: 'Diff', element: diffSlot, group: 'display' }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
@@ -143,6 +146,7 @@
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
   <div class="slot" bind:this={browserSlot}>{@render center.browser()}</div>
+  <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
 </div>
 
 <style>
@@ -182,18 +186,18 @@
   .shell-frame :global(.shell-grid),
   .shell-frame :global(.shell-center-dock) {
     /* token map: translate dockview vars onto the /next palette */
-    --dv-group-view-background-color: #101014;
-    --dv-tabs-and-actions-container-background-color: #101014;
-    --dv-activegroup-visiblepanel-tab-background-color: #17171d;
-    --dv-activegroup-hiddenpanel-tab-background-color: #101014;
-    --dv-inactivegroup-visiblepanel-tab-background-color: #14141a;
-    --dv-inactivegroup-hiddenpanel-tab-background-color: #101014;
+    --dv-group-view-background-color: var(--color-bg);
+    --dv-tabs-and-actions-container-background-color: var(--color-bg);
+    --dv-activegroup-visiblepanel-tab-background-color: var(--color-surface);
+    --dv-activegroup-hiddenpanel-tab-background-color: var(--color-bg);
+    --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-tab-unfocused-surface);
+    --dv-inactivegroup-hiddenpanel-tab-background-color: var(--color-bg);
     --dv-tab-divider-color: transparent;
-    --dv-activegroup-visiblepanel-tab-color: #d8d8e0;
-    --dv-activegroup-hiddenpanel-tab-color: #6d6d7d;
-    --dv-inactivegroup-visiblepanel-tab-color: #9a9aa8;
-    --dv-inactivegroup-hiddenpanel-tab-color: #6d6d7d;
-    --dv-separator-border: #22222c;
+    --dv-activegroup-visiblepanel-tab-color: var(--color-text);
+    --dv-activegroup-hiddenpanel-tab-color: var(--color-text-2);
+    --dv-inactivegroup-visiblepanel-tab-color: var(--color-tab-unfocused-text);
+    --dv-inactivegroup-hiddenpanel-tab-color: var(--color-text-2);
+    --dv-separator-border: var(--color-border);
     --dv-paneview-active-outline-color: transparent;
     /* NEUTRAL wash only — the teal accent here caused the green drag-flash. */
     --dv-drag-over-background-color: rgba(255, 255, 255, 0.05);
@@ -202,7 +206,7 @@
        Safe to color, unlike the drag-over wash above — this paints only the
        sash line itself, never the panel content. Delay 0 so it appears the
        moment you grab it, not half a second in. */
-    --dv-active-sash-color: #4bf3c8;
+    --dv-active-sash-color: var(--color-accent);
     --dv-active-sash-transition-delay: 0.1s;
     --dv-active-sash-transition-duration: 0.05s;
   }

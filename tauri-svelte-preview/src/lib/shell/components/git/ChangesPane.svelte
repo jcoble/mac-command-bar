@@ -45,8 +45,16 @@
     /** False in a browser: it can read the repository but not change it. */
     canWrite: boolean;
     readOnlyReason: string;
+    /** A changed file was picked, so the diff should be brought to the front. */
+    onShowDiff?: () => void;
   }
-  let { panel, service, canWrite, readOnlyReason }: Props = $props();
+  let { panel, service, canWrite, readOnlyReason, onShowDiff }: Props = $props();
+
+  /** Pick a file's changes, and ask for wherever they are drawn to come forward. */
+  function pickFile(file: ProjectGitFileStatus): void {
+    void service.selectFile(file);
+    onShowDiff?.();
+  }
 
   let open = $state(true);
 
@@ -197,7 +205,7 @@
                 class="flex min-w-0 flex-1 items-center gap-1.5 rounded-[4px] py-[3px] pl-1.5
                        text-left focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
                 title={gitFileTitle(file)}
-                onclick={() => void service.selectFile(file)}
+                onclick={() => pickFile(file)}
               >
                 <FileDiff
                   class="size-3.5 shrink-0 text-[var(--color-text-3)]"

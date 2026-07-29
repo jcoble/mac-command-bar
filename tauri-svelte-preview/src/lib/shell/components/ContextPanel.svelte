@@ -22,6 +22,7 @@
    */
   import { Activity, Braces, ChevronRight, FolderGit2, GitBranch, Network } from '@lucide/svelte';
 
+  import PlaywrightCard from './processes/PlaywrightCard.svelte';
   import { refreshAll, refreshCard } from '$lib/shell/context/contextService';
   import {
     contextState,
@@ -240,6 +241,12 @@
         </div>
       {/if}
     </section>
+
+    <!-- ── Playwright's leftover browsers ───────────────────────────────── -->
+    <!-- Its own card, right after the running processes: same family of thing,
+         and it must be visible without scrolling to the bottom. It brings its
+         own card chrome and its own "nothing read yet" line. -->
+    <PlaywrightCard />
 
     <!-- ── Agent sessions ───────────────────────────────────────────────── -->
     <section class="card">

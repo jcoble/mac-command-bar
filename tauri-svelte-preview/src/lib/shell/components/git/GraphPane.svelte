@@ -56,8 +56,10 @@
     commitFiles: GitCommitFilesService;
     /** The commit-file state the service writes, read here for the open rows. */
     files: GitCommitFilesState;
+    /** A file inside a commit was picked, so the diff should come to the front. */
+    onShowDiff?: () => void;
   }
-  let { panel, service, commitFiles, files }: Props = $props();
+  let { panel, service, commitFiles, files, onShowDiff }: Props = $props();
 
   let open = $state(true);
 
@@ -129,6 +131,7 @@
   function pickFile(sha: string, file: GitCommitFileChange): void {
     commitFiles.activate(panel.root);
     void commitFiles.selectCommitFile(sha, file);
+    onShowDiff?.();
   }
 
   /**

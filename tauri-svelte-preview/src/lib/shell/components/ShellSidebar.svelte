@@ -27,10 +27,11 @@
    *
    * No backend IO here, and this component never loads anything itself. What it
    * does do is REPORT: it hands the page controls for the column, and it says
-   * whenever source control or the context cards become visible or stop being
-   * visible, which is what decides when either may read anything (see
-   * `panelActivation.ts`). "Visible" means both things that have to be true —
-   * that view is the open one, and its pane is not folded away.
+   * whenever source control, the worktree manager, the stacks pane or the
+   * context cards become visible or stop being visible, which is what decides
+   * when each may read anything (see `panelActivation.ts`). "Visible" means both
+   * things that have to be true — that view is the open one, and its pane is not
+   * folded away.
    */
   import 'dockview-core/dist/styles/dockview.css';
   import { onMount } from 'svelte';
@@ -53,14 +54,20 @@
   import ContextPanel from './ContextPanel.svelte';
   import ExplorerPanel from './ExplorerPanel.svelte';
   import GitPanel from './GitPanel.svelte';
-  import PanelPlaceholder from './PanelPlaceholder.svelte';
+  import StacksPane from './stacks/StacksPane.svelte';
+  import WorktreeManagerPane from './worktrees/WorktreeManagerPane.svelte';
 
   /** The view "Show source control" opens. */
   const SOURCE_CONTROL: SidebarViewId = 'source-control';
 
   /** The views whose visibility gates a loader: each reads what it shows only
    * while the user can actually see it. */
-  const GATED_VIEWS: readonly SidebarViewId[] = ['source-control', 'context'];
+  const GATED_VIEWS: readonly SidebarViewId[] = [
+    'source-control',
+    'worktrees',
+    'stacks',
+    'context'
+  ];
 
   /** The panes each view opens with. One apiece today; the stack is what lets a
    * view grow a second section (an Outline under Files, a graph under Source
@@ -69,6 +76,7 @@
     explorer: { id: 'files', title: 'Files' },
     'source-control': { id: 'source-control', title: 'Source control' },
     worktrees: { id: 'worktrees', title: 'Worktrees' },
+    stacks: { id: 'stacks', title: 'Stacks' },
     context: { id: 'context', title: 'Context' }
   };
 
@@ -91,14 +99,28 @@
     /** Can the user see source control right now? Reported when it changes, and
      * once at start-up — a remembered view may have left it open. */
     onSourceControlVisible?: (visible: boolean) => void;
+    /** Same question for the worktree manager. */
+    onWorktreesVisible?: (visible: boolean) => void;
+    /** Same question for the stacks pane. */
+    onStacksVisible?: (visible: boolean) => void;
     /** Same question for the context cards. */
     onContextVisible?: (visible: boolean) => void;
+    /** Focus one of the shell's sessions, from a worktree's session list. */
+    onOpenSession?: (ownedId: string) => void;
+    /** A file's changes were picked in source control, so whatever is showing
+     * the diff should be brought to the front. The column has no idea where the
+     * diff is drawn — the page does. */
+    onShowDiff?: () => void;
   }
   let {
     onReady,
     onActiveViewChange,
     onSourceControlVisible,
-    onContextVisible
+    onWorktreesVisible,
+    onStacksVisible,
+    onContextVisible,
+    onOpenSession,
+    onShowDiff
   }: Props = $props();
 
   let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
@@ -136,6 +158,8 @@
     if (visible === lastReported.get(id)) return;
     lastReported.set(id, visible);
     if (id === SOURCE_CONTROL) onSourceControlVisible?.(visible);
+    else if (id === 'worktrees') onWorktreesVisible?.(visible);
+    else if (id === 'stacks') onStacksVisible?.(visible);
     else if (id === 'context') onContextVisible?.(visible);
   }
 
@@ -290,10 +314,13 @@
      can be measured — see the same note in ShellFrame. -->
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={bodies.explorer}><ExplorerPanel /></div>
-  <div class="slot" bind:this={bodies['source-control']}><GitPanel /></div>
-  <div class="slot" bind:this={bodies.worktrees}>
-    <PanelPlaceholder name="Worktrees" hint="Worktree health and cleanup will live here." />
+  <div class="slot" bind:this={bodies['source-control']}>
+    <GitPanel onShowDiff={() => onShowDiff?.()} />
   </div>
+  <div class="slot" bind:this={bodies.worktrees}>
+    <WorktreeManagerPane onOpenSession={(ownedId) => onOpenSession?.(ownedId)} />
+  </div>
+  <div class="slot" bind:this={bodies.stacks}><StacksPane /></div>
   <div class="slot" bind:this={bodies.context}><ContextPanel /></div>
 </div>
 
@@ -379,18 +406,18 @@
      to nothing — which is how you get an invisible header on a black column. */
   .view-host :global(.shell-pane-stack) {
     /* header background and header text */
-    --dv-group-view-background-color: #101014;
-    --dv-activegroup-visiblepanel-tab-color: #7b7b8c;
+    --dv-group-view-background-color: var(--color-bg);
+    --dv-activegroup-visiblepanel-tab-color: var(--color-section-header-text);
     /* the hairline between two sections */
-    --dv-paneview-header-border-color: #22222c;
-    --dv-separator-border: #22222c;
+    --dv-paneview-header-border-color: var(--color-border);
+    --dv-separator-border: var(--color-border);
     /* the focus ring dockview draws around a header or body */
-    --dv-paneview-active-outline-color: #bd93f9;
+    --dv-paneview-active-outline-color: var(--color-section-focus-ring);
     /* VS Code-style resize feedback: the divider lights up teal as you grab it */
-    --dv-active-sash-color: #4bf3c8;
+    --dv-active-sash-color: var(--color-accent);
     --dv-active-sash-transition-delay: 0.1s;
     --dv-active-sash-transition-duration: 0.05s;
-    background: #101014;
+    background: var(--color-bg);
   }
 
   /* Section headers read like the rail's own group headings. */
