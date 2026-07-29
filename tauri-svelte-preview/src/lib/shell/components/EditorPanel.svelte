@@ -42,7 +42,7 @@
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
   import { readSourceFromTauri, warmSourceLspForRootFromTauri } from '$lib/tauriSource';
   import type MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
-  import type { SourceRecord, SourceSymbol } from '$lib/sourceData';
+  import type { SourceDiagnostic, SourceRecord, SourceSymbol } from '$lib/sourceData';
 
   /**
    * The code editor is a large download, so it is fetched with the first file
@@ -71,6 +71,47 @@
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
+
+  /**
+   * What the language server says is wrong, per file. Kept per file rather than
+   * for "the file on screen" because switching tabs must not show the last
+   * file's squiggles on this one while a fresh read is still in flight.
+   */
+  let diagnosticsByPath = $state<Record<string, SourceDiagnostic[]>>({});
+  /**
+   * How long to wait before asking a second time, in milliseconds.
+   *
+   * LOAD-BEARING. The language server answers a file it has only just opened
+   * with an empty list, so the first read after a file lands usually comes back
+   * with nothing and the squiggles appear only when something else happens to
+   * ask again. The old shell has hidden this behind the same wait since it was
+   * written (`src/routes/+page.svelte`, `scheduleSourceLspDiagnostics`). Without
+   * it, "it worked when I clicked around" is the bug report.
+   */
+  const DIAGNOSTICS_SETTLE_MS = 650;
+  /** The pending second read, so switching files quickly does not queue several. */
+  let diagnosticsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Ask what is wrong with the file on screen, and remember it against that file. */
+  async function loadDiagnosticsForActiveFile(): Promise<void> {
+    const path = editorState.activePath;
+    if (!path) return;
+    const diagnostics = await sourceIntelligence.loadActiveFileDiagnostics();
+    // Superseded: the user moved on while this was in flight, so this answer is
+    // about a file that is no longer on screen.
+    if (destroyed || editorState.activePath !== path) return;
+    diagnosticsByPath = { ...diagnosticsByPath, [path]: diagnostics };
+  }
+
+  /** Read the diagnostics now, and once more after the server has settled. */
+  function refreshDiagnosticsForActiveFile(): void {
+    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
+    void loadDiagnosticsForActiveFile();
+    diagnosticsTimer = setTimeout(() => {
+      diagnosticsTimer = null;
+      if (!destroyed) void loadDiagnosticsForActiveFile();
+    }, DIAGNOSTICS_SETTLE_MS);
+  }
 
   function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -133,6 +174,7 @@
     } finally {
       readsInFlight.delete(record.path);
       syncIntelligenceWithActiveFile();
+      refreshDiagnosticsForActiveFile();
     }
   }
 
@@ -165,6 +207,7 @@
   function selectOpenFile(path: string): void {
     setActiveEditorFile(path);
     syncIntelligenceWithActiveFile();
+    refreshDiagnosticsForActiveFile();
     const entry = editorFileFor(path);
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(sourceRecordFromPath(editorState.projectRoot, path));
@@ -175,6 +218,9 @@
     closeEditorFile(path);
     sourceIntelligence.invalidatePreview(path);
     syncIntelligenceWithActiveFile();
+    // A closed file stops holding its diagnostics; nothing can show them now.
+    const { [path]: _closed, ...rest } = diagnosticsByPath;
+    diagnosticsByPath = rest;
   }
 
   function retryRead(path: string): void {
@@ -200,6 +246,8 @@
     const unsubscribe = onOpenFile(handleOpenFileRequest);
     return () => {
       destroyed = true;
+      if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
+      diagnosticsTimer = null;
       unsubscribe();
     };
   });
@@ -264,6 +312,7 @@
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
+            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
             onExternalNavigation={navigateToExternalSource}
             onSymbolsChange={handleSymbolsChange}
           />
