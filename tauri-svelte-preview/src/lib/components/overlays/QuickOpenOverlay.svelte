@@ -19,7 +19,9 @@
    * (via `bind:this`) instead; focus + cursor-to-end covers all three modes.
    *
    * No teleport: this overlay renders inline (no `use:panelAction`), so its scoped
-   * `<style>` works normally.
+   * style block works normally. (Do not write that tag out in full here — see the
+   * same note in `CommandPaletteOverlay.svelte`: the type checker reads the rest of
+   * the file as CSS if it finds an opening style tag inside this comment.)
    */
   import { Search, FileCode2 } from '@lucide/svelte';
   import type { SourceRecord, SourceWorkspaceSymbol } from '$lib/sourceData';
