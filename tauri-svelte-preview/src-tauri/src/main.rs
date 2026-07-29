@@ -1077,9 +1077,12 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
 async fn remove_project_worktree(
     root: String,
     path: String,
+    force: Option<bool>,
 ) -> Result<ProjectWorktreeActionResult, String> {
+    // Leaving `force` out keeps the safe remove that refuses to lose work.
+    let force = force.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        remove_project_worktree_sync(PathBuf::from(root), PathBuf::from(path))
+        remove_project_worktree_sync(PathBuf::from(root), PathBuf::from(path), force)
     })
     .await
     .map_err(|error| format!("Worktree remove task failed: {error}"))?
@@ -2686,9 +2689,15 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
     )
 }
 
+/// `force = false` is the everyday remove: it refuses anything that would lose work.
+/// `force = true` is the "I know, delete it anyway" remove: it unlocks the worktree if
+/// it is locked, deletes it even when files are uncommitted or commits are unmerged, and
+/// reports in the returned message exactly what went away. Neither mode will ever touch
+/// the primary checkout.
 fn remove_project_worktree_sync(
     root: PathBuf,
     path: PathBuf,
+    force: bool,
 ) -> Result<ProjectWorktreeActionResult, String> {
     validate_git_root(&root)?;
 
@@ -2717,14 +2726,16 @@ fn remove_project_worktree_sync(
         })
         .ok_or_else(|| "Worktree path is not registered for this repository".to_string())?;
 
-    if worktree.is_locked {
-        return Err("Refusing to remove locked worktree".to_string());
-    }
-    if worktree.is_dirty {
-        return Err("Refusing to remove dirty worktree".to_string());
-    }
-    if worktree.has_unmerged_commits {
-        return Err("Refusing to remove worktree with unmerged commits".to_string());
+    if !force {
+        if worktree.is_locked {
+            return Err("Refusing to remove locked worktree".to_string());
+        }
+        if worktree.is_dirty {
+            return Err("Refusing to remove dirty worktree".to_string());
+        }
+        if worktree.has_unmerged_commits {
+            return Err("Refusing to remove worktree with unmerged commits".to_string());
+        }
     }
     if worktree.is_prunable {
         run_git_text(&root, &["worktree", "prune"])?;
@@ -2741,6 +2752,41 @@ fn remove_project_worktree_sync(
     }
 
     let worktree_path = worktree.path.clone();
+
+    if force {
+        // Count what is about to be destroyed BEFORE destroying it, so the message can
+        // name it. After the remove there is nothing left to look at.
+        let dirty_file_count = project_worktree_dirty_file_count(&worktree_path);
+        let had_unmerged_commits = worktree.has_unmerged_commits;
+        let unlocked_reason = worktree.is_locked.then(|| {
+            worktree
+                .locked_reason
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        });
+
+        if unlocked_reason.is_some() {
+            run_git_text(&root, &["worktree", "unlock", worktree_path.as_str()])?;
+        }
+        run_git_text(
+            &root,
+            &["worktree", "remove", "--force", worktree_path.as_str()],
+        )?;
+        run_git_text(&root, &["worktree", "prune"])?;
+
+        return Ok(ProjectWorktreeActionResult {
+            message: describe_forced_worktree_removal(
+                &worktree.branch,
+                dirty_file_count,
+                had_unmerged_commits,
+                unlocked_reason.as_deref(),
+            ),
+            worktrees: list_project_worktrees_sync(root)?,
+        });
+    }
+
     run_git_text(&root, &["worktree", "remove", worktree_path.as_str()])?;
     run_git_text(&root, &["worktree", "prune"])?;
 
@@ -2935,6 +2981,73 @@ fn project_worktree_delete_eligibility(
     } else {
         "requires-confirmation".to_string()
     }
+}
+
+/// Plain sentences describing what a forced removal actually threw away, so the person
+/// who clicked the button can read the consequence rather than decode a status code.
+fn describe_forced_worktree_removal(
+    branch: &str,
+    dirty_file_count: usize,
+    had_unpushed_commits: bool,
+    unlocked_reason: Option<&str>,
+) -> String {
+    let mut message = format!("Force removed worktree {branch}.");
+
+    if dirty_file_count > 0 {
+        let noun = if dirty_file_count == 1 {
+            "file"
+        } else {
+            "files"
+        };
+        message.push_str(&format!(
+            " Deleted {dirty_file_count} {noun} with changes that were never committed."
+        ));
+    } else {
+        message.push_str(" It had no uncommitted changes.");
+    }
+
+    // The check behind this is "does this branch have commits that are on no remote", so
+    // the sentence says that and nothing wider.
+    if had_unpushed_commits {
+        message.push_str(" Deleted commits on this branch that were never pushed to a remote.");
+    }
+
+    if let Some(reason) = unlocked_reason {
+        if reason.trim().is_empty() {
+            message.push_str(" Unlocked it first; it was locked with no reason given.");
+        } else {
+            message.push_str(&format!(
+                " Unlocked it first; it was locked because: {}.",
+                reason.trim()
+            ));
+        }
+    }
+
+    message
+}
+
+/// How many files in the worktree have changes git has not been told to keep — the
+/// number a forced removal is about to delete for good.
+fn project_worktree_dirty_file_count(path: &str) -> usize {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            path,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ])
+        .output();
+    output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn project_worktree_is_dirty(path: &str) -> bool {
@@ -6091,7 +6204,7 @@ mod tests {
             ],
         );
 
-        let result = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap();
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone(), false).unwrap();
 
         assert!(result.message.contains("Removed worktree"));
         assert!(!sibling.exists());
@@ -6137,7 +6250,7 @@ mod tests {
         assert!(missing.delete_eligibility.contains("prunable"));
         let missing_path = PathBuf::from(&missing.path);
 
-        let result = remove_project_worktree_sync(root.clone(), missing_path).unwrap();
+        let result = remove_project_worktree_sync(root.clone(), missing_path, false).unwrap();
 
         assert!(result.message.contains("Pruned missing worktree metadata"));
         assert!(!result
@@ -6181,7 +6294,7 @@ mod tests {
             ],
         );
 
-        let error = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap_err();
+        let error = remove_project_worktree_sync(root.clone(), sibling.clone(), false).unwrap_err();
 
         assert!(error.contains("locked worktree"));
         assert!(sibling.exists());
@@ -6218,7 +6331,7 @@ mod tests {
         );
         std::fs::write(sibling.join("dirty.txt"), "keep me\n").unwrap();
 
-        let error = remove_project_worktree_sync(root.clone(), sibling.clone()).unwrap_err();
+        let error = remove_project_worktree_sync(root.clone(), sibling.clone(), false).unwrap_err();
 
         assert!(error.contains("dirty worktree"));
         assert!(sibling.exists());
@@ -6227,6 +6340,138 @@ mod tests {
             &root,
             &["worktree", "remove", "--force", sibling.to_str().unwrap()],
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn forced_worktree_removal_message_says_what_was_destroyed() {
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-clean", 0, false, None),
+            "Force removed worktree cdx/tsk-127-clean. It had no uncommitted changes."
+        );
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-one", 1, false, None),
+            "Force removed worktree cdx/tsk-127-one. Deleted 1 file with changes that were never committed."
+        );
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-all", 3, true, Some("agent running")),
+            "Force removed worktree cdx/tsk-127-all. Deleted 3 files with changes that were never committed. Deleted commits on this branch that were never pushed to a remote. Unlocked it first; it was locked because: agent running."
+        );
+        assert_eq!(
+            describe_forced_worktree_removal("cdx/tsk-127-locked", 0, false, Some("")),
+            "Force removed worktree cdx/tsk-127-locked. It had no uncommitted changes. Unlocked it first; it was locked with no reason given."
+        );
+    }
+
+    #[test]
+    fn force_remove_project_worktree_deletes_a_dirty_sibling_and_says_so() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-force-dirty",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(sibling.join("dirty.txt"), "never committed\n").unwrap();
+        std::fs::write(sibling.join("src/App.ts"), "export const value = 2;\n").unwrap();
+
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone(), true).unwrap();
+
+        assert_eq!(
+            result.message,
+            // This fixture repo has no remote, so the branch's commit counts as never
+            // pushed and the message says so alongside the uncommitted file count.
+            "Force removed worktree cdx/tsk-127-force-dirty. Deleted 2 files with changes that were never committed. Deleted commits on this branch that were never pushed to a remote."
+        );
+        assert!(!sibling.exists());
+        assert!(!result
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.branch == "cdx/tsk-127-force-dirty"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_unlocks_a_locked_sibling_first() {
+        let root = unique_temp_root();
+        let sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "cdx/tsk-127-force-locked",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        run_git_for_test(
+            &root,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "agent running",
+                sibling.to_str().unwrap(),
+            ],
+        );
+
+        let result = remove_project_worktree_sync(root.clone(), sibling.clone(), true).unwrap();
+
+        assert!(
+            result
+                .message
+                .contains("Unlocked it first; it was locked because: agent running."),
+            "unexpected message: {}",
+            result.message
+        );
+        assert!(!sibling.exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_remove_project_worktree_still_refuses_the_primary_checkout() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+
+        let error = remove_project_worktree_sync(root.clone(), root.clone(), true).unwrap_err();
+
+        assert!(
+            error.contains("primary checkout"),
+            "unexpected message: {error}"
+        );
+        assert!(root.join("src/App.ts").exists());
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
