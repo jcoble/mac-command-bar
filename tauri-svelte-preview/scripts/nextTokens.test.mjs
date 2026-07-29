@@ -9,10 +9,15 @@
  * every name they use, and prove the /next file covers the ones it is
  * responsible for.
  *
+ * Two more rules about that stylesheet are checked at the bottom of the file:
+ * that the old shell cannot reach it (it would restyle the whole old page), and
+ * that no /next component styles itself on a `data-…` attribute the component
+ * library never actually writes (such a rule is silently dead CSS).
+ *
  * Run: node --experimental-strip-types scripts/nextTokens.test.mjs
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -257,6 +262,251 @@ for (const rule of sharedRules) {
   assert.ok(
     !/invoke|tauriSource/.test(host),
     'SettingsHost must not talk to the backend'
+  );
+}
+
+// ── The old shell cannot reach the /next stylesheet ───────────────────────
+//
+// The whole wave rests on one rule: the old page keeps rendering exactly as it
+// did, because nothing it loads pulls in `next.css`. Up to now that rule lived
+// only in a comment at the top of `next.css`, and the wave already had to add a
+// second file that imports it. So walk the old shell's imports for real —
+// starting at its route and the layout every route shares — and fail if
+// `next.css`, or anything that imports it, turns up anywhere in that graph.
+{
+  const OLD_SHELL_ENTRY_POINTS = ['src/routes/+page.svelte', 'src/routes/+layout.svelte'];
+  const FORBIDDEN = 'src/lib/shell/styles/next.css';
+
+  /** Where a file's own imports could resolve to. */
+  const CANDIDATE_SUFFIXES = ['', '.ts', '.js', '.svelte', '.css', '/index.ts', '/index.js'];
+
+  /** Turn one import specifier into a project-relative path, or null. */
+  const resolveSpecifier = (specifier, fromPath) => {
+    let base;
+    if (specifier.startsWith('$lib/')) base = 'src/lib/' + specifier.slice('$lib/'.length);
+    else if (specifier === '$lib') base = 'src/lib';
+    else if (specifier.startsWith('.')) {
+      base = resolve(dirname(resolve(projectRoot, fromPath)), specifier).slice(
+        projectRoot.length + 1
+      );
+    } else return null; // a package, not a file of ours
+
+    // The vendored components import each other as `./thing.js` even though the
+    // file on disk is `thing.ts`, so try the sibling extension too.
+    const withoutJs = base.replace(/\.js$/, '');
+    for (const stem of base === withoutJs ? [base] : [base, withoutJs]) {
+      for (const suffix of CANDIDATE_SUFFIXES) {
+        const candidate = stem + suffix;
+        if (!candidate.includes('.')) continue;
+        try {
+          readFileSync(resolve(projectRoot, candidate), 'utf8');
+          return candidate;
+        } catch {
+          /* keep trying */
+        }
+      }
+    }
+    return null;
+  };
+
+  /** Every import specifier a file names, static, dynamic, or CSS `@import`. */
+  const importSpecifiers = (source) => {
+    const found = [];
+    const patterns = [
+      /\bfrom\s*['"]([^'"]+)['"]/g,
+      /\bimport\s*['"]([^'"]+)['"]/g,
+      /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+      /@import\s*(?:url\()?\s*['"]([^'"]+)['"]/g
+    ];
+    for (const pattern of patterns) {
+      for (const match of source.matchAll(pattern)) found.push(match[1]);
+    }
+    return found;
+  };
+
+  const seen = new Set();
+  /** path -> the file that pulled it in, so a hit can be explained. */
+  const broughtInBy = new Map();
+  const queue = [...OLD_SHELL_ENTRY_POINTS];
+  for (const entry of queue) seen.add(entry);
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let source;
+    try {
+      source = read(current);
+    } catch {
+      continue;
+    }
+    for (const specifier of importSpecifiers(source)) {
+      const target = resolveSpecifier(specifier, current);
+      if (!target || seen.has(target)) continue;
+      seen.add(target);
+      broughtInBy.set(target, current);
+      queue.push(target);
+    }
+  }
+
+  // The walk has to actually walk, or it proves nothing.
+  assert.ok(
+    seen.size > 20,
+    `the old shell import walk only found ${seen.size} files; it is not reaching ` +
+      'its own components, so a hit could not be detected either'
+  );
+
+  if (seen.has(FORBIDDEN)) {
+    const chain = [];
+    let step = FORBIDDEN;
+    while (step && chain.length < 20) {
+      chain.unshift(step);
+      step = broughtInBy.get(step);
+    }
+    assert.fail(
+      `the old shell can now reach ${FORBIDDEN}, which restyles the whole old ` +
+        `page. It gets there like this: ${chain.join(' -> ')}`
+    );
+  }
+
+  // And prove the walk would have caught it: the /next page really does import
+  // the stylesheet, so the same walk started there must find it.
+  {
+    const nextQueue = ['src/routes/next/+page.svelte'];
+    const nextSeen = new Set(nextQueue);
+    while (nextQueue.length > 0) {
+      const current = nextQueue.shift();
+      let source;
+      try {
+        source = read(current);
+      } catch {
+        continue;
+      }
+      for (const specifier of importSpecifiers(source)) {
+        const target = resolveSpecifier(specifier, current);
+        if (!target || nextSeen.has(target)) continue;
+        nextSeen.add(target);
+        nextQueue.push(target);
+      }
+    }
+    assert.ok(
+      nextSeen.has(FORBIDDEN),
+      `the walk did not find ${FORBIDDEN} even from the /next page, so it cannot ` +
+        'be trusted to find it from the old page either'
+    );
+  }
+}
+
+// ── Every `data-something:` class matches an attribute that really appears ──
+//
+// The vendored components come from a registry written against a newer version
+// of bits-ui than this app pins. The newer one marks state with its own
+// attribute (`data-checked`); the pinned one writes `data-state="checked"`.
+// Tailwind reads a bare `data-checked:` prefix as "carries an attribute named
+// data-checked", so every rule behind a name the library never writes is dead
+// CSS — which is how the settings switches shipped with no visible on/off state.
+//
+// This check reads the attribute names bits-ui actually emits, adds the ones
+// our own components set by hand and the ones `next.css` explicitly redefines,
+// and fails on any other bare `data-…:` prefix in the /next tree.
+{
+  const nextStylesheet = read(NEXT_STYLESHEET_PATH);
+
+  /** Names `next.css` has taught Tailwind, e.g. `@custom-variant data-checked (...)`. */
+  const redefined = new Set(
+    [...nextStylesheet.matchAll(/@custom-variant\s+(data-[a-z-]+)\s/g)].map((m) => m[1])
+  );
+  for (const required of [
+    'data-checked',
+    'data-unchecked',
+    'data-active',
+    'data-open',
+    'data-closed'
+  ]) {
+    assert.ok(
+      redefined.has(required),
+      `${NEXT_STYLESHEET_PATH} must redefine \`${required}\`, because the pinned ` +
+        'bits-ui writes that state as a value of `data-state` instead'
+    );
+    const declaration = new RegExp(
+      `@custom-variant\\s+${required}\\s*\\([^)]*data-state=`
+    );
+    assert.ok(
+      declaration.test(nextStylesheet),
+      `\`${required}\` must be defined in terms of \`data-state\`, or it still ` +
+        'matches nothing'
+    );
+  }
+
+  /**
+   * Attribute names bits-ui writes as bare presence — the value is either the
+   * empty string or nothing at all — which is what a bare `data-x:` prefix
+   * needs. Read out of the installed package so this cannot go stale.
+   */
+  const presence = new Set();
+  const bitsRoot = resolve(projectRoot, 'node_modules/bits-ui/dist');
+  const collect = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = resolve(directory, entry.name);
+      if (entry.isDirectory()) collect(full);
+      else if (entry.name.endsWith('.js')) {
+        const source = readFileSync(full, 'utf8');
+        for (const match of source.matchAll(/"(data-[a-z-]+)":\s*([^\n]*)/g)) {
+          // The attribute is a presence flag when the library can write it as
+          // the empty string — either literally, or through one of the helpers
+          // whose whole job is "empty string when true, nothing when false".
+          const value = match[2];
+          if (/""/.test(value) || /boolToEmptyStrOrUndef/.test(value)) {
+            presence.add(match[1]);
+          }
+        }
+      }
+    }
+  };
+  collect(bitsRoot);
+  assert.ok(presence.size > 3, 'expected to read a real set of attributes out of bits-ui');
+
+  const OWN_TREE = [
+    'src/lib/components/ui',
+    'src/lib/shell',
+    'src/routes/next'
+  ];
+
+  const svelteFiles = [];
+  const walk = (directory) => {
+    for (const entry of readdirSync(resolve(projectRoot, directory), { withFileTypes: true })) {
+      const relative = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) walk(relative);
+      else if (entry.name.endsWith('.svelte') || entry.name.endsWith('.ts')) {
+        svelteFiles.push(relative);
+      }
+    }
+  };
+  for (const directory of OWN_TREE) walk(directory);
+  assert.ok(svelteFiles.length > 30, 'expected to find the /next components');
+
+  /** Attributes our own markup sets by hand, e.g. `data-inset={inset}`. */
+  const setByHand = new Set();
+  for (const path of svelteFiles) {
+    for (const match of read(path).matchAll(/(?:^|\s)(data-[a-z-]+)=/g)) {
+      setByHand.add(match[1]);
+    }
+  }
+
+  const unmatched = [];
+  for (const path of svelteFiles) {
+    for (const match of read(path).matchAll(/(?:^|[\s"'/:])(data-[a-z-]+):/g)) {
+      const name = match[1];
+      if (redefined.has(name) || presence.has(name) || setByHand.has(name)) continue;
+      unmatched.push(`${path}: ${name}:`);
+    }
+  }
+
+  assert.deepEqual(
+    unmatched,
+    [],
+    'these classes are styled on an attribute nothing ever writes, so they do ' +
+      'nothing at all. Either the component library spells that state as a ' +
+      'value of `data-state` (add a `@custom-variant` line to next.css), or the ' +
+      'attribute name is simply wrong:\n  ' + unmatched.join('\n  ')
   );
 }
 
