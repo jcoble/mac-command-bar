@@ -153,6 +153,7 @@
    * is open every heading is open regardless, so toggling against what is on
    * screen would record the opposite of what the user meant. */
   function toggleGroup(list: SessionList, path: string) {
+    dropRemoveQuestion();
     const settled = (from: GroupExpansion) =>
       isGroupExpanded({ list, path, remembered: from, activeProjectPath, searching: false });
 
@@ -184,17 +185,41 @@
     return session.title || session.ownedId.slice(0, 8);
   }
 
+  /** The one row that is waiting for an answer to "remove this?", by
+   * `ownedId`. Only ever one: asking about a second row moves the question
+   * rather than opening a second one. */
+  let removeAskedAbout = $state<string | null>(null);
+
   /** Removing is the one action nothing undoes, so it is asked about first. The
    * sentence says what survives, because the worry it answers is losing the
    * conversation rather than the row — and it says what does NOT survive when
    * that is true, because removing a session whose process is still going ends
-   * it, and this is the only warning the user gets. */
-  function confirmRemove(session: OwnedSession): void {
-    const running = session.state !== 'exited';
-    const question = running
+   * it, and this is the only warning the user gets.
+   *
+   * The question is drawn in the row itself. It used to be `window.confirm`,
+   * which the desktop webview does not have: there the dialog never appeared,
+   * the call answered "no" without asking anyone, and the only place the
+   * warning ever showed was a browser. */
+  function removeQuestion(session: OwnedSession): string {
+    return session.state !== 'exited'
       ? `Remove "${rowName(session)}" from your sessions? Its terminal is still running and will be closed. The transcript stays on disk.`
       : `Remove "${rowName(session)}" from your sessions? The transcript stays on disk.`;
-    if (typeof window !== 'undefined' && !window.confirm(question)) return;
+  }
+
+  /** Put the question in front of the user, taking it off any other row. */
+  function askAboutRemoving(session: OwnedSession): void {
+    removeAskedAbout = session.ownedId;
+  }
+
+  /** Take the question away. Every other thing the rail can do calls this
+   * first: a question about one row is answered "no" the moment the user goes
+   * and does something else. */
+  function dropRemoveQuestion(): void {
+    removeAskedAbout = null;
+  }
+
+  function removeNow(session: OwnedSession): void {
+    removeAskedAbout = null;
     onRemove(session.ownedId);
   }
 
@@ -289,11 +314,18 @@
       {#if expanded('owned', group.path)}
         <ul class="rows">
           {#each group.items as session (session.ownedId)}
-            <li class="row" class:active={session.ownedId === activeOwnedId}>
+            <li
+              class="row"
+              class:active={session.ownedId === activeOwnedId}
+              class:asking={session.ownedId === removeAskedAbout}
+            >
               <button
                 type="button"
                 class="row-main"
-                onclick={() => onSelect(session.ownedId)}
+                onclick={() => {
+                  dropRemoveQuestion();
+                  onSelect(session.ownedId);
+                }}
                 title={session.cwd || session.title}
               >
                 <span class="dot" data-state={session.state} aria-hidden="true"></span>
@@ -314,7 +346,10 @@
                   class="row-act"
                   aria-label={`reopen ${rowName(session)} — put it back under Working`}
                   title="Reopen"
-                  onclick={() => onReopen(session.ownedId)}
+                  onclick={() => {
+                    dropRemoveQuestion();
+                    onReopen(session.ownedId);
+                  }}
                 >
                   ↩
                 </button>
@@ -323,7 +358,7 @@
                   class="row-act danger"
                   aria-label={`remove ${rowName(session)} from this list`}
                   title="Remove from this list"
-                  onclick={() => confirmRemove(session)}
+                  onclick={() => askAboutRemoving(session)}
                 >
                   ✕
                 </button>
@@ -333,7 +368,10 @@
                   class="row-act"
                   aria-label={`mark ${rowName(session)} done`}
                   title="Mark done"
-                  onclick={() => onComplete(session.ownedId)}
+                  onclick={() => {
+                    dropRemoveQuestion();
+                    onComplete(session.ownedId);
+                  }}
                 >
                   ✓
                 </button>
@@ -345,11 +383,34 @@
                     class="row-act danger"
                     aria-label={`close the terminal for ${rowName(session)}`}
                     title="Close the terminal"
-                    onclick={() => onClose(session.ownedId)}
+                    onclick={() => {
+                      dropRemoveQuestion();
+                      onClose(session.ownedId);
+                    }}
                   >
                     ✕
                   </button>
                 {/if}
+              {/if}
+              <!-- The question, in the row it is about. It takes the width of
+                   the row so the whole sentence is readable, and it is the only
+                   way removing ever happens. -->
+              {#if session.ownedId === removeAskedAbout}
+                <div class="ask" role="group" aria-label="Confirm removing this session">
+                  <p class="ask-question">{removeQuestion(session)}</p>
+                  <div class="ask-buttons">
+                    <button
+                      type="button"
+                      class="ask-act danger"
+                      onclick={() => removeNow(session)}
+                    >
+                      Remove
+                    </button>
+                    <button type="button" class="ask-act" onclick={() => dropRemoveQuestion()}>
+                      Keep
+                    </button>
+                  </div>
+                </div>
               {/if}
             </li>
           {/each}
@@ -366,6 +427,7 @@
       placeholder="Filter sessions"
       aria-label="Filter sessions"
       bind:value={query}
+      oninput={() => dropRemoveQuestion()}
     />
   </div>
 
@@ -395,7 +457,15 @@
   <section class="group">
     <header class="group-head">
       <h2>Resume</h2>
-      <button type="button" class="rescan" disabled={scanning} onclick={() => onRescan()}>
+      <button
+        type="button"
+        class="rescan"
+        disabled={scanning}
+        onclick={() => {
+          dropRemoveQuestion();
+          onRescan();
+        }}
+      >
         {scanning ? 'scanning…' : 'rescan'}
       </button>
     </header>
@@ -427,7 +497,10 @@
                   <button
                     type="button"
                     class="row-main"
-                    onclick={() => onAdopt(session)}
+                    onclick={() => {
+                      dropRemoveQuestion();
+                      onAdopt(session);
+                    }}
                     title={session.projectPath ?? session.title}
                   >
                     <span class="dot" data-state="available" aria-hidden="true"></span>
@@ -455,7 +528,10 @@
                   <button
                     type="button"
                     class="row-main more-main"
-                    onclick={() => (expandedRows = { ...expandedRows, [group.path]: true })}
+                    onclick={() => {
+                      dropRemoveQuestion();
+                      expandedRows = { ...expandedRows, [group.path]: true };
+                    }}
                   >
                     Show {visible.hiddenCount} more
                   </button>
@@ -479,7 +555,7 @@
     padding: 12px 10px;
     background: #101014;
     color: #d8d8e0;
-    font-size: 12px;
+    font-size: 13px;
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
   }
 
@@ -504,7 +580,7 @@
     background: #17171d;
     color: #d8d8e0;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 4px 7px;
   }
 
@@ -539,7 +615,7 @@
     background: transparent;
     color: #6d6d7d;
     font: inherit;
-    font-size: 10px;
+    font-size: 11px;
     text-align: left;
     cursor: pointer;
   }
@@ -586,14 +662,14 @@
     margin-left: auto;
     padding-left: 8px;
     color: #5d5d6b;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   /* The row that offers the rest of a long project. Reads as a row so it lands
      where the eye already is, but carries no dot and no badge. */
   .more-main {
     color: #7b7b8c;
-    font-size: 11px;
+    font-size: 12px;
     padding-left: 23px;
   }
 
@@ -604,7 +680,7 @@
   h2,
   h3 {
     margin: 0;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
@@ -632,7 +708,7 @@
   }
 
   .count {
-    font-size: 11px;
+    font-size: 12px;
     color: #5d5d6b;
   }
 
@@ -641,7 +717,7 @@
     border-radius: 5px;
     background: transparent;
     color: #9a9aad;
-    font-size: 10px;
+    font-size: 11px;
     padding: 2px 7px;
     cursor: pointer;
   }
@@ -660,7 +736,7 @@
     margin: 0;
     padding: 4px 6px;
     color: #5d5d6b;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .rows {
@@ -685,6 +761,70 @@
 
   .row.active {
     background: #22222c;
+  }
+
+  /* The row that is being asked about stands out on its own, because the
+     question below it belongs to that row and to no other. `wrap` is what lets
+     the question sit under the title at the full width of the row instead of
+     being squeezed in beside it. */
+  .row.asking {
+    flex-wrap: wrap;
+    background: #1a1a22;
+  }
+
+  /* Wrapping decides where things go by how wide they WANT to be, and a title
+     wants the whole rail — which would push the row's own buttons onto a line
+     of their own the moment the question opened. Starting the title at nothing
+     and letting it grow keeps the row itself looking exactly as it did. */
+  .row.asking .row-main {
+    flex-basis: 0;
+  }
+
+  .ask {
+    flex: 1 0 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    /* Lines up with the row's title, past the state dot. */
+    padding: 0 8px 8px 23px;
+  }
+
+  .ask-question {
+    margin: 0;
+    color: #c9c9d6;
+    line-height: 1.35;
+  }
+
+  .ask-buttons {
+    display: flex;
+    gap: 6px;
+  }
+
+  .ask-act {
+    border: 1px solid #33333f;
+    border-radius: 5px;
+    background: transparent;
+    color: #d8d8e0;
+    font: inherit;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+
+  .ask-act:hover {
+    border-color: #4c4c5a;
+    background: #22222c;
+  }
+
+  /* The answer that costs something looks like it. */
+  .ask-act.danger {
+    border-color: #5a2b2b;
+    color: #ff6b6b;
+  }
+
+  .ask-act.danger:hover {
+    border-color: #ff5555;
+    background: #2a1616;
+    color: #ff8080;
   }
 
   .row-main {
@@ -731,7 +871,7 @@
     border-radius: 4px;
     background: #24242f;
     color: #9a9aad;
-    font-size: 9px;
+    font-size: 10px;
     letter-spacing: 0.04em;
     padding: 1px 5px;
     white-space: nowrap;
@@ -756,7 +896,7 @@
   .finished,
   .stamp {
     color: #5d5d6b;
-    font-size: 9px;
+    font-size: 10px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -809,7 +949,7 @@
     border-radius: 6px;
     background: transparent;
     color: #5d5d6b;
-    font-size: 11px;
+    font-size: 12px;
     padding: 0 6px;
     cursor: pointer;
     opacity: 0;
