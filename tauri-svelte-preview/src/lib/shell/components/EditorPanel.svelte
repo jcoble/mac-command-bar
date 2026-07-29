@@ -368,7 +368,7 @@
 
   .empty-hint {
     color: #4c4c5a;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .file-strip {
@@ -403,7 +403,7 @@
     color: #6d6d7d;
     cursor: pointer;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 3px 4px 3px 8px;
     white-space: nowrap;
   }
@@ -425,7 +425,7 @@
 
   .chip-note {
     color: #4c4c5a;
-    font-size: 10px;
+    font-size: 12px;
     margin-left: 5px;
   }
 
@@ -469,7 +469,7 @@
     color: #6d6d7d;
     cursor: pointer;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     padding: 2px 7px;
   }
 
@@ -488,7 +488,7 @@
     border-top: 1px solid #22222c;
     color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     padding: 3px 8px;
   }
 

@@ -370,7 +370,7 @@
     padding: 8px 10px;
     color: #ff8f8f;
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .parking-stage {
@@ -424,7 +424,7 @@
   .view-host :global(.dv-default-header) {
     align-items: center;
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;

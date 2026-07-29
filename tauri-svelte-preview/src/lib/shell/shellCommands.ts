@@ -20,7 +20,7 @@ import { gitService } from './git/gitService.ts';
 import type { SidebarViewId } from './layout/sidebarViews.ts';
 import { registerCommands } from './palette/commandRegistry.ts';
 import { refresh as refreshPlaywright } from './processes/playwrightService.ts';
-import { refresh as refreshProblems } from './problems/problemsService.ts';
+import { refreshProblemsForSelection } from './shellPanels.ts';
 import { refreshStacks } from './stacks/stackService.ts';
 
 export interface ShellCommandHooks {
@@ -159,7 +159,7 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       id: 'problems-refresh',
       label: 'Look for problems again',
       detail: 'Ask the language server what is wrong with this project',
-      perform: () => void refreshProblems()
+      perform: () => refreshProblemsForSelection()
     },
     {
       id: 'browser-reload',

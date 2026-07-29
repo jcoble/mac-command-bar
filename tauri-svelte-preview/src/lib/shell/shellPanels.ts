@@ -16,7 +16,7 @@ import { activate as activateExplorer } from './explorer/explorerService.ts';
 import { gitService } from './git/gitService.ts';
 import { createPanelActivation, type PanelProject, type ProjectSelection } from './panelActivation.ts';
 import { activate as activatePlaywright } from './processes/playwrightService.ts';
-import { activate as activateProblems } from './problems/problemsService.ts';
+import { activate as activateProblems, refresh as refreshProblems } from './problems/problemsService.ts';
 import { activateStacks } from './stacks/stackService.ts';
 import { rail } from './stores/sessionRailStore.svelte.ts';
 import { activate as activateWorktrees } from './worktrees/worktreeManagerService.ts';
@@ -61,6 +61,20 @@ function worktreeSessions(): WorktreeSessionInput[] {
     projectPath: session.projectPath,
     state: session.state
   }));
+}
+
+/**
+ * Point the Problems panel at whatever session is active right now, then load.
+ *
+ * This is the panel's Refresh button and the palette command. The bottom dock
+ * is on screen from launch, so the panel deliberately loads nothing on its own
+ * — this explicit gesture is how a root ever reaches it. Without this, Refresh
+ * read a root that nothing had set and told the user to pick a session they
+ * had already picked.
+ */
+export function refreshProblemsForSelection(): void {
+  activateProblems(readSelection().root.trim() || null);
+  void refreshProblems();
 }
 
 export const shellPanels = createPanelActivation(

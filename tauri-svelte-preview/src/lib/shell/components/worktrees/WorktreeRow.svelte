@@ -77,11 +77,16 @@
         : 'Remove this worktree from the repository.'
   );
 
-  /** Why the destructive button is switched off, or what it will do. */
+  /** Why the destructive button is switched off, or what it will do. The
+   * 'unknown' state is real screen time — the capability probe runs after the
+   * pane opens — and claiming the app is out of date before it has answered
+   * would be a guess stated as a fact. */
   const forceTitle = $derived(
     forceSupport === 'available'
       ? 'Delete this worktree and everything in it that was never saved anywhere else.'
-      : FORCE_REMOVE_UNAVAILABLE_TOOLTIP
+      : forceSupport === 'unknown'
+        ? 'Still asking the app whether it can do this.'
+        : FORCE_REMOVE_UNAVAILABLE_TOOLTIP
   );
 </script>
 

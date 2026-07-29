@@ -95,7 +95,7 @@
     background: rgba(16, 16, 20, 0.82);
     color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     padding: 3px 8px;
     pointer-events: none;
   }

@@ -136,14 +136,14 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 11px;
+    font-size: 12px;
     color: #e6e6ee;
   }
 
   .summary {
     flex: 0 0 auto;
     color: #6d6d7d;
-    font-size: 10px;
+    font-size: 12px;
     white-space: nowrap;
   }
 
@@ -151,7 +151,7 @@
     margin: 0;
     padding: 10px;
     color: #6d6d7d;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .notice.error {
@@ -173,7 +173,7 @@
     background: #17171d;
     border-bottom: 1px solid #22222c;
     color: #9a9aad;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -185,7 +185,7 @@
     margin: 0;
     padding: 6px 10px 4px;
     color: #4c4c5a;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .hunk-heading {
@@ -198,7 +198,7 @@
 
   .hunk {
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.5;
   }
 

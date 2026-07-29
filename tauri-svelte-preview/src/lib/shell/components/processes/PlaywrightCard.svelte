@@ -314,7 +314,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -325,7 +325,7 @@
     border-radius: 999px;
     background: var(--color-elevated);
     color: var(--color-text-2);
-    font-size: 10px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     line-height: 1;
     padding: 3px 6px;

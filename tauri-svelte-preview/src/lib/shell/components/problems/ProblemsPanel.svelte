@@ -30,7 +30,10 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import type { SourceDiagnosticSeverity } from '$lib/sourceData.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
-  import { refresh } from '$lib/shell/problems/problemsService.ts';
+  /* Refresh goes through the shell, not the service: only the shell knows
+     which session is active, and the panel deliberately loads nothing on its
+     own (the bottom dock is on screen from launch). */
+  import { refreshProblemsForSelection } from '$lib/shell/shellPanels.ts';
   import {
     countProblems,
     describeProblemCounts,
@@ -172,7 +175,7 @@
              disabled:opacity-60"
       disabled={problemsState.loading}
       title="Ask the language server again"
-      onclick={() => void refresh()}
+      onclick={() => refreshProblemsForSelection()}
     >
       <RefreshCw class="size-3.5" aria-hidden="true" />
       {problemsState.loading ? 'Looking…' : 'Refresh'}

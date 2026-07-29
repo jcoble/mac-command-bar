@@ -67,6 +67,7 @@
     registerStackHandlers,
     type StackStartRequest
   } from '$lib/shell/stacks/stackService';
+  import { recordStackStart, stackIdForOwnedId } from '$lib/shell/stacks/stackStore.svelte';
   import {
     addOwnedSession,
     completeOwnedSession,
@@ -80,7 +81,7 @@
     updateOwnedSession
   } from '$lib/shell/stores/sessionRailStore.svelte';
   import { createTerminalService, tauriTerminalBackend } from '$lib/shell/terminalService';
-  import { applyStoredTheme } from '$lib/shell/themes/themeService';
+  import { applyStoredTheme, clearTheme } from '$lib/shell/themes/themeService';
   import { loadXtermModules, makeTerminalView } from '$lib/shell/xtermFactory';
   import {
     listAgentSessionsFromLocalBridge,
@@ -521,7 +522,15 @@
       }
       // `startOwned` reads the folder and the resume command off this record;
       // the PTY id it had is cleared so nothing can point at the old process.
-      const ptySessionId = await service.startOwned({ ...session, ptySessionId: null }, host);
+      // A stack's session keeps its one-command spawn on restart — typed into
+      // a shell instead, the exit code would belong to the shell and a crashed
+      // dev server would read as "started" again.
+      const restartedStackId = stackIdForOwnedId(ownedId);
+      const ptySessionId = await service.startOwned(
+        { ...session, ptySessionId: null },
+        host,
+        restartedStackId !== null ? { runCommandDirectly: true } : undefined
+      );
       if (!ptySessionId) {
         updateOwnedSession(ownedId, { state: 'exited' });
         rail.error = `could not start "${label}" again: no new terminal opened`;
@@ -543,6 +552,9 @@
 
       // Persist the new PTY id: reload re-attach reads it back out of storage.
       updateOwnedSession(ownedId, { ptySessionId, state: 'live' });
+      // A restarted stack run is a run again — without this the stacks pane
+      // keeps the old exit on record and says "stopped" under a live server.
+      if (restartedStackId !== null) recordStackStart(restartedStackId, ownedId);
       await selectOwned(ownedId);
     } catch (error) {
       // The row goes back to finished rather than sitting there claiming to be
@@ -729,6 +741,11 @@
       pendingHosts.clear();
       awaitingReattach.clear();
       livePtySizes.clear();
+      // The theme painted inline colors onto <html>, above the scoping that
+      // keeps the old shell on its own palette. Leaving this page takes them
+      // back off, so a same-document navigation to the old shell renders it
+      // exactly as it was found.
+      clearTheme();
     };
   });
 </script>

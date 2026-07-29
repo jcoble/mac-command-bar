@@ -297,7 +297,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: #8a8a9c;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -313,7 +313,7 @@
     background: transparent;
     color: #7b7b8c;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 5px;
     cursor: pointer;
   }
@@ -346,7 +346,7 @@
 
   .field-label {
     color: #7b7b8c;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .field-input {
@@ -368,7 +368,7 @@
   .field-hint {
     margin: 0;
     color: #6d6d7d;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.4;
   }
 
@@ -382,7 +382,7 @@
     border: 1px solid transparent;
     border-radius: 4px;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 3px 8px;
     cursor: pointer;
   }
@@ -513,7 +513,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: #6d6d7d;
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .mono {
@@ -531,7 +531,7 @@
     background: rgba(139, 233, 253, 0.1);
     color: #8be9fd;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 11px;
+    font-size: 12px;
     padding: 1px 5px;
     white-space: nowrap;
   }
@@ -543,7 +543,7 @@
     border-radius: 4px;
     background: #24242f;
     color: #9a9aad;
-    font-size: 11px;
+    font-size: 12px;
     padding: 1px 5px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -580,7 +580,7 @@
     background: transparent;
     color: #9a9aad;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 6px;
     cursor: pointer;
   }
@@ -611,7 +611,7 @@
     margin: 0;
     padding: 8px;
     color: #6d6d7d;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.45;
   }
 
@@ -630,7 +630,7 @@
     background: transparent;
     color: #bd93f9;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 0 2px;
     cursor: pointer;
     text-decoration: underline;

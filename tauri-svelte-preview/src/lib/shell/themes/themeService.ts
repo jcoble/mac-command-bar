@@ -133,6 +133,24 @@ function paintTargets(root: HTMLElement | null | undefined): HTMLElement[] {
 }
 
 /**
+ * Remove every inline color this service ever painted.
+ *
+ * Painting writes inline properties onto `<html>`, which outranks the
+ * `:has(.next-shell)` scoping that keeps the old shell on its own palette —
+ * and inline styles outlive the shell unless something takes them off. The
+ * /next page calls this from its unmount cleanup so leaving the shell leaves
+ * the document exactly as it was found. Walks the SAME token names paint()
+ * writes (the registry test pins that the two lists cannot drift apart).
+ */
+export function clearTheme(root?: HTMLElement | null): void {
+  for (const target of paintTargets(root)) {
+    for (const name of Object.keys(current.tokens)) {
+      target.style.removeProperty(name);
+    }
+  }
+}
+
+/**
  * Switch to a theme: paint the chrome, tell the editor and the terminals, and
  * remember the choice. An unknown id lands on the theme the app ships with, so
  * this never fails on a stale or hand-edited settings file.
