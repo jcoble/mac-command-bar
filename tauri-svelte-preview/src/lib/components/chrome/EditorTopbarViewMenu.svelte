@@ -25,7 +25,10 @@
    * `.view-menu-anchor`/`.view-menu-button` toggle stays inline in `+page.svelte`
    * — a scoped copy here would hash its selectors and not reach that inline markup.
    * Only the dock-panel-manager rules and the terminal-picker layout (which were
-   * page-scoped) move into the scoped `<style>` below.
+   * page-scoped) move into the scoped style block below. (Do not write that tag
+   * out in full here — see the note in `CommandPaletteOverlay.svelte`: the type
+   * checker reads the rest of the file as CSS if it finds an opening style tag
+   * inside this comment.)
    *
    * The dock-panel-manager rows call `dockGroupIDForPanel(dockLayout, panelID)` and
    * `dockPanelMoveTargets(panelID)` as fn props; passing `dockLayout` (= the rune

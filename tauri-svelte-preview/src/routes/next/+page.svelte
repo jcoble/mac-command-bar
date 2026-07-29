@@ -13,11 +13,16 @@
   import { onMount, tick } from 'svelte';
 
   import '$lib/shell/styles/nextTokens.css';
+  /* Tailwind + the shadcn component variables. Imported HERE and nowhere else:
+     the old shell shares `app.css` with this page and must keep rendering
+     exactly as it does today, so this file must never reach that route. */
+  import '$lib/shell/styles/next.css';
 
+  import ActivityBar from '$lib/shell/components/ActivityBar.svelte';
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
-  import ContextPanel from '$lib/shell/components/ContextPanel.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
+  import SessionsColumn from '$lib/shell/components/SessionsColumn.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
@@ -25,6 +30,15 @@
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { editorState, resetEditorState } from '$lib/shell/editor/editorStore.svelte';
   import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
+  import {
+    SESSIONS_MAX_WIDTH,
+    SESSIONS_MIN_WIDTH,
+    SESSIONS_STRIP_WIDTH,
+    SESSIONS_WIDTH,
+    type RegionWidthLimits,
+    type ShellRegionId
+  } from '$lib/shell/layout/frame';
+  import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
   import {
@@ -34,6 +48,7 @@
     writeWorkspaces,
     type SessionWorkspaceSnapshot
   } from '$lib/shell/sessionWorkspaces';
+  import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
   import { registerShellCommands } from '$lib/shell/shellCommands';
   import { shellPanels } from '$lib/shell/shellPanels';
   import {
@@ -60,6 +75,11 @@
   const pendingHosts = new Map<string, HTMLElement>();
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
   const awaitingReattach = new Set<string>();
+  /** Sessions with a restart already under way. Added before the first await, so
+   * a second click on "Start again" cannot get past it while the first click is
+   * still waiting on the backend — two starts for one row would leave two agents
+   * resuming the same conversation, with only one of them reachable. */
+  const restarting = new Set<string>();
   /** ptySessionId -> the PTY's REAL grid (launch `backend.list()`), fed to
    * `adoptExisting`: a HIDDEN host cannot be measured, so without it a survivor's
    * view keeps 80x24 and wraps its replay wrong. */
@@ -78,9 +98,23 @@
 
   let service: ReturnType<typeof createTerminalService> | null = null;
   let disposed = false;
-  let frameControls: { resetLayout(): void; showCenterPanel(id: string): void } | null = null;
-  /** The left column's own controls; it builds after the frame does. */
-  let sidebarControls: { resetLayout(): void; expandSourceControl(): void } | null = null;
+  let frameControls: {
+    resetLayout(): void;
+    showCenterPanel(id: string): void;
+    setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
+    setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
+    regionWidth(id: ShellRegionId): number | null;
+  } | null = null;
+  /** The tool column's own controls; it builds after the frame does. */
+  let sidebarControls: {
+    resetLayout(): void;
+    expandSourceControl(): void;
+    selectView(id: SidebarViewId): void;
+  } | null = null;
+  /** Which tool view is open. The column decides it and says so; the page holds
+   * the answer only because the icon strip that draws it is a separate region
+   * of the frame, on the far right edge. */
+  let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
   /** The overlay layer, for opening the settings dialog it owns. */
   let overlays: { openSettings(): void } | null = null;
   let refitScheduled = false;
@@ -96,11 +130,46 @@
     expandSourceControl: () => sidebarControls?.expandSourceControl()
   });
 
-  /** "Reset layout" means ALL of it: the grid regions, the center tabs, and the
-   * left column, which remembers its section sizes under its own key. */
+  /**
+   * Is the sessions column folded up to a strip? The PAGE owns this rather
+   * than the column, because folding is a WIDTH: the column says it wants to
+   * fold, and the frame is what actually makes the region 52px wide.
+   *
+   * Read once here, at component init — an explicit read, not an effect.
+   */
+  let sessionsCollapsed = $state(
+    typeof window === 'undefined' ? false : readSessionsCollapsed(window.localStorage)
+  );
+
+  /** Tell the frame how wide the sessions column is now. The limits go with
+   * the width: folded, the column is fixed at strip width so the divider
+   * beside it cannot be dragged; open, it can be dragged again. */
+  function applySessionsWidth(collapsed: boolean): void {
+    frameControls?.setRegionWidth(
+      'sessions',
+      collapsed ? SESSIONS_STRIP_WIDTH : SESSIONS_WIDTH,
+      collapsed
+        ? { minimumWidth: SESSIONS_STRIP_WIDTH, maximumWidth: SESSIONS_STRIP_WIDTH }
+        : { minimumWidth: SESSIONS_MIN_WIDTH, maximumWidth: SESSIONS_MAX_WIDTH }
+    );
+  }
+
+  /** Fold the sessions column up, or open it out. Remembered under its own
+   * key so the next launch comes back the way it was left. */
+  function collapseSessions(collapsed: boolean): void {
+    sessionsCollapsed = collapsed;
+    writeSessionsCollapsed(window.localStorage, collapsed);
+    applySessionsWidth(collapsed);
+  }
+
+  /** "Reset layout" means ALL of it: the grid regions (so both side columns go
+   * back to their default widths), the center tabs, and the tool column, which
+   * remembers its section sizes and its open view under its own keys. A folded
+   * sessions column is part of that arrangement, so it opens out too. */
   function resetLayout(): void {
     frameControls?.resetLayout();
     sidebarControls?.resetLayout();
+    if (sessionsCollapsed) collapseSessions(false);
   }
 
   /** Coalesce dockview's layout bursts into one refit per frame. */
@@ -154,15 +223,29 @@
     });
   }
 
-  /** Wait for TerminalSurface to mount the host for `ownedId`. */
+  /** Wait for TerminalSurface to mount the host for `ownedId`.
+   *
+   * A host that is no longer IN the page is not an answer: a session whose
+   * terminal was closed loses its host div, and this map still holds the one it
+   * used to have. Building a terminal on that detached element would leave the
+   * session running with nothing on screen — so a host that has been taken out
+   * of the page is dropped here, and the wait continues for the one Svelte is
+   * about to mount in its place. */
   async function hostFor(ownedId: string): Promise<HTMLElement | null> {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    const mounted = (): HTMLElement | null => {
       const host = pendingHosts.get(ownedId);
+      if (!host) return null;
+      if (host.isConnected) return host;
+      pendingHosts.delete(ownedId);
+      return null;
+    };
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const host = mounted();
       if (host) return host;
       await tick();
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 8));
     }
-    return pendingHosts.get(ownedId) ?? null;
+    return mounted();
   }
 
   /** Re-attach one reload survivor; `awaitingReattach` guards double-adopting. */
@@ -273,6 +356,122 @@
     // Persist the PTY id: reload re-attach reads it back out of localStorage.
     updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
+  }
+
+  /**
+   * EXPLICIT IO: start a finished session up again, in place.
+   *
+   * It stays the SAME session — same `ownedId`, so the files it had open, the
+   * branch and task the scanner gave it, and the day it was marked done all
+   * survive. Being picked back up is not a new piece of work, and it does not
+   * un-finish a finished one either: a done session started again stays under
+   * Done until the user reopens it.
+   *
+   * What it cannot keep is the process. A terminal that has ended cannot be
+   * revived, so this spawns a NEW one in the same folder and replays the
+   * session's resume command — the same thing resuming a scanned session does,
+   * which is why the agent picks the conversation up where it left off. A
+   * session started here rather than found on disk has no resume command and
+   * gets a plain shell back.
+   *
+   * Only one restart per row can be in flight. The row keeps reading "finished"
+   * — and so keeps offering the button — for as long as the first click is
+   * waiting on the backend, so without the `restarting` guard a double-click
+   * would spawn two terminals for one session. The second would replace the
+   * first in the service's bookkeeping while the first process kept running,
+   * leaving two agents appending to the same transcript and only one of them
+   * showing up anywhere the user could reach it.
+   */
+  async function restartOwned(ownedId: string): Promise<void> {
+    // Checked and claimed before the first await, so a second click cannot slip
+    // through the window the first one opens.
+    if (!service || disposed || restarting.has(ownedId)) return;
+    const session = rail.owned.find((entry) => entry.ownedId === ownedId);
+    // Only a finished session can be started again; a running one already is.
+    if (!session || session.state !== 'exited') return;
+    const label = session.title || ownedId;
+    restarting.add(ownedId);
+
+    /**
+     * Put the terminal the manager promoted back on screen. Closing a view
+     * makes another session's view visible and `closeOwned` reports which one;
+     * every other caller adopts that answer. On the paths below that never
+     * reach `selectOwned(ownedId)` this is the only thing standing between the
+     * user and another session's scrollback sitting under this session's title.
+     */
+    const adoptSuccessor = async (successor: string | null): Promise<void> => {
+      if (successor === null) return;
+      if (!rail.owned.some((entry) => entry.ownedId === successor)) return;
+      await selectOwned(successor);
+    };
+
+    /** Whoever the first close promoted, kept where every exit can see it. */
+    let successor: string | null = null;
+
+    try {
+      // The old terminal is over: drop its view and let the backend forget the
+      // dead process. One session has one view, so without this the new
+      // terminal would open underneath the last one's final output — and the
+      // backend record of the finished process would be left with nothing able
+      // to reach it. A refusal here is not worth stopping for or reporting: it
+      // means the backend could not tidy away something that is already dead,
+      // and the session is about to get a working terminal regardless.
+      awaitingReattach.delete(ownedId);
+      const closed = await service.closeOwned(ownedId, session.ptySessionId);
+      successor = closed?.successor ?? null;
+
+      // Say the row is running BEFORE asking for a terminal host: the terminal
+      // surface only keeps a host on screen for a session it believes has a
+      // terminal, so while the row still reads as finished there is nothing for
+      // `hostFor` to wait for. The old PTY id goes at the same time — it names
+      // a process that no longer exists.
+      updateOwnedSession(ownedId, { state: 'live', ptySessionId: null });
+
+      const host = await hostFor(ownedId);
+      if (!host) {
+        updateOwnedSession(ownedId, { state: 'exited' });
+        rail.error = `no terminal host for "${label}"`;
+        await adoptSuccessor(successor);
+        return;
+      }
+      // `startOwned` reads the folder and the resume command off this record;
+      // the PTY id it had is cleared so nothing can point at the old process.
+      const ptySessionId = await service.startOwned({ ...session, ptySessionId: null }, host);
+      if (!ptySessionId) {
+        updateOwnedSession(ownedId, { state: 'exited' });
+        rail.error = `could not start "${label}" again: no new terminal opened`;
+        await adoptSuccessor(successor);
+        return;
+      }
+
+      // Ask again what the row says now. The moment it read "running" its Close
+      // and Remove buttons came back, and either of them could have been used
+      // while the terminal was still starting. Neither could reach this PTY —
+      // it did not exist yet — so adopting it here would put back a session the
+      // user has just closed, or attach a live process to a row that is gone.
+      const current = rail.owned.find((entry) => entry.ownedId === ownedId);
+      if (!current || current.state === 'exited') {
+        const closedAgain = await service.closeOwned(ownedId, ptySessionId);
+        await adoptSuccessor(closedAgain?.successor ?? null);
+        return;
+      }
+
+      // Persist the new PTY id: reload re-attach reads it back out of storage.
+      updateOwnedSession(ownedId, { ptySessionId, state: 'live' });
+      await selectOwned(ownedId);
+    } catch (error) {
+      // The row goes back to finished rather than sitting there claiming to be
+      // running: nothing started, and the card's buttons must still offer this.
+      updateOwnedSession(ownedId, { state: 'exited' });
+      if (!disposed) {
+        rail.error = `could not start "${label}" again: ${describeError(error)}`;
+        // Same reason as the early returns above: the close at the top of this
+        // function already put someone else's terminal on screen.
+        await adoptSuccessor(successor);
+      }
+    } finally {
+      restarting.delete(ownedId);
+    }
   }
 
   /**
@@ -435,18 +634,31 @@
 
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
      shadow the imported `rail` store and break every `rail.owned` read. -->
-{#snippet railArea()}
-  <ShellSidebar
+{#snippet sessionsArea()}
+  <SessionsColumn
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
-    scanning={rail.scanning} onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
+    scanning={rail.scanning} collapsed={sessionsCollapsed}
+    onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal} onRestart={restartOwned}
     onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
     onReopen={reopenOwnedSession} onRemove={removeSession}
-    onRescan={scanRail} onReady={(controls) => (sidebarControls = controls)}
+    onRescan={scanRail} onCollapse={collapseSessions}
+  />
+{/snippet}
+{#snippet toolsArea()}
+  <ShellSidebar
+    onReady={(controls) => (sidebarControls = controls)}
+    onActiveViewChange={(id) => (activeView = id)}
     onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
+    onContextVisible={(visible) => shellPanels.contextVisible(visible)}
+  />
+{/snippet}
+{#snippet activityArea()}
+  <ActivityBar
+    activeId={activeView}
+    onSelect={(id) => sidebarControls?.selectView(id)}
     onOpenSettings={() => overlays?.openSettings()}
   />
 {/snippet}
-{#snippet contextArea()}<ContextPanel />{/snippet}
 {#snippet dockArea()}<DockPanel onReset={resetLayout} />{/snippet}
 {#snippet sessionArea()}
   <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
@@ -465,12 +677,38 @@
 
 <main class="next-shell">
   <ShellFrame
-    rail={railArea} context={contextArea} dock={dockArea}
+    sessions={sessionsArea} tools={toolsArea} activity={activityArea} dock={dockArea}
     center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}
     onReady={(controls) => {
       frameControls = controls;
+      // Say what the sessions column is, once, here, where the frame first
+      // exists — in BOTH cases, not only the folded one.
+      //
+      // Two separate things remember the column: the stored grid layout, which
+      // carries its width AND the limits it may be dragged between, and the
+      // fold flag under its own key. They are written at different moments —
+      // the flag straight away, the grid a quarter of a second later — so a
+      // reload in between leaves the flag saying "open" and the grid still
+      // holding the folded 52px with its minimum and maximum both pinned there.
+      // Saying nothing in the open case is what let that stand: the column came
+      // back as an unreadable 52px sliver whose divider could not be dragged,
+      // with the button that would unfold it clipped out of reach.
+      if (sessionsCollapsed) {
+        applySessionsWidth(true);
+      } else {
+        controls.setRegionLimits('sessions', {
+          minimumWidth: SESSIONS_MIN_WIDTH,
+          maximumWidth: SESSIONS_MAX_WIDTH
+        });
+        // Only rescue a column that came back narrower than it is allowed to
+        // be. Any other width is one the user dragged, and it survives.
+        const restored = controls.regionWidth('sessions');
+        if (restored !== null && restored < SESSIONS_MIN_WIDTH) {
+          controls.setRegionWidth('sessions', SESSIONS_WIDTH);
+        }
+      }
       // One timer tick later: the tab area announces the tab it restored
       // through a microtask, and those all arrive before any timer. Waiting
       // means a restored tab loads nothing, while a real click still does.

@@ -49,6 +49,13 @@ const codexSessionTailBytes = 256 * 1024;
  */
 const codexSessionMetaProbeBytes = 64 * 1024;
 const cmuxSessionResultHeadroom = 256;
+/**
+ * How long the one-line "last thing said" on a row may be, prefix included.
+ * Long enough to recognise the turn, short enough to stay on one line.
+ */
+const agentSessionTurnPreviewChars = 120;
+const agentSessionUserTurnPrefix = 'You: ';
+const agentSessionAgentTurnPrefix = 'Agent: ';
 const agentSessionResultLimit =
   claudeSessionFileLimit + codexSessionFileLimit + cmuxSessionResultHeadroom;
 
@@ -94,6 +101,32 @@ export type LocalAgentSessionRecord = {
   taskId?: string | null;
   pullRequestHint?: string | null;
   sourceLabel?: string | null;
+  /**
+   * How many turns of the conversation the scan saw, and the last one of them,
+   * so a row can say "12 messages" and show what was last said.
+   *
+   * Both are read out of the transcript text the scan already had in hand for
+   * the title — no extra file is opened and no read window is widened. That
+   * means the count is a floor rather than a total: the scan reads a bounded
+   * window of each file, so a long session reports the turns inside that window
+   * and no more. A row that says "12 messages" is saying "at least 12", which
+   * is the honest thing a bounded read can say.
+   *
+   * A turn is something the user typed or something the agent said back in
+   * words. Tool calls and their results are how the work gets done, not what was
+   * said, so they are not counted — counting them would put "418 messages" on a
+   * row where the two of them exchanged a dozen.
+   *
+   * The two agents write their transcripts differently and the count has to mean
+   * the same thing on both kinds of row, because they sit on the same list.
+   * Claude Code writes one record per reply. Codex writes a separate record for
+   * every paragraph it narrates between tool calls, so a run of consecutive
+   * Codex agent records is counted as the ONE thing the agent said back; without
+   * that a Codex row read "691 messages" beside a Claude row reading "33" for a
+   * longer conversation.
+   */
+  messageCount?: number | null;
+  latestTurnPreview?: string | null;
 };
 
 export type LocalAgentSessionDerivedMetadata = {
@@ -303,6 +336,11 @@ export function parseCodexIndexJsonl(input: string): LocalAgentSessionRecord[] {
 export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[] {
   const records: LocalAgentSessionRecord[] = [];
   const firstPrompts = new Map<string, string>();
+  const messageCounts = new Map<string, number>();
+  const latestTurns = new Map<string, string>();
+  // Who spoke last in each session, so a run of agent narration can be counted
+  // as the one thing the agent said rather than as twenty.
+  const lastSpeakers = new Map<string, CodexSpeaker>();
 
   for (const value of parseJsonLines(input)) {
     const type = optionalString(value.type);
@@ -344,6 +382,21 @@ export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[]
       const prompt = codexUserPromptText(value);
       if (latest && prompt && !firstPrompts.has(latest.id)) firstPrompts.set(latest.id, prompt);
 
+      const turn = latest ? codexConversationTurn(value) : null;
+      if (latest && turn) {
+        const [speaker, text] = turn;
+        // Codex writes a separate record for every paragraph it narrates
+        // between tool calls, so a run of them is ONE thing the agent said
+        // back, not twenty. Without this a Codex row read "691 messages" where
+        // the Claude row beside it, for a longer conversation, read "33".
+        const repeatNarration = speaker === 'agent' && lastSpeakers.get(latest.id) === 'agent';
+        if (!repeatNarration) {
+          messageCounts.set(latest.id, (messageCounts.get(latest.id) ?? 0) + 1);
+        }
+        lastSpeakers.set(latest.id, speaker);
+        latestTurns.set(latest.id, text); // a later line is the newer turn
+      }
+
       const cwd = codexResponseItemWorkdir(value);
       const description = codexResponseItemDescription(value);
       if (!cwd && !description) continue;
@@ -353,9 +406,38 @@ export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[]
 
   for (const record of records) {
     record.title = codexDisplayTitle(record.title, firstPrompts.get(record.id) ?? null);
+    record.messageCount = messageCounts.get(record.id) ?? null;
+    record.latestTurnPreview = latestTurns.get(record.id) ?? null;
   }
 
   return records;
+}
+
+/** Who said one message of a Codex conversation. */
+type CodexSpeaker = 'user' | 'agent';
+
+/**
+ * One message of a Codex conversation: who said it, and how a row would show it.
+ * The user side uses the same filter the title does, so the opening turns Codex
+ * writes for itself — the repository instructions, the environment block — are
+ * neither counted nor shown; the agent side needs actual words.
+ */
+function codexConversationTurn(value: Record<string, unknown>): [CodexSpeaker, string] | null {
+  const payload = objectValue(value.payload);
+  if (!payload || optionalString(payload.type) !== 'message') return null;
+
+  const role = optionalString(payload.role);
+  if (role === 'user') {
+    const text = codexTypedUserText(value);
+    return text ? ['user', agentSessionTurnPreview(agentSessionUserTurnPrefix, text)] : null;
+  }
+
+  if (role === 'assistant') {
+    const text = valueToText(payload.content)?.trim();
+    return text ? ['agent', agentSessionTurnPreview(agentSessionAgentTurnPrefix, text)] : null;
+  }
+
+  return null;
 }
 
 /**
@@ -444,6 +526,12 @@ export function dropCodexSubagentSessions(
  * recognise, so the title comes from the first turn that is none of them.
  */
 function codexUserPromptText(value: Record<string, unknown>) {
+  const text = codexTypedUserText(value);
+  return text ? compactText(text, 140) : null;
+}
+
+/** The same turn, at full length, for callers that do their own cutting. */
+function codexTypedUserText(value: Record<string, unknown>) {
   const payload = objectValue(value.payload);
   if (!payload || optionalString(payload.type) !== 'message') return null;
   if (optionalString(payload.role) !== 'user') return null;
@@ -452,7 +540,7 @@ function codexUserPromptText(value: Record<string, unknown>) {
   if (!text) return null;
   if (codexInjectedPromptPrefixes.some((prefix) => text.startsWith(prefix))) return null;
 
-  return compactText(text, 140);
+  return text;
 }
 
 /**
@@ -606,6 +694,8 @@ export function parseClaudeJsonl(input: string, projectPath: string): LocalAgent
   const records: LocalAgentSessionRecord[] = [];
   const aiTitles = new Map<string, string>();
   const firstPrompts = new Map<string, string>();
+  const messageCounts = new Map<string, number>();
+  const latestTurns = new Map<string, string>();
 
   for (const value of parseJsonLines(input)) {
     // One such entry condemns the whole transcript: these files are what they
@@ -619,6 +709,11 @@ export function parseClaudeJsonl(input: string, projectPath: string): LocalAgent
     if (aiTitle) aiTitles.set(aiTitle[0], aiTitle[1]); // a later line is the newer title
     const prompt = claudeUserPromptText(value);
     if (prompt && !firstPrompts.has(prompt[0])) firstPrompts.set(prompt[0], prompt[1]);
+    const turn = claudeConversationTurn(value);
+    if (turn) {
+      messageCounts.set(turn[0], (messageCounts.get(turn[0]) ?? 0) + 1);
+      latestTurns.set(turn[0], turn[1]); // a later line is the newer turn
+    }
 
     const id = optionalString(value.sessionId) ?? optionalString(value.session_id);
     if (!id) continue;
@@ -646,9 +741,57 @@ export function parseClaudeJsonl(input: string, projectPath: string): LocalAgent
       firstPrompts.get(record.id) ?? null,
       record.projectPath
     );
+    record.messageCount = messageCounts.get(record.id) ?? null;
+    record.latestTurnPreview = latestTurns.get(record.id) ?? null;
   }
 
   return records;
+}
+
+/**
+ * One turn of the conversation as a row counts it, and how that row would show
+ * it. Tool calls and tool results are `type: "user"` and `type: "assistant"`
+ * records too, so both sides insist on actual words: a user turn goes through
+ * the same filter the title uses (no slash-command wrappers, no resume caveat),
+ * and an assistant turn needs at least one text block.
+ */
+function claudeConversationTurn(value: Record<string, unknown>): [string, string] | null {
+  const type = optionalString(value.type);
+  if (type === 'user') {
+    const prompt = claudeUserPromptText(value);
+    return prompt ? [prompt[0], agentSessionTurnPreview(agentSessionUserTurnPrefix, prompt[1])] : null;
+  }
+
+  if (type === 'assistant') {
+    const id = optionalString(value.sessionId);
+    const text = claudeAssistantText(value);
+    return id && text ? [id, agentSessionTurnPreview(agentSessionAgentTurnPrefix, text)] : null;
+  }
+
+  return null;
+}
+
+/**
+ * What the agent said in words on one transcript line. An assistant record whose
+ * content is nothing but `tool_use` blocks said nothing, and yields null.
+ */
+function claudeAssistantText(value: Record<string, unknown>) {
+  const content = objectValue(value.message)?.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .flatMap((item) => {
+              const object = objectValue(item);
+              return optionalString(object?.type) === 'text'
+                ? optionalString(object?.text) ?? []
+                : [];
+            })
+            .join(' ')
+        : null;
+
+  return text?.trim() || null;
 }
 
 /**
@@ -758,10 +901,24 @@ function claudeAiTitle(value: Record<string, unknown>): [string, string] | null 
 }
 
 /**
+ * Openings that mean Claude Code wrote this "user" message, not the user. `<`
+ * covers every tagged block it injects (`<command-name>`,
+ * `<local-command-caveat>`); the resume caveat and the interruption notice are
+ * the two it writes as plain sentences.
+ *
+ * The interruption matters more than it looks. Pressing Escape in the middle of
+ * an answer is how a session usually ends, so it is disproportionately likely to
+ * be the LAST thing in a transcript — and the row shows the last thing said. In
+ * 617 real user turns sampled on this machine, 50 of them were exactly
+ * "[Request interrupted by user]".
+ */
+const claudeInjectedPromptPrefixes = ['<', 'Caveat:', '[Request interrupted'];
+
+/**
  * The first genuine user prompt in the scanned window. Tool results are
  * `type: "user"` too, so plain `content` text is required and `tool_result` items
- * are dropped; slash-command wrappers (`<command-name>…`) and the resume caveat
- * are skipped because neither says what the session is about.
+ * are dropped; anything Claude Code wrote for itself is skipped because none of
+ * it says what the session is about.
  */
 function claudeUserPromptText(value: Record<string, unknown>): [string, string] | null {
   if (optionalString(value.type) !== 'user' || value.isMeta === true) return null;
@@ -785,7 +942,8 @@ function claudeUserPromptText(value: Record<string, unknown>): [string, string] 
         : null;
 
   const trimmed = text?.trim();
-  if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('Caveat:')) return null;
+  if (!trimmed) return null;
+  if (claudeInjectedPromptPrefixes.some((prefix) => trimmed.startsWith(prefix))) return null;
   return [id, trimmed];
 }
 
@@ -833,6 +991,15 @@ function mergeAgentSessionRecord(existing: LocalAgentSessionRecord, candidate: L
   if (!existing.model) existing.model = candidate.model;
   if (!existing.projectPath) existing.projectPath = candidate.projectPath;
 
+  // The fuller read wins, whichever record it came from. One session can be
+  // described by more than one file, and each count is a floor — the bigger
+  // floor is the one closer to the truth. A record that counted nothing never
+  // overwrites one that did.
+  if (typeof candidate.messageCount === 'number') {
+    existing.messageCount = Math.max(existing.messageCount ?? 0, candidate.messageCount);
+  }
+  if (!existing.latestTurnPreview) existing.latestTurnPreview = candidate.latestTurnPreview;
+
   const candidateIsNewer =
     candidate.lastActivity !== null
     && (existing.lastActivity === null || candidate.lastActivity > existing.lastActivity);
@@ -842,6 +1009,7 @@ function mergeAgentSessionRecord(existing: LocalAgentSessionRecord, candidate: L
     existing.model = candidate.model ?? existing.model;
     existing.projectPath = candidate.projectPath ?? existing.projectPath;
     existing.lastActivity = candidate.lastActivity;
+    existing.latestTurnPreview = candidate.latestTurnPreview ?? existing.latestTurnPreview;
   }
 
   for (const command of candidate.resumeCommands) {
@@ -1995,6 +2163,19 @@ function decodeClaudeProjectDir(name: string) {
   if (!name.trim()) return null;
   const segments = name.split('-').filter(Boolean);
   return segments.length > 0 ? `/${segments.join('/')}` : null;
+}
+
+/**
+ * One line of "who said what", the way a row shows it: `You: …` or `Agent: …`,
+ * whitespace squeezed to single spaces, cut to fit on one line.
+ *
+ * Cut the way everything else in this file is cut — with three dots, where the
+ * Rust scanner uses a single ellipsis character. The two have differed since the
+ * titles were written and the rail reads fine either way; matching the file it
+ * lives in beats matching the other language.
+ */
+function agentSessionTurnPreview(prefix: string, text: string) {
+  return compactText(`${prefix}${text}`, agentSessionTurnPreviewChars);
 }
 
 function compactText(value: string, maxChars: number) {

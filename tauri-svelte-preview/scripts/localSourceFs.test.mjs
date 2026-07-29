@@ -461,6 +461,352 @@ try {
     assert.equal(bare.sourceLabel, 'CMUX Claude · Untitled Codex session');
   }
 
+  // --- How much was said, and the last thing said ----------------------------
+  // The fixtures below are written out line for line in the Rust scanner's tests
+  // (`core/src/scanners/sessions.rs`). Both scanners fill the same rail, so a row
+  // must read the same whichever one produced it, and anything that drifts here
+  // shows up as a message count in the app that the web preview disagrees with.
+  //
+  // One honest difference: this file cuts long text with three dots where the
+  // Rust scanner uses a single ellipsis character. That has been true of session
+  // titles since they were written, and the assertions below pin it rather than
+  // pretend otherwise.
+  const conversationHome = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
+  try {
+    const conversationDir = join(
+      conversationHome, '.claude', 'projects', '-Users-dev-work-mac-command-bar'
+    );
+    await mkdir(conversationDir, { recursive: true });
+
+    /**
+     * A session with an actual back-and-forth in it, and the tool traffic that
+     * ran in between: two things the user typed (one of them a slash command,
+     * which is not conversation), two answers in words, one tool call and one
+     * tool result.
+     */
+    const conversation = (lastAnswer) =>
+      jsonl(
+        {
+          type: 'user', isSidechain: false, sessionId: 'S9', cwd,
+          timestamp: '2026-07-29T09:00:00Z',
+          message: { role: 'user', content: 'Fix the resume rail' }
+        },
+        {
+          type: 'assistant', isSidechain: false, sessionId: 'S9',
+          timestamp: '2026-07-29T09:01:00Z',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Reading the scanner now.' }] }
+        },
+        {
+          type: 'assistant', isSidechain: false, sessionId: 'S9',
+          timestamp: '2026-07-29T09:02:00Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]
+          }
+        },
+        {
+          type: 'user', isSidechain: false, sessionId: 'S9',
+          timestamp: '2026-07-29T09:03:00Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', content: 'File does not exist.' }]
+          }
+        },
+        {
+          type: 'user', isSidechain: false, sessionId: 'S9',
+          timestamp: '2026-07-29T09:04:00Z',
+          message: { role: 'user', content: '<command-name>compact</command-name>' }
+        },
+        {
+          type: 'assistant', isSidechain: false, sessionId: 'S9',
+          timestamp: '2026-07-29T09:05:00Z',
+          message: { role: 'assistant', content: [{ type: 'text', text: lastAnswer }] }
+        }
+      );
+
+    await writeFile(
+      join(conversationDir, 'S9.jsonl'),
+      conversation('The  rail was\n  reading the wrong file.'),
+      'utf8'
+    );
+    // A transcript that held no conversation says nothing rather than zero.
+    await writeFile(
+      join(conversationDir, 'S10.jsonl'),
+      jsonl({ type: 'file-history-snapshot', sessionId: 'S10', timestamp: '2026-07-29T08:00:00Z' }),
+      'utf8'
+    );
+
+    const talked = await scanLocalAgentSessions(conversationHome);
+    const said = talked.find((session) => session.id === 'S9');
+    // Only words count: the tool call, its result and the slash command are how
+    // the work got done, not what was said.
+    assert.equal(said.messageCount, 3);
+    assert.equal(said.latestTurnPreview, 'Agent: The rail was reading the wrong file.');
+    const quiet = talked.find((session) => session.id === 'S10');
+    assert.equal(quiet.messageCount, null);
+    assert.equal(quiet.latestTurnPreview, null);
+
+    // One line means one line: a longer answer is cut and marked.
+    const longAnswer =
+      'The scanner was reading the wrong file the whole time, which is why every '
+      + 'row said Claude session and none of them said anything else at all';
+    await writeFile(join(conversationDir, 'S9.jsonl'), conversation(longAnswer), 'utf8');
+    const cut = (await scanLocalAgentSessions(conversationHome))
+      .find((session) => session.id === 'S9').latestTurnPreview;
+    assert.ok(cut.startsWith('Agent: The scanner was reading the wrong file'));
+    // 119 characters of text plus the three dots this file cuts with.
+    assert.equal(cut.length, 122);
+    assert.ok(cut.endsWith('...'));
+
+    // The user's own turn is shown as the user's when it came last. Mirrors the
+    // Rust case of the same name.
+    await writeFile(
+      join(conversationDir, 'S9.jsonl'),
+      `${conversation('The  rail was\n  reading the wrong file.')}\n${jsonl({
+        type: 'user', isSidechain: false, sessionId: 'S9',
+        timestamp: '2026-07-29T09:06:00Z',
+        message: { role: 'user', content: 'Try it again' }
+      })}`,
+      'utf8'
+    );
+    const answered = (await scanLocalAgentSessions(conversationHome))
+      .find((session) => session.id === 'S9');
+    assert.equal(answered.messageCount, 4);
+    assert.equal(answered.latestTurnPreview, 'You: Try it again');
+
+    // Pressing Escape in the middle of an answer is how a session usually ends,
+    // and Claude writes that as a user message. It is not something the user
+    // said, so it is not a turn — and letting it through put "You: [Request
+    // interrupted by user]" on the most prominent line of the card, where it
+    // says nothing at all about the session. The row falls back to the last
+    // thing that really was said.
+    await writeFile(
+      join(conversationDir, 'S9.jsonl'),
+      `${conversation('The  rail was\n  reading the wrong file.')}\n${jsonl({
+        type: 'user', isSidechain: false, sessionId: 'S9',
+        timestamp: '2026-07-29T09:06:00Z',
+        message: { role: 'user', content: '[Request interrupted by user]' }
+      })}`,
+      'utf8'
+    );
+    const interrupted = (await scanLocalAgentSessions(conversationHome))
+      .find((session) => session.id === 'S9');
+    assert.equal(interrupted.messageCount, 3);
+    assert.equal(interrupted.latestTurnPreview, 'Agent: The rail was reading the wrong file.');
+  } finally {
+    await rm(conversationHome, { recursive: true, force: true });
+  }
+
+  const codexTalkHome = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
+  try {
+    await mkdir(join(codexTalkHome, '.codex', 'sessions'), { recursive: true });
+    await writeFile(
+      join(codexTalkHome, '.codex', 'sessions', 'rollout-019fa964.jsonl'),
+      jsonl(
+        {
+          timestamp: '2026-07-28T16:42:17.000Z',
+          type: 'session_meta',
+          payload: {
+            id: '019fa964',
+            cwd: '/Users/dev/work/rental-management',
+            originator: 'codex-tui',
+            thread_source: 'user',
+            source: 'cli'
+          }
+        },
+        {
+          timestamp: '2026-07-28T16:42:18.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: '# AGENTS.md instructions for /Users/dev/work/rental-management'
+              }
+            ]
+          }
+        },
+        {
+          timestamp: '2026-07-28T16:42:30.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: 'Please plan out an entire year of scans and entries for the 2027 simulation.'
+              }
+            ]
+          }
+        },
+        {
+          timestamp: '2026-07-28T16:43:00.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Here  is the plan\n for 2027.' }]
+          }
+        }
+      ),
+      'utf8'
+    );
+
+    const [talked] = await scanLocalAgentSessions(codexTalkHome);
+    // The repository instructions Codex sends as the user are not a turn.
+    assert.equal(talked.messageCount, 2);
+    assert.equal(talked.latestTurnPreview, 'Agent: Here is the plan for 2027.');
+
+    // A rollout file with nothing but its opening record says nothing rather
+    // than zero. Mirrors the Rust case of the same name.
+    await writeFile(
+      join(codexTalkHome, '.codex', 'sessions', 'rollout-019fa964.jsonl'),
+      jsonl({
+        timestamp: '2026-07-28T16:42:17.000Z',
+        type: 'session_meta',
+        payload: { id: '019fa964', cwd: '/Users/dev', source: 'cli' }
+      }),
+      'utf8'
+    );
+    const [quiet] = await scanLocalAgentSessions(codexTalkHome);
+    assert.equal(quiet.messageCount, null);
+    assert.equal(quiet.latestTurnPreview, null);
+  } finally {
+    await rm(codexTalkHome, { recursive: true, force: true });
+  }
+
+  // Codex writes a separate record for every paragraph it narrates between tool
+  // calls, so counting records put roughly twenty times as many "messages" on a
+  // Codex row as on a Claude row for the same amount of conversation — and the
+  // two sit on the same list. A run of them is one thing the agent said back.
+  //
+  // The index file that names the session knows neither the count nor the last
+  // turn, and merging it must not wipe out what the rollout file found.
+  const codexNarrationHome = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
+  try {
+    await mkdir(join(codexNarrationHome, '.codex', 'sessions'), { recursive: true });
+    const agentSays = (timestamp, text) => ({
+      timestamp,
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }
+    });
+    await writeFile(
+      join(codexNarrationHome, '.codex', 'sessions', 'rollout-019fa964.jsonl'),
+      jsonl(
+        {
+          timestamp: '2026-07-28T16:42:17.000Z',
+          type: 'session_meta',
+          payload: {
+            id: '019fa964',
+            cwd: '/Users/dev/work/rental-management',
+            originator: 'codex-tui',
+            thread_source: 'user',
+            source: 'cli'
+          }
+        },
+        {
+          timestamp: '2026-07-28T16:42:30.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Plan the 2027 simulation.' }]
+          }
+        },
+        agentSays('2026-07-28T16:43:00.000Z', 'Reading the scanner now.'),
+        {
+          timestamp: '2026-07-28T16:43:10.000Z',
+          type: 'response_item',
+          payload: { type: 'function_call', name: 'shell', arguments: '{}' }
+        },
+        agentSays('2026-07-28T16:43:20.000Z', 'Now changing the reader.'),
+        agentSays('2026-07-28T16:43:30.000Z', 'Here is the plan for 2027.')
+      ),
+      'utf8'
+    );
+    await writeFile(
+      join(codexNarrationHome, '.codex', 'session_index.jsonl'),
+      jsonl({
+        id: '019fa964',
+        thread_name: 'Year simulation planning',
+        updated_at: '2026-07-29T16:00:00.000000Z'
+      }),
+      'utf8'
+    );
+
+    const merged = await scanLocalAgentSessions(codexNarrationHome);
+    assert.equal(merged.length, 1);
+    // One thing the user typed, one thing the agent said back.
+    assert.equal(merged[0].messageCount, 2);
+    assert.equal(merged[0].latestTurnPreview, 'Agent: Here is the plan for 2027.');
+    assert.equal(merged[0].title, 'Year simulation planning');
+  } finally {
+    await rm(codexNarrationHome, { recursive: true, force: true });
+  }
+
+  // A rollout file is read as a window from the start and a window from the end.
+  // When the file is bigger than one window but smaller than two, those two
+  // windows OVERLAP. This bridge decides on the file's real length and reads it
+  // whole instead; the Rust scanner used to compare strings and got it wrong,
+  // so a session in this size band reported two different counts depending on
+  // which side served the row. Mirrors the Rust case of the same name.
+  const codexBigHome = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
+  try {
+    await mkdir(join(codexBigHome, '.codex', 'sessions'), { recursive: true });
+    const padding = 'x'.repeat(700);
+    const exchanges = 200;
+    const lines = [
+      {
+        timestamp: '2026-07-28T16:42:17.000Z',
+        type: 'session_meta',
+        payload: {
+          id: '019fa964',
+          cwd: '/Users/dev/work/rental-management',
+          originator: 'codex-tui',
+          thread_source: 'user',
+          source: 'cli'
+        }
+      }
+    ];
+    for (let index = 0; index < exchanges; index += 1) {
+      lines.push({
+        timestamp: '2026-07-28T16:42:30.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: `Question ${index} ${padding}` }]
+        }
+      });
+      lines.push({
+        timestamp: '2026-07-28T16:43:00.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: `Answer ${index} ${padding}` }]
+        }
+      });
+    }
+    const body = jsonl(...lines);
+    // 256 KB from the start, 256 KB from the end: the fixture has to land in the
+    // band between one window and two, or it proves nothing.
+    assert.ok(body.length > 256 * 1024 && body.length < 512 * 1024);
+    await writeFile(
+      join(codexBigHome, '.codex', 'sessions', 'rollout-019fa964.jsonl'),
+      body,
+      'utf8'
+    );
+
+    const [big] = await scanLocalAgentSessions(codexBigHome);
+    assert.equal(big.messageCount, exchanges * 2);
+  } finally {
+    await rm(codexBigHome, { recursive: true, force: true });
+  }
+
   const codexHome = await mkdtemp(join(tmpdir(), 'mcb-local-home-'));
   try {
     await mkdir(join(codexHome, '.codex', 'sessions'), { recursive: true });

@@ -11,6 +11,7 @@ const scanRecord = {
   resumeCommands: ['claude --resume native-9'],
   branchHint: 'tsk-788-session-workspaces', taskId: 'TSK-788', pullRequestHint: 'PR #12',
   sourceLabel: 'CMUX Claude · proj',
+  messageCount: 12, latestTurnPreview: 'Agent: fixed the reference race',
 };
 
 { // normalizeProvider
@@ -37,19 +38,52 @@ const scanRecord = {
   assert.equal(owned.branch, 'tsk-788-session-workspaces');
   assert.equal(owned.taskId, 'TSK-788');
   assert.equal(owned.pullRequest, 'PR #12');
+  // So do how much was said and the last thing said, so the row keeps them.
+  assert.equal(owned.messageCount, 12);
+  assert.equal(owned.latestTurnPreview, 'Agent: fixed the reference race');
+}
+{ // when the session was last busy travels with it, so a working row can say so
+  const seen = '2026-07-28T09:00:00.000Z';
+  const owned = adoptAgentSession({ ...scanRecord, lastActivity: seen }, mint);
+  assert.equal(owned.lastActivity, seen);
+  // A scan with nothing to say about it leaves the row with no stamp at all.
+  assert.equal(adoptAgentSession(scanRecord, mint).lastActivity, null);
+  for (const junk of [123, true, {}, [], '', undefined]) {
+    assert.equal(
+      adoptAgentSession({ ...scanRecord, lastActivity: junk }, mint).lastActivity,
+      null,
+      `a last-activity stamp of ${JSON.stringify(junk)}`
+    );
+  }
 }
 { // a scan that found none of it leaves the fields empty rather than blank chips
-  const { branchHint, taskId, pullRequestHint, ...bare } = scanRecord;
+  const { branchHint, taskId, pullRequestHint, messageCount, latestTurnPreview, ...bare } =
+    scanRecord;
   const owned = adoptAgentSession(bare, mint);
   assert.equal(owned.branch, null);
   assert.equal(owned.taskId, null);
   assert.equal(owned.pullRequest, null);
+  assert.equal(owned.messageCount, null);
+  assert.equal(owned.latestTurnPreview, null);
+}
+{ // a count of zero turns is nothing to show, not "0 messages"
+  const owned = adoptAgentSession({ ...scanRecord, messageCount: 0 }, mint);
+  assert.equal(owned.messageCount, null);
+  // Anything that is not a whole count of turns is not a count.
+  for (const junk of [-3, 2.5, '12', true, {}, null]) {
+    assert.equal(adoptAgentSession({ ...scanRecord, messageCount: junk }, mint).messageCount, null);
+  }
 }
 { // a session started here has nothing scanned about it yet
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
   assert.equal(fresh.branch, null);
   assert.equal(fresh.taskId, null);
   assert.equal(fresh.pullRequest, null);
+  assert.equal(fresh.messageCount, null);
+  assert.equal(fresh.latestTurnPreview, null);
+  // Including when it was last busy: that is the scanner's reading of a
+  // conversation on disk, and a shell started here has not had one yet.
+  assert.equal(fresh.lastActivity, null);
 }
 { // createFreshSession defaults
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
@@ -97,6 +131,42 @@ const scanRecord = {
       JSON.stringify([{ ...owned, branch: junk, taskId: junk, pullRequest: junk }])
     )[0];
     assert.deepEqual([record.branch, record.taskId, record.pullRequest], [null, null, null]);
+  }
+}
+{ // how much was said and the last thing said survive a save and a reload
+  const owned = adoptAgentSession(scanRecord, mint);
+  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  assert.equal(parsed[0].messageCount, 12);
+  assert.equal(parsed[0].latestTurnPreview, 'Agent: fixed the reference race');
+  // Sessions saved before these fields existed come back with nothing to show.
+  const { messageCount, latestTurnPreview, ...older } = owned;
+  const restored = parseStoredOwnedSessions(JSON.stringify([older]))[0];
+  assert.equal(restored.messageCount, null);
+  assert.equal(restored.latestTurnPreview, null);
+  // And neither is anything a count or a line of text is not.
+  for (const junk of [-3, 2.5, '12', true, {}, [], '', 0]) {
+    const record = parseStoredOwnedSessions(JSON.stringify([{ ...owned, messageCount: junk }]))[0];
+    assert.equal(record.messageCount, null, `a message count of ${JSON.stringify(junk)}`);
+  }
+  for (const junk of [123, true, {}, [], '']) {
+    const record = parseStoredOwnedSessions(
+      JSON.stringify([{ ...owned, latestTurnPreview: junk }])
+    )[0];
+    assert.equal(record.latestTurnPreview, null, `a turn preview of ${JSON.stringify(junk)}`);
+  }
+}
+{ // when the session was last busy survives a save and a reload
+  const seen = '2026-07-28T09:00:00.000Z';
+  const owned = adoptAgentSession({ ...scanRecord, lastActivity: seen }, mint);
+  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  assert.deepEqual(parsed, [owned]);
+  // Sessions saved before this field existed come back with no stamp.
+  const { lastActivity, ...older } = owned;
+  assert.equal(parseStoredOwnedSessions(JSON.stringify([older]))[0].lastActivity, null);
+  // Anything that is not text is not a stamp.
+  for (const junk of [123, true, {}, [], '']) {
+    const record = parseStoredOwnedSessions(JSON.stringify([{ ...owned, lastActivity: junk }]))[0];
+    assert.equal(record.lastActivity, null, `a last-activity stamp of ${JSON.stringify(junk)}`);
   }
 }
 { // reconcile after reload

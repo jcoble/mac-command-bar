@@ -26,6 +26,11 @@ const CODEX_SESSION_TAIL_BYTES: usize = 256 * 1024;
 /// rollout files: median 27 KB, largest 44 KB.
 const CODEX_SESSION_META_PROBE_BYTES: usize = 64 * 1024;
 const CMUX_SESSION_RESULT_HEADROOM: usize = 256;
+/// How long the one-line "last thing said" on a row may be, prefix included.
+/// Long enough to recognise the turn, short enough to stay on one line.
+const AGENT_SESSION_TURN_PREVIEW_CHARS: usize = 120;
+const AGENT_SESSION_USER_TURN_PREFIX: &str = "You: ";
+const AGENT_SESSION_AGENT_TURN_PREFIX: &str = "Agent: ";
 const AGENT_SESSION_RESULT_LIMIT: usize =
     CODEX_SESSION_FILE_LIMIT + CLAUDE_SESSION_FILE_LIMIT + CMUX_SESSION_RESULT_HEADROOM;
 
@@ -54,6 +59,38 @@ pub struct AgentSessionRecord {
     pub pull_request_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_label: Option<String>,
+    /// How many turns of the conversation the scan saw, and the last one of
+    /// them, so a row can say "12 messages" and show what was last said.
+    ///
+    /// Both are read out of the transcript text the scan already had in hand
+    /// for the title — no extra file is opened and no read window is widened.
+    /// That means the count is a floor rather than a total: the scan reads a
+    /// bounded window of each file, so a long session reports the turns inside
+    /// that window and no more. A row that says "12 messages" is saying "at
+    /// least 12", which is the honest thing a bounded read can say.
+    ///
+    /// A turn is something the user typed or something the agent said back in
+    /// words. Tool calls and their results are how the work gets done, not what
+    /// was said, so they are not counted — counting them would put "418
+    /// messages" on a row where the two of them exchanged a dozen.
+    ///
+    /// The two agents write their transcripts differently and the count has to
+    /// mean the same thing on both kinds of row, because they sit on the same
+    /// list. Claude Code writes one record per reply. Codex writes a separate
+    /// record for every paragraph it narrates between tool calls, so a run of
+    /// consecutive Codex agent records is counted as the ONE thing the agent
+    /// said back; without that a Codex row read "691 messages" beside a Claude
+    /// row reading "33" for a longer conversation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_turn_preview: Option<String>,
+}
+
+/// One line of "who said what", the way a row shows it: `You: …` or `Agent: …`,
+/// whitespace squeezed to single spaces, cut to fit on one line.
+fn agent_session_turn_preview(prefix: &str, text: &str) -> String {
+    compact_text(&format!("{prefix}{text}"), AGENT_SESSION_TURN_PREVIEW_CHARS)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +265,8 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 task_id: None,
                 pull_request_hint: None,
                 source_label: None,
+                message_count: None,
+                latest_turn_preview: None,
             })
         })
         .collect()
@@ -236,6 +275,11 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
 pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
     let mut records: Vec<AgentSessionRecord> = Vec::new();
     let mut first_prompts: HashMap<String, String> = HashMap::new();
+    let mut message_counts: HashMap<String, u32> = HashMap::new();
+    let mut latest_turns: HashMap<String, String> = HashMap::new();
+    // Who spoke last in each session, so a run of agent narration can be
+    // counted as the one thing the agent said rather than as twenty.
+    let mut last_speakers: HashMap<String, CodexSpeaker> = HashMap::new();
 
     for value in input
         .lines()
@@ -277,6 +321,8 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     task_id: None,
                     pull_request_hint: None,
                     source_label: None,
+                    message_count: None,
+                    latest_turn_preview: None,
                 };
 
                 if let Some(existing) = records.iter_mut().find(|candidate| {
@@ -316,6 +362,23 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     first_prompts.entry(record.id.clone()).or_insert(prompt);
                 }
 
+                if let Some(id) = records.last().map(|record| record.id.clone()) {
+                    if let Some((speaker, turn)) = codex_conversation_turn(&value) {
+                        // Codex writes a separate record for every paragraph it
+                        // narrates between tool calls, so a run of them is ONE
+                        // thing the agent said back, not twenty. Without this a
+                        // Codex row read "691 messages" where the Claude row
+                        // beside it, for a longer conversation, read "33".
+                        let repeat_narration = speaker == CodexSpeaker::Agent
+                            && last_speakers.get(&id) == Some(&CodexSpeaker::Agent);
+                        if !repeat_narration {
+                            *message_counts.entry(id.clone()).or_insert(0) += 1;
+                        }
+                        last_speakers.insert(id.clone(), speaker);
+                        latest_turns.insert(id, turn); // a later line is the newer turn
+                    }
+                }
+
                 let cwd = codex_response_item_workdir(&value);
                 let description = codex_response_item_description(&value);
                 if cwd.is_none() && description.is_none() {
@@ -336,9 +399,50 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
             &record.title,
             first_prompts.get(&record.id).map(String::as_str),
         );
+        record.message_count = message_counts.get(&record.id).copied();
+        record.latest_turn_preview = latest_turns.get(&record.id).cloned();
     }
 
     records
+}
+
+/// Who said one message of a Codex conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexSpeaker {
+    User,
+    Agent,
+}
+
+/// One message of a Codex conversation: who said it, and how a row would show
+/// it. The user side uses the same filter the title does, so the opening turns
+/// Codex writes for itself — the repository instructions, the environment block
+/// — are neither counted nor shown; the agent side needs actual words.
+fn codex_conversation_turn(value: &Value) -> Option<(CodexSpeaker, String)> {
+    let payload = value.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+
+    match payload.get("role").and_then(Value::as_str)? {
+        "user" => Some((
+            CodexSpeaker::User,
+            agent_session_turn_preview(
+                AGENT_SESSION_USER_TURN_PREFIX,
+                &codex_typed_user_text(value)?,
+            ),
+        )),
+        "assistant" => {
+            let text = payload.get("content").and_then(value_to_text)?;
+            let text = text.trim();
+            (!text.is_empty()).then(|| {
+                (
+                    CodexSpeaker::Agent,
+                    agent_session_turn_preview(AGENT_SESSION_AGENT_TURN_PREFIX, text),
+                )
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Codex spawns its own helper threads and writes each one as a rollout file
@@ -432,6 +536,11 @@ pub fn drop_codex_subagent_sessions(
 /// environment block, the plugin list, the file list — and each has a shape we
 /// can recognise, so the title comes from the first turn that is none of them.
 fn codex_user_prompt_text(value: &Value) -> Option<String> {
+    codex_typed_user_text(value).map(|text| compact_text(&text, 140))
+}
+
+/// The same turn, at full length, for callers that do their own cutting.
+fn codex_typed_user_text(value: &Value) -> Option<String> {
     let payload = value.get("payload")?;
     if payload.get("type").and_then(Value::as_str) != Some("message") {
         return None;
@@ -446,7 +555,7 @@ fn codex_user_prompt_text(value: &Value) -> Option<String> {
         return None;
     }
 
-    Some(compact_text(text, 140))
+    Some(text.to_string())
 }
 
 /// Openings that mean Codex wrote this turn, not the user. `<` covers every
@@ -520,6 +629,8 @@ fn update_latest_codex_record(
         task_id: None,
         pull_request_hint: None,
         source_label: None,
+        message_count: None,
+        latest_turn_preview: None,
     };
     merge_codex_record(record, update);
 }
@@ -633,6 +744,8 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 task_id: None,
                 pull_request_hint: None,
                 source_label: None,
+                message_count: None,
+                latest_turn_preview: None,
             })
         })
         .collect()
@@ -642,6 +755,8 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
     let mut records: Vec<AgentSessionRecord> = Vec::new();
     let mut ai_titles: HashMap<String, String> = HashMap::new();
     let mut first_prompts: HashMap<String, String> = HashMap::new();
+    let mut message_counts: HashMap<String, u32> = HashMap::new();
+    let mut latest_turns: HashMap<String, String> = HashMap::new();
 
     for value in input
         .lines()
@@ -661,6 +776,10 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         }
         if let Some((session, prompt)) = claude_user_prompt_text(&value) {
             first_prompts.entry(session).or_insert(prompt);
+        }
+        if let Some((session, turn)) = claude_conversation_turn(&value) {
+            *message_counts.entry(session.clone()).or_insert(0) += 1;
+            latest_turns.insert(session, turn); // a later line is the newer turn
         }
 
         let Some(id) = value
@@ -704,6 +823,8 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             task_id: None,
             pull_request_hint: None,
             source_label: None,
+            message_count: None,
+            latest_turn_preview: None,
         };
 
         if let Some(existing) = records
@@ -723,9 +844,57 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             first_prompts.get(&record.id).map(String::as_str),
             record.project_path.as_deref(),
         );
+        record.message_count = message_counts.get(&record.id).copied();
+        record.latest_turn_preview = latest_turns.get(&record.id).cloned();
     }
 
     records
+}
+
+/// One turn of the conversation as a row counts it, and how that row would show
+/// it. Tool calls and tool results are `type: "user"` and `type: "assistant"`
+/// records too, so both sides insist on actual words: a user turn goes through
+/// the same filter the title uses (no slash-command wrappers, no resume
+/// caveat), and an assistant turn needs at least one text block.
+fn claude_conversation_turn(value: &Value) -> Option<(String, String)> {
+    match optional_string(value.get("type"))?.as_str() {
+        "user" => {
+            let (id, text) = claude_user_prompt_text(value)?;
+            Some((
+                id,
+                agent_session_turn_preview(AGENT_SESSION_USER_TURN_PREFIX, &text),
+            ))
+        }
+        "assistant" => {
+            let id = optional_string(value.get("sessionId"))?;
+            let text = claude_assistant_text(value)?;
+            Some((
+                id,
+                agent_session_turn_preview(AGENT_SESSION_AGENT_TURN_PREFIX, &text),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// What the agent said in words on one transcript line. An assistant record
+/// whose content is nothing but `tool_use` blocks said nothing, and yields
+/// `None`.
+fn claude_assistant_text(value: &Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?;
+    let text = match content {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter(|item| optional_string(item.get("type")).as_deref() == Some("text"))
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => return None,
+    };
+
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// A Claude Code SUBAGENT transcript is stored as its own `.jsonl` and is never
@@ -826,10 +995,23 @@ fn claude_ai_title(value: &Value) -> Option<(String, String)> {
     ))
 }
 
+/// Openings that mean Claude Code wrote this "user" message, not the user. `<`
+/// covers every tagged block it injects (`<command-name>`,
+/// `<local-command-caveat>`); the resume caveat and the interruption notice are
+/// the two it writes as plain sentences.
+///
+/// The interruption matters more than it looks. Pressing Escape in the middle
+/// of an answer is how a session usually ends, so it is disproportionately
+/// likely to be the LAST thing in a transcript — and the row shows the last
+/// thing said. In 617 real user turns sampled on this machine, 50 of them were
+/// exactly "[Request interrupted by user]".
+const CLAUDE_INJECTED_PROMPT_PREFIXES: &[&str] =
+    &["<", "Caveat:", "[Request interrupted"];
+
 /// The first genuine user prompt in the scanned window. Tool results are
 /// `type: "user"` too, so plain `content` text is required and `tool_result`
-/// items are dropped; slash-command wrappers (`<command-name>…`) and the resume
-/// caveat are skipped because neither says what the session is about.
+/// items are dropped; anything Claude Code wrote for itself is skipped because
+/// none of it says what the session is about.
 fn claude_user_prompt_text(value: &Value) -> Option<(String, String)> {
     if optional_string(value.get("type"))? != "user" {
         return None;
@@ -851,7 +1033,11 @@ fn claude_user_prompt_text(value: &Value) -> Option<(String, String)> {
     };
 
     let text = text.trim();
-    if text.is_empty() || text.starts_with('<') || text.starts_with("Caveat:") {
+    if text.is_empty()
+        || CLAUDE_INJECTED_PROMPT_PREFIXES
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+    {
         return None;
     }
 
@@ -925,6 +1111,16 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
         existing.project_path = candidate.project_path.clone();
     }
 
+    // The fuller read wins, whichever record it came from. One session can be
+    // described by more than one file, and each count is a floor — the bigger
+    // floor is the one closer to the truth. (`None` sorts below every `Some`,
+    // so a record that counted nothing never overwrites one that did.)
+    existing.message_count = existing.message_count.max(candidate.message_count);
+
+    if existing.latest_turn_preview.is_none() {
+        existing.latest_turn_preview = candidate.latest_turn_preview.clone();
+    }
+
     let candidate_is_newer = candidate
         .last_activity
         .as_ref()
@@ -943,6 +1139,9 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
         existing.model = candidate.model.or(existing.model.take());
         existing.project_path = candidate.project_path.or(existing.project_path.take());
         existing.last_activity = candidate.last_activity;
+        existing.latest_turn_preview = candidate
+            .latest_turn_preview
+            .or(existing.latest_turn_preview.take());
     }
 
     for command in candidate.resume_commands {
@@ -1411,14 +1610,27 @@ pub fn read_head_utf8(path: &Path, max_bytes: usize) -> std::io::Result<String> 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A window from the start of the file and a window from the end, joined.
+///
+/// A file that fits inside the two windows put together is read WHOLE instead,
+/// decided on its real length. The obvious-looking alternative — stitch the two
+/// windows and notice afterwards that the head already ended with the tail —
+/// only recognises a file that fits inside ONE window. Anything between one
+/// window and two got the middle of the file handed to the caller twice, and
+/// the caller counts what it is given.
 fn read_head_and_tail_utf8(
     path: &Path,
     head_bytes: usize,
     tail_bytes: usize,
 ) -> std::io::Result<String> {
+    let combined = head_bytes.saturating_add(tail_bytes);
+    if fs::metadata(path)?.len() <= combined as u64 {
+        return read_head_utf8(path, combined);
+    }
+
     let head = read_head_utf8(path, head_bytes)?;
     let tail = read_tail_utf8(path, tail_bytes)?;
-    if tail.is_empty() || head.ends_with(&tail) {
+    if tail.is_empty() {
         return Ok(head);
     }
 
@@ -1489,7 +1701,253 @@ mod tests {
             task_id: None,
             pull_request_hint: None,
             source_label: None,
+            message_count: None,
+            latest_turn_preview: None,
         }
+    }
+
+    /// A Claude session with an actual back-and-forth in it, and the tool
+    /// traffic that ran in between: two things the user typed (one of them a
+    /// slash command, which is not conversation), two answers in words, one
+    /// tool call and one tool result.
+    ///
+    /// The same fixture is written out line for line in
+    /// `tauri-svelte-preview/scripts/localSourceFs.test.mjs`. Both scanners
+    /// fill the same rail, so a row has to read the same whichever one produced
+    /// it.
+    const CONVERSATION_JSONL: &str = concat!(
+        r#"{"type":"user","isSidechain":false,"sessionId":"S9","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-29T09:00:00Z","message":{"role":"user","content":"Fix the resume rail"}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Reading the scanner now."}]}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:02:00Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}"#,
+        "\n",
+        r#"{"type":"user","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:03:00Z","message":{"role":"user","content":[{"type":"tool_result","content":"File does not exist."}]}}"#,
+        "\n",
+        r#"{"type":"user","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:04:00Z","message":{"role":"user","content":"<command-name>compact</command-name>"}}"#,
+        "\n",
+        r#"{"type":"assistant","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:05:00Z","message":{"role":"assistant","content":[{"type":"text","text":"The  rail was\n  reading the wrong file."}]}}"#,
+    );
+
+    /// The same session ending on an answer far longer than one line, so the
+    /// cut is pinned. Also mirrored in the TypeScript suite.
+    const LONG_ANSWER_TEXT: &str = "The scanner was reading the wrong file the whole time, which is why every row said Claude session and none of them said anything else at all";
+
+    /// A Codex session with the agent's reply in it, on top of the opening
+    /// turns Codex writes for itself.
+    const CODEX_CONVERSATION_ROLLOUT_JSONL: &str = concat!(
+        r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#,
+        "\n",
+        r##"{"timestamp":"2026-07-28T16:42:18.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/dev/work/rental-management"}]}}"##,
+        "\n",
+        r#"{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please plan out an entire year of scans and entries for the 2027 simulation."}]}}"#,
+        "\n",
+        r#"{"timestamp":"2026-07-28T16:43:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Here  is the plan\n for 2027."}]}}"#,
+    );
+
+    /// A row wants to say "12 messages · Agent: fixed the reference race…", and
+    /// this is where both halves of that come from. Only words count: the tool
+    /// call, its result and the slash command are how the work got done, not
+    /// what was said, and counting them would put hundreds on a row where the
+    /// two of them exchanged a dozen.
+    #[test]
+    fn claude_rows_carry_how_many_turns_were_said_and_the_last_of_them() {
+        let records = parse_claude_jsonl(CONVERSATION_JSONL, "/Users/dev/work/mac-command-bar");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].message_count, Some(3));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: The rail was reading the wrong file.")
+        );
+
+        // A transcript that held no conversation says nothing rather than zero.
+        let bare = r#"{"type":"file-history-snapshot","sessionId":"S3","timestamp":"2026-07-28T09:00:00Z"}"#;
+        let records = parse_claude_jsonl(bare, "");
+        assert_eq!(records[0].message_count, None);
+        assert_eq!(records[0].latest_turn_preview, None);
+
+        // The user's own turn is shown as the user's when it came last.
+        let user_last = format!(
+            "{CONVERSATION_JSONL}\n{}",
+            r#"{"type":"user","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:06:00Z","message":{"role":"user","content":"Try it again"}}"#
+        );
+        let records = parse_claude_jsonl(&user_last, "/Users/dev/work/mac-command-bar");
+        assert_eq!(records[0].message_count, Some(4));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("You: Try it again")
+        );
+    }
+
+    /// One line means one line: an answer longer than the row can hold is cut
+    /// and marked, and the cut lands on a character boundary.
+    #[test]
+    fn a_long_last_turn_is_cut_to_one_line() {
+        let long = CONVERSATION_JSONL.replace(
+            "The  rail was\\n  reading the wrong file.",
+            LONG_ANSWER_TEXT,
+        );
+        let records = parse_claude_jsonl(&long, "/Users/dev/work/mac-command-bar");
+
+        let preview = records[0].latest_turn_preview.clone().unwrap();
+        assert_eq!(preview.chars().count(), 120);
+        assert!(preview.starts_with("Agent: The scanner was reading the wrong file"));
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn codex_rows_carry_how_many_turns_were_said_and_the_last_of_them() {
+        let records = parse_codex_rollout_jsonl(CODEX_CONVERSATION_ROLLOUT_JSONL);
+
+        assert_eq!(records.len(), 1);
+        // The repository instructions Codex sends as the user are not a turn.
+        assert_eq!(records[0].message_count, Some(2));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: Here is the plan for 2027.")
+        );
+
+        // A rollout file with nothing but its opening record says nothing.
+        let meta_only = r#"{"type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev","source":"cli"}}"#;
+        let records = parse_codex_rollout_jsonl(meta_only);
+        assert_eq!(records[0].message_count, None);
+        assert_eq!(records[0].latest_turn_preview, None);
+
+        // The index file knows neither, and must not wipe out what the rollout
+        // file found when the two records are merged.
+        let index = parse_codex_index_jsonl(
+            r#"{"id":"019fa964","thread_name":"Year simulation planning","updated_at":"2026-07-29T16:00:00.000000Z"}"#,
+        );
+        let merged = merge_codex_session_metadata(
+            index,
+            parse_codex_rollout_jsonl(CODEX_CONVERSATION_ROLLOUT_JSONL),
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].message_count, Some(2));
+        assert_eq!(
+            merged[0].latest_turn_preview.as_deref(),
+            Some("Agent: Here is the plan for 2027.")
+        );
+    }
+
+    /// Pressing Escape in the middle of an answer is how a session usually
+    /// ends, and Claude writes that as a user message reading "[Request
+    /// interrupted by user]". It is not something the user said, so it is not a
+    /// turn — and because the row shows the LAST turn, letting it through put
+    /// "You: [Request interrupted by user]" on the most prominent line of the
+    /// card, where it says nothing at all about the session. The row falls back
+    /// to the last thing that really was said.
+    #[test]
+    fn an_interrupted_request_is_neither_counted_nor_shown() {
+        let interrupted = format!(
+            "{CONVERSATION_JSONL}\n{}",
+            r#"{"type":"user","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:06:00Z","message":{"role":"user","content":"[Request interrupted by user]"}}"#
+        );
+        let records = parse_claude_jsonl(&interrupted, "/Users/dev/work/mac-command-bar");
+
+        assert_eq!(records[0].message_count, Some(3));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: The rail was reading the wrong file.")
+        );
+    }
+
+    /// Codex writes a separate record for every paragraph it narrates between
+    /// tool calls, so counting records put roughly twenty times as many
+    /// "messages" on a Codex row as on a Claude row for the same amount of
+    /// conversation — and the two sit side by side on the same list. A run of
+    /// them is one thing the agent said back, so it counts once.
+    #[test]
+    fn codex_narration_between_tool_calls_counts_as_one_agent_turn() {
+        let narrated = concat!(
+            r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Plan the 2027 simulation."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Reading the scanner now."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:10.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:20.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Now changing the reader."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:30.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Here is the plan for 2027."}]}}"#,
+        );
+
+        let records = parse_codex_rollout_jsonl(narrated);
+
+        // One thing the user typed, one thing the agent said back.
+        assert_eq!(records[0].message_count, Some(2));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: Here is the plan for 2027.")
+        );
+
+        // A second exchange is a second pair, so the count still grows with the
+        // conversation rather than with the narration.
+        let second_exchange = format!(
+            "{narrated}\n{}\n{}",
+            r#"{"timestamp":"2026-07-28T16:44:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Go ahead."}]}}"#,
+            r#"{"timestamp":"2026-07-28T16:44:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}"#
+        );
+        let records = parse_codex_rollout_jsonl(&second_exchange);
+        assert_eq!(records[0].message_count, Some(4));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: Done.")
+        );
+    }
+
+    /// A rollout file is read as a window from the start and a window from the
+    /// end. When the file is bigger than one window but smaller than two, those
+    /// two windows OVERLAP, and every line in the overlap used to be handed to
+    /// the parser twice. Nothing noticed until a row started counting turns:
+    /// counting is the first thing this parser does that is not idempotent, and
+    /// a session in that size band reported a number inflated by the overlap —
+    /// while the same file through the web preview reported the true one.
+    #[test]
+    fn a_file_between_one_window_and_two_is_not_read_twice() {
+        // Long enough to run past one window, short enough to stay inside two.
+        let padding = "x".repeat(700);
+        let mut lines = vec![
+            r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#
+                .to_string(),
+        ];
+        let exchanges = 200;
+        for index in 0..exchanges {
+            lines.push(format!(
+                r#"{{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Question {index} {padding}"}}]}}}}"#
+            ));
+            lines.push(format!(
+                r#"{{"timestamp":"2026-07-28T16:43:00.000Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"Answer {index} {padding}"}}]}}}}"#
+            ));
+        }
+        let body = lines.join("\n");
+
+        let combined = CODEX_SESSION_HEAD_BYTES + CODEX_SESSION_TAIL_BYTES;
+        assert!(
+            body.len() > CODEX_SESSION_HEAD_BYTES && body.len() < combined,
+            "the fixture has to land in the band where the two windows overlap; \
+             it is {} bytes and the band is {}..{}",
+            body.len(),
+            CODEX_SESSION_HEAD_BYTES,
+            combined
+        );
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("rollout-019fa964.jsonl");
+        fs::write(&path, &body).expect("write the fixture");
+
+        let read = read_head_and_tail_utf8(&path, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
+            .expect("read the fixture");
+        assert_eq!(
+            read.lines().count(),
+            body.lines().count(),
+            "the file came back with lines in it more than once"
+        );
+
+        let records = parse_codex_rollout_jsonl(&read);
+        assert_eq!(records[0].message_count, Some(exchanges * 2));
     }
 
     #[test]
@@ -1923,6 +2381,8 @@ mod tests {
         assert_eq!(value.get("branchHint"), None);
         assert_eq!(value.get("pullRequestHint"), None);
         assert_eq!(value.get("sourceLabel"), None);
+        assert_eq!(value.get("messageCount"), None);
+        assert_eq!(value.get("latestTurnPreview"), None);
         assert_eq!(
             value.get("projectPath").and_then(Value::as_str),
             Some("/repo")
@@ -1937,6 +2397,8 @@ mod tests {
         record.task_id = metadata.task_id;
         record.pull_request_hint = metadata.pull_request_hint;
         record.source_label = Some(metadata.source_label);
+        record.message_count = Some(12);
+        record.latest_turn_preview = Some("Agent: fixed the reference race".to_string());
 
         let value = serde_json::to_value(&record).unwrap();
 
@@ -1952,6 +2414,11 @@ mod tests {
         assert_eq!(
             value.get("sourceLabel").and_then(Value::as_str),
             Some("Codex · repo")
+        );
+        assert_eq!(value.get("messageCount").and_then(Value::as_u64), Some(12));
+        assert_eq!(
+            value.get("latestTurnPreview").and_then(Value::as_str),
+            Some("Agent: fixed the reference race")
         );
         // Nothing renders the link yet, so it is not sent.
         assert_eq!(value.get("linkHint"), None);

@@ -22,7 +22,7 @@ import { registerCommands } from './palette/commandRegistry.ts';
 export interface ShellCommandHooks {
   /** Bring a center tab to the front (its id in the tab roster). */
   showPanel(id: string): void;
-  /** Unfold the Source control section of the left column. */
+  /** Unfold the Source control section of the tool column on the right. */
   expandSourceControl(): void;
 }
 
@@ -46,7 +46,7 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
     {
       id: 'show-git',
       label: 'Show source control',
-      detail: 'Open the source control section of the left column',
+      detail: 'Open the source control section of the tool column on the right',
       perform: () => hooks.expandSourceControl()
     },
     {

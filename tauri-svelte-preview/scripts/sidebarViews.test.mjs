@@ -26,11 +26,12 @@ function fakeStorage({ failWrites = false } = {}) {
 }
 
 // The roster is the four views the activity bar offers, and the one it opens on
-// is one of them.
+// is one of them. Sessions is NOT among them any more: the sessions list has a
+// column of its own on the left of the shell.
 {
   assert.deepEqual(
     SIDEBAR_VIEWS.map((view) => view.id),
-    ['sessions', 'explorer', 'source-control', 'worktrees']
+    ['explorer', 'source-control', 'worktrees', 'context']
   );
   assert.ok(
     SIDEBAR_VIEWS.every((view) => typeof view.title === 'string' && view.title.length > 0),
@@ -40,12 +41,23 @@ function fakeStorage({ failWrites = false } = {}) {
 }
 
 // Only the four ids are ids. Anything else — including the shapes a corrupt
-// stored value can take — is not.
+// stored value can take, and the sessions view that used to be one — is not.
 {
-  for (const id of ['sessions', 'explorer', 'source-control', 'worktrees']) {
+  for (const id of ['explorer', 'source-control', 'worktrees', 'context']) {
     assert.ok(isSidebarViewId(id), `${id} is a view`);
   }
-  for (const value of ['', 'files', 'git', 'SESSIONS', null, undefined, 7, {}, ['sessions']]) {
+  for (const value of [
+    '',
+    'sessions',
+    'files',
+    'git',
+    'CONTEXT',
+    null,
+    undefined,
+    7,
+    {},
+    ['explorer']
+  ]) {
     assert.equal(isSidebarViewId(value), false, `${JSON.stringify(value)} is not a view`);
   }
 }
@@ -54,10 +66,10 @@ function fakeStorage({ failWrites = false } = {}) {
 {
   const keys = SIDEBAR_VIEWS.map((view) => viewPanesKey(view.id));
   assert.deepEqual(keys, [
-    'mac-command-bar.next.view-sessions-panes',
     'mac-command-bar.next.view-explorer-panes',
     'mac-command-bar.next.view-source-control-panes',
-    'mac-command-bar.next.view-worktrees-panes'
+    'mac-command-bar.next.view-worktrees-panes',
+    'mac-command-bar.next.view-context-panes'
   ]);
   assert.equal(new Set(keys).size, keys.length, 'no two views write to the same key');
   assert.ok(!keys.includes(ACTIVE_VIEW_KEY), 'and none of them is the active-view key');
@@ -82,6 +94,11 @@ function fakeStorage({ failWrites = false } = {}) {
 {
   const storage = fakeStorage();
   storage.map.set(ACTIVE_VIEW_KEY, JSON.stringify('a-view-we-removed'));
+  assert.equal(readActiveView(storage), DEFAULT_SIDEBAR_VIEW);
+
+  // The real case of that today: a shell that was last left on the Sessions
+  // view, which moved out of this column entirely.
+  storage.map.set(ACTIVE_VIEW_KEY, JSON.stringify('sessions'));
   assert.equal(readActiveView(storage), DEFAULT_SIDEBAR_VIEW);
 
   storage.map.set(ACTIVE_VIEW_KEY, '{not json');
@@ -122,7 +139,7 @@ function fakeStorage({ failWrites = false } = {}) {
     }
   };
   assert.equal(readActiveView(hostile), DEFAULT_SIDEBAR_VIEW);
-  assert.equal(writeActiveView(hostile, 'sessions'), false);
+  assert.equal(writeActiveView(hostile, 'explorer'), false);
   clearActiveView(hostile);
 }
 

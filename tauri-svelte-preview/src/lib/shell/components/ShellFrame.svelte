@@ -10,12 +10,21 @@
   import { onMount, type Snippet } from 'svelte';
 
   import { createCenterDock, type CenterDock } from '$lib/shell/layout/centerDock';
-  import { createShellFrame, type ShellFrame as Frame } from '$lib/shell/layout/frame';
+  import {
+    createShellFrame,
+    type RegionWidthLimits,
+    type ShellFrame as Frame,
+    type ShellRegionId
+  } from '$lib/shell/layout/frame';
 
   interface Props {
-    rail: Snippet;
+    /** The left column: the sessions list, and nothing else. */
+    sessions: Snippet;
     center: { session: Snippet; editor: Snippet; browser: Snippet };
-    context: Snippet;
+    /** The right column: whichever tool view the icon strip has open. */
+    tools: Snippet;
+    /** The icon strip on the far right edge, which picks that view. */
+    activity: Snippet;
     dock: Snippet;
     onSessionPanelLayout?: () => void;
     /** A center tab came to the front. Fires for the dock's own start-up
@@ -24,13 +33,22 @@
     onReady?: (controls: {
       resetLayout: () => void;
       showCenterPanel: (id: string) => void;
+      /** Give one region a width — how a column asks to be folded up or
+       * opened out. See `setRegionWidth` in `frame.ts`. */
+      setRegionWidth: (id: ShellRegionId, width: number, limits?: RegionWidthLimits) => void;
+      /** Say what a region may be dragged to without moving it. See
+       * `setRegionLimits` in `frame.ts`. */
+      setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
+      /** How wide a region is right now, or null if the frame is gone. */
+      regionWidth: (id: ShellRegionId) => number | null;
     }) => void;
     onError?: (message: string) => void;
   }
   let {
-    rail,
+    sessions,
     center,
-    context,
+    tools,
+    activity,
     dock,
     onSessionPanelLayout,
     onCenterPanelShown,
@@ -39,9 +57,10 @@
   }: Props = $props();
 
   let gridHost: HTMLElement;
-  let railSlot: HTMLElement;
+  let sessionsSlot: HTMLElement;
   let centerSlot: HTMLElement; // holds the center Dockview's own container
-  let contextSlot: HTMLElement;
+  let toolsSlot: HTMLElement;
+  let activitySlot: HTMLElement;
   let dockSlot: HTMLElement;
   let sessionSlot: HTMLElement;
   let editorSlot: HTMLElement;
@@ -56,7 +75,13 @@
     try {
       frame = createShellFrame(gridHost, {
         storage: window.localStorage,
-        regions: { rail: railSlot, center: centerSlot, context: contextSlot, dock: dockSlot }
+        regions: {
+          sessions: sessionsSlot,
+          center: centerSlot,
+          tools: toolsSlot,
+          activity: activitySlot,
+          dock: dockSlot
+        }
       });
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
@@ -85,7 +110,10 @@
           frame?.resetLayout();
           centerDock?.resetLayout();
         },
-        showCenterPanel: (id: string) => centerDock?.activatePanel(id)
+        showCenterPanel: (id: string) => centerDock?.activatePanel(id),
+        setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
+        setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
+        regionWidth: (id) => frame?.regionWidth(id) ?? null
       });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : String(error));
@@ -107,9 +135,10 @@
      whenever a panel hands it back. Not rendered at all, so nothing parked here
      can be measured — see the note on `.parking-stage` in the styles below. -->
 <div class="parking-stage" aria-hidden="true">
-  <div class="slot" bind:this={railSlot}>{@render rail()}</div>
+  <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
   <div class="slot slot-center-dock" bind:this={centerSlot}></div>
-  <div class="slot" bind:this={contextSlot}>{@render context()}</div>
+  <div class="slot" bind:this={toolsSlot}>{@render tools()}</div>
+  <div class="slot" bind:this={activitySlot}>{@render activity()}</div>
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>

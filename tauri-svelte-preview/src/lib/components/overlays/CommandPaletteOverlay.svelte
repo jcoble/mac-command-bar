@@ -13,7 +13,11 @@
    * it imperatively on open, so we focus it from here whenever `visible` flips true.
    *
    * No teleport: this overlay renders inline (no `use:panelAction`), so its scoped
-   * `<style>` works normally.
+   * style block works normally. (Do not write that tag out in full here: the type
+   * checker's Svelte-to-TypeScript step looks for the opening style tag as plain
+   * text, finds the one in this comment first, and then reads the rest of the file
+   * as CSS — after which the component has no default export and every file that
+   * imports it fails to type-check.)
    */
   import { tick } from 'svelte';
   import { Search, MoreHorizontal } from '@lucide/svelte';

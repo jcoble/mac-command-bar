@@ -343,6 +343,8 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             task_id: None,
             pull_request_hint: None,
             source_label: None,
+            message_count: None,
+            latest_turn_preview: None,
         },
         AgentSessionRecord {
             provider: "claude".to_string(),
@@ -360,6 +362,8 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             task_id: None,
             pull_request_hint: None,
             source_label: None,
+            message_count: None,
+            latest_turn_preview: None,
         },
     ]);
 
@@ -428,4 +432,26 @@ fn reads_only_tail_of_large_jsonl_files() {
     assert!(tail.contains("\"line\":199"));
     assert!(!tail.contains("\"line\":0"));
     assert!(tail.starts_with('{'));
+}
+
+/// Times the session scan the way the app calls it, against the transcripts
+/// actually on this machine — the only realistic input there is.
+///
+/// Ignored on purpose: it reads whatever happens to be on disk, so it measures
+/// rather than checks, and its number means nothing on another machine. Run it
+/// with:
+///   cargo test --manifest-path core/Cargo.toml --test scanner_tests -- \
+///     --ignored --nocapture session_scan_time
+#[test]
+#[ignore]
+fn session_scan_time() {
+    for pass in 1..=3 {
+        let start = std::time::Instant::now();
+        let records = scan_sessions();
+        println!(
+            "pass {pass}: {} sessions in {:?}",
+            records.len(),
+            start.elapsed()
+        );
+    }
 }
