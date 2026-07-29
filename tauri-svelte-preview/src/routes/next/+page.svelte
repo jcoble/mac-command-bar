@@ -13,6 +13,10 @@
   import { onMount, tick } from 'svelte';
 
   import '$lib/shell/styles/nextTokens.css';
+  /* Tailwind + the shadcn component variables. Imported HERE and nowhere else:
+     the old shell shares `app.css` with this page and must keep rendering
+     exactly as it does today, so this file must never reach that route. */
+  import '$lib/shell/styles/next.css';
 
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
   import ContextPanel from '$lib/shell/components/ContextPanel.svelte';

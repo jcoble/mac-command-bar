@@ -1,4 +1,5 @@
 import { sveltekit } from '@sveltejs/kit/vite';
+import tailwindcss from '@tailwindcss/vite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -169,7 +170,10 @@ function numberOrUndefined(value: unknown): number | undefined {
 }
 
 export default defineConfig({
-  plugins: [localSourceBridgePlugin(), sveltekit()],
+  // Tailwind only ever compiles `src/lib/shell/styles/next.css`, which only the
+  // /next route imports. The old shell never loads that file, so adding the
+  // plugin here cannot change how the old page renders.
+  plugins: [localSourceBridgePlugin(), tailwindcss(), sveltekit()],
   server: {
     host: '127.0.0.1',
     port: 5177,
