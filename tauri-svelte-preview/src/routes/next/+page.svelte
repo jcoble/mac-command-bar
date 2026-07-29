@@ -216,15 +216,29 @@
     });
   }
 
-  /** Wait for TerminalSurface to mount the host for `ownedId`. */
+  /** Wait for TerminalSurface to mount the host for `ownedId`.
+   *
+   * A host that is no longer IN the page is not an answer: a session whose
+   * terminal was closed loses its host div, and this map still holds the one it
+   * used to have. Building a terminal on that detached element would leave the
+   * session running with nothing on screen — so a host that has been taken out
+   * of the page is dropped here, and the wait continues for the one Svelte is
+   * about to mount in its place. */
   async function hostFor(ownedId: string): Promise<HTMLElement | null> {
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    const mounted = (): HTMLElement | null => {
       const host = pendingHosts.get(ownedId);
+      if (!host) return null;
+      if (host.isConnected) return host;
+      pendingHosts.delete(ownedId);
+      return null;
+    };
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const host = mounted();
       if (host) return host;
       await tick();
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 8));
     }
-    return pendingHosts.get(ownedId) ?? null;
+    return mounted();
   }
 
   /** Re-attach one reload survivor; `awaitingReattach` guards double-adopting. */
@@ -335,6 +349,72 @@
     // Persist the PTY id: reload re-attach reads it back out of localStorage.
     updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
+  }
+
+  /**
+   * EXPLICIT IO: start a finished session up again, in place.
+   *
+   * It stays the SAME session — same `ownedId`, so the files it had open, the
+   * branch and task the scanner gave it, and the day it was marked done all
+   * survive. Being picked back up is not a new piece of work, and it does not
+   * un-finish a finished one either: a done session started again stays under
+   * Done until the user reopens it.
+   *
+   * What it cannot keep is the process. A terminal that has ended cannot be
+   * revived, so this spawns a NEW one in the same folder and replays the
+   * session's resume command — the same thing resuming a scanned session does,
+   * which is why the agent picks the conversation up where it left off. A
+   * session started here rather than found on disk has no resume command and
+   * gets a plain shell back.
+   */
+  async function restartOwned(ownedId: string): Promise<void> {
+    if (!service || disposed) return;
+    const session = rail.owned.find((entry) => entry.ownedId === ownedId);
+    // Only a finished session can be started again; a running one already is.
+    if (!session || session.state !== 'exited') return;
+    const label = session.title || ownedId;
+
+    try {
+      // The old terminal is over: drop its view and let the backend forget the
+      // dead process. One session has one view, so without this the new
+      // terminal would open underneath the last one's final output — and the
+      // backend record of the finished process would be left with nothing able
+      // to reach it. A refusal here is not worth stopping for or reporting: it
+      // means the backend could not tidy away something that is already dead,
+      // and the session is about to get a working terminal regardless.
+      awaitingReattach.delete(ownedId);
+      await service.closeOwned(ownedId, session.ptySessionId);
+
+      // Say the row is running BEFORE asking for a terminal host: the terminal
+      // surface only keeps a host on screen for a session it believes has a
+      // terminal, so while the row still reads as finished there is nothing for
+      // `hostFor` to wait for. The old PTY id goes at the same time — it names
+      // a process that no longer exists.
+      updateOwnedSession(ownedId, { state: 'live', ptySessionId: null });
+
+      const host = await hostFor(ownedId);
+      if (!host) {
+        updateOwnedSession(ownedId, { state: 'exited' });
+        rail.error = `no terminal host for "${label}"`;
+        return;
+      }
+      // `startOwned` reads the folder and the resume command off this record;
+      // the PTY id it had is cleared so nothing can point at the old process.
+      const ptySessionId = await service.startOwned({ ...session, ptySessionId: null }, host);
+      if (!ptySessionId) {
+        updateOwnedSession(ownedId, { state: 'exited' });
+        rail.error = `could not start "${label}" again: no new terminal opened`;
+        return;
+      }
+      // Persist the new PTY id: reload re-attach reads it back out of storage.
+      updateOwnedSession(ownedId, { ptySessionId, state: 'live' });
+      await selectOwned(ownedId);
+    } catch (error) {
+      // The row goes back to finished rather than sitting there claiming to be
+      // running: nothing started, and the card's buttons must still offer this.
+      updateOwnedSession(ownedId, { state: 'exited' });
+      if (!disposed) rail.error = `could not start "${label}" again: ${describeError(error)}`;
+    }
   }
 
   /**
@@ -501,7 +581,7 @@
   <SessionsColumn
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
     scanning={rail.scanning} collapsed={sessionsCollapsed}
-    onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal}
+    onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal} onRestart={restartOwned}
     onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
     onReopen={reopenOwnedSession} onRemove={removeSession}
     onRescan={scanRail} onCollapse={collapseSessions}

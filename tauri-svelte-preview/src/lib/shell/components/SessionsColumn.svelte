@@ -53,6 +53,7 @@
   import Hash from '@lucide/svelte/icons/hash';
   import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
+  import Play from '@lucide/svelte/icons/play';
   import Power from '@lucide/svelte/icons/power';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
@@ -107,6 +108,10 @@
     onAdopt(session: AgentSession): void;
     /** End a session's terminal process. The session itself stays on the list. */
     onClose(ownedId: string): void;
+    /** Give a finished session a new terminal, without changing anything else
+     * about it. Offered on both lists: a done session can be picked back up
+     * without being moved off Done first. */
+    onRestart(ownedId: string): void;
     /** Move a session to Done. */
     onComplete(ownedId: string): void;
     /** Move a done session back to Working. */
@@ -128,6 +133,7 @@
     onSelect,
     onAdopt,
     onClose,
+    onRestart,
     onComplete,
     onReopen,
     onRemove,
@@ -388,6 +394,11 @@
   {@const project = projectLabel(session.projectPath ?? session.cwd)}
   {@const count = messageCountLabel(session.messageCount)}
   {@const finishedWhen = isDone ? stamp(session.completedAt) : ''}
+  <!-- When the scanner last saw something happen in the conversation. Working
+       rows only: a done row already says when it was finished, and two times on
+       one line is a line nobody reads. Sessions started here have no stamp and
+       the line is simply shorter. -->
+  {@const busyWhen = isDone ? '' : stamp(session.lastActivity)}
   <Card.Root
     size="sm"
     class={cn(
@@ -405,7 +416,15 @@
       title={session.cwd || sessionLabel(session)}
       onclick={() => onSelect(session.ownedId)}
     >
-      <span class="flex w-full min-w-0 items-center gap-2 pr-11">
+      <!-- The title stops short of the buttons in the corner rather than running
+           under them. A card carries two, except a finished one on Done, which
+           also carries Start again. -->
+      <span
+        class={cn(
+          'flex w-full min-w-0 items-center gap-2',
+          isDone && session.state === 'exited' ? 'pr-[76px]' : 'pr-11'
+        )}
+      >
         <span class="dot" data-state={session.state} aria-hidden="true"></span>
         <span class="truncate text-[14px] leading-[1.35] font-medium text-[#e6e6ee]">
           {sessionLabel(session)}
@@ -430,6 +449,12 @@
           <span class="shrink-0 text-[var(--color-text-3)]">·</span>
           <span class="shrink-0">{count}</span>
         {/if}
+        {#if busyWhen}
+          <span class="shrink-0 text-[var(--color-text-3)]">·</span>
+          <span class="shrink-0" title={exactLocalTime(session.lastActivity)}>
+            last active {busyWhen}
+          </span>
+        {/if}
         {#if finishedWhen}
           <span class="shrink-0 text-[var(--color-text-3)]">·</span>
           <span class="shrink-0" title={exactLocalTime(session.completedAt)}>
@@ -452,6 +477,20 @@
       class="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity
              group-hover/card:opacity-100 focus-within:opacity-100"
     >
+      <!-- A finished session can be picked back up from either list, and it is
+           the FIRST button on the card because it is the one thing you cannot
+           do to it otherwise. Starting a done session again does not move it
+           off Done: which list a session is on is the user's answer, not the
+           terminal's. -->
+      {#if session.state === 'exited'}
+        {@render action(
+          `start ${sessionLabel(session)} again`,
+          'Start this session again',
+          Play,
+          false,
+          () => onRestart(session.ownedId)
+        )}
+      {/if}
       {#if isDone}
         {@render action(
           `reopen ${sessionLabel(session)} — put it back under Working`,

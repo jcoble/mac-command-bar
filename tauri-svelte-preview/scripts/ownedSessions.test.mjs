@@ -42,6 +42,20 @@ const scanRecord = {
   assert.equal(owned.messageCount, 12);
   assert.equal(owned.latestTurnPreview, 'Agent: fixed the reference race');
 }
+{ // when the session was last busy travels with it, so a working row can say so
+  const seen = '2026-07-28T09:00:00.000Z';
+  const owned = adoptAgentSession({ ...scanRecord, lastActivity: seen }, mint);
+  assert.equal(owned.lastActivity, seen);
+  // A scan with nothing to say about it leaves the row with no stamp at all.
+  assert.equal(adoptAgentSession(scanRecord, mint).lastActivity, null);
+  for (const junk of [123, true, {}, [], '', undefined]) {
+    assert.equal(
+      adoptAgentSession({ ...scanRecord, lastActivity: junk }, mint).lastActivity,
+      null,
+      `a last-activity stamp of ${JSON.stringify(junk)}`
+    );
+  }
+}
 { // a scan that found none of it leaves the fields empty rather than blank chips
   const { branchHint, taskId, pullRequestHint, messageCount, latestTurnPreview, ...bare } =
     scanRecord;
@@ -67,6 +81,9 @@ const scanRecord = {
   assert.equal(fresh.pullRequest, null);
   assert.equal(fresh.messageCount, null);
   assert.equal(fresh.latestTurnPreview, null);
+  // Including when it was last busy: that is the scanner's reading of a
+  // conversation on disk, and a shell started here has not had one yet.
+  assert.equal(fresh.lastActivity, null);
 }
 { // createFreshSession defaults
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
@@ -136,6 +153,20 @@ const scanRecord = {
       JSON.stringify([{ ...owned, latestTurnPreview: junk }])
     )[0];
     assert.equal(record.latestTurnPreview, null, `a turn preview of ${JSON.stringify(junk)}`);
+  }
+}
+{ // when the session was last busy survives a save and a reload
+  const seen = '2026-07-28T09:00:00.000Z';
+  const owned = adoptAgentSession({ ...scanRecord, lastActivity: seen }, mint);
+  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  assert.deepEqual(parsed, [owned]);
+  // Sessions saved before this field existed come back with no stamp.
+  const { lastActivity, ...older } = owned;
+  assert.equal(parseStoredOwnedSessions(JSON.stringify([older]))[0].lastActivity, null);
+  // Anything that is not text is not a stamp.
+  for (const junk of [123, true, {}, [], '']) {
+    const record = parseStoredOwnedSessions(JSON.stringify([{ ...owned, lastActivity: junk }]))[0];
+    assert.equal(record.lastActivity, null, `a last-activity stamp of ${JSON.stringify(junk)}`);
   }
 }
 { // reconcile after reload

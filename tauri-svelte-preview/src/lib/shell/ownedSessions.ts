@@ -55,6 +55,16 @@ export type OwnedSession = {
    */
   messageCount: number | null;
   latestTurnPreview: string | null;
+  /**
+   * When the scanner last saw anything happen in this conversation, as the
+   * stamp it reported. Copied off the scanned record when the session is
+   * adopted, so a row can say how old the work is.
+   *
+   * It is a reading of the transcript on disk taken at adopt time and nothing
+   * moves it afterwards — a session started here has none at all. `null`
+   * whenever the scanner had nothing to say, and the row then shows no stamp.
+   */
+  lastActivity: string | null;
 };
 
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'gemini', 'opencode'];
@@ -92,6 +102,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     pullRequest: isNonEmptyString(record.pullRequestHint) ? record.pullRequestHint : null,
     messageCount: isTurnCount(record.messageCount) ? record.messageCount : null,
     latestTurnPreview: isNonEmptyString(record.latestTurnPreview) ? record.latestTurnPreview : null,
+    lastActivity: isNonEmptyString(record.lastActivity) ? record.lastActivity : null,
   };
 }
 
@@ -119,6 +130,10 @@ export function createFreshSession(
     pullRequest: null,
     messageCount: null,
     latestTurnPreview: null,
+    // Deliberately not "now": this field is what the scanner read out of a
+    // conversation on disk, and a shell started here has no conversation yet.
+    // Its row simply shows no stamp, like every other scanner field above.
+    lastActivity: null,
   };
 }
 
@@ -191,6 +206,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       latestTurnPreview: isNonEmptyString(candidate.latestTurnPreview)
         ? candidate.latestTurnPreview
         : null,
+      lastActivity: isNonEmptyString(candidate.lastActivity) ? candidate.lastActivity : null,
     });
   }
   return result;
