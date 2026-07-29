@@ -116,6 +116,14 @@ export type LocalAgentSessionRecord = {
    * words. Tool calls and their results are how the work gets done, not what was
    * said, so they are not counted — counting them would put "418 messages" on a
    * row where the two of them exchanged a dozen.
+   *
+   * The two agents write their transcripts differently and the count has to mean
+   * the same thing on both kinds of row, because they sit on the same list.
+   * Claude Code writes one record per reply. Codex writes a separate record for
+   * every paragraph it narrates between tool calls, so a run of consecutive
+   * Codex agent records is counted as the ONE thing the agent said back; without
+   * that a Codex row read "691 messages" beside a Claude row reading "33" for a
+   * longer conversation.
    */
   messageCount?: number | null;
   latestTurnPreview?: string | null;
@@ -330,6 +338,9 @@ export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[]
   const firstPrompts = new Map<string, string>();
   const messageCounts = new Map<string, number>();
   const latestTurns = new Map<string, string>();
+  // Who spoke last in each session, so a run of agent narration can be counted
+  // as the one thing the agent said rather than as twenty.
+  const lastSpeakers = new Map<string, CodexSpeaker>();
 
   for (const value of parseJsonLines(input)) {
     const type = optionalString(value.type);
@@ -373,8 +384,17 @@ export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[]
 
       const turn = latest ? codexConversationTurn(value) : null;
       if (latest && turn) {
-        messageCounts.set(latest.id, (messageCounts.get(latest.id) ?? 0) + 1);
-        latestTurns.set(latest.id, turn); // a later line is the newer turn
+        const [speaker, text] = turn;
+        // Codex writes a separate record for every paragraph it narrates
+        // between tool calls, so a run of them is ONE thing the agent said
+        // back, not twenty. Without this a Codex row read "691 messages" where
+        // the Claude row beside it, for a longer conversation, read "33".
+        const repeatNarration = speaker === 'agent' && lastSpeakers.get(latest.id) === 'agent';
+        if (!repeatNarration) {
+          messageCounts.set(latest.id, (messageCounts.get(latest.id) ?? 0) + 1);
+        }
+        lastSpeakers.set(latest.id, speaker);
+        latestTurns.set(latest.id, text); // a later line is the newer turn
       }
 
       const cwd = codexResponseItemWorkdir(value);
@@ -393,25 +413,28 @@ export function parseCodexRolloutJsonl(input: string): LocalAgentSessionRecord[]
   return records;
 }
 
+/** Who said one message of a Codex conversation. */
+type CodexSpeaker = 'user' | 'agent';
+
 /**
- * One turn of a Codex conversation, and how a row would show it. The user side
- * uses the same filter the title does, so the opening turns Codex writes for
- * itself — the repository instructions, the environment block — are neither
- * counted nor shown; the agent side needs actual words.
+ * One message of a Codex conversation: who said it, and how a row would show it.
+ * The user side uses the same filter the title does, so the opening turns Codex
+ * writes for itself — the repository instructions, the environment block — are
+ * neither counted nor shown; the agent side needs actual words.
  */
-function codexConversationTurn(value: Record<string, unknown>) {
+function codexConversationTurn(value: Record<string, unknown>): [CodexSpeaker, string] | null {
   const payload = objectValue(value.payload);
   if (!payload || optionalString(payload.type) !== 'message') return null;
 
   const role = optionalString(payload.role);
   if (role === 'user') {
     const text = codexTypedUserText(value);
-    return text ? agentSessionTurnPreview(agentSessionUserTurnPrefix, text) : null;
+    return text ? ['user', agentSessionTurnPreview(agentSessionUserTurnPrefix, text)] : null;
   }
 
   if (role === 'assistant') {
     const text = valueToText(payload.content)?.trim();
-    return text ? agentSessionTurnPreview(agentSessionAgentTurnPrefix, text) : null;
+    return text ? ['agent', agentSessionTurnPreview(agentSessionAgentTurnPrefix, text)] : null;
   }
 
   return null;
@@ -878,10 +901,24 @@ function claudeAiTitle(value: Record<string, unknown>): [string, string] | null 
 }
 
 /**
+ * Openings that mean Claude Code wrote this "user" message, not the user. `<`
+ * covers every tagged block it injects (`<command-name>`,
+ * `<local-command-caveat>`); the resume caveat and the interruption notice are
+ * the two it writes as plain sentences.
+ *
+ * The interruption matters more than it looks. Pressing Escape in the middle of
+ * an answer is how a session usually ends, so it is disproportionately likely to
+ * be the LAST thing in a transcript — and the row shows the last thing said. In
+ * 617 real user turns sampled on this machine, 50 of them were exactly
+ * "[Request interrupted by user]".
+ */
+const claudeInjectedPromptPrefixes = ['<', 'Caveat:', '[Request interrupted'];
+
+/**
  * The first genuine user prompt in the scanned window. Tool results are
  * `type: "user"` too, so plain `content` text is required and `tool_result` items
- * are dropped; slash-command wrappers (`<command-name>…`) and the resume caveat
- * are skipped because neither says what the session is about.
+ * are dropped; anything Claude Code wrote for itself is skipped because none of
+ * it says what the session is about.
  */
 function claudeUserPromptText(value: Record<string, unknown>): [string, string] | null {
   if (optionalString(value.type) !== 'user' || value.isMeta === true) return null;
@@ -905,7 +942,8 @@ function claudeUserPromptText(value: Record<string, unknown>): [string, string] 
         : null;
 
   const trimmed = text?.trim();
-  if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('Caveat:')) return null;
+  if (!trimmed) return null;
+  if (claudeInjectedPromptPrefixes.some((prefix) => trimmed.startsWith(prefix))) return null;
   return [id, trimmed];
 }
 

@@ -73,6 +73,14 @@ pub struct AgentSessionRecord {
     /// words. Tool calls and their results are how the work gets done, not what
     /// was said, so they are not counted — counting them would put "418
     /// messages" on a row where the two of them exchanged a dozen.
+    ///
+    /// The two agents write their transcripts differently and the count has to
+    /// mean the same thing on both kinds of row, because they sit on the same
+    /// list. Claude Code writes one record per reply. Codex writes a separate
+    /// record for every paragraph it narrates between tool calls, so a run of
+    /// consecutive Codex agent records is counted as the ONE thing the agent
+    /// said back; without that a Codex row read "691 messages" beside a Claude
+    /// row reading "33" for a longer conversation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -269,6 +277,9 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
     let mut first_prompts: HashMap<String, String> = HashMap::new();
     let mut message_counts: HashMap<String, u32> = HashMap::new();
     let mut latest_turns: HashMap<String, String> = HashMap::new();
+    // Who spoke last in each session, so a run of agent narration can be
+    // counted as the one thing the agent said rather than as twenty.
+    let mut last_speakers: HashMap<String, CodexSpeaker> = HashMap::new();
 
     for value in input
         .lines()
@@ -352,8 +363,18 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 }
 
                 if let Some(id) = records.last().map(|record| record.id.clone()) {
-                    if let Some(turn) = codex_conversation_turn(&value) {
-                        *message_counts.entry(id.clone()).or_insert(0) += 1;
+                    if let Some((speaker, turn)) = codex_conversation_turn(&value) {
+                        // Codex writes a separate record for every paragraph it
+                        // narrates between tool calls, so a run of them is ONE
+                        // thing the agent said back, not twenty. Without this a
+                        // Codex row read "691 messages" where the Claude row
+                        // beside it, for a longer conversation, read "33".
+                        let repeat_narration = speaker == CodexSpeaker::Agent
+                            && last_speakers.get(&id) == Some(&CodexSpeaker::Agent);
+                        if !repeat_narration {
+                            *message_counts.entry(id.clone()).or_insert(0) += 1;
+                        }
+                        last_speakers.insert(id.clone(), speaker);
                         latest_turns.insert(id, turn); // a later line is the newer turn
                     }
                 }
@@ -385,26 +406,40 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
     records
 }
 
-/// One turn of a Codex conversation, and how a row would show it. The user side
-/// uses the same filter the title does, so the opening turns Codex writes for
-/// itself — the repository instructions, the environment block — are neither
-/// counted nor shown; the agent side needs actual words.
-fn codex_conversation_turn(value: &Value) -> Option<String> {
+/// Who said one message of a Codex conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexSpeaker {
+    User,
+    Agent,
+}
+
+/// One message of a Codex conversation: who said it, and how a row would show
+/// it. The user side uses the same filter the title does, so the opening turns
+/// Codex writes for itself — the repository instructions, the environment block
+/// — are neither counted nor shown; the agent side needs actual words.
+fn codex_conversation_turn(value: &Value) -> Option<(CodexSpeaker, String)> {
     let payload = value.get("payload")?;
     if payload.get("type").and_then(Value::as_str) != Some("message") {
         return None;
     }
 
     match payload.get("role").and_then(Value::as_str)? {
-        "user" => Some(agent_session_turn_preview(
-            AGENT_SESSION_USER_TURN_PREFIX,
-            &codex_typed_user_text(value)?,
+        "user" => Some((
+            CodexSpeaker::User,
+            agent_session_turn_preview(
+                AGENT_SESSION_USER_TURN_PREFIX,
+                &codex_typed_user_text(value)?,
+            ),
         )),
         "assistant" => {
             let text = payload.get("content").and_then(value_to_text)?;
             let text = text.trim();
-            (!text.is_empty())
-                .then(|| agent_session_turn_preview(AGENT_SESSION_AGENT_TURN_PREFIX, text))
+            (!text.is_empty()).then(|| {
+                (
+                    CodexSpeaker::Agent,
+                    agent_session_turn_preview(AGENT_SESSION_AGENT_TURN_PREFIX, text),
+                )
+            })
         }
         _ => None,
     }
@@ -960,10 +995,23 @@ fn claude_ai_title(value: &Value) -> Option<(String, String)> {
     ))
 }
 
+/// Openings that mean Claude Code wrote this "user" message, not the user. `<`
+/// covers every tagged block it injects (`<command-name>`,
+/// `<local-command-caveat>`); the resume caveat and the interruption notice are
+/// the two it writes as plain sentences.
+///
+/// The interruption matters more than it looks. Pressing Escape in the middle
+/// of an answer is how a session usually ends, so it is disproportionately
+/// likely to be the LAST thing in a transcript — and the row shows the last
+/// thing said. In 617 real user turns sampled on this machine, 50 of them were
+/// exactly "[Request interrupted by user]".
+const CLAUDE_INJECTED_PROMPT_PREFIXES: &[&str] =
+    &["<", "Caveat:", "[Request interrupted"];
+
 /// The first genuine user prompt in the scanned window. Tool results are
 /// `type: "user"` too, so plain `content` text is required and `tool_result`
-/// items are dropped; slash-command wrappers (`<command-name>…`) and the resume
-/// caveat are skipped because neither says what the session is about.
+/// items are dropped; anything Claude Code wrote for itself is skipped because
+/// none of it says what the session is about.
 fn claude_user_prompt_text(value: &Value) -> Option<(String, String)> {
     if optional_string(value.get("type"))? != "user" {
         return None;
@@ -985,7 +1033,11 @@ fn claude_user_prompt_text(value: &Value) -> Option<(String, String)> {
     };
 
     let text = text.trim();
-    if text.is_empty() || text.starts_with('<') || text.starts_with("Caveat:") {
+    if text.is_empty()
+        || CLAUDE_INJECTED_PROMPT_PREFIXES
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+    {
         return None;
     }
 
@@ -1558,14 +1610,27 @@ pub fn read_head_utf8(path: &Path, max_bytes: usize) -> std::io::Result<String> 
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// A window from the start of the file and a window from the end, joined.
+///
+/// A file that fits inside the two windows put together is read WHOLE instead,
+/// decided on its real length. The obvious-looking alternative — stitch the two
+/// windows and notice afterwards that the head already ended with the tail —
+/// only recognises a file that fits inside ONE window. Anything between one
+/// window and two got the middle of the file handed to the caller twice, and
+/// the caller counts what it is given.
 fn read_head_and_tail_utf8(
     path: &Path,
     head_bytes: usize,
     tail_bytes: usize,
 ) -> std::io::Result<String> {
+    let combined = head_bytes.saturating_add(tail_bytes);
+    if fs::metadata(path)?.len() <= combined as u64 {
+        return read_head_utf8(path, combined);
+    }
+
     let head = read_head_utf8(path, head_bytes)?;
     let tail = read_tail_utf8(path, tail_bytes)?;
-    if tail.is_empty() || head.ends_with(&tail) {
+    if tail.is_empty() {
         return Ok(head);
     }
 
@@ -1764,6 +1829,125 @@ mod tests {
             merged[0].latest_turn_preview.as_deref(),
             Some("Agent: Here is the plan for 2027.")
         );
+    }
+
+    /// Pressing Escape in the middle of an answer is how a session usually
+    /// ends, and Claude writes that as a user message reading "[Request
+    /// interrupted by user]". It is not something the user said, so it is not a
+    /// turn — and because the row shows the LAST turn, letting it through put
+    /// "You: [Request interrupted by user]" on the most prominent line of the
+    /// card, where it says nothing at all about the session. The row falls back
+    /// to the last thing that really was said.
+    #[test]
+    fn an_interrupted_request_is_neither_counted_nor_shown() {
+        let interrupted = format!(
+            "{CONVERSATION_JSONL}\n{}",
+            r#"{"type":"user","isSidechain":false,"sessionId":"S9","timestamp":"2026-07-29T09:06:00Z","message":{"role":"user","content":"[Request interrupted by user]"}}"#
+        );
+        let records = parse_claude_jsonl(&interrupted, "/Users/dev/work/mac-command-bar");
+
+        assert_eq!(records[0].message_count, Some(3));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: The rail was reading the wrong file.")
+        );
+    }
+
+    /// Codex writes a separate record for every paragraph it narrates between
+    /// tool calls, so counting records put roughly twenty times as many
+    /// "messages" on a Codex row as on a Claude row for the same amount of
+    /// conversation — and the two sit side by side on the same list. A run of
+    /// them is one thing the agent said back, so it counts once.
+    #[test]
+    fn codex_narration_between_tool_calls_counts_as_one_agent_turn() {
+        let narrated = concat!(
+            r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Plan the 2027 simulation."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Reading the scanner now."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:10.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:20.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Now changing the reader."}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-28T16:43:30.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Here is the plan for 2027."}]}}"#,
+        );
+
+        let records = parse_codex_rollout_jsonl(narrated);
+
+        // One thing the user typed, one thing the agent said back.
+        assert_eq!(records[0].message_count, Some(2));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: Here is the plan for 2027.")
+        );
+
+        // A second exchange is a second pair, so the count still grows with the
+        // conversation rather than with the narration.
+        let second_exchange = format!(
+            "{narrated}\n{}\n{}",
+            r#"{"timestamp":"2026-07-28T16:44:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Go ahead."}]}}"#,
+            r#"{"timestamp":"2026-07-28T16:44:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}"#
+        );
+        let records = parse_codex_rollout_jsonl(&second_exchange);
+        assert_eq!(records[0].message_count, Some(4));
+        assert_eq!(
+            records[0].latest_turn_preview.as_deref(),
+            Some("Agent: Done.")
+        );
+    }
+
+    /// A rollout file is read as a window from the start and a window from the
+    /// end. When the file is bigger than one window but smaller than two, those
+    /// two windows OVERLAP, and every line in the overlap used to be handed to
+    /// the parser twice. Nothing noticed until a row started counting turns:
+    /// counting is the first thing this parser does that is not idempotent, and
+    /// a session in that size band reported a number inflated by the overlap —
+    /// while the same file through the web preview reported the true one.
+    #[test]
+    fn a_file_between_one_window_and_two_is_not_read_twice() {
+        // Long enough to run past one window, short enough to stay inside two.
+        let padding = "x".repeat(700);
+        let mut lines = vec![
+            r#"{"timestamp":"2026-07-28T16:42:17.000Z","type":"session_meta","payload":{"id":"019fa964","cwd":"/Users/dev/work/rental-management","originator":"codex-tui","thread_source":"user","source":"cli"}}"#
+                .to_string(),
+        ];
+        let exchanges = 200;
+        for index in 0..exchanges {
+            lines.push(format!(
+                r#"{{"timestamp":"2026-07-28T16:42:30.000Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"Question {index} {padding}"}}]}}}}"#
+            ));
+            lines.push(format!(
+                r#"{{"timestamp":"2026-07-28T16:43:00.000Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"Answer {index} {padding}"}}]}}}}"#
+            ));
+        }
+        let body = lines.join("\n");
+
+        let combined = CODEX_SESSION_HEAD_BYTES + CODEX_SESSION_TAIL_BYTES;
+        assert!(
+            body.len() > CODEX_SESSION_HEAD_BYTES && body.len() < combined,
+            "the fixture has to land in the band where the two windows overlap; \
+             it is {} bytes and the band is {}..{}",
+            body.len(),
+            CODEX_SESSION_HEAD_BYTES,
+            combined
+        );
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("rollout-019fa964.jsonl");
+        fs::write(&path, &body).expect("write the fixture");
+
+        let read = read_head_and_tail_utf8(&path, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
+            .expect("read the fixture");
+        assert_eq!(
+            read.lines().count(),
+            body.lines().count(),
+            "the file came back with lines in it more than once"
+        );
+
+        let records = parse_codex_rollout_jsonl(&read);
+        assert_eq!(records[0].message_count, Some(exchanges * 2));
     }
 
     #[test]
