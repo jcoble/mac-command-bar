@@ -15,6 +15,8 @@
    * Clicking a problem opens its file at that line through `openFileBus`, the
    * same route the explorer and the palette use.
    */
+  import type { Snippet } from 'svelte';
+
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import CircleX from '@lucide/svelte/icons/circle-x';
@@ -43,6 +45,14 @@
     severityWord,
     type ProblemRow
   } from '$lib/shell/problems/problemsStore.svelte.ts';
+
+  interface Props {
+    /** Anything the region around this panel wants on the end of its header row.
+     * The bottom dock puts its "Reset layout" button here — it used to float in
+     * the same corner and landed on top of Refresh. */
+    headerEnd?: Snippet;
+  }
+  let { headerEnd }: Props = $props();
 
   /** Files the user has folded shut. Everything is open until it is closed. */
   let closedFiles = $state<Record<string, boolean>>({});
@@ -167,6 +177,8 @@
       <RefreshCw class="size-3.5" aria-hidden="true" />
       {problemsState.loading ? 'Looking…' : 'Refresh'}
     </button>
+
+    {#if headerEnd}{@render headerEnd()}{/if}
   </div>
 
   {#if sourceLine && problemsState.rows.length > 0}

@@ -17,8 +17,11 @@
 </script>
 
 <div class="dock-slot">
-  <ProblemsPanel />
-  <button class="reset-layout" onclick={onReset}>Reset layout</button>
+  <ProblemsPanel>
+    {#snippet headerEnd()}
+      <button class="reset-layout" onclick={onReset}>Reset layout</button>
+    {/snippet}
+  </ProblemsPanel>
 </div>
 
 <style>
@@ -27,16 +30,16 @@
     height: 100%;
   }
 
+  /* On the end of the panel's own header row. It used to float in that corner,
+     which put it straight on top of the panel's Refresh button. */
   .reset-layout {
-    position: absolute;
-    top: 6px;
-    right: 8px;
+    flex-shrink: 0;
     background: transparent;
     border: 1px solid #22222c;
     border-radius: 5px;
     color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     padding: 2px 7px;
     cursor: pointer;
   }
