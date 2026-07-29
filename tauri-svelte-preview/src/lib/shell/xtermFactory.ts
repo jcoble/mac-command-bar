@@ -12,11 +12,32 @@
  * still receiving output), it is just slower, which nobody can see.
  *
  * The terminal options below are copied from the proven old-shell config
- * (`src/routes/+page.svelte`), Dracula theme included, so /next looks and
- * behaves identically to the terminal users already have.
+ * (`src/routes/+page.svelte`), so /next behaves identically to the terminal
+ * users already have. The COLOURS now come from the theme in force rather than
+ * from a constant in this file — and the theme the app ships with carries the
+ * same Dracula palette the terminal has always had, so nothing changes on screen
+ * until somebody picks a different theme.
  */
 import type { TerminalView } from '../liveConversationTerminals';
 import { defaultSettings, settings } from '../settingsStore.svelte';
+import { currentTheme, registerTerminalApplier } from './themes/themeService';
+
+/**
+ * Every terminal this factory has built and not yet disposed.
+ *
+ * The shell keeps one terminal per owned session alive at all times and shows
+ * one of them, so a theme switch has to walk all of them — repainting only the
+ * visible one leaves every other session wearing the old colours until it is
+ * looked at.
+ */
+const liveTerminals = new Set<import('@xterm/xterm').Terminal>();
+
+// Called at once with the theme in force, and again on every switch.
+registerTerminalApplier((theme) => {
+  for (const terminal of liveTerminals) {
+    terminal.options.theme = { ...theme.terminal };
+  }
+});
 
 /** Everything {@link makeTerminalView} needs, resolved once. */
 export type XtermModules = Awaited<ReturnType<typeof loadXtermModules>>;
@@ -39,7 +60,14 @@ const TERMINAL_FONT_DEFAULTS = {
   lineHeight: 1.2
 } as const;
 
-/** Dracula — copied verbatim from the old shell's xterm config. */
+/**
+ * Dracula — copied verbatim from the old shell's xterm config.
+ *
+ * The factory does not read this any more: terminals take their colours from the
+ * theme in force. It stays because `scripts/themeRegistry.test.mjs` reads it out
+ * of this file to prove the registry's Dracula is the same palette, value for
+ * value, that the terminal has always had. Move it and update that test.
+ */
 const DRACULA_THEME = {
   background: '#282a36',
   foreground: '#f8f8f2',
@@ -136,7 +164,7 @@ export function makeTerminalView(
     // pays it including the hidden ones (this shell keeps one view per owned
     // session alive across switches).
     scrollback: 20000,
-    theme: { ...DRACULA_THEME }
+    theme: { ...currentTheme().terminal }
   });
 
   const fitAddon = new modules.FitAddon();
@@ -144,6 +172,7 @@ export function makeTerminalView(
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(serializeAddon);
   terminal.open(host);
+  liveTerminals.add(terminal);
 
   const inputDisposable = terminal.onData((data) => hooks.onData(data));
 
@@ -233,6 +262,7 @@ export function makeTerminalView(
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      liveTerminals.delete(terminal);
       inputDisposable.dispose();
       releaseWebgl();
       try {
