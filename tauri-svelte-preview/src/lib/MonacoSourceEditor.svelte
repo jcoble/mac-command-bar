@@ -23,6 +23,8 @@
 		sourceCodeLensSpotFromId,
 	} from "./sourceCodeLensKeys";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
+	import { listThemes } from "$lib/shell/themes/themeRegistry";
+	import { currentTheme, registerMonacoApplier } from "$lib/shell/themes/themeService";
 	import { isNativeTauriRuntime } from "./tauriSource";
 	import {
 		extractSourceSemanticTokens,
@@ -342,7 +344,30 @@
 	// within this budget with the best answer available now; a cold/slow/empty backend
 	// returns fast (empty peek that can re-populate) instead of freezing the gesture.
 	const NAV_LOOKUP_DEADLINE_MS = 200;
-	const editorBackground = sourcePreviewAppearance.theme.colors["editor.background"] ?? "#17191e";
+	/**
+	 * The theme in force, kept here as state so the markup below follows a switch.
+	 * `currentTheme()` is a plain function, not a rune, so reading it in a
+	 * `$derived` would freeze at whatever was in force when this editor was
+	 * created — the applier registered below is what keeps this honest.
+	 */
+	let activeTheme = $state(currentTheme());
+	/**
+	 * Repaint this editor when the theme changes. Called once immediately with the
+	 * theme in force, and again on every switch.
+	 *
+	 * `setTheme` is only safe once Monaco has loaded, because `configureMonaco` is
+	 * where every theme is defined; before that, remembering which theme is in
+	 * force is enough, and the editor is created with it.
+	 */
+	const disposeThemeApplier = registerMonacoApplier((theme) => {
+		activeTheme = theme;
+		monacoApi?.editor.setTheme(theme.monaco.id);
+	});
+	/** The colour behind the editor before Monaco has painted a frame. It follows
+	 * the theme, or a Dracula editor flashes Houston's background on the way in. */
+	const editorBackground = $derived(
+		activeTheme.monaco.colors["editor.background"] ?? "#17191e",
+	);
 	const sourceLspMonacoLanguageIDs = [
 		"typescript",
 		"javascript",
@@ -377,13 +402,21 @@
 		};
 	}
 
+	/**
+	 * Define every theme the shell ships, and hand Monaco's repainter to the theme
+	 * service so a switch reaches the editor. Runs once per Monaco load, which is
+	 * the right scope: `setTheme` is global to Monaco, so one registration covers
+	 * however many editors exist.
+	 */
 	function configureMonaco(monaco: typeof Monaco) {
-		const { id, ...theme } = sourcePreviewAppearance.theme;
-		monaco.editor.defineTheme(id, {
-			...theme,
-			rules: theme.rules ?? [],
-			colors: theme.colors ?? {},
-		});
+		for (const theme of listThemes()) {
+			const { id, ...definition } = theme.monaco;
+			monaco.editor.defineTheme(id, {
+				...definition,
+				rules: definition.rules ?? [],
+				colors: definition.colors ?? {},
+			});
+		}
 	}
 
 	function configureTypeScriptLanguageService(typeScriptLanguage: TypeScriptContribution) {
@@ -1410,9 +1443,12 @@
 			fontSize,
 			letterSpacing: sourcePreviewAppearance.letterSpacing,
 			lineHeight,
-			theme: sourcePreviewAppearance.theme.id,
+			// The theme in force, NOT the shipped one: this runs again whenever the
+			// font changes, and naming the shipped theme here would snap a switched
+			// editor back to it mid-session.
+			theme: activeTheme.monaco.id,
 		});
-		monacoApi.editor.setTheme(sourcePreviewAppearance.theme.id);
+		monacoApi.editor.setTheme(activeTheme.monaco.id);
 	}
 
 	function applyPreview() {
@@ -2083,7 +2119,7 @@
 			smoothScrolling: true,
 			stickyScroll: { enabled: true },
 			tabSize: 4,
-			theme: sourcePreviewAppearance.theme.id,
+			theme: activeTheme.monaco.id,
 			wordWrap: "off",
 		});
 
@@ -2304,6 +2340,9 @@
 
 	onDestroy(() => {
 		componentDestroyed = true;
+		// A torn-down editor must stop being repainted, or the theme service keeps
+		// a dead Monaco in its set for the life of the page.
+		disposeThemeApplier();
 		if (layoutFrame) {
 			window.cancelAnimationFrame(layoutFrame);
 			layoutFrame = 0;
@@ -2373,7 +2412,7 @@
 	class="source-editor"
 	data-font-family={sourcePreviewAppearance.fontFamily}
 	data-testid="monaco-source-editor"
-	data-theme-id={sourcePreviewAppearance.theme.id}
+	data-theme-id={activeTheme.monaco.id}
 	style={`--source-editor-background: ${editorBackground}`}
 >
 	<div bind:this={host} class="monaco-host"></div>

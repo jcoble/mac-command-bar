@@ -17,11 +17,16 @@
      the old shell shares `app.css` with this page and must keep rendering
      exactly as it does today, so this file must never reach that route. */
   import '$lib/shell/styles/next.css';
+  /* Four colours the dock needs that the shared token file has no name for.
+     A stylesheet rather than something the theme service sets, because the dock
+     is painted on the first frame, before any theme has been applied. */
+  import '$lib/shell/styles/themeChrome.css';
 
   import ActivityBar from '$lib/shell/components/ActivityBar.svelte';
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
+  import GitDiffView from '$lib/shell/components/GitDiffView.svelte';
   import SessionsColumn from '$lib/shell/components/SessionsColumn.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
@@ -39,8 +44,13 @@
     type ShellRegionId
   } from '$lib/shell/layout/frame';
   import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
+  import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
   import { requestOpenFile } from '$lib/shell/openFileBus';
-  import { adoptAgentSession, reconcileOwnedSessions } from '$lib/shell/ownedSessions';
+  import {
+    adoptAgentSession,
+    createFreshSession,
+    reconcileOwnedSessions
+  } from '$lib/shell/ownedSessions';
   import {
     captureWorkspace,
     pruneWorkspaces,
@@ -51,6 +61,13 @@
   import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
   import { registerShellCommands } from '$lib/shell/shellCommands';
   import { shellPanels } from '$lib/shell/shellPanels';
+  import {
+    noteSessionRemoved,
+    noteTerminalExit,
+    registerStackHandlers,
+    type StackStartRequest
+  } from '$lib/shell/stacks/stackService';
+  import { recordStackStart, stackIdForOwnedId } from '$lib/shell/stacks/stackStore.svelte';
   import {
     addOwnedSession,
     completeOwnedSession,
@@ -64,6 +81,7 @@
     updateOwnedSession
   } from '$lib/shell/stores/sessionRailStore.svelte';
   import { createTerminalService, tauriTerminalBackend } from '$lib/shell/terminalService';
+  import { applyStoredTheme, clearTheme } from '$lib/shell/themes/themeService';
   import { loadXtermModules, makeTerminalView } from '$lib/shell/xtermFactory';
   import {
     listAgentSessionsFromLocalBridge,
@@ -115,8 +133,8 @@
    * the answer only because the icon strip that draws it is a separate region
    * of the frame, on the far right edge. */
   let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
-  /** The overlay layer, for opening the settings dialog it owns. */
-  let overlays: { openSettings(): void } | null = null;
+  /** The overlay layer, for opening the dialogs it owns. */
+  let overlays: { openSettings(): void; openNewSession(): void } | null = null;
   let refitScheduled = false;
   /** Its own state, NOT `rail.error`: ShellFrame mounts before this page's
    * start-up, and `scanRail` clears `rail.error` — which would erase a mount
@@ -127,7 +145,11 @@
    * user picks one — so it belongs here at component init, not in an effect. */
   registerShellCommands({
     showPanel: (id) => frameControls?.showCenterPanel(id),
-    expandSourceControl: () => sidebarControls?.expandSourceControl()
+    expandSourceControl: () => sidebarControls?.expandSourceControl(),
+    // Opening a view is what lets that view read anything, so nothing else has
+    // to be called here — the column reports the change and the load follows.
+    showView: (id) => sidebarControls?.selectView(id),
+    openNewSession: () => overlays?.openNewSession()
   });
 
   /**
@@ -359,6 +381,70 @@
   }
 
   /**
+   * EXPLICIT IO: start a session the user described in the new-session dialog.
+   *
+   * Mirrors `adopt` step for step; the difference is where the description comes
+   * from. `createFreshSession` makes a plain shell — agent 'other', nothing to
+   * replay — and the dialog knows better on both counts, so BOTH are set before
+   * `startOwned`: that is the call which types the command in.
+   */
+  async function startNewSession(request: NewSessionRequest): Promise<void> {
+    if (!service || disposed) return;
+    const owned = {
+      ...createFreshSession({ cwd: request.cwd, title: request.title }),
+      agent: request.agent,
+      resumeCommand: request.command
+    };
+    addOwnedSession(owned);
+    const host = await hostFor(owned.ownedId);
+    if (!host) {
+      rail.error = `no terminal host for "${owned.title}"`;
+      return;
+    }
+    const ptySessionId = await service.startOwned(owned, host);
+    if (!ptySessionId) {
+      updateOwnedSession(owned.ownedId, { state: 'exited' });
+      rail.error = `failed to start a terminal for "${owned.title}"`;
+      return;
+    }
+    // Persist the PTY id: reload re-attach reads it back out of localStorage.
+    updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
+    await selectOwned(owned.ownedId);
+  }
+
+  /**
+   * EXPLICIT IO: run a saved stack. A stack IS a session — it appears on the
+   * rail like any other and its terminal is the one you watch.
+   *
+   * `runCommandDirectly` is what makes the stacks pane honest: the session is
+   * the command rather than a shell with the command typed into it, so when the
+   * dev server dies the session ends with the server's exit code instead of
+   * dropping back to a prompt that reads as "still starting". A desktop build
+   * too old for that falls back to typing the command in — see `startOwned`.
+   *
+   * Answers with the new session's id, or `null` when no terminal could be
+   * opened; the pane says so in its own words rather than guessing.
+   */
+  async function onStartStack(request: StackStartRequest): Promise<string | null> {
+    if (!service || disposed) return null;
+    const owned = {
+      ...createFreshSession({ cwd: request.cwd, title: request.title }),
+      resumeCommand: request.script
+    };
+    addOwnedSession(owned);
+    const host = await hostFor(owned.ownedId);
+    if (!host) return null;
+    const ptySessionId = await service.startOwned(owned, host, { runCommandDirectly: true });
+    if (!ptySessionId) {
+      updateOwnedSession(owned.ownedId, { state: 'exited' });
+      return null;
+    }
+    updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
+    await selectOwned(owned.ownedId);
+    return owned.ownedId;
+  }
+
+  /**
    * EXPLICIT IO: start a finished session up again, in place.
    *
    * It stays the SAME session — same `ownedId`, so the files it had open, the
@@ -436,7 +522,15 @@
       }
       // `startOwned` reads the folder and the resume command off this record;
       // the PTY id it had is cleared so nothing can point at the old process.
-      const ptySessionId = await service.startOwned({ ...session, ptySessionId: null }, host);
+      // A stack's session keeps its one-command spawn on restart — typed into
+      // a shell instead, the exit code would belong to the shell and a crashed
+      // dev server would read as "started" again.
+      const restartedStackId = stackIdForOwnedId(ownedId);
+      const ptySessionId = await service.startOwned(
+        { ...session, ptySessionId: null },
+        host,
+        restartedStackId !== null ? { runCommandDirectly: true } : undefined
+      );
       if (!ptySessionId) {
         updateOwnedSession(ownedId, { state: 'exited' });
         rail.error = `could not start "${label}" again: no new terminal opened`;
@@ -458,6 +552,9 @@
 
       // Persist the new PTY id: reload re-attach reads it back out of storage.
       updateOwnedSession(ownedId, { ptySessionId, state: 'live' });
+      // A restarted stack run is a run again — without this the stacks pane
+      // keeps the old exit on record and says "stopped" under a live server.
+      if (restartedStackId !== null) recordStackStart(restartedStackId, ownedId);
       await selectOwned(ownedId);
     } catch (error) {
       // The row goes back to finished rather than sitting there claiming to be
@@ -523,6 +620,9 @@
     pendingHosts.delete(ownedId);
     awaitingReattach.delete(ownedId);
     removeOwnedSession(ownedId);
+    // A removed row takes its stack tag with it, rather than leaving one
+    // pointing at a session that is gone.
+    noteSessionRemoved(ownedId);
     // The row is gone, so the tabs and tree it remembered go with it — pruning
     // against what is left also clears anything an earlier build orphaned.
     workspaces = pruneWorkspaces(
@@ -533,7 +633,18 @@
   }
 
   onMount(() => {
+    // First, and synchronous: it only touches the DOM, and every panel below
+    // paints in the theme it sets.
+    applyStoredTheme();
     disposed = false;
+    // The stacks pane never spawns or kills anything itself — the page owns the
+    // rail, the terminal service and the terminal hosts, so it does the work and
+    // the pane asks for it. Pure bookkeeping; nothing runs until a click.
+    registerStackHandlers({
+      onStartStack,
+      onStopStack: (ownedId) => closeTerminal(ownedId),
+      onSelectSession: (ownedId) => selectOwned(ownedId)
+    });
     void (async () => {
       try {
         const backend = tauriTerminalBackend(countInvoke);
@@ -543,7 +654,13 @@
         service = createTerminalService({
           backend,
           createView: (host, hooks) => makeTerminalView(modules, host, hooks),
-          onExit: (ownedId) => updateOwnedSession(ownedId, { state: 'exited' })
+          onExit: (ownedId, payload) => {
+            updateOwnedSession(ownedId, { state: 'exited' });
+            // The stacks pane learns how its run ended from here and nowhere
+            // else: no timer anywhere reads process states. A session that is
+            // not a stack's costs one map lookup.
+            noteTerminalExit(ownedId, { exitCode: payload.exitCode, signal: payload.signal });
+          }
         });
         await service.attach();
         if (disposed) return;
@@ -624,6 +741,11 @@
       pendingHosts.clear();
       awaitingReattach.clear();
       livePtySizes.clear();
+      // The theme painted inline colors onto <html>, above the scoping that
+      // keeps the old shell on its own palette. Leaving this page takes them
+      // back off, so a same-document navigation to the old shell renders it
+      // exactly as it was found.
+      clearTheme();
     };
   });
 </script>
@@ -642,6 +764,7 @@
     onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
     onReopen={reopenOwnedSession} onRemove={removeSession}
     onRescan={scanRail} onCollapse={collapseSessions}
+    onNewSession={() => overlays?.openNewSession()}
   />
 {/snippet}
 {#snippet toolsArea()}
@@ -649,7 +772,11 @@
     onReady={(controls) => (sidebarControls = controls)}
     onActiveViewChange={(id) => (activeView = id)}
     onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
+    onWorktreesVisible={(visible) => shellPanels.worktreesVisible(visible)}
+    onStacksVisible={(visible) => shellPanels.stacksVisible(visible)}
     onContextVisible={(visible) => shellPanels.contextVisible(visible)}
+    onOpenSession={(ownedId) => void selectOwned(ownedId)}
+    onShowDiff={() => frameControls?.showCenterPanel('diff')}
   />
 {/snippet}
 {#snippet activityArea()}
@@ -674,11 +801,21 @@
   />
 {/snippet}
 {#snippet browserArea()}<BrowserPanel />{/snippet}
+<!-- The changes to whichever file source control has selected. `GitDiffView`
+     reads that selection itself and takes no props, so it can simply live here
+     as a tab of its own — which is what gives a diff the width of the middle
+     instead of a column. -->
+{#snippet diffArea()}<GitDiffView />{/snippet}
 
 <main class="next-shell">
   <ShellFrame
     sessions={sessionsArea} tools={toolsArea} activity={activityArea} dock={dockArea}
-    center={{ session: sessionArea, editor: editorArea, browser: browserArea }}
+    center={{
+      session: sessionArea,
+      editor: editorArea,
+      browser: browserArea,
+      diff: diffArea
+    }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}
     onReady={(controls) => {
@@ -721,6 +858,8 @@
     bind:this={overlays}
     onResetLayout={resetLayout}
     onRescanSessions={scanRail}
+    onStartNewSession={startNewSession}
+    newSessionRoots={rail.owned.map((session) => session.cwd)}
     message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
   />
 </main>

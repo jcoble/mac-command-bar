@@ -24,6 +24,7 @@
  * loading flag the newer read owns.
  */
 
+import { bridgeGitBackend, canChangeRepository, hasGitBridge } from './gitBackendExtra.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
   commitGitRepositoryFromTauri,
@@ -418,5 +419,14 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
  * The service the panel uses. A lane-scoped singleton bound to `gitPanel`,
  * because the panel component takes no props (the shell's panel contract).
  * Constructing it performs no IO.
+ *
+ * WHERE ITS ANSWERS COME FROM. In the desktop app, the desktop's own git
+ * commands. In a browser those answer nothing at all, so it reads through the
+ * dev server's git bridge instead — which can read a repository but can never
+ * change one, deliberately. Without this the panel in a browser tab could only
+ * ever say "desktop app only", and the panes could not be looked at outside the
+ * app at all.
  */
-export const gitService = createGitService();
+export const gitService = createGitService(
+  canChangeRepository() || !hasGitBridge() ? {} : { backend: bridgeGitBackend() }
+);

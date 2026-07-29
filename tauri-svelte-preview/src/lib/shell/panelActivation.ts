@@ -24,17 +24,25 @@
  * has never been shown never loads, and changing session re-loads only the
  * panels the user has actually opened.
  *
- * Two panels are neither a tab nor always on screen: **source control** and the
- * **context cards**. Both live in the tool column on the right, as two of the
- * four views its icon strip switches between, and the shell opens on neither.
- * So both follow the same principle by a third route — they load when you can
- * actually see them. Picking a session loads one only while it is in view, and
- * opening one loads it if a session is already picked. Out of view they cost
- * nothing; in view they are never stale.
+ * Four panels are neither a tab nor always on screen: **source control**, the
+ * **worktree manager**, the **stacks pane** and the **context cards**. All four
+ * live in the tool column on the right, as four of the five views its icon strip
+ * switches between, and the shell opens on none of them. So all four follow the
+ * same principle by a third route — they load when you can actually see them.
+ * Picking a session loads one only while it is in view, and opening one loads it
+ * if a session is already picked. Out of view they cost nothing; in view they
+ * are never stale.
  *
  * What counts as "in view" is not decided here — the tool column knows both
  * halves of it (which view is open, and whether the pane inside is folded) and
  * reports the answer as one yes or no, per view.
+ *
+ * The **Problems panel** in the bottom dock has the same route and a harder
+ * problem: the dock is on screen from the moment the shell opens, so "in view"
+ * cannot mean "mounted" there. `problemsVisible(true)` must only ever be
+ * reported from something the user did. Nothing in the shell reports it today —
+ * the panel's own Refresh button is the only way in — but the route is here and
+ * tested, so the day the dock grows tabs or a fold, one call is all it takes.
  */
 
 /** A project folder, in the shape the backend's project-scoped commands want. */
@@ -59,6 +67,9 @@ export interface PanelActivators {
   browser(): void;
   explorer(root: string): void;
   context(selection: ProjectSelection): void;
+  worktrees(selection: ProjectSelection): void;
+  stacks(root: string | null): void;
+  problems(root: string | null): void;
 }
 
 export interface PanelActivation {
@@ -81,6 +92,15 @@ export interface PanelActivation {
   /** The context cards came into view, or went out of it. Same contract as
    * source control above. */
   contextVisible(visible: boolean): void;
+  /** The worktree manager came into view, or went out of it. Same contract. */
+  worktreesVisible(visible: boolean): void;
+  /** The stacks pane came into view, or went out of it. Same contract. */
+  stacksVisible(visible: boolean): void;
+  /** The Problems panel came into view, or went out of it. Same contract as
+   * source control above — but see the note at the top of this file: the bottom
+   * dock is on screen at launch, so this may only ever be called for something
+   * the user did. */
+  problemsVisible(visible: boolean): void;
   /** Which panels have loaded at least once — for tests and for the report. */
   loadedPanels(): string[];
 }
@@ -110,6 +130,18 @@ export function createPanelActivation(
   let contextInView = false;
   /** Same bookkeeping as `gitLoadedFor`, for the context cards. */
   let contextLoadedFor: string | null = null;
+  /** Can the user see the worktree manager right now? */
+  let worktreesInView = false;
+  /** Same bookkeeping as `gitLoadedFor`, for the worktree manager. */
+  let worktreesLoadedFor: string | null = null;
+  /** Can the user see the stacks pane right now? */
+  let stacksInView = false;
+  /** Same bookkeeping as `gitLoadedFor`, for the stacks pane. */
+  let stacksLoadedFor: string | null = null;
+  /** Can the user see the Problems panel right now? */
+  let problemsInView = false;
+  /** Same bookkeeping as `gitLoadedFor`, for the Problems panel. */
+  let problemsLoadedFor: string | null = null;
 
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
@@ -132,13 +164,38 @@ export function createPanelActivation(
     activators.context({ root: selection.root, projects: selection.projects });
   };
 
+  /** Point the worktree manager at this selection. It needs the whole selection
+   * rather than a bare folder: it lists the checkouts of the project the session
+   * is in, and joins the shell's own sessions onto them. */
+  const loadWorktrees = (selection: ProjectSelection): void => {
+    worktreesLoadedFor = selection.root.trim();
+    activators.worktrees({ root: selection.root, projects: selection.projects });
+  };
+
+  /** Point the stacks pane at this folder. The saved stacks are per project. */
+  const loadStacks = (selection: ProjectSelection): void => {
+    const root = selection.root.trim();
+    stacksLoadedFor = root;
+    activators.stacks(root || null);
+  };
+
+  /** Point the Problems panel at this folder. */
+  const loadProblems = (selection: ProjectSelection): void => {
+    const root = selection.root.trim();
+    problemsLoadedFor = root;
+    activators.problems(root || null);
+  };
+
   /** The panels that come with the session the user just picked: the file tree,
-   * plus source control and the context cards while they are in view. */
+   * plus every view-gated panel that is in view. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
     if (root) activators.explorer(root);
     if (sourceControlInView) loadSourceControl(selection);
     if (contextInView) loadContext(selection);
+    if (worktreesInView) loadWorktrees(selection);
+    if (stacksInView) loadStacks(selection);
+    if (problemsInView) loadProblems(selection);
   };
 
   return {
@@ -196,11 +253,38 @@ export function createPanelActivation(
       loadContext(selection);
     },
 
+    worktreesVisible(visible: boolean): void {
+      worktreesInView = visible;
+      if (!visible || !sessionPanelsShown) return;
+      const selection = readSelection();
+      if (worktreesLoadedFor === selection.root.trim()) return;
+      loadWorktrees(selection);
+    },
+
+    stacksVisible(visible: boolean): void {
+      stacksInView = visible;
+      if (!visible || !sessionPanelsShown) return;
+      const selection = readSelection();
+      if (stacksLoadedFor === selection.root.trim()) return;
+      loadStacks(selection);
+    },
+
+    problemsVisible(visible: boolean): void {
+      problemsInView = visible;
+      if (!visible || !sessionPanelsShown) return;
+      const selection = readSelection();
+      if (problemsLoadedFor === selection.root.trim()) return;
+      loadProblems(selection);
+    },
+
     loadedPanels(): string[] {
       const loaded = [...shownPanels];
       if (sessionPanelsShown) loaded.push('explorer');
       if (gitLoadedFor !== null) loaded.push('git');
       if (contextLoadedFor !== null) loaded.push('context');
+      if (worktreesLoadedFor !== null) loaded.push('worktrees');
+      if (stacksLoadedFor !== null) loaded.push('stacks');
+      if (problemsLoadedFor !== null) loaded.push('problems');
       return loaded;
     }
   };

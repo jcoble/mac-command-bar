@@ -27,6 +27,8 @@
   import { Switch } from '$lib/components/ui/switch/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
   import { resetSettings, settings, type SettingsSection } from '$lib/settingsStore.svelte';
+  import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
+  import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
 
   interface Props {
     /** Whether the settings dialog is open. */
@@ -36,11 +38,8 @@
   let { open = $bindable(false) }: Props = $props();
 
   // ── Option lists ────────────────────────────────────────────────────────
-  const themeItems = [
-    { value: 'dark', label: 'Dark' },
-    { value: 'light', label: 'Light' },
-    { value: 'houston', label: 'Houston' }
-  ];
+  /** The themes the app actually ships, straight from the registry. */
+  const themeItems = themeChoices();
 
   const fontFamilyItems = [
     { value: 'Google Sans Mono', label: 'Google Sans Mono' },
@@ -89,8 +88,25 @@
     return items.find((item) => item.value === value)?.label ?? value;
   }
 
+  /**
+   * The theme this screen should show as chosen.
+   *
+   * Every install made before themes existed has `dark` stored, which is not one
+   * of the themes the app ships. The screen renders the shipped theme in that
+   * case, so this says so rather than naming a theme nobody can see.
+   */
+  const shownThemeId = $derived(
+    themeItems.some((item) => item.value === settings.appearance.themeId)
+      ? settings.appearance.themeId
+      : DEFAULT_THEME_ID
+  );
+
   function resetActiveSection() {
     resetSettings(activeTab as SettingsSection);
+    // Putting the settings back has to put the SCREEN back too, or the app says
+    // one thing and shows another. A reset stores `dark`, which resolves to the
+    // theme the app ships with.
+    applyTheme(settings.appearance.themeId);
   }
 </script>
 
@@ -130,9 +146,11 @@
                 </span>
               </div>
               <div class="w-[200px] shrink-0">
-                <Select.Root type="single" bind:value={settings.appearance.themeId}>
+                <!-- Not `bind:value`: applying a theme writes the setting itself, and a
+                     binding would fight it. -->
+                <Select.Root type="single" value={shownThemeId} onValueChange={(value) => applyTheme(value)}>
                   <Select.Trigger class="w-full">
-                    {labelFor(themeItems, settings.appearance.themeId)}
+                    {labelFor(themeItems, shownThemeId)}
                   </Select.Trigger>
                   <Select.Content>
                     {#each themeItems as item (item.value)}

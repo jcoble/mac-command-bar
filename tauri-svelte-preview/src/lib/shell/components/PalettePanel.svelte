@@ -214,7 +214,7 @@
     background: transparent;
     color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     cursor: pointer;
   }
 

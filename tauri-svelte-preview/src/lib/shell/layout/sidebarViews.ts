@@ -24,7 +24,7 @@
  */
 import { clearLayout, loadLayout, saveLayout, type LayoutStorage } from './layoutStorage.ts';
 
-export type SidebarViewId = 'explorer' | 'source-control' | 'worktrees' | 'context';
+export type SidebarViewId = 'explorer' | 'source-control' | 'worktrees' | 'stacks' | 'context';
 
 export interface SidebarView {
   id: SidebarViewId;
@@ -37,6 +37,7 @@ export const SIDEBAR_VIEWS: readonly SidebarView[] = [
   { id: 'explorer', title: 'Explorer' },
   { id: 'source-control', title: 'Source control' },
   { id: 'worktrees', title: 'Worktrees' },
+  { id: 'stacks', title: 'Stacks' },
   { id: 'context', title: 'Context' }
 ];
 

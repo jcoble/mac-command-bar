@@ -129,8 +129,52 @@ console.log(
   `Elsewhere in the project (not checked by this gate): ${otherErrors} error(s) — the old shell's own backlog.`
 );
 
-if (ownedErrors.length > 0) {
+// ── The font floor ───────────────────────────────────────────────────────────
+// The shell's rule is 13px body / 12px meta, and the class-based Tailwind trap
+// is documented — but a raw `font-size: 11px` in a component's <style> block is
+// invisible to a type checker, which is exactly how two panes shipped below the
+// floor. Walk the owned .svelte files and fail on any hardcoded size under 12px.
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+
+function svelteFilesUnder(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name);
+    if (statSync(full).isDirectory()) out.push(...svelteFilesUnder(full));
+    else if (name.endsWith('.svelte')) out.push(full);
+  }
+  return out;
+}
+
+const fontFloorHits = [];
+for (const prefix of OWNED) {
+  if (!prefix.endsWith('/')) continue;
+  const dir = path.join(projectRoot, prefix);
+  let files = [];
+  try {
+    files = svelteFilesUnder(dir);
+  } catch {
+    continue;
+  }
+  for (const file of files) {
+    const text = readFileSync(file, 'utf8');
+    for (const match of text.matchAll(/font-size:\s*(\d+)px/g)) {
+      if (Number(match[1]) < 12) {
+        const row = text.slice(0, match.index).split('\n').length;
+        fontFloorHits.push(`${path.relative(projectRoot, file)}:${row}  font-size: ${match[1]}px`);
+      }
+    }
+  }
+}
+
+if (fontFloorHits.length > 0) {
   console.log('');
-  console.log('Type-checking the /next shell failed. Fix the errors listed above.');
+  console.log('Text below the 12px floor (the shell rule is 13px body / 12px meta):');
+  for (const hit of fontFloorHits) console.log(`ERROR   ${hit}`);
+}
+
+if (ownedErrors.length > 0 || fontFloorHits.length > 0) {
+  console.log('');
+  console.log('Checking the /next shell failed. Fix the problems listed above.');
   process.exit(1);
 }

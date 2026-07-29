@@ -172,14 +172,14 @@
   }
 
   .browser-title strong {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 700;
   }
 
   .browser-title span {
     color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .browser-actions {
@@ -229,7 +229,7 @@
     height: 28px;
     padding: 0 10px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 700;
   }
 
@@ -243,7 +243,7 @@
     border-radius: 6px;
     background: #17171d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .browser-url-form input::placeholder {
@@ -263,7 +263,7 @@
     border: 1px solid #22222c;
     border-radius: 6px;
     background: #17171d;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .browser-frame-wrap {
@@ -294,13 +294,13 @@
     color: #6d6d7d;
     border: 1px dashed #22222c;
     border-radius: 6px;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.5;
   }
 
   .browser-empty code {
     color: #d8d8e0;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
   }
 </style>

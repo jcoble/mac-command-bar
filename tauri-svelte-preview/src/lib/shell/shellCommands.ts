@@ -17,13 +17,23 @@ import { explorer } from './explorer/explorerStore.svelte.ts';
 import { refresh as refreshFileList, stopScan } from './explorer/explorerService.ts';
 import { gitPanel } from './git/gitPanelStore.svelte.ts';
 import { gitService } from './git/gitService.ts';
+import type { SidebarViewId } from './layout/sidebarViews.ts';
 import { registerCommands } from './palette/commandRegistry.ts';
+import { refresh as refreshPlaywright } from './processes/playwrightService.ts';
+import { refreshProblemsForSelection } from './shellPanels.ts';
+import { refreshStacks } from './stacks/stackService.ts';
 
 export interface ShellCommandHooks {
   /** Bring a center tab to the front (its id in the tab roster). */
   showPanel(id: string): void;
   /** Unfold the Source control section of the tool column on the right. */
   expandSourceControl(): void;
+  /** Open one view of the tool column on the right. Opening a view is what
+   * lets that view read anything, so this is the entry point for somebody who
+   * has not got the column open at all. */
+  showView(id: SidebarViewId): void;
+  /** Open the new-session dialog. */
+  openNewSession(): void;
 }
 
 /** Register the panel actions. Calling it again replaces them, never doubles. */
@@ -54,6 +64,18 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       label: 'Show the browser',
       detail: 'Bring the web page panel to the front',
       perform: () => hooks.showPanel('browser')
+    },
+    {
+      id: 'show-diff',
+      label: 'Show the changes to a file',
+      detail: 'Bring the diff panel to the front',
+      perform: () => hooks.showPanel('diff')
+    },
+    {
+      id: 'new-session',
+      label: 'Start a new session',
+      detail: 'Pick a project folder and start an agent in it',
+      perform: () => hooks.openNewSession()
     },
     {
       id: 'git-refresh',
@@ -101,7 +123,43 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       id: 'context-refresh',
       label: 'Refresh the context cards',
       detail: 'Read runs, processes, agent sessions, worktrees and repositories again',
-      perform: () => refreshContextCards()
+      perform: () => {
+        refreshContextCards();
+        void refreshPlaywright();
+      }
+    },
+    {
+      id: 'playwright-show',
+      label: 'Show leftover Playwright processes',
+      detail: 'Open the Context view and look again for browsers Playwright left running',
+      perform: () => {
+        hooks.showView('context');
+        void refreshPlaywright();
+      }
+    },
+    {
+      id: 'worktrees-clean-up',
+      label: 'Clean up worktrees',
+      detail: 'Open the worktree list and see which folders are safe to remove',
+      perform: () => hooks.showView('worktrees')
+    },
+    {
+      id: 'show-stacks',
+      label: 'Show stacks',
+      detail: 'Open the stacks section of the tool column on the right',
+      perform: () => hooks.showView('stacks')
+    },
+    {
+      id: 'stacks-refresh',
+      label: 'Stacks: refresh',
+      detail: 'Look again at which ports the stacks have open',
+      perform: () => void refreshStacks()
+    },
+    {
+      id: 'problems-refresh',
+      label: 'Look for problems again',
+      detail: 'Ask the language server what is wrong with this project',
+      perform: () => refreshProblemsForSelection()
     },
     {
       id: 'browser-reload',

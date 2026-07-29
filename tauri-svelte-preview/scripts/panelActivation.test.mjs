@@ -12,7 +12,10 @@ function recorder() {
       git: (root) => calls.push(['git', root]),
       browser: () => calls.push(['browser', null]),
       explorer: (root) => calls.push(['explorer', root]),
-      context: (selection) => calls.push(['context', selection.root])
+      context: (selection) => calls.push(['context', selection.root]),
+      worktrees: (selection) => calls.push(['worktrees', selection.root]),
+      stacks: (root) => calls.push(['stacks', root]),
+      problems: (root) => calls.push(['problems', root])
     }
   };
 }
@@ -357,6 +360,137 @@ function selection(root, projects = []) {
   assert.equal(panels.loadsAllowed(), false, 'opening tabs says nothing about session picks');
   panels.allowSessionLoads();
   assert.equal(panels.loadsAllowed(), true, 'launch is over, so a pick is the user speaking');
+}
+
+// The worktree manager, the stacks pane and the Problems panel take the same
+// route as source control and the context cards: in view plus a session picked.
+// Out of view they cost nothing, and coming back to the same folder reads
+// nothing again.
+for (const panel of [
+  { report: 'worktreesVisible', name: 'worktrees' },
+  { report: 'stacksVisible', name: 'stacks' },
+  { report: 'problemsVisible', name: 'problems' }
+]) {
+  {
+    const { calls, activators } = recorder();
+    const panels = createPanelActivation(activators, () => selection('/repo/one'));
+    panels.allowSessionLoads();
+    panels.sessionPicked();
+    calls.length = 0;
+
+    panels[panel.report](true);
+    assert.deepEqual(
+      calls,
+      [[panel.name, '/repo/one']],
+      `bringing ${panel.name} into view loads it`
+    );
+    assert.deepEqual(panels.loadedPanels(), ['explorer', panel.name]);
+
+    panels[panel.report](false);
+    panels[panel.report](true);
+    assert.equal(calls.length, 1, `${panel.name}: coming back to the same folder reads nothing`);
+  }
+
+  // In view before any session is picked: nothing to point it at, so nothing
+  // loads. The pick that follows is what loads it.
+  {
+    const { calls, activators } = recorder();
+    const panels = createPanelActivation(activators, () => selection('/repo/one'));
+    panels.allowSessionLoads();
+    panels[panel.report](true);
+    assert.deepEqual(calls, [], `${panel.name} in view with no session picked loads nothing`);
+    assert.deepEqual(panels.loadedPanels(), []);
+
+    panels.sessionPicked();
+    assert.deepEqual(calls, [
+      ['explorer', '/repo/one'],
+      [panel.name, '/repo/one']
+    ]);
+  }
+
+  // Launch loads nothing, in view or not.
+  {
+    const { calls, activators } = recorder();
+    const panels = createPanelActivation(activators, () => selection('/repo/one'));
+    panels[panel.report](true);
+    panels.sessionPicked();
+    panels[panel.report](true);
+    assert.deepEqual(calls, [], `${panel.name}: launch loads nothing, in view or not`);
+  }
+
+  // Changing session re-points it while it is in view, costs nothing while it is
+  // not, and coming back afterwards reads the new folder rather than the old.
+  {
+    let root = '/repo/one';
+    const { calls, activators } = recorder();
+    const panels = createPanelActivation(activators, () => selection(root));
+    panels.allowSessionLoads();
+    panels.sessionPicked();
+    panels[panel.report](true);
+    calls.length = 0;
+
+    root = '/repo/two';
+    panels.sessionPicked();
+    assert.deepEqual(calls, [
+      ['explorer', '/repo/two'],
+      [panel.name, '/repo/two']
+    ]);
+
+    panels[panel.report](false);
+    calls.length = 0;
+    root = '/repo/three';
+    panels.sessionPicked();
+    assert.ok(
+      !calls.some(([name]) => name === panel.name),
+      `a session change while ${panel.name} is out of view reads nothing`
+    );
+    panels[panel.report](true);
+    assert.deepEqual(
+      calls.at(-1),
+      [panel.name, '/repo/three'],
+      `${panel.name}: coming back reads the new folder`
+    );
+  }
+}
+
+// A session with no folder still tells the stacks pane and the Problems panel
+// there is nothing to look at, and still gives the worktree manager the empty
+// selection — none of them may be left showing the last project's answer.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(''));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+
+  panels.worktreesVisible(true);
+  assert.deepEqual(calls.at(-1), ['worktrees', '']);
+  panels.stacksVisible(true);
+  assert.deepEqual(calls.at(-1), ['stacks', null]);
+  panels.problemsVisible(true);
+  assert.deepEqual(calls.at(-1), ['problems', null]);
+}
+
+// The view-gated panels are independent of each other: opening one loads that
+// one and nothing else.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  calls.length = 0;
+
+  panels.worktreesVisible(true);
+  assert.deepEqual(calls, [['worktrees', '/repo/one']], 'the worktree manager alone');
+  panels.stacksVisible(true);
+  assert.deepEqual(calls.at(-1), ['stacks', '/repo/one'], 'the stacks pane alone');
+  panels.problemsVisible(true);
+  assert.deepEqual(calls.at(-1), ['problems', '/repo/one'], 'the Problems panel alone');
+  assert.deepEqual(panels.loadedPanels(), [
+    'explorer',
+    'worktrees',
+    'stacks',
+    'problems'
+  ]);
 }
 
 console.log('panelActivation: all tests passed');

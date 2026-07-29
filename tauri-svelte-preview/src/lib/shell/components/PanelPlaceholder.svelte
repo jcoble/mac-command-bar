@@ -32,6 +32,6 @@
   }
   .hint {
     color: #4c4c5a;
-    font-size: 11px;
+    font-size: 12px;
   }
 </style>

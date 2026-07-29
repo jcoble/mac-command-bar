@@ -166,7 +166,10 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     }
 
     // Every add above made its own panel the active one, so the last display tab
-    // is showing. Hand focus back to the front of the roster.
+    // is showing — which is now Diff, an empty pane until a file is picked. Put
+    // the display group back on its first tab, then hand focus to the front of
+    // the roster.
+    if (leadDisplay) panelById(leadDisplay.id)?.api.setActive();
     const opening = anchor ?? leadDisplay;
     if (opening) panelById(opening.id)?.api.setActive();
   };

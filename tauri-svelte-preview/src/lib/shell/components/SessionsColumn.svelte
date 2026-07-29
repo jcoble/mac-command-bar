@@ -53,6 +53,7 @@
   import Hash from '@lucide/svelte/icons/hash';
   import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
+  import Plus from '@lucide/svelte/icons/plus';
   import Play from '@lucide/svelte/icons/play';
   import Power from '@lucide/svelte/icons/power';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -120,6 +121,8 @@
     onRemove(ownedId: string): void;
     /** Re-run the agent-session scan. */
     onRescan(): void;
+    /** Open the new-session dialog. */
+    onNewSession(): void;
     /** Fold the column up, or open it out again. */
     onCollapse(collapsed: boolean): void;
   }
@@ -138,6 +141,7 @@
     onReopen,
     onRemove,
     onRescan,
+    onNewSession,
     onCollapse
   }: Props = $props();
 
@@ -635,7 +639,8 @@
           My work
         </h2>
         <span class="text-[12px] text-[var(--color-text-3)]">{owned.length}</span>
-        <div class="ml-auto">
+        <div class="ml-auto flex items-center gap-1">
+          {@render action('start a new session', 'New session', Plus, false, () => onNewSession())}
           {@render action(
             'fold the sessions column up',
             'Fold this column up',

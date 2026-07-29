@@ -43,6 +43,18 @@ export type TerminalStartRequest = {
   cols?: number | null;
   rows?: number | null;
   ownedId?: string | null;
+  /**
+   * Run this one command instead of opening an interactive shell. The session
+   * ends when the command does, and its exit code is the command's — which is
+   * the only way a caller can tell "it finished" from "it crashed". Leave it out
+   * and the session is the ordinary login shell it has always been.
+   *
+   * Desktop builds older than this field silently drop it and open a shell, so
+   * anything that depends on the exit code must check
+   * `hasBackendCapability('terminalCommandSpawn')` first — see
+   * `src/lib/shell/backendCapabilities.ts`.
+   */
+  command?: string | null;
 };
 
 export type TerminalSessionInfo = {

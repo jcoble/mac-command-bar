@@ -36,6 +36,7 @@ import {
   sourceSupportsLanguageIntelligence,
   type SourceCompletionItem,
   type SourceDefinitionTarget,
+  type SourceDiagnostic,
   type SourceDocumentHighlight,
   type SourceInlayHint,
   type SourceLspHover,
@@ -57,7 +58,8 @@ import {
   findSourceLspSemanticTokensFromTauri,
   findSourceLspSignatureHelpFromTauri,
   findSourceReferencesFromTauri,
-  readSourceFromTauri
+  readSourceFromTauri,
+  readSourceLspDiagnosticsFromTauri
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { activateEditor } from './editorStore.svelte.ts';
@@ -154,6 +156,15 @@ export interface SourceIntelligence {
   invalidatePreview(path: string): void;
   /** Forget every remembered file (call when the project changes). */
   invalidateAllPreviews(): void;
+  /**
+   * What the language server says is wrong with the file on screen.
+   *
+   * PUSHED, not pulled: Monaco has no diagnostics callback, so this is not one
+   * of `callbacks` — the editor panel asks for it and hands the answer down as
+   * `externalDiagnostics`. Empty when there is no language server for this file,
+   * when there is no file, or when the read fails.
+   */
+  loadActiveFileDiagnostics(): Promise<SourceDiagnostic[]>;
   /** Read-only view of the current context, for status lines and tests. */
   readonly projectRoot: string | null;
   /** The callbacks to spread onto `MonacoSourceEditor`. */
@@ -231,6 +242,24 @@ export function createSourceIntelligence(): SourceIntelligence {
       column: request.column,
       limit: maxSourceDefinitionResults
     }).catch(() => null);
+  }
+
+  /** See `SourceIntelligence.loadActiveFileDiagnostics`. */
+  async function loadActiveFileDiagnostics(): Promise<SourceDiagnostic[]> {
+    const preview = previewWithDraft();
+    if (!preview || !languageIntelligenceAvailable()) return [];
+    try {
+      countInvoke('read_source_lsp_diagnostics');
+      return (
+        (await readSourceLspDiagnosticsFromTauri(preview, {
+          root: lookupRoot(),
+          line: 1,
+          column: 1
+        })) ?? []
+      );
+    } catch {
+      return [];
+    }
   }
 
   async function lspReferences(
@@ -526,6 +555,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       externalPreviewCache.clear();
       forgetReferenceCounts();
     },
+    loadActiveFileDiagnostics,
     get projectRoot(): string | null {
       return projectRoot;
     },

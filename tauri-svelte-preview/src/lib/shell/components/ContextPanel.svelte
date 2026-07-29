@@ -22,6 +22,7 @@
    */
   import { Activity, Braces, ChevronRight, FolderGit2, GitBranch, Network } from '@lucide/svelte';
 
+  import PlaywrightCard from './processes/PlaywrightCard.svelte';
   import { refreshAll, refreshCard } from '$lib/shell/context/contextService';
   import {
     contextState,
@@ -240,6 +241,12 @@
         </div>
       {/if}
     </section>
+
+    <!-- ── Playwright's leftover browsers ───────────────────────────────── -->
+    <!-- Its own card, right after the running processes: same family of thing,
+         and it must be visible without scrolling to the bottom. It brings its
+         own card chrome and its own "nothing read yet" line. -->
+    <PlaywrightCard />
 
     <!-- ── Agent sessions ───────────────────────────────────────────────── -->
     <section class="card">
@@ -476,7 +483,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
@@ -490,7 +497,7 @@
     background: transparent;
     color: #9a9aad;
     font: inherit;
-    font-size: 10px;
+    font-size: 12px;
     padding: 2px 7px;
     cursor: pointer;
   }
@@ -561,7 +568,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -572,7 +579,7 @@
     border-radius: 999px;
     background: #1c1c24;
     color: #6d6d7d;
-    font-size: 10px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     line-height: 1;
     padding: 3px 6px;
@@ -589,7 +596,7 @@
     margin: 0;
     padding: 0 6px;
     color: #8a8a9c;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.45;
   }
 
@@ -659,7 +666,7 @@
     gap: 2px 8px;
     min-width: 0;
     color: #6d6d7d;
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.3;
     font-variant-numeric: tabular-nums;
   }
@@ -708,7 +715,7 @@
     border-radius: 4px;
     background: #24242f;
     color: #9a9aad;
-    font-size: 9px;
+    font-size: 12px;
     letter-spacing: 0.04em;
     padding: 1px 5px;
     text-overflow: ellipsis;
@@ -746,7 +753,7 @@
     background: rgba(139, 233, 253, 0.1);
     color: #8be9fd;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 9px;
+    font-size: 12px;
     padding: 1px 5px;
     white-space: nowrap;
   }
@@ -796,14 +803,14 @@
     margin: 0;
     padding: 4px 6px 0;
     color: #5d5d6b;
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .state {
     margin: 0;
     padding: 8px 6px;
     color: #6d6d7d;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.45;
   }
 
@@ -832,7 +839,7 @@
     background: transparent;
     color: #bd93f9;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 0 2px;
     cursor: pointer;
     text-decoration: underline;

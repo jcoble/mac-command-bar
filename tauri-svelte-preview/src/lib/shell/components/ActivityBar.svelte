@@ -9,7 +9,7 @@
    * The roster comes from `sidebarViews.ts` so the ids here and the ids the
    * column builds hosts for cannot drift apart.
    */
-  import { Activity, Files, GitBranch, Layers, Settings } from '@lucide/svelte';
+  import { Activity, Files, GitBranch, Layers, Server, Settings } from '@lucide/svelte';
 
   import { SIDEBAR_VIEWS, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
 
@@ -26,6 +26,7 @@
     explorer: Files,
     'source-control': GitBranch,
     worktrees: Layers,
+    stacks: Server,
     context: Activity
   };
 </script>

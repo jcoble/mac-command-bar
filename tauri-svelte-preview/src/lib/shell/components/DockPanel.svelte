@@ -1,6 +1,14 @@
 <script lang="ts">
-  /** The bottom dock region: a named placeholder plus the frame's reset control. */
-  import PanelPlaceholder from './PanelPlaceholder.svelte';
+  /**
+   * The bottom dock region: the Problems panel, plus the frame's reset control.
+   *
+   * This region is on screen from the moment the shell opens, so the panel it
+   * hosts must load nothing when it mounts — `ProblemsPanel` reads the language
+   * server only when the user presses its Refresh button. See
+   * `panelActivation.ts` for the rule and the route that is waiting for a
+   * gesture to fire it.
+   */
+  import ProblemsPanel from './problems/ProblemsPanel.svelte';
 
   interface Props {
     onReset(): void;
@@ -9,8 +17,11 @@
 </script>
 
 <div class="dock-slot">
-  <PanelPlaceholder name="Dock" hint="Secondary terminals and logs will live here." />
-  <button class="reset-layout" onclick={onReset}>Reset layout</button>
+  <ProblemsPanel>
+    {#snippet headerEnd()}
+      <button class="reset-layout" onclick={onReset}>Reset layout</button>
+    {/snippet}
+  </ProblemsPanel>
 </div>
 
 <style>
@@ -19,16 +30,16 @@
     height: 100%;
   }
 
+  /* On the end of the panel's own header row. It used to float in that corner,
+     which put it straight on top of the panel's Refresh button. */
   .reset-layout {
-    position: absolute;
-    top: 6px;
-    right: 8px;
+    flex-shrink: 0;
     background: transparent;
     border: 1px solid #22222c;
     border-radius: 5px;
     color: #6d6d7d;
     font-family: ui-monospace, Menlo, monospace;
-    font-size: 10px;
+    font-size: 12px;
     padding: 2px 7px;
     cursor: pointer;
   }

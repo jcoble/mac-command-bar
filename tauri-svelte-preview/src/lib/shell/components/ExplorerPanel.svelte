@@ -228,7 +228,7 @@
 
   h2 {
     margin: 0;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
@@ -241,7 +241,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: #9a9aad;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .spacer {
@@ -255,7 +255,7 @@
     background: transparent;
     color: #9a9aad;
     font: inherit;
-    font-size: 10px;
+    font-size: 12px;
     padding: 2px 7px;
     cursor: pointer;
   }
@@ -285,7 +285,7 @@
     background: #17171d;
     color: #d8d8e0;
     font: inherit;
-    font-size: 11px;
+    font-size: 12px;
     padding: 4px 7px;
   }
 
@@ -296,7 +296,7 @@
   .count {
     flex: 0 0 auto;
     color: #6d6d7d;
-    font-size: 10px;
+    font-size: 12px;
     white-space: nowrap;
   }
 
@@ -308,7 +308,7 @@
     border-radius: 5px;
     background: #17171d;
     color: #9a9aad;
-    font-size: 10px;
+    font-size: 12px;
     padding: 5px 7px;
   }
 
@@ -326,7 +326,7 @@
     margin: 0;
     padding: 8px 12px;
     color: #6d6d7d;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .tree {
@@ -374,7 +374,7 @@
     flex: 0 0 auto;
     width: 9px;
     color: #6d6d7d;
-    font-size: 9px;
+    font-size: 12px;
   }
 
   .name {
@@ -388,13 +388,13 @@
   .meta {
     flex: 0 0 auto;
     color: #4c4c5a;
-    font-size: 9px;
+    font-size: 12px;
   }
 
   .note {
     border-top: 1px solid #22222c;
     color: #4c4c5a;
-    font-size: 9px;
+    font-size: 12px;
     line-height: 1.4;
     padding: 6px 10px;
   }

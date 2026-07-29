@@ -144,8 +144,8 @@ const ownedA = {
   assert.equal(pty, 'pty-1');
   assert.deepEqual(
     log.find((e) => e[0] === 'start')[1],
-    { cwd: '/p', ownedId: 'a' },
-    'start request carries cwd + ownedId only'
+    { cwd: '/p', ownedId: 'a', command: null },
+    'an ordinary start asks for a shell, not a one-command session'
   );
   assert.deepEqual(
     log.find((e) => e[0] === 'write'),
@@ -160,6 +160,32 @@ const ownedA = {
   emit({ sessionId: 'pty-1', data: '', terminated: true, exitCode: 0, signal: null });
   assert.deepEqual(exits, [['a', 0]], 'terminated payload reports the exit');
   assert.equal(log.filter((e) => e[0] === 'listen').length, 1, 'exactly one backend listener');
+}
+
+{
+  // A caller that wants the command to BE the session (a stack run, so the exit
+  // code is the command's) still gets a working session where the desktop app
+  // cannot do that — here, outside the desktop app altogether. The command is
+  // typed into the shell exactly as before, and it is asked for exactly once.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'viewCmd') });
+  await svc.attach();
+  await svc.startOwned(
+    { ...ownedA, ownedId: 'cmd', resumeCommand: 'pnpm dev' },
+    {},
+    { runCommandDirectly: true }
+  );
+  assert.deepEqual(
+    log.find((e) => e[0] === 'start')[1],
+    { cwd: '/p', ownedId: 'cmd', command: null },
+    'without the desktop app there is no one-command session to ask for'
+  );
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'write'),
+    [['write', 'pty-1', 'pnpm dev\r']],
+    'so the command is typed in, once, the way it always was'
+  );
 }
 
 {

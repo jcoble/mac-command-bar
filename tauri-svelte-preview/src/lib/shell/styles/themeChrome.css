@@ -1,0 +1,43 @@
+/* ============================================================
+ * themeChrome.css — four colors the dock needs that the shared
+ * token file has no name for.
+ *
+ * WHY THIS FILE EXISTS
+ * dockview paints itself from its own `--dv-…` names, and those
+ * were set to colors typed straight into the shell components,
+ * which is why the dock never followed a theme. Pointing them at
+ * `var(--color-…)` fixes that — except for four tones that exist
+ * nowhere in `tokens.css` or `nextTokens.css`: a header text that
+ * sits between the second and third text tiers, the ring dockview
+ * draws around the section you are working in, and the two tones
+ * a visible tab takes when its group is not the focused one.
+ *
+ * They are declared here, rather than added to `nextTokens.css`,
+ * for two reasons. That file's rule is that it only re-points
+ * names the shared components already read, and these four are
+ * new. And this file must be reachable from the /next page BEFORE
+ * any theme has been applied, so the dock is right on the very
+ * first frame instead of flashing an unpainted edge.
+ *
+ * The values below are today's colors, taken from the components
+ * they came out of. `themeRegistry.ts` holds the same four values
+ * for Houston, and `scripts/themeRegistry.test.mjs` fails if the
+ * two ever disagree.
+ *
+ * Same two selectors as nextTokens.css, and for the same reason:
+ * the shell element, plus the whole document while the shell is
+ * mounted, because menus and dialogs are moved outside it.
+ * ============================================================ */
+
+:is(:root:has(.next-shell), .next-shell) {
+  /* Sidebar section headers ("EXPLORER", "OUTLINE"), and the ring
+     dockview draws around the section that has focus. */
+  --color-section-header-text: #7b7b8c;
+  --color-section-focus-ring: #bd93f9;
+
+  /* A tab that is showing, in a group you are not working in: one
+     step lighter than the shell backdrop, with quieter text than
+     the focused group's tab. */
+  --color-tab-unfocused-surface: #14141a;
+  --color-tab-unfocused-text: #9a9aa8;
+}
