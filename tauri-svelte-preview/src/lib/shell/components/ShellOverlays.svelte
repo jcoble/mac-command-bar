@@ -15,6 +15,7 @@
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
+  import type { ProblemsLocation } from '$lib/settingsStore.svelte';
   import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
 
   interface Props {
@@ -29,13 +30,17 @@
     newSessionRoots: string[];
     /** One line describing whatever has gone wrong, or null when all is well. */
     message: string | null;
+    /** The user moved the Problems list from the settings dialog, which lives
+     * here; the page is what opens or closes the strip along the bottom. */
+    onProblemsLocationChange?: (location: ProblemsLocation) => void;
   }
   let {
     onResetLayout,
     onRescanSessions,
     onStartNewSession,
     newSessionRoots,
-    message
+    message,
+    onProblemsLocationChange
   }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
@@ -61,7 +66,7 @@
   {onRescanSessions}
   onOpenSettings={() => settingsHost?.open()}
 />
-<SettingsHost bind:this={settingsHost} />
+<SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
 <NewSessionHost bind:this={newSessionHost} onStart={onStartNewSession} />
 
 {#if message}

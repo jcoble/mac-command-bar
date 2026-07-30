@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   captureWorkspace,
+  diffPathFor,
   OPEN_PATHS_CAP,
   pruneWorkspaces,
   readWorkspaces,
@@ -29,7 +30,10 @@ function openFiles(...paths) {
 }
 
 // A capture is exactly what was on screen: the strip in order, the file showing,
-// the open folders as a list, the highlighted file, and the scroll offset.
+// the open folders as a list, the highlighted file, the scroll offset, and the
+// file the Diff tab was showing. A capture that says nothing about a diff still
+// carries both diff fields, as nulls — the Diff tab is one tab for the whole
+// shell, so "this session was not looking at one" is an answer it needs told.
 {
   const snapshot = captureWorkspace({
     openFiles: openFiles('/repo/a.ts', '/repo/b.ts'),
@@ -43,7 +47,9 @@ function openFiles(...paths) {
     activePath: '/repo/b.ts',
     expandedFolderIds: ['folder:src', 'folder:src/lib'],
     selectedPath: '/repo/b.ts',
-    scrollTop: 120
+    scrollTop: 120,
+    diffPath: null,
+    diffRoot: null
   });
 }
 
@@ -61,7 +67,9 @@ function openFiles(...paths) {
     activePath: null,
     expandedFolderIds: [],
     selectedPath: null,
-    scrollTop: 0
+    scrollTop: 0,
+    diffPath: null,
+    diffRoot: null
   });
 }
 
@@ -210,7 +218,11 @@ function openFiles(...paths) {
     activePath: null,
     expandedFolderIds: [],
     selectedPath: null,
-    scrollTop: 0
+    scrollTop: 0,
+    // Written before the Diff tab was remembered at all, so it reads back as
+    // "was not looking at one" — correct for that record, and the safe answer.
+    diffPath: null,
+    diffRoot: null
   });
 }
 
@@ -257,6 +269,37 @@ function openFiles(...paths) {
     scrollTop: 0
   });
   assert.deepEqual(pruneWorkspaces({ 'owned-1': snapshot }, []), {});
+}
+
+// Which file the Diff tab should show for the session being restored, or null
+// meaning clear it. Null is the answer in every way it can be wrong, because the
+// Diff tab is one tab for the whole shell and the alternative is showing the
+// project the reader just left.
+{
+  const diff = (diffPath, diffRoot) =>
+    captureWorkspace({
+      openFiles: [],
+      activePath: null,
+      expandedFolderIds: new Set(),
+      selectedPath: null,
+      scrollTop: 0,
+      diffPath,
+      diffRoot
+    });
+
+  // The same project: the diff is kept, because nothing changed underneath it.
+  assert.equal(diffPathFor(diff('src/a.ts', '/repo'), '/repo'), 'src/a.ts');
+  // A trailing slash is the same folder spelled differently, not a second one.
+  assert.equal(diffPathFor(diff('src/a.ts', '/repo/'), '/repo'), 'src/a.ts');
+  // Another project's file with a path that exists in most projects — this is
+  // the case a path on its own could never have caught.
+  assert.equal(diffPathFor(diff('src/index.ts', '/other'), '/repo'), null);
+  // Nothing was being looked at, no record at all, and no project on screen.
+  assert.equal(diffPathFor(diff(null, null), '/repo'), null);
+  assert.equal(diffPathFor(null, '/repo'), null);
+  assert.equal(diffPathFor(diff('src/a.ts', '/repo'), null), null);
+  // A file with no folder is not enough to go on, so it is stored as no diff.
+  assert.equal(diff('src/a.ts', null).diffPath, null);
 }
 
 console.log('sessionWorkspaces: all tests passed');

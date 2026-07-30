@@ -24,7 +24,13 @@
  */
 import { clearLayout, loadLayout, saveLayout, type LayoutStorage } from './layoutStorage.ts';
 
-export type SidebarViewId = 'explorer' | 'source-control' | 'worktrees' | 'stacks' | 'context';
+export type SidebarViewId =
+  | 'explorer'
+  | 'source-control'
+  | 'worktrees'
+  | 'stacks'
+  | 'context'
+  | 'problems';
 
 export interface SidebarView {
   id: SidebarViewId;
@@ -32,35 +38,14 @@ export interface SidebarView {
   title: string;
 }
 
-/** Top to bottom, in the order the activity bar draws them. */
-export const SIDEBAR_VIEWS: readonly SidebarView[] = [
-  { id: 'explorer', title: 'Explorer' },
-  { id: 'source-control', title: 'Source control' },
-  { id: 'worktrees', title: 'Worktrees' },
-  { id: 'stacks', title: 'Stacks' },
-  { id: 'context', title: 'Context' }
-];
-
 /**
- * The Problems list, when the user has asked for it in this column rather than
- * in the strip along the bottom (`settings.panels.problemsLocation === 'right'`).
- *
- * It is described here, on its own, instead of being added to `SIDEBAR_VIEWS`
- * and to `SidebarViewId` above — and that is deliberate, not an oversight.
- * `ActivityBar.svelte` and `ShellSidebar.svelte` each keep a table with one row
- * per view id (an icon, and a pane title), written so that a view without one is
- * a type error rather than a blank button or an empty column. Adding the id here
- * on its own would therefore break both files, and neither belongs to the lane
- * that added this. So the pieces are laid out ready and the two tables are filled
- * in by the same change that widens the id — see the Lane B integration note,
- * which gives both edits in full.
- *
- * Everything below is what those edits need, in the shape they need it.
+ * The Problems list, which the user can ask for in this column rather than in
+ * the strip along the bottom (`settings.panels.problemsLocation === 'right'`).
  */
-export const PROBLEMS_VIEW_ID = 'problems';
+export const PROBLEMS_VIEW_ID: SidebarViewId = 'problems';
 
-/** The roster row: splice this into `SIDEBAR_VIEWS` when the location is 'right'. */
-export const PROBLEMS_SIDEBAR_VIEW: { id: string; title: string } = {
+/** Its row in the roster below. */
+export const PROBLEMS_SIDEBAR_VIEW: SidebarView = {
   id: PROBLEMS_VIEW_ID,
   title: 'Problems'
 };
@@ -71,6 +56,25 @@ export const PROBLEMS_SIDEBAR_PANE: { id: string; title: string } = {
   id: 'problems',
   title: 'Problems'
 };
+
+/**
+ * Top to bottom, in the order the activity bar draws them.
+ *
+ * Problems is always in this list even though its icon usually is not. The tool
+ * column builds one container per row here, once, when it mounts; a roster that
+ * grew and shrank with a setting would tear those containers down and put them
+ * back, losing whatever was in them. So the container is always there and the
+ * ACTIVITY BAR decides whether to offer the icon — see `ActivityBar.svelte`,
+ * which draws Problems only while the setting asks for it.
+ */
+export const SIDEBAR_VIEWS: readonly SidebarView[] = [
+  { id: 'explorer', title: 'Explorer' },
+  { id: 'source-control', title: 'Source control' },
+  { id: 'worktrees', title: 'Worktrees' },
+  { id: 'stacks', title: 'Run' },
+  { id: 'context', title: 'Context' },
+  PROBLEMS_SIDEBAR_VIEW
+];
 
 /** The view a first launch opens on, and the one a reset goes back to. */
 export const DEFAULT_SIDEBAR_VIEW: SidebarViewId = 'explorer';

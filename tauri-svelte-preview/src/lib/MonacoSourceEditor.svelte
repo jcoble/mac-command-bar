@@ -1401,9 +1401,10 @@
 		return nextCount;
 	}
 
+	// No "+" after fifty any more: the count reaching here is exact, so a symbol
+	// used 312 times used to read "312+", which claimed a limit that is gone.
 	function formatReferenceCodeLensTitle(count: number) {
-		const suffix = count >= 50 ? "+" : "";
-		return `${count}${suffix} ${count === 1 ? "reference" : "references"}`;
+		return `${count} ${count === 1 ? "reference" : "references"}`;
 	}
 
 	function encodeSemanticTokens(tokens: SourceSemanticToken[]): Uint32Array {

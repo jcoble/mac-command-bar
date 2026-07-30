@@ -10,6 +10,7 @@
  * settings" itself from the callbacks the page passes it; everything here is
  * the panels' own actions.
  */
+import { settings } from '../settingsStore.svelte.ts';
 import { browser, reloadBrowserFrame } from './browser/browserStore.svelte.ts';
 import { refreshAll as refreshContextCards } from './context/contextService.ts';
 import { closeEditorFile, editorState } from './editor/editorStore.svelte.ts';
@@ -34,6 +35,10 @@ export interface ShellCommandHooks {
   showView(id: SidebarViewId): void;
   /** Open the new-session dialog. */
   openNewSession(): void;
+  /** Put the Problems list back in the strip along the bottom. Hiding the list
+   * removes the buttons that would put it back, so this is a way in from the
+   * keyboard that cannot be taken away. */
+  showProblemsAtBottom(): void;
 }
 
 /** Register the panel actions. Calling it again replaces them, never doubles. */
@@ -123,10 +128,9 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       id: 'context-refresh',
       label: 'Refresh the context cards',
       detail: 'Read runs, processes, agent sessions, worktrees and repositories again',
-      perform: () => {
-        refreshContextCards();
-        void refreshPlaywright();
-      }
+      // `refreshContextCards` reads the Playwright list itself now, so asking
+      // for it again here would only read it twice.
+      perform: () => void refreshContextCards()
     },
     {
       id: 'playwright-show',
@@ -145,14 +149,14 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
     },
     {
       id: 'show-stacks',
-      label: 'Show stacks',
-      detail: 'Open the stacks section of the tool column on the right',
+      label: 'Show run configurations',
+      detail: 'Open the run configurations section of the tool column on the right',
       perform: () => hooks.showView('stacks')
     },
     {
       id: 'stacks-refresh',
-      label: 'Stacks: refresh',
-      detail: 'Look again at which ports the stacks have open',
+      label: 'Run configurations: check which ports are open',
+      detail: 'Look again at which ports the running configurations have open',
       perform: () => void refreshStacks()
     },
     {
@@ -160,6 +164,16 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       label: 'Look for problems again',
       detail: 'Ask the language server what is wrong with this project',
       perform: () => refreshProblemsForSelection()
+    },
+    {
+      // The way back when the Problems list has been hidden: hiding it takes
+      // its own buttons with it, so the settings dialog and this are the only
+      // two doors left.
+      id: 'problems-show-at-bottom',
+      label: 'Show the problems list at the bottom',
+      detail: 'Put the list of mistakes back in the strip along the bottom',
+      disabled: () => settings.panels.problemsLocation === 'bottom',
+      perform: () => hooks.showProblemsAtBottom()
     },
     {
       id: 'browser-reload',

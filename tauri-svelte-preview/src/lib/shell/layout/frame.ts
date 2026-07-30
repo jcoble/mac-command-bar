@@ -64,6 +64,13 @@ export interface RegionWidthLimits {
   maximumWidth?: number;
 }
 
+/** How short and how tall a region may be dragged. The dock is the only region
+ * laid out vertically, and this is what lets it be closed entirely. */
+export interface RegionHeightLimits {
+  minimumHeight?: number;
+  maximumHeight?: number;
+}
+
 export interface ShellFrame {
   api: GridviewApi;
   resetLayout(): void;
@@ -77,6 +84,14 @@ export interface ShellFrame {
    * be clamped back to 220.
    */
   setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
+  /**
+   * Give one region a height, optionally changing what it may be dragged to.
+   * The mirror of `setRegionWidth`, for the bottom dock — the one region this
+   * frame lays out vertically. Closing the dock means asking for a height of
+   * zero, which a minimum height would otherwise clamp back up, so the limits
+   * are applied first here for the same reason they are there.
+   */
+  setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
   /**
    * Say what a region may be dragged to, without touching the width it has.
    *
@@ -152,6 +167,23 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     }
   };
 
+  /** Ask one region for a height, and for what it may be dragged to. Same
+   * tolerance as `setRegionWidth`. */
+  const setRegionHeight = (
+    id: ShellRegionId,
+    height: number,
+    limits?: RegionHeightLimits
+  ): void => {
+    try {
+      const panel = api.getPanel(id);
+      if (!panel) return;
+      if (limits) panel.api.setConstraints(limits);
+      panel.api.setSize({ height });
+    } catch {
+      // nothing to do — the arrangement is still usable
+    }
+  };
+
   /** Say what a region may be dragged to and nothing else. Same tolerance as
    * `setRegionWidth`: a region that will not take it keeps what it has. */
   const setRegionLimits = (id: ShellRegionId, limits: RegionWidthLimits): void => {
@@ -213,12 +245,16 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       maximumWidth: 640
     });
     // Below CENTER only: the dock spans the middle column, not the side columns.
+    //
+    // No minimum height, on purpose. The Problems list can be moved to the tool
+    // column or hidden altogether, and both answers close this strip completely
+    // — a minimum of 96px would clamp that back to a 96px strip of nothing.
     api.addPanel({
       id: 'dock',
       component: COMPONENT,
       position: { direction: 'below', referencePanel: 'center' },
       size: 180,
-      minimumHeight: 96
+      minimumHeight: 0
     });
     // Say the two side widths again, now that every region exists.
     //
@@ -323,6 +359,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   return {
     api,
     setRegionWidth,
+    setRegionHeight,
     setRegionLimits,
     regionWidth,
     resetLayout(): void {

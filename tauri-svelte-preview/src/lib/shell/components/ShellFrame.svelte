@@ -12,6 +12,7 @@
   import { createCenterDock, type CenterDock } from '$lib/shell/layout/centerDock';
   import {
     createShellFrame,
+    type RegionHeightLimits,
     type RegionWidthLimits,
     type ShellFrame as Frame,
     type ShellRegionId
@@ -36,6 +37,10 @@
       /** Give one region a width — how a column asks to be folded up or
        * opened out. See `setRegionWidth` in `frame.ts`. */
       setRegionWidth: (id: ShellRegionId, width: number, limits?: RegionWidthLimits) => void;
+      /** Give one region a height — how the bottom strip is closed when the
+       * Problems list has been moved elsewhere or hidden. See
+       * `setRegionHeight` in `frame.ts`. */
+      setRegionHeight: (id: ShellRegionId, height: number, limits?: RegionHeightLimits) => void;
       /** Say what a region may be dragged to without moving it. See
        * `setRegionLimits` in `frame.ts`. */
       setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
@@ -115,6 +120,7 @@
         },
         showCenterPanel: (id: string) => centerDock?.activatePanel(id),
         setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
+        setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
         setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
         regionWidth: (id) => frame?.regionWidth(id) ?? null
       });

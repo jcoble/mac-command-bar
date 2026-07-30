@@ -32,14 +32,21 @@
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
   import TerminalSurface from '$lib/shell/components/TerminalSurface.svelte';
+  import RunButton from '$lib/shell/components/run/RunButton.svelte';
+  import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
+  import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { editorState, resetEditorState } from '$lib/shell/editor/editorStore.svelte';
+  import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
+  import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
+  import { gitService } from '$lib/shell/git/gitService';
   import {
     SESSIONS_MAX_WIDTH,
     SESSIONS_MIN_WIDTH,
     SESSIONS_STRIP_WIDTH,
     SESSIONS_WIDTH,
+    type RegionHeightLimits,
     type RegionWidthLimits,
     type ShellRegionId
   } from '$lib/shell/layout/frame';
@@ -53,6 +60,7 @@
   } from '$lib/shell/ownedSessions';
   import {
     captureWorkspace,
+    diffPathFor,
     pruneWorkspaces,
     readWorkspaces,
     writeWorkspaces,
@@ -60,7 +68,7 @@
   } from '$lib/shell/sessionWorkspaces';
   import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
   import { registerShellCommands } from '$lib/shell/shellCommands';
-  import { shellPanels } from '$lib/shell/shellPanels';
+  import { readSelection, shellPanels } from '$lib/shell/shellPanels';
   import {
     noteSessionRemoved,
     noteTerminalExit,
@@ -120,6 +128,7 @@
     resetLayout(): void;
     showCenterPanel(id: string): void;
     setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
+    setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
     setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
     regionWidth(id: ShellRegionId): number | null;
   } | null = null;
@@ -135,6 +144,9 @@
   let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
   /** The overlay layer, for opening the dialogs it owns. */
   let overlays: { openSettings(): void; openNewSession(): void } | null = null;
+  /** The sessions column, for opening its "Find a session" drawer from the
+   * context panel's "Search all sessions" link. */
+  let sessionsColumn: { openFinder(): void } | null = null;
   let refitScheduled = false;
   /** Its own state, NOT `rail.error`: ShellFrame mounts before this page's
    * start-up, and `scanRail` clears `rail.error` — which would erase a mount
@@ -149,7 +161,20 @@
     // Opening a view is what lets that view read anything, so nothing else has
     // to be called here — the column reports the change and the load follows.
     showView: (id) => sidebarControls?.selectView(id),
-    openNewSession: () => overlays?.openNewSession()
+    openNewSession: () => overlays?.openNewSession(),
+    showProblemsAtBottom: () => {
+      settings.panels.problemsLocation = 'bottom';
+      applyProblemsLocation('bottom');
+    }
+  });
+
+  /** The two places the context panel can send you: the Worktrees view, and the
+   * sessions column's "Find a session" drawer. Both live outside that panel, so
+   * it asks rather than reaching for them. Pure bookkeeping, like the palette
+   * actions above — nothing runs until a link is clicked. */
+  setContextPanelHooks({
+    showWorktreesView: () => sidebarControls?.selectView('worktrees'),
+    openSessionFinder: () => sessionsColumn?.openFinder()
   });
 
   /**
@@ -184,6 +209,37 @@
     applySessionsWidth(collapsed);
   }
 
+  /**
+   * Put the Problems list where the setting says it goes.
+   *
+   * Only "in the strip along the bottom" keeps that strip open; the other two
+   * answers close it to nothing, and the maximum height goes with the minimum
+   * so a divider cannot be dragged to reopen a strip holding nothing. Asked for
+   * once at start-up as well as on every change, or a choice made last week
+   * would only take effect when the buttons were pressed again.
+   */
+  function applyProblemsLocation(location: ProblemsLocation): void {
+    const atBottom = location === 'bottom';
+    frameControls?.setRegionHeight(
+      'dock',
+      atBottom ? 180 : 0,
+      atBottom
+        ? // The maximum has to be said again, not just the minimum: closing the
+          // strip pins BOTH ends at zero, and a limit left off is a limit left
+          // alone — so a strip reopened without this comes back pinned shut and
+          // settles at its minimum instead of the height it is meant to have.
+          // MAX_SAFE_INTEGER is dockview's own word for "no maximum".
+          { minimumHeight: 96, maximumHeight: Number.MAX_SAFE_INTEGER }
+        : { minimumHeight: 0, maximumHeight: 0 }
+    );
+    if (location === 'right') sidebarControls?.selectView('problems');
+    // The tool column keeps a container for Problems whether or not it is
+    // offered, so leaving the list on screen there after it has been moved back
+    // to the bottom would be the same list in two places, with only one of them
+    // reachable from the icon strip.
+    else if (activeView === 'problems') sidebarControls?.selectView(DEFAULT_SIDEBAR_VIEW);
+  }
+
   /** "Reset layout" means ALL of it: the grid regions (so both side columns go
    * back to their default widths), the center tabs, and the tool column, which
    * remembers its section sizes and its open view under its own keys. A folded
@@ -192,6 +248,10 @@
     frameControls?.resetLayout();
     sidebarControls?.resetLayout();
     if (sessionsCollapsed) collapseSessions(false);
+    // A reset builds the default arrangement, which has the bottom strip open.
+    // Where the Problems list goes is a setting rather than part of the
+    // arrangement, so it is said again here — a reset must not quietly undo it.
+    applyProblemsLocation(settings.panels.problemsLocation);
   }
 
   /** Coalesce dockview's layout bursts into one refit per frame. */
@@ -297,7 +357,9 @@
         activePath: editorState.activePath,
         expandedFolderIds: explorer.expandedFolderIds,
         selectedPath: explorer.selectedPath,
-        scrollTop: explorer.scrollTop
+        scrollTop: explorer.scrollTop,
+        diffPath: gitPanel.selectedPath || null,
+        diffRoot: gitPanel.root
       })
     };
     writeWorkspaces(window.localStorage, workspaces);
@@ -323,6 +385,15 @@
     // file open gets one, and that emptiness is the whole point: it is the other
     // session's tabs not being there.
     resetEditorState();
+    // The Diff tab is one tab for the whole shell — it is always mounted, and
+    // source control only re-points itself while it is the view in front. So a
+    // switch to a session in another project used to leave the tab showing the
+    // file you had just left. Cleared here when the file it is showing belongs
+    // to somewhere else; two sessions in the same repository keep it, which is
+    // right, because nothing has changed underneath it.
+    if (diffPathFor(workspaces[ownedId] ?? null, readSelection().root) === null) {
+      gitService.clearSelection();
+    }
     const snapshot = workspaces[ownedId];
     if (!snapshot) return;
 
@@ -378,6 +449,11 @@
     // Persist the PTY id: reload re-attach reads it back out of localStorage.
     updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
+    // A session you just started is a session you want to watch. Deliberately
+    // here rather than inside `selectOwned`, which also runs on every plain
+    // click on a card — a click on a row must not yank the reader off the file
+    // they had open.
+    frameControls?.showCenterPanel('session');
   }
 
   /**
@@ -410,6 +486,8 @@
     // Persist the PTY id: reload re-attach reads it back out of localStorage.
     updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
+    // Same as resuming one: you asked for this session, so it comes to the front.
+    frameControls?.showCenterPanel('session');
   }
 
   /**
@@ -441,6 +519,10 @@
     }
     updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
+    // Pressing play is asking to watch the thing start. Without this the run
+    // configuration's terminal opens behind whatever tab was already in front,
+    // and a command that fails immediately does so out of sight.
+    frameControls?.showCenterPanel('session');
     return owned.ownedId;
   }
 
@@ -556,6 +638,11 @@
       // keeps the old exit on record and says "stopped" under a live server.
       if (restartedStackId !== null) recordStackStart(restartedStackId, ownedId);
       await selectOwned(ownedId);
+      // Only on this path, where the session the user asked for is the one that
+      // ended up on screen. Every early return above hands the screen to a
+      // DIFFERENT session on purpose, and pulling the reader to the terminal
+      // panel there would show them somebody else's scrollback.
+      frameControls?.showCenterPanel('session');
     } catch (error) {
       // The row goes back to finished rather than sitting there claiming to be
       // running: nothing started, and the card's buttons must still offer this.
@@ -637,6 +724,17 @@
     // paints in the theme it sets.
     applyStoredTheme();
     disposed = false;
+    // Honour where the reader last put the Problems list. The frame and the
+    // tool column both mount before this runs, so both have handed over their
+    // controls by now. Without it the bottom strip comes back open on every
+    // launch however it was left.
+    applyProblemsLocation(settings.panels.problemsLocation);
+    // The C# language server switch lives in the desktop process, which forgets
+    // it between launches and starts with the server allowed. Without this,
+    // someone who turned it off last week silently gets the 800MB back.
+    if (!settings.intelligence.csharpLanguageServer) {
+      void setCsharpLanguageServerEnabled(false);
+    }
     // The stacks pane never spawns or kills anything itself — the page owns the
     // rail, the terminal service and the terminal hosts, so it does the work and
     // the pane asks for it. Pure bookkeeping; nothing runs until a click.
@@ -758,6 +856,7 @@
      shadow the imported `rail` store and break every `rail.owned` read. -->
 {#snippet sessionsArea()}
   <SessionsColumn
+    bind:this={sessionsColumn}
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
     scanning={rail.scanning} collapsed={sessionsCollapsed}
     onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal} onRestart={restartOwned}
@@ -775,6 +874,7 @@
     onWorktreesVisible={(visible) => shellPanels.worktreesVisible(visible)}
     onStacksVisible={(visible) => shellPanels.stacksVisible(visible)}
     onContextVisible={(visible) => shellPanels.contextVisible(visible)}
+    onProblemsVisible={(visible) => shellPanels.problemsVisible(visible)}
     onOpenSession={(ownedId) => void selectOwned(ownedId)}
     onShowDiff={() => frameControls?.showCenterPanel('diff')}
   />
@@ -786,9 +886,20 @@
     onOpenSettings={() => overlays?.openSettings()}
   />
 {/snippet}
-{#snippet dockArea()}<DockPanel onReset={resetLayout} />{/snippet}
+{#snippet dockArea()}
+  <DockPanel onReset={resetLayout} onProblemsLocationChange={applyProblemsLocation} />
+{/snippet}
 {#snippet sessionArea()}
-  <TerminalSurface owned={rail.owned} activeOwnedId={rail.activeOwnedId} {registerHost} />
+  <!-- `onHostLayout` is what re-measures a terminal: a terminal is built inside
+       a hidden host, where one character measures zero pixels wide, so the fit
+       that runs when the panel is shown does nothing. The surface says when a
+       host appears, changes size, or the terminal font lands. -->
+  <TerminalSurface
+    owned={rail.owned}
+    activeOwnedId={rail.activeOwnedId}
+    {registerHost}
+    onHostLayout={scheduleRefit}
+  />
 {/snippet}
 {#snippet editorArea()}
   <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight.
@@ -808,7 +919,15 @@
 {#snippet diffArea()}<GitDiffView />{/snippet}
 
 <main class="next-shell">
-  <ShellFrame
+  <!-- The strip along the top. It holds the play button that runs a saved
+       configuration; anything else that belongs above the whole shell goes
+       beside it, since it is a plain flex row. -->
+  <div class="top-bar">
+    <RunButton />
+  </div>
+
+  <div class="frame-area">
+    <ShellFrame
     sessions={sessionsArea} tools={toolsArea} activity={activityArea} dock={dockArea}
     center={{
       session: sessionArea,
@@ -852,7 +971,8 @@
       setTimeout(() => shellPanels.allowPanelLoads(), 0);
     }}
     onError={(message) => (layoutError = `layout failed: ${message}`)}
-  />
+    />
+  </div>
 
   <ShellOverlays
     bind:this={overlays}
@@ -861,18 +981,42 @@
     onStartNewSession={startNewSession}
     newSessionRoots={rail.owned.map((session) => session.cwd)}
     message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
+    onProblemsLocationChange={applyProblemsLocation}
   />
 </main>
 
 <style>
   /* ShellFrame owns the geometry now, but it still needs a definite height to
-     measure against — at 0x0 the grid mounts and renders nothing. */
+     measure against — at 0x0 the grid mounts and renders nothing.
+     `position: relative` is what ShellOverlays positions its message strip and
+     the development call counter against; both are absolute, so neither becomes
+     a flex item of the column below. */
   .next-shell {
     position: relative;
+    display: flex;
+    flex-direction: column;
     height: 100vh;
     width: 100vw;
     overflow: hidden;
     background: #101014;
     color: #d8d8e0;
+  }
+
+  .top-bar {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  /* ShellFrame's own root is `height: 100%`, so it needs a parent whose height
+     is already settled. A flex child with `min-height: 0` has one; the shell
+     itself no longer does, now that there is a bar above the frame. */
+  .frame-area {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 </style>

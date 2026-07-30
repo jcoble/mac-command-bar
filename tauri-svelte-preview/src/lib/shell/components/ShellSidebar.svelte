@@ -43,6 +43,7 @@
   import { createPaneStack, type PaneStack } from '$lib/shell/layout/paneStack';
   import {
     DEFAULT_SIDEBAR_VIEW,
+    PROBLEMS_SIDEBAR_PANE,
     SIDEBAR_VIEWS,
     clearActiveView,
     readActiveView,
@@ -54,6 +55,7 @@
   import ContextPanel from './ContextPanel.svelte';
   import ExplorerPanel from './ExplorerPanel.svelte';
   import GitPanel from './GitPanel.svelte';
+  import ProblemsPanel from './problems/ProblemsPanel.svelte';
   import StacksPane from './stacks/StacksPane.svelte';
   import WorktreeManagerPane from './worktrees/WorktreeManagerPane.svelte';
 
@@ -66,18 +68,30 @@
     'source-control',
     'worktrees',
     'stacks',
-    'context'
+    'context',
+    'problems'
   ];
 
   /** The panes each view opens with. One apiece today; the stack is what lets a
    * view grow a second section (an Outline under Files, a graph under Source
-   * control) without any of this changing shape. */
+   * control) without any of this changing shape.
+   *
+   * The run configurations pane is deliberately no longer called `stacks`.
+   * dockview writes each pane's title into the saved arrangement and its header
+   * reads that title exactly once, when the pane is built, so a view somebody
+   * had already opened would have gone on saying "Stacks" for good. A pane id
+   * the stored arrangement does not recognise is not restored, so the pane is
+   * built fresh under its real name; the only thing lost is that one pane's
+   * remembered height, and each view holds a single pane that fills it anyway.
+   * The VIEW's id stays `stacks` — that one is the key its sizes and "which
+   * view was open" are stored under. */
   const PANES: Record<SidebarViewId, { id: string; title: string }> = {
     explorer: { id: 'files', title: 'Files' },
     'source-control': { id: 'source-control', title: 'Source control' },
     worktrees: { id: 'worktrees', title: 'Worktrees' },
-    stacks: { id: 'stacks', title: 'Stacks' },
-    context: { id: 'context', title: 'Context' }
+    stacks: { id: 'run-configurations', title: 'Run configurations' },
+    context: { id: 'context', title: 'Context' },
+    problems: PROBLEMS_SIDEBAR_PANE
   };
 
   /** Height a pane opens at when the view has not been measured yet. Normally
@@ -105,6 +119,9 @@
     onStacksVisible?: (visible: boolean) => void;
     /** Same question for the context cards. */
     onContextVisible?: (visible: boolean) => void;
+    /** Same question for the Problems list, which lives here only when the user
+     * has asked for it in this column rather than the strip along the bottom. */
+    onProblemsVisible?: (visible: boolean) => void;
     /** Focus one of the shell's sessions, from a worktree's session list. */
     onOpenSession?: (ownedId: string) => void;
     /** A file's changes were picked in source control, so whatever is showing
@@ -119,6 +136,7 @@
     onWorktreesVisible,
     onStacksVisible,
     onContextVisible,
+    onProblemsVisible,
     onOpenSession,
     onShowDiff
   }: Props = $props();
@@ -161,6 +179,7 @@
     else if (id === 'worktrees') onWorktreesVisible?.(visible);
     else if (id === 'stacks') onStacksVisible?.(visible);
     else if (id === 'context') onContextVisible?.(visible);
+    else if (id === 'problems') onProblemsVisible?.(visible);
   }
 
   /** Say where every gated view stands. Called whenever the open view changes:
@@ -322,6 +341,7 @@
   </div>
   <div class="slot" bind:this={bodies.stacks}><StacksPane /></div>
   <div class="slot" bind:this={bodies.context}><ContextPanel /></div>
+  <div class="slot" bind:this={bodies.problems}><ProblemsPanel /></div>
 </div>
 
 <style>

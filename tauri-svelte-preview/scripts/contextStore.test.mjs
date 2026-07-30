@@ -43,10 +43,12 @@ const {
   contextState,
   describeContextInput,
   failCardLoad,
+  filterAgentRows,
   folderName,
   isCurrentCardRequest,
   markCardUnavailable,
   markContextActivated,
+  processStopUnavailableReason,
   resetContext,
   runStatusGroup,
   setContextInput,
@@ -290,6 +292,24 @@ test('the repository summary reports changes and sync state', () => {
     ]),
     '3 repositories, 1 with uncommitted changes, 1 ahead of its remote, 1 behind its remote, 1 could not be read'
   );
+});
+
+test('the session search looks at name, agent and folder, not just what is on screen', () => {
+  const rows = [
+    { title: 'Fix the parser', id: 'a1', provider: 'claude', projectPath: '/dev/work/edi' },
+    { title: 'Ship the docs', id: 'b2', provider: 'codex', projectPath: '/dev/work/portfolio' }
+  ];
+  assert.equal(filterAgentRows(rows, '').length, 2);
+  assert.equal(filterAgentRows(rows, 'parser')[0].id, 'a1');
+  assert.equal(filterAgentRows(rows, 'CODEX')[0].id, 'b2');
+  assert.equal(filterAgentRows(rows, 'portfolio')[0].id, 'b2');
+  assert.equal(filterAgentRows(rows, 'nothing here').length, 0);
+});
+
+test('a button we have not asked about yet is not reported as one the app cannot do', () => {
+  assert.equal(processStopUnavailableReason('available'), null);
+  assert.match(processStopUnavailableReason('unknown'), /Still asking/);
+  assert.match(processStopUnavailableReason('unavailable'), /cannot do this yet/);
 });
 
 console.log(`\ncontextStore: ${passed} checks passed`);
