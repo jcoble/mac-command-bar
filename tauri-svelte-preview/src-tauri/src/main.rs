@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use mcb_core::reference_counts::{
     count_reference_lines_across_files, is_source_token_boundary,
     normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
+    MAX_REFERENCE_SCAN_BYTES,
 };
 use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
 use orchestration::{
@@ -1024,6 +1025,47 @@ async fn find_source_lsp_hover(
         .map_err(|error| format!("Source LSP hover task failed: {error}"))?
 }
 
+/// Every symbol in one file, as the editor's margin counts want them: flattened, with
+/// both numbers counted from zero.
+///
+/// This is what switches the margin counts on for Rust and Svelte, where the app's own
+/// pattern-based symbol reader has never worked. Unlike the other language-server
+/// lookups it is handed a path rather than the editor's copy of the text, and reads the
+/// file from disk itself.
+#[tauri::command]
+async fn find_source_lsp_document_symbols(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+    language: String,
+    path: String,
+) -> Result<Vec<lsp::SourceLspDocumentSymbol>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.find_document_symbols(root, language, path)
+    })
+    .await
+    .map_err(|error| format!("Source LSP document symbol task failed: {error}"))?
+}
+
+/// The last few hundred lines a running language server printed to its own error output.
+///
+/// When a server refuses to answer, this is usually the only explanation there is. Empty
+/// when no server for that language is running.
+#[tauri::command]
+async fn read_source_lsp_log(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+    language: String,
+) -> Result<Vec<String>, String> {
+    // The project folder is accepted but not used: one server per language serves every
+    // project, so there is only ever one log to hand back.
+    let _ = root;
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.read_server_log(&language))
+        .await
+        .map_err(|error| format!("Source LSP log task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn find_source_lsp_symbols(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
@@ -1143,7 +1185,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 8] = [
+const BACKEND_CAPABILITIES: [&str; 11] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1161,7 +1203,19 @@ const BACKEND_CAPABILITIES: [&str; 8] = [
     "worktreePruneSingle",
     // `set_csharp_language_server_enabled` turns the C# language server off and on.
     "csharpLanguageServerToggle",
+    // `find_source_lsp_document_symbols` lists a file's symbols using the language
+    // server, which is what gives Rust and Svelte margin counts.
+    "lspDocumentSymbols",
+    // The app sends a `source-lsp-status-changed` event whenever a language server
+    // changes what it is doing, so nothing has to ask on a timer.
+    "lspStatusEvents",
+    // `read_source_lsp_log` hands back what a running language server printed to its
+    // own error output.
+    "lspLog",
 ];
+
+/// The event the app sends whenever a language server changes what it is doing.
+const SOURCE_LSP_STATUS_CHANGED_EVENT: &str = "source-lsp-status-changed";
 
 fn backend_capabilities() -> Vec<String> {
     BACKEND_CAPABILITIES
@@ -1989,7 +2043,12 @@ fn count_source_references_sync(
         .collect::<Vec<_>>();
 
     let plan = ReferenceCountPlan::new(&names);
-    let pass = count_reference_lines_across_files(&files, &plan, deadline, MAX_PREVIEW_BYTES);
+    // Not `MAX_PREVIEW_BYTES`: that ceiling decides how much text is worth putting on
+    // screen, which has nothing to do with how much text this pass can walk through.
+    // Reusing it meant one 660KB source file made every count in the project a floor.
+    let pass =
+        count_reference_lines_across_files(&files, &plan, deadline, MAX_REFERENCE_SCAN_BYTES);
+    log_reference_count_timing(&pass, names.len(), started);
     // Both mean the same thing to the reader: not every file was counted, so
     // the totals are floors and the margin must say "at least", never an exact
     // number nobody actually took.
@@ -2011,6 +2070,32 @@ fn count_source_references_sync(
 
 fn elapsed_millis(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Say, on the terminal the app was started from, how long one pass of counting
+/// mentions across the project took — but only when the reader asked for timings
+/// by starting the app with `MCB_TIMING=1`. Silence otherwise.
+fn log_reference_count_timing(
+    pass: &mcb_core::reference_counts::ReferenceCountPass,
+    symbol_count: usize,
+    started: Instant,
+) {
+    if !lsp::timing_enabled() {
+        return;
+    }
+
+    let outcome = if pass.ran_out_of_time {
+        "it ran out of time, so the totals are floors"
+    } else if pass.skipped_files {
+        "some files were too big or could not be read, so the totals are floors"
+    } else {
+        "every file on the list was read, so the totals are exact"
+    };
+    eprintln!(
+        "Timing: counting {symbol_count} names across {} files took {} ms; {outcome}.",
+        pass.scanned_files,
+        elapsed_millis(started)
+    );
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -5024,6 +5109,16 @@ fn main() {
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Every time a language server starts, finishes reading a project, or stops,
+            // tell the editor straight away. Without this the editor would have to ask
+            // over and over to notice, which is what it used to do.
+            let app = app.handle().clone();
+            lsp::set_source_lsp_status_listener(Arc::new(move |change| {
+                let _ = app.emit(SOURCE_LSP_STATUS_CHANGED_EVENT, change);
+            }));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             read_backend_capabilities,
             list_source_files,
@@ -5060,6 +5155,8 @@ fn main() {
             find_source_lsp_references,
             find_source_lsp_hover,
             find_source_lsp_symbols,
+            find_source_lsp_document_symbols,
+            read_source_lsp_log,
             read_source_lsp_diagnostics,
             list_source_lsp_diagnostics_for_root,
             project_git_status,
@@ -7877,6 +7974,9 @@ mod tests {
                 "processKill".to_string(),
                 "worktreePruneSingle".to_string(),
                 "csharpLanguageServerToggle".to_string(),
+                "lspDocumentSymbols".to_string(),
+                "lspStatusEvents".to_string(),
+                "lspLog".to_string(),
             ]
         );
     }
