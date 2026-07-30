@@ -11,12 +11,20 @@
    * with a lock somebody else set, or work only its owner can judge. Copying one
    * changes nothing on its own, which is the point: the reader takes it away,
    * reads it, and runs it themselves.
+   *
+   * Above both halves sit the plain facts about the folder — where it is, when
+   * anything last happened in it, how it stands against its remote, who has
+   * worked in it. Those used to run along the closed row separated by "·",
+   * where they wrapped into an unreadable stack; here each one has a label and
+   * a line, and a fact with nothing in it is left out rather than left as a
+   * separator with empty space on both sides.
    */
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
 
   import { Button } from '$lib/components/ui/button/index.js';
-  import type { WorktreeManagerRow } from '$lib/shell/worktrees/worktreeManagerRows';
+  import { exactLocalTime } from '$lib/shell/relativeTime';
+  import { worktreeFacts, type WorktreeManagerRow } from '$lib/shell/worktrees/worktreeManagerRows';
   import { cn } from '$lib/utils';
 
   interface Props {
@@ -40,23 +48,36 @@
     protected: 'text-[var(--color-good)] bg-[var(--color-good-bg)]'
   };
 
-  const commands = $derived([
-    {
-      id: 'audit',
-      label: 'Look at what is in here',
-      command: row.commands.audit
-    },
-    {
-      id: 'backup',
-      label: 'Copy the work somewhere safe',
-      command: row.commands.backup
-    },
-    {
-      id: 'cleanup',
-      label: 'Remove it from the repository',
-      command: row.commands.cleanup
-    }
-  ]);
+  const facts = $derived(worktreeFacts(row));
+
+  /**
+   * The three commands. A worktree whose folder is already gone has nothing to
+   * copy anywhere, so it is not offered a command that pretends otherwise, and
+   * the last one is described as what it actually does for that row.
+   */
+  const commands = $derived(
+    [
+      {
+        id: 'audit',
+        label: 'Look at what is in here',
+        command: row.commands.audit
+      },
+      row.folderGone
+        ? null
+        : {
+            id: 'backup',
+            label: 'Copy the work somewhere safe',
+            command: row.commands.backup
+          },
+      {
+        id: 'cleanup',
+        label: row.folderGone
+          ? 'Clear git’s record of it yourself'
+          : 'Remove it from the repository',
+        command: row.commands.cleanup
+      }
+    ].filter((entry) => entry !== null)
+  );
 
   async function copy(id: string, command: string): Promise<void> {
     copyError = '';
@@ -73,6 +94,19 @@
 </script>
 
 <div class="flex flex-col gap-2.5">
+  <!-- The plain facts, one labelled line each. Anything unknown is absent. -->
+  <dl class="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
+    {#each facts as fact (fact.label)}
+      <dt class="m-0 text-[12px] leading-[1.5] text-[var(--color-text-3)]">{fact.label}</dt>
+      <dd
+        class="m-0 min-w-0 text-[12px] leading-[1.5] break-words text-[var(--color-text-2)]"
+        title={fact.stamp ? exactLocalTime(fact.stamp) : undefined}
+      >
+        {fact.value}
+      </dd>
+    {/each}
+  </dl>
+
   <!-- The verdict, in three lines: what to do, why, and what to check first. -->
   <div class="flex flex-col gap-1.5">
     <div class="flex flex-wrap items-center gap-1.5">
