@@ -22,8 +22,16 @@
   import { onMount } from 'svelte';
 
   import { upgradeUnknownLanguage } from './editor/editorLanguage.ts';
+  import {
+    createLanguageServerGate,
+    readLanguageServerState,
+    statusMessageIsAboutThisFile,
+    type LanguageServerStatusMessage
+  } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
+  import LanguageServerStatusChip from './LanguageServerStatusChip.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
+  import { hasBackendCapability } from '$lib/shell/backendCapabilities';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import {
     activateEditor,
@@ -40,11 +48,24 @@
     setEditorSymbols
   } from '$lib/shell/editor/editorStore.svelte';
   import { needsRead } from '$lib/shell/editor/editorStoreOps';
-  import { sourceIntelligence } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    sourceIntelligence,
+    type SourceInlayHintRequest
+  } from '$lib/shell/editor/sourceIntelligence';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
-  import { readSourceFromTauri, warmSourceLspForRootFromTauri } from '$lib/tauriSource';
+  import {
+    isNativeTauriRuntime,
+    readSourceFromTauri,
+    readSourceLspStatusFromTauri,
+    warmSourceLspForRootFromTauri
+  } from '$lib/tauriSource';
   import type MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
-  import type { SourceDiagnostic, SourceRecord, SourceSymbol } from '$lib/sourceData';
+  import type {
+    SourceDiagnostic,
+    SourceInlayHint,
+    SourceRecord,
+    SourceSymbol
+  } from '$lib/sourceData';
 
   /**
    * The code editor is a large download, so it is fetched with the first file
@@ -94,6 +115,95 @@
   /** The pending second read, so switching files quickly does not queue several. */
   let diagnosticsTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * The last thing the desktop app said about the open file's language server —
+   * either the answer to `read_source_lsp_status` or a pushed
+   * `source-lsp-status-changed` message. Both carry the same `state` and
+   * `detail` fields, so either one can be shown as-is.
+   *
+   * `null` means nobody has said anything: a browser tab (there is no language
+   * server behind a browser) or a desktop build older than these fields. In
+   * both cases no chip appears and the panel behaves exactly as it used to.
+   */
+  let languageServerStatus = $state<unknown>(null);
+  /** Which project and language that answer was about, so a stale one is dropped. */
+  let languageServerSubject: { root: string; language: string } | null = null;
+  /**
+   * Holds back work that a server which is still starting up or reading the
+   * project could not answer anyway. It lets everything through the moment the
+   * server says it is ready — and, if that never happens, on its own time limit.
+   */
+  const languageServerGate = createLanguageServerGate();
+  /** Counts inline-hint requests, so only the newest one survives a wait. */
+  let inlayHintRequestCount = 0;
+
+  /** The language of the file on screen, or null when nothing is open. */
+  function activeFileLanguage(): string | null {
+    return activeEditorFile()?.language ?? null;
+  }
+
+  /** Record what the desktop app just said, and let waiting work know. */
+  function applyLanguageServerStatus(
+    status: unknown,
+    subject: { root: string; language: string } | null
+  ): void {
+    languageServerStatus = status;
+    languageServerSubject = subject;
+    languageServerGate.setState(readLanguageServerState(status));
+  }
+
+  /**
+   * Ask what the language server for this file is doing. Called when a file
+   * opens or the strip selection changes — never on a timer. Everything after
+   * that arrives as a pushed message.
+   */
+  async function refreshLanguageServerStatus(): Promise<void> {
+    const root = editorState.projectRoot;
+    const language = activeFileLanguage();
+
+    // A different project or a different language means the last answer was
+    // about someone else's server; drop it rather than show it against this file.
+    if (
+      languageServerSubject &&
+      (languageServerSubject.root !== root || languageServerSubject.language !== language)
+    ) {
+      applyLanguageServerStatus(null, null);
+    }
+
+    if (!root || !language || !isNativeTauriRuntime()) return;
+
+    countInvoke('read_source_lsp_status');
+    let answer: unknown = null;
+    try {
+      answer = await readSourceLspStatusFromTauri(root, language);
+    } catch {
+      // No answer is not a state worth reporting, so the chip stays away.
+      answer = null;
+    }
+    // Superseded: the user moved to another file while this was in flight.
+    if (destroyed || editorState.projectRoot !== root || activeFileLanguage() !== language) return;
+    applyLanguageServerStatus(answer, { root, language });
+  }
+
+  /** Listen for the desktop app telling us the server moved on. */
+  async function listenForLanguageServerStatus(): Promise<(() => void) | null> {
+    if (!isNativeTauriRuntime()) return null;
+    // An older desktop build never sends these, and asking it to listen would
+    // leave the panel waiting for a message that cannot arrive.
+    if (!(await hasBackendCapability('lspStatusEvents'))) return null;
+
+    const { listen } = await import('@tauri-apps/api/event');
+    return listen<LanguageServerStatusMessage>('source-lsp-status-changed', (event) => {
+      const root = editorState.projectRoot;
+      const language = activeFileLanguage();
+      if (!root || !language) return;
+      // Several servers can be running at once, so a message about another
+      // project or another language must not move this file's chip.
+      if (!statusMessageIsAboutThisFile(event.payload, root, language)) return;
+      applyLanguageServerStatus(event.payload, { root, language });
+    });
+  }
+
   /** Ask what is wrong with the file on screen, and remember it against that file. */
   async function loadDiagnosticsForActiveFile(): Promise<void> {
     const path = editorState.activePath;
@@ -108,11 +218,66 @@
   /** Read the diagnostics now, and once more after the server has settled. */
   function refreshDiagnosticsForActiveFile(): void {
     if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
+    diagnosticsTimer = null;
     void loadDiagnosticsForActiveFile();
+    scheduleSecondDiagnosticsRead();
+  }
+
+  /**
+   * Line up the second read.
+   *
+   * While the server is still starting up or reading the project the second
+   * read is pointless — it would come back empty for the same reason the first
+   * one did — so it waits for the server to say it is ready and only then
+   * starts the settle wait. When nothing is known about the server (an older
+   * desktop build, or a browser tab) this is the original behaviour with no
+   * delay of any kind added: the timer starts immediately, as it always did.
+   */
+  function scheduleSecondDiagnosticsRead(): void {
+    if (!languageServerGate.isBusy()) {
+      startDiagnosticsSettleTimer();
+      return;
+    }
+    const path = editorState.activePath;
+    void languageServerGate.waitUntilReady().then(() => {
+      if (destroyed || editorState.activePath !== path) return;
+      startDiagnosticsSettleTimer();
+    });
+  }
+
+  function startDiagnosticsSettleTimer(): void {
+    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
     diagnosticsTimer = setTimeout(() => {
       diagnosticsTimer = null;
       if (!destroyed) void loadDiagnosticsForActiveFile();
     }, DIAGNOSTICS_SETTLE_MS);
+  }
+
+  /**
+   * Inline type hints, held back until the server can actually answer.
+   *
+   * The editor asks for these the instant a file appears. A server that is
+   * still reading the project answers "no hints", the editor believes it, and
+   * nothing asks again — which is why hints used to be missing for the rest of
+   * the session on a cold start. Making the request WAIT instead of answering
+   * it emptily means the same request is answered properly once the server is
+   * ready. With nothing known about the server this passes straight through.
+   */
+  async function lookupInlayHintsWhenServerCanAnswer(
+    request: SourceInlayHintRequest
+  ): Promise<SourceInlayHint[]> {
+    if (languageServerGate.isBusy()) {
+      const path = editorState.activePath;
+      const ticket = ++inlayHintRequestCount;
+      await languageServerGate.waitUntilReady();
+      // Only the newest request survives the wait. The editor asks again for
+      // every scroll, so answering a whole queue of stale ranges at once would
+      // simply move the pile-up to the end of the wait instead of removing it.
+      if (destroyed || ticket !== inlayHintRequestCount || editorState.activePath !== path) {
+        return [];
+      }
+    }
+    return sourceIntelligence.callbacks.onInlayHintLookup(request);
   }
 
   function describeError(error: unknown): string {
@@ -192,8 +357,21 @@
     } finally {
       readsInFlight.delete(record.path);
       syncIntelligenceWithActiveFile();
-      refreshDiagnosticsForActiveFile();
+      void refreshEditorIntelligenceForActiveFile();
     }
+  }
+
+  /**
+   * Find out what the language server is doing, then ask it about the file.
+   *
+   * The order is the point: knowing the server is still reading the project is
+   * what lets the panel hold back the work it could not answer yet, instead of
+   * firing everything at it the instant a file lands.
+   */
+  async function refreshEditorIntelligenceForActiveFile(): Promise<void> {
+    await refreshLanguageServerStatus();
+    if (destroyed) return;
+    refreshDiagnosticsForActiveFile();
   }
 
   /**
@@ -225,7 +403,7 @@
   function selectOpenFile(path: string): void {
     setActiveEditorFile(path);
     syncIntelligenceWithActiveFile();
-    refreshDiagnosticsForActiveFile();
+    void refreshEditorIntelligenceForActiveFile();
     const entry = editorFileFor(path);
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(recordForPath(path));
@@ -236,6 +414,9 @@
     closeEditorFile(path);
     sourceIntelligence.invalidatePreview(path);
     syncIntelligenceWithActiveFile();
+    // Whatever is in front now may be a different language, with a different
+    // server behind it — so the chip must not keep the closed file's answer.
+    void refreshLanguageServerStatus();
     // A closed file stops holding its diagnostics; nothing can show them now.
     const { [path]: _closed, ...rest } = diagnosticsByPath;
     diagnosticsByPath = rest;
@@ -262,10 +443,24 @@
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
     const unsubscribe = onOpenFile(handleOpenFileRequest);
+
+    // Listening for status updates is likewise free, and it is the only way the
+    // chip ever changes after a file opens — nothing here polls.
+    let stopStatusUpdates: (() => void) | null = null;
+    let panelClosed = false;
+    void listenForLanguageServerStatus().then((stop) => {
+      if (panelClosed) stop?.();
+      else stopStatusUpdates = stop;
+    });
+
     return () => {
       destroyed = true;
+      panelClosed = true;
       if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
       diagnosticsTimer = null;
+      stopStatusUpdates?.();
+      // Anything still waiting on the server has nowhere to go now.
+      languageServerGate.releaseAll();
       unsubscribe();
     };
   });
@@ -278,33 +473,42 @@
       <p class="empty-hint">Open a file from the explorer or palette.</p>
     </div>
   {:else}
-    <div class="file-strip" role="tablist" aria-label="Open files">
-      {#each editorState.openFiles as file (file.path)}
-        <div class="file-chip" class:active={file.path === editorState.activePath}>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={file.path === editorState.activePath}
-            class="file-name"
-            title={file.relativePath}
-            onclick={() => selectOpenFile(file.path)}
-          >
-            <FileIcon fileName={file.fileName} size={13} />
-            {file.fileName}
-            {#if file.loading}<span class="chip-note">reading</span>{/if}
-            {#if file.error}<span class="chip-note error">failed</span>{/if}
-          </button>
-          <button
-            type="button"
-            class="file-close"
-            aria-label={`Close ${file.fileName}`}
-            title={`Close ${file.fileName}`}
-            onclick={() => closeOpenFileAt(file.path)}
-          >
-            ×
-          </button>
-        </div>
-      {/each}
+    <div class="editor-header">
+      <div class="file-strip" role="tablist" aria-label="Open files">
+        {#each editorState.openFiles as file (file.path)}
+          <div class="file-chip" class:active={file.path === editorState.activePath}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={file.path === editorState.activePath}
+              class="file-name"
+              title={file.relativePath}
+              onclick={() => selectOpenFile(file.path)}
+            >
+              <FileIcon fileName={file.fileName} size={13} />
+              {file.fileName}
+              {#if file.loading}<span class="chip-note">reading</span>{/if}
+              {#if file.error}<span class="chip-note error">failed</span>{/if}
+            </button>
+            <button
+              type="button"
+              class="file-close"
+              aria-label={`Close ${file.fileName}`}
+              title={`Close ${file.fileName}`}
+              onclick={() => closeOpenFileAt(file.path)}
+            >
+              ×
+            </button>
+          </div>
+        {/each}
+      </div>
+
+      <!-- Nothing renders here in a browser tab or on an older desktop build:
+           there is no language server to report on, so there is no chip. -->
+      <LanguageServerStatusChip
+        language={activeFile?.language ?? null}
+        status={languageServerStatus}
+      />
     </div>
 
     <div class="editor-canvas">
@@ -325,6 +529,7 @@
         {#if CodeEditor}
           <CodeEditor
             {...sourceIntelligence.callbacks}
+            onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
             content={activeFile.preview.content}
             editable={false}
@@ -390,15 +595,27 @@
     font-size: 12px;
   }
 
+  /* The strip of open files and, pinned to the right, what the language server
+   * is doing. The strip scrolls when there are many files; the chip does not go
+   * with it, so it stays readable however many tabs are open. */
+  .editor-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    padding: 3px 8px 3px 4px;
+    min-width: 0;
+  }
+
   .file-strip {
     display: flex;
     align-items: stretch;
     gap: 2px;
-    flex: 0 0 auto;
+    flex: 1 1 auto;
+    min-width: 0;
     overflow-x: auto;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    padding: 3px 4px;
     scrollbar-width: thin;
   }
 

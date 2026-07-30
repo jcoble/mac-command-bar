@@ -1,0 +1,268 @@
+/**
+ * languageServerStatus.ts — what the editor can say about the language server,
+ * and when it should hold work back.
+ *
+ * A language server is the background program that knows what the code MEANS:
+ * where a name is defined, what is wrong with a file, what the inline type
+ * hints are. For a large C# solution it can spend the first half-minute after
+ * start-up just reading the project, and everything asked of it in that window
+ * either comes back empty or arrives very late. Until now the editor said
+ * nothing about that, so a slow start looked like a broken feature.
+ *
+ * Two jobs live here, both kept out of the component so they can be tested
+ * without a browser:
+ *
+ *  1. Turn the desktop app's answer into the words on the chip. The `state`
+ *     and `detail` fields are ADDITIVE — a desktop build older than they are
+ *     simply will not send them, and a browser tab has no desktop app behind it
+ *     at all. Both cases must produce no chip rather than a guess, so every
+ *     read here is defensive and returns null when it is not certain.
+ *
+ *  2. Hold back the extra lookups while the server is still getting started.
+ *     `createLanguageServerGate` is a waiting room: ask it to wait, and it lets
+ *     the work through the moment the server is ready — or, if that moment
+ *     never comes, when its own time limit runs out. A wait that never ends
+ *     would be indistinguishable from a hang, so the limit is not optional.
+ */
+
+/** How far along the language server is, as the desktop app reports it. */
+export type LanguageServerState = 'not-running' | 'starting' | 'indexing' | 'ready' | 'disabled';
+
+const KNOWN_STATES: readonly string[] = [
+  'not-running',
+  'starting',
+  'indexing',
+  'ready',
+  'disabled'
+];
+
+/** The chip's words and its colour family. */
+export type LanguageServerChip = {
+  /** What the chip shows, e.g. "C#: indexing…". */
+  label: string;
+  /** The longer sentence shown on hover. */
+  tooltip: string;
+  /** Which colour the chip is painted in. */
+  tone: 'ready' | 'working' | 'off';
+};
+
+function fieldOf(status: unknown, name: string): unknown {
+  if (!status || typeof status !== 'object') return undefined;
+  return (status as Record<string, unknown>)[name];
+}
+
+/**
+ * The reported state, or null when this build does not report one. Anything
+ * unrecognised counts as "not reported": a name this app has never heard of
+ * cannot be described honestly, so it is better to say nothing.
+ */
+export function readLanguageServerState(status: unknown): LanguageServerState | null {
+  const state = fieldOf(status, 'state');
+  if (typeof state !== 'string' || !KNOWN_STATES.includes(state)) return null;
+  return state as LanguageServerState;
+}
+
+/** The server's own plain-English sentence, when it sent one worth showing. */
+export function readLanguageServerDetail(status: unknown): string | null {
+  const detail = fieldOf(status, 'detail');
+  if (typeof detail !== 'string') return null;
+  const trimmed = detail.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Names people actually write. The identifiers come from the file extension
+ * mapping (`sourceRecordFromPath.ts`), which is all lower case, and "csharp"
+ * on a chip reads like a bug.
+ */
+const LANGUAGE_NAMES: Record<string, string> = {
+  csharp: 'C#',
+  typescript: 'TypeScript',
+  typescriptreact: 'TypeScript',
+  javascript: 'JavaScript',
+  javascriptreact: 'JavaScript',
+  rust: 'Rust',
+  svelte: 'Svelte',
+  python: 'Python',
+  go: 'Go',
+  json: 'JSON',
+  sql: 'SQL',
+  html: 'HTML',
+  css: 'CSS',
+  yaml: 'YAML',
+  markdown: 'Markdown'
+};
+
+/** How this language should be written in front of a person. */
+export function languageDisplayName(language: string): string {
+  const key = language.trim().toLowerCase();
+  if (!key) return 'This file';
+  return LANGUAGE_NAMES[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/**
+ * The chip for one language's server, or null when there is nothing truthful to
+ * say — no desktop app, or a desktop build that does not report its state.
+ */
+export function describeLanguageServer(
+  language: string,
+  status: unknown
+): LanguageServerChip | null {
+  const state = readLanguageServerState(status);
+  if (!state) return null;
+
+  const name = languageDisplayName(language);
+  const detail = readLanguageServerDetail(status);
+
+  const wording: Record<LanguageServerState, { label: string; standby: string; tone: LanguageServerChip['tone'] }> = {
+    ready: {
+      label: `${name}: ready`,
+      standby: `The ${name} language server is ready.`,
+      tone: 'ready'
+    },
+    indexing: {
+      label: `${name}: indexing…`,
+      standby: `The ${name} language server is reading the project.`,
+      tone: 'working'
+    },
+    starting: {
+      label: `${name}: starting…`,
+      standby: `The ${name} language server is starting up.`,
+      tone: 'working'
+    },
+    'not-running': {
+      label: `${name}: not running`,
+      standby: `No ${name} language server is running for this project yet.`,
+      tone: 'off'
+    },
+    disabled: {
+      label: `${name} server is off`,
+      standby: `The ${name} language server is switched off in Settings.`,
+      tone: 'off'
+    }
+  };
+
+  const { label, standby, tone } = wording[state];
+  return { label, tooltip: detail ?? standby, tone };
+}
+
+/**
+ * The desktop app pushes one of these every time a language server moves on:
+ * `source-lsp-status-changed`. It carries the project and language it is about,
+ * because several servers can be running at once.
+ */
+export type LanguageServerStatusMessage = {
+  root: string;
+  language: string;
+  state: LanguageServerState;
+  detail: string | null;
+};
+
+/**
+ * Does this pushed message describe the file currently on screen? Anything for
+ * another project or another language belongs to a different server and must
+ * not move this chip.
+ */
+export function statusMessageIsAboutThisFile(
+  message: unknown,
+  projectRoot: string | null,
+  language: string | null
+): boolean {
+  if (!projectRoot || !language) return false;
+  const messageRoot = fieldOf(message, 'root');
+  const messageLanguage = fieldOf(message, 'language');
+  if (typeof messageRoot !== 'string' || typeof messageLanguage !== 'string') return false;
+  return messageRoot === projectRoot && messageLanguage === language;
+}
+
+/**
+ * Is the server still getting itself going? Only then is it worth waiting.
+ *
+ * A server that is off, missing, or ready is as good as it is going to get, and
+ * an unknown state means an older desktop build or a browser tab — both keep
+ * today's behaviour, which is to ask straight away.
+ */
+export function languageServerIsBusy(state: LanguageServerState | null): boolean {
+  return state === 'starting' || state === 'indexing';
+}
+
+/** Start a timer; the returned function calls it off. */
+export type ScheduleWaitLimit = (run: () => void, afterMs: number) => () => void;
+
+export interface LanguageServerGate {
+  /** The last state the gate was told about. */
+  readonly state: LanguageServerState | null;
+  /** Record a new state; anything waiting is let through if the wait is over. */
+  setState(next: LanguageServerState | null): void;
+  /** Is work being held back right now? */
+  isBusy(): boolean;
+  /** Resolves as soon as it is worth asking the server anything. */
+  waitUntilReady(): Promise<void>;
+  /** Let everything through at once — the panel is closing or the file changed. */
+  releaseAll(): void;
+}
+
+export interface LanguageServerGateOptions {
+  /** How long a job may be held back before it runs anyway. */
+  maxWaitMs?: number;
+  /** How the time limit is kept. Replaced in tests so no test has to sleep. */
+  schedule?: ScheduleWaitLimit;
+}
+
+/**
+ * Long enough that a big solution usually finishes reading itself first, short
+ * enough that a server which never reports being ready does not strand the
+ * editor's inline hints and squiggles forever.
+ */
+const DEFAULT_MAX_WAIT_MS = 20_000;
+
+export function createLanguageServerGate(
+  options: LanguageServerGateOptions = {}
+): LanguageServerGate {
+  const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  const schedule: ScheduleWaitLimit =
+    options.schedule ??
+    ((run, afterMs) => {
+      const timer = setTimeout(run, afterMs);
+      return () => clearTimeout(timer);
+    });
+
+  let state: LanguageServerState | null = null;
+  let waiting: Array<() => void> = [];
+  let cancelLimit: (() => void) | null = null;
+
+  function letEveryoneThrough(): void {
+    cancelLimit?.();
+    cancelLimit = null;
+    const released = waiting;
+    waiting = [];
+    for (const resume of released) resume();
+  }
+
+  return {
+    get state() {
+      return state;
+    },
+
+    setState(next: LanguageServerState | null): void {
+      state = next;
+      if (!languageServerIsBusy(state)) letEveryoneThrough();
+    },
+
+    isBusy(): boolean {
+      return languageServerIsBusy(state);
+    },
+
+    waitUntilReady(): Promise<void> {
+      if (!languageServerIsBusy(state)) return Promise.resolve();
+      return new Promise<void>((resume) => {
+        waiting.push(resume);
+        cancelLimit ??= schedule(letEveryoneThrough, maxWaitMs);
+      });
+    },
+
+    releaseAll(): void {
+      letEveryoneThrough();
+    }
+  };
+}
