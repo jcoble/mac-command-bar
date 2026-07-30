@@ -329,6 +329,36 @@ function pendingAnswers() {
   assert.deepEqual(answers.outstanding, ['a', 'b', 'c']);
 }
 
+// a duplicate stays ignored while its question is outstanding, but the same
+// symbol may be asked again after its answer has been delivered.
+{
+  const answers = pendingAnswers();
+  const landed = [];
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 1,
+    countFor: answers.countFor,
+    onCounted: (key, count) => landed.push([key, count])
+  });
+
+  scheduler.request(['a']);
+  scheduler.request(['a']);
+  await settle();
+  assert.deepEqual(answers.outstanding, ['a'], 'an outstanding question must stay deduplicated');
+
+  answers.answer('a', null);
+  await settle();
+  scheduler.request(['a']);
+  await settle();
+  assert.deepEqual(answers.outstanding, ['a'], 'a delivered question may be asked again');
+
+  answers.answer('a', exactly(6));
+  await settle();
+  assert.deepEqual(landed, [
+    ['a', null],
+    ['a', exactly(6)]
+  ]);
+}
+
 // the reader opened another file: everything still waiting is dropped, and the
 // answers to the questions already sent are ignored rather than drawn over the
 // new file

@@ -133,6 +133,10 @@ export const codeLensReferenceCountBatchWindowMs = 50;
  * Nothing on screen is blocked while it runs.
  */
 export const codeLensReferenceCountDeadlineMs = 1_500;
+/** How many times a failed language-server count may be asked again. */
+export const semanticCountRetryLimit = 3;
+/** How long to wait before each language-server count retry, in milliseconds. */
+export const semanticCountRetryDelaysMs = [2_000, 6_000, 12_000];
 /**
  * How long a counted number stays good for. Project-wide counts move when
  * files elsewhere change, which is not something typing in the open file does
@@ -483,6 +487,8 @@ export function createSourceIntelligence(): SourceIntelligence {
     /** Everyone who wants to hear the answer. */
     waiters: ((count: CodeLensCount | null) => void)[];
     askedAt: number;
+    /** How many failed answers have already caused this question to be asked again. */
+    tries: number;
   }
 
   const waitingSpots = new Map<string, WaitingSpot>();
@@ -503,8 +509,30 @@ export function createSourceIntelligence(): SourceIntelligence {
     },
     onCounted(key: string, count: CodeLensCount | null) {
       const spot = waitingSpots.get(key);
-      waitingSpots.delete(key);
       if (!spot) return;
+      if (count === null && spot.tries < semanticCountRetryLimit) {
+        spot.tries += 1;
+        const retryDelayMs = semanticCountRetryDelaysMs[spot.tries - 1];
+        reportLensTiming(
+          `${spot.request.symbolName}: no answer after ${
+            Date.now() - spot.askedAt
+          }ms — asking again in ${retryDelayMs / 1_000}s (try ${spot.tries + 1} of ${
+            semanticCountRetryLimit + 1
+          })`
+        );
+        const askAgain = () => {
+          if (waitingSpots.get(key) !== spot) return;
+          semanticScheduler.request([key]);
+        };
+        if (typeof window === 'undefined') {
+          setTimeout(askAgain, retryDelayMs);
+        } else {
+          window.setTimeout(askAgain, retryDelayMs);
+        }
+        return;
+      }
+
+      waitingSpots.delete(key);
       if (count) {
         countStore.remember(projectRoot, normalizeProjectPath(spot.preview.path), key, count);
       }
@@ -729,7 +757,8 @@ export function createSourceIntelligence(): SourceIntelligence {
         request,
         preview,
         waiters: [resolve],
-        askedAt: Date.now()
+        askedAt: Date.now(),
+        tries: 0
       });
 
       if (holdBack) {

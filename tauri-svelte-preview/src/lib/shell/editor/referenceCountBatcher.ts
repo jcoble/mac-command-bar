@@ -252,7 +252,10 @@ export function createSemanticReferenceCountScheduler(
         .then((count) => {
           running -= 1;
           try {
-            if (startedIn === generation) options.onCounted(key, count);
+            if (startedIn === generation) {
+              asked.delete(key);
+              options.onCounted(key, count);
+            }
           } finally {
             startWhatWeCan();
           }

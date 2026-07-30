@@ -5,6 +5,7 @@
  * `src/lib/sourceCodeLensKeys.ts` so they can be checked without Monaco.
  */
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
 	formatSourceCodeLensTitle,
 	sourceCodeLensCountKey,
@@ -17,8 +18,16 @@ import {
 // not compile Svelte runes, so this identity function supplies the one rune the
 // module creates while these pure decisions are imported.
 globalThis.$state = (value) => value;
-const { countingReadinessForStatus } = await import(
+const {
+	countingReadinessForStatus,
+	semanticCountRetryDelaysMs,
+	semanticCountRetryLimit
+} = await import(
 	'../src/lib/shell/editor/sourceIntelligence.ts'
+);
+const sourceIntelligenceSource = await readFile(
+	new URL('../src/lib/shell/editor/sourceIntelligence.ts', import.meta.url),
+	'utf8'
 );
 
 const spot = (symbolName, line, column) => ({ symbolName, line, column });
@@ -110,6 +119,22 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	assert.equal(countingReadinessForStatus('not-running', undefined, true), 'no-server');
 	assert.equal(countingReadinessForStatus('disabled', true, true), 'no-server');
 	assert.equal(countingReadinessForStatus(undefined, true, true), 'no-server');
+}
+
+// a failed language-server question gets three spaced retries before its
+// waiting margin row is allowed to give up.
+{
+	assert.equal(semanticCountRetryLimit, 3);
+	assert.deepEqual(semanticCountRetryDelaysMs, [2_000, 6_000, 12_000]);
+	assert.equal(semanticCountRetryDelaysMs.length, semanticCountRetryLimit);
+	assert.match(sourceIntelligenceSource, /spot\.tries < semanticCountRetryLimit/);
+	assert.match(sourceIntelligenceSource, /spot\.tries \+= 1/);
+	assert.match(
+		sourceIntelligenceSource,
+		/semanticCountRetryDelaysMs\[spot\.tries - 1\]/
+	);
+	assert.match(sourceIntelligenceSource, /waitingSpots\.get\(key\) !== spot/);
+	assert.match(sourceIntelligenceSource, /semanticScheduler\.request\(\[key\]\)/);
 }
 
 console.log('sourceCodeLensKeys tests passed');
