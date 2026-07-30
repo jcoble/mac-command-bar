@@ -433,6 +433,47 @@ function selection(root, projects = []) {
   );
 }
 
+// A tab the dock puts back at launch announces itself before either gate is
+// open, so it loads nothing then — but it IS on screen, and the session picked
+// next has to point it at that session's project. Forgetting the announcement
+// altogether is what left a restored editor tab never being told which project
+// its file is in, so nothing in the margin could be counted for the rest of the
+// session.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.panelShown('editor');
+  assert.deepEqual(calls, [], 'the tab the dock put back loads nothing at launch');
+  assert.deepEqual(panels.loadedPanels(), [], 'and it has not loaded');
+
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  assert.deepEqual(
+    calls,
+    [
+      ['explorer', '/repo/one'],
+      ['editor', '/repo/one']
+    ],
+    'the first pick points the restored editor tab at the project'
+  );
+}
+
+// The same announcement for the browser tab: it shows a web page rather than a
+// project, so a session pick is nothing to it whether it has loaded or not.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.panelShown('browser');
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.sessionPicked();
+  assert.ok(
+    !calls.some(([name]) => name === 'browser'),
+    'picking a session never loads the browser tab'
+  );
+}
+
 // A repeated tab activation is passed on every time: the loaders are the ones
 // that decide a repeat costs nothing, and this keeps a retry after a failure
 // possible.
