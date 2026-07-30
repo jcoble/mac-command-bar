@@ -1289,8 +1289,11 @@ async fn kill_playwright_sessions() -> Result<PlaywrightCleanupResult, String> {
 /// and losing unsaved work in one because a click was read as "destroy" is not
 /// a trade this makes on their behalf.
 #[tauri::command]
-async fn kill_process(pid: u32) -> Result<ProcessKillResult, String> {
-    tauri::async_runtime::spawn_blocking(move || kill_process_sync(pid))
+async fn kill_process(
+    pid: u32,
+    expected_command: Option<String>,
+) -> Result<ProcessKillResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kill_process_sync(pid, expected_command))
         .await
         .map_err(|error| format!("Stop process task failed: {error}"))
 }
@@ -1987,7 +1990,10 @@ fn count_source_references_sync(
 
     let plan = ReferenceCountPlan::new(&names);
     let pass = count_reference_lines_across_files(&files, &plan, deadline, MAX_PREVIEW_BYTES);
-    approximate = approximate || pass.ran_out_of_time;
+    // Both mean the same thing to the reader: not every file was counted, so
+    // the totals are floors and the margin must say "at least", never an exact
+    // number nobody actually took.
+    approximate = approximate || pass.ran_out_of_time || pass.skipped_files;
 
     let counts = names
         .iter()
@@ -4032,8 +4038,66 @@ where
     })
 }
 
-fn kill_process_sync(pid: u32) -> ProcessKillResult {
+fn kill_process_sync(pid: u32, expected_command: Option<String>) -> ProcessKillResult {
+    // Process numbers get handed out again after a process exits. The panel the
+    // reader clicked in may be minutes old, so before anything is signalled,
+    // check the number still belongs to the command the panel showed them.
+    if let Some(expected) = expected_command.as_deref().map(str::trim) {
+        if !expected.is_empty() && pid > 1 {
+            match process_command_name(pid) {
+                None => {
+                    return ProcessKillResult {
+                        ok: false,
+                        message: format!(
+                            "Process {pid} has already exited, so there was nothing to stop."
+                        ),
+                    };
+                }
+                Some(actual) => {
+                    if !process_commands_match(&actual, expected) {
+                        return ProcessKillResult {
+                            ok: false,
+                            message: format!(
+                                "Process {pid} now belongs to \"{actual}\", not \"{expected}\" — the number was reused by something else, so nothing was stopped. Refresh the list and try again."
+                            ),
+                        };
+                    }
+                }
+            }
+        }
+    }
     kill_process_with(pid, std::process::id(), signal_process)
+}
+
+/// The executable a process number belongs to right now, or None when no such
+/// process exists.
+fn process_command_name(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// The panel shows short names ("node") while `ps` answers with full paths
+/// ("/usr/local/bin/node"), so the comparison is between file names, either
+/// containing the other to survive versioned names like "node22".
+fn process_commands_match(actual: &str, expected: &str) -> bool {
+    fn file_name(command: &str) -> &str {
+        command.trim().rsplit('/').next().unwrap_or(command)
+    }
+    let actual_name = file_name(actual);
+    let expected_name = file_name(expected);
+    if actual_name.is_empty() || expected_name.is_empty() {
+        return false;
+    }
+    actual_name == expected_name
+        || actual_name.contains(expected_name)
+        || expected_name.contains(actual_name)
 }
 
 /// Stop one process, with the refusals spelled out.
@@ -6818,6 +6882,38 @@ mod tests {
         assert!(result.message.contains("Could not stop process 4242"));
         assert!(result.message.contains("already exited"));
         assert!(result.message.contains("No such process"));
+    }
+
+    #[test]
+    fn a_process_number_still_running_the_expected_command_is_recognised() {
+        assert!(process_commands_match("node", "node"));
+        assert!(
+            process_commands_match("/usr/local/bin/node", "node"),
+            "the list shows a short name while ps answers with a full path"
+        );
+        assert!(
+            process_commands_match("node", "/usr/local/bin/node"),
+            "and the full path can arrive from either side"
+        );
+        assert!(
+            process_commands_match("node22", "node"),
+            "a versioned executable is still the same program"
+        );
+    }
+
+    #[test]
+    fn a_process_number_now_running_something_else_is_not_recognised() {
+        assert!(
+            !process_commands_match("node", "RentalCommand.Api"),
+            "a reused process number must not be mistaken for the original"
+        );
+        assert!(
+            !process_commands_match("/usr/bin/python3", "node"),
+            "comparing file names must not match across different programs"
+        );
+        assert!(!process_commands_match("", "node"), "no name is never a match");
+        assert!(!process_commands_match("node", ""), "and neither is no expectation");
+        assert!(!process_commands_match("   ", "node"));
     }
 
     #[test]

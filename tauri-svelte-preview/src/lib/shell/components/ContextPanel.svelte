@@ -149,7 +149,9 @@
   function stopConfirmedProcess(): void {
     const job = confirmingProcess;
     confirmingProcess = null;
-    if (job) void stopProcess(job.pid);
+    // The command travels along so the app can check the id still belongs to
+    // it — process ids get reused, and this list may be minutes old.
+    if (job) void stopProcess(job.pid, job.command);
   }
 
   function repoSyncLabel(repo: { hasUpstream: boolean; ahead: number; behind: number }): string {

@@ -183,12 +183,12 @@ export async function askWhatTheAppCanDo(): Promise<void> {
  * keyboard shortcut or a stale screen can never send a request that would be
  * silently ignored.
  */
-export async function stopProcess(pid: number): Promise<void> {
+export async function stopProcess(pid: number, expectedCommand?: string): Promise<void> {
   if (contextState.processKill !== 'available') return;
   beginProcessStop(pid);
   try {
     countInvoke('kill_process');
-    const result = await killProcess(pid);
+    const result = await killProcess(pid, expectedCommand);
     if (result === null) {
       finishProcessStop(DESKTOP_ONLY);
       return;

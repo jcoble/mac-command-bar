@@ -386,13 +386,17 @@
     // session's tabs not being there.
     resetEditorState();
     // The Diff tab is one tab for the whole shell — it is always mounted, and
-    // source control only re-points itself while it is the view in front. So a
-    // switch to a session in another project used to leave the tab showing the
-    // file you had just left. Cleared here when the file it is showing belongs
-    // to somewhere else; two sessions in the same repository keep it, which is
-    // right, because nothing has changed underneath it.
-    if (diffPathFor(workspaces[ownedId] ?? null, readSelection().root) === null) {
+    // source control only re-points itself while it is the view in front. So
+    // what the tab shows must be decided here, on every switch: the diff THIS
+    // session remembered comes back, and anything else — including the file
+    // the last session was looking at, which otherwise survives because the
+    // panel's own root only updates while its view is in front — is cleared.
+    const sessionRoot = readSelection().root.trim();
+    const rememberedDiff = diffPathFor(workspaces[ownedId] ?? null, sessionRoot);
+    if (rememberedDiff === null) {
       gitService.clearSelection();
+    } else {
+      void gitService.showStoredDiff(sessionRoot, rememberedDiff);
     }
     const snapshot = workspaces[ownedId];
     if (!snapshot) return;

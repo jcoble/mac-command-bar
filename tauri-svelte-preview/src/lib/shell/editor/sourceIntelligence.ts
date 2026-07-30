@@ -65,7 +65,7 @@ import {
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { activateEditor } from './editorStore.svelte.ts';
-import { createReferenceCountBatcher } from './referenceCountBatcher.ts';
+import { createReferenceCountBatcher, type CodeLensCount } from './referenceCountBatcher.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
@@ -137,7 +137,7 @@ export interface SourceInlayHintRequest {
 export interface SourceIntelligenceCallbacks {
   onDefinitionLookup(request: SourceLookupRequest): Promise<SourceDefinitionTarget[]>;
   onReferenceLookup(request: SourceLookupRequest): Promise<SourceReferenceTarget[]>;
-  onReferenceCountLookup(request: SourceLookupRequest): Promise<number | null>;
+  onReferenceCountLookup(request: SourceLookupRequest): Promise<CodeLensCount | null>;
   onExternalPreviewLookup(record: SourceRecord): Promise<SourcePreview | null>;
   onHoverLookup(request: SourceLookupRequest): Promise<SourceLspHover | null>;
   onCompletionLookup(request: SourceLookupRequest): Promise<SourceCompletionItem[]>;
@@ -402,7 +402,7 @@ export function createSourceIntelligence(): SourceIntelligence {
    */
   async function countReferencesForCodeLens(
     request: SourceLookupRequest
-  ): Promise<number | null> {
+  ): Promise<CodeLensCount | null> {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return null;
     return referenceCountBatcher.count(symbolName);

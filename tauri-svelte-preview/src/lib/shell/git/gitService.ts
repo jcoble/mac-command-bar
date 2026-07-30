@@ -195,6 +195,13 @@ export interface GitService {
   loadMoreHistory(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus): Promise<void>;
+  /**
+   * Put back a diff a session remembered, pointing the panel at that session's
+   * repository first if it is somewhere else. The Diff tab is one tab for the
+   * whole shell, so on a session switch what it shows must follow the session
+   * in front — this is how a remembered diff comes back.
+   */
+  showStoredDiff(root: string, relativePath: string): Promise<void>;
   /** Stop showing a diff. */
   clearSelection(): void;
   stagePaths(paths: string[]): Promise<void>;
@@ -371,6 +378,53 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     clearSelectedGitFile(state);
   }
 
+  function activate(root: string | null): void {
+    if (root === state.root && state.activated) return;
+    statusGuard.invalidate();
+    historyGuard.invalidate();
+    diffGuard.invalidate();
+    resetGitPanelState(state, root);
+    if (!root) return;
+    state.activated = true;
+    void refresh();
+  }
+
+  async function showStoredDiff(root: string, relativePath: string): Promise<void> {
+    const folder = root.trim();
+    const path = relativePath.trim();
+    if (!folder || !path) return;
+
+    activate(folder);
+    // When the panel is already on this repository the file list is likely
+    // loaded; going through selectFile keeps the deleted-file wording. On a
+    // fresh activation the status read is still in flight, so the diff is read
+    // directly rather than after it lands.
+    const known = (state.status?.files ?? []).find((file) => file.relativePath === path);
+    if (known) return selectFile(known);
+
+    state.selectedPath = path;
+    state.selectedDiff = null;
+    state.diffError = '';
+
+    const id = diffGuard.next();
+    state.diffLoading = true;
+    try {
+      const diff = await backend.readDiff(folder, absolutePathWithin(folder, path));
+      if (!stillCurrent(diffGuard, id, folder)) return;
+      if (!diff) {
+        state.desktopOnly = true;
+        state.diffError = DESKTOP_ONLY_MESSAGE;
+        return;
+      }
+      state.selectedDiff = diff;
+    } catch (error) {
+      if (!stillCurrent(diffGuard, id, folder)) return;
+      state.diffError = describeError(error, 'Could not read the changes for this file.');
+    } finally {
+      if (stillCurrent(diffGuard, id, folder)) state.diffLoading = false;
+    }
+  }
+
   /** Re-read the diff on screen after an action changed the working tree. */
   function refreshSelectedDiff(): void {
     const selected = state.selectedPath;
@@ -433,22 +487,14 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   return {
     state,
 
-    activate(root: string | null): void {
-      if (root === state.root && state.activated) return;
-      statusGuard.invalidate();
-      historyGuard.invalidate();
-      diffGuard.invalidate();
-      resetGitPanelState(state, root);
-      if (!root) return;
-      state.activated = true;
-      void refresh();
-    },
+    activate,
 
     refresh,
     refreshStatus,
     refreshHistory,
     loadMoreHistory,
     selectFile,
+    showStoredDiff,
     clearSelection,
 
     async stagePaths(paths: string[]): Promise<void> {

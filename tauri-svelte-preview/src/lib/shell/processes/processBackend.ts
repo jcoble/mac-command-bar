@@ -38,11 +38,18 @@ export interface ProcessKillResult {
  * The desktop side refuses ids that would be dangerous (anything at or below 1,
  * and the app's own process), so the honest answer for those comes back as
  * `ok: false` with a sentence saying why, not as a thrown error.
+ *
+ * `expectedCommand` is the command the list showed for this id. Ids get handed
+ * out again after a process exits, so the app re-checks the id still belongs
+ * to that command before sending anything, and refuses if it moved on.
  */
-export async function killProcess(pid: number): Promise<ProcessKillResult | null> {
+export async function killProcess(
+  pid: number,
+  expectedCommand?: string
+): Promise<ProcessKillResult | null> {
   if (!isNativeTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ProcessKillResult>('kill_process', { pid });
+  return invoke<ProcessKillResult>('kill_process', { pid, expectedCommand: expectedCommand ?? null });
 }
 
 /**

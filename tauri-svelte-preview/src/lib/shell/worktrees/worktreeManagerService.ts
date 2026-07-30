@@ -202,10 +202,14 @@ export async function clearWorktreeEntry(path: string, branch: string): Promise<
       failWorktreeAction(DESKTOP_ONLY_MESSAGE);
       return;
     }
+    // A new app says exactly what happened in plain words — including "there
+    // was nothing to clear" when git's records were already gone — so its own
+    // sentence is the honest one to show. Only the older build, whose message
+    // is jargon and names one branch while clearing several, gets ours.
     const cleared = `Cleared git’s record of “${branch}”. Nothing on disk was touched.`;
     landAction(
       worktreeManager.pruneSingleRowSupport === 'available'
-        ? cleared
+        ? result.message
         : `${cleared} This app build clears them together, so any other row whose folder was gone is cleared too.`,
       result.worktrees
     );

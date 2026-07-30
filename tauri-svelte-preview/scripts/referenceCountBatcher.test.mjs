@@ -3,6 +3,10 @@
  * margin numbers. The rules live in `referenceCountBatcher.ts` (no Svelte
  * state, no backend calls) precisely so this test can run under plain Node —
  * `sourceIntelligence.ts` only wires them to the real backend.
+ *
+ * A count comes back as `{ count, atLeast }`. `atLeast: false` means the pass
+ * read every file and the number is exact; `atLeast: true` means it did not,
+ * so the margin says "at least N" rather than stating a number nobody took.
  */
 import assert from 'node:assert/strict';
 import {
@@ -17,6 +21,11 @@ const resultFor = (counts, approximate = false) => ({
   scannedFiles: 10,
   elapsedMs: 5
 });
+
+/** A number the pass counted in full. */
+const exactly = (count) => ({ count, atLeast: false });
+/** A number the pass could only put a floor under. */
+const atLeast = (count) => ({ count, atLeast: true });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -39,7 +48,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     batcher.count('Gamma')
   ]);
 
-  assert.deepEqual(counts, [3, 7, 0]);
+  assert.deepEqual(counts, [exactly(3), exactly(7), exactly(0)]);
   assert.equal(asked.length, 1, 'three symbols must cost one request, not three');
   assert.deepEqual(asked[0], ['Alpha', 'Beta', 'Gamma']);
 }
@@ -59,7 +68,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
   const counts = await Promise.all([batcher.count('Alpha'), batcher.count('Alpha')]);
 
-  assert.deepEqual(counts, [4, 4]);
+  assert.deepEqual(counts, [exactly(4), exactly(4)]);
   assert.deepEqual(asked, [['Alpha']]);
 }
 
@@ -76,17 +85,18 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     }
   });
 
-  assert.equal(await batcher.count('Alpha'), 2);
-  assert.equal(await batcher.count('Alpha'), 2);
+  assert.deepEqual(await batcher.count('Alpha'), exactly(2));
+  assert.deepEqual(await batcher.count('Alpha'), exactly(2));
   assert.equal(requests, 1);
 
   // …until the project changes underneath it
   batcher.forget();
-  assert.equal(await batcher.count('Alpha'), 2);
+  assert.deepEqual(await batcher.count('Alpha'), exactly(2));
   assert.equal(requests, 2);
 }
 
-// counts above the margin's ceiling are reported as the ceiling ("50+")
+// counts above the margin's ceiling are cut down to it, and reported as a floor
+// rather than as the exact number the margin has room for
 {
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
@@ -95,7 +105,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     countReferences: () => Promise.resolve(resultFor({ Alpha: 812 }))
   });
 
-  assert.equal(await batcher.count('Alpha'), 50);
+  assert.deepEqual(await batcher.count('Alpha'), atLeast(50));
 }
 
 // a pass that ran out of time reports "not counted", not "no references"
@@ -108,7 +118,11 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   });
 
   const [alpha, beta] = await Promise.all([batcher.count('Alpha'), batcher.count('Beta')]);
-  assert.equal(alpha, 6, 'a symbol the pass did reach still gets its number');
+  assert.deepEqual(
+    alpha,
+    atLeast(6),
+    'a symbol the pass did reach gets its number, marked as a floor'
+  );
   assert.equal(beta, null, 'a zero from a pass that gave up early means "unknown"');
 }
 
@@ -153,7 +167,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   });
 
   assert.equal(await batcher.count('Alpha'), null);
-  assert.equal(await batcher.count('Alpha'), 9);
+  assert.deepEqual(await batcher.count('Alpha'), exactly(9));
   assert.equal(requests, 2);
 }
 
@@ -170,9 +184,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     }
   });
 
-  assert.equal(await batcher.count('Alpha'), 1);
+  assert.deepEqual(await batcher.count('Alpha'), exactly(1));
   await settle();
-  assert.equal(await batcher.count('Beta'), 2);
+  assert.deepEqual(await batcher.count('Beta'), exactly(2));
   assert.deepEqual(asked, [['Alpha'], ['Beta']]);
 }
 
@@ -181,33 +195,49 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   let clock = 1_000;
   const memory = createCountMemory({ cacheMs: 30_000, now: () => clock });
 
-  memory.remember('Alpha', 5);
-  assert.equal(memory.get('Alpha'), 5);
+  memory.remember('Alpha', exactly(5));
+  assert.deepEqual(memory.get('Alpha'), exactly(5));
 
   clock += 29_999;
-  assert.equal(memory.get('Alpha'), 5, 'still good just before it expires');
+  assert.deepEqual(memory.get('Alpha'), exactly(5), 'still good just before it expires');
 
   clock += 1;
   assert.equal(memory.get('Alpha'), undefined, 'let go once it is old enough');
   assert.equal(memory.size, 0, 'and dropped rather than kept around');
 }
 
+// a floor is remembered as a floor, not quietly turned into an exact number
+{
+  const memory = createCountMemory({ cacheMs: 30_000 });
+  memory.remember('Alpha', atLeast(12));
+  assert.deepEqual(memory.get('Alpha'), atLeast(12));
+}
+
 // forgetting empties the memory
 {
   const memory = createCountMemory({ cacheMs: 30_000 });
-  memory.remember('Alpha', 5);
+  memory.remember('Alpha', exactly(5));
   memory.forget();
   assert.equal(memory.get('Alpha'), undefined);
 }
 
 // reading one symbol out of a pass's result
 {
-  assert.equal(countFromResult(resultFor({ Alpha: 3 }), 'Alpha', 50), 3);
+  assert.deepEqual(countFromResult(resultFor({ Alpha: 3 }), 'Alpha', 50), exactly(3));
   assert.equal(countFromResult(resultFor({ Alpha: 3 }), 'Beta', 50), null);
   assert.equal(countFromResult(null, 'Alpha', 50), null);
-  assert.equal(countFromResult(resultFor({ Alpha: 0 }), 'Alpha', 50), 0);
+  assert.deepEqual(countFromResult(resultFor({ Alpha: 0 }), 'Alpha', 50), exactly(0));
   assert.equal(countFromResult(resultFor({ Alpha: 0 }, true), 'Alpha', 50), null);
-  assert.equal(countFromResult(resultFor({ Alpha: 4 }, true), 'Alpha', 50), 4);
+  assert.deepEqual(
+    countFromResult(resultFor({ Alpha: 4 }, true), 'Alpha', 50),
+    atLeast(4),
+    'a number from a pass that did not read everything is a floor'
+  );
+  assert.deepEqual(
+    countFromResult(resultFor({ Alpha: 812 }), 'Alpha', 50),
+    atLeast(50),
+    'a number cut down to the ceiling is a floor too'
+  );
 }
 
 console.log('referenceCountBatcher tests passed');
