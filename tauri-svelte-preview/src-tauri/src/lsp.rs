@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +24,41 @@ const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
     "rust",
     "svelte",
 ];
+
+/// Whether the C# language server may run at all.
+///
+/// It is the most expensive thing this app starts — around 800MB of memory once
+/// it has loaded a large solution — and a reader who is not writing C# right now
+/// has no use for it. Switching it off costs precision, not features: the counts
+/// in the margin and the plain-text search over the project both read the files
+/// themselves and keep working, while the squiggles under mistakes and the
+/// "which of these three `Send` methods did I click" accuracy go away.
+///
+/// Process-wide rather than kept on the registry because the readiness report
+/// ([`read_source_lsp_status_sync`]) has no registry to ask, and a report that
+/// said "ready" for a server the reader has switched off would be a lie.
+static CSHARP_LANGUAGE_SERVER_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Is the C# language server allowed to run?
+pub(crate) fn csharp_language_server_enabled() -> bool {
+    CSHARP_LANGUAGE_SERVER_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Allow or forbid the C# language server. Returns whether this changed
+/// anything, so the caller can tell the reader what actually happened.
+///
+/// Forbidding it does NOT stop a server that is already running — see
+/// [`SourceLspRegistry::stop_servers_for_language`] for that half. They are
+/// separate so the flag can be set before the registry exists (at startup, from
+/// the reader's saved setting) without needing one.
+pub(crate) fn set_csharp_language_server_enabled(enabled: bool) -> bool {
+    CSHARP_LANGUAGE_SERVER_ENABLED.swap(enabled, Ordering::Relaxed) != enabled
+}
+
+/// May a server for this language be started or reused right now?
+fn language_server_allowed(language_id: &str) -> bool {
+    language_id != "csharp" || csharp_language_server_enabled()
+}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -783,6 +819,12 @@ impl SourceLspRegistry {
         let Some(key) = SourceLspSessionKey::from_preview(preview, request) else {
             return Ok(None);
         };
+        // A language whose server the reader has switched off answers nothing,
+        // which sends every lookup down to the plain-text tier instead of
+        // starting the server behind their back.
+        if !language_server_allowed(&key.language) {
+            return Ok(None);
+        }
         let Some(root) = normalized_lsp_root(&request.root) else {
             return Ok(None);
         };
@@ -816,6 +858,35 @@ impl SourceLspRegistry {
         let session = Arc::new(Mutex::new(session));
         sessions.insert(key, Arc::clone(&session));
         Ok(Some(session))
+    }
+
+    /// Shut down the running server for one language, if there is one.
+    ///
+    /// Dropping the registry's last handle on a session is what stops the
+    /// process: [`SourceLspSession`]'s destructor sends the language-server
+    /// shutdown handshake and then reaps the child. The handles are taken out
+    /// from under the registry lock and dropped after it is released, because
+    /// that handshake waits on the child and holding the lock across it would
+    /// stall lookups for every other language.
+    ///
+    /// Returns how many servers were stopped, so the caller can say so plainly.
+    pub(crate) fn stop_servers_for_language(&self, language_id: &str) -> Result<usize, String> {
+        let stopped = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            let keys = sessions
+                .keys()
+                .filter(|key| key.language == language_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| sessions.remove(&key))
+                .collect::<Vec<_>>()
+        };
+
+        Ok(stopped.len())
     }
 
     fn remove_session(
@@ -1493,8 +1564,9 @@ pub(crate) fn read_source_lsp_status_sync(
     };
 
     let root_exists = root.is_dir();
+    let switched_off = !language_server_allowed(spec.language_id);
     let resolved = resolve_command(spec.command);
-    let available = root_exists && resolved.is_some();
+    let available = root_exists && resolved.is_some() && !switched_off;
     let command = resolved.unwrap_or_else(|| spec.command.to_string());
     Ok(SourceLspStatus {
         language,
@@ -1503,7 +1575,12 @@ pub(crate) fn read_source_lsp_status_sync(
         server_name: spec.server_name.to_string(),
         command,
         args: spec.args.iter().map(|arg| (*arg).to_string()).collect(),
-        reason: if !root_exists {
+        reason: if switched_off {
+            Some(
+                "The C# language server is switched off in Settings. Reference counts and project search still work; mistake squiggles and precise go-to-definition do not."
+                    .to_string(),
+            )
+        } else if !root_exists {
             Some("Project root is not a directory".to_string())
         } else if !available {
             Some(format!("{} is not installed or not on PATH", spec.command))

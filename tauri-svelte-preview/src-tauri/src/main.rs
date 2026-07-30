@@ -41,7 +41,12 @@ const DEFAULT_REFERENCE_COUNT_DEADLINE_MS: u64 = 1_500;
 const MAX_REFERENCE_COUNT_DEADLINE_MS: u64 = 10_000;
 const MAX_SOURCE_SCAN_SKIPPED_DIRECTORY_SAMPLES: usize = 16;
 const DEFAULT_GIT_HISTORY_LIMIT: usize = 24;
-const MAX_GIT_HISTORY_LIMIT: usize = 80;
+/// Most commits one history request will read. The commits list pages: it opens
+/// with a couple of dozen and asks for another hundred each time the reader
+/// wants more, so this is the ceiling on the accumulated ask rather than a page
+/// size. Five hundred entries of subject-and-author is a small read for git and
+/// still a list a person can scroll.
+const MAX_GIT_HISTORY_LIMIT: usize = 500;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
 const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
@@ -310,6 +315,27 @@ struct PlaywrightCleanupResult {
 struct PlaywrightCleanupFailure {
     pgid: u32,
     pid: Option<u32>,
+    message: String,
+}
+
+/// What happened when the app was asked to stop one process.
+///
+/// `message` is a whole sentence for the reader, whichever way it went — asking
+/// a process to stop can fail for reasons the reader can act on (it belongs to
+/// another user, it already exited) and "failed" on its own tells them nothing.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessKillResult {
+    ok: bool,
+    message: String,
+}
+
+/// What happened when the C# language server was switched off or on.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CsharpLanguageServerToggleResult {
+    enabled: bool,
+    stopped_servers: usize,
     message: String,
 }
 
@@ -775,6 +801,59 @@ async fn warm_source_lsp_for_root(
         .map_err(|error| format!("Source LSP warm task failed: {error}"))?
 }
 
+/// Turn the C# language server off or on, and stop it now if it is running.
+///
+/// The reader's setting drives this. Call it with what the setting says when
+/// the app starts as well as when the switch is flipped: the flag lives in this
+/// process and starts out on, so a reader who turned it off last week would
+/// otherwise get the server back on the next launch.
+#[tauri::command]
+async fn set_csharp_language_server_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    enabled: bool,
+) -> Result<CsharpLanguageServerToggleResult, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = lsp::set_csharp_language_server_enabled(enabled);
+        let stopped_servers = if enabled {
+            0
+        } else {
+            registry.stop_servers_for_language("csharp")?
+        };
+
+        Ok(CsharpLanguageServerToggleResult {
+            enabled,
+            stopped_servers,
+            message: describe_csharp_language_server_toggle(enabled, changed, stopped_servers),
+        })
+    })
+    .await
+    .map_err(|error| format!("C# language server switch task failed: {error}"))?
+}
+
+fn describe_csharp_language_server_toggle(
+    enabled: bool,
+    changed: bool,
+    stopped_servers: usize,
+) -> String {
+    if enabled {
+        return if changed {
+            "The C# language server is back on. It starts the next time you open a C# file, and takes a minute to read the solution."
+                .to_string()
+        } else {
+            "The C# language server was already on.".to_string()
+        };
+    }
+
+    if stopped_servers > 0 {
+        "The C# language server is off and the running one has been stopped, freeing its memory. Reference counts and project search still work; mistake squiggles and precise go-to-definition do not."
+            .to_string()
+    } else {
+        "The C# language server is off. It was not running, so nothing had to be stopped. Reference counts and project search still work; mistake squiggles and precise go-to-definition do not."
+            .to_string()
+    }
+}
+
 #[tauri::command]
 async fn find_source_lsp_definitions(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
@@ -1064,7 +1143,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 4] = [
+const BACKEND_CAPABILITIES: [&str; 8] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1073,6 +1152,15 @@ const BACKEND_CAPABILITIES: [&str; 4] = [
     "lspDiagnosticsForRoot",
     // `start_terminal_session` accepts `command` and exits with its code.
     "terminalCommandSpawn",
+    // `count_source_references` counts every requested symbol in one project pass.
+    "referenceCounts",
+    // `kill_process` stops one process the app is showing, by number.
+    "processKill",
+    // `remove_project_worktree` on a worktree whose folder is gone clears only that
+    // one entry's records, instead of every entry whose folder is gone.
+    "worktreePruneSingle",
+    // `set_csharp_language_server_enabled` turns the C# language server off and on.
+    "csharpLanguageServerToggle",
 ];
 
 fn backend_capabilities() -> Vec<String> {
@@ -1190,6 +1278,21 @@ async fn kill_playwright_sessions() -> Result<PlaywrightCleanupResult, String> {
     tauri::async_runtime::spawn_blocking(kill_playwright_sessions_sync)
         .await
         .map_err(|error| format!("Playwright cleanup task failed: {error}"))?
+}
+
+/// Ask one process to stop — the button next to a running process in the
+/// context panel.
+///
+/// This sends the polite stop signal only. A process that ignores it keeps
+/// running and the reader is told so, rather than the app escalating to a kill
+/// nobody asked for: these are the reader's own dev servers and test runners,
+/// and losing unsaved work in one because a click was read as "destroy" is not
+/// a trade this makes on their behalf.
+#[tauri::command]
+async fn kill_process(pid: u32) -> Result<ProcessKillResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kill_process_sync(pid))
+        .await
+        .map_err(|error| format!("Stop process task failed: {error}"))
 }
 
 #[tauri::command]
@@ -2802,9 +2905,21 @@ fn remove_project_worktree_sync(
         }
     }
     if worktree.is_prunable {
-        run_git_text(&root, &["worktree", "prune"])?;
+        // Only this row. `git worktree prune` would clear the records of EVERY
+        // worktree whose folder is gone, and it did: a reader who clicked one
+        // stale row watched two of them disappear. Git documents removing a
+        // single `.git/worktrees/<name>` folder by hand as the supported way to
+        // forget one worktree, which is exactly the promise the button makes.
+        let branch = worktree.branch.clone();
+        let cleared = clear_one_worktree_record(&root, &worktree.path)?;
         return Ok(ProjectWorktreeActionResult {
-            message: format!("Pruned missing worktree metadata {}", worktree.branch),
+            message: if cleared {
+                format!(
+                    "Cleared git's records for {branch}. Its folder was already gone, and nothing on disk was touched."
+                )
+            } else {
+                format!("Git had no records left for {branch}, so there was nothing to clear.")
+            },
             worktrees: list_project_worktrees_sync(root)?,
         });
     }
@@ -2860,6 +2975,81 @@ fn remove_project_worktree_sync(
         message: format!("Removed worktree {}", worktree.branch),
         worktrees: list_project_worktrees_sync(root)?,
     })
+}
+
+/// Forget ONE worktree, leaving every other worktree's records alone.
+///
+/// Git keeps a small folder of records per linked worktree under the
+/// repository's `worktrees` directory. The folder is named after the worktree
+/// but not reliably so — two worktrees whose folders share a name get suffixed
+/// names — so this does not guess from the name. Each record folder holds a
+/// `gitdir` file naming the worktree it belongs to, and that is what is matched.
+///
+/// Returns whether a record folder was actually found and removed.
+fn clear_one_worktree_record(root: &Path, worktree_path: &str) -> Result<bool, String> {
+    let records_directory = git_worktree_records_directory(root)?;
+    let Ok(entries) = std::fs::read_dir(&records_directory) else {
+        return Ok(false);
+    };
+
+    for entry in entries.flatten() {
+        let record_directory = entry.path();
+        if !record_directory.is_dir() {
+            continue;
+        }
+        let Ok(gitdir) = std::fs::read_to_string(record_directory.join("gitdir")) else {
+            continue;
+        };
+        if worktree_record_gitdir_names(gitdir.trim()) != Some(worktree_path.to_string()) {
+            continue;
+        }
+
+        std::fs::remove_dir_all(&record_directory).map_err(|error| {
+            format!(
+                "Could not clear git's records for this worktree: {error} ({})",
+                record_directory.display()
+            )
+        })?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Where this repository keeps its per-worktree record folders.
+///
+/// Asked of git rather than assumed to be `<root>/.git/worktrees`: the answer
+/// may be relative to the root, and in a repository that is itself a linked
+/// worktree the records live in the primary checkout, not next door.
+fn git_worktree_records_directory(root: &Path) -> Result<PathBuf, String> {
+    let common_directory = run_git_text(root, &["rev-parse", "--git-common-dir"])?
+        .trim()
+        .to_string();
+    if common_directory.is_empty() {
+        return Err("Could not find where this repository keeps its records".to_string());
+    }
+
+    let common_directory = PathBuf::from(&common_directory);
+    let common_directory = if common_directory.is_absolute() {
+        common_directory
+    } else {
+        root.join(common_directory)
+    };
+
+    Ok(common_directory.join("worktrees"))
+}
+
+/// Which worktree a record folder's `gitdir` file points at.
+///
+/// The file names the worktree's own `.git` file — `/path/to/worktree/.git` —
+/// so the worktree is its parent folder. The folder is normally gone by the
+/// time this is asked, which is why this is pure text and never touches disk.
+fn worktree_record_gitdir_names(gitdir: &str) -> Option<String> {
+    let gitdir = gitdir.trim();
+    if gitdir.is_empty() {
+        return None;
+    }
+    Path::new(gitdir).parent().map(normalized_path_string)
 }
 
 fn archive_project_worktree_sync(
@@ -3842,6 +4032,56 @@ where
     })
 }
 
+fn kill_process_sync(pid: u32) -> ProcessKillResult {
+    kill_process_with(pid, std::process::id(), signal_process)
+}
+
+/// Stop one process, with the refusals spelled out.
+///
+/// Numbers 0 and 1 are not ordinary processes — 0 means "every process in my
+/// group" to the kill signal and 1 is the system's own first process, so both
+/// are refused before anything is sent. So is this app's own number, which
+/// would otherwise close the window the reader clicked in.
+fn kill_process_with<SignalProcess>(
+    pid: u32,
+    own_pid: u32,
+    mut signal_process: SignalProcess,
+) -> ProcessKillResult
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
+{
+    if pid <= 1 {
+        return ProcessKillResult {
+            ok: false,
+            message: format!(
+                "{pid} is not a process this app will stop — it is the system's own, and stopping it would take the machine down."
+            ),
+        };
+    }
+    if pid == own_pid {
+        return ProcessKillResult {
+            ok: false,
+            message: "That number belongs to this app itself, so nothing was stopped."
+                .to_string(),
+        };
+    }
+
+    match signal_process(pid, "TERM") {
+        Ok(()) => ProcessKillResult {
+            ok: true,
+            message: format!(
+                "Asked process {pid} to stop. It may take a moment to finish shutting down."
+            ),
+        },
+        Err(reason) => ProcessKillResult {
+            ok: false,
+            message: format!(
+                "Could not stop process {pid}. It may have already exited, or it may belong to another user. ({reason})"
+            ),
+        },
+    }
+}
+
 fn signal_process(pid: u32, signal: &str) -> Result<(), String> {
     if pid == 0 || pid == std::process::id() {
         return Err(format!("Refusing to signal unsafe process {pid}"));
@@ -4740,6 +4980,7 @@ fn main() {
             read_source_lsp_status,
             list_source_lsp_statuses,
             warm_source_lsp_for_root,
+            set_csharp_language_server_enabled,
             find_source_lsp_definitions,
             find_source_lsp_completions,
             find_source_lsp_implementations,
@@ -4777,6 +5018,7 @@ fn main() {
             list_playwright_sessions,
             kill_playwright_session,
             kill_playwright_sessions,
+            kill_process,
             list_orchestration_runs,
             record_orchestration_event,
             start_terminal_session,
@@ -6543,6 +6785,65 @@ mod tests {
     }
 
     #[test]
+    fn stopping_a_process_asks_it_politely_and_says_so() {
+        let mut signalled = Vec::new();
+        let result = kill_process_with(4242, 99, |pid, signal| {
+            signalled.push((pid, signal.to_string()));
+            Ok(())
+        });
+
+        assert_eq!(signalled, vec![(4242, "TERM".to_string())]);
+        assert!(result.ok);
+        assert!(result.message.contains("Asked process 4242 to stop"));
+    }
+
+    #[test]
+    fn stopping_the_system_or_this_app_is_refused_before_any_signal() {
+        for pid in [0, 1] {
+            let result = kill_process_with(pid, 99, |_, _| panic!("must not signal pid {pid}"));
+            assert!(!result.ok);
+            assert!(result.message.contains("system's own"));
+        }
+
+        let result = kill_process_with(99, 99, |_, _| panic!("must not signal this app"));
+        assert!(!result.ok);
+        assert!(result.message.contains("this app itself"));
+    }
+
+    #[test]
+    fn a_process_that_could_not_be_stopped_is_reported_as_a_sentence() {
+        let result = kill_process_with(4242, 99, |_, _| Err("No such process".to_string()));
+
+        assert!(!result.ok);
+        assert!(result.message.contains("Could not stop process 4242"));
+        assert!(result.message.contains("already exited"));
+        assert!(result.message.contains("No such process"));
+    }
+
+    #[test]
+    fn switching_the_csharp_language_server_off_says_what_was_lost() {
+        let stopped = describe_csharp_language_server_toggle(false, true, 1);
+        assert!(stopped.contains("freeing its memory"));
+        assert!(stopped.contains("Reference counts and project search still work"));
+
+        let nothing_running = describe_csharp_language_server_toggle(false, true, 0);
+        assert!(nothing_running.contains("was not running"));
+
+        let back_on = describe_csharp_language_server_toggle(true, true, 0);
+        assert!(back_on.contains("back on"));
+        assert!(describe_csharp_language_server_toggle(true, false, 0).contains("already on"));
+    }
+
+    #[test]
+    fn a_worktree_record_points_at_the_folder_above_its_git_file() {
+        assert_eq!(
+            worktree_record_gitdir_names("/Users/reader/work/trees/tsk-1/.git\n"),
+            Some("/Users/reader/work/trees/tsk-1".to_string())
+        );
+        assert_eq!(worktree_record_gitdir_names("   "), None);
+    }
+
+    #[test]
     fn remove_project_worktree_removes_clean_sibling_and_refreshes_list() {
         let root = unique_temp_root();
         let sibling = unique_temp_root();
@@ -6622,11 +6923,64 @@ mod tests {
 
         let result = remove_project_worktree_sync(root.clone(), missing_path, false).unwrap();
 
-        assert!(result.message.contains("Pruned missing worktree metadata"));
+        assert!(result.message.contains("Cleared git's records for"));
+        assert!(result.message.contains("cdx/tsk-127-missing"));
         assert!(!result
             .worktrees
             .iter()
             .any(|worktree| worktree.branch == "cdx/tsk-127-missing"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The incident this replaced: a reader clicked one row whose folder was
+    /// gone and watched every other gone-folder row disappear with it, because
+    /// the removal ran a repo-wide prune.
+    #[test]
+    fn remove_project_worktree_clears_only_the_asked_for_missing_sibling() {
+        let root = unique_temp_root();
+        let first_sibling = unique_temp_root();
+        let second_sibling = unique_temp_root();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/App.ts"), "export const value = 1;\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&root, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&root, &["add", "src/App.ts"]);
+        run_git_for_test(&root, &["commit", "-m", "initial"]);
+        for (branch, sibling) in [
+            ("cdx/tsk-500-first", &first_sibling),
+            ("cdx/tsk-500-second", &second_sibling),
+        ] {
+            run_git_for_test(
+                &root,
+                &["worktree", "add", "-b", branch, sibling.to_str().unwrap()],
+            );
+            std::fs::remove_dir_all(sibling).unwrap();
+        }
+
+        let before = list_project_worktrees_sync(root.clone()).unwrap();
+        let first = before
+            .iter()
+            .find(|worktree| worktree.branch == "cdx/tsk-500-first")
+            .expect("both deleted siblings should still be registered");
+        assert!(first.is_prunable);
+        let first_path = PathBuf::from(&first.path);
+
+        let result = remove_project_worktree_sync(root.clone(), first_path, false).unwrap();
+
+        assert!(!result
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.branch == "cdx/tsk-500-first"));
+        assert!(
+            result
+                .worktrees
+                .iter()
+                .any(|worktree| worktree.branch == "cdx/tsk-500-second"),
+            "clearing one gone-folder row must leave the other one alone"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7423,6 +7777,10 @@ mod tests {
                 "playwrightSessionKill".to_string(),
                 "lspDiagnosticsForRoot".to_string(),
                 "terminalCommandSpawn".to_string(),
+                "referenceCounts".to_string(),
+                "processKill".to_string(),
+                "worktreePruneSingle".to_string(),
+                "csharpLanguageServerToggle".to_string(),
             ]
         );
     }
