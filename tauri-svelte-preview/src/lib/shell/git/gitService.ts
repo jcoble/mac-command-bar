@@ -46,13 +46,34 @@ import {
   clearSelectedGitFile,
   gitPanel,
   isGitFileDeleted,
+  isGitHistoryComplete,
   resetGitPanelState,
   type GitActionKind,
   type GitPanelState
 } from './gitPanelStore.svelte.ts';
 
-/** How many commits the history list asks for. The backend caps the limit. */
+/** How many commits the history list asks for first. The backend caps the limit. */
 export const COMMIT_HISTORY_LIMIT = 24;
+
+/** How many more commits each "Load more" asks for on top of what is on screen. */
+export const COMMIT_HISTORY_PAGE = 100;
+
+/**
+ * The most this panel will ever ask for in one read. The desktop app clamps the
+ * limit its own way, so asking past its clamp only wastes a call — and a list of
+ * 500 commits is already more than the graph can usefully draw.
+ */
+export const COMMIT_HISTORY_CEILING = 500;
+
+/**
+ * The next limit to ask for, given the one already asked for. Never past the
+ * ceiling, so a repository with more history than that stops asking rather than
+ * spinning on a request that answers the same thing every time.
+ */
+export function nextCommitHistoryLimit(requested: number): number {
+  const current = requested > 0 ? requested : COMMIT_HISTORY_LIMIT;
+  return Math.min(current + COMMIT_HISTORY_PAGE, COMMIT_HISTORY_CEILING);
+}
 
 /** Shown whenever a wrapper returns `null` — i.e. we are not in the desktop app. */
 export const DESKTOP_ONLY_MESSAGE =
@@ -168,7 +189,10 @@ export interface GitService {
   /** Re-read status and commit history for the current repository. */
   refresh(): Promise<void>;
   refreshStatus(): Promise<void>;
+  /** Re-read the history at the size it has already grown to. */
   refreshHistory(): Promise<void>;
+  /** Ask for another page of older commits. Does nothing once the list is whole. */
+  loadMoreHistory(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus): Promise<void>;
   /** Stop showing a diff. */
@@ -202,6 +226,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.desktopOnly = true;
     state.status = null;
     state.history = [];
+    state.historyRequested = 0;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    state.historyCeiling = false;
   }
 
   async function refreshStatus(): Promise<void> {
@@ -229,15 +257,29 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     }
   }
 
-  async function refreshHistory(): Promise<void> {
+  /**
+   * Read the history at `limit` commits.
+   *
+   * The backend answers with the whole list from the newest commit down, not
+   * with the slice past what we already have, so a bigger limit REPLACES the
+   * list rather than adding to it. That is what keeps the graph honest: the
+   * columns are worked out from every commit's parents at once, so feeding the
+   * lane assignment a stitched-together list would draw lines to commits it had
+   * never seen.
+   *
+   * `loadingMore` decides which flag the wait shows on. A "Load more" leaves the
+   * list on screen and lights the button; a plain refresh replaces it.
+   */
+  async function loadHistory(limit: number, loadingMore: boolean): Promise<void> {
     const root = state.root;
     if (!root) return;
     const id = historyGuard.next();
-    state.historyLoading = true;
+    if (loadingMore) state.historyLoadingMore = true;
+    else state.historyLoading = true;
     state.historyError = '';
 
     try {
-      const history = await backend.readHistory(root, COMMIT_HISTORY_LIMIT);
+      const history = await backend.readHistory(root, limit);
       if (!stillCurrent(historyGuard, id, root)) return;
       if (!history) {
         markDesktopOnly();
@@ -245,13 +287,42 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       }
       state.desktopOnly = false;
       state.history = history;
+      state.historyRequested = limit;
+      state.historyComplete = isGitHistoryComplete(limit, history.length);
+      state.historyCeiling = !state.historyComplete && limit >= COMMIT_HISTORY_CEILING;
     } catch (error) {
       if (!stillCurrent(historyGuard, id, root)) return;
-      state.history = [];
+      // A failed "Load more" keeps what is already on screen; only a failed
+      // refresh has nothing left to show.
+      if (!loadingMore) state.history = [];
       state.historyError = describeError(error, 'Could not read the commit history.');
     } finally {
-      if (stillCurrent(historyGuard, id, root)) state.historyLoading = false;
+      if (stillCurrent(historyGuard, id, root)) {
+        if (loadingMore) state.historyLoadingMore = false;
+        else state.historyLoading = false;
+      }
     }
+  }
+
+  /**
+   * Re-read the history at the size it has grown to, so refreshing after two
+   * pages of "Load more" does not silently drop back to the first 24.
+   */
+  async function refreshHistory(): Promise<void> {
+    const limit = state.historyRequested > 0 ? state.historyRequested : COMMIT_HISTORY_LIMIT;
+    await loadHistory(limit, false);
+  }
+
+  async function loadMoreHistory(): Promise<void> {
+    if (!state.root || state.historyLoading || state.historyLoadingMore) return;
+    if (state.historyComplete || state.historyCeiling) return;
+    const limit = nextCommitHistoryLimit(state.historyRequested);
+    if (limit <= state.historyRequested) {
+      state.historyCeiling = true;
+      return;
+    }
+    state.historyPaged = true;
+    await loadHistory(limit, true);
   }
 
   async function refresh(): Promise<void> {
@@ -376,6 +447,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     refresh,
     refreshStatus,
     refreshHistory,
+    loadMoreHistory,
     selectFile,
     clearSelection,
 

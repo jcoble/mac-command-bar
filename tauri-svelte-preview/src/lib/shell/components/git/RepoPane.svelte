@@ -25,7 +25,11 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
-  import { repositoryLabel, type GitPanelState } from '$lib/shell/git/gitPanelStore.svelte';
+  import {
+    describeGitBranchTitle,
+    repositoryLabel,
+    type GitPanelState
+  } from '$lib/shell/git/gitPanelStore.svelte';
   import type { GitService } from '$lib/shell/git/gitService';
   import { cn } from '$lib/utils';
 
@@ -45,6 +49,7 @@
   const ahead = $derived(panel.status?.ahead ?? 0);
   const behind = $derived(panel.status?.behind ?? 0);
   const hasUpstream = $derived(panel.status?.hasUpstream ?? false);
+  const branchTitle = $derived(describeGitBranchTitle(panel.status));
 
   const remoteActions = [
     {
@@ -98,9 +103,17 @@
     </button>
   </div>
 
-  <div class="mt-0.5 flex min-w-0 items-center gap-1 pl-5 text-[12px] text-[var(--color-text-2)]">
+  <!-- The branch name wraps rather than being cut off: a name shortened to
+       `codex/outbound-rule-generat…` cannot be told apart from the next one like
+       it. The hover text carries the full name and spells the counts out, for
+       the case where even wrapping runs out of room. -->
+  <div
+    class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 pl-5
+           text-[12px] leading-[16px] text-[var(--color-text-2)]"
+    title={branchTitle}
+  >
     <GitBranch class="size-3 shrink-0" aria-hidden="true" />
-    <span class="truncate">{branch || 'no branch checked out'}</span>
+    <span class="min-w-0 break-words">{branch || 'no branch checked out'}</span>
     {#if !hasUpstream}
       <span class="{CHIP} text-[var(--color-text-3)]">no remote branch</span>
     {:else if ahead === 0 && behind === 0}
