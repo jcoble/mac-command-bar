@@ -12,11 +12,19 @@
    *                  answer (`completedAt`), never the process's — an agent
    *                  that stopped running is still work in progress until it
    *                  is marked done, and a session marked done may still have
-   *                  a terminal running. That is also why a card has two
-   *                  separate destructive-looking buttons: closing the
+   *                  a terminal running. That is also why a card offers two
+   *                  separate destructive-looking actions: closing the
    *                  terminal ends the process and keeps the card, removing
    *                  takes the card away — and why removing is only offered
    *                  once a session is done.
+   *
+   *                  Working and Done are two panes that open and close on
+   *                  their own, and each one scrolls its own list. That is a
+   *                  fix, not a decoration: they used to be plain runs of
+   *                  cards in one flex column, so a card growing — being
+   *                  selected, being read — squeezed every other card down to
+   *                  a sliver. Cards now refuse to shrink below their own
+   *                  content and the pane around them scrolls instead.
    *
    *   FIND A SESSION a drawer, closed until you want it. Everything on this
    *                  machine that could be resumed, under one heading per
@@ -42,11 +50,11 @@
    * deliberately not an `$effect`: nothing is watched, nothing reloads, and a
    * storage that refuses the write costs only the arrangement next launch.
    */
+  import { tick } from 'svelte';
+
   import Bot from '@lucide/svelte/icons/bot';
-  import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import Folder from '@lucide/svelte/icons/folder';
   import Gem from '@lucide/svelte/icons/gem';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
@@ -54,30 +62,26 @@
   import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
-  import Play from '@lucide/svelte/icons/play';
-  import Power from '@lucide/svelte/icons/power';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import SquareCode from '@lucide/svelte/icons/square-code';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Terminal from '@lucide/svelte/icons/terminal';
-  import Trash2 from '@lucide/svelte/icons/trash-2';
-  import Undo2 from '@lucide/svelte/icons/undo-2';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Badge } from '$lib/components/ui/badge/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
-  import * as Card from '$lib/components/ui/card/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+  import SessionCard from '$lib/shell/components/sessions/SessionCard.svelte';
+  import { messageCountLabel } from '$lib/shell/components/sessions/sessionCardModel';
   import { normalizeProvider, type AgentKind, type OwnedSession } from '$lib/shell/ownedSessions';
   import { exactLocalTime, formatLastActivity } from '$lib/shell/relativeTime';
   import {
     groupSessions,
     groupToggleKey,
     isGroupExpanded,
-    projectLabel,
     readGroupExpansion,
     rememberGroupToggle,
     RESUME_GROUP_ROW_CAP,
@@ -168,6 +172,21 @@
   /** The same list again with everything but the icon taken away. */
   const cells = $derived(stripCells(owned, activeOwnedId));
 
+  /** Are the Working and Done panes open? Both start open, and each closes on
+   * its own — a column with fifteen finished sessions in it can be folded down
+   * to the four being worked on without losing the count beside "Done". */
+  let workingOpen = $state(true);
+  let doneOpen = $state(true);
+
+  /** Which cards have their detail block open, by owned id. Held here rather
+   * than inside the cards so a redraw — a scan landing, a session starting —
+   * does not close what somebody was reading. */
+  let openCards = $state<Record<string, boolean>>({});
+
+  function toggleCard(ownedId: string): void {
+    openCards = { ...openCards, [ownedId]: openCards[ownedId] !== true };
+  }
+
   /** What the drawer's search box holds. Deliberately the column's own state
    * and NOT reported to the page: narrowing what you can see loads nothing. */
   let query = $state('');
@@ -175,6 +194,28 @@
 
   /** Is the drawer open? Closed to start: it is a cupboard, not a room. */
   let findOpen = $state(false);
+
+  /** The drawer's search box, once it is on screen. Null while the drawer is
+   * closed — a closed collapsible is `hidden`, so there is no input to hold. */
+  let findInput = $state<HTMLInputElement | null>(null);
+
+  /**
+   * Open the "Find a session" drawer from somewhere else in the shell, with the
+   * cursor already in the search box.
+   *
+   * The context panel's "Search all sessions" link is on the far side of the
+   * window from this drawer, so a link that only scrolled a closed drawer into
+   * view would look like it had done nothing. The page reaches this through
+   * `bind:this` on the component.
+   *
+   * The focus waits a tick because the box does not exist yet at the moment the
+   * drawer is told to open — and if it still is not there, opening the drawer is
+   * the part that mattered and the click is not wasted.
+   */
+  export function openFinder(): void {
+    findOpen = true;
+    void tick().then(() => findInput?.focus());
+  }
 
   const grouped = $derived(groupSessions([], resumable, query));
 
@@ -254,14 +295,6 @@
     ].filter((chip): chip is { icon: typeof Bot; text: string } => {
       return typeof chip.text === 'string' && chip.text.length > 0;
     });
-  }
-
-  /** "12 messages" — a plain count of the turns the scanner saw. It is a floor
-   * rather than a total (the scanner reads a bounded window of a transcript),
-   * which is why it is not dressed up as a total with a "+". */
-  function messageCountLabel(count: number | null | undefined): string | null {
-    if (typeof count !== 'number' || count <= 0) return null;
-    return count === 1 ? '1 message' : `${count} messages`;
   }
 
   /** The clock is read per row rather than held in state on purpose: the column
@@ -378,160 +411,72 @@
   {/each}
 {/snippet}
 
-<!-- "Working" / "Done", and the drawer's project headings: the same quiet
-     lettering, so a division inside a list never competes with the list. -->
-{#snippet sectionHead(label: string, count: number)}
-  <div class="flex items-center justify-between gap-2 px-1 pt-1 pb-0.5">
-    <h3
-      class="text-[12px] font-semibold tracking-[0.09em] text-[var(--color-text-2)] uppercase"
-    >
-      {label}
-    </h3>
-    <span class="text-[12px] text-[var(--color-text-3)]">{count}</span>
-  </div>
-{/snippet}
+<!-- "Working" or "Done": a heading that opens and closes, and under it that
+     list's cards with their own scrollbar.
 
-<!-- One session you own. `isDone` is the only difference between the two
-     sections: it decides which pair of buttons the card offers. -->
-{#snippet workCard(session: OwnedSession, isDone: boolean)}
-  {@const active = session.ownedId === activeOwnedId}
-  {@const project = projectLabel(session.projectPath ?? session.cwd)}
-  {@const count = messageCountLabel(session.messageCount)}
-  {@const finishedWhen = isDone ? stamp(session.completedAt) : ''}
-  <!-- When the scanner last saw something happen in the conversation. Working
-       rows only: a done row already says when it was finished, and two times on
-       one line is a line nobody reads. Sessions started here have no stamp and
-       the line is simply shorter. -->
-  {@const busyWhen = isDone ? '' : stamp(session.lastActivity)}
-  <Card.Root
-    size="sm"
-    class={cn(
-      'relative rounded-md ring-[var(--color-border)] transition-colors [--card-spacing:0px]',
-      'hover:bg-[var(--color-elevated)]',
-      active && 'bg-[var(--color-elevated)] ring-primary/45'
-    )}
+     The pane grows to fill what is left of the column while it is open
+     (`flex-auto` + `min-h-0`) and takes only its heading's height while it is
+     closed. Two open panes therefore share the column between them and each
+     one scrolls its own cards, which is what stops a long list of finished
+     sessions from pushing the ones being worked on off the screen. -->
+{#snippet workPane(
+  label: string,
+  sessions: OwnedSession[],
+  isDone: boolean,
+  open: boolean,
+  setOpen: (next: boolean) => void
+)}
+  <Collapsible.Root
+    {open}
+    onOpenChange={setOpen}
+    class={cn('flex min-w-0 flex-col', open ? 'min-h-0 flex-auto' : 'shrink-0')}
   >
-    {#if active}
-      <span class="absolute inset-y-0 left-0 w-[2px] bg-primary" aria-hidden="true"></span>
-    {/if}
-    <button
-      type="button"
-      class="flex w-full min-w-0 flex-col items-start gap-1 px-2.5 py-2 text-left"
-      title={session.cwd || sessionLabel(session)}
-      onclick={() => onSelect(session.ownedId)}
+    <Collapsible.Trigger
+      class="flex w-full shrink-0 items-center gap-1.5 rounded-md px-1 py-1.5 text-left
+             transition-colors hover:bg-[var(--color-elevated)] focus-visible:ring-3
+             focus-visible:ring-ring/50 outline-none"
     >
-      <!-- The title stops short of the buttons in the corner rather than running
-           under them. A card carries two, except a finished one on Done, which
-           also carries Start again. -->
-      <span
+      <ChevronRight
         class={cn(
-          'flex w-full min-w-0 items-center gap-2',
-          isDone && session.state === 'exited' ? 'pr-[76px]' : 'pr-11'
+          'size-3 shrink-0 text-[var(--color-text-2)] transition-transform',
+          open && 'rotate-90'
         )}
-      >
-        <span class="dot" data-state={session.state} aria-hidden="true"></span>
-        <span class="truncate text-[14px] leading-[1.35] font-medium text-[#e6e6ee]">
-          {sessionLabel(session)}
-        </span>
+        aria-hidden="true"
+      />
+      <!-- A span rather than a heading: this is the label of a button, and a
+           button may only contain phrasing content. -->
+      <span class="text-[12px] font-semibold tracking-[0.09em] text-[var(--color-text-2)] uppercase">
+        {label}
       </span>
+      <span class="ml-auto pl-2 text-[12px] text-[var(--color-text-2)]">{sessions.length}</span>
+    </Collapsible.Trigger>
 
-      <span class="flex w-full min-w-0 flex-wrap items-center gap-1">
-        {@render metaBadges(session.agent, session.viaCmux, session)}
-      </span>
-
-      <!-- Where the work lives, how much of it there is, and when it finished.
-           Every piece is left out when there is nothing to say — a session the
-           scanner counted no turns for simply has a shorter card. -->
-      <span
-        class="flex w-full min-w-0 items-center gap-1.5 text-[12px] text-[var(--color-text-2)]"
-      >
-        <Folder class="size-3 shrink-0 text-[var(--color-text-3)]" aria-hidden="true" />
-        <span class="truncate">
-          {project.name}{project.parentProject ? ` · ${project.parentProject}` : ''}
-        </span>
-        {#if count}
-          <span class="shrink-0 text-[var(--color-text-3)]">·</span>
-          <span class="shrink-0">{count}</span>
-        {/if}
-        {#if busyWhen}
-          <span class="shrink-0 text-[var(--color-text-3)]">·</span>
-          <span class="shrink-0" title={exactLocalTime(session.lastActivity)}>
-            last active {busyWhen}
-          </span>
-        {/if}
-        {#if finishedWhen}
-          <span class="shrink-0 text-[var(--color-text-3)]">·</span>
-          <span class="shrink-0" title={exactLocalTime(session.completedAt)}>
-            done {finishedWhen}
-          </span>
-        {/if}
-      </span>
-
-      {#if session.latestTurnPreview}
-        <span class="w-full min-w-0 truncate text-[13px] text-[var(--color-text-2)]">
-          {session.latestTurnPreview}
-        </span>
-      {/if}
-    </button>
-
-    <!-- Out of sight until the card is pointed at or a button is tabbed to, so
-         a column of twenty sessions is a list of titles rather than a wall of
-         icons. -->
-    <div
-      class="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity
-             group-hover/card:opacity-100 focus-within:opacity-100"
-    >
-      <!-- A finished session can be picked back up from either list, and it is
-           the FIRST button on the card because it is the one thing you cannot
-           do to it otherwise. Starting a done session again does not move it
-           off Done: which list a session is on is the user's answer, not the
-           terminal's. -->
-      {#if session.state === 'exited'}
-        {@render action(
-          `start ${sessionLabel(session)} again`,
-          'Start this session again',
-          Play,
-          false,
-          () => onRestart(session.ownedId)
-        )}
-      {/if}
-      {#if isDone}
-        {@render action(
-          `reopen ${sessionLabel(session)} — put it back under Working`,
-          'Reopen',
-          Undo2,
-          false,
-          () => onReopen(session.ownedId)
-        )}
-        {@render action(
-          `remove ${sessionLabel(session)} from this list`,
-          'Remove from this list',
-          Trash2,
-          true,
-          () => askAboutRemoving(session)
-        )}
-      {:else}
-        {@render action(
-          `mark ${sessionLabel(session)} done`,
-          'Mark done',
-          Check,
-          false,
-          () => onComplete(session.ownedId)
-        )}
-        <!-- Nothing left to close once the process has ended, and the card's
-             hollow dot already says so. -->
-        {#if session.state !== 'exited'}
-          {@render action(
-            `close the terminal for ${sessionLabel(session)}`,
-            'Close the terminal',
-            Power,
-            true,
-            () => onClose(session.ownedId)
-          )}
-        {/if}
-      {/if}
-    </div>
-  </Card.Root>
+    <!-- NOT `flex` on the content itself: a closed collapsible is hidden by the
+         `hidden` attribute, which is a display rule the browser only applies by
+         default — any display class of ours would beat it and the pane would
+         never close. `flex-auto` is a sizing rule, not a display one, so it is
+         safe here; the arrangement of the cards lives on the div inside. -->
+    <Collapsible.Content class="min-h-0 flex-auto overflow-y-auto">
+      <div class="flex flex-col gap-1.5 py-1">
+        {#each sessions as session (session.ownedId)}
+          <SessionCard
+            {session}
+            {isDone}
+            active={session.ownedId === activeOwnedId}
+            expanded={openCards[session.ownedId] === true}
+            meta={metaBadges}
+            onToggle={() => toggleCard(session.ownedId)}
+            onSelect={() => onSelect(session.ownedId)}
+            onRestart={() => onRestart(session.ownedId)}
+            onComplete={() => onComplete(session.ownedId)}
+            onReopen={() => onReopen(session.ownedId)}
+            onClose={() => onClose(session.ownedId)}
+            onAskRemove={() => askAboutRemoving(session)}
+          />
+        {/each}
+      </div>
+    </Collapsible.Content>
+  </Collapsible.Root>
 {/snippet}
 
 <!-- One session in the drawer: everything the scanner knows, and a click
@@ -566,12 +511,12 @@
         pullRequest: session.pullRequestHint
       })}
       {#if when}
-        <span class="text-[12px] text-[var(--color-text-3)]" title={exactLocalTime(session.lastActivity)}>
+        <span class="text-[12px] text-[var(--color-text-2)]" title={exactLocalTime(session.lastActivity)}>
           {when}
         </span>
       {/if}
       {#if count}
-        <span class="text-[12px] text-[var(--color-text-3)]">{count}</span>
+        <span class="text-[12px] text-[var(--color-text-2)]">{count}</span>
       {/if}
     </span>
     {#if session.latestTurnPreview}
@@ -638,7 +583,7 @@
         <h2 class="text-[12px] font-semibold tracking-[0.09em] text-[var(--color-text-2)] uppercase">
           My work
         </h2>
-        <span class="text-[12px] text-[var(--color-text-3)]">{owned.length}</span>
+        <span class="text-[12px] text-[var(--color-text-2)]">{owned.length}</span>
         <div class="ml-auto flex items-center gap-1">
           {@render action('start a new session', 'New session', Plus, false, () => onNewSession())}
           {@render action(
@@ -651,26 +596,27 @@
         </div>
       </header>
 
-      <div class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-2">
+      <!-- The two panes and nothing else. `overflow-hidden` rather than a
+           scrollbar of its own: each pane scrolls its own cards, so a scrollbar
+           here would be a second one wrapped around the first. -->
+      <div class="flex min-h-0 flex-1 flex-col gap-1 overflow-hidden px-2 py-2">
         {#if owned.length === 0}
           <p class="px-1 py-1 text-[13px] text-[var(--color-text-2)]">
             No sessions yet — find one to resume below.
           </p>
         {:else}
           {#if split.working.length > 0}
-            {@render sectionHead('Working', split.working.length)}
-            {#each split.working as session (session.ownedId)}
-              {@render workCard(session, false)}
-            {/each}
+            {@render workPane(
+              'Working',
+              split.working,
+              false,
+              workingOpen,
+              (next) => (workingOpen = next)
+            )}
           {/if}
           <!-- Nobody needs to be told they have finished nothing yet. -->
           {#if split.done.length > 0}
-            <div class={split.working.length > 0 ? 'pt-2' : ''}>
-              {@render sectionHead('Done', split.done.length)}
-            </div>
-            {#each split.done as session (session.ownedId)}
-              {@render workCard(session, true)}
-            {/each}
+            {@render workPane('Done', split.done, true, doneOpen, (next) => (doneOpen = next))}
           {/if}
         {/if}
       </div>
@@ -692,7 +638,7 @@
               <ChevronRight class="size-3.5 shrink-0" aria-hidden="true" />
             {/if}
             <span class="text-[13px]">Find a session</span>
-            <span class="ml-auto pl-2 text-[12px] text-[var(--color-text-3)]">
+            <span class="ml-auto pl-2 text-[12px] text-[var(--color-text-2)]">
               {resumable.length}
             </span>
           </Collapsible.Trigger>
@@ -721,6 +667,7 @@
                 type="search"
                 placeholder="Search sessions to resume"
                 aria-label="Search sessions to resume"
+                bind:ref={findInput}
                 bind:value={query}
                 class="h-7 rounded-md bg-[var(--color-surface)] pl-7 text-[13px] md:text-[13px]"
               />
@@ -761,11 +708,11 @@
                       <!-- A worktree is named for its task, so the repository it
                            belongs to is said here, and it is the first thing to
                            go when the column is narrow. -->
-                      <span class="truncate text-[var(--color-text-3)]">
+                      <span class="truncate text-[var(--color-text-2)]">
                         · {group.parentProject}
                       </span>
                     {/if}
-                    <span class="ml-auto shrink-0 pl-2 text-[var(--color-text-3)]">
+                    <span class="ml-auto shrink-0 pl-2 text-[var(--color-text-2)]">
                       {group.items.length}
                     </span>
                   </button>
@@ -829,34 +776,41 @@
 </Tooltip.Provider>
 
 <style>
-  /* The state dot, unchanged from the rail this column replaces:
-     live = accent pulse, background = solid, exited = hollow, and a scanned
-     session waiting to be resumed = hollow in the resume colour. */
+  /* The state dot on the folded-up strip and on a drawer row: a running
+     terminal this app is attached to pulses in the live colour, one running
+     without us is the same colour standing still, a terminal that has ended is
+     hollow, and a session on disk waiting to be resumed is hollow too — it has
+     no terminal at all yet.
+
+     Every colour is a token. The dot used to be five hard-coded hexes, which
+     meant it was the one thing in the shell a theme could not move. The cards
+     draw their own dot from the same tokens (SessionCard.svelte): Svelte scopes
+     styles to the component, so the rule cannot be shared. */
   .dot {
     flex: 0 0 auto;
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #4c4c5a;
+    background: var(--color-text-3);
   }
 
   .dot[data-state='live'] {
-    background: #50fa7b;
+    background: var(--color-live);
     animation: pulse 1.9s ease-in-out infinite;
   }
 
   .dot[data-state='background'] {
-    background: #8a8a9c;
+    background: var(--color-live);
   }
 
   .dot[data-state='exited'] {
     background: transparent;
-    box-shadow: inset 0 0 0 1px #4c4c5a;
+    box-shadow: inset 0 0 0 1px var(--color-text-2);
   }
 
   .dot[data-state='available'] {
     background: transparent;
-    box-shadow: inset 0 0 0 1px #bd93f9;
+    box-shadow: inset 0 0 0 1px var(--color-text-2);
   }
 
   @keyframes pulse {
