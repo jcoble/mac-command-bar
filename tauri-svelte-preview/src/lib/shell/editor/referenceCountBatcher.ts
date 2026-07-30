@@ -250,10 +250,12 @@ export function createSemanticReferenceCountScheduler(
         .countFor(key)
         .catch(() => null)
         .then((count) => {
-          if (startedIn !== generation) return;
           running -= 1;
-          options.onCounted(key, count);
-          startWhatWeCan();
+          try {
+            if (startedIn === generation) options.onCounted(key, count);
+          } finally {
+            startWhatWeCan();
+          }
         });
     }
   }
@@ -271,7 +273,6 @@ export function createSemanticReferenceCountScheduler(
       generation += 1;
       queue = [];
       asked = new Set();
-      running = 0;
     },
     get inFlight(): number {
       return running;

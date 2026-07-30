@@ -87,6 +87,7 @@ import {
   createSemanticReferenceCountScheduler,
   type CodeLensCount
 } from './referenceCountBatcher.ts';
+import { statusMessageIsAboutThisFile } from '../components/editor/languageServerStatus.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
@@ -165,6 +166,27 @@ export const maxCodeLensSymbols = 120;
  * and short enough that a cold one is never waited on.
  */
 export const languageServerLookupDeadlineMs = 1_000;
+
+/** Whether a reference-count question should run, wait, or use plain text. */
+export type CountingReadiness = 'ask-it' | 'wait-for-it' | 'no-server';
+
+/**
+ * Decide what a reported server state means for one reference-count question.
+ * Waiting is allowed only when the caller knows both that this server can be
+ * woken and that its later status changes will reach the editor.
+ */
+export function countingReadinessForStatus(
+  state: string | undefined,
+  available: boolean | undefined,
+  canWait: boolean
+): CountingReadiness {
+  if (state === 'ready') return 'ask-it';
+  if (state === 'starting' || state === 'indexing') {
+    return canWait ? 'wait-for-it' : 'no-server';
+  }
+  if (state === 'not-running' && available === true && canWait) return 'wait-for-it';
+  return 'no-server';
+}
 
 // ── The shapes Monaco hands us ────────────────────────────────────────────────
 
@@ -548,8 +570,6 @@ export function createSourceIntelligence(): SourceIntelligence {
    * other exactly as they used to; the plain-text count is both faster and
    * safer there.
    */
-  type CountingReadiness = 'ask-it' | 'wait-for-it' | 'no-server';
-
   /**
    * The last answer per project and language, and when it was given.
    *
@@ -584,16 +604,25 @@ export function createSourceIntelligence(): SourceIntelligence {
   ): Promise<CountingReadiness> {
     countInvoke('read_source_lsp_status');
     const status = await readSourceLspStatusFromTauri(root, language).catch(() => null);
-    const state = (status as (SourceLspStatus & { state?: string }) | null)?.state;
-    if (typeof state !== 'string') return 'no-server';
-    if (state === 'ready') return 'ask-it';
-    if (state !== 'starting' && state !== 'indexing') return 'no-server';
+    const reported = status as
+      | (SourceLspStatus & { state?: unknown; available?: unknown })
+      | null;
+    const state = typeof reported?.state === 'string' ? reported.state : undefined;
+    const available =
+      typeof reported?.available === 'boolean' ? reported.available : undefined;
+    const mightWait =
+      state === 'starting' ||
+      state === 'indexing' ||
+      (state === 'not-running' && available === true);
+    if (!mightWait) return countingReadinessForStatus(state, available, false);
 
-    // It is not ready yet, so the only honest thing is to wait — but waiting is
-    // only honest if something is going to wake us up. When this build cannot
-    // push status changes, nothing would, and the margin would say "counting
-    // references…" for the rest of the session.
-    return (await watchLanguageServerStatus()) ? 'wait-for-it' : 'no-server';
+    // Waiting is honest only because the document-symbols request for this same
+    // file is already on its way to start or move the server, and a later status
+    // update will release these questions. Without either ability, the margin
+    // would say "counting references…" for the rest of the session.
+    const canWatch = await watchLanguageServerStatus();
+    const canWake = canWatch && (await hasBackendCapability('lspDocumentSymbols'));
+    return countingReadinessForStatus(state, available, canWake);
   }
 
   /** Set up once we first need it; answers whether the app can tell us. */
@@ -604,11 +633,23 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (!(await hasBackendCapability('lspStatusEvents'))) return false;
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        await listen<{ state?: string }>('source-lsp-status-changed', (event) => {
-          // Whatever we last worked out about the server is now out of date.
-          rememberedReadiness.clear();
-          if (event.payload?.state === 'ready') releaseHeldQuestions();
-        });
+        await listen<{ state?: string; root: string; language: string }>(
+          'source-lsp-status-changed',
+          (event) => {
+            // Whatever we last worked out about the server is now out of date.
+            rememberedReadiness.clear();
+            if (
+              event.payload?.state === 'ready' &&
+              statusMessageIsAboutThisFile(
+                event.payload,
+                projectRoot,
+                activePreview?.language ?? null
+              )
+            ) {
+              releaseHeldQuestions();
+            }
+          }
+        );
         return true;
       } catch {
         return false;

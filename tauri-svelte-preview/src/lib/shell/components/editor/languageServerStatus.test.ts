@@ -137,6 +137,39 @@ test('a message about the open file and its project is taken', () => {
   );
 });
 
+test('TypeScript server messages apply to TSX files in the same project', () => {
+  assert.equal(
+    statusMessageIsAboutThisFile(
+      { ...CSHARP_UPDATE, language: 'typescript' },
+      '/Users/someone/dev/work/EdiPlatform',
+      'tsx'
+    ),
+    true
+  );
+});
+
+test('JavaScript server messages apply to JSX files in the same project', () => {
+  assert.equal(
+    statusMessageIsAboutThisFile(
+      { ...CSHARP_UPDATE, language: 'javascript' },
+      '/Users/someone/dev/work/EdiPlatform',
+      'jsx'
+    ),
+    true
+  );
+});
+
+test('TypeScript server messages do not apply to Rust files', () => {
+  assert.equal(
+    statusMessageIsAboutThisFile(
+      { ...CSHARP_UPDATE, language: 'typescript' },
+      '/Users/someone/dev/work/EdiPlatform',
+      'rust'
+    ),
+    false
+  );
+});
+
 test('a message about another project or another language is ignored', () => {
   assert.equal(
     statusMessageIsAboutThisFile(CSHARP_UPDATE, '/Users/someone/dev/work/OtherApp', 'csharp'),

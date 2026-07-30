@@ -363,6 +363,54 @@ function pendingAnswers() {
   assert.deepEqual(landed, [['a', exactly(5)]]);
 }
 
+// opening another file does not forget the old questions are still physically
+// running, so the four-request ceiling survives the switch
+{
+  const answers = pendingAnswers();
+  const landed = [];
+  const oldKeys = ['old-a', 'old-b', 'old-c', 'old-d'];
+  const newKeys = ['new-a', 'new-b', 'new-c', 'new-d'];
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 4,
+    countFor: answers.countFor,
+    onCounted: (key, count) => landed.push([key, count])
+  });
+
+  scheduler.request(oldKeys);
+  await settle();
+  assert.deepEqual(answers.outstanding, oldKeys);
+
+  scheduler.clear();
+  scheduler.request(newKeys);
+  await settle();
+  assert.deepEqual(
+    answers.outstanding,
+    oldKeys,
+    'the new file must wait while four old questions are still physically running'
+  );
+
+  for (const [index, oldKey] of oldKeys.entries()) {
+    answers.answer(oldKey, exactly(1));
+    await settle();
+    assert.deepEqual(
+      answers.outstanding,
+      [...oldKeys.slice(index + 1), ...newKeys.slice(0, index + 1)],
+      'one new question must start when one old question ends'
+    );
+  }
+
+  assert.deepEqual(landed, [], 'answers from the cleared file must not be reported');
+  for (const key of newKeys) {
+    answers.answer(key, exactly(2));
+  }
+  await settle();
+  assert.deepEqual(
+    landed.map(([key]) => key),
+    newKeys,
+    'answers for the new file must be reported'
+  );
+}
+
 // a question that fails answers "unknown" instead of blocking everything behind it
 {
   const scheduler = createSemanticReferenceCountScheduler({

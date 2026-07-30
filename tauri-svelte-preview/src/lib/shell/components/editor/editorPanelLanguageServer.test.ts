@@ -30,6 +30,10 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const panelSource = readFileSync(path.join(here, '..', 'EditorPanel.svelte'), 'utf8');
 const chipSource = readFileSync(path.join(here, '..', 'LanguageServerStatusChip.svelte'), 'utf8');
+const intelligenceSource = readFileSync(
+  path.join(here, '..', '..', 'editor', 'sourceIntelligence.ts'),
+  'utf8'
+);
 
 test('the panel shows the chip', () => {
   assert.match(panelSource, /import LanguageServerStatusChip from/);
@@ -65,6 +69,14 @@ test('pushed updates are only listened for when the build says it sends them', (
 
 test('a pushed update about another project or language is ignored', () => {
   assert.match(panelSource, /statusMessageIsAboutThisFile\(/);
+});
+
+test('held questions are released only by a ready update for the open file', () => {
+  assert.match(intelligenceSource, /statusMessageIsAboutThisFile\(/);
+  assert.match(
+    intelligenceSource,
+    /statusMessageIsAboutThisFile\(\s*event\.payload,\s*projectRoot,\s*activePreview\?\.language \?\? null\s*\)/
+  );
 });
 
 test('the waiting inline-hint lookup replaces the original, not the other way round', () => {

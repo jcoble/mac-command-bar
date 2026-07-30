@@ -13,6 +13,14 @@ import {
 	sourceCodeLensSpotFromId
 } from '../src/lib/sourceCodeLensKeys.ts';
 
+// The source-intelligence module imports the shared Svelte counter. Node does
+// not compile Svelte runes, so this identity function supplies the one rune the
+// module creates while these pure decisions are imported.
+globalThis.$state = (value) => value;
+const { countingReadinessForStatus } = await import(
+	'../src/lib/shell/editor/sourceIntelligence.ts'
+);
+
 const spot = (symbolName, line, column) => ({ symbolName, line, column });
 
 // an id carries the spot back intact when the user clicks the number
@@ -87,6 +95,21 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 {
 	assert.equal(formatSourceCodeLensTitle(1, true), 'at least 1 reference');
 	assert.equal(formatSourceCodeLensTitle(50, true), 'at least 50 references');
+}
+
+// whether a reference-count question can wait for the language server
+{
+	assert.equal(countingReadinessForStatus('ready', false, false), 'ask-it');
+	assert.equal(countingReadinessForStatus('starting', false, true), 'wait-for-it');
+	assert.equal(countingReadinessForStatus('indexing', false, true), 'wait-for-it');
+	assert.equal(countingReadinessForStatus('starting', false, false), 'no-server');
+	assert.equal(countingReadinessForStatus('indexing', false, false), 'no-server');
+	assert.equal(countingReadinessForStatus('not-running', true, true), 'wait-for-it');
+	assert.equal(countingReadinessForStatus('not-running', true, false), 'no-server');
+	assert.equal(countingReadinessForStatus('not-running', false, true), 'no-server');
+	assert.equal(countingReadinessForStatus('not-running', undefined, true), 'no-server');
+	assert.equal(countingReadinessForStatus('disabled', true, true), 'no-server');
+	assert.equal(countingReadinessForStatus(undefined, true, true), 'no-server');
 }
 
 console.log('sourceCodeLensKeys tests passed');

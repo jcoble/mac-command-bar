@@ -159,6 +159,17 @@ export type LanguageServerStatusMessage = {
 };
 
 /**
+ * The language name a server uses for this file. One TypeScript server serves
+ * .ts and .tsx files alike, so messages about either kind say "typescript";
+ * the JavaScript server treats .js and .jsx the same way.
+ */
+export function languageServerLanguageFor(language: string): string {
+  if (language === 'tsx') return 'typescript';
+  if (language === 'jsx') return 'javascript';
+  return language;
+}
+
+/**
  * Does this pushed message describe the file currently on screen? Anything for
  * another project or another language belongs to a different server and must
  * not move this chip.
@@ -172,7 +183,10 @@ export function statusMessageIsAboutThisFile(
   const messageRoot = fieldOf(message, 'root');
   const messageLanguage = fieldOf(message, 'language');
   if (typeof messageRoot !== 'string' || typeof messageLanguage !== 'string') return false;
-  return messageRoot === projectRoot && messageLanguage === language;
+  return (
+    messageRoot === projectRoot &&
+    languageServerLanguageFor(messageLanguage) === languageServerLanguageFor(language)
+  );
 }
 
 /**
