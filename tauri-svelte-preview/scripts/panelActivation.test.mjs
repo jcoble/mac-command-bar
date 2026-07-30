@@ -322,18 +322,115 @@ function selection(root, projects = []) {
 // The two gates are independent: opening tabs is allowed while start-up is
 // still finishing, and picking a session then still works.
 {
+  let root = '/repo/one';
   const { calls, activators } = recorder();
-  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  const panels = createPanelActivation(activators, () => selection(root));
   panels.allowPanelLoads();
   panels.panelShown('editor');
   panels.sessionPicked();
   assert.deepEqual(calls, [['editor', '/repo/one']], 'session picks are still switched off');
   panels.allowSessionLoads();
+  root = '/repo/two';
   panels.sessionPicked();
   assert.deepEqual(calls.slice(1), [
-    ['explorer', '/repo/one'],
-    ['editor', '/repo/one']
+    ['explorer', '/repo/two'],
+    ['editor', '/repo/two']
   ]);
+}
+
+// Picking a session that is in the SAME folder tells the tabs nothing they do
+// not already know, so none of them is loaded again. This is what keeps
+// switching between two sessions in one project from throwing away and
+// rebuilding everything on screen.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.panelShown('editor');
+  panels.sessionPicked();
+  calls.length = 0;
+
+  panels.sessionPicked();
+  assert.deepEqual(
+    calls,
+    [['explorer', '/repo/one']],
+    'only the file tree is told again, and it refuses the repeat itself'
+  );
+}
+
+// The same folder twice over, with everything the user could have open: nothing
+// reads anything a second time.
+{
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection('/repo/one'));
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.panelShown('editor');
+  panels.panelShown('browser');
+  panels.sessionPicked();
+  panels.sourceControlVisible(true);
+  panels.contextVisible(true);
+  panels.worktreesVisible(true);
+  panels.stacksVisible(true);
+  panels.problemsVisible(true);
+  calls.length = 0;
+
+  panels.sessionPicked();
+  assert.deepEqual(
+    calls.map(([name]) => name),
+    ['explorer'],
+    'a session pick that changes no folder loads no panel'
+  );
+
+  assert.deepEqual(
+    panels.loadedPanels(),
+    ['editor', 'browser', 'explorer', 'git', 'context', 'worktrees', 'stacks', 'problems'],
+    'and every panel still counts as opened'
+  );
+}
+
+// A pick that DOES change the folder loads every panel that is open, tab or
+// view — this is the switch that has to be honoured.
+{
+  let root = '/repo/one';
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(root));
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.panelShown('editor');
+  panels.sessionPicked();
+  panels.sourceControlVisible(true);
+  panels.stacksVisible(true);
+  calls.length = 0;
+
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.deepEqual(calls, [
+    ['explorer', '/repo/two'],
+    ['git', '/repo/two'],
+    ['stacks', '/repo/two'],
+    ['editor', '/repo/two']
+  ]);
+}
+
+// The browser panel shows a web page, not a project, so once it has loaded no
+// session pick can tell it anything — including a pick that changes folder.
+{
+  let root = '/repo/one';
+  const { calls, activators } = recorder();
+  const panels = createPanelActivation(activators, () => selection(root));
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.panelShown('browser');
+  calls.length = 0;
+
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.ok(
+    !calls.some(([name]) => name === 'browser'),
+    'the browser panel is not reloaded by a change of project'
+  );
 }
 
 // A repeated tab activation is passed on every time: the loaders are the ones

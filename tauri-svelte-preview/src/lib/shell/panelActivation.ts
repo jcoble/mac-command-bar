@@ -22,7 +22,12 @@
  * After that, loading is driven by user actions only: bringing a tab to the
  * front, picking a session, and opening a view of the tool column. A panel that
  * has never been shown never loads, and changing session re-loads only the
- * panels the user has actually opened.
+ * panels the user has actually opened — and of those, only the ones the change
+ * tells something new. A panel is already showing the folder the session you
+ * just picked is in when that session shares a project or a checkout with the
+ * one you left, and reading it again would throw the panel's work away and
+ * rebuild the same answer. So each panel remembers the folder it was last
+ * loaded for, and a pick that does not change it loads nothing.
  *
  * Four panels are neither a tab nor always on screen: **source control**, the
  * **worktree manager**, the **stacks pane** and the **context cards**. All four
@@ -143,8 +148,20 @@ export function createPanelActivation(
   /** Same bookkeeping as `gitLoadedFor`, for the Problems panel. */
   let problemsLoadedFor: string | null = null;
 
+  /** What a center tab is pointed at, as the one thing that can change for it.
+   * The editor follows the project; the browser panel shows a web page rather
+   * than a project, so nothing about a session is an input of its at all — and
+   * the empty folder it always answers is what makes a pick a no-op for it. */
+  const panelInput = (id: string, selection: ProjectSelection): string =>
+    id === 'browser' ? '' : selection.root.trim();
+
+  /** The folder each center tab was last loaded for. A tab that has never
+   * loaded is absent, which is different from one loaded for no folder. */
+  const panelLoadedFor = new Map<string, string>();
+
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
+    panelLoadedFor.set(id, panelInput(id, selection));
     if (id === 'editor') activators.editor(root || null);
     else if (id === 'browser') activators.browser();
   };
@@ -187,15 +204,22 @@ export function createPanelActivation(
   };
 
   /** The panels that come with the session the user just picked: the file tree,
-   * plus every view-gated panel that is in view. */
+   * plus every view-gated panel that is in view AND is not already showing this
+   * folder — the same "coming back to it is not a reason to read it again" rule
+   * the visibility reports below have always used.
+   *
+   * The file tree is the exception, and deliberately: its own service already
+   * refuses to re-list a folder it is showing, and it is also the one that
+   * retries after a scan that failed. Refusing the call here would take that
+   * retry away and give nothing back. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
     if (root) activators.explorer(root);
-    if (sourceControlInView) loadSourceControl(selection);
-    if (contextInView) loadContext(selection);
-    if (worktreesInView) loadWorktrees(selection);
-    if (stacksInView) loadStacks(selection);
-    if (problemsInView) loadProblems(selection);
+    if (sourceControlInView && gitLoadedFor !== root) loadSourceControl(selection);
+    if (contextInView && contextLoadedFor !== root) loadContext(selection);
+    if (worktreesInView && worktreesLoadedFor !== root) loadWorktrees(selection);
+    if (stacksInView && stacksLoadedFor !== root) loadStacks(selection);
+    if (problemsInView && problemsLoadedFor !== root) loadProblems(selection);
   };
 
   return {
@@ -223,8 +247,12 @@ export function createPanelActivation(
       sessionPanelsShown = true;
       loadSessionPanels(selection);
       // Re-point the tabs the user has already opened at the new project. A tab
-      // never opened stays untouched, so switching session costs nothing for it.
-      for (const id of shownPanels) loadPanel(id, selection);
+      // never opened stays untouched, so switching session costs nothing for it
+      // — and neither does a tab already pointed at this project, which is what
+      // makes switching between two sessions in one repository cheap.
+      for (const id of shownPanels) {
+        if (panelLoadedFor.get(id) !== panelInput(id, selection)) loadPanel(id, selection);
+      }
     },
 
     sourceControlVisible(visible: boolean): void {
