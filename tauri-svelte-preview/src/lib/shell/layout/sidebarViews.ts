@@ -41,6 +41,37 @@ export const SIDEBAR_VIEWS: readonly SidebarView[] = [
   { id: 'context', title: 'Context' }
 ];
 
+/**
+ * The Problems list, when the user has asked for it in this column rather than
+ * in the strip along the bottom (`settings.panels.problemsLocation === 'right'`).
+ *
+ * It is described here, on its own, instead of being added to `SIDEBAR_VIEWS`
+ * and to `SidebarViewId` above — and that is deliberate, not an oversight.
+ * `ActivityBar.svelte` and `ShellSidebar.svelte` each keep a table with one row
+ * per view id (an icon, and a pane title), written so that a view without one is
+ * a type error rather than a blank button or an empty column. Adding the id here
+ * on its own would therefore break both files, and neither belongs to the lane
+ * that added this. So the pieces are laid out ready and the two tables are filled
+ * in by the same change that widens the id — see the Lane B integration note,
+ * which gives both edits in full.
+ *
+ * Everything below is what those edits need, in the shape they need it.
+ */
+export const PROBLEMS_VIEW_ID = 'problems';
+
+/** The roster row: splice this into `SIDEBAR_VIEWS` when the location is 'right'. */
+export const PROBLEMS_SIDEBAR_VIEW: { id: string; title: string } = {
+  id: PROBLEMS_VIEW_ID,
+  title: 'Problems'
+};
+
+/** The collapsible pane the tool column builds for it, matching `PANES` in
+ * `ShellSidebar.svelte` (`{ id, title }`, one per view). */
+export const PROBLEMS_SIDEBAR_PANE: { id: string; title: string } = {
+  id: 'problems',
+  title: 'Problems'
+};
+
 /** The view a first launch opens on, and the one a reset goes back to. */
 export const DEFAULT_SIDEBAR_VIEW: SidebarViewId = 'explorer';
 
