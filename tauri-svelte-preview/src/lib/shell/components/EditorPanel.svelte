@@ -21,6 +21,8 @@
    */
   import { onMount } from 'svelte';
 
+  import { upgradeUnknownLanguage } from './editor/editorLanguage.ts';
+  import FileIcon from './explorer/FileIcon.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import {
@@ -117,6 +119,22 @@
     return error instanceof Error ? error.message : String(error);
   }
 
+  /**
+   * The record for a path, with its language filled in when the usual mapping
+   * did not recognise the file. SQL is the clearest case: `.sql` was not on the
+   * old list, so those files opened as flat grey text even though the editor has
+   * had the SQL colouring rules loaded all along. Files the old mapping already
+   * knew are untouched.
+   *
+   * LOAD-BEARING ORDER: the record is what the read wrapper copies the language
+   * back out of, so it has to be right before the file is read, not after.
+   */
+  function recordForPath(path: string): SourceRecord {
+    const record = sourceRecordFromPath(editorState.projectRoot, path);
+    const language = upgradeUnknownLanguage(record.path, record.language);
+    return language === record.language ? record : { ...record, language };
+  }
+
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {
     if (CodeEditor || loadingEditorComponent) return;
@@ -189,7 +207,7 @@
   function openPath(path: string, line?: number | null): boolean {
     if (!path.trim()) return false;
     activateEditor();
-    const record = sourceRecordFromPath(editorState.projectRoot, path);
+    const record = recordForPath(path);
     const entry = openEditorFile(record);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
     syncIntelligenceWithActiveFile();
@@ -210,7 +228,7 @@
     refreshDiagnosticsForActiveFile();
     const entry = editorFileFor(path);
     if (entry && needsRead(entry)) {
-      void readFileIntoEditor(sourceRecordFromPath(editorState.projectRoot, path));
+      void readFileIntoEditor(recordForPath(path));
     }
   }
 
@@ -224,7 +242,7 @@
   }
 
   function retryRead(path: string): void {
-    void readFileIntoEditor(sourceRecordFromPath(editorState.projectRoot, path));
+    void readFileIntoEditor(recordForPath(path));
   }
 
   /** Monaco followed a definition or a reference into another file. */
@@ -271,6 +289,7 @@
             title={file.relativePath}
             onclick={() => selectOpenFile(file.path)}
           >
+            <FileIcon fileName={file.fileName} size={13} />
             {file.fileName}
             {#if file.loading}<span class="chip-note">reading</span>{/if}
             {#if file.error}<span class="chip-note error">failed</span>{/if}
@@ -345,8 +364,8 @@
     height: 100%;
     width: 100%;
     overflow: hidden;
-    background: #101014;
-    color: #d8d8e0;
+    background: var(--color-bg);
+    color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
   }
 
@@ -357,8 +376,8 @@
     justify-content: center;
     gap: 4px;
     height: 100%;
-    color: #6d6d7d;
-    font-size: 12px;
+    color: var(--color-text-2);
+    font-size: 13px;
     user-select: none;
   }
 
@@ -367,7 +386,7 @@
   }
 
   .empty-hint {
-    color: #4c4c5a;
+    color: var(--color-text-3);
     font-size: 12px;
   }
 
@@ -377,8 +396,8 @@
     gap: 2px;
     flex: 0 0 auto;
     overflow-x: auto;
-    background: #17171d;
-    border-bottom: 1px solid #22222c;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
     padding: 3px 4px;
     scrollbar-width: thin;
   }
@@ -392,20 +411,28 @@
   }
 
   .file-chip.active {
-    background: #101014;
-    border-color: #22222c;
+    background: var(--color-elevated);
+    border-color: var(--color-border);
   }
 
   .file-name,
   .file-close {
     background: transparent;
     border: none;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     cursor: pointer;
     font-family: inherit;
     font-size: 12px;
     padding: 3px 4px 3px 8px;
     white-space: nowrap;
+  }
+
+  /* The file-type icon sits on the same line as the name, and the gap is what
+   * keeps it off the text. */
+  .file-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
 
   .file-close {
@@ -415,22 +442,22 @@
   }
 
   .file-chip.active .file-name {
-    color: #d8d8e0;
+    color: var(--color-text);
   }
 
   .file-name:hover,
   .file-close:hover {
-    color: #d8d8e0;
+    color: var(--color-text);
   }
 
   .chip-note {
-    color: #4c4c5a;
+    color: var(--color-text-3);
     font-size: 12px;
     margin-left: 5px;
   }
 
   .chip-note.error {
-    color: #ff9d9d;
+    color: var(--color-bad);
   }
 
   .editor-canvas {
@@ -448,8 +475,8 @@
     gap: 8px;
     height: 100%;
     margin: 0;
-    color: #6d6d7d;
-    font-size: 12px;
+    color: var(--color-text-2);
+    font-size: 13px;
     text-align: center;
     padding: 0 16px;
   }
@@ -459,14 +486,14 @@
   }
 
   .canvas-message.error {
-    color: #ff9d9d;
+    color: var(--color-bad);
   }
 
   .retry {
     background: transparent;
-    border: 1px solid #22222c;
+    border: 1px solid var(--color-border);
     border-radius: 5px;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     cursor: pointer;
     font-family: ui-monospace, Menlo, monospace;
     font-size: 12px;
@@ -474,8 +501,8 @@
   }
 
   .retry:hover {
-    color: #d8d8e0;
-    border-color: #3a3a48;
+    color: var(--color-text);
+    border-color: var(--color-text-3);
   }
 
   .editor-status {
@@ -484,9 +511,9 @@
     justify-content: space-between;
     gap: 12px;
     flex: 0 0 auto;
-    background: #17171d;
-    border-top: 1px solid #22222c;
-    color: #6d6d7d;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-2);
     font-family: ui-monospace, Menlo, monospace;
     font-size: 12px;
     padding: 3px 8px;
@@ -499,7 +526,7 @@
   }
 
   .status-detail {
-    color: #4c4c5a;
+    color: var(--color-text-3);
     white-space: nowrap;
   }
 </style>

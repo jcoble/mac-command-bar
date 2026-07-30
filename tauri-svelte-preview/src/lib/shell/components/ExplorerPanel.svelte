@@ -16,6 +16,17 @@
    * The tree maths is not written here: rows come from `buildExplorerView` in
    * `explorerTree.ts`, which composes the audited helpers in `sourceData.ts`.
    */
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Folder from '@lucide/svelte/icons/folder';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
+
+  import FileIcon from './explorer/FileIcon.svelte';
+  import {
+    folderFileCountLabel,
+    folderFileCounts,
+    folderFileCountTitle
+  } from './explorer/folderFileCounts.ts';
   import {
     refresh,
     scanRoot,
@@ -37,7 +48,7 @@
     EXPLORER_ROW_HEIGHT
   } from '$lib/shell/explorer/explorerTree';
   import { requestOpenFile } from '$lib/shell/openFileBus';
-  import type { SourceTreeNode } from '$lib/sourceData';
+  import { filterSourceRecords, type SourceTreeNode } from '$lib/sourceData';
 
   /** The scrolling tree container, captured by `measureViewport` rather than
    * `bind:this` — the action already receives the node, and a plain `let` that
@@ -56,6 +67,19 @@
   );
   const filtering = $derived(explorer.query.trim().length > 0);
   const rootLabel = $derived(projectRootLabel(explorer.root));
+  /**
+   * Files under every folder. The badge has to mean "files in here, all the way
+   * down" — a folder node's own `children.length` only counts what sits directly
+   * inside it, which reads as a far smaller number than the folder holds.
+   *
+   * Deliberately NOT derived from `view.matchedRecords`, close as that is: the
+   * view is rebuilt on every scroll frame, so counting off it would re-count the
+   * whole project while the user drags the scrollbar. Reading the same filter
+   * separately costs one extra pass when the filter box changes and nothing at
+   * all when it does not.
+   */
+  const countedRecords = $derived(filterSourceRecords(records, explorer.query));
+  const fileCounts = $derived(folderFileCounts(countedRecords));
 
   /** Watch the tree's own height so the visible-row window matches reality.
    * A zero reading means the panel is parked or behind another tab — not a
@@ -181,12 +205,31 @@
             aria-expanded={isFolder ? isOpen : undefined}
             onclick={() => onRowClick(node)}
           >
-            <span class="chevron" aria-hidden="true">{isFolder ? (isOpen ? '▾' : '▸') : ''}</span>
+            <span class="chevron" aria-hidden="true">
+              {#if isFolder}
+                {#if isOpen}
+                  <ChevronDown size={12} strokeWidth={2} />
+                {:else}
+                  <ChevronRight size={12} strokeWidth={2} />
+                {/if}
+              {/if}
+            </span>
+            {#if isFolder}
+              <span class="folder-icon" aria-hidden="true">
+                {#if isOpen}
+                  <FolderOpen size={14} strokeWidth={1.75} />
+                {:else}
+                  <Folder size={14} strokeWidth={1.75} />
+                {/if}
+              </span>
+            {:else}
+              <FileIcon fileName={node.name} size={14} />
+            {/if}
             <span class="name">{node.name}</span>
             {#if isFolder}
-              <span class="meta">{node.children.length}</span>
-            {:else}
-              <span class="meta">{node.file?.language}</span>
+              <span class="meta" title={folderFileCountTitle(fileCounts, node.id)}>
+                {folderFileCountLabel(fileCounts, node.id)}
+              </span>
             {/if}
           </button>
         {/each}
@@ -213,10 +256,10 @@
     width: 100%;
     min-height: 0;
     overflow: hidden;
-    background: #101014;
-    color: #d8d8e0;
+    background: var(--color-bg);
+    color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .head {
@@ -232,7 +275,7 @@
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
-    color: #6d6d7d;
+    color: var(--color-text-3);
   }
 
   .root {
@@ -240,7 +283,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #9a9aad;
+    color: var(--color-text-2);
     font-size: 12px;
   }
 
@@ -250,10 +293,10 @@
 
   .action {
     flex: 0 0 auto;
-    border: 1px solid #22222c;
+    border: 1px solid var(--color-border);
     border-radius: 5px;
     background: transparent;
-    color: #9a9aad;
+    color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
     padding: 2px 7px;
@@ -261,8 +304,8 @@
   }
 
   .action:hover:not(:disabled) {
-    border-color: #3d3d4a;
-    color: #d8d8e0;
+    border-color: var(--color-text-3);
+    color: var(--color-text);
   }
 
   .action:disabled {
@@ -280,22 +323,22 @@
   input[type='search'] {
     flex: 1 1 auto;
     min-width: 0;
-    border: 1px solid #22222c;
+    border: 1px solid var(--color-border);
     border-radius: 5px;
-    background: #17171d;
-    color: #d8d8e0;
+    background: var(--color-surface);
+    color: var(--color-text);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 7px;
   }
 
   input[type='search']::placeholder {
-    color: #4c4c5a;
+    color: var(--color-text-3);
   }
 
   .count {
     flex: 0 0 auto;
-    color: #6d6d7d;
+    color: var(--color-text-3);
     font-size: 12px;
     white-space: nowrap;
   }
@@ -306,27 +349,27 @@
     gap: 8px;
     margin: 0 10px 6px;
     border-radius: 5px;
-    background: #17171d;
-    color: #9a9aad;
+    background: var(--color-surface);
+    color: var(--color-text-2);
     font-size: 12px;
     padding: 5px 7px;
   }
 
   .notice.error {
-    background: rgba(255, 85, 85, 0.14);
-    color: #ff9d9d;
+    background: var(--color-bad-bg);
+    color: var(--color-bad);
   }
 
   .notice.error .action {
-    border-color: rgba(255, 157, 157, 0.4);
-    color: #ff9d9d;
+    border-color: var(--color-bad);
+    color: var(--color-bad);
   }
 
   .empty {
     margin: 0;
     padding: 8px 12px;
-    color: #6d6d7d;
-    font-size: 12px;
+    color: var(--color-text-2);
+    font-size: 13px;
   }
 
   .tree {
@@ -344,7 +387,7 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     width: 100%;
     height: var(--row-height);
     border: 0;
@@ -352,29 +395,43 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
     padding: 0 6px 0 calc(6px + var(--level) * 11px);
   }
 
   .row:hover {
-    background: #17171d;
+    background: var(--color-surface);
   }
 
   .row.selected {
-    background: #22222c;
+    background: var(--color-elevated);
   }
 
   .row.folder .name {
-    color: #b9b9c8;
+    color: var(--color-text-2);
+  }
+
+  /* Both leading slots keep their width whether or not they draw anything, so
+   * every name in a folder starts at the same x. */
+  .chevron,
+  .folder-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    color: var(--color-text-3);
   }
 
   .chevron {
-    flex: 0 0 auto;
-    width: 9px;
-    color: #6d6d7d;
-    font-size: 12px;
+    width: 12px;
+    height: 12px;
+  }
+
+  .folder-icon {
+    width: 14px;
+    height: 14px;
   }
 
   .name {
@@ -387,13 +444,14 @@
 
   .meta {
     flex: 0 0 auto;
-    color: #4c4c5a;
+    color: var(--color-text-3);
     font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
 
   .note {
-    border-top: 1px solid #22222c;
-    color: #4c4c5a;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-3);
     font-size: 12px;
     line-height: 1.4;
     padding: 6px 10px;
@@ -401,7 +459,7 @@
 
   button:focus-visible,
   input:focus-visible {
-    outline: 1px solid #bd93f9;
+    outline: 1px solid var(--color-accent);
     outline-offset: -1px;
   }
 </style>
