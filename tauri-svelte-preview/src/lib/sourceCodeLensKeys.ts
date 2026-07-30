@@ -75,3 +75,27 @@ export function sourceCodeLensSpotFromId(id: string | undefined): SourceCodeLens
 export function sourceCodeLensCountKey(modelUri: string, spot: SourceCodeLensSpot): string {
 	return `${modelUri}::${spot.line}:${spot.symbolName}`;
 }
+
+/**
+ * What the margin says before anyone has counted anything.
+ *
+ * The row appears the moment the file does, so the reader can see there is
+ * something to click, and the real number replaces this line as soon as it
+ * arrives. There is deliberately no number in this sentence: a placeholder
+ * digit would be a number nobody counted, and the reader has no way to tell
+ * one of those from a real one.
+ */
+export const sourceCodeLensPendingTitle = 'counting references…';
+
+/**
+ * The finished sentence for a number we were actually given.
+ *
+ * "at least N" is for a number that came out of the plain-text search over the
+ * project — that search stops when it runs out of time or hits its ceiling, so
+ * the tally covers only the files it reached and the real number can only be
+ * higher. A number from the language server is exact and is stated as it is.
+ */
+export function formatSourceCodeLensTitle(count: number, atLeast: boolean): string {
+	const word = count === 1 ? 'reference' : 'references';
+	return atLeast ? `at least ${count} ${word}` : `${count} ${word}`;
+}

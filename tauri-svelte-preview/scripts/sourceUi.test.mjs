@@ -2188,6 +2188,44 @@ assert.ok(
   editorSource.includes('onReferenceCountLookup?: SourceEditorReferenceCountLookup'),
   'Editor should support quiet reference counts for CodeLens without opening result drawers'
 );
+
+// ── The margin's "N references" row paints first and fills in afterwards ────
+//
+// The row must be on screen the moment the file is, saying it is counting, and
+// each real number must replace that line as it arrives rather than the reader
+// waiting for the last one. These check the wiring that makes that true, since
+// none of it can be exercised without a browser and a live Monaco.
+assert.ok(
+  editorSource.includes('title: sourceCodeLensPendingTitle'),
+  'A reference row should be drawn straight away saying it is still counting'
+);
+assert.ok(
+  editorSource.includes('onDidChange: codeLensChangeEmitter.event') &&
+    editorSource.includes('codeLensChangeEmitter?.fire(sourceCodeLensProvider)'),
+  'A number that lands should make Monaco draw that row again, so numbers fill in as they arrive'
+);
+assert.ok(
+  editorSource.includes('function codeLensSpotsWorthCountingNow') &&
+    editorSource.includes('getVisibleRanges()'),
+  'Counting should start from what the reader can see rather than the whole file at once'
+);
+assert.ok(
+  editorSource.includes('if (counted === null) return undefined;'),
+  'A symbol whose number cannot be worked out should leave its row blank, never show a made-up number'
+);
+assert.ok(
+  editorSource.includes('CODE_LENS_RECOUNT_AFTER_EDIT_MS') &&
+    editorSource.includes('onReferenceCountsOutOfDate?.('),
+  'Editing a file should have its numbers counted again once the reader pauses, and only that file'
+);
+assert.ok(
+  editorSource.includes('onCodeLensAnchorLookup?: SourceEditorCodeLensAnchorLookup'),
+  'Editor should accept a better list of symbols than its own reading of the text, for languages it cannot read'
+);
+assert.ok(
+  editorSource.includes('if (!editor || editor.getModel() !== model) {'),
+  'Only the file on screen should get reference rows — a peeked file would be counted against the wrong file'
+);
 assert.ok(
   editorSource.includes('onImplementationLookup?: SourceEditorImplementationLookup'),
   'Editor should return native implementation targets to Monaco'

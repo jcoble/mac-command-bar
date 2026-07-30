@@ -6,8 +6,10 @@
  */
 import assert from 'node:assert/strict';
 import {
+	formatSourceCodeLensTitle,
 	sourceCodeLensCountKey,
 	sourceCodeLensId,
+	sourceCodeLensPendingTitle,
 	sourceCodeLensSpotFromId
 } from '../src/lib/sourceCodeLensKeys.ts';
 
@@ -65,6 +67,26 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 		sourceCodeLensCountKey('file:///project/App.cs', spot('RunAsync', 42, 17)),
 		sourceCodeLensCountKey('file:///project/Other.cs', spot('RunAsync', 42, 17))
 	);
+}
+
+// what the margin says while it is still waiting: a whole phrase, and no digit
+// anywhere in it, because a number nobody has counted must never be shown
+{
+	assert.equal(sourceCodeLensPendingTitle, 'counting references…');
+	assert.ok(!/\d/.test(sourceCodeLensPendingTitle), 'the waiting line must not contain a number');
+}
+
+// a number that was counted in full is stated plainly, singular and plural
+{
+	assert.equal(formatSourceCodeLensTitle(0, false), '0 references');
+	assert.equal(formatSourceCodeLensTitle(1, false), '1 reference');
+	assert.equal(formatSourceCodeLensTitle(12, false), '12 references');
+}
+
+// a number from a pass that could not read everything says so
+{
+	assert.equal(formatSourceCodeLensTitle(1, true), 'at least 1 reference');
+	assert.equal(formatSourceCodeLensTitle(50, true), 'at least 50 references');
 }
 
 console.log('sourceCodeLensKeys tests passed');
