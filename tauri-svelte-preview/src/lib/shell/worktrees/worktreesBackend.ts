@@ -41,6 +41,18 @@ import {
 /** The name the desktop app uses for "this build can force-remove a worktree". */
 export const WORKTREE_FORCE_REMOVE_CAPABILITY = 'worktreeForceRemove';
 
+/**
+ * The name the desktop app uses for "this build clears ONE folder-gone row".
+ *
+ * A build without it answers a click on a folder-gone row by running git's
+ * repo-wide tidy-up, which clears every row whose folder is gone — not the one
+ * that was clicked. Both builds accept exactly the same call and both answer
+ * "done", so there is nothing in the outcome to tell them apart. The app is
+ * asked outright, and the confirmation dialog says which of the two will happen
+ * before anybody presses anything.
+ */
+export const WORKTREE_PRUNE_SINGLE_CAPABILITY = 'worktreePruneSingle';
+
 /** List the worktrees of the repository `root` belongs to. */
 export function listWorktrees(root: string): Promise<ProjectWorktree[] | null> {
   return listProjectWorktreesFromTauri(root);

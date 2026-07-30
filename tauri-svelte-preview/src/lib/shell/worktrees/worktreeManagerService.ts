@@ -33,6 +33,7 @@ import {
   finishWorktreeAction,
   markWorktreesUnavailable,
   setForceRemoveSupport,
+  setPruneSingleRowSupport,
   setWorktreeManagerInput,
   worktreeManager
 } from './worktreeManagerStore.svelte.ts';
@@ -42,7 +43,8 @@ import {
   listWorktrees,
   readBackendCapabilities,
   removeWorktree as removeWorktreeCommand,
-  WORKTREE_FORCE_REMOVE_CAPABILITY
+  WORKTREE_FORCE_REMOVE_CAPABILITY,
+  WORKTREE_PRUNE_SINGLE_CAPABILITY
 } from './worktreesBackend.ts';
 
 /** Shown when the data only exists inside the desktop app. */
@@ -132,11 +134,13 @@ export async function refresh(): Promise<void> {
 }
 
 /**
- * Ask the desktop app whether it can force-remove a worktree, once per launch.
+ * Ask the desktop app what it can do, once per launch.
  *
- * This has to be asked rather than tried, because an older build accepts the
- * forced remove and quietly performs a careful one instead. See the long note
- * in `worktreesBackend.ts`.
+ * Both answers have to be asked for rather than tried. An older build accepts
+ * the forced remove and quietly performs a careful one instead; an older build
+ * also answers a folder-gone row by clearing every folder-gone row rather than
+ * the one that was clicked. Neither difference shows up in the outcome. See the
+ * long notes in `worktreesBackend.ts`.
  */
 export async function askWhatTheAppCanDo(): Promise<void> {
   countInvoke('read_backend_capabilities');
@@ -144,10 +148,14 @@ export async function askWhatTheAppCanDo(): Promise<void> {
   if (capabilities === null) {
     // Not the desktop app at all; nothing here can remove anything.
     setForceRemoveSupport('unavailable');
+    setPruneSingleRowSupport('unavailable');
     return;
   }
   setForceRemoveSupport(
     capabilities.includes(WORKTREE_FORCE_REMOVE_CAPABILITY) ? 'available' : 'unavailable'
+  );
+  setPruneSingleRowSupport(
+    capabilities.includes(WORKTREE_PRUNE_SINGLE_CAPABILITY) ? 'available' : 'unavailable'
   );
 }
 
@@ -166,6 +174,47 @@ export async function removeWorktree(path: string): Promise<void> {
     landAction(result.message, result.worktrees);
   } catch (error) {
     failWorktreeAction(`The worktree was not removed: ${describeError(error)}`);
+  }
+}
+
+/**
+ * Clear git's record of a worktree whose folder is already gone.
+ *
+ * It is the same command as the everyday remove — the desktop app recognises a
+ * folder-gone worktree and clears the record instead of deleting anything — but
+ * it is a separate function because what it DOES is different enough that the
+ * sentence afterwards has to be different too.
+ *
+ * That sentence is written here rather than passed through from the desktop
+ * app, because this is the one case where the app's own wording ("Pruned
+ * missing worktree metadata …") is both jargon and, on an older build,
+ * incomplete: it names one branch while having cleared several. What is said
+ * here follows what the app told us it can do, so it is right for both builds.
+ */
+export async function clearWorktreeEntry(path: string, branch: string): Promise<void> {
+  const root = (worktreeManager.root ?? '').trim();
+  if (!root || !path) return;
+  beginWorktreeAction(path, 'clear');
+  try {
+    countInvoke('remove_project_worktree');
+    const result = await removeWorktreeCommand(root, path);
+    if (result === null) {
+      failWorktreeAction(DESKTOP_ONLY_MESSAGE);
+      return;
+    }
+    // A new app says exactly what happened in plain words — including "there
+    // was nothing to clear" when git's records were already gone — so its own
+    // sentence is the honest one to show. Only the older build, whose message
+    // is jargon and names one branch while clearing several, gets ours.
+    const cleared = `Cleared git’s record of “${branch}”. Nothing on disk was touched.`;
+    landAction(
+      worktreeManager.pruneSingleRowSupport === 'available'
+        ? result.message
+        : `${cleared} This app build clears them together, so any other row whose folder was gone is cleared too.`,
+      result.worktrees
+    );
+  } catch (error) {
+    failWorktreeAction(`Nothing was cleared: ${describeError(error)}`);
   }
 }
 

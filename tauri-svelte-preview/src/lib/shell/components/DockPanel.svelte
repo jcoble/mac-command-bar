@@ -1,25 +1,66 @@
 <script lang="ts">
   /**
-   * The bottom dock region: the Problems panel, plus the frame's reset control.
+   * The bottom dock region: the Problems panel, plus the frame's reset control
+   * and the two buttons that move the Problems list somewhere else.
    *
    * This region is on screen from the moment the shell opens, so the panel it
    * hosts must load nothing when it mounts — `ProblemsPanel` reads the language
    * server only when the user presses its Refresh button. See
    * `panelActivation.ts` for the rule and the route that is waiting for a
    * gesture to fire it.
+   *
+   * Moving the list is a SETTING, not a piece of state this component keeps: the
+   * buttons write `settings.panels.problemsLocation` and say so, and the shell
+   * reacts to the setting. That way the settings dialog and these buttons cannot
+   * disagree, and the choice survives a restart.
    */
+  import PanelRight from '@lucide/svelte/icons/panel-right';
+  import X from '@lucide/svelte/icons/x';
+
+  import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
+
   import ProblemsPanel from './problems/ProblemsPanel.svelte';
 
   interface Props {
     onReset(): void;
+    /**
+     * The user asked for the Problems list somewhere else. The setting is
+     * already written by the time this runs — this is only so the shell can
+     * close the bottom strip and open the list in its new home straight away,
+     * rather than on the next launch.
+     */
+    onProblemsLocationChange?(location: ProblemsLocation): void;
   }
-  let { onReset }: Props = $props();
+  let { onReset, onProblemsLocationChange }: Props = $props();
+
+  function moveProblems(location: ProblemsLocation): void {
+    settings.panels.problemsLocation = location;
+    onProblemsLocationChange?.(location);
+  }
 </script>
 
 <div class="dock-slot">
   <ProblemsPanel>
     {#snippet headerEnd()}
-      <button class="reset-layout" onclick={onReset}>Reset layout</button>
+      <button
+        class="dock-action"
+        type="button"
+        title="Show the Problems list in the tool column on the right instead"
+        onclick={() => moveProblems('right')}
+      >
+        <PanelRight size={13} strokeWidth={1.6} />
+        Move to the right side
+      </button>
+      <button
+        class="dock-action"
+        type="button"
+        title="Stop showing the Problems list. Settings brings it back."
+        onclick={() => moveProblems('hidden')}
+      >
+        <X size={13} strokeWidth={1.6} />
+        Hide
+      </button>
+      <button class="dock-action" type="button" onclick={onReset}>Reset layout</button>
     {/snippet}
   </ProblemsPanel>
 </div>
@@ -30,22 +71,34 @@
     height: 100%;
   }
 
-  /* On the end of the panel's own header row. It used to float in that corner,
-     which put it straight on top of the panel's Refresh button. */
-  .reset-layout {
+  /* On the end of the panel's own header row. These used to float in that
+     corner, which put them straight on top of the panel's Refresh button. */
+  .dock-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     flex-shrink: 0;
+    /* The same 28px the panel's own Refresh button is, so the header row reads
+       as one row of controls rather than two sizes of button. */
+    height: 28px;
     background: transparent;
-    border: 1px solid #22222c;
-    border-radius: 5px;
-    color: #6d6d7d;
-    font-family: ui-monospace, Menlo, monospace;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    color: var(--color-text-2);
+    font-family: inherit;
     font-size: 12px;
-    padding: 2px 7px;
+    padding: 0 8px;
     cursor: pointer;
+    transition: color 120ms, background-color 120ms, border-color 120ms;
   }
 
-  .reset-layout:hover {
-    color: #d8d8e0;
-    border-color: #3a3a48;
+  .dock-action:hover {
+    color: var(--color-text);
+    background: var(--color-elevated);
+  }
+
+  .dock-action:focus-visible {
+    outline: 1px solid var(--color-focus);
+    outline-offset: -2px;
   }
 </style>

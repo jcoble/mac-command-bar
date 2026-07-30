@@ -26,16 +26,30 @@
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
-  import { resetSettings, settings, type SettingsSection } from '$lib/settingsStore.svelte';
+  import {
+    PROBLEMS_LOCATIONS,
+    PROBLEMS_LOCATION_LABELS,
+    resetSettings,
+    settings,
+    type ProblemsLocation,
+    type SettingsSection
+  } from '$lib/settingsStore.svelte';
+  import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
 
   interface Props {
     /** Whether the settings dialog is open. */
     open?: boolean;
+    /**
+     * The user moved the Problems list. The setting is already written by the
+     * time this runs — this is only so the shell can close or reopen the strip
+     * along the bottom straight away, rather than on the next launch.
+     */
+    onProblemsLocationChange?: (location: ProblemsLocation) => void;
   }
 
-  let { open = $bindable(false) }: Props = $props();
+  let { open = $bindable(false), onProblemsLocationChange }: Props = $props();
 
   // ── Option lists ────────────────────────────────────────────────────────
   /** The themes the app actually ships, straight from the registry. */
@@ -69,6 +83,11 @@
     { value: 'Alacritty', label: 'Alacritty' }
   ];
 
+  const problemsLocationItems = PROBLEMS_LOCATIONS.map((value) => ({
+    value,
+    label: PROBLEMS_LOCATION_LABELS[value]
+  }));
+
   const tabs = [
     { value: 'appearance', label: 'Appearance', icon: Palette },
     { value: 'editor', label: 'Editor', icon: Type },
@@ -82,6 +101,34 @@
   // functional in isolation. Application is a later step.
   let editorLigatures = $state(false);
   let terminalCursorBlink = $state(true);
+
+  /**
+   * What the app said the last time the C# language server was switched. Shown
+   * as-is under the switch: the backend answers in whole sentences, including
+   * the one that says this build of the app cannot do it at all.
+   */
+  let csharpLanguageServerNote = $state<string | null>(null);
+  /** False once the app has said it cannot switch the server. The control is
+   * then switched off rather than left looking live and doing nothing. */
+  let csharpLanguageServerSupported = $state(true);
+
+  function moveProblems(location: ProblemsLocation): void {
+    settings.panels.problemsLocation = location;
+    onProblemsLocationChange?.(location);
+  }
+
+  async function switchCsharpLanguageServer(enabled: boolean): Promise<void> {
+    const before = settings.intelligence.csharpLanguageServer;
+    settings.intelligence.csharpLanguageServer = enabled;
+    const result = await setCsharpLanguageServerEnabled(enabled);
+    csharpLanguageServerSupported = result.supported;
+    csharpLanguageServerNote = result.message;
+    // An app that cannot do this leaves the server exactly as it was, so the
+    // setting has to go back to saying so. Otherwise the switch reads "off"
+    // over a server that is still running — and since the control is disabled
+    // from here on, there would be no way to put it right.
+    if (!result.supported) settings.intelligence.csharpLanguageServer = before;
+  }
 
   /** The label to show on a closed dropdown, given what is selected. */
   function labelFor(items: { value: string; label: string }[], value: string): string {
@@ -359,6 +406,60 @@
                   </Select.Content>
                 </Select.Root>
               </div>
+            </div>
+
+            <div class="flex items-center justify-between gap-5">
+              <div class="flex min-w-0 flex-col gap-1">
+                <span class="text-[14px] leading-[1.3] font-medium">Where the problems list sits</span>
+                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
+                  The list of mistakes the language server has found in this project.
+                </span>
+              </div>
+              <div class="w-[200px] shrink-0">
+                <!-- Not `bind:value`: the shell has to be told as well as the
+                     store, so that the strip along the bottom opens or closes
+                     now rather than at the next launch. -->
+                <Select.Root
+                  type="single"
+                  value={settings.panels.problemsLocation}
+                  onValueChange={(value) => moveProblems(value as ProblemsLocation)}
+                >
+                  <Select.Trigger class="w-full">
+                    {labelFor(problemsLocationItems, settings.panels.problemsLocation)}
+                  </Select.Trigger>
+                  <Select.Content>
+                    {#each problemsLocationItems as item (item.value)}
+                      <Select.Item value={item.value} label={item.label} />
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+              </div>
+            </div>
+
+            <div class="flex flex-col gap-2">
+              <div class="flex items-center justify-between gap-5">
+                <div class="flex min-w-0 flex-col gap-1">
+                  <span class="text-[14px] leading-[1.3] font-medium">C# language server</span>
+                  <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
+                    Off saves about 800MB of memory. Reference counts and project-wide search keep
+                    working. What you lose is the squiggles under mistakes, and the precision of
+                    go-to-definition when a name is used in more than one place.
+                  </span>
+                </div>
+                <div class="flex shrink-0 justify-end">
+                  <Switch
+                    checked={settings.intelligence.csharpLanguageServer}
+                    disabled={!csharpLanguageServerSupported}
+                    onCheckedChange={(checked) => void switchCsharpLanguageServer(checked)}
+                    aria-label="C# language server"
+                  />
+                </div>
+              </div>
+              {#if csharpLanguageServerNote}
+                <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">
+                  {csharpLanguageServerNote}
+                </p>
+              {/if}
             </div>
           </div>
         </Tabs.Content>

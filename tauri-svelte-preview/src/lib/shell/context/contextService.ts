@@ -11,6 +11,11 @@
  *  - the user presses Refresh in the panel, which calls `refreshAll()` or
  *    `refreshCard(key)`.
  *
+ * `refreshAll` reaches the Playwright card too, even though that card keeps its
+ * own state next door in `playwrightService` — one Refresh button in the panel
+ * has to mean every card in the panel, or the one it skips looks freshly read
+ * when it is not.
+ *
  * Every backend call is counted with `countInvoke('<command name>')`
  * immediately before it, so the dev invoke counter stays honest.
  *
@@ -28,14 +33,23 @@ import {
   type AgentSession
 } from '../../tauriSource.ts';
 import {
+  killProcess,
+  PROCESS_KILL_CAPABILITY,
+  readBackendCapabilities
+} from '../processes/processBackend.ts';
+import { refresh as refreshPlaywrightCard } from '../processes/playwrightService.ts';
+import {
   applyCardRows,
   beginCardLoad,
+  beginProcessStop,
   contextState,
   describeContextInput,
   failCardLoad,
+  finishProcessStop,
   markCardUnavailable,
   markContextActivated,
   setContextInput,
+  setProcessKillSupport,
   type ContextCardKey,
   type ContextInput
 } from './contextStore.svelte.ts';
@@ -75,7 +89,15 @@ export function activate(input: ContextInput): void {
   loadedInputKey = key;
 
   if (firstTime) {
-    void refreshAll();
+    // Deliberately NOT `refreshAll()`: the shell activates the Playwright card
+    // in the same breath as this one, and `refreshAll` reads it too, so calling
+    // it here would read that card twice on the very first show.
+    void loadRuns();
+    void loadRuntime();
+    void loadAgents();
+    void loadWorktrees();
+    void loadRepositories();
+    void askWhatTheAppCanDo();
     return;
   }
   if (nextProjects !== previousProjects) {
@@ -89,14 +111,28 @@ export function activate(input: ContextInput): void {
   }
 }
 
-/** Reload every card. The panel's Refresh button. */
+/**
+ * Reload EVERY card in the panel. The panel's Refresh button.
+ *
+ * "Every" includes the Playwright card, which keeps its own state in
+ * `playwrightService` and used to sit there unreloaded while the five cards
+ * around it went and read fresh data. A refresh button that skips a card is
+ * worse than no refresh button: the stale card looks as freshly read as its
+ * neighbours.
+ *
+ * The same pass is also where the panel finds out whether this build of the
+ * desktop app can stop a process, so the stop buttons can never be left greyed
+ * out by a question nobody got round to asking.
+ */
 export async function refreshAll(): Promise<void> {
   await Promise.all([
     loadRuns(),
     loadRuntime(),
     loadAgents(),
     loadWorktrees(),
-    loadRepositories()
+    loadRepositories(),
+    refreshPlaywrightCard(),
+    askWhatTheAppCanDo()
   ]);
 }
 
@@ -112,6 +148,56 @@ export async function refreshCard(key: ContextCardKey): Promise<void> {
 /** Forget which input was last loaded — used when the shell tears the panel down. */
 export function resetContextActivation(): void {
   loadedInputKey = null;
+}
+
+// ── Stopping one running process ──────────────────────────────────────────────
+
+/**
+ * Ask the desktop app whether it can stop a process by id.
+ *
+ * Asked rather than tried: see the long note in `processBackend.ts`. Asking
+ * again is cheap and keeps the answer right after the user updates and restarts
+ * the app, so this runs on every full refresh rather than once per launch.
+ */
+export async function askWhatTheAppCanDo(): Promise<void> {
+  countInvoke('read_backend_capabilities');
+  const capabilities = await readBackendCapabilities();
+  if (capabilities === null) {
+    // Not the desktop app at all; nothing here can stop anything.
+    setProcessKillSupport('unavailable');
+    return;
+  }
+  setProcessKillSupport(
+    capabilities.includes(PROCESS_KILL_CAPABILITY) ? 'available' : 'unavailable'
+  );
+}
+
+/**
+ * Stop the process with this id, then read the running processes again.
+ *
+ * The list is re-read rather than edited in place, because the desktop app's
+ * answer says what it ASKED the process to do, not whether the process has
+ * actually gone. Reading again is the only honest way to show what survived.
+ *
+ * Refuses outright when the app has not said it can do this, so a wired-up
+ * keyboard shortcut or a stale screen can never send a request that would be
+ * silently ignored.
+ */
+export async function stopProcess(pid: number, expectedCommand?: string): Promise<void> {
+  if (contextState.processKill !== 'available') return;
+  beginProcessStop(pid);
+  try {
+    countInvoke('kill_process');
+    const result = await killProcess(pid, expectedCommand);
+    if (result === null) {
+      finishProcessStop(DESKTOP_ONLY);
+      return;
+    }
+    finishProcessStop(result.message);
+  } catch (error) {
+    finishProcessStop(`Process ${pid} was not stopped: ${describeError(error)}`);
+  }
+  await loadRuntime();
 }
 
 // ── The five loaders ──────────────────────────────────────────────────────────

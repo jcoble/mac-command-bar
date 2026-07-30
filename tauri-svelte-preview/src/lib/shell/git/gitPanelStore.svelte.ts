@@ -52,6 +52,21 @@ export interface GitPanelState {
   history: GitCommitHistoryEntry[];
   historyLoading: boolean;
   historyError: string;
+  /** How many commits the last history read asked the app for. 0 before any read.
+   *  The backend always answers with the whole list from the top, so this grows
+   *  and the list is replaced — never appended to — which keeps the graph's
+   *  columns correct across pages. */
+  historyRequested: number;
+  /** True while "Load more" is running. Separate from `historyLoading` so the
+   *  list stays on screen instead of flipping back to "Reading the history…". */
+  historyLoadingMore: boolean;
+  /** True once a read came back with fewer commits than it asked for. Asking the
+   *  same way again would return the same list, so there is nothing more to load. */
+  historyComplete: boolean;
+  /** True once "Load more" has been used for this repository. */
+  historyPaged: boolean;
+  /** True once we have asked for the most this app will ask for in one go. */
+  historyCeiling: boolean;
 
   // ── the file whose diff is on screen ──────────────────────────────────────
   /** Repository-relative path of the selected file, or '' when none is selected. */
@@ -83,6 +98,11 @@ export function createGitPanelState(): GitPanelState {
     history: [],
     historyLoading: false,
     historyError: '',
+    historyRequested: 0,
+    historyLoadingMore: false,
+    historyComplete: false,
+    historyPaged: false,
+    historyCeiling: false,
     selectedPath: '',
     selectedDiff: null,
     diffLoading: false,
@@ -194,6 +214,67 @@ export function describeGitFileChange(file: ProjectGitFileStatus): string {
   return file.status || 'changed';
 }
 
+// ── how much of the history is on screen ────────────────────────────────────
+// The history is read in pages: a short first list, then more on request. These
+// four functions are the whole of the panel's honesty about that — they are
+// pure over the state above so a node test can check every wording, including
+// the ones that only appear against an app build that reads fewer commits than
+// this panel asks for.
+
+/**
+ * A read that came back with fewer commits than it asked for has nothing more to
+ * give: asking again the same way returns the same list. That is true whether
+ * the repository ran out of commits or the app build stopped early, which is why
+ * the sentences below never claim to know which.
+ */
+export function isGitHistoryComplete(requested: number, received: number): boolean {
+  return received < requested;
+}
+
+/** Should the "Load more" button be offered right now? */
+export function canLoadMoreGitHistory(state: GitPanelState): boolean {
+  return (
+    state.activated &&
+    !state.desktopOnly &&
+    state.history.length > 0 &&
+    !state.historyComplete &&
+    !state.historyCeiling &&
+    !state.historyLoading &&
+    !state.historyLoadingMore
+  );
+}
+
+/**
+ * The short count beside the "Commits" heading. "so far" is the whole point:
+ * a bare number next to a list of 24 out of thousands reads as the total.
+ */
+export function describeGitHistoryCount(state: GitPanelState): string {
+  const shown = state.history.length;
+  if (shown === 0) return '';
+  if (state.historyComplete || state.historyCeiling) return String(shown);
+  return `${shown} so far`;
+}
+
+/**
+ * The sentence under the list, and the hover text on the count. It says what
+ * actually came back rather than what was asked for, so an older app build that
+ * returns fewer commits than this panel requests cannot look like a repository
+ * that has run out of history.
+ */
+export function describeGitHistoryFooter(state: GitPanelState): string {
+  const shown = state.history.length;
+  if (shown === 0) return '';
+  if (state.historyCeiling) {
+    return `Showing ${shown} commits — the most this app reads at one time. Older commits are not in this list.`;
+  }
+  if (!state.historyComplete) return `Showing ${shown} so far.`;
+  if (!state.historyPaged) return `Showing all ${shown} commits.`;
+  return (
+    `Showing ${shown} commits. We asked for ${state.historyRequested} and this is all that came ` +
+    `back, so it is everything this app will show for this repository.`
+  );
+}
+
 /** "main · 2 ahead · 1 behind", or why there is no branch line to show. */
 export function describeGitBranch(status: ProjectGitStatus | null): string {
   if (!status) return 'No repository loaded';
@@ -206,6 +287,38 @@ export function describeGitBranch(status: ProjectGitStatus | null): string {
     if (status.ahead === 0 && status.behind === 0) parts.push('up to date');
   }
   return parts.join(' · ');
+}
+
+/**
+ * The hover text for the branch line. A branch name like
+ * `codex/outbound-rule-generation` does not fit a narrow panel, and a name cut
+ * off at `outbound-rule-generat…` is worse than no name at all — you cannot tell
+ * two long branches apart. So the full name always exists somewhere you can
+ * read it, with the ahead/behind counts spelled out as sentences rather than
+ * arrows.
+ */
+export function describeGitBranchTitle(status: ProjectGitStatus | null): string {
+  if (!status) return 'No repository loaded';
+  const branch = status.branch ?? '';
+  const lines: string[] = [branch === '' ? 'No branch is checked out.' : `Branch: ${branch}`];
+
+  if (!status.hasUpstream) {
+    lines.push('This branch has no matching branch on the remote yet.');
+  } else if (status.ahead === 0 && status.behind === 0) {
+    lines.push('Up to date with the remote.');
+  } else {
+    if (status.ahead > 0) {
+      lines.push(
+        `${status.ahead} commit${status.ahead === 1 ? '' : 's'} here that the remote does not have.`
+      );
+    }
+    if (status.behind > 0) {
+      lines.push(
+        `${status.behind} commit${status.behind === 1 ? '' : 's'} on the remote that you do not have.`
+      );
+    }
+  }
+  return lines.join('\n');
 }
 
 /** The last path segment of an absolute path, for the panel's title line. */

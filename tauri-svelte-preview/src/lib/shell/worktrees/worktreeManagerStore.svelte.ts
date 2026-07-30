@@ -25,15 +25,23 @@ import type { GitRepositorySummary, ProjectWorktree } from '../../tauriSource.ts
 import type { WorktreeSessionInput } from './worktreeManagerRows.ts';
 
 /** Which action is running, or '' when none is. */
-export type WorktreeActionKind = '' | 'remove' | 'force-remove' | 'archive';
+export type WorktreeActionKind = '' | 'remove' | 'clear' | 'force-remove' | 'archive';
 
 /**
- * Whether this build of the desktop app can force-remove a worktree.
- * `'unknown'` is the state before the app has been asked — the destructive
- * button stays switched off in that state, because offering a button that might
- * quietly do something gentler instead is worse than offering nothing.
+ * Whether this build of the desktop app can do a particular thing.
+ * `'unknown'` is the state before the app has been asked, and it is real screen
+ * time: the question is asked once when the pane first opens. Nothing pretends
+ * to know the answer while it is still `'unknown'`.
  */
-export type ForceRemoveSupport = 'unknown' | 'available' | 'unavailable';
+export type BackendSupport = 'unknown' | 'available' | 'unavailable';
+
+/**
+ * Whether this build of the desktop app can force-remove a worktree. The
+ * destructive button stays switched off while this is `'unknown'`, because
+ * offering a button that might quietly do something gentler instead is worse
+ * than offering nothing.
+ */
+export type ForceRemoveSupport = BackendSupport;
 
 export interface WorktreeManagerState {
   /** The pane has been shown and pointed at a folder at least once. */
@@ -79,11 +87,17 @@ export interface WorktreeManagerState {
 
   // ── what the desktop app can do ────────────────────────────────────────────
   forceRemoveSupport: ForceRemoveSupport;
+  /**
+   * Whether clearing one folder-gone row clears only that row. When this is not
+   * `'available'`, the confirmation dialog says out loud that every other row
+   * whose folder is gone goes with it — see `describeRemovalQuestion`.
+   */
+  pruneSingleRowSupport: BackendSupport;
 }
 
 /** Shown on the destructive button while this build cannot actually force. */
 export const FORCE_REMOVE_UNAVAILABLE_TOOLTIP =
-  'This needs the updated desktop app — restart it after the next update.';
+  'This build of the app cannot do this yet — restart the desktop app after updating.';
 
 export function createWorktreeManagerState(): WorktreeManagerState {
   return {
@@ -104,7 +118,8 @@ export function createWorktreeManagerState(): WorktreeManagerState {
     busyAction: '',
     actionMessage: '',
     actionError: '',
-    forceRemoveSupport: 'unknown'
+    forceRemoveSupport: 'unknown',
+    pruneSingleRowSupport: 'unknown'
   };
 }
 
@@ -179,6 +194,11 @@ export function markWorktreesUnavailable(requestId: number, reason: string): boo
 /** Record what this build of the desktop app can do. */
 export function setForceRemoveSupport(support: ForceRemoveSupport): void {
   worktreeManager.forceRemoveSupport = support;
+}
+
+/** Record whether clearing one folder-gone row leaves the other ones alone. */
+export function setPruneSingleRowSupport(support: BackendSupport): void {
+  worktreeManager.pruneSingleRowSupport = support;
 }
 
 /** Open one row's details, or close them by passing the open one again. */

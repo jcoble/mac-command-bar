@@ -22,17 +22,28 @@
  */
 import type { SourceReferenceCountResult } from '../../sourceData.ts';
 
+/**
+ * One symbol's number for the margin. `atLeast` is true when the pass that
+ * produced it did not read every file — it ran out of time, the project had
+ * more files than one walk collects, or some files could not be read — so the
+ * real number can only be this or higher, and the margin must say so.
+ */
+export interface CodeLensCount {
+  count: number;
+  atLeast: boolean;
+}
+
 /** A count that has already been worked out, and when. */
 export interface RememberedCount {
-  count: number;
+  value: CodeLensCount;
   countedAt: number;
 }
 
 /** Counts kept for a while, then let go. */
 export interface CountMemory {
   /** The remembered count, or `undefined` when there is nothing worth using. */
-  get(key: string): number | null | undefined;
-  remember(key: string, count: number): void;
+  get(key: string): CodeLensCount | undefined;
+  remember(key: string, value: CodeLensCount): void;
   forget(): void;
   readonly size: number;
 }
@@ -49,17 +60,17 @@ export function createCountMemory(options: CountMemoryOptions): CountMemory {
   const remembered = new Map<string, RememberedCount>();
 
   return {
-    get(key: string): number | null | undefined {
+    get(key: string): CodeLensCount | undefined {
       const entry = remembered.get(key);
       if (!entry) return undefined;
       if (now() - entry.countedAt >= options.cacheMs) {
         remembered.delete(key);
         return undefined;
       }
-      return entry.count;
+      return entry.value;
     },
-    remember(key: string, count: number): void {
-      remembered.set(key, { count, countedAt: now() });
+    remember(key: string, value: CodeLensCount): void {
+      remembered.set(key, { value, countedAt: now() });
     },
     forget(): void {
       remembered.clear();
@@ -89,7 +100,7 @@ export interface ReferenceCountBatcherOptions {
 
 export interface ReferenceCountBatcher {
   /** How many lines mention this symbol, or `null` when that is not known. */
-  count(symbolName: string): Promise<number | null>;
+  count(symbolName: string): Promise<CodeLensCount | null>;
   /** Drop every remembered count (the project changed underneath us). */
   forget(): void;
 }
@@ -98,7 +109,7 @@ export function createReferenceCountBatcher(
   options: ReferenceCountBatcherOptions
 ): ReferenceCountBatcher {
   const memory = createCountMemory({ cacheMs: options.cacheMs, now: options.now });
-  let waiting = new Map<string, ((count: number | null) => void)[]>();
+  let waiting = new Map<string, ((count: CodeLensCount | null) => void)[]>();
   let windowTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function askForWaitingSymbols(): Promise<void> {
@@ -116,7 +127,7 @@ export function createReferenceCountBatcher(
   }
 
   return {
-    count(symbolName: string): Promise<number | null> {
+    count(symbolName: string): Promise<CodeLensCount | null> {
       const remembered = memory.get(symbolName);
       if (remembered !== undefined) return Promise.resolve(remembered);
 
@@ -142,15 +153,19 @@ export function createReferenceCountBatcher(
  *
  * A pass that ran out of time may never have opened the files a symbol lives
  * in, so a zero from it means "not counted", and the margin is better left
- * blank than told there are no references.
+ * blank than told there are no references. A non-zero tally from such a pass
+ * is real but incomplete — it comes back marked `atLeast` so the margin says
+ * "at least N" instead of stating a number nobody actually counted.
  */
 export function countFromResult(
   result: SourceReferenceCountResult | null,
   symbolName: string,
   maxCount: number
-): number | null {
+): CodeLensCount | null {
   const counted = result?.counts?.[symbolName];
   if (typeof counted !== 'number') return null;
-  if (result?.approximate === true && counted === 0) return null;
-  return Math.min(counted, maxCount);
+  const partial = result?.approximate === true;
+  if (partial && counted === 0) return null;
+  const shown = Math.min(counted, maxCount);
+  return { count: shown, atLeast: partial || shown < counted };
 }

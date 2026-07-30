@@ -43,11 +43,49 @@ export interface GeneralSettings {
 	terminalApp: string;
 }
 
+/**
+ * Where the Problems list is shown.
+ *
+ * 'bottom' is the strip under the middle of the shell it has always lived in.
+ * 'right' moves it into the tool column on the right, as one more view of the
+ * icon strip. 'hidden' shows it nowhere. Both of the latter two leave the
+ * bottom strip with nothing in it, so the shell closes the strip as well.
+ */
+export type ProblemsLocation = 'bottom' | 'right' | 'hidden';
+
+export const PROBLEMS_LOCATIONS: readonly ProblemsLocation[] = ['bottom', 'right', 'hidden'];
+
+/** What each choice says in the settings dialog, in plain English. */
+export const PROBLEMS_LOCATION_LABELS: Record<ProblemsLocation, string> = {
+	bottom: 'In the strip along the bottom',
+	right: 'In the tool column on the right',
+	hidden: 'Do not show it'
+};
+
+export interface PanelsSettings {
+	problemsLocation: ProblemsLocation;
+}
+
+export interface IntelligenceSettings {
+	/**
+	 * Run the C# language server for C# projects.
+	 *
+	 * Turning it off frees the memory and processor time it uses; in exchange the
+	 * app can no longer underline mistakes in C# files or jump to a definition
+	 * precisely. Counting where something is used keeps working either way — that
+	 * comes from the app's own search of the project, not from the language
+	 * server.
+	 */
+	csharpLanguageServer: boolean;
+}
+
 export interface Settings {
 	appearance: AppearanceSettings;
 	editor: EditorSettings;
 	terminal: TerminalSettings;
 	general: GeneralSettings;
+	panels: PanelsSettings;
+	intelligence: IntelligenceSettings;
 }
 
 /** A section key of {@link Settings}. */
@@ -77,6 +115,12 @@ export function defaultSettings(): Settings {
 		},
 		general: {
 			terminalApp: 'Warp'
+		},
+		panels: {
+			problemsLocation: 'bottom'
+		},
+		intelligence: {
+			csharpLanguageServer: true
 		}
 	};
 }
@@ -107,6 +151,17 @@ function mergeWithDefaults(raw: unknown): Settings {
 				target[key] = next;
 			}
 		}
+	}
+
+	// The type check above only asks "is it a string?", which is not enough for a
+	// setting whose value has to be one of three words: a stored "Right", or any
+	// leftover from an older build, would pass it and then match no branch — and
+	// for THIS setting the failure is silent and hard to escape, because the two
+	// non-default answers close the strip that holds the control for changing it
+	// back. Anything unrecognised goes back to showing the list where it has
+	// always been.
+	if (!PROBLEMS_LOCATIONS.includes(base.panels.problemsLocation)) {
+		base.panels.problemsLocation = 'bottom';
 	}
 
 	return base;

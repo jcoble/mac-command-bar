@@ -91,9 +91,18 @@
 		request: SourceEditorLookupRequest
 	) => SourceReferenceTarget[] | Promise<SourceReferenceTarget[]> | null | undefined;
 
+	// A count may arrive as a bare number (older callers) or with `atLeast`,
+	// which means the pass behind it did not finish reading the project, so the
+	// real number can only be equal or higher.
+	type SourceEditorReferenceCount = { count: number; atLeast: boolean };
 	type SourceEditorReferenceCountLookup = (
 		request: SourceEditorLookupRequest
-	) => number | Promise<number | null> | null | undefined;
+	) =>
+		| number
+		| SourceEditorReferenceCount
+		| Promise<number | SourceEditorReferenceCount | null>
+		| null
+		| undefined;
 
 	type SourceEditorExternalPreviewLookup = (
 		record: SourceRecord
@@ -336,7 +345,7 @@
 	// every one of them. See `sourceCodeLensKeys.ts` for how they are named.
 	const codeLensReferenceCountCache = new Map<
 		string,
-		{ count: number | null; countedAt: number }
+		{ count: number | null; atLeast: boolean; countedAt: number }
 	>();
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
 	// Hot-path deadline for the four navigation providers (design-monaco.md §2.3).
@@ -644,17 +653,17 @@
 					const request = sourceCodeLensLookupRequest(codeLens);
 					if (!request || token.isCancellationRequested) return codeLens;
 
-					const count = await sourceCodeLensReferenceCount(model, request);
+					const counted = await sourceCodeLensReferenceCount(model, request);
 					if (token.isCancellationRequested) return codeLens;
 					// Unknown count (no LSP / skipped large-repo scan) ⇒ leave the lens
 					// without a command so Monaco shows no "N references" instead of "0".
-					if (count === null) return codeLens;
+					if (counted === null) return codeLens;
 
 					return {
 						...codeLens,
 						command: {
 							id: codeLensReferenceCommandId,
-							title: formatReferenceCodeLensTitle(count),
+							title: formatReferenceCodeLensTitle(counted.count, counted.atLeast),
 							arguments: [request],
 						},
 					};
@@ -1385,25 +1394,39 @@
 	async function sourceCodeLensReferenceCount(
 		model: Monaco.editor.ITextModel,
 		request: SourceEditorLookupRequest
-	) {
+	): Promise<SourceEditorReferenceCount | null> {
 		const cacheKey = sourceCodeLensCountKey(model.uri.toString(), request);
 		const remembered = codeLensReferenceCountCache.get(cacheKey);
 		if (remembered && Date.now() - remembered.countedAt < sourceCodeLensCountMemoryMs) {
-			return remembered.count;
+			return remembered.count === null
+				? null
+				: { count: remembered.count, atLeast: remembered.atLeast };
 		}
 
 		const lookup = await onReferenceCountLookup?.(request);
 		// null/undefined ⇒ the count is unknown (no scan yet, or the scan ran out
 		// of time). Cache and return null so the lens renders without a count
 		// rather than "0".
-		const nextCount = typeof lookup === "number" ? Math.max(0, lookup) : null;
-		codeLensReferenceCountCache.set(cacheKey, { count: nextCount, countedAt: Date.now() });
-		return nextCount;
+		const next: SourceEditorReferenceCount | null =
+			typeof lookup === "number"
+				? { count: Math.max(0, lookup), atLeast: false }
+				: lookup && typeof lookup.count === "number"
+					? { count: Math.max(0, lookup.count), atLeast: lookup.atLeast === true }
+					: null;
+		codeLensReferenceCountCache.set(cacheKey, {
+			count: next?.count ?? null,
+			atLeast: next?.atLeast ?? false,
+			countedAt: Date.now(),
+		});
+		return next;
 	}
 
-	function formatReferenceCodeLensTitle(count: number) {
-		const suffix = count >= 50 ? "+" : "";
-		return `${count}${suffix} ${count === 1 ? "reference" : "references"}`;
+	// No "+" after fifty any more — a full pass gives the exact number. A pass
+	// that could not read everything says "at least", because the tally covers
+	// only the files it reached and the real number can only be higher.
+	function formatReferenceCodeLensTitle(count: number, atLeast: boolean) {
+		const word = count === 1 ? "reference" : "references";
+		return atLeast ? `at least ${count} ${word}` : `${count} ${word}`;
 	}
 
 	function encodeSemanticTokens(tokens: SourceSemanticToken[]): Uint32Array {

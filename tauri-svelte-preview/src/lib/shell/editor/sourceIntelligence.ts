@@ -58,19 +58,24 @@ import {
   findSourceLspSemanticTokensFromTauri,
   findSourceLspSignatureHelpFromTauri,
   findSourceReferencesFromTauri,
+  isNativeTauriRuntime,
   readSourceFromTauri,
   readSourceLspDiagnosticsFromTauri
 } from '../../tauriSource.ts';
+import { hasBackendCapability } from '../backendCapabilities.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { activateEditor } from './editorStore.svelte.ts';
-import { createReferenceCountBatcher } from './referenceCountBatcher.ts';
+import { createReferenceCountBatcher, type CodeLensCount } from './referenceCountBatcher.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
 
 /** Most definitions one lookup will return. */
 export const maxSourceDefinitionResults = 20;
-/** Most references (and reference counts) one lookup will return. */
+/**
+ * Most references one "find references" click will list. The margin counts do
+ * NOT use this — they are exact numbers now, not "50+".
+ */
 export const maxSourceReferenceResults = 50;
 /** Most completion items one lookup will return. */
 export const maxSourceCompletionResults = 50;
@@ -132,7 +137,7 @@ export interface SourceInlayHintRequest {
 export interface SourceIntelligenceCallbacks {
   onDefinitionLookup(request: SourceLookupRequest): Promise<SourceDefinitionTarget[]>;
   onReferenceLookup(request: SourceLookupRequest): Promise<SourceReferenceTarget[]>;
-  onReferenceCountLookup(request: SourceLookupRequest): Promise<number | null>;
+  onReferenceCountLookup(request: SourceLookupRequest): Promise<CodeLensCount | null>;
   onExternalPreviewLookup(record: SourceRecord): Promise<SourcePreview | null>;
   onHoverLookup(request: SourceLookupRequest): Promise<SourceLspHover | null>;
   onCompletionLookup(request: SourceLookupRequest): Promise<SourceCompletionItem[]>;
@@ -194,6 +199,25 @@ function answerOrGiveUp<T>(lookup: Promise<T | null>, deadlineMs: number): Promi
       }
     );
   });
+}
+
+/**
+ * Can whatever is behind this page count references in one pass?
+ *
+ * In the desktop app the answer is a promise the backend makes by name, because
+ * a desktop build older than this page would quietly answer nothing at all
+ * rather than failing — see `backendCapabilities.ts`. In the browser preview
+ * there is nothing to check: the counting is served by the same dev server that
+ * served this page, so the two are never out of step.
+ *
+ * When the answer is no, margin counts are simply not drawn. The way they were
+ * worked out before — one reading of the whole project per symbol, a hundred or
+ * more of them as a file opened — is what made the editor stop responding for
+ * ten seconds, so it is not somewhere worth falling back to.
+ */
+async function backendCanCountReferences(): Promise<boolean> {
+  if (!isNativeTauriRuntime()) return true;
+  return hasBackendCapability('referenceCounts');
 }
 
 /**
@@ -333,9 +357,14 @@ export function createSourceIntelligence(): SourceIntelligence {
   const referenceCountBatcher = createReferenceCountBatcher({
     windowMs: codeLensReferenceCountBatchWindowMs,
     cacheMs: codeLensReferenceCountCacheMs,
-    maxCount: maxSourceReferenceResults,
-    countReferences(symbolNames: string[]) {
-      if (!projectRoot) return Promise.resolve(null);
+    // Uncapped: the count is now an exact number the backend worked out in one
+    // pass, so there is no reason to round it off to "50+". The old ceiling
+    // existed because each count cost its own reading of the project and was
+    // stopped early to keep that affordable.
+    maxCount: Number.POSITIVE_INFINITY,
+    async countReferences(symbolNames: string[]) {
+      if (!projectRoot) return null;
+      if (!(await backendCanCountReferences())) return null;
       countInvoke('count_source_references');
       return countSourceReferencesFromTauri(
         projectRoot,
@@ -373,7 +402,7 @@ export function createSourceIntelligence(): SourceIntelligence {
    */
   async function countReferencesForCodeLens(
     request: SourceLookupRequest
-  ): Promise<number | null> {
+  ): Promise<CodeLensCount | null> {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return null;
     return referenceCountBatcher.count(symbolName);
@@ -585,4 +614,62 @@ export function activate(projectRoot?: string | null): void {
 /** Forget one file's remembered contents (call after that file is written). */
 export function invalidatePreview(path: string): void {
   sourceIntelligence.invalidatePreview(path);
+}
+
+/** What came back from turning the C# language server off or on. */
+export interface CsharpLanguageServerToggleResult {
+  /** Whether the server is allowed to run now. */
+  enabled: boolean;
+  /** How many running servers were stopped (0 when it was not running). */
+  stoppedServers: number;
+  /** A whole sentence to show the reader. */
+  message: string;
+  /** False when this build of the app has no such switch; `message` says so. */
+  supported: boolean;
+}
+
+/**
+ * Turn the C# language server off or on.
+ *
+ * The C# server is by far the most expensive thing the app starts — around
+ * 800MB once it has read a large solution — and a reader who is not writing C#
+ * gets nothing back for it. Switching it off keeps the margin counts and the
+ * project-wide search working, because those read the files directly; what goes
+ * away is the squiggles under mistakes and the precision of go-to-definition on
+ * an overloaded name.
+ *
+ * Call this on start-up with the reader's saved setting as well as when the
+ * switch is flipped: the desktop app forgets between launches and starts the
+ * server allowed.
+ */
+export async function setCsharpLanguageServerEnabled(
+  enabled: boolean
+): Promise<CsharpLanguageServerToggleResult> {
+  const unsupported: CsharpLanguageServerToggleResult = {
+    enabled: true,
+    stoppedServers: 0,
+    supported: false,
+    message:
+      'This build of the app cannot do this yet — restart the desktop app after updating.'
+  };
+
+  if (!isNativeTauriRuntime()) return unsupported;
+  if (!(await hasBackendCapability('csharpLanguageServerToggle'))) return unsupported;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    countInvoke('set_csharp_language_server_enabled');
+    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
+      'set_csharp_language_server_enabled',
+      { enabled }
+    );
+    return { ...result, supported: true };
+  } catch {
+    return {
+      enabled: !enabled,
+      stoppedServers: 0,
+      supported: true,
+      message: 'The C# language server setting could not be changed just now. Please try again.'
+    };
+  }
 }

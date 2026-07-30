@@ -112,6 +112,10 @@ pub struct ReferenceCountPass {
     pub counts: Vec<u32>,
     pub scanned_files: usize,
     pub ran_out_of_time: bool,
+    /// True when at least one file on the list was never counted — too big for
+    /// the size ceiling, or unreadable. The totals are then floors, not exact
+    /// numbers, and the caller must say so rather than present them as exact.
+    pub skipped_files: bool,
 }
 
 /// Read every file once and count all of the symbols in it, spread across the
@@ -136,6 +140,7 @@ pub fn count_reference_lines_across_files(
         .clamp(1, MAX_REFERENCE_COUNT_WORKERS);
     let next_file = AtomicUsize::new(0);
     let ran_out_of_time = AtomicBool::new(false);
+    let skipped_files = AtomicBool::new(false);
     let mut counts = vec![0u32; plan.len()];
     let mut scanned_files = 0;
 
@@ -144,6 +149,7 @@ pub fn count_reference_lines_across_files(
             .map(|_| {
                 let next_file = &next_file;
                 let ran_out_of_time = &ran_out_of_time;
+                let skipped_files = &skipped_files;
                 scope.spawn(move || {
                     let mut tally = ReferenceCountTally::new(plan.len());
                     let mut scanned = 0;
@@ -162,9 +168,11 @@ pub fn count_reference_lines_across_files(
                         }
 
                         if file.byte_count > max_file_bytes {
+                            skipped_files.store(true, Ordering::Relaxed);
                             continue;
                         }
                         let Ok(bytes) = std::fs::read(file.path) else {
+                            skipped_files.store(true, Ordering::Relaxed);
                             continue;
                         };
                         scanned += 1;
@@ -191,6 +199,7 @@ pub fn count_reference_lines_across_files(
         counts,
         scanned_files,
         ran_out_of_time: ran_out_of_time.load(Ordering::Relaxed),
+        skipped_files: skipped_files.load(Ordering::Relaxed),
     }
 }
 
@@ -353,6 +362,103 @@ mod tests {
         );
 
         assert_eq!(counts, vec![1]);
+    }
+
+    /// A directory of this test's own, named so two tests running at once
+    /// cannot land in the same one.
+    fn unique_temp_root(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("reference-counts-{label}-{stamp}"));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_pass_that_read_every_file_says_nothing_was_skipped() {
+        let root = unique_temp_root("read-everything");
+        let small = root.join("Small.cs");
+        std::fs::write(&small, "var detector = new FormatDetector();\n").unwrap();
+
+        let files = vec![ReferenceCountFile {
+            path: small.as_path(),
+            byte_count: std::fs::metadata(&small).unwrap().len(),
+        }];
+        let names = vec!["FormatDetector".to_string()];
+        let plan = ReferenceCountPlan::new(&names);
+        let pass = count_reference_lines_across_files(
+            &files,
+            &plan,
+            Instant::now() + std::time::Duration::from_secs(30),
+            1_000_000,
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(pass.counts, vec![1]);
+        assert_eq!(pass.scanned_files, 1);
+        assert!(!pass.skipped_files, "every file was read, so none was skipped");
+        assert!(!pass.ran_out_of_time);
+    }
+
+    #[test]
+    fn a_file_too_big_to_read_makes_the_totals_a_floor() {
+        let root = unique_temp_root("too-big");
+        let small = root.join("Small.cs");
+        let big = root.join("Big.cs");
+        std::fs::write(&small, "var detector = new FormatDetector();\n").unwrap();
+        std::fs::write(&big, "FormatDetector\n".repeat(200)).unwrap();
+
+        let files = vec![
+            ReferenceCountFile {
+                path: small.as_path(),
+                byte_count: std::fs::metadata(&small).unwrap().len(),
+            },
+            ReferenceCountFile {
+                path: big.as_path(),
+                byte_count: std::fs::metadata(&big).unwrap().len(),
+            },
+        ];
+        let names = vec!["FormatDetector".to_string()];
+        let plan = ReferenceCountPlan::new(&names);
+        let pass = count_reference_lines_across_files(
+            &files,
+            &plan,
+            Instant::now() + std::time::Duration::from_secs(30),
+            64,
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(pass.scanned_files, 1, "the oversized file was never opened");
+        assert_eq!(pass.counts, vec![1], "so its 200 mentions are missing");
+        assert!(
+            pass.skipped_files,
+            "and the pass must say a file was left out, or the total looks exact"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_anymore_makes_the_totals_a_floor() {
+        let root = unique_temp_root("unreadable");
+        let missing = root.join("Gone.cs");
+
+        let files = vec![ReferenceCountFile {
+            path: missing.as_path(),
+            byte_count: 20,
+        }];
+        let names = vec!["FormatDetector".to_string()];
+        let plan = ReferenceCountPlan::new(&names);
+        let pass = count_reference_lines_across_files(
+            &files,
+            &plan,
+            Instant::now() + std::time::Duration::from_secs(30),
+            1_000_000,
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(pass.scanned_files, 0);
+        assert!(pass.skipped_files);
     }
 
     #[test]

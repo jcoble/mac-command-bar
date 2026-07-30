@@ -24,7 +24,13 @@
  */
 import { clearLayout, loadLayout, saveLayout, type LayoutStorage } from './layoutStorage.ts';
 
-export type SidebarViewId = 'explorer' | 'source-control' | 'worktrees' | 'stacks' | 'context';
+export type SidebarViewId =
+  | 'explorer'
+  | 'source-control'
+  | 'worktrees'
+  | 'stacks'
+  | 'context'
+  | 'problems';
 
 export interface SidebarView {
   id: SidebarViewId;
@@ -32,13 +38,42 @@ export interface SidebarView {
   title: string;
 }
 
-/** Top to bottom, in the order the activity bar draws them. */
+/**
+ * The Problems list, which the user can ask for in this column rather than in
+ * the strip along the bottom (`settings.panels.problemsLocation === 'right'`).
+ */
+export const PROBLEMS_VIEW_ID: SidebarViewId = 'problems';
+
+/** Its row in the roster below. */
+export const PROBLEMS_SIDEBAR_VIEW: SidebarView = {
+  id: PROBLEMS_VIEW_ID,
+  title: 'Problems'
+};
+
+/** The collapsible pane the tool column builds for it, matching `PANES` in
+ * `ShellSidebar.svelte` (`{ id, title }`, one per view). */
+export const PROBLEMS_SIDEBAR_PANE: { id: string; title: string } = {
+  id: 'problems',
+  title: 'Problems'
+};
+
+/**
+ * Top to bottom, in the order the activity bar draws them.
+ *
+ * Problems is always in this list even though its icon usually is not. The tool
+ * column builds one container per row here, once, when it mounts; a roster that
+ * grew and shrank with a setting would tear those containers down and put them
+ * back, losing whatever was in them. So the container is always there and the
+ * ACTIVITY BAR decides whether to offer the icon — see `ActivityBar.svelte`,
+ * which draws Problems only while the setting asks for it.
+ */
 export const SIDEBAR_VIEWS: readonly SidebarView[] = [
   { id: 'explorer', title: 'Explorer' },
   { id: 'source-control', title: 'Source control' },
   { id: 'worktrees', title: 'Worktrees' },
-  { id: 'stacks', title: 'Stacks' },
-  { id: 'context', title: 'Context' }
+  { id: 'stacks', title: 'Run' },
+  { id: 'context', title: 'Context' },
+  PROBLEMS_SIDEBAR_VIEW
 ];
 
 /** The view a first launch opens on, and the one a reset goes back to. */

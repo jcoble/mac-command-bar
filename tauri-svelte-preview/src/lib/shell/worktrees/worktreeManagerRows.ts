@@ -62,6 +62,12 @@ export type WorktreeChipTone = 'danger' | 'warn' | 'info';
 export interface WorktreeChip {
   id: 'dirty' | 'unmerged' | 'locked' | 'prunable';
   label: string;
+  /**
+   * The same thing in as few characters as it can be said in, for the closed
+   * row — where the branch, the chips and the buttons all share one line and
+   * the full label would push the branch name off the end of it.
+   */
+  short: string;
   /** The longer sentence behind it, shown on hover. */
   title: string;
   tone: WorktreeChipTone;
@@ -87,6 +93,14 @@ export interface WorktreeManagerRow {
   taskId: string | null;
   /** This is the repository's main checkout. It is never removable. */
   isPrimary: boolean;
+  /**
+   * The folder is no longer on disk and only git's note about it is left.
+   *
+   * This row has nothing to back up and nothing to delete, so it gets one
+   * action of its own ("Clear this entry") rather than the three that belong to
+   * a worktree that still exists.
+   */
+  folderGone: boolean;
   /** "3h ago", or "no activity recorded". */
   age: string;
   /** The stamp the age was worked out from, for hovering. */
@@ -268,6 +282,7 @@ export function worktreeChips(worktree: ProjectWorktree): WorktreeChip[] {
     chips.push({
       id: 'dirty',
       label: 'Uncommitted changes',
+      short: 'Uncommitted',
       title: 'Files here have been changed and never committed.',
       tone: 'warn'
     });
@@ -276,6 +291,7 @@ export function worktreeChips(worktree: ProjectWorktree): WorktreeChip[] {
     chips.push({
       id: 'unmerged',
       label: 'Commits not pushed',
+      short: 'Not pushed',
       title: 'This branch has commits that are on no remote.',
       tone: 'warn'
     });
@@ -285,6 +301,7 @@ export function worktreeChips(worktree: ProjectWorktree): WorktreeChip[] {
     chips.push({
       id: 'locked',
       label: 'Locked',
+      short: 'Locked',
       title: reason
         ? `Someone locked this worktree because: ${reason}.`
         : 'Someone locked this worktree, with no reason given.',
@@ -296,6 +313,7 @@ export function worktreeChips(worktree: ProjectWorktree): WorktreeChip[] {
     chips.push({
       id: 'prunable',
       label: 'Folder is gone',
+      short: 'Folder gone',
       title: reason
         ? `The folder is no longer on disk: ${reason}. Only git's note about it is left.`
         : "The folder is no longer on disk. Only git's note about it is left.",
@@ -367,6 +385,7 @@ export function buildWorktreeManagerRows(input: WorktreeManagerInput): WorktreeM
       folderName: worktreeFolderName(worktree.path),
       taskId: taskId === '' ? null : taskId,
       isPrimary,
+      folderGone: !isPrimary && isPrunable(worktree),
       age: describeWorktreeAge(worktree.lastActivity, now),
       lastActivity: worktree.lastActivity,
       chips: worktreeChips(worktree),
@@ -454,6 +473,206 @@ export function describeForcedRemoval(row: WorktreeManagerRow): string[] {
     lines.push(`Deletes the folder ${row.path} and the note git keeps about it.`);
   }
   return lines;
+}
+
+// ── the facts under an open row ──────────────────────────────────────────────
+
+/** One labelled fact in an open row's detail block. */
+export interface WorktreeFact {
+  label: string;
+  value: string;
+  /** The raw timestamp behind a relative one, for hovering. '' when there is none. */
+  stamp: string;
+}
+
+/**
+ * What an open row says about itself, as labelled facts.
+ *
+ * These used to run along the CLOSED row as one line with "·" between them,
+ * which is how a row with nothing to say ended up reading "· / no activity
+ * recorded / · / No session has worked here" stacked over four lines in a narrow
+ * pane. A fact with nothing in it is left out here instead, so there is never a
+ * separator with empty space on both sides of it.
+ */
+export function worktreeFacts(row: WorktreeManagerRow): WorktreeFact[] {
+  const facts: WorktreeFact[] = [];
+  if (row.path) {
+    facts.push({
+      label: 'Folder',
+      value: row.folderGone ? `${row.path} — not on disk any more` : row.path,
+      stamp: ''
+    });
+  }
+  facts.push({ label: 'Last activity', value: row.age, stamp: row.lastActivity ?? '' });
+  if (row.aheadBehindLabel) {
+    facts.push({ label: 'Remote', value: row.aheadBehindLabel, stamp: '' });
+  }
+  facts.push({ label: 'Sessions', value: row.sessionsLabel, stamp: '' });
+  return facts;
+}
+
+// ── the question asked before anything is removed ────────────────────────────
+
+/** The three removals this pane can start. Each asks its own question first. */
+export type WorktreeRemovalKind = 'remove' | 'clear' | 'force';
+
+/**
+ * Whether the desktop app has said it can do a particular thing. Spelled out
+ * here rather than imported from the store, so this file stays pure.
+ */
+export type WorktreeCapabilityState = 'unknown' | 'available' | 'unavailable';
+
+/** Everything the confirmation dialog needs to say and do. */
+export interface WorktreeRemovalQuestion {
+  kind: WorktreeRemovalKind;
+  title: string;
+  /** The paragraph under the title. */
+  intro: string;
+  /** One sentence per thing that will happen, in the order it matters. */
+  lines: string[];
+  /** The word on the button that goes through with it. */
+  confirmLabel: string;
+  /** The word on the button that does not. */
+  cancelLabel: string;
+  /** The folder's own name has to be typed before the button works. */
+  requiresTypedName: boolean;
+  /** This one can lose work, so its button is drawn in the danger colour. */
+  destructive: boolean;
+}
+
+/** What the pane knows when it asks the question. */
+export interface WorktreeRemovalContext {
+  kind: WorktreeRemovalKind;
+  /** Whether this build can clear ONE folder-gone row instead of all of them. */
+  pruneSingleRow: WorktreeCapabilityState;
+  /** The branches of the OTHER rows whose folder is gone, for the honest count. */
+  otherFolderGoneBranches: string[];
+}
+
+function listBranches(branches: string[]): string {
+  const named = branches.slice(0, 4);
+  const rest = branches.length - named.length;
+  const quoted = named.map((branch) => `“${branch}”`).join(', ');
+  return rest > 0 ? `${quoted} and ${rest} more` : quoted;
+}
+
+/**
+ * What clearing a folder-gone row would take with it besides that row.
+ *
+ * This is the sentence a real person needed and did not get: they pressed the
+ * button on one row whose folder was gone, and BOTH of their stale rows
+ * disappeared, because the desktop app answered by running git's repo-wide
+ * tidy-up. An app build that can clear one row says so; one that cannot says
+ * that, plainly, before anything happens.
+ */
+function collateralClearLines(context: WorktreeRemovalContext): string[] {
+  const others = context.otherFolderGoneBranches.filter((branch) => branch.trim() !== '');
+  const alsoCleared =
+    others.length === 0
+      ? []
+      : [
+          `Right now that would also clear ${others.length} other ${
+            others.length === 1 ? 'row' : 'rows'
+          }: ${listBranches(others)}.`
+        ];
+
+  if (context.pruneSingleRow === 'available') {
+    return ['Only this row is cleared. Every other row is left exactly as it is.'];
+  }
+  if (context.pruneSingleRow === 'unknown') {
+    return [
+      'The app has not answered yet whether it can clear this row on its own. If it cannot, clearing this row will also clear every other row whose folder is gone.',
+      ...alsoCleared
+    ];
+  }
+  return [
+    'Because this app build is older, clearing this row will also clear every other row whose folder is gone.',
+    ...alsoCleared
+  ];
+}
+
+/**
+ * The whole confirmation dialog, worked out here so it can be read in a test
+ * rather than clicked through in an app.
+ *
+ * Every removal path goes through one of these — including the folder-gone row,
+ * which used to act on the first click with nothing asked.
+ */
+export function describeRemovalQuestion(
+  row: WorktreeManagerRow,
+  context: WorktreeRemovalContext
+): WorktreeRemovalQuestion {
+  if (context.kind === 'clear') {
+    return {
+      kind: 'clear',
+      title: `Clear git’s record of “${row.branch}”?`,
+      intro:
+        'The folder is already gone. This only clears git’s records for it — nothing on disk is touched.',
+      lines: [
+        `Removes the note git keeps that a worktree for this branch used to be at ${row.path}.`,
+        `The branch “${row.branch}” itself stays in the repository.`,
+        ...collateralClearLines(context)
+      ],
+      confirmLabel: 'Clear this entry',
+      cancelLabel: 'Leave it alone',
+      requiresTypedName: false,
+      destructive: false
+    };
+  }
+
+  if (context.kind === 'force') {
+    return {
+      kind: 'force',
+      title: `Delete the folder “${row.folderName}” and everything left in it?`,
+      intro: `The branch “${row.branch}” stays in the repository. The folder on disk does not, and neither does anything below.`,
+      lines: describeForcedRemoval(row),
+      confirmLabel: 'Delete it',
+      cancelLabel: 'Keep it',
+      requiresTypedName: true,
+      destructive: true
+    };
+  }
+
+  const lines = [
+    `Deletes the folder ${row.path} from your disk.`,
+    'Nothing in it has been changed without being committed, and nothing is locked — the app checks again as it goes, and refuses if that has changed since this list was read.',
+    `The branch “${row.branch}” stays in the repository.`
+  ];
+  const ahead = row.aheadBehind?.ahead ?? 0;
+  if (ahead > 0) {
+    lines.push(`This branch still has ${commits(ahead)} that its remote does not have.`);
+  }
+  if (row.sessions.length > 0) {
+    const running = row.sessions.filter((link) => link.isRunning).length;
+    const count = `${row.sessions.length} ${row.sessions.length === 1 ? 'session' : 'sessions'}`;
+    lines.push(
+      running > 0
+        ? `${count} still point at this folder, and ${running === 1 ? 'one is' : `${running} are`} running right now.`
+        : `${count} worked in this folder and will point at nothing afterwards.`
+    );
+  }
+
+  return {
+    kind: 'remove',
+    title: `Remove the worktree “${row.branch}”?`,
+    intro:
+      'This is the careful remove: the desktop app stops and says so if it finds anything here that was never saved anywhere else.',
+    lines,
+    confirmLabel: 'Remove it',
+    cancelLabel: 'Keep it',
+    requiresTypedName: false,
+    destructive: false
+  };
+}
+
+/** The branches of every OTHER row whose folder is gone, for the clear dialog. */
+export function otherFolderGoneBranches(
+  rows: WorktreeManagerRow[],
+  row: WorktreeManagerRow
+): string[] {
+  return rows
+    .filter((other) => other.folderGone && other.path !== row.path)
+    .map((other) => other.branch);
 }
 
 /** The rows whose branch, task, folder or path contains what was typed. */

@@ -20,11 +20,19 @@
    * The collapsible's content is hidden with the `hidden` attribute, which any
    * display rule of ours would beat, so the layout classes live on the div
    * inside it and never on the content itself.
+   *
+   * HOW MUCH HISTORY IS HERE. The list starts at the newest 24 commits and
+   * grows on request. The count beside the heading says "so far" until a read
+   * comes back short, and the line under the list says what actually came back
+   * — never "that is all of them" — because an app build that reads fewer
+   * commits than this panel asks for looks exactly like a repository that has
+   * run out of history, and the two must not be confused.
    */
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
+  import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
   import {
@@ -44,8 +52,13 @@
     type GitCommitFilesState
   } from '$lib/shell/git/gitCommitFilesStore.svelte';
   import type { GitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
-  import type { GitPanelState } from '$lib/shell/git/gitPanelStore.svelte';
-  import type { GitService } from '$lib/shell/git/gitService';
+  import {
+    canLoadMoreGitHistory,
+    describeGitHistoryCount,
+    describeGitHistoryFooter,
+    type GitPanelState
+  } from '$lib/shell/git/gitPanelStore.svelte';
+  import { COMMIT_HISTORY_PAGE, type GitService } from '$lib/shell/git/gitService';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { cn } from '$lib/utils';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
@@ -86,7 +99,13 @@
   ];
 
   const commits = $derived(buildGitCommitGraphRows(panel.history));
+  // The lane assignment reads every commit's parents, so it is always handed the
+  // whole accumulated list — which is why loading more replaces the list rather
+  // than appending a page to it.
   const layout = $derived(assignGitGraphLanes(panel.history));
+  const historyCount = $derived(describeGitHistoryCount(panel));
+  const historyFooter = $derived(describeGitHistoryFooter(panel));
+  const canLoadMore = $derived(canLoadMoreGitHistory(panel));
   const drawnLanes = $derived(Math.min(layout.laneCount, MAX_DRAWN_LANES));
   const graphWidth = $derived(
     Math.max(gitGraphLaneWidth(drawnLanes, LANE_SPACING, LANE_OFFSET), LANE_OFFSET * 2)
@@ -177,7 +196,9 @@
         <ChevronRight class="size-3 shrink-0" aria-hidden="true" />
       {/if}
       <span>Commits</span>
-      <span class="ml-auto normal-case text-[var(--color-text-3)]">{panel.history.length}</span>
+      <span class="ml-auto normal-case text-[var(--color-text-3)]" title={historyFooter}>
+        {historyCount}
+      </span>
     </button>
     <button
       type="button"
@@ -196,7 +217,7 @@
 
   {#if open}
     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-2">
-      {#if panel.historyError}
+      {#if panel.historyError && commits.length === 0}
         <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-bad)]">
           {panel.historyError}
         </p>
@@ -357,6 +378,36 @@
             </Collapsible.Content>
           </Collapsible.Root>
         {/each}
+
+        <!-- How much of the history is on screen, and how to get more of it.
+             Inside the scrolling list on purpose: it belongs to the end of the
+             list, the way the bottom of a page belongs to the page. -->
+        <div class="flex shrink-0 flex-col gap-1 px-2 pt-1.5">
+          {#if panel.historyError}
+            <p class="text-[12px] leading-[16px] text-[var(--color-bad)]">
+              {panel.historyError}
+            </p>
+          {/if}
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+            {historyFooter}
+          </p>
+          {#if canLoadMore || panel.historyLoadingMore}
+            <button
+              type="button"
+              class={cn(
+                buttonVariants({ variant: 'outline', size: 'xs' }),
+                'w-full text-[12px] font-normal'
+              )}
+              disabled={!canLoadMore}
+              title="Read another {COMMIT_HISTORY_PAGE} commits further back in this branch's history"
+              onclick={() => void service.loadMoreHistory()}
+            >
+              {panel.historyLoadingMore
+                ? 'Reading older commits…'
+                : `Load ${COMMIT_HISTORY_PAGE} more`}
+            </button>
+          {/if}
+        </div>
       {/if}
     </div>
   {/if}

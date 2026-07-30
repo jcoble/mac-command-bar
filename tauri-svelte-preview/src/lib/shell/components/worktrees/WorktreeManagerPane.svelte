@@ -20,6 +20,11 @@
    *  - Delete anyway is the only button that can lose work, and it goes through
    *    a dialog that lists what dies and asks for the folder name typed out.
    *
+   * EVERY one of those, and the quiet "Clear this entry" on a row whose folder
+   * is already gone, is asked about first. That last one is why: it used to act
+   * on the first click, and on an app build that clears folder-gone rows
+   * together it took another row with it, which nobody had been told.
+   *
    * The rows themselves are worked out by `worktreeManagerRows.ts` (pure and
    * tested); this file arranges them and nothing else.
    */
@@ -29,9 +34,12 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import {
     buildWorktreeManagerRows,
+    describeRemovalQuestion,
     filterWorktreeRows,
+    otherFolderGoneBranches,
     summarizeWorktreeManager,
-    type WorktreeManagerRow
+    type WorktreeManagerRow,
+    type WorktreeRemovalKind
   } from '$lib/shell/worktrees/worktreeManagerRows';
   import {
     toggleWorktreeDetail,
@@ -39,12 +47,13 @@
   } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import {
     archiveWorktree,
+    clearWorktreeEntry,
     forceRemoveWorktree,
     refresh,
     removeWorktree
   } from '$lib/shell/worktrees/worktreeManagerService';
 
-  import ForceRemoveDialog from './ForceRemoveDialog.svelte';
+  import RemoveWorktreeDialog from './RemoveWorktreeDialog.svelte';
   import WorktreeDetail from './WorktreeDetail.svelte';
   import WorktreeRow from './WorktreeRow.svelte';
 
@@ -58,8 +67,8 @@
   }
   let { onOpenSession }: Props = $props();
 
-  /** The worktree the "delete it anyway" question is being asked about. */
-  let asking = $state<WorktreeManagerRow | null>(null);
+  /** The row a removal question is open about, and which question it is. */
+  let asking = $state<{ row: WorktreeManagerRow; kind: WorktreeRemovalKind } | null>(null);
 
   const rows = $derived(
     buildWorktreeManagerRows({
@@ -75,14 +84,33 @@
   /** The filter is hiding rows, and saying so beats an unexplained short list. */
   const hiddenByFilter = $derived(rows.length - shown.length);
 
-  function askForceRemove(row: WorktreeManagerRow): void {
-    asking = row;
+  /**
+   * The open question, written out by the pure function so the exact wording —
+   * including the sentence about an older app build clearing more than one row
+   * — can be read in a test.
+   */
+  const question = $derived(
+    asking
+      ? describeRemovalQuestion(asking.row, {
+          kind: asking.kind,
+          pruneSingleRow: worktreeManager.pruneSingleRowSupport,
+          otherFolderGoneBranches: otherFolderGoneBranches(rows, asking.row)
+        })
+      : null
+  );
+
+  function ask(row: WorktreeManagerRow, kind: WorktreeRemovalKind): void {
+    asking = { row, kind };
   }
 
-  function confirmForceRemove(): void {
-    const row = asking;
+  /** Do the thing that was asked about, whichever of the three it was. */
+  function confirmAsked(): void {
+    const open = asking;
     asking = null;
-    if (row) void forceRemoveWorktree(row.path);
+    if (!open) return;
+    if (open.kind === 'clear') void clearWorktreeEntry(open.row.path, open.row.branch);
+    else if (open.kind === 'force') void forceRemoveWorktree(open.row.path);
+    else void removeWorktree(open.row.path);
   }
 </script>
 
@@ -168,9 +196,10 @@
               {paneBusy}
               forceSupport={worktreeManager.forceRemoveSupport}
               onToggle={() => toggleWorktreeDetail(row.path)}
-              onRemove={() => void removeWorktree(row.path)}
+              onAskRemove={() => ask(row, 'remove')}
               onArchive={() => void archiveWorktree(row.path)}
-              onAskForceRemove={() => askForceRemove(row)}
+              onAskClear={() => ask(row, 'clear')}
+              onAskForceRemove={() => ask(row, 'force')}
             >
               {#snippet detail()}
                 <WorktreeDetail {row} {onOpenSession} />
@@ -189,11 +218,12 @@
   {/if}
 </div>
 
-<ForceRemoveDialog
-  row={asking}
+<RemoveWorktreeDialog
+  {question}
+  folderName={asking?.row.folderName ?? ''}
   open={asking !== null}
   onOpenChange={(open) => {
     if (!open) asking = null;
   }}
-  onConfirm={confirmForceRemove}
+  onConfirm={confirmAsked}
 />

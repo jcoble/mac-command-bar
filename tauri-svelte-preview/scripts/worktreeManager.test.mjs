@@ -19,16 +19,19 @@ import {
   buildWorktreeManagerRows,
   describeAheadBehind,
   describeForcedRemoval,
+  describeRemovalQuestion,
   describeSessions,
   describeWorktreeAge,
   filterWorktreeRows,
   findAheadBehind,
   normalizeWorktreePath,
+  otherFolderGoneBranches,
   primaryCheckoutPath,
   safeRemoveBlockedReason,
   sessionsForWorktree,
   summarizeWorktreeManager,
   worktreeChips,
+  worktreeFacts,
   worktreeFolderName
 } from '../src/lib/shell/worktrees/worktreeManagerRows.ts';
 
@@ -399,6 +402,184 @@ const NOW = new Date('2026-07-29T12:00:00Z');
   const losses = describeForcedRemoval(row);
   assert.equal(losses.length, 1);
   assert.match(losses[0], /deletes the folder/i);
+}
+
+// ── the question asked before anything is removed ────────────────────────────
+// A real person clicked the button on ONE row whose folder was gone and watched
+// TWO rows disappear, with nothing asked and nothing said. These are the
+// sentences that stop that happening again, so they are checked word for word.
+{
+  const gone = worktree({
+    path: '/w/gone-one',
+    branch: 'tsk-31-gone-one',
+    isPrunable: true,
+    prunableReason: 'gitdir file points at nothing'
+  });
+  const alsoGone = worktree({ path: '/w/gone-two', branch: 'tsk-32-gone-two', isPrunable: true });
+  const rows = buildWorktreeManagerRows({
+    worktrees: [worktree({ path: PRIMARY, branch: 'main' }), gone, alsoGone],
+    repositories: [],
+    sessions: [],
+    primaryPath: PRIMARY,
+    now: NOW
+  });
+  const row = rows.find((entry) => entry.branch === 'tsk-31-gone-one');
+
+  // A row whose folder is gone is marked as such, and is the only kind of row
+  // that gets the single "Clear this entry" action.
+  assert.equal(row.folderGone, true);
+  assert.equal(row.chips.find((chip) => chip.id === 'prunable').short, 'Folder gone');
+  assert.deepEqual(otherFolderGoneBranches(rows, row), ['tsk-32-gone-two']);
+
+  // The app build that can clear one row promises exactly that.
+  const scoped = describeRemovalQuestion(row, {
+    kind: 'clear',
+    pruneSingleRow: 'available',
+    otherFolderGoneBranches: ['tsk-32-gone-two']
+  });
+  assert.equal(scoped.title, 'Clear git’s record of “tsk-31-gone-one”?');
+  assert.equal(
+    scoped.intro,
+    'The folder is already gone. This only clears git’s records for it — nothing on disk is touched.'
+  );
+  assert.equal(scoped.confirmLabel, 'Clear this entry');
+  assert.equal(scoped.requiresTypedName, false);
+  assert.equal(scoped.destructive, false);
+  assert.ok(scoped.lines.includes('Only this row is cleared. Every other row is left exactly as it is.'));
+  assert.ok(!scoped.lines.some((line) => line.includes('older')));
+
+  // The older app build says so, and names what else goes.
+  const wide = describeRemovalQuestion(row, {
+    kind: 'clear',
+    pruneSingleRow: 'unavailable',
+    otherFolderGoneBranches: ['tsk-32-gone-two']
+  });
+  assert.ok(
+    wide.lines.includes(
+      'Because this app build is older, clearing this row will also clear every other row whose folder is gone.'
+    )
+  );
+  assert.ok(
+    wide.lines.includes('Right now that would also clear 1 other row: “tsk-32-gone-two”.')
+  );
+
+  // Before the app has answered, nothing is claimed either way.
+  const unsure = describeRemovalQuestion(row, {
+    kind: 'clear',
+    pruneSingleRow: 'unknown',
+    otherFolderGoneBranches: []
+  });
+  assert.ok(unsure.lines.some((line) => line.startsWith('The app has not answered yet')));
+  assert.ok(!unsure.lines.some((line) => line.includes('Because this app build is older')));
+  assert.ok(!unsure.lines.some((line) => line.includes('Only this row is cleared')));
+}
+
+// The everyday remove is asked about too, and says what it will delete.
+{
+  const rows = buildWorktreeManagerRows({
+    worktrees: [
+      worktree({ path: PRIMARY, branch: 'main' }),
+      worktree({ path: '/w/clean', branch: 'tsk-40-clean' })
+    ],
+    repositories: [summary({ path: '/w/clean', ahead: 2, behind: 0 })],
+    sessions: [session({ cwd: '/w/clean', state: 'live' })],
+    primaryPath: PRIMARY,
+    now: NOW
+  });
+  const clean = rows.find((entry) => entry.branch === 'tsk-40-clean');
+  const question = describeRemovalQuestion(clean, {
+    kind: 'remove',
+    pruneSingleRow: 'available',
+    otherFolderGoneBranches: []
+  });
+  assert.equal(question.title, 'Remove the worktree “tsk-40-clean”?');
+  assert.equal(question.confirmLabel, 'Remove it');
+  assert.equal(question.requiresTypedName, false);
+  assert.ok(question.lines.includes('Deletes the folder /w/clean from your disk.'));
+  assert.ok(
+    question.lines.includes('This branch still has 2 commits that its remote does not have.')
+  );
+  assert.ok(question.lines.some((line) => line.includes('running right now')));
+}
+
+// The destructive one still asks for the folder name typed out.
+{
+  const rows = buildWorktreeManagerRows({
+    worktrees: [
+      worktree({ path: PRIMARY, branch: 'main' }),
+      worktree({ path: '/w/messy', branch: 'tsk-41-messy', isDirty: true })
+    ],
+    repositories: [],
+    sessions: [],
+    primaryPath: PRIMARY,
+    now: NOW
+  });
+  const messy = rows.find((entry) => entry.branch === 'tsk-41-messy');
+  const question = describeRemovalQuestion(messy, {
+    kind: 'force',
+    pruneSingleRow: 'available',
+    otherFolderGoneBranches: []
+  });
+  assert.equal(question.requiresTypedName, true);
+  assert.equal(question.destructive, true);
+  assert.equal(question.confirmLabel, 'Delete it');
+  assert.equal(question.title, 'Delete the folder “messy” and everything left in it?');
+  assert.deepEqual(question.lines, describeForcedRemoval(messy));
+}
+
+// ── the facts under an open row ──────────────────────────────────────────────
+// The closed row used to carry these separated by "·", so a row with nothing to
+// say showed separators around empty space. A fact with nothing in it is left
+// out here instead.
+{
+  const withNothing = buildWorktreeManagerRows({
+    worktrees: [
+      worktree({ path: PRIMARY, branch: 'main' }),
+      worktree({ path: '/w/quiet', branch: 'tsk-50-quiet' })
+    ],
+    repositories: [],
+    sessions: [],
+    primaryPath: PRIMARY,
+    now: NOW
+  }).find((entry) => entry.branch === 'tsk-50-quiet');
+  const facts = worktreeFacts(withNothing);
+  assert.deepEqual(
+    facts.map((fact) => fact.label),
+    ['Folder', 'Last activity', 'Sessions']
+  );
+  assert.ok(facts.every((fact) => fact.value.trim() !== ''));
+
+  const withRemote = buildWorktreeManagerRows({
+    worktrees: [
+      worktree({ path: PRIMARY, branch: 'main' }),
+      worktree({ path: '/w/loud', branch: 'tsk-51-loud', lastActivity: '2026-07-29T09:00:00Z' })
+    ],
+    repositories: [summary({ path: '/w/loud', ahead: 1, behind: 0 })],
+    sessions: [],
+    primaryPath: PRIMARY,
+    now: NOW
+  }).find((entry) => entry.branch === 'tsk-51-loud');
+  const loudFacts = worktreeFacts(withRemote);
+  assert.deepEqual(
+    loudFacts.map((fact) => fact.label),
+    ['Folder', 'Last activity', 'Remote', 'Sessions']
+  );
+  assert.equal(loudFacts.find((fact) => fact.label === 'Last activity').stamp, '2026-07-29T09:00:00Z');
+
+  const goneRow = buildWorktreeManagerRows({
+    worktrees: [
+      worktree({ path: PRIMARY, branch: 'main' }),
+      worktree({ path: '/w/vanished', branch: 'tsk-52-vanished', isPrunable: true })
+    ],
+    repositories: [],
+    sessions: [],
+    primaryPath: PRIMARY,
+    now: NOW
+  }).find((entry) => entry.branch === 'tsk-52-vanished');
+  assert.equal(
+    worktreeFacts(goneRow).find((fact) => fact.label === 'Folder').value,
+    '/w/vanished — not on disk any more'
+  );
 }
 
 // ── the filter box ───────────────────────────────────────────────────────────

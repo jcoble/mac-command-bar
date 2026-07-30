@@ -72,6 +72,16 @@ export type ContextRow =
   | ProjectWorktree
   | GitRepositorySummary;
 
+/**
+ * Whether the desktop app behind this window can do a named thing.
+ *
+ * `unknown` is the launch state — nobody has asked yet, so nothing may be
+ * offered on the strength of it. It is deliberately NOT the same as
+ * `unavailable`: a button greyed out because we have not asked yet and a button
+ * greyed out because this build genuinely cannot do it need different sentences.
+ */
+export type BackendSupport = 'unknown' | 'available' | 'unavailable';
+
 /** What the panel is loaded FOR: the projects to scan and the active project. */
 export interface ContextInput {
   /** Projects handed in by the shell; the scans that take a list use this. */
@@ -108,6 +118,12 @@ export const contextState = $state<{
   agents: ContextCard<AgentSession>;
   worktrees: ContextCard<ProjectWorktree>;
   repositories: ContextCard<GitRepositorySummary>;
+  /** Can this desktop build stop a running process? Asked once per launch. */
+  processKill: BackendSupport;
+  /** The process id currently being stopped, or `null` when none is. */
+  stoppingPid: number | null;
+  /** What the last stop did, in one sentence. `null` until one has been tried. */
+  lastProcessMessage: string | null;
 }>({
   activated: false,
   projects: [],
@@ -117,7 +133,10 @@ export const contextState = $state<{
   runtime: emptyCard<RuntimeContext>(),
   agents: emptyCard<AgentSession>(),
   worktrees: emptyCard<ProjectWorktree>(),
-  repositories: emptyCard<GitRepositorySummary>()
+  repositories: emptyCard<GitRepositorySummary>(),
+  processKill: 'unknown',
+  stoppingPid: null,
+  lastProcessMessage: null
 });
 
 function cardFor(key: ContextCardKey): ContextCard<ContextRow> {
@@ -215,6 +234,43 @@ export function markCardUnavailable(
   return true;
 }
 
+// ── Stopping one running process ──────────────────────────────────────────────
+
+/** Record what the desktop app answered about stopping processes. */
+export function setProcessKillSupport(support: BackendSupport): void {
+  contextState.processKill = support;
+}
+
+/**
+ * Mark that a stop has been sent for `pid`. The previous outcome sentence is
+ * cleared at the same moment: leaving the last stop's result on screen while a
+ * new one is in flight reads as though the new one has already answered.
+ */
+export function beginProcessStop(pid: number): void {
+  contextState.stoppingPid = pid;
+  contextState.lastProcessMessage = null;
+}
+
+/** Land the outcome of a stop, whatever it was. */
+export function finishProcessStop(message: string): void {
+  contextState.stoppingPid = null;
+  contextState.lastProcessMessage = message;
+}
+
+/**
+ * Why the "stop this process" button cannot be pressed, or `null` when it can.
+ *
+ * One place, so the greyed-out button and its tooltip can never disagree, and so
+ * "we have not asked yet" never gets reported as "this app cannot do it".
+ */
+export function processStopUnavailableReason(support: BackendSupport): string | null {
+  if (support === 'available') return null;
+  if (support === 'unknown') {
+    return 'Still asking this app what it can do — press refresh at the top of the panel.';
+  }
+  return 'This build of the app cannot do this yet — restart the desktop app after updating.';
+}
+
 /** Drop everything back to launch state. Used by tests and by a full reset. */
 export function resetContext(): void {
   contextState.activated = false;
@@ -226,6 +282,9 @@ export function resetContext(): void {
   contextState.agents = emptyCard<AgentSession>();
   contextState.worktrees = emptyCard<ProjectWorktree>();
   contextState.repositories = emptyCard<GitRepositorySummary>();
+  contextState.processKill = 'unknown';
+  contextState.stoppingPid = null;
+  contextState.lastProcessMessage = null;
 }
 
 // ── Plain-English summaries ───────────────────────────────────────────────────
@@ -326,6 +385,31 @@ export function summarizeAgents(agents: { provider?: string }[]): string {
   const shown = providers.slice(0, 3);
   const tail = providers.length > shown.length ? ` and ${providers.length - shown.length} more` : '';
   return `${label} from ${joinWords(shown)}${tail}`;
+}
+
+/**
+ * The agent sessions whose name, id, agent or folder contains `query`.
+ *
+ * Case-insensitive, and an empty query keeps everything. The whole list is
+ * searched, not only the handful of rows the card happens to be showing — that
+ * is the entire point of the search box, since a machine can easily carry four
+ * hundred sessions and the card shows six of them.
+ */
+export function filterAgentRows<
+  Row extends {
+    title?: string;
+    id?: string;
+    provider?: string;
+    projectPath?: string | null;
+  }
+>(rows: Row[], query: string): Row[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return rows;
+  return rows.filter((row) =>
+    [row.title, row.id, row.provider, row.projectPath].some((field) =>
+      (field ?? '').toLowerCase().includes(needle)
+    )
+  );
 }
 
 /** "4 worktrees, 2 with uncommitted changes". */

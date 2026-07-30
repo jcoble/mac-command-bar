@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * ContextPanel.svelte — the /next context region: five cards showing what is
-   * going on around the active project (runs, running processes, agent
-   * sessions, worktrees, repositories).
+   * ContextPanel.svelte — the /next context region: six cards showing what is
+   * going on around the active project (recorded agent runs, running processes,
+   * Playwright's leftover browsers, agent sessions, worktrees, repositories).
    *
    * Quarried from `src/lib/WorkbenchContextPanel.svelte` (row shapes, the
    * six-row cap with a "+N more" line, the tone rules) and restyled to the
@@ -10,23 +10,43 @@
    *
    *  - it reads `contextStore` directly instead of taking twenty props, and
    *  - the collapsible sections, chips and badges are inlined here, so the
-   *    panel carries no dependency on the old shell's component library or its
-   *    (different) colour tokens.
+   *    panel carries no dependency on the old shell's component library.
    *
    * NO props, NO IO at mount, NO `$effect`. It renders an inert "nothing loaded
    * yet" line until the shell calls `activate()` on `contextService`; after that
-   * the only thing that starts a backend call is the Refresh button.
+   * the only things that reach the backend are the Refresh button and the stop
+   * button on a running process, which asks first.
    *
-   * Worktree rows are read-only in this slice: removing or archiving a worktree
-   * runs a separate safety check that is not part of this panel yet.
+   * WHAT A CAPPED LIST DOES AT THE BOTTOM. Every card shows six rows and then
+   * says how many more there are. That count used to be a dead sentence, which
+   * is the worst of both worlds: it tells you there are 368 sessions and gives
+   * you no way to see one. Now each "+N more" does something. Most cards unfold
+   * the next 25 rows in place. The worktrees card instead opens the Worktrees
+   * view, because a worktree list you can act on already exists there and a
+   * second half-copy of it in a glance panel would only disagree with it.
+   *
+   * Colours come from the `--color-*` tokens rather than the hex values this
+   * file was written with, so changing the theme reaches this panel too.
    */
-  import { Activity, Braces, ChevronRight, FolderGit2, GitBranch, Network } from '@lucide/svelte';
+  import {
+    Activity,
+    Braces,
+    ChevronRight,
+    FolderGit2,
+    GitBranch,
+    Network,
+    Search
+  } from '@lucide/svelte';
 
   import PlaywrightCard from './processes/PlaywrightCard.svelte';
-  import { refreshAll, refreshCard } from '$lib/shell/context/contextService';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import { refreshAll, refreshCard, stopProcess } from '$lib/shell/context/contextService';
+  import { contextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import {
     contextState,
+    filterAgentRows,
     folderName,
+    processStopUnavailableReason,
     runStatusGroup,
     summarizeAgents,
     summarizeRepositories,
@@ -35,30 +55,79 @@
     summarizeWorktrees,
     type ContextCardKey
   } from '$lib/shell/context/contextStore.svelte';
+  import { playwrightState } from '$lib/shell/processes/playwrightStore.svelte';
+  import type { RuntimeContext } from '$lib/tauriSource';
 
   /** How many rows a card shows before it defers to a "+N more" line. */
   const ROW_LIMIT = 6;
 
-  /** Which sections are open. All five start open, like the old panel. */
+  /** How many further rows one press of "+N more" unfolds. */
+  const PAGE_SIZE = 25;
+
+  /**
+   * Which sections are open.
+   *
+   * Recorded agent runs starts CLOSED. On most machines it is empty — nothing
+   * in this shell records a run — so an open card spends its height saying
+   * nothing. Its heading still carries the count, so a machine that does have
+   * runs shows that at a glance and one click opens them.
+   */
   let expanded = $state<Record<ContextCardKey, boolean>>({
-    runs: true,
+    runs: false,
     runtime: true,
     agents: true,
     worktrees: true,
     repositories: true
   });
 
+  /** How many rows each card is currently showing. Bumped by "+N more". */
+  let shown = $state<Record<ContextCardKey, number>>({
+    runs: ROW_LIMIT,
+    runtime: ROW_LIMIT,
+    agents: ROW_LIMIT,
+    worktrees: ROW_LIMIT,
+    repositories: ROW_LIMIT
+  });
+
+  /** What the agent-session search box holds. */
+  let agentQuery = $state('');
+
+  /** The running process the "stop it?" question is being asked about. */
+  let confirmingProcess = $state<RuntimeContext | null>(null);
+  let confirmStopOpen = $state(false);
+
   function toggle(key: ContextCardKey): void {
     expanded[key] = !expanded[key];
   }
 
+  function showMore(key: ContextCardKey): void {
+    shown[key] += PAGE_SIZE;
+  }
+
+  function showFewer(key: ContextCardKey): void {
+    shown[key] = ROW_LIMIT;
+  }
+
+  /**
+   * The refresh button covers every card in the panel, including the Playwright
+   * card next door, so "reading…" has to mean all of them are busy — otherwise
+   * the button goes live again while a card is still loading.
+   */
   const anyLoading = $derived(
     contextState.runs.loading ||
       contextState.runtime.loading ||
       contextState.agents.loading ||
       contextState.worktrees.loading ||
-      contextState.repositories.loading
+      contextState.repositories.loading ||
+      playwrightState.loading
   );
+
+  /** The agent sessions matching the search box — the whole list, not the page. */
+  const agentMatches = $derived(filterAgentRows(contextState.agents.rows, agentQuery));
+  const agentSearching = $derived(agentQuery.trim().length > 0);
+
+  /** Why the stop button is off, or null when it can be pressed. */
+  const stopUnavailable = $derived(processStopUnavailableReason(contextState.processKill));
 
   /** Trailing tail of a path, so the meaningful end stays visible: `…/b/c`. */
   function tailPath(path: string, segments = 2): string {
@@ -70,6 +139,19 @@
   /** Empty-state sentence that names the project when we know it. */
   function emptyLabel(noun: string): string {
     return contextState.projectName ? `No ${noun} in ${contextState.projectName}` : `No ${noun}`;
+  }
+
+  function askStopProcess(job: RuntimeContext): void {
+    confirmingProcess = job;
+    confirmStopOpen = true;
+  }
+
+  function stopConfirmedProcess(): void {
+    const job = confirmingProcess;
+    confirmingProcess = null;
+    // The command travels along so the app can check the id still belongs to
+    // it — process ids get reused, and this list may be minutes old.
+    if (job) void stopProcess(job.pid, job.command);
   }
 
   function repoSyncLabel(repo: { hasUpstream: boolean; ahead: number; behind: number }): string {
@@ -110,7 +192,7 @@
       class="refresh"
       disabled={anyLoading}
       onclick={() => void refreshAll()}
-      title="Read runs, processes, agent sessions, worktrees and repositories again"
+      title="Read every card again — runs, processes, Playwright, sessions, worktrees, repositories"
     >
       {anyLoading ? 'reading…' : 'refresh'}
     </button>
@@ -119,7 +201,7 @@
   {#if !contextState.activated}
     <p class="state">Nothing loaded yet — press refresh to look around this project.</p>
   {:else}
-    <!-- ── Runs ─────────────────────────────────────────────────────────── -->
+    <!-- ── Recorded agent runs ──────────────────────────────────────────── -->
     <section class="card">
       <button
         type="button"
@@ -131,12 +213,18 @@
           <ChevronRight size={13} />
         </span>
         <span class="card-icon" aria-hidden="true"><Activity size={13} /></span>
-        <span class="card-title">Runs</span>
+        <span class="card-title">Recorded agent runs</span>
         <span class="card-count">{contextState.runs.rows.length}</span>
       </button>
 
       {#if expanded.runs}
         <div class="card-body">
+          <p class="explainer">
+            A run is a piece of work an agent reported step by step as it went — which stage it
+            reached, how far along it is, what it produced. Nothing shows up here unless an agent
+            records one, so an empty list is the normal answer.
+          </p>
+
           {#if contextState.runs.error}
             <p class="state error">
               {contextState.runs.error}
@@ -150,7 +238,7 @@
             {@const summary = summarizeRuns(contextState.runs.rows)}
             {#if summary}<p class="summary">{summary}</p>{/if}
             <ul class="rows">
-              {#each contextState.runs.rows.slice(0, ROW_LIMIT) as run (run.id)}
+              {#each contextState.runs.rows.slice(0, shown.runs) as run (run.id)}
                 <li class="row">
                   <div class="row-main">
                     {#if runStatusGroup(run.status) === 'running'}
@@ -171,13 +259,20 @@
                 </li>
               {/each}
             </ul>
-            {#if contextState.runs.rows.length > ROW_LIMIT}
-              <p class="more">+{contextState.runs.rows.length - ROW_LIMIT} more</p>
+            {#if contextState.runs.rows.length > shown.runs}
+              <button type="button" class="more" onclick={() => showMore('runs')}>
+                Show {Math.min(PAGE_SIZE, contextState.runs.rows.length - shown.runs)} more of
+                {contextState.runs.rows.length - shown.runs}
+              </button>
+            {:else if shown.runs > ROW_LIMIT}
+              <button type="button" class="more" onclick={() => showFewer('runs')}>
+                Show fewer
+              </button>
             {/if}
           {:else if contextState.runs.loading}
-            <p class="state loading">Reading runs…</p>
+            <p class="state loading">Reading recorded agent runs…</p>
           {:else}
-            <p class="state">{emptyLabel('runs')}</p>
+            <p class="state">{emptyLabel('recorded agent runs')}</p>
           {/if}
         </div>
       {/if}
@@ -214,7 +309,7 @@
             {@const summary = summarizeRuntime(contextState.runtime.rows)}
             {#if summary}<p class="summary">{summary}</p>{/if}
             <ul class="rows">
-              {#each contextState.runtime.rows.slice(0, ROW_LIMIT) as job (`${job.pid}:${job.port}`)}
+              {#each contextState.runtime.rows.slice(0, shown.runtime) as job (`${job.pid}:${job.port}`)}
                 <li class="row">
                   <div class="row-main">
                     <span class="badge">:{job.port}</span>
@@ -226,12 +321,38 @@
                     {#if job.cwd}
                       <span class="mono truncate" title={job.cwd}>{tailPath(job.cwd)}</span>
                     {/if}
+                    <button
+                      type="button"
+                      class="stop"
+                      disabled={stopUnavailable !== null || contextState.stoppingPid !== null}
+                      title={stopUnavailable ??
+                        `Ask process ${job.pid} on port ${job.port} to shut down`}
+                      onclick={() => askStopProcess(job)}
+                    >
+                      {contextState.stoppingPid === job.pid ? 'stopping…' : 'Stop'}
+                    </button>
                   </div>
                 </li>
               {/each}
             </ul>
-            {#if contextState.runtime.rows.length > ROW_LIMIT}
-              <p class="more">+{contextState.runtime.rows.length - ROW_LIMIT} more</p>
+            {#if contextState.runtime.rows.length > shown.runtime}
+              <button type="button" class="more" onclick={() => showMore('runtime')}>
+                Show {Math.min(PAGE_SIZE, contextState.runtime.rows.length - shown.runtime)} more of
+                {contextState.runtime.rows.length - shown.runtime}
+              </button>
+            {:else if shown.runtime > ROW_LIMIT}
+              <button type="button" class="more" onclick={() => showFewer('runtime')}>
+                Show fewer
+              </button>
+            {/if}
+            {#if contextState.lastProcessMessage}
+              <p class="result">{contextState.lastProcessMessage}</p>
+            {/if}
+            {#if stopUnavailable && contextState.processKill === 'unavailable'}
+              <p class="note">
+                This build of the app cannot stop a process yet — restart the desktop app after
+                updating.
+              </p>
             {/if}
           {:else if contextState.runtime.loading}
             <p class="state loading">Looking for running processes…</p>
@@ -278,8 +399,29 @@
           {:else if contextState.agents.rows.length > 0}
             {@const summary = summarizeAgents(contextState.agents.rows)}
             {#if summary}<p class="summary">{summary}</p>{/if}
+
+            <!-- Searches every session on the machine, not just the rows on
+                 screen — which is the only reason a box over six rows is worth
+                 having. -->
+            <label class="search">
+              <span class="search-icon" aria-hidden="true"><Search size={12} /></span>
+              <input
+                type="search"
+                bind:value={agentQuery}
+                placeholder="Search all {contextState.agents.rows.length} sessions"
+                aria-label="Search all agent sessions"
+              />
+            </label>
+
+            {#if agentSearching}
+              <p class="summary">
+                {agentMatches.length}
+                {agentMatches.length === 1 ? 'session matches' : 'sessions match'} “{agentQuery.trim()}”
+              </p>
+            {/if}
+
             <ul class="rows">
-              {#each contextState.agents.rows.slice(0, ROW_LIMIT) as agent (`${agent.provider}:${agent.id}`)}
+              {#each agentMatches.slice(0, shown.agents) as agent (`${agent.provider}:${agent.id}`)}
                 <li class="row">
                   <div class="row-main">
                     <span class="row-title" title={agent.title}>{agent.title || agent.id}</span>
@@ -296,10 +438,32 @@
                     </div>
                   {/if}
                 </li>
+              {:else}
+                <li class="row">
+                  <span class="state">Nothing matches “{agentQuery.trim()}”.</span>
+                </li>
               {/each}
             </ul>
-            {#if contextState.agents.rows.length > ROW_LIMIT}
-              <p class="more">+{contextState.agents.rows.length - ROW_LIMIT} more</p>
+
+            {#if agentMatches.length > shown.agents}
+              <button type="button" class="more" onclick={() => showMore('agents')}>
+                Show {Math.min(PAGE_SIZE, agentMatches.length - shown.agents)} more of
+                {agentMatches.length - shown.agents}
+              </button>
+            {:else if shown.agents > ROW_LIMIT}
+              <button type="button" class="more" onclick={() => showFewer('agents')}>
+                Show fewer
+              </button>
+            {/if}
+
+            {#if contextPanelHooks.openSessionFinder}
+              <button
+                type="button"
+                class="link"
+                onclick={() => contextPanelHooks.openSessionFinder?.()}
+              >
+                Open “Find a session” to take one over
+              </button>
             {/if}
           {:else if contextState.agents.loading}
             <p class="state loading">Looking for agent sessions…</p>
@@ -328,6 +492,16 @@
 
       {#if expanded.worktrees}
         <div class="card-body">
+          {#if contextPanelHooks.showWorktreesView}
+            <button
+              type="button"
+              class="link"
+              onclick={() => contextPanelHooks.showWorktreesView?.()}
+            >
+              Open the Worktrees view to remove or back one up
+            </button>
+          {/if}
+
           {#if contextState.worktrees.error}
             <p class="state error">
               {contextState.worktrees.error}
@@ -341,7 +515,7 @@
             {@const summary = summarizeWorktrees(contextState.worktrees.rows)}
             {#if summary}<p class="summary">{summary}</p>{/if}
             <ul class="rows">
-              {#each contextState.worktrees.rows.slice(0, ROW_LIMIT) as worktree (worktree.path)}
+              {#each contextState.worktrees.rows.slice(0, shown.worktrees) as worktree (worktree.path)}
                 <li class="row">
                   <div class="row-main">
                     <span class="row-title" title={worktree.branch}>{worktree.branch}</span>
@@ -361,8 +535,30 @@
                 </li>
               {/each}
             </ul>
-            {#if contextState.worktrees.rows.length > ROW_LIMIT}
-              <p class="more">+{contextState.worktrees.rows.length - ROW_LIMIT} more</p>
+            {#if contextState.worktrees.rows.length > shown.worktrees}
+              {#if contextPanelHooks.showWorktreesView}
+                <!-- The Worktrees view is the place with the safety checks and
+                     the remove buttons, so the rest of the list opens there
+                     rather than growing a second, weaker copy here. -->
+                <button
+                  type="button"
+                  class="more"
+                  onclick={() => contextPanelHooks.showWorktreesView?.()}
+                >
+                  See all {contextState.worktrees.rows.length} in the Worktrees view
+                </button>
+              {:else}
+                <button type="button" class="more" onclick={() => showMore('worktrees')}>
+                  Show {Math.min(
+                    PAGE_SIZE,
+                    contextState.worktrees.rows.length - shown.worktrees
+                  )} more of {contextState.worktrees.rows.length - shown.worktrees}
+                </button>
+              {/if}
+            {:else if shown.worktrees > ROW_LIMIT}
+              <button type="button" class="more" onclick={() => showFewer('worktrees')}>
+                Show fewer
+              </button>
             {/if}
           {:else if contextState.worktrees.loading}
             <p class="state loading">Looking for worktrees…</p>
@@ -404,7 +600,7 @@
             {@const summary = summarizeRepositories(contextState.repositories.rows)}
             {#if summary}<p class="summary">{summary}</p>{/if}
             <ul class="rows">
-              {#each contextState.repositories.rows.slice(0, ROW_LIMIT) as repo (repo.path)}
+              {#each contextState.repositories.rows.slice(0, shown.repositories) as repo (repo.path)}
                 <li class="row">
                   <div class="row-main">
                     <span class="row-title" title={repo.path}>
@@ -431,8 +627,17 @@
                 </li>
               {/each}
             </ul>
-            {#if contextState.repositories.rows.length > ROW_LIMIT}
-              <p class="more">+{contextState.repositories.rows.length - ROW_LIMIT} more</p>
+            {#if contextState.repositories.rows.length > shown.repositories}
+              <button type="button" class="more" onclick={() => showMore('repositories')}>
+                Show {Math.min(
+                  PAGE_SIZE,
+                  contextState.repositories.rows.length - shown.repositories
+                )} more of {contextState.repositories.rows.length - shown.repositories}
+              </button>
+            {:else if shown.repositories > ROW_LIMIT}
+              <button type="button" class="more" onclick={() => showFewer('repositories')}>
+                Show fewer
+              </button>
             {/if}
           {:else if contextState.repositories.loading}
             <p class="state loading">Reading repositories…</p>
@@ -444,6 +649,43 @@
     </section>
   {/if}
 </div>
+
+<!-- Stopping a process is not undoable and the row is one line of text, so the
+     question names the command, the port, the process id and the folder — enough
+     to recognise it without going and looking it up somewhere else. -->
+<AlertDialog.Root bind:open={confirmStopOpen}>
+  <AlertDialog.Content
+    class="rounded-lg bg-background text-foreground ring-[var(--color-border)]
+           shadow-[var(--shadow-lg)]"
+  >
+    <AlertDialog.Header>
+      <AlertDialog.Title class="text-[14px] leading-[1.4] font-semibold">
+        Stop this process?
+      </AlertDialog.Title>
+      <AlertDialog.Description class="text-[13px] leading-[1.5] text-[var(--color-text-2)]">
+        {#if confirmingProcess}
+          <span class="font-medium">{confirmingProcess.command}</span> is holding port
+          {confirmingProcess.port} as process {confirmingProcess.pid}{confirmingProcess.cwd
+            ? `, started in ${confirmingProcess.cwd}`
+            : ''}. It is asked to shut down cleanly, so whatever it was serving — a dev server, a
+          test run, a database — stops, and anything it had not written out is lost. Nothing else on
+          your machine is touched.
+        {/if}
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="bg-transparent">
+      <AlertDialog.Cancel size="sm" class="text-[13px]">Leave it running</AlertDialog.Cancel>
+      <AlertDialog.Action
+        size="sm"
+        variant="destructive"
+        class="text-[13px]"
+        onclick={stopConfirmedProcess}
+      >
+        Stop it
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <style>
   .context-panel {
@@ -457,8 +699,8 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding: 8px 8px 16px;
-    background: #101014;
-    color: #d8d8e0;
+    background: var(--color-bg);
+    color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
     font-size: 12px;
     scrollbar-width: thin;
@@ -475,7 +717,7 @@
     gap: 8px;
     margin: -8px -8px 4px;
     padding: 8px;
-    background: #101014;
+    background: var(--color-bg);
   }
 
   .toolbar-title {
@@ -487,15 +729,15 @@
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
-    color: #7b7b8c;
+    color: var(--color-section-header-text);
   }
 
   .refresh {
     flex: 0 0 auto;
-    border: 1px solid #2a2a34;
+    border: 1px solid var(--color-border);
     border-radius: 5px;
     background: transparent;
-    color: #9a9aad;
+    color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
     padding: 2px 7px;
@@ -503,8 +745,8 @@
   }
 
   .refresh:hover:not(:disabled) {
-    border-color: #3d3d4a;
-    color: #d8d8e0;
+    border-color: var(--color-accent);
+    color: var(--color-text);
   }
 
   .refresh:disabled {
@@ -516,7 +758,7 @@
   .card {
     display: flex;
     flex-direction: column;
-    border-top: 1px solid #22222c;
+    border-top: 1px solid var(--color-border);
   }
 
   .card:first-of-type {
@@ -532,22 +774,22 @@
     border: 0;
     border-radius: 6px;
     background: transparent;
-    color: #9a9aad;
+    color: var(--color-text-2);
     font: inherit;
     text-align: left;
     cursor: pointer;
   }
 
   .card-head:hover {
-    background: #17171d;
-    color: #d8d8e0;
+    background: var(--color-surface);
+    color: var(--color-text);
   }
 
   .chevron {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     transition: transform 130ms ease;
   }
 
@@ -559,7 +801,7 @@
     display: flex;
     flex: 0 0 auto;
     align-items: center;
-    color: #6d6d7d;
+    color: var(--color-text-2);
   }
 
   .card-title {
@@ -577,8 +819,8 @@
   .card-count {
     flex: 0 0 auto;
     border-radius: 999px;
-    background: #1c1c24;
-    color: #6d6d7d;
+    background: var(--color-elevated);
+    color: var(--color-text-2);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -592,12 +834,62 @@
     padding: 0 4px 8px 22px;
   }
 
-  .summary {
+  .explainer,
+  .summary,
+  .note,
+  .result {
     margin: 0;
     padding: 0 6px;
-    color: #8a8a9c;
+    color: var(--color-text-2);
     font-size: 12px;
     line-height: 1.45;
+  }
+
+  .note {
+    color: var(--color-attention);
+  }
+
+  .result {
+    padding-top: 4px;
+  }
+
+  /* ── The agent-session search box ──────────────────────────────────── */
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin: 2px 6px 4px;
+    padding: 3px 7px;
+    border: 1px solid var(--color-border);
+    border-radius: 5px;
+    background: var(--color-surface);
+  }
+
+  .search:focus-within {
+    border-color: var(--color-accent);
+  }
+
+  .search-icon {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    color: var(--color-text-2);
+  }
+
+  .search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-text);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    outline: none;
+  }
+
+  .search input::placeholder {
+    color: var(--color-text-2);
   }
 
   /* ── Rows ──────────────────────────────────────────────────────────── */
@@ -619,7 +911,7 @@
   }
 
   .row:hover {
-    background: #17171d;
+    background: var(--color-surface);
   }
 
   .row + .row {
@@ -633,7 +925,7 @@
     left: 6px;
     right: 6px;
     height: 1px;
-    background: #22222c;
+    background: var(--color-border);
   }
 
   .row:hover::before,
@@ -654,8 +946,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #e6e6ee;
-    font-size: 12px;
+    color: var(--color-text);
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -665,25 +957,25 @@
     align-items: center;
     gap: 2px 8px;
     min-width: 0;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     font-size: 12px;
     line-height: 1.3;
     font-variant-numeric: tabular-nums;
   }
 
   .meta-strong {
-    color: #8a8a9c;
+    color: var(--color-text-2);
   }
 
   .num {
-    color: #8a8a9c;
+    color: var(--color-text-2);
     font-variant-numeric: tabular-nums;
   }
 
   .meta-id,
   .stamp {
     flex-shrink: 0;
-    color: #5d5d6b;
+    color: var(--color-text-2);
   }
 
   .mono {
@@ -702,7 +994,7 @@
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    color: #ff9d9d;
+    color: var(--color-bad);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -713,8 +1005,8 @@
     max-width: 45%;
     overflow: hidden;
     border-radius: 4px;
-    background: #24242f;
-    color: #9a9aad;
+    background: var(--color-elevated);
+    color: var(--color-text-2);
     font-size: 12px;
     letter-spacing: 0.04em;
     padding: 1px 5px;
@@ -723,35 +1015,35 @@
   }
 
   .chip[data-tone='running'] {
-    background: rgba(80, 250, 123, 0.12);
-    color: #50fa7b;
+    background: var(--color-live-bg);
+    color: var(--color-live);
   }
 
   .chip[data-tone='good'] {
-    background: rgba(80, 250, 123, 0.1);
-    color: #7ee39a;
+    background: var(--color-good-bg);
+    color: var(--color-good);
   }
 
   .chip[data-tone='attention'] {
-    background: rgba(241, 250, 140, 0.12);
-    color: #f1fa8c;
+    background: var(--color-attention-bg);
+    color: var(--color-attention);
   }
 
   .chip[data-tone='failed'] {
-    background: rgba(255, 85, 85, 0.14);
-    color: #ff8888;
+    background: var(--color-bad-bg);
+    color: var(--color-bad);
   }
 
   .chip[data-tone='finished'] {
-    background: rgba(139, 233, 253, 0.1);
-    color: #8be9fd;
+    background: var(--color-good-bg);
+    color: var(--color-good);
   }
 
   .badge {
     flex: 0 0 auto;
     border-radius: 4px;
-    background: rgba(139, 233, 253, 0.1);
-    color: #8be9fd;
+    background: var(--color-live-bg);
+    color: var(--color-live);
     font-family: ui-monospace, Menlo, monospace;
     font-size: 12px;
     padding: 1px 5px;
@@ -763,19 +1055,19 @@
   }
 
   .sync[data-tone='good'] {
-    color: #7ee39a;
+    color: var(--color-good);
   }
 
   .sync[data-tone='live'] {
-    color: #8be9fd;
+    color: var(--color-live);
   }
 
   .sync[data-tone='attention'] {
-    color: #f1fa8c;
+    color: var(--color-attention);
   }
 
   .sync[data-tone='muted'] {
-    color: #5d5d6b;
+    color: var(--color-text-2);
   }
 
   /* ── Live pulse ────────────────────────────────────────────────────── */
@@ -784,7 +1076,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #50fa7b;
+    background: var(--color-live);
     animation: context-pulse 1.9s ease-in-out infinite;
   }
 
@@ -798,24 +1090,66 @@
     }
   }
 
-  /* ── States ────────────────────────────────────────────────────────── */
-  .more {
+  /* ── Buttons ───────────────────────────────────────────────────────── */
+  /* "+N more" is a button now, not a sentence: every capped list has somewhere
+     to go. It keeps the quiet look the old dead line had so the panel does not
+     turn into a wall of links. */
+  .more,
+  .link {
+    align-self: flex-start;
     margin: 0;
-    padding: 4px 6px 0;
-    color: #5d5d6b;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text-2);
+    font: inherit;
     font-size: 12px;
+    padding: 4px 6px 0;
+    cursor: pointer;
+    text-align: left;
+    text-decoration: underline;
   }
 
+  .more:hover,
+  .link:hover {
+    color: var(--color-text);
+  }
+
+  .stop {
+    flex: 0 0 auto;
+    margin-left: auto;
+    border: 1px solid var(--color-border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--color-text-2);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.3;
+    padding: 1px 8px;
+    cursor: pointer;
+  }
+
+  .stop:hover:not(:disabled) {
+    border-color: var(--color-bad);
+    color: var(--color-bad);
+  }
+
+  .stop:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  /* ── States ────────────────────────────────────────────────────────── */
   .state {
     margin: 0;
     padding: 8px 6px;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     font-size: 12px;
     line-height: 1.45;
   }
 
   .state.error {
-    color: #ff9d9d;
+    color: var(--color-bad);
   }
 
   .state.loading {
@@ -837,7 +1171,7 @@
     border: 0;
     border-radius: 4px;
     background: transparent;
-    color: #bd93f9;
+    color: var(--color-accent);
     font: inherit;
     font-size: 12px;
     padding: 0 2px;
@@ -846,7 +1180,7 @@
   }
 
   button:focus-visible {
-    outline: 1px solid #bd93f9;
+    outline: 1px solid var(--color-accent);
     outline-offset: -1px;
   }
 

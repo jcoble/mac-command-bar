@@ -9,9 +9,22 @@
    * The roster comes from `sidebarViews.ts` so the ids here and the ids the
    * column builds hosts for cannot drift apart.
    */
-  import { Activity, Files, GitBranch, Layers, Server, Settings } from '@lucide/svelte';
+  import {
+    Activity,
+    Files,
+    GitBranch,
+    Layers,
+    Play,
+    Settings,
+    TriangleAlert
+  } from '@lucide/svelte';
 
-  import { SIDEBAR_VIEWS, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
+  import { settings } from '$lib/settingsStore.svelte';
+  import {
+    PROBLEMS_VIEW_ID,
+    SIDEBAR_VIEWS,
+    type SidebarViewId
+  } from '$lib/shell/layout/sidebarViews';
 
   interface Props {
     activeId: SidebarViewId;
@@ -26,14 +39,25 @@
     explorer: Files,
     'source-control': GitBranch,
     worktrees: Layers,
-    stacks: Server,
-    context: Activity
+    stacks: Play,
+    context: Activity,
+    problems: TriangleAlert
   };
+
+  /** The icons to draw. Problems has a container in the tool column at all
+   * times, but it only earns an icon here when the user has asked for it in
+   * this column — while it is in the strip along the bottom, a second way in
+   * would be two doors onto one list. */
+  const shownViews = $derived(
+    SIDEBAR_VIEWS.filter(
+      (view) => view.id !== PROBLEMS_VIEW_ID || settings.panels.problemsLocation === 'right'
+    )
+  );
 </script>
 
 <nav class="activity-bar" aria-label="Views">
   <div class="group">
-    {#each SIDEBAR_VIEWS as view (view.id)}
+    {#each shownViews as view (view.id)}
       {@const Icon = ICONS[view.id]}
       <button
         type="button"

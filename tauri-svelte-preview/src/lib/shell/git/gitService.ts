@@ -46,13 +46,34 @@ import {
   clearSelectedGitFile,
   gitPanel,
   isGitFileDeleted,
+  isGitHistoryComplete,
   resetGitPanelState,
   type GitActionKind,
   type GitPanelState
 } from './gitPanelStore.svelte.ts';
 
-/** How many commits the history list asks for. The backend caps the limit. */
+/** How many commits the history list asks for first. The backend caps the limit. */
 export const COMMIT_HISTORY_LIMIT = 24;
+
+/** How many more commits each "Load more" asks for on top of what is on screen. */
+export const COMMIT_HISTORY_PAGE = 100;
+
+/**
+ * The most this panel will ever ask for in one read. The desktop app clamps the
+ * limit its own way, so asking past its clamp only wastes a call — and a list of
+ * 500 commits is already more than the graph can usefully draw.
+ */
+export const COMMIT_HISTORY_CEILING = 500;
+
+/**
+ * The next limit to ask for, given the one already asked for. Never past the
+ * ceiling, so a repository with more history than that stops asking rather than
+ * spinning on a request that answers the same thing every time.
+ */
+export function nextCommitHistoryLimit(requested: number): number {
+  const current = requested > 0 ? requested : COMMIT_HISTORY_LIMIT;
+  return Math.min(current + COMMIT_HISTORY_PAGE, COMMIT_HISTORY_CEILING);
+}
 
 /** Shown whenever a wrapper returns `null` — i.e. we are not in the desktop app. */
 export const DESKTOP_ONLY_MESSAGE =
@@ -168,9 +189,19 @@ export interface GitService {
   /** Re-read status and commit history for the current repository. */
   refresh(): Promise<void>;
   refreshStatus(): Promise<void>;
+  /** Re-read the history at the size it has already grown to. */
   refreshHistory(): Promise<void>;
+  /** Ask for another page of older commits. Does nothing once the list is whole. */
+  loadMoreHistory(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus): Promise<void>;
+  /**
+   * Put back a diff a session remembered, pointing the panel at that session's
+   * repository first if it is somewhere else. The Diff tab is one tab for the
+   * whole shell, so on a session switch what it shows must follow the session
+   * in front — this is how a remembered diff comes back.
+   */
+  showStoredDiff(root: string, relativePath: string): Promise<void>;
   /** Stop showing a diff. */
   clearSelection(): void;
   stagePaths(paths: string[]): Promise<void>;
@@ -202,6 +233,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.desktopOnly = true;
     state.status = null;
     state.history = [];
+    state.historyRequested = 0;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    state.historyCeiling = false;
   }
 
   async function refreshStatus(): Promise<void> {
@@ -229,15 +264,29 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     }
   }
 
-  async function refreshHistory(): Promise<void> {
+  /**
+   * Read the history at `limit` commits.
+   *
+   * The backend answers with the whole list from the newest commit down, not
+   * with the slice past what we already have, so a bigger limit REPLACES the
+   * list rather than adding to it. That is what keeps the graph honest: the
+   * columns are worked out from every commit's parents at once, so feeding the
+   * lane assignment a stitched-together list would draw lines to commits it had
+   * never seen.
+   *
+   * `loadingMore` decides which flag the wait shows on. A "Load more" leaves the
+   * list on screen and lights the button; a plain refresh replaces it.
+   */
+  async function loadHistory(limit: number, loadingMore: boolean): Promise<void> {
     const root = state.root;
     if (!root) return;
     const id = historyGuard.next();
-    state.historyLoading = true;
+    if (loadingMore) state.historyLoadingMore = true;
+    else state.historyLoading = true;
     state.historyError = '';
 
     try {
-      const history = await backend.readHistory(root, COMMIT_HISTORY_LIMIT);
+      const history = await backend.readHistory(root, limit);
       if (!stillCurrent(historyGuard, id, root)) return;
       if (!history) {
         markDesktopOnly();
@@ -245,13 +294,42 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       }
       state.desktopOnly = false;
       state.history = history;
+      state.historyRequested = limit;
+      state.historyComplete = isGitHistoryComplete(limit, history.length);
+      state.historyCeiling = !state.historyComplete && limit >= COMMIT_HISTORY_CEILING;
     } catch (error) {
       if (!stillCurrent(historyGuard, id, root)) return;
-      state.history = [];
+      // A failed "Load more" keeps what is already on screen; only a failed
+      // refresh has nothing left to show.
+      if (!loadingMore) state.history = [];
       state.historyError = describeError(error, 'Could not read the commit history.');
     } finally {
-      if (stillCurrent(historyGuard, id, root)) state.historyLoading = false;
+      if (stillCurrent(historyGuard, id, root)) {
+        if (loadingMore) state.historyLoadingMore = false;
+        else state.historyLoading = false;
+      }
     }
+  }
+
+  /**
+   * Re-read the history at the size it has grown to, so refreshing after two
+   * pages of "Load more" does not silently drop back to the first 24.
+   */
+  async function refreshHistory(): Promise<void> {
+    const limit = state.historyRequested > 0 ? state.historyRequested : COMMIT_HISTORY_LIMIT;
+    await loadHistory(limit, false);
+  }
+
+  async function loadMoreHistory(): Promise<void> {
+    if (!state.root || state.historyLoading || state.historyLoadingMore) return;
+    if (state.historyComplete || state.historyCeiling) return;
+    const limit = nextCommitHistoryLimit(state.historyRequested);
+    if (limit <= state.historyRequested) {
+      state.historyCeiling = true;
+      return;
+    }
+    state.historyPaged = true;
+    await loadHistory(limit, true);
   }
 
   async function refresh(): Promise<void> {
@@ -298,6 +376,53 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   function clearSelection(): void {
     diffGuard.invalidate();
     clearSelectedGitFile(state);
+  }
+
+  function activate(root: string | null): void {
+    if (root === state.root && state.activated) return;
+    statusGuard.invalidate();
+    historyGuard.invalidate();
+    diffGuard.invalidate();
+    resetGitPanelState(state, root);
+    if (!root) return;
+    state.activated = true;
+    void refresh();
+  }
+
+  async function showStoredDiff(root: string, relativePath: string): Promise<void> {
+    const folder = root.trim();
+    const path = relativePath.trim();
+    if (!folder || !path) return;
+
+    activate(folder);
+    // When the panel is already on this repository the file list is likely
+    // loaded; going through selectFile keeps the deleted-file wording. On a
+    // fresh activation the status read is still in flight, so the diff is read
+    // directly rather than after it lands.
+    const known = (state.status?.files ?? []).find((file) => file.relativePath === path);
+    if (known) return selectFile(known);
+
+    state.selectedPath = path;
+    state.selectedDiff = null;
+    state.diffError = '';
+
+    const id = diffGuard.next();
+    state.diffLoading = true;
+    try {
+      const diff = await backend.readDiff(folder, absolutePathWithin(folder, path));
+      if (!stillCurrent(diffGuard, id, folder)) return;
+      if (!diff) {
+        state.desktopOnly = true;
+        state.diffError = DESKTOP_ONLY_MESSAGE;
+        return;
+      }
+      state.selectedDiff = diff;
+    } catch (error) {
+      if (!stillCurrent(diffGuard, id, folder)) return;
+      state.diffError = describeError(error, 'Could not read the changes for this file.');
+    } finally {
+      if (stillCurrent(diffGuard, id, folder)) state.diffLoading = false;
+    }
   }
 
   /** Re-read the diff on screen after an action changed the working tree. */
@@ -362,21 +487,14 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   return {
     state,
 
-    activate(root: string | null): void {
-      if (root === state.root && state.activated) return;
-      statusGuard.invalidate();
-      historyGuard.invalidate();
-      diffGuard.invalidate();
-      resetGitPanelState(state, root);
-      if (!root) return;
-      state.activated = true;
-      void refresh();
-    },
+    activate,
 
     refresh,
     refreshStatus,
     refreshHistory,
+    loadMoreHistory,
     selectFile,
+    showStoredDiff,
     clearSelection,
 
     async stagePaths(paths: string[]): Promise<void> {

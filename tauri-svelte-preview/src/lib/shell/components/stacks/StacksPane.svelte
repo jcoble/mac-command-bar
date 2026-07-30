@@ -1,14 +1,19 @@
 <script lang="ts">
   /**
-   * StacksPane.svelte — the /next stack runner.
+   * StacksPane.svelte — the Run section of the tool column.
    *
-   * A stack is one command you keep re-running in a project: `pnpm dev`,
+   * A RUN CONFIGURATION is one saved way to start something: `pnpm dev`,
    * `docker compose up`, `dotnet watch`. This pane keeps them, starts them,
    * stops them, and says where each one stands right now.
    *
-   * A running stack IS a session in the rail — the same list your agents are in
-   * — so clicking a row puts its terminal on screen, output and all. There is no
-   * second, hidden place for a process to live.
+   * The file is still called StacksPane because the shell mounts it by that
+   * path and this lane may not edit the file that does the mounting. The word
+   * "stack" appears nowhere a user can see it — see the note at the top of
+   * `stackStore.svelte.ts` for why the code kept the old name.
+   *
+   * A running configuration IS a session in the rail — the same list your
+   * agents are in — so clicking a row puts its terminal on screen, output and
+   * all. There is no second, hidden place for a process to live.
    *
    * NO props, NO IO at mount, NO `$effect`. Everything it draws comes out of
    * `stackStore`; the only things that reach the outside world are the buttons,
@@ -16,8 +21,10 @@
    * the page (which owns the session rail and the terminals) through the three
    * handlers the service registers — see `_(stacks)-INTEGRATION.md`.
    */
-  import { Play, Plus, RefreshCw, Square, Trash2, X } from '@lucide/svelte';
+  import { Pencil, Play, Plus, RefreshCw, Square, Trash2 } from '@lucide/svelte';
 
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import RunConfigurationDialog from '$lib/shell/components/run/RunConfigurationDialog.svelte';
   import {
     isStackBusy,
     refreshStacks,
@@ -26,54 +33,27 @@
     stopStack
   } from '$lib/shell/stacks/stackService';
   import {
-    addStack,
     clearStackNotice,
     removeStack,
     stacks,
-    visibleStackRows
+    visibleStackRows,
+    type StackDefinition
   } from '$lib/shell/stacks/stackStore.svelte';
 
-  /** Is the "add a stack" form open? */
-  let adding = $state(false);
-  /** The name being typed. */
-  let draftName = $state('');
-  /** The command being typed. */
-  let draftScript = $state('');
-  /** The stack whose Remove button has been pressed once, awaiting a second press. */
-  let confirmingRemoval = $state<string | null>(null);
+  /** The editor dialog, referred to by the one method this component calls. */
+  let editor = $state<{
+    openFor: (configuration: StackDefinition | null, defaultFolder?: string) => void;
+  } | null>(null);
+  let editorOpen = $state(false);
+
+  /** The configuration whose removal is being confirmed, or `null`. */
+  let removing = $state<StackDefinition | null>(null);
+  const removeOpen = $derived(removing !== null);
 
   const rows = $derived(visibleStackRows());
 
-  /** The folder new stacks are saved in: the project the shell is pointed at. */
+  /** The folder a new configuration starts in: the project the shell is on. */
   const folder = $derived((stacks.activeRoot ?? '').trim());
-
-  function openForm(): void {
-    adding = true;
-    confirmingRemoval = null;
-    clearStackNotice();
-  }
-
-  function closeForm(): void {
-    adding = false;
-    draftName = '';
-    draftScript = '';
-    clearStackNotice();
-  }
-
-  function submitForm(event: SubmitEvent): void {
-    event.preventDefault();
-    const saved = addStack({ name: draftName, script: draftScript, cwd: folder });
-    if (saved) closeForm();
-  }
-
-  function pressRemove(stackId: string): void {
-    if (confirmingRemoval === stackId) {
-      removeStack(stackId);
-      confirmingRemoval = null;
-      return;
-    }
-    confirmingRemoval = stackId;
-  }
 
   /** Which colour a state gets. The four states, and nothing else. */
   function tone(state: string): string {
@@ -82,24 +62,27 @@
     if (state === 'failed') return 'failed';
     return 'neutral';
   }
+
+  function confirmRemoval(): void {
+    if (!removing) return;
+    removeStack(removing.id);
+    removing = null;
+  }
 </script>
 
-<div class="stacks-pane" aria-label="Stacks">
+<div class="run-pane" aria-label="Run configurations">
   <header class="toolbar">
     <span class="toolbar-title">
-      {stacks.projectName ? stacks.projectName : 'Stacks'}
+      {stacks.projectName ? stacks.projectName : 'Run'}
     </span>
     <button
       type="button"
       class="tool"
-      disabled={!folder}
-      onclick={() => (adding ? closeForm() : openForm())}
-      title={folder
-        ? 'Save a command you want to be able to start from here'
-        : 'Pick a session first, so a new stack knows which folder to run in'}
+      onclick={() => editor?.openFor(null, folder)}
+      title="Save a command you want to be able to start from here"
     >
       <Plus size={13} />
-      <span>add</span>
+      <span>new</span>
     </button>
     <button
       type="button"
@@ -112,40 +95,6 @@
       <span>{stacks.loading ? 'reading…' : 'refresh'}</span>
     </button>
   </header>
-
-  {#if adding}
-    <form class="add-form" onsubmit={submitForm}>
-      <label class="field">
-        <span class="field-label">Name</span>
-        <input
-          class="field-input"
-          type="text"
-          bind:value={draftName}
-          placeholder="Web"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-      <label class="field">
-        <span class="field-label">Command</span>
-        <input
-          class="field-input mono"
-          type="text"
-          bind:value={draftScript}
-          placeholder="pnpm dev"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-      <p class="field-hint">
-        Runs in {folder || 'the project folder'} — the same thing as typing it in a terminal there.
-      </p>
-      <div class="form-actions">
-        <button type="submit" class="primary">Save stack</button>
-        <button type="button" class="secondary" onclick={closeForm}>Cancel</button>
-      </div>
-    </form>
-  {/if}
 
   {#if stacks.notice}
     <p class="state notice">
@@ -170,9 +119,11 @@
       {#if !stacks.activated}
         Nothing read yet — press refresh to see what is running.
       {:else if stacks.projectName}
-        No stacks saved for {stacks.projectName} yet. Add the command you normally type to start it.
+        Nothing saved for {stacks.projectName} yet. A run configuration is one command you keep
+        starting — the dev server, the database, the watcher.
       {:else}
-        No stacks saved yet. Add the command you normally type to start a project.
+        Nothing saved yet. A run configuration is one command you keep starting — the dev server,
+        the database, the watcher.
       {/if}
     </p>
   {:else}
@@ -185,7 +136,7 @@
               <button
                 type="button"
                 class="row-title link"
-                title="Show this stack's terminal"
+                title="Show this configuration's terminal"
                 onclick={() => void selectStackSession(row.ownedId as string)}
               >
                 {row.definition.name}
@@ -199,6 +150,12 @@
           <div class="row-meta">
             <code class="mono script" title={row.definition.script}>{row.definition.script}</code>
           </div>
+
+          {#if row.definition.env && row.definition.env.length > 0}
+            <p class="env" title={row.definition.env.map((entry) => entry.key).join(', ')}>
+              Sets {row.definition.env.map((entry) => entry.key).join(', ')}
+            </p>
+          {/if}
 
           {#if row.processes.length > 0}
             <div class="ports">
@@ -229,36 +186,29 @@
                 onclick={() => void startStack(row.definition.id)}
               >
                 <Play size={11} />
-                <span>Start</span>
+                <span>Run</span>
               </button>
             {/if}
 
-            {#if confirmingRemoval === row.definition.id}
-              <button
-                type="button"
-                class="action danger"
-                onclick={() => pressRemove(row.definition.id)}
-              >
-                <span>Really remove?</span>
-              </button>
-              <button
-                type="button"
-                class="action quiet"
-                title="Keep this stack"
-                onclick={() => (confirmingRemoval = null)}
-              >
-                <X size={11} />
-              </button>
-            {:else}
-              <button
-                type="button"
-                class="action quiet"
-                title="Forget this saved command. The terminal it ran in is left alone."
-                onclick={() => pressRemove(row.definition.id)}
-              >
-                <Trash2 size={11} />
-              </button>
-            {/if}
+            <button
+              type="button"
+              class="action quiet"
+              title="Change the name, command, folder or environment variables"
+              aria-label={`Change ${row.definition.name}`}
+              onclick={() => editor?.openFor(row.definition)}
+            >
+              <Pencil size={11} />
+            </button>
+
+            <button
+              type="button"
+              class="action quiet"
+              title="Forget this saved command. The terminal it ran in is left alone."
+              aria-label={`Remove ${row.definition.name}`}
+              onclick={() => (removing = row.definition)}
+            >
+              <Trash2 size={11} />
+            </button>
           </div>
         </li>
       {/each}
@@ -266,14 +216,44 @@
   {/if}
 </div>
 
+<RunConfigurationDialog bind:this={editor} bind:open={editorOpen} />
+
+<AlertDialog.Root open={removeOpen} onOpenChange={(next) => { if (!next) removing = null; }}>
+  <AlertDialog.Content
+    class="rounded-lg bg-background text-foreground ring-[var(--color-border)]
+           shadow-[var(--shadow-lg)]"
+  >
+    <AlertDialog.Header>
+      <AlertDialog.Title class="text-[14px] leading-[1.4] font-semibold">
+        Remove “{removing?.name ?? ''}” from the run list?
+      </AlertDialog.Title>
+      <AlertDialog.Description class="text-[13px] leading-[1.5] text-[var(--color-text-2)]">
+        This forgets the saved command and nothing else. If it is running right now, the terminal
+        keeps running and stays in your session list — you would stop it there.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="bg-transparent">
+      <AlertDialog.Cancel size="sm" class="text-[13px]">Keep it</AlertDialog.Cancel>
+      <AlertDialog.Action
+        size="sm"
+        variant="destructive"
+        class="text-[13px]"
+        onclick={confirmRemoval}
+      >
+        Remove it
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
+
 <style>
-  .stacks-pane {
+  .run-pane {
     display: flex;
     flex-direction: column;
     height: 100%;
     overflow-y: auto;
-    background: #101014;
-    color: #c9c9d4;
+    background: var(--color-bg);
+    color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
   }
 
@@ -286,8 +266,8 @@
     align-items: center;
     gap: 6px;
     padding: 6px 8px;
-    background: #101014;
-    border-bottom: 1px solid #22222c;
+    background: var(--color-bg);
+    border-bottom: 1px solid var(--color-border);
   }
 
   .toolbar-title {
@@ -296,7 +276,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #8a8a9c;
+    color: var(--color-text-2);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.05em;
@@ -311,7 +291,7 @@
     border: 0;
     border-radius: 4px;
     background: transparent;
-    color: #7b7b8c;
+    color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
     padding: 2px 5px;
@@ -319,92 +299,13 @@
   }
 
   .tool:hover:not(:disabled) {
-    background: #1c1c24;
-    color: #d8d8e0;
+    background: var(--color-elevated);
+    color: var(--color-text);
   }
 
   .tool:disabled {
     cursor: default;
     opacity: 0.45;
-  }
-
-  /* ── Add form ──────────────────────────────────────────────────────── */
-  .add-form {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px;
-    border-bottom: 1px solid #22222c;
-    background: #13131a;
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .field-label {
-    color: #7b7b8c;
-    font-size: 12px;
-  }
-
-  .field-input {
-    width: 100%;
-    border: 1px solid #2a2a36;
-    border-radius: 4px;
-    background: #0c0c10;
-    color: #e6e6ee;
-    font: inherit;
-    font-size: 12px;
-    padding: 4px 6px;
-  }
-
-  .field-input:focus {
-    outline: none;
-    border-color: #bd93f9;
-  }
-
-  .field-hint {
-    margin: 0;
-    color: #6d6d7d;
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .form-actions {
-    display: flex;
-    gap: 6px;
-  }
-
-  .primary,
-  .secondary {
-    border: 1px solid transparent;
-    border-radius: 4px;
-    font: inherit;
-    font-size: 12px;
-    padding: 3px 8px;
-    cursor: pointer;
-  }
-
-  .primary {
-    background: #bd93f9;
-    color: #16161c;
-    font-weight: 600;
-  }
-
-  .primary:hover {
-    background: #cbaaff;
-  }
-
-  .secondary {
-    background: transparent;
-    border-color: #2a2a36;
-    color: #8a8a9c;
-  }
-
-  .secondary:hover {
-    color: #d8d8e0;
   }
 
   /* ── Rows ──────────────────────────────────────────────────────────── */
@@ -426,7 +327,7 @@
   }
 
   .row:hover {
-    background: #17171d;
+    background: var(--color-surface);
   }
 
   .row + .row {
@@ -440,7 +341,7 @@
     left: 6px;
     right: 6px;
     height: 1px;
-    background: #22222c;
+    background: var(--color-border);
   }
 
   .row:hover::before,
@@ -460,19 +361,19 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #3a3a48;
+    background: var(--color-idle);
   }
 
   .dot[data-tone='running'] {
-    background: #50fa7b;
+    background: var(--color-live);
   }
 
   .dot[data-tone='attention'] {
-    background: #f1fa8c;
+    background: var(--color-attention);
   }
 
   .dot[data-tone='failed'] {
-    background: #ff5555;
+    background: var(--color-bad);
   }
 
   .row-title {
@@ -482,8 +383,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     text-align: left;
-    color: #e6e6ee;
-    font-size: 12px;
+    color: var(--color-text);
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -491,13 +392,13 @@
     border: 0;
     background: transparent;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     padding: 0;
     cursor: pointer;
   }
 
   .row-title.link:hover {
-    color: #8be9fd;
+    color: var(--color-accent);
     text-decoration: underline;
   }
 
@@ -512,8 +413,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #6d6d7d;
-    font-size: 13px;
+    color: var(--color-text-2);
+    font-size: 12px;
+  }
+
+  .env {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text-2);
+    font-size: 12px;
   }
 
   .mono {
@@ -528,8 +438,8 @@
 
   .badge {
     border-radius: 4px;
-    background: rgba(139, 233, 253, 0.1);
-    color: #8be9fd;
+    background: var(--color-live-bg);
+    color: var(--color-live);
     font-family: ui-monospace, Menlo, monospace;
     font-size: 12px;
     padding: 1px 5px;
@@ -541,8 +451,8 @@
     max-width: 55%;
     overflow: hidden;
     border-radius: 4px;
-    background: #24242f;
-    color: #9a9aad;
+    background: var(--color-elevated);
+    color: var(--color-text-2);
     font-size: 12px;
     padding: 1px 5px;
     text-overflow: ellipsis;
@@ -550,18 +460,18 @@
   }
 
   .chip[data-tone='running'] {
-    background: rgba(80, 250, 123, 0.12);
-    color: #50fa7b;
+    background: var(--color-live-bg);
+    color: var(--color-live);
   }
 
   .chip[data-tone='attention'] {
-    background: rgba(241, 250, 140, 0.12);
-    color: #f1fa8c;
+    background: var(--color-attention-bg);
+    color: var(--color-attention);
   }
 
   .chip[data-tone='failed'] {
-    background: rgba(255, 85, 85, 0.14);
-    color: #ff8888;
+    background: var(--color-bad-bg);
+    color: var(--color-bad);
   }
 
   /* ── Actions ───────────────────────────────────────────────────────── */
@@ -575,10 +485,10 @@
     display: flex;
     align-items: center;
     gap: 3px;
-    border: 1px solid #2a2a36;
+    border: 1px solid var(--color-border);
     border-radius: 4px;
     background: transparent;
-    color: #9a9aad;
+    color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
     padding: 2px 6px;
@@ -586,9 +496,8 @@
   }
 
   .action:hover:not(:disabled) {
-    border-color: #3a3a48;
-    color: #e6e6ee;
-    background: #1c1c24;
+    color: var(--color-text);
+    background: var(--color-elevated);
   }
 
   .action:disabled {
@@ -598,29 +507,23 @@
 
   .action.quiet {
     border-color: transparent;
-    color: #6d6d7d;
-  }
-
-  .action.danger {
-    border-color: rgba(255, 85, 85, 0.4);
-    color: #ff8888;
   }
 
   /* ── States ────────────────────────────────────────────────────────── */
   .state {
     margin: 0;
     padding: 8px;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     font-size: 13px;
     line-height: 1.45;
   }
 
   .state.error {
-    color: #ff9d9d;
+    color: var(--color-bad);
   }
 
   .state.notice {
-    color: #f1fa8c;
+    color: var(--color-attention);
   }
 
   .retry {
@@ -628,7 +531,7 @@
     border: 0;
     border-radius: 4px;
     background: transparent;
-    color: #bd93f9;
+    color: var(--color-accent);
     font: inherit;
     font-size: 12px;
     padding: 0 2px;
@@ -636,9 +539,8 @@
     text-decoration: underline;
   }
 
-  button:focus-visible,
-  input:focus-visible {
-    outline: 1px solid #bd93f9;
+  button:focus-visible {
+    outline: 1px solid var(--color-accent);
     outline-offset: -1px;
   }
 </style>

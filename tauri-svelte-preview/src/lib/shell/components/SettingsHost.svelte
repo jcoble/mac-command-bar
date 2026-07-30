@@ -29,9 +29,18 @@
   import '$lib/shell/styles/nextTokens.css';
   import '$lib/shell/styles/next.css';
 
+  import type { ProblemsLocation } from '$lib/settingsStore.svelte';
+
   /** The real settings surface, referred to by type only — no load yet. */
   type SettingsDialogComponent =
     (typeof import('$lib/shell/components/SettingsDialog.svelte'))['default'];
+
+  interface Props {
+    /** Passed straight through to the dialog: the user moved the Problems
+     * list, and the shell needs to open or close the bottom strip now. */
+    onProblemsLocationChange?: (location: ProblemsLocation) => void;
+  }
+  let { onProblemsLocationChange }: Props = $props();
 
   let SettingsDialog = $state<SettingsDialogComponent | null>(null);
   let dialogOpen = $state(false);
@@ -76,7 +85,7 @@
 </script>
 
 {#if SettingsDialog}
-  <SettingsDialog bind:open={dialogOpen} />
+  <SettingsDialog bind:open={dialogOpen} {onProblemsLocationChange} />
 {/if}
 
 {#if loadFailure}

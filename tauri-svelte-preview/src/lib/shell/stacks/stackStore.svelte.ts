@@ -1,8 +1,17 @@
 /**
- * stackStore.svelte.ts — Svelte 5 runes state for the /next stack runner.
+ * stackStore.svelte.ts — Svelte 5 runes state for the /next run configurations.
  *
- * A "stack" here is one command you keep re-running in a project: `pnpm dev`,
- * `docker compose up`, `dotnet watch`. The store holds
+ * A RUN CONFIGURATION is one saved way to start something: `pnpm dev`,
+ * `docker compose up`, `dotnet watch`. On screen that is the only word used.
+ *
+ * WHY THE CODE STILL SAYS "STACK". Every name in this file — the storage keys,
+ * the exported functions, the `script` field — was written when the feature was
+ * called a stack, and the keys are what a user's saved data is filed under. A
+ * rename here would mean their saved configurations came back empty after an
+ * update. So the vocabulary changed where a person can see it and stayed where
+ * only the code can: `stack` in this module means "run configuration".
+ *
+ * The store holds
  *
  *  - the stacks you have saved, per project folder;
  *  - which terminal session each one was last started in — the tag that makes a
@@ -42,7 +51,23 @@
 
 // ── Stored shapes ─────────────────────────────────────────────────────────────
 
-/** A saved command: what to run, in which folder, under what name. */
+/** One environment variable set for a run configuration. */
+export interface StackEnvVar {
+  /** The name, as the shell sees it — `NODE_ENV`. */
+  key: string;
+  /** The value, unquoted. Quoting happens when the command line is built. */
+  value: string;
+}
+
+/**
+ * A saved run configuration: what to run, in which folder, under what name.
+ *
+ * `env` is the ONE field added after this shape first shipped, and it is
+ * optional on purpose. A configuration with no environment variables is written
+ * exactly as it was before the field existed, so a saved value never grows a
+ * key nothing reads, and anything saved by an older build simply has no `env`
+ * and loads with none. See `parseStackDefinitions`.
+ */
 export interface StackDefinition {
   /** Minted here; the key everything else points at. */
   id: string;
@@ -52,6 +77,8 @@ export interface StackDefinition {
   script: string;
   /** The project folder the command runs in. */
   cwd: string;
+  /** Environment variables to set for the run; absent when there are none. */
+  env?: StackEnvVar[];
 }
 
 /** The terminal session a stack was last started in, and how it ended. */
@@ -109,9 +136,9 @@ export const STACK_DEFINITIONS_STORAGE_KEY = 'mac-command-bar.next.stacks.defini
 /** Where "this session is that stack" lives, so the tag survives a reload. */
 export const STACK_RUNS_STORAGE_KEY = 'mac-command-bar.next.stacks.runs';
 
-/** What the user is told when a saved stack could not be written down. */
+/** What the user is told when a saved configuration could not be written down. */
 export const STORAGE_WRITE_FAILED_MESSAGE =
-  'This stack will not come back after a reload — browser storage is full';
+  'This run configuration will not come back after a reload — browser storage is full';
 
 function trimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -133,10 +160,38 @@ function parseArray(raw: string | null | undefined): unknown[] {
 }
 
 /**
- * Read saved stacks back. Tolerant on purpose: an unreadable value, a value
- * that is not a list, a row that is not an object, a row missing any of its
- * four fields, and a second row re-using an id are all simply dropped — a bad
- * saved value must never be able to stop the panel from opening.
+ * Read a saved `env` list back. Anything that is not a list of `{key, value}`
+ * pairs with a usable name comes back empty, and a list with nothing usable in
+ * it comes back as `[]` — which the caller then leaves off the record entirely.
+ */
+function parseEnvList(value: unknown): StackEnvVar[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const variables: StackEnvVar[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+    const key = trimmedString(row.key);
+    if (!key || !isEnvName(key) || seen.has(key)) continue;
+    seen.add(key);
+    variables.push({ key, value: typeof row.value === 'string' ? row.value : '' });
+  }
+  return variables;
+}
+
+/**
+ * Read saved run configurations back. Tolerant on purpose: an unreadable value,
+ * a value that is not a list, a row that is not an object, a row missing any of
+ * its four required fields, and a second row re-using an id are all simply
+ * dropped — a bad saved value must never be able to stop the panel opening.
+ *
+ * MIGRATION. Environment variables arrived after this shape shipped, so a
+ * configuration saved by an older build has no `env` key at all. That is not an
+ * error and needs no conversion step: the field is optional, a missing or
+ * unusable one reads as "no environment variables", and the record is left
+ * WITHOUT the key rather than being given an empty list. An old saved value
+ * therefore reads back byte-identical to what was written, and a user who never
+ * sets a variable can move between builds in either direction.
  */
 export function parseStackDefinitions(raw: string | null | undefined): StackDefinition[] {
   const seen = new Set<string>();
@@ -151,20 +206,118 @@ export function parseStackDefinitions(raw: string | null | undefined): StackDefi
     if (!id || !name || !script || !cwd) continue;
     if (seen.has(id)) continue;
     seen.add(id);
-    definitions.push({ id, name, script, cwd });
+    const env = parseEnvList(row.env);
+    definitions.push(env.length > 0 ? { id, name, script, cwd, env } : { id, name, script, cwd });
   }
   return definitions;
 }
 
 export function serializeStackDefinitions(definitions: StackDefinition[]): string {
   return JSON.stringify(
-    definitions.map((definition) => ({
-      id: definition.id,
-      name: definition.name,
-      script: definition.script,
-      cwd: definition.cwd
-    }))
+    definitions.map((definition) => {
+      const env = definition.env ?? [];
+      const row: Record<string, unknown> = {
+        id: definition.id,
+        name: definition.name,
+        script: definition.script,
+        cwd: definition.cwd
+      };
+      // Only written when there is something to write — see the migration note
+      // on `parseStackDefinitions`.
+      if (env.length > 0) row.env = env.map((entry) => ({ key: entry.key, value: entry.value }));
+      return row;
+    })
   );
+}
+
+// ── Environment variables (pure) ──────────────────────────────────────────────
+
+/** The names a shell will accept: a letter or underscore, then word characters. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isEnvName(value: string): boolean {
+  return ENV_NAME.test(value);
+}
+
+/** Drop one matching pair of surrounding quotes, if the value has them. */
+function unquote(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === '"' || first === "'") && first === last) return value.slice(1, -1);
+  return value;
+}
+
+/**
+ * Read the environment box: one `KEY=value` per line.
+ *
+ * Blank lines and lines starting with `#` are skipped, a leading `export ` is
+ * allowed and ignored, and a value wrapped in quotes has them removed (the
+ * quoting is put back when the command line is built, so typing them is neither
+ * required nor harmful). Anything else comes back in `unreadable` so the editor
+ * can say which lines it did not understand instead of dropping them silently.
+ * The last line wins when a name is given twice.
+ */
+export function readEnvLines(text: string | null | undefined): {
+  variables: StackEnvVar[];
+  unreadable: string[];
+} {
+  const variables: StackEnvVar[] = [];
+  const unreadable: string[] = [];
+  const positionOf = new Map<string, number>();
+  for (const rawLine of String(text ?? '').split('\n')) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const body = line.startsWith('export ') ? line.slice('export '.length).trim() : line;
+    const split = body.indexOf('=');
+    if (split <= 0) {
+      unreadable.push(line);
+      continue;
+    }
+    const key = body.slice(0, split).trim();
+    if (!isEnvName(key)) {
+      unreadable.push(line);
+      continue;
+    }
+    const value = unquote(body.slice(split + 1).trim());
+    const existing = positionOf.get(key);
+    if (existing === undefined) {
+      positionOf.set(key, variables.length);
+      variables.push({ key, value });
+    } else {
+      variables[existing] = { key, value };
+    }
+  }
+  return { variables, unreadable };
+}
+
+/** The saved variables as the editor's box shows them, one per line. */
+export function formatEnvLines(env: StackEnvVar[] | null | undefined): string {
+  return (env ?? []).map((entry) => `${entry.key}=${entry.value}`).join('\n');
+}
+
+/** Wrap a value in single quotes so a shell takes it literally, spaces and all. */
+function shellQuote(value: string): string {
+  return `'${value.split("'").join("'\\''")}'`;
+}
+
+/**
+ * The command line a run configuration actually runs: its script with its
+ * environment variables in front of it.
+ *
+ * Put in FRONT rather than handed to the backend because the desktop app's
+ * terminal spawn takes a command and a folder and nothing else. `KEY=value cmd`
+ * is what a person would type, it works in every shell the app opens, and it is
+ * visible in the terminal afterwards — so what ran is on screen rather than
+ * hidden in a settings file.
+ */
+export function commandWithEnv(script: string, env: StackEnvVar[] | null | undefined): string {
+  const command = script.trim();
+  const prefix = (env ?? [])
+    .filter((entry) => isEnvName(entry.key))
+    .map((entry) => `${entry.key}=${shellQuote(entry.value)}`)
+    .join(' ');
+  return prefix ? `${prefix} ${command}` : command;
 }
 
 /**
@@ -482,28 +635,66 @@ function mintStackId(): string {
   return random ? `stack-${random}` : `stack-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** What the editor hands over for a new or changed run configuration. */
+export interface StackDraft {
+  name: string;
+  script: string;
+  cwd: string;
+  env?: StackEnvVar[];
+}
+
 /**
- * Save a new stack. Returns the saved record, or `null` when a field was blank —
- * in which case `stacks.notice` says which one, because a button that silently
- * does nothing is worse than one that explains itself.
+ * The first thing wrong with a draft, said the way it would be said to the
+ * person who typed it — or `null` when there is nothing wrong. Pure, so the
+ * editor can grey out its Save button without saving anything first.
  */
-export function addStack(input: { name: string; script: string; cwd: string }): StackDefinition | null {
-  const name = input.name.trim();
-  const script = input.script.trim();
-  const cwd = input.cwd.trim();
-  if (!name) {
-    stacks.notice = 'Give the stack a name first.';
+export function describeStackProblem(draft: StackDraft): string | null {
+  if (!draft.name.trim()) return 'Give this run configuration a name first.';
+  if (!draft.script.trim()) return 'Type the command it should run.';
+  if (!draft.cwd.trim()) return 'Say which folder it should run in.';
+  return null;
+}
+
+/** Strip a draft down to what gets saved: trimmed, with usable variables only. */
+function cleanDraft(draft: StackDraft): {
+  name: string;
+  script: string;
+  cwd: string;
+  env: StackEnvVar[];
+} {
+  const cwd = draft.cwd.trim();
+  // A trailing slash would make the same folder look like two different ones to
+  // the folder comparisons below. `/` itself keeps its slash — it is the path.
+  const trimmedCwd = cwd.replace(/(.)\/+$/, '$1');
+  return {
+    name: draft.name.trim(),
+    script: draft.script.trim(),
+    cwd: trimmedCwd,
+    env: (draft.env ?? [])
+      .filter((entry) => isEnvName(entry.key.trim()))
+      .map((entry) => ({ key: entry.key.trim(), value: entry.value }))
+  };
+}
+
+/**
+ * Save a new run configuration. Returns the saved record, or `null` when a
+ * field was blank — in which case `stacks.notice` says which one, because a
+ * button that silently does nothing is worse than one that explains itself.
+ */
+export function addStack(draft: StackDraft): StackDefinition | null {
+  const problem = describeStackProblem(draft);
+  if (problem) {
+    stacks.notice = problem;
     return null;
   }
-  if (!script) {
-    stacks.notice = 'Type the command this stack should run.';
-    return null;
-  }
-  if (!cwd) {
-    stacks.notice = 'Pick a session first, so the stack knows which folder to run in.';
-    return null;
-  }
-  const definition: StackDefinition = { id: mintStackId(), name, script, cwd };
+  const clean = cleanDraft(draft);
+  const definition: StackDefinition = {
+    id: mintStackId(),
+    name: clean.name,
+    script: clean.script,
+    cwd: clean.cwd
+  };
+  if (clean.env.length > 0) definition.env = clean.env;
   stacks.definitions = [...stacks.definitions, definition];
   stacks.notice = null;
   persistDefinitions();
@@ -511,8 +702,44 @@ export function addStack(input: { name: string; script: string; cwd: string }): 
 }
 
 /**
- * Forget a saved stack, and the tag saying which session belonged to it. The
- * SESSION survives untouched — this only removes CommandBar's saved command.
+ * Change a saved run configuration in place. It keeps its id, so the terminal
+ * it is running in stays tagged as its — editing the command does not orphan a
+ * run that is already going, it only changes what the NEXT run does.
+ *
+ * Returns the saved record, or `null` when the id is unknown or a field was
+ * blank; `stacks.notice` says which, same as adding one.
+ */
+export function updateStack(stackId: string, draft: StackDraft): StackDefinition | null {
+  const existing = stacks.definitions.find((definition) => definition.id === stackId);
+  if (!existing) {
+    stacks.notice = 'That run configuration is no longer saved.';
+    return null;
+  }
+  const problem = describeStackProblem(draft);
+  if (problem) {
+    stacks.notice = problem;
+    return null;
+  }
+  const clean = cleanDraft(draft);
+  const updated: StackDefinition = {
+    id: existing.id,
+    name: clean.name,
+    script: clean.script,
+    cwd: clean.cwd
+  };
+  if (clean.env.length > 0) updated.env = clean.env;
+  stacks.definitions = stacks.definitions.map((definition) =>
+    definition.id === stackId ? updated : definition
+  );
+  stacks.notice = null;
+  persistDefinitions();
+  return updated;
+}
+
+/**
+ * Forget a saved run configuration, and the tag saying which session belonged
+ * to it. The SESSION survives untouched — this only removes CommandBar's saved
+ * command.
  */
 export function removeStack(stackId: string): void {
   stacks.definitions = stacks.definitions.filter((definition) => definition.id !== stackId);
@@ -607,13 +834,49 @@ export function clearStackNotice(): void {
   stacks.notice = null;
 }
 
-/** The stacks the panel should draw: this project's, or all of them. */
+/**
+ * Is this folder the project's own folder, or one underneath it?
+ *
+ * The same test `stackProcessesFor` uses, for the same reason: a configuration
+ * whose folder was edited to `…/app/server` still belongs to the project at
+ * `…/app`, and a folder whose name merely starts the same way does not.
+ */
+export function isInsideRoot(cwd: string, root: string): boolean {
+  const folder = (cwd ?? '').replace(/\/+$/, '');
+  const base = (root ?? '').replace(/\/+$/, '');
+  if (!base) return true;
+  return folder === base || folder.startsWith(`${base}/`);
+}
+
+/** The run configurations the panel should draw: this project's, or all of them. */
 export function visibleStackRows(): StackRow[] {
   const root = (stacks.activeRoot ?? '').trim();
   const definitions = root
-    ? stacks.definitions.filter((definition) => definition.cwd === root)
+    ? stacks.definitions.filter((definition) => isInsideRoot(definition.cwd, root))
     : stacks.definitions;
   return buildStackRows(definitions, stacks.runs, stacks.processes);
+}
+
+/**
+ * EVERY saved run configuration, whichever project it belongs to.
+ *
+ * The run button in the top bar lists all of them: it is one control for the
+ * whole app, and hiding a configuration because the tool column happens to be
+ * pointed elsewhere would look like the configuration had been lost.
+ */
+export function allStackRows(): StackRow[] {
+  return buildStackRows(stacks.definitions, stacks.runs, stacks.processes);
+}
+
+/**
+ * The run record for one configuration, or `null` when it has never been
+ * started here. The run button reads `startedAt` off it to say when.
+ */
+export function runRecordForStack(stackId: string): StackRunRecord | null {
+  for (const run of Object.values(stacks.runs)) {
+    if (run.stackId === stackId) return run;
+  }
+  return null;
 }
 
 /** Drop everything back to launch state. Used by tests and by a full reset. */

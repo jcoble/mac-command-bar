@@ -28,6 +28,21 @@ export interface SessionWorkspaceSnapshot {
   selectedPath: string | null;
   /** Scroll offset of the tree, in pixels. */
   scrollTop: number;
+  /**
+   * The file the Diff tab was showing, as a path relative to the repository, or
+   * null when it was showing nothing.
+   */
+  diffPath: string | null;
+  /**
+   * The project folder `diffPath` is inside, or null when there is no diff.
+   *
+   * Stored next to the path because a path on its own cannot be checked: the
+   * Diff tab is one tab for the whole shell, and "src/lib/index.ts" names a real
+   * file in most projects. Keeping the folder it came from is what lets
+   * {@link diffPathFor} tell "this is your file" from "this is the last
+   * project's file that happens to have the same name".
+   */
+  diffRoot: string | null;
 }
 
 export const SESSION_WORKSPACES_STORAGE_KEY = 'mac-command-bar.next.session-workspaces';
@@ -65,8 +80,22 @@ export function captureWorkspace(input: {
   expandedFolderIds: Set<string>;
   selectedPath: string | null;
   scrollTop: number;
+  /** What the Diff tab is showing, if the caller passes it. Optional so the
+   * page can start recording it separately from the rest of this record; a
+   * caller that says nothing gets "no diff", which is what an older stored
+   * record means too. */
+  diffPath?: string | null;
+  /** The project folder that diff came from. See `diffRoot` on the record. */
+  diffRoot?: string | null;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
+  // A path with no folder cannot be checked against the session being restored,
+  // and the safe reading of an unknown owner is "not this session's" — so half
+  // an answer is stored as no answer rather than as a diff we would then show
+  // to the wrong project.
+  const diffPath = pathOf(input.diffPath);
+  const diffRoot = pathOf(input.diffRoot);
+  const bothKnown = diffPath !== null && diffRoot !== null;
   return {
     openPaths: cappedPaths(
       input.openFiles.map((file) => file.path),
@@ -75,7 +104,9 @@ export function captureWorkspace(input: {
     activePath,
     expandedFolderIds: [...input.expandedFolderIds],
     selectedPath: input.selectedPath ?? null,
-    scrollTop: Math.max(0, input.scrollTop)
+    scrollTop: Math.max(0, input.scrollTop),
+    diffPath: bothKnown ? diffPath : null,
+    diffRoot: bothKnown ? diffRoot : null
   };
 }
 
@@ -97,13 +128,47 @@ function snapshotOf(value: unknown): SessionWorkspaceSnapshot | null {
   const entry = value as Record<string, unknown>;
   const activePath = pathOf(entry.activePath);
   const scrollTop = typeof entry.scrollTop === 'number' && entry.scrollTop > 0 ? entry.scrollTop : 0;
+  // Records written before the Diff tab was remembered have neither field, and
+  // they read back as "this session was not looking at a diff" — which is the
+  // right answer for them and the safe one in general.
+  const diffPath = pathOf(entry.diffPath);
+  const diffRoot = pathOf(entry.diffRoot);
+  const bothKnown = diffPath !== null && diffRoot !== null;
   return {
     openPaths: cappedPaths(stringsOf(entry.openPaths), activePath),
     activePath,
     expandedFolderIds: stringsOf(entry.expandedFolderIds),
     selectedPath: pathOf(entry.selectedPath),
-    scrollTop
+    scrollTop,
+    diffPath: bothKnown ? diffPath : null,
+    diffRoot: bothKnown ? diffRoot : null
   };
+}
+
+/** Trailing slashes make two spellings of one folder look different. */
+function sameFolder(left: string, right: string): boolean {
+  return left.replace(/\/+$/, '') === right.replace(/\/+$/, '');
+}
+
+/**
+ * The file the Diff tab should show for a session whose project folder is
+ * `root`, or null when it should show nothing.
+ *
+ * This is the answer to the bug where switching session left the Diff tab
+ * showing a file from the project you had just left. There are three ways to get
+ * null, and all of them mean "clear the tab": the session has no stored record
+ * at all, it was not looking at a diff, or the diff it was looking at belongs to
+ * a different project. Only a diff from this session's own project comes back.
+ *
+ * A session with no folder (`root` empty) can own no diff, so it always clears.
+ */
+export function diffPathFor(
+  snapshot: SessionWorkspaceSnapshot | null | undefined,
+  root: string | null | undefined
+): string | null {
+  const folder = (root ?? '').trim();
+  if (!snapshot || !folder || !snapshot.diffPath || !snapshot.diffRoot) return null;
+  return sameFolder(snapshot.diffRoot, folder) ? snapshot.diffPath : null;
 }
 
 /** Every session's record, by owned id. Anything unreadable — no value, broken

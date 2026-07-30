@@ -12,6 +12,10 @@
    *
    * The component does no IO and holds no state: it hands each host element to
    * the page through `registerHost` exactly once, on mount.
+   *
+   * It does own one other thing, and it is the only place that can: WHEN the
+   * terminal has to be measured again. See `watchHost` below for what goes wrong
+   * without it.
    */
   import '@xterm/xterm/css/xterm.css';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
@@ -23,9 +27,19 @@
     activeOwnedId: string | null;
     /** Called once per host element, as soon as it is in the DOM. */
     registerHost(ownedId: string, host: HTMLElement): void;
+    /**
+     * This session's terminal needs measuring again — it just appeared, its box
+     * changed size, or the font it draws with finished loading.
+     *
+     * Safe to call often: measuring re-reports the grid through the same path
+     * every other measurement uses, and a grid that has not actually changed
+     * costs nothing (the terminal service drops a resize that matches the size
+     * the session is already at).
+     */
+    onHostLayout?(ownedId: string): void;
   }
 
-  let { owned, activeOwnedId, registerHost }: Props = $props();
+  let { owned, activeOwnedId, registerHost, onHostLayout }: Props = $props();
 
   /**
    * An exited session keeps its host only while its PTY id is still around
@@ -34,9 +48,83 @@
    */
   const hosted = $derived(owned.filter((session) => session.state !== 'exited' || session.ptySessionId));
 
-  /** Svelte action: publish the host element to the page, once, on mount. */
+  /**
+   * How many animation frames to keep re-measuring for after a terminal appears.
+   *
+   * It is not one, and that is the whole fix. xterm works out how big one
+   * character is by measuring it on screen, and a terminal built inside a hidden
+   * host cannot do that — so it holds a character size of zero. Showing the host
+   * does start a re-measure, but xterm starts it from a browser notification
+   * ("this element is on screen now") that is not delivered until the end of the
+   * frame, well after the code that made the host visible has finished. Measuring
+   * the grid in that gap is the bug in screenshots 46 and 52: xterm still has no
+   * character size, so the fit does nothing and quietly reports the OLD grid,
+   * which is then what the session is resized to. Nothing measures it again
+   * afterwards, so the terminal stays wrong — the prompt sits above the line you
+   * type on, the top of the input box is cut off, and the bottom of the output
+   * runs past the end of the panel — until a divider is dragged.
+   *
+   * Four frames is comfortably past that first one, and the extra measurements
+   * are free: a grid that has not changed sends nothing to the session.
+   */
+  const FRAMES_AFTER_APPEARING = 4;
+
+  /**
+   * Svelte action: publish the host element to the page, and from then on say
+   * when this session's terminal needs measuring again.
+   *
+   * Three things ask for that, and before this the shell listened for none of
+   * them — the only re-measure in the whole shell came from the middle tab area
+   * reporting a layout, which a newly created session never triggers:
+   *
+   *  - the host appeared (the terminal manager sets `display` on it directly,
+   *    which is why this watches the element's own style rather than any state);
+   *  - its box changed size (a dragged divider, a resized window, a folded
+   *    column);
+   *  - the font finished loading, which changes how wide a character is after
+   *    xterm has already measured one — the same wrong-grid symptom, arriving a
+   *    beat later.
+   */
   function host(node: HTMLElement, ownedId: string) {
     registerHost(ownedId, node);
+
+    /** Is this host the one on screen? A hidden host has nothing to measure. */
+    const shown = (): boolean => node.style.display !== 'none';
+
+    let framesLeft = 0;
+    let frame = 0;
+
+    /** Ask for a measurement now and on the next few frames. */
+    function remeasure(): void {
+      if (!shown()) return;
+      framesLeft = FRAMES_AFTER_APPEARING;
+      if (frame !== 0) return;
+      const step = (): void => {
+        onHostLayout?.(ownedId);
+        framesLeft -= 1;
+        frame = framesLeft > 0 ? requestAnimationFrame(step) : 0;
+      };
+      frame = requestAnimationFrame(step);
+    }
+
+    const sizes = new ResizeObserver(() => remeasure());
+    sizes.observe(node);
+
+    const shownOrHidden = new MutationObserver(() => remeasure());
+    shownOrHidden.observe(node, { attributes: true, attributeFilter: ['style'] });
+
+    const fonts = document.fonts ?? null;
+    const onFontsLoaded = (): void => remeasure();
+    fonts?.addEventListener('loadingdone', onFontsLoaded);
+
+    return {
+      destroy(): void {
+        if (frame !== 0) cancelAnimationFrame(frame);
+        sizes.disconnect();
+        shownOrHidden.disconnect();
+        fonts?.removeEventListener('loadingdone', onFontsLoaded);
+      }
+    };
   }
 </script>
 

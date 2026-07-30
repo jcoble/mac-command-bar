@@ -1,5 +1,11 @@
 /**
- * stackService.ts — the ONLY place the stack runner talks to the rest of the app.
+ * stackService.ts — the ONLY place run configurations talk to the rest of the app.
+ *
+ * On screen this feature is called "Run" and one saved entry is a "run
+ * configuration". In here it is still called a stack, because renaming the
+ * functions would mean renaming the storage keys they save under and every
+ * user's saved entries would come back empty. See the note at the top of
+ * `stackStore.svelte.ts`.
  *
  * Two kinds of outside world, kept apart on purpose:
  *
@@ -24,6 +30,7 @@ import { listRuntimeContextsFromTauri } from '../../tauriSource.ts';
 import {
   applyStackProcesses,
   beginStackLoad,
+  commandWithEnv,
   failStackLoad,
   folderName,
   forgetStackRun,
@@ -160,20 +167,25 @@ export async function refreshStacks(): Promise<void> {
 }
 
 /**
- * Start a saved stack: ask the page for a session running its command, tag that
- * session as this stack's, then read the ports again.
+ * Start a saved run configuration: ask the page for a session running its
+ * command, tag that session as this configuration's, then read the ports again.
  *
  * The port read happens straight away and will usually still show "started, no
  * port yet" — a dev server takes a second or two to bind. That is deliberate:
  * the alternative is a timer, and this lane does not poll. The refresh button
  * (and the row's own click) is how the user asks again.
+ *
+ * The environment variables are folded into the command line HERE rather than
+ * anywhere further in, so nothing downstream has to learn about them: the page
+ * gets one command line and spawns it exactly as it always has, and the honest
+ * exit code that comes back still belongs to the command the user asked for.
  */
 export async function startStack(stackId: string): Promise<void> {
   if (startsInFlight.has(stackId)) return;
   const definition = definitionFor(stackId);
   if (!definition) return;
   if (!handlers.onStartStack) {
-    stacks.error = 'The shell has not wired up starting stacks yet.';
+    stacks.error = 'The shell has not wired up starting run configurations yet.';
     return;
   }
   startsInFlight.add(stackId);
@@ -182,7 +194,7 @@ export async function startStack(stackId: string): Promise<void> {
     const ownedId = await handlers.onStartStack({
       stackId: definition.id,
       cwd: definition.cwd,
-      script: definition.script,
+      script: commandWithEnv(definition.script, definition.env),
       title: definition.name
     });
     if (!ownedId) {
@@ -209,7 +221,7 @@ export async function stopStack(stackId: string): Promise<void> {
   const ownedId = ownedIdForStack(stackId);
   if (!ownedId) return;
   if (!handlers.onStopStack) {
-    stacks.error = 'The shell has not wired up stopping stacks yet.';
+    stacks.error = 'The shell has not wired up stopping run configurations yet.';
     return;
   }
   stopsInFlight.add(stackId);
@@ -222,7 +234,7 @@ export async function stopStack(stackId: string): Promise<void> {
     recordStackExit(ownedId, { exitCode: 0, signal: null });
     await refreshStacks();
   } catch (error) {
-    stacks.error = `Could not stop "${definition?.name ?? 'this stack'}": ${describeError(error)}`;
+    stacks.error = `Could not stop "${definition?.name ?? 'this run configuration'}": ${describeError(error)}`;
   } finally {
     stopsInFlight.delete(stackId);
   }

@@ -25,13 +25,16 @@ function fakeStorage({ failWrites = false } = {}) {
   };
 }
 
-// The roster is the five views the activity bar offers, and the one it opens on
+// The roster is the six views the tool column can hold, and the one it opens on
 // is one of them. Sessions is NOT among them any more: the sessions list has a
-// column of its own on the left of the shell.
+// column of its own on the left of the shell. Problems IS among them, even
+// though its icon is usually not offered — the column keeps a container for it
+// at all times and the activity bar decides whether to draw the icon, so that
+// changing where the Problems list lives never tears a container down.
 {
   assert.deepEqual(
     SIDEBAR_VIEWS.map((view) => view.id),
-    ['explorer', 'source-control', 'worktrees', 'stacks', 'context']
+    ['explorer', 'source-control', 'worktrees', 'stacks', 'context', 'problems']
   );
   assert.ok(
     SIDEBAR_VIEWS.every((view) => typeof view.title === 'string' && view.title.length > 0),
@@ -40,10 +43,17 @@ function fakeStorage({ failWrites = false } = {}) {
   assert.ok(isSidebarViewId(DEFAULT_SIDEBAR_VIEW));
 }
 
-// Only the five ids are ids. Anything else — including the shapes a corrupt
+// Only the six ids are ids. Anything else — including the shapes a corrupt
 // stored value can take, and the sessions view that used to be one — is not.
 {
-  for (const id of ['explorer', 'source-control', 'worktrees', 'stacks', 'context']) {
+  for (const id of [
+    'explorer',
+    'source-control',
+    'worktrees',
+    'stacks',
+    'context',
+    'problems'
+  ]) {
     assert.ok(isSidebarViewId(id), `${id} is a view`);
   }
   for (const value of [
@@ -70,7 +80,8 @@ function fakeStorage({ failWrites = false } = {}) {
     'mac-command-bar.next.view-source-control-panes',
     'mac-command-bar.next.view-worktrees-panes',
     'mac-command-bar.next.view-stacks-panes',
-    'mac-command-bar.next.view-context-panes'
+    'mac-command-bar.next.view-context-panes',
+    'mac-command-bar.next.view-problems-panes'
   ]);
   assert.equal(new Set(keys).size, keys.length, 'no two views write to the same key');
   assert.ok(!keys.includes(ACTIVE_VIEW_KEY), 'and none of them is the active-view key');
