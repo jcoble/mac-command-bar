@@ -11,6 +11,13 @@
  * every session its own record means switching can put back what that session
  * had, and the two stop overwriting each other.
  *
+ * The second half of the file is about the same switch costing less. A record
+ * is only a list of paths, so putting one back used to mean reading every one
+ * of those files off disk again — even the file you were reading thirty seconds
+ * ago. So the tabs of the last few sessions are held in memory as well, and a
+ * switch back to one of them puts the files themselves back rather than their
+ * names. See {@link retainTabs} for what "the last few" means and why.
+ *
  * What is NOT here: any decision about when to save or restore. The page owns
  * that (see `+page.svelte`), so nothing in this file can fire on its own.
  */
@@ -206,4 +213,171 @@ export function pruneWorkspaces(
     if (keep.has(ownedId)) kept[ownedId] = snapshot;
   }
   return kept;
+}
+
+/* ---------------------------------------------------------------------------
+ * Tabs held in memory, so switching back to a session does not read its files
+ * off disk all over again.
+ * ------------------------------------------------------------------------- */
+
+/** What this file needs of an editor tab to decide about it. The editor's own
+ * tab is wider than this, and everything else on it — the language, where the
+ * reader had scrolled to — is carried along untouched. */
+export interface RetainedTab {
+  /** Which file the tab is for. */
+  path: string;
+  /** The file's contents once read, and null until then. */
+  preview: unknown;
+  /** A read is in flight. */
+  loading: boolean;
+  /** Why the last read failed, in plain words, or null. */
+  error: string | null;
+}
+
+/** The tabs of the sessions still held in memory. */
+export interface RetainedWorkspaces<Tab extends RetainedTab> {
+  /** The sessions held, the one used longest ago first — so the one to let go
+   * of is always the one at the front. */
+  leastRecentFirst: string[];
+  /** The tabs each held session left behind. */
+  tabsByOwnedId: Record<string, Tab[]>;
+}
+
+/**
+ * How many sessions keep their tabs in memory at once.
+ *
+ * Three covers the switching people actually do — the session you are on and
+ * the two you keep going back to — and it is what stops this from growing
+ * without limit: a held session holds the full text of every file it had open.
+ * The fourth session to be left behind is the one let go of, and coming back to
+ * that one reads its files from disk exactly as it did before any of this.
+ */
+export const RETAINED_WORKSPACES_CAP = 3;
+
+/** Nothing held yet. */
+export function emptyRetainedWorkspaces<Tab extends RetainedTab>(): RetainedWorkspaces<Tab> {
+  return { leastRecentFirst: [], tabsByOwnedId: {} };
+}
+
+/** The queue and the tabs, with everything past the cap let go of. */
+function withinCap<Tab extends RetainedTab>(
+  leastRecentFirst: string[],
+  tabsByOwnedId: Record<string, Tab[]>,
+  cap: number
+): RetainedWorkspaces<Tab> {
+  const queue = [...leastRecentFirst];
+  const tabs = { ...tabsByOwnedId };
+  while (queue.length > Math.max(0, cap)) {
+    const letGo = queue.shift();
+    if (letGo !== undefined) delete tabs[letGo];
+  }
+  return { leastRecentFirst: queue, tabsByOwnedId: tabs };
+}
+
+/**
+ * A tab held with its read unfinished comes back as a tab nobody has read yet.
+ *
+ * Leaving a session abandons the reads it had in flight — the editor throws
+ * away an answer for a file it can no longer see — so a tab held as "still
+ * loading" would come back waiting for something that will never arrive, and
+ * nothing would ever start the read again. A tab whose read failed is cleared
+ * too: coming back to a session used to read every one of its files, so a
+ * failure got a second chance on every switch, and it still should.
+ */
+function readyToRead<Tab extends RetainedTab>(tab: Tab): Tab {
+  const contentsInMemory = tab.preview !== null && tab.preview !== undefined;
+  if (contentsInMemory || (!tab.loading && tab.error === null)) return tab;
+  return { ...tab, loading: false, error: null };
+}
+
+/**
+ * Hold the tabs a session is leaving behind, and count that as using it.
+ *
+ * A session leaving with an empty editor is not held at all: there is nothing
+ * to put back, and letting its place go means the three places belong to
+ * sessions that do have files open.
+ *
+ * The store handed in is never changed — a new one comes back — so the page can
+ * keep using the old one right up until it assigns the new.
+ */
+export function retainTabs<Tab extends RetainedTab>(
+  retained: RetainedWorkspaces<Tab>,
+  ownedId: string,
+  tabs: readonly Tab[],
+  cap: number = RETAINED_WORKSPACES_CAP
+): RetainedWorkspaces<Tab> {
+  const others = retained.leastRecentFirst.filter((id) => id !== ownedId);
+  const held = { ...retained.tabsByOwnedId };
+  delete held[ownedId];
+  if (tabs.length === 0) return withinCap(others, held, cap);
+  held[ownedId] = tabs.map(readyToRead);
+  return withinCap([...others, ownedId], held, cap);
+}
+
+/**
+ * The tabs held for a session, or null when none are — which is the answer for
+ * a session opened for the first time this run, and for one whose place was
+ * given up to a newer session.
+ *
+ * Taking them counts as using the session, so the one you keep coming back to
+ * is never the one let go of.
+ */
+export function takeRetainedTabs<Tab extends RetainedTab>(
+  retained: RetainedWorkspaces<Tab>,
+  ownedId: string
+): { retained: RetainedWorkspaces<Tab>; tabs: Tab[] | null } {
+  const tabs = retained.tabsByOwnedId[ownedId];
+  if (!tabs) return { retained, tabs: null };
+  return {
+    retained: {
+      leastRecentFirst: [...retained.leastRecentFirst.filter((id) => id !== ownedId), ownedId],
+      tabsByOwnedId: retained.tabsByOwnedId
+    },
+    tabs
+  };
+}
+
+/** What the page has to do to put a session's editor back the way it was. */
+export interface WorkspaceRestorePlan<Tab extends RetainedTab> {
+  /** Tabs to put straight back on screen, contents and all, or null when this
+   * session's files have to be read from disk. */
+  restoredTabs: Tab[] | null;
+  /** Files still to be asked for through the open-file bus, in strip order. */
+  pathsToOpen: string[];
+  /** The file to leave in front, or null when there is nothing to show. */
+  activePath: string | null;
+}
+
+/**
+ * Work out how to put a session's editor back, from its stored record and
+ * whatever tabs are still held for it.
+ *
+ * With tabs held, they go back as they are and only a file the record names
+ * that they do not have is read — which happens when the strip was longer than
+ * the twelve a record keeps, or when the record outlived the tabs.
+ *
+ * With nothing held, this is exactly what the page did before: every stored path
+ * is asked for, in order.
+ *
+ * A held tab carries the file as it was when the reader left it, not as it is
+ * on disk now. That is what an editor does with a file you have open, and it is
+ * the whole saving here; a file that has changed underneath is picked up the
+ * next time that tab is actually read.
+ */
+export function planWorkspaceRestore<Tab extends RetainedTab>(
+  snapshot: SessionWorkspaceSnapshot | null | undefined,
+  retainedTabs: readonly Tab[] | null | undefined
+): WorkspaceRestorePlan<Tab> {
+  const restoredTabs = retainedTabs && retainedTabs.length > 0 ? [...retainedTabs] : null;
+  const heldPaths = restoredTabs ? restoredTabs.map((tab) => tab.path) : [];
+  const held = new Set(heldPaths);
+  const pathsToOpen = (snapshot?.openPaths ?? []).filter((path) => !held.has(path));
+  // No record of which file was showing: the last tab in the strip is the one
+  // in front, which is where opening them one after another used to leave it.
+  const strip = [...heldPaths, ...pathsToOpen];
+  return {
+    restoredTabs,
+    pathsToOpen,
+    activePath: snapshot?.activePath ?? strip[strip.length - 1] ?? null
+  };
 }

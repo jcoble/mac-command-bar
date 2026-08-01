@@ -12,7 +12,9 @@ import assert from 'node:assert/strict';
 import {
   countFromResult,
   createCountMemory,
-  createReferenceCountBatcher
+  createReferenceCountBatcher,
+  createReferenceCountStore,
+  createSemanticReferenceCountScheduler
 } from '../src/lib/shell/editor/referenceCountBatcher.ts';
 
 const resultFor = (counts, approximate = false) => ({
@@ -34,7 +36,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   const asked = [];
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences(symbolNames) {
       asked.push(symbolNames);
@@ -58,7 +60,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   const asked = [];
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences(symbolNames) {
       asked.push(symbolNames);
@@ -77,7 +79,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   let requests = 0;
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences() {
       requests += 1;
@@ -100,7 +102,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 {
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.resolve(resultFor({ Alpha: 812 }))
   });
@@ -112,7 +114,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 {
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.resolve(resultFor({ Alpha: 6, Beta: 0 }, true))
   });
@@ -130,7 +132,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 {
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.resolve(null)
   });
@@ -145,7 +147,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 {
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.reject(new Error('backend is gone'))
   });
@@ -158,7 +160,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   let requests = 0;
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences() {
       requests += 1;
@@ -176,7 +178,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   const asked = [];
   const batcher = createReferenceCountBatcher({
     windowMs: 5,
-    cacheMs: 30_000,
+    memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences(symbolNames) {
       asked.push(symbolNames);
@@ -238,6 +240,398 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
     atLeast(50),
     'a number cut down to the ceiling is a floor too'
   );
+}
+
+// ── The queue behind the language server's own counts ───────────────────────
+//
+// These cover the other way of asking, the one the desktop app uses: the
+// language server is asked about one symbol at a time, so the queue decides how
+// many questions are allowed to be outstanding and in what order they go out.
+
+/** A promise whose ending this test gets to choose, plus the key it was for. */
+function pendingAnswers() {
+  const settle = new Map();
+  return {
+    countFor(key) {
+      return new Promise((resolve) => settle.set(key, resolve));
+    },
+    /** Let the answer for one key arrive. */
+    answer(key, value) {
+      const resolve = settle.get(key);
+      assert.ok(resolve, `nothing was asked about ${key}`);
+      settle.delete(key);
+      resolve(value);
+    },
+    get outstanding() {
+      return [...settle.keys()];
+    }
+  };
+}
+
+// the queue works down the list it was given and never has more than the
+// allowed number of questions outstanding at once
+{
+  const answers = pendingAnswers();
+  const landed = [];
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 4,
+    countFor: answers.countFor,
+    onCounted: (key, count) => landed.push([key, count])
+  });
+
+  scheduler.request(['a', 'b', 'c', 'd', 'e', 'f']);
+  await settle();
+
+  assert.deepEqual(answers.outstanding, ['a', 'b', 'c', 'd'], 'four at once, in the order given');
+  assert.equal(scheduler.inFlight, 4);
+  assert.equal(scheduler.waiting, 2);
+
+  answers.answer('b', exactly(7));
+  await settle();
+  assert.deepEqual(landed, [['b', exactly(7)]]);
+  assert.deepEqual(
+    answers.outstanding,
+    ['a', 'c', 'd', 'e'],
+    'one answer lands, the next symbol in the document goes out'
+  );
+
+  answers.answer('a', exactly(1));
+  answers.answer('c', null);
+  answers.answer('d', exactly(2));
+  answers.answer('e', exactly(3));
+  await settle();
+  assert.deepEqual(answers.outstanding, ['f']);
+
+  answers.answer('f', exactly(4));
+  await settle();
+  assert.equal(scheduler.inFlight, 0);
+  assert.equal(scheduler.waiting, 0);
+  assert.deepEqual(
+    landed.map(([key]) => key),
+    ['b', 'a', 'c', 'd', 'e', 'f'],
+    'every symbol got an answer'
+  );
+}
+
+// the same symbol asked about twice is only asked about once
+{
+  const answers = pendingAnswers();
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 4,
+    countFor: answers.countFor,
+    onCounted: () => {}
+  });
+
+  scheduler.request(['a', 'b']);
+  scheduler.request(['b', 'a', 'c']);
+  await settle();
+
+  assert.deepEqual(answers.outstanding, ['a', 'b', 'c']);
+}
+
+// a duplicate stays ignored while its question is outstanding, but the same
+// symbol may be asked again after its answer has been delivered.
+{
+  const answers = pendingAnswers();
+  const landed = [];
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 1,
+    countFor: answers.countFor,
+    onCounted: (key, count) => landed.push([key, count])
+  });
+
+  scheduler.request(['a']);
+  scheduler.request(['a']);
+  await settle();
+  assert.deepEqual(answers.outstanding, ['a'], 'an outstanding question must stay deduplicated');
+
+  answers.answer('a', null);
+  await settle();
+  scheduler.request(['a']);
+  await settle();
+  assert.deepEqual(answers.outstanding, ['a'], 'a delivered question may be asked again');
+
+  answers.answer('a', exactly(6));
+  await settle();
+  assert.deepEqual(landed, [
+    ['a', null],
+    ['a', exactly(6)]
+  ]);
+}
+
+// the reader opened another file: everything still waiting is dropped, and the
+// answers to the questions already sent are ignored rather than drawn over the
+// new file
+{
+  const answers = pendingAnswers();
+  const landed = [];
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 2,
+    countFor: answers.countFor,
+    onCounted: (key, count) => landed.push([key, count])
+  });
+
+  scheduler.request(['a', 'b', 'c', 'd']);
+  await settle();
+  assert.deepEqual(answers.outstanding, ['a', 'b']);
+
+  scheduler.clear();
+  assert.equal(scheduler.waiting, 0, 'nothing is still queued');
+
+  answers.answer('a', exactly(9));
+  answers.answer('b', exactly(3));
+  await settle();
+  assert.deepEqual(landed, [], 'answers about the file that was closed are not reported');
+  assert.deepEqual(answers.outstanding, [], 'and nothing new went out for it either');
+
+  // a fresh file starts cleanly, including symbols that share a name
+  scheduler.request(['a']);
+  await settle();
+  assert.deepEqual(answers.outstanding, ['a']);
+  answers.answer('a', exactly(5));
+  await settle();
+  assert.deepEqual(landed, [['a', exactly(5)]]);
+}
+
+// opening another file does not forget the old questions are still physically
+// running, so the four-request ceiling survives the switch
+{
+  const answers = pendingAnswers();
+  const landed = [];
+  const oldKeys = ['old-a', 'old-b', 'old-c', 'old-d'];
+  const newKeys = ['new-a', 'new-b', 'new-c', 'new-d'];
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 4,
+    countFor: answers.countFor,
+    onCounted: (key, count) => landed.push([key, count])
+  });
+
+  scheduler.request(oldKeys);
+  await settle();
+  assert.deepEqual(answers.outstanding, oldKeys);
+
+  scheduler.clear();
+  scheduler.request(newKeys);
+  await settle();
+  assert.deepEqual(
+    answers.outstanding,
+    oldKeys,
+    'the new file must wait while four old questions are still physically running'
+  );
+
+  for (const [index, oldKey] of oldKeys.entries()) {
+    answers.answer(oldKey, exactly(1));
+    await settle();
+    assert.deepEqual(
+      answers.outstanding,
+      [...oldKeys.slice(index + 1), ...newKeys.slice(0, index + 1)],
+      'one new question must start when one old question ends'
+    );
+  }
+
+  assert.deepEqual(landed, [], 'answers from the cleared file must not be reported');
+  for (const key of newKeys) {
+    answers.answer(key, exactly(2));
+  }
+  await settle();
+  assert.deepEqual(
+    landed.map(([key]) => key),
+    newKeys,
+    'answers for the new file must be reported'
+  );
+}
+
+// a question that fails answers "unknown" instead of blocking everything behind it
+{
+  const scheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: 1,
+    countFor: (key) => (key === 'a' ? Promise.reject(new Error('gone')) : Promise.resolve(exactly(2))),
+    onCounted: (key, count) => landed.push([key, count])
+  });
+  const landed = [];
+
+  scheduler.request(['a', 'b']);
+  await settle();
+
+  assert.deepEqual(landed, [
+    ['a', null],
+    ['b', exactly(2)]
+  ]);
+  assert.equal(scheduler.inFlight, 0);
+}
+
+// ── Numbers remembered per project, per file, per symbol ────────────────────
+
+// switching to another project and back keeps the first project's numbers,
+// rather than throwing them away and counting everything a second time
+{
+  let clock = 1_000;
+  const store = createReferenceCountStore({ cacheMs: 30_000, now: () => clock });
+
+  store.remember('/projects/alpha', 'App.cs', 'RunAsync', exactly(4));
+  store.remember('/projects/beta', 'App.cs', 'RunAsync', exactly(11));
+
+  assert.deepEqual(store.get('/projects/alpha', 'App.cs', 'RunAsync'), exactly(4));
+  assert.deepEqual(
+    store.get('/projects/beta', 'App.cs', 'RunAsync'),
+    exactly(11),
+    'the same name in another project is its own number'
+  );
+  assert.equal(store.get('/projects/gamma', 'App.cs', 'RunAsync'), undefined);
+}
+
+// a number is let go once it is old enough, wherever it was kept
+{
+  let clock = 1_000;
+  const store = createReferenceCountStore({ cacheMs: 30_000, now: () => clock });
+
+  store.remember('/projects/alpha', 'App.cs', 'RunAsync', exactly(4));
+  clock += 29_999;
+  assert.deepEqual(store.get('/projects/alpha', 'App.cs', 'RunAsync'), exactly(4));
+  clock += 1;
+  assert.equal(store.get('/projects/alpha', 'App.cs', 'RunAsync'), undefined);
+}
+
+// serialized counts hydrate a fresh page instance without another lookup
+{
+  let changes = 0;
+  const initial = [{
+    project: '/projects/alpha',
+    file: 'App.cs',
+    key: '42:RunAsync',
+    value: exactly(4),
+    countedAt: 1_000
+  }];
+  const store = createReferenceCountStore({
+    cacheMs: 30_000,
+    now: () => 2_000,
+    initial,
+    onChange: () => {
+      changes += 1;
+    }
+  });
+
+  assert.deepEqual(store.get('/projects/alpha', 'App.cs', '42:RunAsync'), exactly(4));
+  assert.deepEqual(store.entries(), initial);
+  assert.equal(changes, 0, 'hydrating must not rewrite storage immediately');
+
+  store.remember('/projects/alpha', 'App.cs', '43:Stop', exactly(2));
+  assert.equal(changes, 1, 'a new answer schedules persistence');
+  assert.equal(store.entries().length, 2);
+
+  store.forgetFile('/projects/alpha', 'App.cs');
+  assert.equal(changes, 2, 'invalidation schedules persistence too');
+  assert.deepEqual(store.entries(), []);
+}
+
+// an asynchronous IndexedDB restore keeps a newer in-page answer and discards
+// expired durable rows when the next snapshot is written
+{
+  let clock = 40_000;
+  const store = createReferenceCountStore({ cacheMs: 30_000, now: () => clock });
+  store.remember('/projects/alpha', 'App.cs', '42:RunAsync', exactly(8));
+  store.restore([
+    {
+      project: '/projects/alpha',
+      file: 'App.cs',
+      key: '42:RunAsync',
+      value: exactly(4),
+      countedAt: 35_000
+    },
+    {
+      project: '/projects/alpha',
+      file: 'Old.cs',
+      key: '1:Old',
+      value: exactly(1),
+      countedAt: 1_000
+    }
+  ]);
+
+  assert.deepEqual(
+    store.get('/projects/alpha', 'App.cs', '42:RunAsync'),
+    exactly(8),
+    'a result counted in this page wins over an older durable value'
+  );
+  assert.deepEqual(
+    store.entries().map((entry) => entry.file),
+    ['App.cs'],
+    'expired durable rows are not written back'
+  );
+}
+
+// the reader edited one file: only that file's numbers are counted again
+{
+  const store = createReferenceCountStore({ cacheMs: 30_000 });
+
+  store.remember('/projects/alpha', 'App.cs', 'RunAsync', exactly(4));
+  store.remember('/projects/alpha', 'App.cs', 'Stop', exactly(2));
+  store.remember('/projects/alpha', 'Other.cs', 'RunAsync', exactly(9));
+  store.remember('/projects/beta', 'App.cs', 'RunAsync', exactly(11));
+
+  store.forgetFile('/projects/alpha', 'App.cs');
+
+  assert.equal(store.get('/projects/alpha', 'App.cs', 'RunAsync'), undefined);
+  assert.equal(store.get('/projects/alpha', 'App.cs', 'Stop'), undefined);
+  assert.deepEqual(
+    store.get('/projects/alpha', 'Other.cs', 'RunAsync'),
+    exactly(9),
+    'a file nobody touched keeps its numbers'
+  );
+  assert.deepEqual(store.get('/projects/beta', 'App.cs', 'RunAsync'), exactly(11));
+}
+
+// a project whose files all moved underneath us starts again from nothing
+{
+  const store = createReferenceCountStore({ cacheMs: 30_000 });
+  store.remember('/projects/alpha', 'App.cs', 'RunAsync', exactly(4));
+  store.remember('/projects/beta', 'App.cs', 'RunAsync', exactly(11));
+
+  store.forgetProject('/projects/alpha');
+  assert.equal(store.get('/projects/alpha', 'App.cs', 'RunAsync'), undefined);
+  assert.deepEqual(store.get('/projects/beta', 'App.cs', 'RunAsync'), exactly(11));
+
+  store.forgetEverything();
+  assert.equal(store.get('/projects/beta', 'App.cs', 'RunAsync'), undefined);
+}
+
+// a page with no project open still has somewhere to put its numbers
+{
+  const store = createReferenceCountStore({ cacheMs: 30_000 });
+  store.remember(null, 'App.cs', 'RunAsync', exactly(4));
+  assert.deepEqual(store.get(null, 'App.cs', 'RunAsync'), exactly(4));
+}
+
+// the plain-text batcher writes into a drawer of this same store, and the
+// drawer follows the reader from one project to the next
+{
+  let requests = 0;
+  let project = '/projects/alpha';
+  const store = createReferenceCountStore({ cacheMs: 30_000 });
+  const batcher = createReferenceCountBatcher({
+    windowMs: 5,
+    memory: store.drawer(() => project, 'the whole project'),
+    maxCount: 50,
+    countReferences() {
+      requests += 1;
+      return Promise.resolve(resultFor({ Alpha: 2 }));
+    }
+  });
+
+  assert.deepEqual(await batcher.count('Alpha'), exactly(2));
+  assert.equal(requests, 1);
+  assert.deepEqual(
+    store.get('/projects/alpha', 'the whole project', 'Alpha'),
+    exactly(2),
+    'the number went into the one store, filed under the project it was counted in'
+  );
+
+  project = '/projects/beta';
+  assert.deepEqual(await batcher.count('Alpha'), exactly(2));
+  assert.equal(requests, 2, 'another project is counted on its own');
+
+  project = '/projects/alpha';
+  assert.deepEqual(await batcher.count('Alpha'), exactly(2));
+  assert.equal(requests, 2, 'coming back finds the first project’s number still there');
 }
 
 console.log('referenceCountBatcher tests passed');

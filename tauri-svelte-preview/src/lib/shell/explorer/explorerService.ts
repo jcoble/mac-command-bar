@@ -32,6 +32,10 @@ import {
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
+  forgetProjectSourceRecords,
+  setProjectSourceRecords
+} from '../projectSourceIndex.ts';
+import {
   applyScanResult,
   beginScan,
   endScan,
@@ -94,12 +98,15 @@ export async function scanRoot(root: string): Promise<void> {
     if (generation !== scanGeneration) return;
 
     if (!result) {
+      forgetProjectSourceRecords(target);
       failScan(SCANNER_UNAVAILABLE_MESSAGE);
       return;
     }
+    setProjectSourceRecords(target, result.records);
     applyScanResult(result.records, result.limit, result.truncated);
   } catch (error) {
     if (generation !== scanGeneration) return;
+    forgetProjectSourceRecords(target);
     failScan(`Could not list the files in this project: ${describeError(error)}`);
   } finally {
     if (generation === scanGeneration) endScan();

@@ -137,6 +137,21 @@ export function setEditorSymbols(symbols: SourceSymbol[]): void {
   editorState.symbols = symbols;
 }
 
+/**
+ * Put a session's tabs back exactly as it left them, contents and all.
+ *
+ * The counterpart of {@link resetEditorState}, and the reason switching to a
+ * session you were on a minute ago does not read its files off disk again: the
+ * page held those entries while you were away and hands the same ones back. No
+ * file is on screen yet — the page asks for that one through the open-file bus,
+ * so the same path runs whether the tab was held or has to be read.
+ */
+export function restoreEditorFiles(files: OpenEditorFile[]): void {
+  editorState.openFiles = files;
+  editorState.activePath = null;
+  editorState.symbols = [];
+}
+
 /** Drop everything (used when the shell tears the editor down). */
 export function resetEditorState(): void {
   editorState.openFiles = [];

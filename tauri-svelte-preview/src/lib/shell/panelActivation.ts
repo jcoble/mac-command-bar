@@ -13,7 +13,10 @@
  *    So tab loads stay switched off until `allowPanelLoads()` is called, which
  *    the page does one timer tick after the frame is ready — every one of
  *    dockview's own announcements is delivered by then (they travel on
- *    microtasks, which all drain before the first timer callback).
+ *    microtasks, which all drain before the first timer callback). What the
+ *    announcement still does, even switched off, is tell this file the tab is
+ *    on screen: the tab loads nothing at launch, and the session picked next is
+ *    what points it at a project.
  * 2. **Start-up re-attaching a terminal.** Re-attaching a session that survived
  *    a reload selects it, which looks exactly like the user picking it. So
  *    session loads stay switched off until `allowSessionLoads()` is called,
@@ -22,7 +25,12 @@
  * After that, loading is driven by user actions only: bringing a tab to the
  * front, picking a session, and opening a view of the tool column. A panel that
  * has never been shown never loads, and changing session re-loads only the
- * panels the user has actually opened.
+ * panels the user has actually opened — and of those, only the ones the change
+ * tells something new. A panel is already showing the folder the session you
+ * just picked is in when that session shares a project or a checkout with the
+ * one you left, and reading it again would throw the panel's work away and
+ * rebuild the same answer. So each panel remembers the folder it was last
+ * loaded for, and a pick that does not change it loads nothing.
  *
  * Four panels are neither a tab nor always on screen: **source control**, the
  * **worktree manager**, the **stacks pane** and the **context cards**. All four
@@ -117,6 +125,7 @@ export function createPanelActivation(
   activators: PanelActivators,
   readSelection: () => ProjectSelection
 ): PanelActivation {
+  /** Every center tab that has been on screen, whether or not it has loaded. */
   const shownPanels = new Set<string>();
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
@@ -143,8 +152,13 @@ export function createPanelActivation(
   /** Same bookkeeping as `gitLoadedFor`, for the Problems panel. */
   let problemsLoadedFor: string | null = null;
 
+  /** The folder each center tab was last loaded for. A tab that has never
+   * loaded is absent, which is different from one loaded for no folder. */
+  const panelLoadedFor = new Map<string, string>();
+
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
+    panelLoadedFor.set(id, root);
     if (id === 'editor') activators.editor(root || null);
     else if (id === 'browser') activators.browser();
   };
@@ -187,15 +201,22 @@ export function createPanelActivation(
   };
 
   /** The panels that come with the session the user just picked: the file tree,
-   * plus every view-gated panel that is in view. */
+   * plus every view-gated panel that is in view AND is not already showing this
+   * folder — the same "coming back to it is not a reason to read it again" rule
+   * the visibility reports below have always used.
+   *
+   * The file tree is the exception, and deliberately: its own service already
+   * refuses to re-list a folder it is showing, and it is also the one that
+   * retries after a scan that failed. Refusing the call here would take that
+   * retry away and give nothing back. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
     if (root) activators.explorer(root);
-    if (sourceControlInView) loadSourceControl(selection);
-    if (contextInView) loadContext(selection);
-    if (worktreesInView) loadWorktrees(selection);
-    if (stacksInView) loadStacks(selection);
-    if (problemsInView) loadProblems(selection);
+    if (sourceControlInView && gitLoadedFor !== root) loadSourceControl(selection);
+    if (contextInView && contextLoadedFor !== root) loadContext(selection);
+    if (worktreesInView && worktreesLoadedFor !== root) loadWorktrees(selection);
+    if (stacksInView && stacksLoadedFor !== root) loadStacks(selection);
+    if (problemsInView && problemsLoadedFor !== root) loadProblems(selection);
   };
 
   return {
@@ -212,8 +233,14 @@ export function createPanelActivation(
     },
 
     panelShown(id: string): void {
-      if (!panelLoadsAllowed || !LOADABLE_PANELS.has(id)) return;
+      if (!LOADABLE_PANELS.has(id)) return;
+      // Remembered even while loads are switched off. The tab the dock puts
+      // back at launch announces itself before that gate opens, and it must
+      // load nothing then — but it is on screen, and forgetting it altogether
+      // is what left a restored editor tab never being told which project it
+      // was in: the session picked next only points the tabs it knows about.
       shownPanels.add(id);
+      if (!panelLoadsAllowed) return;
       loadPanel(id, readSelection());
     },
 
@@ -222,9 +249,16 @@ export function createPanelActivation(
       const selection = readSelection();
       sessionPanelsShown = true;
       loadSessionPanels(selection);
-      // Re-point the tabs the user has already opened at the new project. A tab
-      // never opened stays untouched, so switching session costs nothing for it.
-      for (const id of shownPanels) loadPanel(id, selection);
+      // Re-point the tabs that are open at the new project. A tab never opened
+      // stays untouched, so switching session costs nothing for it — and
+      // neither does a tab already pointed at this project, which is what makes
+      // switching between two sessions in one repository cheap. The browser tab
+      // is left out of both: it shows a web page rather than a project, so a
+      // session is nothing to it whether it has loaded or not.
+      for (const id of shownPanels) {
+        if (id === 'browser') continue;
+        if (panelLoadedFor.get(id) !== selection.root.trim()) loadPanel(id, selection);
+      }
     },
 
     sourceControlVisible(visible: boolean): void {
@@ -278,7 +312,10 @@ export function createPanelActivation(
     },
 
     loadedPanels(): string[] {
-      const loaded = [...shownPanels];
+      // The tabs that have actually loaded, which is not the same as the tabs
+      // on screen: one the dock put back at launch is on screen without having
+      // loaded anything.
+      const loaded = [...panelLoadedFor.keys()];
       if (sessionPanelsShown) loaded.push('explorer');
       if (gitLoadedFor !== null) loaded.push('git');
       if (contextLoadedFor !== null) loaded.push('context');

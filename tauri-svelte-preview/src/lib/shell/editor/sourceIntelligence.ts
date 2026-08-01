@@ -11,27 +11,34 @@
  * (`src/routes/+page.svelte:8446`, `:8486`, `:8548`, `:8607`, `:10104-10214`)
  * with the constitution's rules applied:
  *
- *  - **Two tiers, then give up.** Language server first, then the backend's
- *    plain-text scan, then an empty answer. The old shell had a third tier
- *    that answered from bundled demo files; /next never invents results. The
- *    one exception is the "N references" margin count, which uses the backend
- *    scan alone and never asks the language server — see
- *    `countReferencesForCodeLens` for why. The first tier also has a stopwatch
- *    on it: a language server that has not answered within
- *    `languageServerLookupDeadlineMs` is left behind and the plain-text answer
- *    is shown instead.
+ *  - **One native authority.** The desktop editor gets reference results and
+ *    counts only from Roslyn. The browser preview still uses the backend's
+ *    plain-text scan because it has no language server. The old shell had a
+ *    third tier that answered from bundled demo files; /next never invents
+ *    results.
  *  - **Every backend call is counted** with `countInvoke('<command name>')`
  *    immediately before it, so the dev counter tells the truth.
  *  - **Nothing runs on import.** The first backend call of any kind happens
  *    when the user opens a file.
  *
- * The reference-count budgets below are load-bearing — see
- * `countReferencesForCodeLens`. They no longer match the old shell's: the
- * margin counts there asked the backend once per symbol and were switched off
- * entirely on any project over 1500 files, which is why big projects showed no
- * counts at all. Here every symbol on screen is counted in one pass.
+ * WHERE THE "N references" NUMBER COMES FROM (ruled 2026-07-30, replacing the
+ * ruling of 2026-07-28 that this comment used to carry).
+ *
+ * In the desktop app it comes from the language server, progressively and a
+ * few symbols at a time. The targets returned while counting are retained, so
+ * clicking a finished number does not ask the same language-server question a
+ * second time and the number agrees with the list it opens.
+ *
+ * In the browser preview it comes from one plain-text project scan for every
+ * name in the file. A browser has no language server, so this is the fast
+ * name-match approximation the old page used before extraction. It is never
+ * allowed to populate a native semantic count.
+ *
+ * The budgets below are load-bearing for both — see
+ * `countReferencesForCodeLens`.
  */
 import {
+  normalizeProjectPath,
   previewFromContent,
   sourceSupportsLanguageIntelligence,
   type SourceCompletionItem,
@@ -40,11 +47,13 @@ import {
   type SourceDocumentHighlight,
   type SourceInlayHint,
   type SourceLspHover,
+  type SourceLspStatus,
   type SourcePreview,
   type SourceRecord,
   type SourceReferenceTarget,
   type SourceSemanticToken,
-  type SourceSignatureHelp
+  type SourceSignatureHelp,
+  type SourceSymbol
 } from '../../sourceData.ts';
 import {
   countSourceReferencesFromTauri,
@@ -60,12 +69,25 @@ import {
   findSourceReferencesFromTauri,
   isNativeTauriRuntime,
   readSourceFromTauri,
-  readSourceLspDiagnosticsFromTauri
+  readSourceLspDiagnosticsFromTauri,
+  readSourceLspStatusFromTauri
 } from '../../tauriSource.ts';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
+import { projectSourceRecords } from '../projectSourceIndex.ts';
 import { activateEditor } from './editorStore.svelte.ts';
-import { createReferenceCountBatcher, type CodeLensCount } from './referenceCountBatcher.ts';
+import {
+  createReferenceCountBatcher,
+  createReferenceCountStore,
+  createSemanticReferenceCountScheduler,
+  type CodeLensCount,
+  type ReferenceCountStore
+} from './referenceCountBatcher.ts';
+import {
+  loadPersistedReferenceCounts,
+  replacePersistedReferenceCounts
+} from './referenceCountPersistence.ts';
+import { statusMessageIsAboutThisFile } from '../components/editor/languageServerStatus.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
@@ -74,9 +96,28 @@ import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 export const maxSourceDefinitionResults = 20;
 /**
  * Most references one "find references" click will list. The margin counts do
- * NOT use this — they are exact numbers now, not "50+".
+ * NOT use this — see `maxSourceReferenceCountResults`.
  */
 export const maxSourceReferenceResults = 50;
+/**
+ * Most references the language server is asked to list when all we want is the
+ * number. Far higher than a peek window's ceiling because a peek is something a
+ * person reads and a count is not: cutting it off at fifty would put "50" above
+ * a symbol used two hundred times. Should a symbol somehow exceed even this,
+ * the margin says "at least" rather than stating a number nobody reached.
+ */
+export const maxSourceReferenceCountResults = 1_000;
+/**
+ * How many "how many references?" questions the language server may be working
+ * on at once.
+ *
+ * Small on purpose. A cold server takes seconds over a single one of these, and
+ * a file with a hundred symbols in it used to send all hundred at once — which
+ * is what made opening a C# file look like the app had died. Four keeps the
+ * numbers arriving steadily down the page while leaving the server free to
+ * answer the click the reader is actually waiting on.
+ */
+export const semanticReferenceCountMaxInFlight = 4;
 /** Most completion items one lookup will return. */
 export const maxSourceCompletionResults = 50;
 /**
@@ -92,27 +133,61 @@ export const codeLensReferenceCountBatchWindowMs = 50;
  * Nothing on screen is blocked while it runs.
  */
 export const codeLensReferenceCountDeadlineMs = 1_500;
+/** How many times a failed language-server count may be asked again. */
+export const semanticCountRetryLimit = 3;
+/** How long to wait before each language-server count retry, in milliseconds. */
+export const semanticCountRetryDelaysMs = [2_000, 6_000, 12_000];
 /**
  * How long a counted number stays good for. Project-wide counts move when
  * files elsewhere change, which is not something typing in the open file does
  * — so counts must NOT be thrown away on every keystroke. That is what used to
  * leave the margin blank while a big project was being typed in.
  */
-export const codeLensReferenceCountCacheMs = 30_000;
+export const codeLensReferenceCountCacheMs = 24 * 60 * 60 * 1_000;
 /**
- * How long the language server gets to answer a "find references" or "go to
- * definition" click before the plain-text search answers instead.
+ * Where the plain-text counts are filed. They are counted by NAME across the
+ * whole project, so the same name has the same number in every file and they
+ * all belong in one drawer — unlike the language server's numbers, which are
+ * about one symbol in one file and are filed under that file.
+ */
+export const wholeProjectCountsDrawer = 'the whole project';
+/**
+ * Most symbols one file gets margin numbers for. The same ceiling the editor
+ * applies to the lens rows it draws.
+ */
+export const maxCodeLensSymbols = 120;
+/**
+ * How long the language server gets to answer a browser-preview reference or
+ * a go-to-definition click before the plain-text search answers instead.
  *
  * The language server's answer is the better one — it knows which `Send` you
  * clicked — so it is used whenever it arrives in time. But a cold C# server
- * loading a large solution does not answer for tens of seconds, and waiting on
- * it left the editor saying "Finding references…" for half a minute. The
- * plain-text search over the scanned files comes back in a moment and is the
- * only answer the web preview has ever had, which is why the same click there
- * has always felt instant. One second is long enough for a warm server to win
- * and short enough that a cold one is never waited on.
+ * loading a large solution does not answer for tens of seconds. Native
+ * references deliberately do not use this fallback deadline: Peek waits for
+ * the same Roslyn answer that supplies its CodeLens total.
  */
 export const languageServerLookupDeadlineMs = 1_000;
+
+/** Whether a reference-count question should run, wait, or use plain text. */
+export type CountingReadiness = 'ask-it' | 'wait-for-it' | 'no-server';
+
+/**
+ * Decide what a reported server state means for one reference-count question.
+ * Waiting is allowed only when the caller knows both that this server can be
+ * woken and that its later status changes will reach the editor.
+ */
+export function countingReadinessForStatus(
+  state: string | undefined,
+  available: boolean | undefined,
+  canWait: boolean
+): CountingReadiness {
+  if (state === 'ready') return 'ask-it';
+  if (state === 'starting' || state === 'indexing') {
+    return canWait ? 'wait-for-it' : 'no-server';
+  }
+  if (state === 'not-running' && available === true && canWait) return 'wait-for-it';
+  return 'no-server';
+}
 
 // ── The shapes Monaco hands us ────────────────────────────────────────────────
 
@@ -123,6 +198,13 @@ export interface SourceLookupRequest {
   line: number;
   /** 1-based. */
   column: number;
+  /**
+   * Which file the spot is in, when the editor knows. Only the margin's row
+   * spots carry it, and only so that a number counted against one file can
+   * never be drawn above another one; every other lookup leaves it out and is
+   * resolved against the file on screen as before.
+   */
+  filePath?: string;
 }
 
 /** The visible range Monaco wants inline hints for. */
@@ -137,7 +219,21 @@ export interface SourceInlayHintRequest {
 export interface SourceIntelligenceCallbacks {
   onDefinitionLookup(request: SourceLookupRequest): Promise<SourceDefinitionTarget[]>;
   onReferenceLookup(request: SourceLookupRequest): Promise<SourceReferenceTarget[]>;
-  onReferenceCountLookup(request: SourceLookupRequest): Promise<CodeLensCount | null>;
+  onReferenceCountLookup(
+    request: SourceLookupRequest
+  ): CodeLensCount | null | Promise<CodeLensCount | null>;
+  /**
+   * The symbols a file's margin rows sit above, when the language server can
+   * name them better than the editor's own reader of the text can. Answers
+   * `null` when it cannot — the editor then falls back to reading the text,
+   * which is all the browser preview has ever done.
+   */
+  onCodeLensAnchorLookup(preview: SourcePreview): Promise<SourceSymbol[] | null>;
+  /**
+   * This file was edited or saved, so the numbers counted for it are out of
+   * date. Only that file's numbers are let go; every other file's stand.
+   */
+  onReferenceCountsOutOfDate(filePath: string): void;
   onExternalPreviewLookup(record: SourceRecord): Promise<SourcePreview | null>;
   onHoverLookup(request: SourceLookupRequest): Promise<SourceLspHover | null>;
   onCompletionLookup(request: SourceLookupRequest): Promise<SourceCompletionItem[]>;
@@ -155,10 +251,10 @@ export interface SourceIntelligence {
   setActivePreview(preview: SourcePreview | null): void;
   /** The file on screen's current text — the same as the preview while read-only. */
   setDraftContent(content: string): void;
-  /** The scanned file list, when a scan exists; the plain-text tier searches it. */
-  setRecords(records: SourceRecord[]): void;
   /** Forget the remembered contents of one file (call after it is written). */
   invalidatePreview(path: string): void;
+  /** Drop only a closed file's preview; its still-valid count remains warm. */
+  releasePreview(path: string): void;
   /** Forget every remembered file (call when the project changes). */
   invalidateAllPreviews(): void;
   /**
@@ -229,7 +325,6 @@ export function createSourceIntelligence(): SourceIntelligence {
   let projectRoot: string | null = null;
   let activePreview: SourcePreview | null = null;
   let draftContent = '';
-  let records: SourceRecord[] = [];
   /**
    * Remembered contents per file. A peek window resolves the same file once
    * per group; without this the lazy preview resolver re-reads it every time.
@@ -286,39 +381,33 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
   }
 
-  async function lspReferences(
-    request: SourceLookupRequest
-  ): Promise<SourceReferenceTarget[] | null> {
-    const preview = previewWithDraft();
-    if (!preview || !languageIntelligenceAvailable()) return null;
-    countInvoke('find_source_lsp_references');
-    return findSourceLspReferencesFromTauri(preview, {
-      root: lookupRoot(),
-      line: request.line,
-      column: request.column,
-      limit: maxSourceReferenceResults
-    }).catch(() => null);
-  }
+  // ── The callbacks ──────────────────────────────────────────────────────────
 
-  // ── Tier 2: the backend's plain-text scan ──────────────────────────────────
-
-  async function nativeDefinitions(symbolName: string): Promise<SourceDefinitionTarget[] | null> {
+  async function indexedDefinitions(
+    symbolName: string
+  ): Promise<SourceDefinitionTarget[] | null> {
+    const records = projectSourceRecords(projectRoot);
     if (records.length === 0) return null;
     countInvoke('find_source_definitions');
-    return findSourceDefinitionsFromTauri(records, symbolName, maxSourceDefinitionResults).catch(
-      () => null
-    );
+    return findSourceDefinitionsFromTauri(
+      [...records],
+      symbolName,
+      maxSourceDefinitionResults
+    ).catch(() => null);
   }
 
-  async function nativeReferences(symbolName: string): Promise<SourceReferenceTarget[] | null> {
+  async function indexedReferences(
+    symbolName: string
+  ): Promise<SourceReferenceTarget[] | null> {
+    const records = projectSourceRecords(projectRoot);
     if (records.length === 0) return null;
     countInvoke('find_source_references');
-    return findSourceReferencesFromTauri(records, symbolName, maxSourceReferenceResults).catch(
-      () => null
-    );
+    return findSourceReferencesFromTauri(
+      [...records],
+      symbolName,
+      maxSourceReferenceResults
+    ).catch(() => null);
   }
-
-  // ── The callbacks ──────────────────────────────────────────────────────────
 
   async function findDefinitions(
     request: SourceLookupRequest
@@ -330,8 +419,7 @@ export function createSourceIntelligence(): SourceIntelligence {
         lspDefinitions(request),
         languageServerLookupDeadlineMs
       );
-      if (lspTargets?.length) return lspTargets;
-      return (await nativeDefinitions(symbolName)) ?? [];
+      return lspTargets ?? (await indexedDefinitions(symbolName)) ?? [];
     } catch {
       return [];
     }
@@ -341,71 +429,596 @@ export function createSourceIntelligence(): SourceIntelligence {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return [];
     try {
-      const lspTargets = await answerOrGiveUp(
-        lspReferences(request),
-        languageServerLookupDeadlineMs
-      );
-      if (lspTargets?.length) return lspTargets;
-      return (await nativeReferences(symbolName)) ?? [];
+      // A finished semantic count already obtained the exact targets for this
+      // spot. Reuse them instead of sending the same request to the language
+      // server again — this is what makes a displayed count clickable now.
+      if (request.filePath) {
+        const cached = semanticTargetsFor(request);
+        if (cached) return cached;
+      }
+
+      const preview = previewWithDraft();
+      const root = projectRoot;
+      if (preview && languageIntelligenceAvailable()) {
+        // A CodeLens click and its margin count are the same semantic question.
+        // Share the one references response instead of asking Roslyn once
+        // for the number and again for the Peek rows.
+        const semanticRequest = resolveSemanticReferences(preview, request, root);
+        const semantic = isNativeTauriRuntime()
+          ? await semanticRequest
+          : await answerOrGiveUp(semanticRequest, languageServerLookupDeadlineMs);
+        if (semantic) return semantic.targets;
+      }
+
+      // Keep the legacy text finder for the browser preview, but never let it
+      // compete with Roslyn in the native editor.
+      if (isNativeTauriRuntime()) return [];
+      return (await indexedReferences(symbolName)) ?? [];
     } catch {
       return [];
     }
   }
 
-  // ── Margin counts: one project pass for every symbol on screen ─────────────
+  // ── Margin counts ──────────────────────────────────────────────────────────
+  //
+  // Two machines can answer "how many references?", and which one does depends
+  // entirely on whether there is a language server behind this page. See the
+  // note at the top of the file for the ruling. Both file their answers in the
+  // one store below.
 
-  const referenceCountBatcher = createReferenceCountBatcher({
-    windowMs: codeLensReferenceCountBatchWindowMs,
-    cacheMs: codeLensReferenceCountCacheMs,
-    // Uncapped: the count is now an exact number the backend worked out in one
-    // pass, so there is no reason to round it off to "50+". The old ceiling
-    // existed because each count cost its own reading of the project and was
-    // stopped early to keep that affordable.
-    maxCount: Number.POSITIVE_INFINITY,
-    async countReferences(symbolNames: string[]) {
-      if (!projectRoot) return null;
-      if (!(await backendCanCountReferences())) return null;
-      countInvoke('count_source_references');
-      return countSourceReferencesFromTauri(
-        projectRoot,
-        symbolNames,
-        codeLensReferenceCountDeadlineMs
+  /**
+   * The one place a counted number is remembered, for either machine.
+   *
+   * Filed under the project it was counted in, so opening another workspace
+   * puts its numbers in a drawer of their own rather than emptying this one —
+   * coming back finds the first workspace's numbers where they were left.
+   */
+  let countStore: ReferenceCountStore;
+  let persistCountsTimer: number | null = null;
+  let persistenceWrite = Promise.resolve();
+  const scheduleCountPersistence = () => {
+    if (typeof window === 'undefined' || persistCountsTimer !== null) return;
+    persistCountsTimer = window.setTimeout(() => {
+      persistCountsTimer = null;
+      const entries = countStore.entries();
+      persistenceWrite = persistenceWrite.then(() =>
+        replacePersistedReferenceCounts(entries)
       );
+    }, 100);
+  };
+  countStore = createReferenceCountStore({
+    cacheMs: codeLensReferenceCountCacheMs,
+    onChange: scheduleCountPersistence
+  });
+  let persistedCountsLoaded = false;
+  const persistedCountsHydration = loadPersistedReferenceCounts()
+    .then((entries) => countStore.restore(entries))
+    .catch(() => {
+      // Durable caching is an optimization; storage failure never blocks counts.
+    });
+  const persistedCountsReady = Promise.race([
+    persistedCountsHydration,
+    new Promise<void>((resolve) => setTimeout(resolve, 100))
+  ]).then(() => {
+    persistedCountsLoaded = true;
+  });
+
+  /** The plain-text search over the project: one pass answers many names. */
+  const referenceCountBatcher = isNativeTauriRuntime()
+    ? null
+    : createReferenceCountBatcher({
+        windowMs: codeLensReferenceCountBatchWindowMs,
+        memory: countStore.drawer(() => projectRoot, wholeProjectCountsDrawer),
+        // Uncapped: the count is an exact number the backend worked out in one
+        // pass, so there is no reason to round it off to "50+". The old ceiling
+        // existed because each count cost its own reading of the project and was
+        // stopped early to keep that affordable.
+        maxCount: Number.POSITIVE_INFINITY,
+        async countReferences(symbolNames: string[]) {
+          if (!projectRoot) return null;
+          if (!(await backendCanCountReferences())) return null;
+          countInvoke('count_source_references');
+          const startedAt = Date.now();
+          const result = await countSourceReferencesFromTauri(
+            projectRoot,
+            symbolNames,
+            codeLensReferenceCountDeadlineMs
+          );
+          reportLensTiming(
+            `read the project for ${symbolNames.length} name(s) in ${Date.now() - startedAt}ms`
+          );
+          return result;
+        }
+      });
+
+  /**
+   * A symbol whose number the language server has been, or is about to be,
+   * asked for. It stays here until the answer lands or the reader moves on.
+   */
+  interface WaitingSpot {
+    request: SourceLookupRequest;
+    /** The file as it was when the question was asked. */
+    preview: SourcePreview;
+    /** The project it belonged to, even if the reader switches before it lands. */
+    projectRoot: string | null;
+    /** Everyone who wants to hear the answer. */
+    waiters: ((count: CodeLensCount | null) => void)[];
+    askedAt: number;
+    /** How many failed answers have already caused this question to be asked again. */
+    tries: number;
+  }
+
+  const waitingSpots = new Map<string, WaitingSpot>();
+  /** Exact semantic targets retained by the count that produced the number. */
+  const rememberedSemanticTargets = new Map<string, SourceReferenceTarget[]>();
+  /** One in-flight semantic answer shared by the margin and a Peek click. */
+  const semanticReferenceRequests = new Map<
+    string,
+    Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null>
+  >();
+
+  /**
+   * Symbols whose questions are held back because the language server is still
+   * starting up or still reading the project. They go out the moment it says it
+   * is ready; until then the margin keeps saying it is still counting.
+   */
+  let heldUntilServerIsReady: string[] = [];
+
+  const semanticScheduler = createSemanticReferenceCountScheduler({
+    maxInFlight: semanticReferenceCountMaxInFlight,
+    async countFor(key: string) {
+      const spot = waitingSpots.get(key);
+      if (!spot) return null;
+      return askLanguageServerToCount(spot);
+    },
+    onCounted(key: string, count: CodeLensCount | null) {
+      const spot = waitingSpots.get(key);
+      if (!spot) return;
+      if (count === null && spot.tries < semanticCountRetryLimit) {
+        spot.tries += 1;
+        const retryDelayMs = semanticCountRetryDelaysMs[spot.tries - 1];
+        reportLensTiming(
+          `${spot.request.symbolName}: no answer after ${
+            Date.now() - spot.askedAt
+          }ms — asking again in ${retryDelayMs / 1_000}s (try ${spot.tries + 1} of ${
+            semanticCountRetryLimit + 1
+          })`
+        );
+        const askAgain = () => {
+          if (waitingSpots.get(key) !== spot) return;
+          semanticScheduler.request([key]);
+        };
+        if (typeof window === 'undefined') {
+          setTimeout(askAgain, retryDelayMs);
+        } else {
+          window.setTimeout(askAgain, retryDelayMs);
+        }
+        return;
+      }
+
+      waitingSpots.delete(key);
+      reportLensTiming(
+        `${spot.request.symbolName}: ${
+          count ? `${count.count} reference(s)` : 'no answer'
+        } after ${Date.now() - spot.askedAt}ms`
+      );
+      for (const waiter of spot.waiters) waiter(count);
     }
   });
 
-  function forgetReferenceCounts(): void {
-    referenceCountBatcher.forget();
+  /**
+   * Which line, which name. The file is not in here because the store already
+   * files a number under its file, and the column is left out because text
+   * typed earlier on the line moves the symbol sideways without changing how
+   * many places use it.
+   */
+  function countKeyFor(request: SourceLookupRequest): string {
+    return `${request.line}:${request.symbolName}`;
+  }
+
+  function semanticTargetKey(
+    request: SourceLookupRequest,
+    root: string | null = projectRoot
+  ): string {
+    const filePath = normalizeProjectPath(request.filePath ?? activePreview?.path ?? '');
+    return `${root ?? ''}|${filePath}|${countKeyFor(request)}`;
+  }
+
+  function semanticTargetsFor(request: SourceLookupRequest): SourceReferenceTarget[] | null {
+    return rememberedSemanticTargets.get(semanticTargetKey(request)) ?? null;
   }
 
   /**
-   * The "N references" number drawn above a symbol. Returns `null` for
-   * "unknown", which draws nothing at all — better than a wrong number.
+   * Resolve one symbol through the language server exactly once.
    *
-   * **The number always comes from the fast project pass** — one backend scan
-   * that counts the symbol's NAME wherever it appears in the project, shared by
-   * every count on screen. It never asks the language server.
-   *
-   * Until 2026-07-28 each visible count also fired its own language-server
-   * lookup and used that answer whenever it came back inside 700ms, because the
-   * language server counts that one symbol at that one spot rather than the
-   * bare name. The user chose the name-based count instead — the same number
-   * the web preview shows — because those per-symbol lookups were the whole
-   * problem: ten or fifteen of them go out at once as the counts scroll into
-   * view, the 700ms wait gives up without stopping the work, and the backend
-   * runs them one at a time behind a single lock. Nothing cancels them, so
-   * clicking a count could sit for twenty seconds waiting for that queue to
-   * drain.
-   *
-   * The language server is untouched everywhere else: it still answers a click
-   * on the count, hover, and go-to-definition.
+   * `textDocument/references` is a superset of a resolved CodeLens answer: the
+   * returned locations give us both the number to paint and the rows to open.
+   * A resolved server CodeLens only gives us the title; asking
+   * `textDocument/references` once gives both the exact count and the Peek rows.
    */
-  async function countReferencesForCodeLens(
+  function resolveSemanticReferences(
+    preview: SourcePreview,
+    request: SourceLookupRequest,
+    root: string | null
+  ): Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null> {
+    const filePath = normalizeProjectPath(preview.path);
+    const requestWithFile = { ...request, filePath: preview.path };
+    const resultKey = semanticTargetKey(requestWithFile, root);
+    const rememberedTargets = rememberedSemanticTargets.get(resultKey);
+    const rememberedCount = countStore.get(root, filePath, countKeyFor(request));
+    if (rememberedTargets && rememberedCount) {
+      return Promise.resolve({ count: rememberedCount, targets: rememberedTargets });
+    }
+
+    const pending = semanticReferenceRequests.get(resultKey);
+    if (pending) return pending;
+
+    const answer = (async () => {
+      countInvoke('find_source_lsp_references');
+      const targets = await findSourceLspReferencesFromTauri(preview, {
+        root: root ?? '',
+        line: request.line,
+        column: request.column,
+        limit: maxSourceReferenceCountResults
+      }).catch(() => null);
+      if (!targets) return null;
+
+      const uniqueUses = new Map<string, SourceReferenceTarget>();
+      for (const target of targets) {
+        const targetPath = normalizeProjectPath(target.path);
+        if (target.line === request.line && targetPath === filePath) continue;
+        const locationKey = `${targetPath}:${target.line}:${target.column}`;
+        if (!uniqueUses.has(locationKey)) uniqueUses.set(locationKey, target);
+      }
+
+      const uses = [...uniqueUses.values()];
+      const count = {
+        count: uses.length,
+        atLeast: targets.length >= maxSourceReferenceCountResults
+      };
+      const peekTargets = uses.slice(0, maxSourceReferenceResults);
+
+      // Publish the number and its locations together. Any later CodeLens
+      // repaint or Peek click now observes one coherent language-server answer.
+      rememberedSemanticTargets.set(resultKey, peekTargets);
+      countStore.remember(root, filePath, countKeyFor(request), count);
+      return { count, targets: peekTargets };
+    })().finally(() => {
+      semanticReferenceRequests.delete(resultKey);
+    });
+
+    semanticReferenceRequests.set(resultKey, answer);
+    return answer;
+  }
+
+  /**
+   * Ask the language server how many places use this exact symbol, and turn the
+   * list it answers with into a number.
+   *
+   * The declaration itself is dropped when the server includes it, so the
+   * number means "used in N places" the way it does in every other editor. A
+   * symbol that calls itself keeps those uses: only the line the margin row
+   * sits on is taken out.
+   */
+  async function askLanguageServerToCount(spot: WaitingSpot): Promise<CodeLensCount | null> {
+    const answer = await resolveSemanticReferences(
+      spot.preview,
+      spot.request,
+      spot.projectRoot
+    );
+    return answer?.count ?? null;
+  }
+
+  /**
+   * Is the language server for the file on screen in a position to count?
+   *
+   *  - `ask-it`      — it is running and has finished reading the project.
+   *  - `wait-for-it` — it is still starting up or still reading. The margin
+   *                    keeps saying it is counting, and the questions go out
+   *                    when it tells us it is ready.
+   *  - `no-server`   — there is none, it is switched off, or this is the
+   *                    browser preview. Only the browser uses plain text;
+   *                    native leaves the count unanswered.
+   *
+   * A desktop build too old to say what state it is in is treated as
+   * `no-server` on purpose rather than silently substituting name matches for
+   * semantic results.
+   */
+  /**
+   * The last answer per project and language, and when it was given.
+   *
+   * A file's margin rows are asked about in a burst — twenty at once is
+   * ordinary — and asking the app what the language server is doing twenty
+   * times over would be its own little storm. One answer serves the burst, and
+   * a status change throws it away immediately.
+   */
+  const rememberedReadiness = new Map<string, { at: number; answer: Promise<CountingReadiness> }>();
+  /** How long one reading of the server's state is reused for. */
+  const readinessMemoryMs = 3_000;
+
+  async function languageServerCountingReadiness(
+    preview: SourcePreview
+  ): Promise<CountingReadiness> {
+    if (!isNativeTauriRuntime()) return 'no-server';
+    if (!sourceSupportsLanguageIntelligence(preview.language)) return 'no-server';
+    if (!projectRoot) return 'no-server';
+
+    const memoKey = `${projectRoot}|${preview.language}`;
+    const remembered = rememberedReadiness.get(memoKey);
+    if (remembered && Date.now() - remembered.at < readinessMemoryMs) return remembered.answer;
+
+    const answer = readLanguageServerCountingReadiness(projectRoot, preview.language);
+    rememberedReadiness.set(memoKey, { at: Date.now(), answer });
+    return answer;
+  }
+
+  async function readLanguageServerCountingReadiness(
+    root: string,
+    language: SourcePreview['language']
+  ): Promise<CountingReadiness> {
+    countInvoke('read_source_lsp_status');
+    const status = await readSourceLspStatusFromTauri(root, language).catch(() => null);
+    const reported = status as
+      | (SourceLspStatus & { state?: unknown; available?: unknown })
+      | null;
+    const state = typeof reported?.state === 'string' ? reported.state : undefined;
+    const available =
+      typeof reported?.available === 'boolean' ? reported.available : undefined;
+    const mightWait =
+      state === 'starting' ||
+      state === 'indexing' ||
+      (state === 'not-running' && available === true);
+    if (!mightWait) return countingReadinessForStatus(state, available, false);
+
+    // Waiting is honest only because the document-symbols request for this same
+    // file is already on its way to start or move the server, and a later status
+    // update will release these questions. Without either ability, the margin
+    // would stay at the zero placeholder for the rest of the session.
+    const canWatch = await watchLanguageServerStatus();
+    const canWake = canWatch && (await hasBackendCapability('lspDocumentSymbols'));
+    return countingReadinessForStatus(state, available, canWake);
+  }
+
+  /** Set up once we first need it; answers whether the app can tell us. */
+  let statusWatch: Promise<boolean> | null = null;
+
+  function watchLanguageServerStatus(): Promise<boolean> {
+    statusWatch ??= (async () => {
+      if (!(await hasBackendCapability('lspStatusEvents'))) return false;
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        await listen<{ state?: string; root: string; language: string }>(
+          'source-lsp-status-changed',
+          (event) => {
+            // Whatever we last worked out about the server is now out of date.
+            rememberedReadiness.clear();
+            if (
+              event.payload?.state === 'ready' &&
+              statusMessageIsAboutThisFile(
+                event.payload,
+                projectRoot,
+                activePreview?.language ?? null
+              )
+            ) {
+              releaseHeldQuestions();
+            }
+          }
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    return statusWatch;
+  }
+
+  function releaseHeldQuestions(): void {
+    if (heldUntilServerIsReady.length === 0) return;
+    const released = heldUntilServerIsReady;
+    heldUntilServerIsReady = [];
+    reportLensTiming(`the language server is ready — asking about ${released.length} symbol(s)`);
+    semanticScheduler.request(released);
+  }
+
+  /**
+   * The "N references" number drawn above a symbol.
+   *
+   * `null` means we cannot count this one at all, and the editor draws no
+   * number rather than a wrong one. A promise that has not settled yet means
+   * the counting is still going on, and the margin keeps saying so.
+   */
+  function countReferencesForCodeLens(
     request: SourceLookupRequest
-  ): Promise<CodeLensCount | null> {
+  ): CodeLensCount | null | Promise<CodeLensCount | null> {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return null;
-    return referenceCountBatcher.count(symbolName);
+
+    const preview = previewWithDraft();
+    const spotRequest: SourceLookupRequest = { ...request, symbolName };
+    const key = countKeyFor(spotRequest);
+
+    if (preview) {
+      // The spot belongs to a file other than the one on screen — which is the
+      // only file anything here can count against. Better to show no number
+      // than one worked out for the wrong file.
+      if (
+        request.filePath &&
+        normalizeProjectPath(request.filePath) !== normalizeProjectPath(preview.path)
+      ) {
+        return null;
+      }
+
+      const filePath = normalizeProjectPath(preview.path);
+      const remembered = countStore.get(projectRoot, filePath, key);
+      if (remembered) return remembered;
+    }
+
+    if (!persistedCountsLoaded) {
+      return persistedCountsReady.then(() => countReferencesForCodeLens(spotRequest));
+    }
+
+    if (preview) {
+      return countUnrememberedSemanticReferences(key, spotRequest, preview);
+    }
+
+    // Browser preview: one project scan answers every name in the file. The
+    // batcher is deliberately absent from native editor instances.
+    return referenceCountBatcher?.count(symbolName) ?? null;
+  }
+
+  async function countUnrememberedSemanticReferences(
+    key: string,
+    spotRequest: SourceLookupRequest,
+    preview: SourcePreview
+  ): Promise<CodeLensCount | null> {
+    const readiness = await languageServerCountingReadiness(preview);
+    if (readiness !== 'no-server') {
+      // The server turned ready between one symbol and the next: whatever was
+      // held back while it was starting goes out now, so the whole file's rows
+      // fill in rather than the ones asked about after it woke up.
+      if (readiness === 'ask-it') releaseHeldQuestions();
+      return countBySemantics(key, spotRequest, preview, readiness === 'wait-for-it');
+    }
+
+    // Browser preview: one project scan answers every name in the file.
+    return referenceCountBatcher?.count(spotRequest.symbolName) ?? null;
+  }
+
+  /** Put this symbol in the language server's queue and wait for its turn. */
+  function countBySemantics(
+    key: string,
+    request: SourceLookupRequest,
+    preview: SourcePreview,
+    holdBack: boolean
+  ): Promise<CodeLensCount | null> {
+    return new Promise((resolve) => {
+      const existing = waitingSpots.get(key);
+      if (existing) {
+        existing.waiters.push(resolve);
+        return;
+      }
+
+      waitingSpots.set(key, {
+        request,
+        preview,
+        projectRoot,
+        waiters: [resolve],
+        askedAt: Date.now(),
+        tries: 0
+      });
+
+      if (holdBack) {
+        heldUntilServerIsReady.push(key);
+      } else {
+        semanticScheduler.request([key]);
+      }
+    });
+  }
+
+  /**
+   * Stop counting for the file that was on screen. Everything still queued is
+   * dropped; anyone still waiting is told we have no number, which takes the
+   * zero placeholder off a margin nobody is looking at any more.
+   */
+  function stopCountingForTheOldFile(): void {
+    semanticScheduler.clear();
+    heldUntilServerIsReady = [];
+    const abandoned = [...waitingSpots.values()];
+    waitingSpots.clear();
+    for (const spot of abandoned) {
+      for (const waiter of spot.waiters) waiter(null);
+    }
+  }
+
+  /** Every remembered number in every project, let go. */
+  function forgetReferenceCounts(): void {
+    countStore.forgetEverything();
+    rememberedSemanticTargets.clear();
+  }
+
+  /**
+   * One file was edited or saved, so its numbers are counted again.
+   *
+   * Only the language server's numbers, and only for that file: they are about
+   * this file's symbols and editing it can genuinely change them. The
+   * plain-text counts are left alone on purpose. They count a NAME across the
+   * project's saved files, which typing in the open buffer does not change, and
+   * throwing them away every time the reader paused would put the browser
+   * preview back to reading the whole project every couple of seconds.
+   */
+  function forgetFileReferenceCounts(filePath: string): void {
+    if (!filePath) return;
+    const normalizedPath = normalizeProjectPath(filePath);
+    countStore.forgetFile(projectRoot, normalizedPath);
+    const prefix = `${projectRoot ?? ''}|${normalizedPath}|`;
+    for (const key of rememberedSemanticTargets.keys()) {
+      if (key.startsWith(prefix)) rememberedSemanticTargets.delete(key);
+    }
+  }
+
+  /**
+   * The symbols a file's margin rows sit above.
+   *
+   * The editor can find these itself by reading the text, but it only knows how
+   * to read TypeScript, JavaScript and C#. The language server knows the shape
+   * of whatever it is looking at, which is what puts margin rows on Rust and
+   * Svelte files for the first time. When the desktop app is too old to answer
+   * this question, or answers with nothing, we say so and the editor reads the
+   * text as before.
+   */
+  async function lookupCodeLensAnchors(asked: SourcePreview): Promise<SourceSymbol[] | null> {
+    if (!isNativeTauriRuntime() || !projectRoot) return null;
+
+    // Ask about the file on screen, not about the copy the editor handed us:
+    // the editor describes a file by the language Monaco paints it in, and
+    // Monaco paints Svelte as HTML. The language server needs to be told it is
+    // Svelte, and only this side knows that.
+    const preview = activePreview;
+    if (!preview) return null;
+    if (normalizeProjectPath(asked.path) !== normalizeProjectPath(preview.path)) return null;
+    if (!sourceSupportsLanguageIntelligence(preview.language)) return null;
+    if (!(await hasBackendCapability('lspDocumentSymbols'))) return null;
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      countInvoke('find_source_lsp_document_symbols');
+      const startedAt = Date.now();
+      const symbols = await invoke<
+        { name: string; kind: string; line: number; character: number }[]
+      >('find_source_lsp_document_symbols', {
+        root: projectRoot,
+        language: preview.language,
+        path: preview.path
+      });
+      if (!Array.isArray(symbols) || symbols.length === 0) return null;
+
+      reportLensTiming(
+        `the language server named ${symbols.length} symbol(s) in ${preview.fileName} in ${
+          Date.now() - startedAt
+        }ms`
+      );
+      // The backend counts lines and characters from zero; everything on this
+      // side of the wire counts from one.
+      return symbols.slice(0, maxCodeLensSymbols).map((symbol) => ({
+        name: symbol.name,
+        kind: String(symbol.kind).toLowerCase(),
+        line: symbol.line + 1,
+        column: symbol.character + 1,
+        detail: symbol.name
+      }));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * One line about how the margin numbers are getting on, when somebody has
+   * asked to see them. Switch it on from the browser console with
+   * `window.mcbShowLensTiming = true`; it is off for everyone else.
+   */
+  function reportLensTiming(sentence: string): void {
+    if ((globalThis as { mcbShowLensTiming?: unknown }).mcbShowLensTiming !== true) return;
+    console.info(`Reference counts: ${sentence}`);
   }
 
   /**
@@ -414,7 +1027,11 @@ export function createSourceIntelligence(): SourceIntelligence {
    * from memory when it can, and reads from disk at most once per file.
    */
   async function loadExternalPreview(record: SourceRecord): Promise<SourcePreview | null> {
-    const sourceRecord = sourceRecordFromPath(projectRoot, record.path, records);
+    const sourceRecord = sourceRecordFromPath(
+      projectRoot,
+      record.path,
+      projectSourceRecords(projectRoot)
+    );
 
     if (activePreview?.path === sourceRecord.path) {
       return previewFromContent(
@@ -544,6 +1161,8 @@ export function createSourceIntelligence(): SourceIntelligence {
     onDefinitionLookup: findDefinitions,
     onReferenceLookup: findReferences,
     onReferenceCountLookup: countReferencesForCodeLens,
+    onCodeLensAnchorLookup: lookupCodeLensAnchors,
+    onReferenceCountsOutOfDate: forgetFileReferenceCounts,
     onExternalPreviewLookup: loadExternalPreview,
     onHoverLookup: lookupHover,
     onCompletionLookup: lookupCompletions,
@@ -559,25 +1178,25 @@ export function createSourceIntelligence(): SourceIntelligence {
         nextProjectRoot && nextProjectRoot.trim().length > 0 ? nextProjectRoot : null;
       if (normalized === projectRoot) return;
       projectRoot = normalized;
-      // Files and counts remembered under the old project must not answer for
-      // the new one.
+      // The numbers counted for the old project are NOT thrown away — they are
+      // filed under it, and coming back finds them. What must stop is the
+      // counting that was still going on for the file that was on screen.
       externalPreviewCache.clear();
-      forgetReferenceCounts();
+      stopCountingForTheOldFile();
     },
     setActivePreview(preview: SourcePreview | null): void {
+      if (preview?.path !== activePreview?.path) stopCountingForTheOldFile();
       activePreview = preview;
       draftContent = preview?.content ?? '';
     },
     setDraftContent(content: string): void {
       draftContent = content;
     },
-    setRecords(nextRecords: SourceRecord[]): void {
-      records = nextRecords;
-      // A fresh scan means files moved, so the counts taken from them are no
-      // longer trustworthy.
-      forgetReferenceCounts();
-    },
     invalidatePreview(path: string): void {
+      externalPreviewCache.delete(path);
+      forgetFileReferenceCounts(path);
+    },
+    releasePreview(path: string): void {
       externalPreviewCache.delete(path);
     },
     invalidateAllPreviews(): void {

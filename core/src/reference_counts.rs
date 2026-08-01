@@ -17,6 +17,16 @@ use std::time::Instant;
 /// Most symbols one batched margin-count request may ask about. The editor
 /// draws at most 120 margin counts per file, so this leaves room to spare.
 pub const MAX_REFERENCE_COUNT_SYMBOLS: usize = 256;
+/// How big a file may be before a counting pass reads it. Files above this are
+/// skipped, and skipping even one turns every total in the pass into a floor.
+///
+/// This is deliberately its own number rather than the ceiling the app uses for
+/// showing a file's contents on screen (512KB). That one is about how much text
+/// a reader can usefully be shown at once; this one is about how much text the
+/// machine can afford to walk through, and the machine can afford far more. A
+/// 660KB source file is uncommon but real, and letting it poison the exactness
+/// of every other count in the project was a bug, not a safeguard.
+pub const MAX_REFERENCE_SCAN_BYTES: u64 = 4 * 1024 * 1024;
 /// Most cores one counting pass will use. The pass is bounded by how fast the
 /// disk hands over files, so beyond a handful of readers there is nothing left
 /// to win — and the rest of the machine has work to do.
@@ -459,6 +469,43 @@ mod tests {
 
         assert_eq!(pass.scanned_files, 0);
         assert!(pass.skipped_files);
+    }
+
+    #[test]
+    fn a_six_hundred_kilobyte_source_file_is_still_counted() {
+        // The ceiling this pass uses is its own, and it is generous. A 660KB source
+        // file is unusual but real, and skipping it would turn every total in the
+        // whole pass into a floor — the counts stop being exact for every symbol,
+        // not just the ones in that file.
+        let root = unique_temp_root("large-but-countable");
+        let large = root.join("Large.cs");
+        std::fs::write(&large, "var detector = new FormatDetector();\n".repeat(18_000)).unwrap();
+        let byte_count = std::fs::metadata(&large).unwrap().len();
+
+        let files = vec![ReferenceCountFile {
+            path: large.as_path(),
+            byte_count,
+        }];
+        let names = vec!["FormatDetector".to_string()];
+        let plan = ReferenceCountPlan::new(&names);
+        let pass = count_reference_lines_across_files(
+            &files,
+            &plan,
+            Instant::now() + std::time::Duration::from_secs(30),
+            MAX_REFERENCE_SCAN_BYTES,
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(
+            byte_count > 600_000,
+            "the test file must actually be large, it was {byte_count} bytes"
+        );
+        assert_eq!(pass.scanned_files, 1, "the large file must have been read");
+        assert_eq!(pass.counts, vec![18_000]);
+        assert!(
+            !pass.skipped_files,
+            "a 660KB file is well under this pass's ceiling, so nothing was left out"
+        );
     }
 
     #[test]

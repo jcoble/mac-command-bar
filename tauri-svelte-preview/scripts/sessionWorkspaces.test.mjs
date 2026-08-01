@@ -3,10 +3,15 @@ import assert from 'node:assert/strict';
 import {
   captureWorkspace,
   diffPathFor,
+  emptyRetainedWorkspaces,
   OPEN_PATHS_CAP,
+  planWorkspaceRestore,
   pruneWorkspaces,
   readWorkspaces,
+  RETAINED_WORKSPACES_CAP,
+  retainTabs,
   SESSION_WORKSPACES_STORAGE_KEY,
+  takeRetainedTabs,
   writeWorkspaces
 } from '../src/lib/shell/sessionWorkspaces.ts';
 
@@ -300,6 +305,292 @@ function openFiles(...paths) {
   assert.equal(diffPathFor(diff('src/a.ts', '/repo'), null), null);
   // A file with no folder is not enough to go on, so it is stored as no diff.
   assert.equal(diff('src/a.ts', null).diffPath, null);
+}
+
+/**
+ * A stand-in for the editor panel: the strip of open files, and a record of
+ * every file it actually went to disk for.
+ *
+ * `open` is `EditorPanel.openPath` with everything but the read left out — a
+ * file already in the strip keeps its place AND its contents, and only a file
+ * whose contents are missing is read. That last rule is the whole point of the
+ * retained tabs, so the stub has to keep it honest.
+ */
+function editorStub() {
+  const editor = {
+    openFiles: [],
+    activePath: null,
+    /** Every path read from disk, in order, including repeats. */
+    reads: [],
+    open(path) {
+      let file = editor.openFiles.find((entry) => entry.path === path);
+      if (!file) {
+        file = { path, preview: null, loading: false, error: null };
+        editor.openFiles = [...editor.openFiles, file];
+      }
+      editor.activePath = path;
+      // `needsRead`, word for word: never read, not reading, and not failed.
+      if (file.preview === null && !file.loading && file.error === null) {
+        editor.reads.push(path);
+        file.preview = { text: `the contents of ${path}` };
+      }
+    },
+    /** Open a file and leave its read in flight, which is what switching
+     * session in the second it takes to read a file does. */
+    startRead(path) {
+      editor.open(path);
+      const file = editor.openFiles.find((entry) => entry.path === path);
+      file.preview = null;
+      file.loading = true;
+    },
+    /** What the page does when a session's tabs are not held in memory. */
+    reset() {
+      editor.openFiles = [];
+      editor.activePath = null;
+    },
+    /** What the page does when they are. */
+    restore(tabs) {
+      editor.openFiles = tabs;
+      editor.activePath = null;
+    },
+    paths: () => editor.openFiles.map((file) => file.path)
+  };
+  return editor;
+}
+
+/**
+ * The page's own half of a session switch, wired exactly as `/next/+page.svelte`
+ * wires it: leaving a session records what it had open and holds its tabs;
+ * arriving at one takes its tabs back and asks the open-file bus for whatever is
+ * left. Anything this stub gets wrong is a bug the real switch would have too.
+ */
+function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
+  const editor = editorStub();
+  let retained = emptyRetainedWorkspaces();
+  const stored = {};
+  return {
+    editor,
+    retained: () => retained,
+    leave(ownedId) {
+      stored[ownedId] = captureWorkspace({
+        openFiles: editor.openFiles,
+        activePath: editor.activePath,
+        expandedFolderIds: new Set(),
+        selectedPath: null,
+        scrollTop: 0
+      });
+      retained = retainTabs(retained, ownedId, editor.openFiles, cap);
+    },
+    arrive(ownedId) {
+      const taken = takeRetainedTabs(retained, ownedId);
+      retained = taken.retained;
+      const plan = planWorkspaceRestore(stored[ownedId] ?? null, taken.tabs);
+      if (plan.restoredTabs) editor.restore(plan.restoredTabs);
+      else editor.reset();
+      for (const path of plan.pathsToOpen) editor.open(path);
+      if (plan.activePath) editor.open(plan.activePath);
+    }
+  };
+}
+
+// The measurement this whole lane exists for: going to another session and back
+// puts the first session's files on screen again without reading one of them
+// from disk a second time.
+{
+  const shell = shellStub();
+  shell.editor.open('/repo/a/one.ts');
+  shell.editor.open('/repo/a/two.ts');
+  assert.deepEqual(shell.editor.reads, ['/repo/a/one.ts', '/repo/a/two.ts'], 'first open reads');
+
+  shell.leave('session-a');
+  shell.arrive('session-b');
+  shell.editor.open('/repo/b/other.ts');
+
+  shell.leave('session-b');
+  shell.arrive('session-a');
+  assert.deepEqual(
+    shell.editor.paths(),
+    ['/repo/a/one.ts', '/repo/a/two.ts'],
+    'both of the first session’s tabs are back, and the other session’s is not'
+  );
+  assert.equal(shell.editor.activePath, '/repo/a/two.ts', 'the file that was showing is showing');
+  assert.deepEqual(
+    shell.editor.reads,
+    ['/repo/a/one.ts', '/repo/a/two.ts', '/repo/b/other.ts'],
+    'coming back read nothing: the same three reads as before the round trip'
+  );
+}
+
+// Three sessions keep their tabs; the fourth to be left pushes out the one left
+// longest ago, and only that one has to be read from disk again.
+{
+  const shell = shellStub();
+  assert.equal(RETAINED_WORKSPACES_CAP, 3);
+  for (const name of ['a', 'b', 'c', 'd']) {
+    shell.arrive(`session-${name}`);
+    shell.editor.open(`/repo/${name}.ts`);
+    shell.leave(`session-${name}`);
+  }
+  assert.deepEqual(
+    shell.retained().leastRecentFirst,
+    ['session-b', 'session-c', 'session-d'],
+    'three sessions held, the oldest let go of'
+  );
+
+  const readsBefore = shell.editor.reads.length;
+  shell.arrive('session-d');
+  assert.equal(shell.editor.reads.length, readsBefore, 'a held session reads nothing');
+  shell.arrive('session-a');
+  assert.deepEqual(
+    shell.editor.reads.slice(readsBefore),
+    ['/repo/a.ts'],
+    'the session that was let go of reads its file again, exactly as it used to'
+  );
+}
+
+// Going back to a session moves it to the front of the queue, so the sessions
+// someone keeps returning to are the ones kept.
+{
+  const shell = shellStub();
+  for (const name of ['a', 'b', 'c']) {
+    shell.arrive(`session-${name}`);
+    shell.editor.open(`/repo/${name}.ts`);
+    shell.leave(`session-${name}`);
+  }
+  shell.arrive('session-a');
+  shell.leave('session-a');
+  shell.arrive('session-d');
+  shell.editor.open('/repo/d.ts');
+  shell.leave('session-d');
+  assert.deepEqual(
+    shell.retained().leastRecentFirst,
+    ['session-c', 'session-a', 'session-d'],
+    'the session nobody went back to is the one let go of'
+  );
+}
+
+// A session opening its files for the first time behaves exactly as it did
+// before any of this: every stored path is read, and the file that was showing
+// ends up in front.
+{
+  const shell = shellStub();
+  const stored = captureWorkspace({
+    openFiles: openFiles('/repo/one.ts', '/repo/two.ts', '/repo/three.ts'),
+    activePath: '/repo/two.ts',
+    expandedFolderIds: new Set(),
+    selectedPath: null,
+    scrollTop: 0
+  });
+  const plan = planWorkspaceRestore(stored, null);
+  assert.equal(plan.restoredTabs, null, 'nothing is held, so nothing is put straight back');
+  assert.deepEqual(plan.pathsToOpen, ['/repo/one.ts', '/repo/two.ts', '/repo/three.ts']);
+  assert.equal(plan.activePath, '/repo/two.ts');
+
+  shell.editor.open('/repo/one.ts');
+  shell.editor.open('/repo/two.ts');
+  shell.leave('session-a');
+  shell.arrive('session-never-seen');
+  assert.deepEqual(shell.editor.paths(), [], 'a session with nothing stored opens nothing');
+}
+
+// A record that names a file the held tabs do not have — the strip was longer
+// than the twelve a record keeps, or the record was written by an earlier run —
+// still reads that one file, and only that one.
+{
+  const held = [{ path: '/repo/one.ts', preview: { text: 'held' } }];
+  const stored = captureWorkspace({
+    openFiles: openFiles('/repo/one.ts', '/repo/two.ts'),
+    activePath: '/repo/two.ts',
+    expandedFolderIds: new Set(),
+    selectedPath: null,
+    scrollTop: 0
+  });
+  const plan = planWorkspaceRestore(stored, held);
+  assert.deepEqual(plan.restoredTabs, held);
+  assert.deepEqual(plan.pathsToOpen, ['/repo/two.ts'], 'only the file not already in memory');
+  assert.equal(plan.activePath, '/repo/two.ts');
+}
+
+// With no record of which file was showing, the last tab in the strip is the one
+// left in front — the same answer opening them one after another used to give.
+{
+  const held = [{ path: '/repo/one.ts', preview: {} }, { path: '/repo/two.ts', preview: {} }];
+  assert.equal(planWorkspaceRestore(null, held).activePath, '/repo/two.ts');
+  assert.equal(planWorkspaceRestore(null, null).activePath, null, 'nothing open, nothing showing');
+  assert.deepEqual(planWorkspaceRestore(null, null).pathsToOpen, []);
+}
+
+// A session left with an empty editor holds nothing, so its place goes to a
+// session that has files worth keeping.
+{
+  const tabs = [{ path: '/repo/one.ts', preview: {} }];
+  let retained = retainTabs(emptyRetainedWorkspaces(), 'session-a', tabs);
+  assert.deepEqual(retained.leastRecentFirst, ['session-a']);
+  retained = retainTabs(retained, 'session-a', []);
+  assert.deepEqual(retained.leastRecentFirst, [], 'the empty session lets its place go');
+  assert.deepEqual(retained.tabsByOwnedId, {});
+  assert.equal(takeRetainedTabs(retained, 'session-a').tabs, null);
+}
+
+// A tab whose read had not finished, and one whose read failed, both come back
+// as tabs nobody has read yet. Leaving a session throws away the answers its
+// reads were about to give, so a tab held as "still loading" would come back
+// waiting for something that never arrives.
+{
+  const stillReading = { path: '/repo/one.ts', preview: null, loading: true, error: null };
+  const failed = {
+    path: '/repo/two.ts',
+    preview: null,
+    loading: false,
+    error: 'This file could not be read from here.'
+  };
+  const alreadyRead = { path: '/repo/three.ts', preview: { text: 'here' }, loading: false, error: null };
+  const retained = retainTabs(emptyRetainedWorkspaces(), 'session-a', [
+    stillReading,
+    failed,
+    alreadyRead
+  ]);
+  const held = retained.tabsByOwnedId['session-a'];
+  assert.deepEqual(held[0], { path: '/repo/one.ts', preview: null, loading: false, error: null });
+  assert.deepEqual(
+    held[1],
+    { path: '/repo/two.ts', preview: null, loading: false, error: null },
+    'a failed read gets the second chance the switch always used to give it'
+  );
+  assert.equal(held[2], alreadyRead, 'a file already in memory is held exactly as it is');
+  assert.equal(stillReading.loading, true, 'and the editor’s own tab is left alone');
+}
+
+// The same thing through a whole round trip: switching away while a file is
+// still being read, then coming back, reads that one file and only that one.
+{
+  const shell = shellStub();
+  shell.editor.open('/repo/a/one.ts');
+  shell.editor.startRead('/repo/a/two.ts');
+  shell.leave('session-a');
+  shell.arrive('session-b');
+  shell.leave('session-b');
+  shell.arrive('session-a');
+  assert.deepEqual(
+    shell.editor.paths(),
+    ['/repo/a/one.ts', '/repo/a/two.ts'],
+    'both tabs are back, in the order they were opened'
+  );
+  assert.deepEqual(
+    shell.editor.reads,
+    ['/repo/a/one.ts', '/repo/a/two.ts', '/repo/a/two.ts'],
+    'the file whose read never landed is read again; the one already in memory is not'
+  );
+}
+
+// Holding tabs never changes the store handed in, so the page can keep the old
+// one until the new one is assigned.
+{
+  const before = retainTabs(emptyRetainedWorkspaces(), 'session-a', [{ path: '/a.ts' }]);
+  const after = retainTabs(before, 'session-b', [{ path: '/b.ts' }]);
+  assert.deepEqual(before.leastRecentFirst, ['session-a'], 'the input is untouched');
+  assert.deepEqual(after.leastRecentFirst, ['session-a', 'session-b']);
+  assert.equal(takeRetainedTabs(before, 'session-b').tabs, null);
 }
 
 console.log('sessionWorkspaces: all tests passed');

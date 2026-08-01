@@ -75,3 +75,50 @@ export function sourceCodeLensSpotFromId(id: string | undefined): SourceCodeLens
 export function sourceCodeLensCountKey(modelUri: string, spot: SourceCodeLensSpot): string {
 	return `${modelUri}::${spot.line}:${spot.symbolName}`;
 }
+
+/**
+ * What the margin says before anyone has counted anything.
+ *
+ * The row appears the moment the file does, so the reader can see there is
+ * something to click, and the real number replaces this line as soon as it
+ * arrives. There is deliberately no number in this sentence: a placeholder
+ * digit would be a number nobody counted, and the reader has no way to tell
+ * one of those from a real one.
+ */
+export const sourceCodeLensPendingTitle = '0 references';
+
+export type SettledSourceCodeLensCount = {
+	count: number;
+	atLeast: boolean;
+};
+
+/**
+ * Choose what remains painted when one asynchronous count request settles.
+ *
+ * Roslyn is the native editor's one count authority, but two consumers can be
+ * waiting on the same answer: the background CodeLens request and a later Peek
+ * click. An older completion must not repaint over the later one, and a
+ * transient no-answer must not erase a real number that already arrived.
+ */
+export function settledSourceCodeLensCount(
+	current: SettledSourceCodeLensCount | null | undefined,
+	incoming: SettledSourceCodeLensCount | null,
+	isLatestRequest: boolean
+): SettledSourceCodeLensCount | null | undefined {
+	if (!isLatestRequest) return current;
+	if (incoming === null && current != null) return current;
+	return incoming;
+}
+
+/**
+ * The finished sentence for a number we were actually given.
+ *
+ * "at least N" is for a number that came out of the plain-text search over the
+ * project — that search stops when it runs out of time or hits its ceiling, so
+ * the tally covers only the files it reached and the real number can only be
+ * higher. A number from the language server is exact and is stated as it is.
+ */
+export function formatSourceCodeLensTitle(count: number, atLeast: boolean): string {
+	const word = count === 1 ? 'reference' : 'references';
+	return atLeast ? `at least ${count} ${word}` : `${count} ${word}`;
+}

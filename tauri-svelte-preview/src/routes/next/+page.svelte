@@ -36,7 +36,12 @@
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
   import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
-  import { editorState, resetEditorState } from '$lib/shell/editor/editorStore.svelte';
+  import {
+    editorState,
+    resetEditorState,
+    restoreEditorFiles,
+    type OpenEditorFile
+  } from '$lib/shell/editor/editorStore.svelte';
   import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
@@ -61,9 +66,14 @@
   import {
     captureWorkspace,
     diffPathFor,
+    emptyRetainedWorkspaces,
+    planWorkspaceRestore,
     pruneWorkspaces,
     readWorkspaces,
+    retainTabs,
+    takeRetainedTabs,
     writeWorkspaces,
+    type RetainedWorkspaces,
     type SessionWorkspaceSnapshot
   } from '$lib/shell/sessionWorkspaces';
   import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
@@ -346,10 +356,29 @@
     if (rail.activeOwnedId === null) await selectOwned(ownedId);
   }
 
+  /**
+   * The editor tabs the last few sessions left behind, contents and all.
+   *
+   * The stored record beside it is only a list of paths, so putting a session
+   * back used to mean reading every one of its files off disk again — including
+   * the file the reader had been looking at seconds earlier. Holding the tabs
+   * themselves is what makes going back to a session free. Only the last three
+   * sessions are held, so the memory this costs has a ceiling; the fourth reads
+   * its files again, exactly as every session used to.
+   *
+   * Not persisted, and it must not be: file contents are far too big for the
+   * browser's storage, and a reload has to read from disk anyway.
+   */
+  let retainedTabs: RetainedWorkspaces<OpenEditorFile> = emptyRetainedWorkspaces();
+
   /** Remember the editor tabs and file tree this session is leaving behind.
    * Stored straight away: a reload can come at any moment, and the write is a
    * few hundred bytes. */
   function snapshotWorkspace(ownedId: string): void {
+    // The tabs themselves are held here rather than in the stored record: same
+    // moment, same session, but this half stays in memory. A session leaving an
+    // empty editor holds nothing, so its place goes to one that has files.
+    retainedTabs = retainTabs(retainedTabs, ownedId, editorState.openFiles);
     workspaces = {
       ...workspaces,
       [ownedId]: captureWorkspace({
@@ -368,23 +397,24 @@
   /**
    * Put back the editor tabs and file tree this session had.
    *
-   * The files go back through the same "open this file" request the explorer
-   * uses, in strip order, with the file that was showing asked for last so it is
-   * the one left in front. The tree's state is assigned directly, AFTER
-   * `sessionPicked` has pointed the explorer at the project: listing the same
-   * folder again does nothing, and a scan of a different folder never closes
-   * folders the user had open. A highlighted file that no longer exists loses
-   * its highlight when that scan lands, which is the right answer.
+   * A tab still held from the last time this session was on screen goes back as
+   * it is — the file is already in memory, so nothing is read. Any other file
+   * the record names goes back through the same "open this file" request the
+   * explorer uses, in strip order. Either way the file that was showing is asked
+   * for last, so it is the one left in front and the panel points its lookups at
+   * it; asking for a file that is already open costs nothing but that.
+   *
+   * The tree's state is assigned directly, AFTER `sessionPicked` has pointed the
+   * explorer at the project: listing the same folder again does nothing, and a
+   * scan of a different folder never closes folders the user had open. A
+   * highlighted file that no longer exists loses its highlight when that scan
+   * lands, which is the right answer.
    */
   function restoreWorkspace(ownedId: string): void {
     // Start-up re-attaching a session picks it, which is indistinguishable from
     // a click. Replaying files then would read files before launch is over; the
     // end of start-up calls this itself once the gate is open.
     if (!shellPanels.loadsAllowed()) return;
-    // Every restore starts from an empty editor. A session that has never had a
-    // file open gets one, and that emptiness is the whole point: it is the other
-    // session's tabs not being there.
-    resetEditorState();
     // The Diff tab is one tab for the whole shell — it is always mounted, and
     // source control only re-points itself while it is the view in front. So
     // what the tab shows must be decided here, on every switch: the diff THIS
@@ -399,15 +429,24 @@
       void gitService.showStoredDiff(sessionRoot, rememberedDiff);
     }
     const snapshot = workspaces[ownedId];
-    if (!snapshot) return;
+    const taken = takeRetainedTabs(retainedTabs, ownedId);
+    retainedTabs = taken.retained;
+    const plan = planWorkspaceRestore(snapshot ?? null, taken.tabs);
+    // Every restore starts from THIS session's tabs and no others. A session
+    // that has never had a file open starts from an empty editor, and that
+    // emptiness is the whole point: it is the other session's tabs not being
+    // there.
+    if (plan.restoredTabs) restoreEditorFiles(plan.restoredTabs);
+    else resetEditorState();
 
     restoringWorkspace = true;
     try {
-      for (const path of snapshot.openPaths) requestOpenFile({ path });
-      if (snapshot.activePath) requestOpenFile({ path: snapshot.activePath });
+      for (const path of plan.pathsToOpen) requestOpenFile({ path });
+      if (plan.activePath) requestOpenFile({ path: plan.activePath });
     } finally {
       restoringWorkspace = false;
     }
+    if (!snapshot) return;
     explorer.expandedFolderIds = new Set(snapshot.expandedFolderIds);
     selectPath(snapshot.selectedPath);
     setScrollTop(snapshot.scrollTop);
@@ -913,6 +952,13 @@
     onFileOpened={() => {
       if (!restoringWorkspace) frameControls?.showCenterPanel('editor');
     }}
+    onStartWorkspaceCommand={(request) =>
+      onStartStack({
+        stackId: request.id,
+        cwd: request.cwd,
+        script: request.script,
+        title: request.title
+      })}
   />
 {/snippet}
 {#snippet browserArea()}<BrowserPanel />{/snippet}
