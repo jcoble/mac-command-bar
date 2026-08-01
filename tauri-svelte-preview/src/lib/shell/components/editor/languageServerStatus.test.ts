@@ -38,9 +38,9 @@ test('a build too old to report a state gives nothing away', () => {
     language: 'csharp',
     languageID: 'csharp',
     available: true,
-    serverName: 'csharp-ls',
-    command: 'csharp-ls',
-    args: [],
+    serverName: 'Roslyn',
+    command: 'roslyn-language-server',
+    args: ['--stdio'],
     reason: null
   };
   assert.equal(readLanguageServerState(oldBuildAnswer), null);

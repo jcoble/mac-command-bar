@@ -59,6 +59,11 @@
     readSourceLspStatusFromTauri,
     warmSourceLspForRootFromTauri
   } from '$lib/tauriSource';
+  import {
+    dotnetWorkspaceSessionRequest,
+    type DotnetWorkspaceAction,
+    type WorkspaceCommandSessionRequest
+  } from '$lib/workspaceCodeLens';
   import type MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
   import type {
     SourceDiagnostic,
@@ -78,8 +83,12 @@
      * bring this panel's tab to the front. The panel itself stays unaware of the
      * tab area — it just says a file arrived. */
     onFileOpened?: () => void;
+    /** Start a fixed workspace command as an ordinary owned terminal session. */
+    onStartWorkspaceCommand?: (
+      request: WorkspaceCommandSessionRequest
+    ) => Promise<string | null>;
   }
-  let { onFileOpened }: Props = $props();
+  let { onFileOpened, onStartWorkspaceCommand }: Props = $props();
 
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
@@ -333,6 +342,17 @@
     sourceIntelligence.setActivePreview(activeEditorFile()?.preview ?? null);
   }
 
+  // Session restore and project switching update the shared editor store
+  // without calling this panel's open/select handlers. Keep the extracted
+  // intelligence service attached to that state continuously; otherwise the
+  // file can be visible while counts are asked with projectRoot = null.
+  $effect(() => {
+    editorState.projectRoot;
+    editorState.activePath;
+    activeEditorFile()?.preview;
+    syncIntelligenceWithActiveFile();
+  });
+
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord): Promise<void> {
     if (readsInFlight.has(record.path)) return;
@@ -412,7 +432,7 @@
 
   function closeOpenFileAt(path: string): void {
     closeEditorFile(path);
-    sourceIntelligence.invalidatePreview(path);
+    sourceIntelligence.releasePreview(path);
     syncIntelligenceWithActiveFile();
     // Whatever is in front now may be a different language, with a different
     // server behind it — so the chip must not keep the closed file's answer.
@@ -437,6 +457,17 @@
 
   function handleSymbolsChange(symbols: SourceSymbol[]): void {
     setEditorSymbols(symbols);
+  }
+
+  async function runDotnetWorkspaceAction(action: DotnetWorkspaceAction): Promise<void> {
+    const root = editorState.projectRoot;
+    if (!root) throw new Error('No workspace is active.');
+    if (!onStartWorkspaceCommand) {
+      throw new Error('The shell has not wired workspace commands to terminal sessions.');
+    }
+
+    const ownedId = await onStartWorkspaceCommand(dotnetWorkspaceSessionRequest(action, root));
+    if (!ownedId) throw new Error(`No terminal opened for .NET ${action}.`);
   }
 
   onMount(() => {
@@ -538,6 +569,8 @@
             targetLineRequestId={activeFile.targetLineRequestId}
             externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
             onExternalNavigation={navigateToExternalSource}
+            onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
+            onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
             onSymbolsChange={handleSymbolsChange}
           />
         {:else}

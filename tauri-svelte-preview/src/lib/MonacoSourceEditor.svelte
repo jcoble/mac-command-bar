@@ -18,10 +18,16 @@
 	import { onDestroy, onMount } from "svelte";
 	import {
 		formatSourceCodeLensTitle,
+		settledSourceCodeLensCount,
 		sourceCodeLensCountKey,
 		sourceCodeLensId,
 		sourceCodeLensPendingTitle,
 	} from "./sourceCodeLensKeys";
+	import {
+		dotnetWorkspaceCommandIds,
+		dotnetWorkspaceLensTitles,
+		type DotnetWorkspaceAction,
+	} from "./workspaceCodeLens";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
 	import { listThemes } from "$lib/shell/themes/themeRegistry";
 	import { currentTheme, registerMonacoApplier } from "$lib/shell/themes/themeService";
@@ -252,6 +258,8 @@
 		 * file's numbers still stand.
 		 */
 		onReferenceCountsOutOfDate?: (filePath: string) => void;
+		onDotnetBuildRequest?: () => void | Promise<void>;
+		onDotnetTestRequest?: () => void | Promise<void>;
 		onRename?: SourceEditorRename;
 		onSaveRequest?: () => void;
 		onInlayHintLookup?: SourceEditorInlayHintLookup;
@@ -294,6 +302,8 @@
 		onReferenceLookup,
 		onReferenceCountLookup,
 		onReferenceCountsOutOfDate,
+		onDotnetBuildRequest,
+		onDotnetTestRequest,
 		onRename,
 		onSaveRequest,
 		onInlayHintLookup,
@@ -346,6 +356,7 @@
 	let targetLineRevealFrame = 0;
 	let externalWorkspaceEditCommandId = "";
 	let codeLensReferenceCommandDisposable: Monaco.IDisposable | null = null;
+	let dotnetCodeLensCommandDisposables: Monaco.IDisposable[] = [];
 	let monacoCancellationSuppressionDepth = 0;
 	let monacoCancellationSuppressionTimer = 0;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
@@ -377,10 +388,9 @@
 	// working down the page rather than making the reader wait for the last one.
 	// Nothing here ever puts a number on screen that was not handed to us.
 	//
-	// Numbers are NOT remembered here for any length of time. This map is what
-	// is currently on screen for the file on screen; whoever answers
-	// `onReferenceCountLookup` is the one place a number is remembered, so
-	// there is no second copy to go stale.
+	// This map is only a paint cache, keyed by model URI. It survives model
+	// switches within this editor instance so a warm file can draw its number
+	// synchronously; `onReferenceCountLookup` owns durable freshness.
 	//
 	// `undefined` for a spot means nobody has answered yet — the row says it is
 	// counting. `null` means we asked and were told the number cannot be worked
@@ -388,11 +398,20 @@
 	const codeLensCounts = new Map<string, SourceEditorReferenceCount | null>();
 	/** Spots already asked about, so repainting the rows does not ask again. */
 	const codeLensAsked = new Set<string>();
-	/** Symbols named by whoever supplied `onCodeLensAnchorLookup`, if they could. */
-	let codeLensNamedSymbols: SourceSymbol[] | null = null;
-	/** The file those named symbols are for, and the one being asked about. */
-	let codeLensNamedSymbolsFor = "";
-	let codeLensNamedSymbolsPending = "";
+	/** Latest asynchronous count request allowed to repaint each row. */
+	const codeLensCountRequestIds = new Map<string, number>();
+	let codeLensCountRequestSequence = 0;
+	/**
+	 * Authoritative symbol anchors, kept with the real file model they describe.
+	 *
+	 * Without this URI-keyed cache Monaco first drew rows from its quick text
+	 * parser, then replaced their identities when Roslyn answered. A real count
+	 * could therefore appear, disappear behind a fresh placeholder, and appear
+	 * again. Native files now wait for that one authoritative anchor answer;
+	 * switching tabs reuses it.
+	 */
+	const codeLensNamedSymbolsByModel = new Map<string, SourceSymbol[] | null>();
+	const codeLensNamedSymbolsPending = new Map<string, symbol>();
 	/** Last read of the symbols in the file, so scrolling does not re-read it. */
 	let codeLensSpotsCache: {
 		modelUri: string;
@@ -420,14 +439,6 @@
 	 * whole design exists to avoid.
 	 */
 	const CODE_LENS_RECOUNT_AFTER_EDIT_MS = 2000;
-	/**
-	 * How far past the top and bottom of the window to count, measured in
-	 * windowfuls. Reading a little ahead means the number is already there when
-	 * the reader scrolls, without asking about a thousand-line file all at once.
-	 */
-	const CODE_LENS_WINDOWFULS_TO_READ_AHEAD = 2;
-	/** How many symbols to count when the window's size is not known yet. */
-	const CODE_LENS_COUNTS_BEFORE_THE_WINDOW_IS_MEASURED = 40;
 	/** Most rows one file gets, however many symbols it has. */
 	const MAX_CODE_LENS_ROWS = 120;
 	const codeLensReferenceCommandId = "mcb.source.referenceCodeLens";
@@ -727,15 +738,23 @@
 				}
 
 				requestCodeLensNamedSymbols(model);
-				const spots = codeLensSpotsForModel(model);
+				const modelUri = model.uri.toString();
+				const waitingForAuthoritativeAnchors =
+					Boolean(onCodeLensAnchorLookup) &&
+					codeLensNamedSymbolsPending.has(modelUri) &&
+					!codeLensNamedSymbolsByModel.has(modelUri);
+				const spots = waitingForAuthoritativeAnchors ? [] : codeLensSpotsForModel(model);
 				askForCountsWorthAskingFor(model, spots);
 
 				return {
-					lenses: spots.map((spot) => ({
-						id: sourceCodeLensId(spot),
-						range: new monaco.Range(spot.line, 1, spot.line, 1),
-						command: codeLensCommandForSpot(model, spot),
-					})),
+					lenses: [
+						...dotnetWorkspaceCodeLenses(monaco, model),
+						...spots.map((spot) => ({
+							id: sourceCodeLensId(spot),
+							range: new monaco.Range(spot.line, 1, spot.line, 1),
+							command: codeLensCommandForSpot(model, spot),
+						})),
+					],
 					dispose() {},
 				};
 			},
@@ -754,6 +773,25 @@
 		);
 	}
 
+	function dotnetWorkspaceCodeLenses(
+		monaco: typeof Monaco,
+		model: Monaco.editor.ITextModel
+	): Monaco.languages.CodeLens[] {
+		if (model.getLanguageId() !== "csharp") return [];
+
+		const actions: DotnetWorkspaceAction[] = [];
+		if (onDotnetBuildRequest) actions.push("build");
+		if (onDotnetTestRequest) actions.push("test");
+		return actions.map((action) => ({
+			id: `${dotnetWorkspaceCommandIds[action]}:${model.uri.toString()}`,
+			range: new monaco.Range(1, 1, 1, 1),
+			command: {
+				id: dotnetWorkspaceCommandIds[action],
+				title: dotnetWorkspaceLensTitles[action],
+			},
+		}));
+	}
+
 	/**
 	 * The symbols this file's rows sit above. The ones named by whoever supplied
 	 * `onCodeLensAnchorLookup`, when they could name any; otherwise the editor's
@@ -770,7 +808,7 @@
 			return lastRead.spots;
 		}
 
-		const named = codeLensNamedSymbolsFor === modelUri ? codeLensNamedSymbols : null;
+		const named = codeLensNamedSymbolsByModel.get(modelUri) ?? null;
 		const symbols = named ?? extractSourceSymbols(previewForModel(model), model.getValue());
 		const filePath = model.uri.fsPath || model.uri.path;
 		const spots = symbols
@@ -790,8 +828,8 @@
 		spot: SourceEditorLookupRequest
 	): Monaco.languages.Command | undefined {
 		const counted = codeLensCounts.get(sourceCodeLensCountKey(model.uri.toString(), spot));
-		// Nobody has answered yet. Say what is going on rather than showing a
-		// number that has not been counted or an empty gap that looks broken.
+		// Match VS Code: zero is the placeholder while the Roslyn answer is still
+		// arriving, and remains the correct display when the settled answer is zero.
 		if (counted === undefined) {
 			return {
 				id: codeLensReferenceCommandId,
@@ -811,30 +849,17 @@
 	}
 
 	/**
-	 * The symbols worth counting right now: the ones in the window, plus a
-	 * couple of windowfuls either side so the number is already there when the
-	 * reader scrolls. Everything further away waits until they scroll towards
-	 * it — which is what stops opening a long file from asking a hundred
-	 * questions in one go.
+	 * Every symbol worth counting in this file.
+	 *
+	 * The source-intelligence service batches these names into one project
+	 * scan. Limiting the requests to the viewport made untouched rows claim
+	 * they were "counting" even though no question had been asked, and forced a
+	 * new request after every scroll.
 	 */
 	function codeLensSpotsWorthCountingNow(
 		spots: SourceEditorLookupRequest[]
 	): SourceEditorLookupRequest[] {
-		const visible = editor?.getVisibleRanges() ?? [];
-		if (visible.length === 0) {
-			return spots.slice(0, CODE_LENS_COUNTS_BEFORE_THE_WINDOW_IS_MEASURED);
-		}
-
-		const firstVisibleLine = Math.min(
-			...visible.map((range: Monaco.Range) => range.startLineNumber)
-		);
-		const lastVisibleLine = Math.max(
-			...visible.map((range: Monaco.Range) => range.endLineNumber)
-		);
-		const windowful = Math.max(1, lastVisibleLine - firstVisibleLine);
-		const from = firstVisibleLine - windowful * CODE_LENS_WINDOWFULS_TO_READ_AHEAD;
-		const to = lastVisibleLine + windowful * CODE_LENS_WINDOWFULS_TO_READ_AHEAD;
-		return spots.filter((spot) => spot.line >= from && spot.line <= to);
+		return spots;
 	}
 
 	function askForCountsWorthAskingFor(
@@ -858,23 +883,55 @@
 		}
 	}
 
-	async function askForOneCount(
+	function askForOneCount(
 		modelUri: string,
 		key: string,
 		spot: SourceEditorLookupRequest
 	) {
-		let answer: number | SourceEditorReferenceCount | null | undefined = null;
+		const requestId = ++codeLensCountRequestSequence;
+		codeLensCountRequestIds.set(key, requestId);
+		let answer:
+			| number
+			| SourceEditorReferenceCount
+			| Promise<number | SourceEditorReferenceCount | null>
+			| null
+			| undefined;
 		try {
-			answer = await onReferenceCountLookup?.(spot);
+			answer = onReferenceCountLookup?.(spot);
 		} catch {
-			answer = null;
+			acceptCountAnswer(modelUri, key, requestId, null);
+			return;
 		}
 
+		if (answer && typeof (answer as Promise<unknown>).then === "function") {
+			void Promise.resolve(answer)
+				.then((settled) => acceptCountAnswer(modelUri, key, requestId, settled))
+				.catch(() => acceptCountAnswer(modelUri, key, requestId, null));
+			return;
+		}
+		acceptCountAnswer(modelUri, key, requestId, answer);
+	}
+
+	function acceptCountAnswer(
+		modelUri: string,
+		key: string,
+		requestId: number,
+		answer: number | SourceEditorReferenceCount | null | undefined
+	) {
 		// The reader opened another file while we were waiting. This number is
 		// about a file that is no longer on screen.
 		if (componentDestroyed || editor?.getModel()?.uri.toString() !== modelUri) return;
+		const isLatestRequest = codeLensCountRequestIds.get(key) === requestId;
+		if (!isLatestRequest) return;
+		codeLensCountRequestIds.delete(key);
 
-		codeLensCounts.set(key, referenceCountFromAnswer(answer));
+		const settled = settledSourceCodeLensCount(
+			codeLensCounts.get(key),
+			referenceCountFromAnswer(answer),
+			isLatestRequest
+		);
+		if (settled === undefined) codeLensCounts.delete(key);
+		else codeLensCounts.set(key, settled);
 		drawTheRowsAgainSoon();
 	}
 
@@ -902,11 +959,15 @@
 	function requestCodeLensNamedSymbols(model: Monaco.editor.ITextModel) {
 		if (!onCodeLensAnchorLookup) return;
 		const modelUri = model.uri.toString();
-		if (codeLensNamedSymbolsFor === modelUri || codeLensNamedSymbolsPending === modelUri) {
+		if (
+			codeLensNamedSymbolsByModel.has(modelUri) ||
+			codeLensNamedSymbolsPending.has(modelUri)
+		) {
 			return;
 		}
 
-		codeLensNamedSymbolsPending = modelUri;
+		const requestToken = Symbol(modelUri);
+		codeLensNamedSymbolsPending.set(modelUri, requestToken);
 		void (async () => {
 			let named: SourceSymbol[] | null | undefined = null;
 			try {
@@ -916,25 +977,25 @@
 			}
 
 			if (componentDestroyed) return;
-			codeLensNamedSymbolsPending = "";
-			if (editor?.getModel()?.uri.toString() !== modelUri) return;
+			// A reload may have invalidated this request and started a newer one.
+			// Its answer is the only one allowed to name the rows.
+			if (codeLensNamedSymbolsPending.get(modelUri) !== requestToken) return;
+			codeLensNamedSymbolsPending.delete(modelUri);
 
 			// Remembered either way: an answer of "I cannot" is an answer, and
 			// asking again on every repaint would be a call per scroll.
-			codeLensNamedSymbolsFor = modelUri;
-			codeLensNamedSymbols = named?.length ? named : null;
-			if (codeLensNamedSymbols) {
-				codeLensSpotsCache = null;
-				drawTheRowsAgainSoon();
-			}
+			codeLensNamedSymbolsByModel.set(modelUri, named?.length ? named : null);
+			if (editor?.getModel()?.uri.toString() !== modelUri) return;
+			codeLensSpotsCache = null;
+			drawTheRowsAgainSoon();
 		})();
 	}
 
 	/**
 	 * Count this file's symbols again, once the reader has stopped typing for a
 	 * moment. The numbers already on screen stay where they are until better
-	 * ones arrive, so the margin does not blink back to "counting references…"
-	 * every time the reader pauses.
+	 * ones arrive, so the margin does not blink back to zero every time the
+	 * reader pauses.
 	 */
 	function countAgainOnceTheReaderStops() {
 		codeLensLastEditAt = Date.now();
@@ -978,12 +1039,14 @@
 	}
 
 	/** Start over: another file is on screen, or this one was reloaded. */
-	function forgetCodeLensRows() {
-		codeLensCounts.clear();
+	function forgetCodeLensRows(clearRememberedCounts = false) {
+		if (clearRememberedCounts) {
+			codeLensCounts.clear();
+			codeLensNamedSymbolsByModel.clear();
+			codeLensNamedSymbolsPending.clear();
+		}
 		codeLensAsked.clear();
-		codeLensNamedSymbols = null;
-		codeLensNamedSymbolsFor = "";
-		codeLensNamedSymbolsPending = "";
+		codeLensCountRequestIds.clear();
 		codeLensSpotsCache = null;
 		codeLensLastEditAt = 0;
 		if (codeLensRepaintTimer) {
@@ -1771,7 +1834,9 @@
 				// Both the symbols in it and how many places use them can have
 				// moved, so both are worth asking about again. The numbers already
 				// on screen stay until better ones arrive.
-				codeLensNamedSymbolsFor = "";
+				const modelUri = model.uri.toString();
+				codeLensNamedSymbolsByModel.delete(modelUri);
+				codeLensNamedSymbolsPending.delete(modelUri);
 				codeLensAsked.clear();
 				codeLensSpotsCache = null;
 			}
@@ -2101,6 +2166,15 @@
 			return;
 		}
 		showEditorNotice("");
+		// The reference lookup and the CodeLens count are one semantic answer on
+		// the service side. Read the now-cached count back immediately so a click
+		// can never open populated Peek rows while the margin still says zero.
+		if (model) {
+			const modelUri = model.uri.toString();
+			const key = sourceCodeLensCountKey(modelUri, request);
+			codeLensAsked.add(key);
+			askForOneCount(modelUri, key, request);
+		}
 		// A2: no bulk pre-read. peekLocations carries only {uri, range}; the peek tree
 		// pulls each file group's preview model lazily on expand through our lazy
 		// resolver shim (installLazyTargetModelResolver).
@@ -2142,6 +2216,31 @@
 			(_accessor, request?: SourceEditorLookupRequest) => {
 				runCodeLensReferenceCommand(monaco, request);
 			}
+		);
+	}
+
+	async function runDotnetWorkspaceCommand(action: DotnetWorkspaceAction) {
+		const request = action === "build" ? onDotnetBuildRequest : onDotnetTestRequest;
+		if (!request) return;
+
+		showEditorNoticeAfter(150, `Starting .NET ${action}…`);
+		try {
+			await request();
+			showEditorNotice("");
+		} catch (error) {
+			console.warn(`Could not start .NET ${action}`, error);
+			showEditorNotice(`Could not start .NET ${action}.`, 5000);
+		}
+	}
+
+	function registerDotnetWorkspaceCodeLensCommands(monaco: typeof Monaco) {
+		for (const disposable of dotnetCodeLensCommandDisposables) disposable.dispose();
+		dotnetCodeLensCommandDisposables = (["build", "test"] as DotnetWorkspaceAction[]).map(
+			(action) =>
+				monaco.editor.registerCommand(
+					dotnetWorkspaceCommandIds[action],
+					() => void runDotnetWorkspaceCommand(action)
+				)
 		);
 	}
 
@@ -2434,6 +2533,7 @@
 				if (action) void onWorkspaceEditAction?.(action);
 			}) ?? "";
 		registerSourceCodeLensReferenceCommand(monaco);
+		registerDotnetWorkspaceCodeLensCommands(monaco);
 		registerSourceCodeLensProvider(monaco);
 		installExternalEditorOpener(monaco);
 		installLazyTargetModelResolver(monaco);
@@ -2596,6 +2696,8 @@
 
 		contentChangeDisposable = editor.onDidChangeModelContent(handleEditorContentChange);
 		modelChangeDisposable = editor.onDidChangeModel(() => {
+			// Keys include the model URI, so numbers for the file being left can
+			// stay in memory and repaint immediately when its tab comes back.
 			forgetCodeLensRows();
 			publishDiagnostics();
 		});
@@ -2695,6 +2797,8 @@
 		completionProviderDisposable?.dispose();
 		documentSymbolProviderDisposable?.dispose();
 		codeLensReferenceCommandDisposable?.dispose();
+		for (const disposable of dotnetCodeLensCommandDisposables) disposable.dispose();
+		dotnetCodeLensCommandDisposables = [];
 		editorOpenerDisposable?.dispose();
 		uninstallLazyTargetModelResolver();
 		codeLensReferenceCommandDisposable = null;
@@ -2711,7 +2815,7 @@
 		}
 		editor?.dispose();
 		externalWorkspaceEditCommandId = "";
-		forgetCodeLensRows();
+		forgetCodeLensRows(true);
 		for (const model of ownedModels) {
 			model.dispose();
 		}

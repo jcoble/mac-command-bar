@@ -2385,7 +2385,7 @@ assert.ok(pageSource.includes('function sourceLspReadinessReportLines'), 'Source
 assert.ok(pageSource.includes('function copySourceLspReadinessReport'), 'Source page should copy native LSP readiness reports');
 assert.ok(pageSource.includes('Copy language server readiness report'), 'Command palette should expose LSP readiness checks');
 assert.ok(pageSource.includes('function copySourceLspInstallCommand'), 'Source page should copy LSP install commands');
-assert.ok(pageSource.includes('dotnet tool install --global csharp-ls'), 'C# LSP guidance should install csharp-ls');
+assert.ok(pageSource.includes('dotnet tool install --global roslyn-language-server --prerelease'), 'C# LSP guidance should install official Roslyn');
 assert.ok(pageSource.includes('npm install -g typescript typescript-language-server'), 'TypeScript LSP guidance should install the TS language server');
 assert.ok(pageSource.includes('rustup component add rust-analyzer'), 'Rust LSP guidance should install rust-analyzer');
 assert.ok(pageSource.includes('npm install -g svelte-language-server typescript'), 'Svelte LSP guidance should install the Svelte language server');

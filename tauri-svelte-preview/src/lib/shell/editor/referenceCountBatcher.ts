@@ -293,6 +293,18 @@ export interface ReferenceCountStoreOptions {
   cacheMs: number;
   /** The clock, so tests can move time without waiting. */
   now?: () => number;
+  /** Counts restored from the previous page instance. */
+  initial?: readonly StoredReferenceCount[];
+  /** Called after a remembered value is added or removed. */
+  onChange?: () => void;
+}
+
+export interface StoredReferenceCount {
+  project: string | null;
+  file: string;
+  key: string;
+  value: CodeLensCount;
+  countedAt: number;
 }
 
 export interface ReferenceCountStore {
@@ -304,6 +316,10 @@ export interface ReferenceCountStore {
   /** Every file in this project moved underneath us. */
   forgetProject(project: string | null): void;
   forgetEverything(): void;
+  /** Serializable view used to survive a webview/page refresh. */
+  entries(): StoredReferenceCount[];
+  /** Add counts loaded asynchronously from the durable page cache. */
+  restore(entries: readonly StoredReferenceCount[]): void;
   /**
    * One drawer of this store, seen through the flat interface the plain-text
    * batcher wants. `whichProject` is asked each time rather than fixed, so the
@@ -332,6 +348,22 @@ export function createReferenceCountStore(
   const projects = new Map<string, Map<string, Map<string, RememberedCount>>>();
 
   const drawerFor = (project: string | null) => project ?? noProject;
+  const projectFor = (drawer: string) => (drawer === noProject ? null : drawer);
+
+  for (const entry of options.initial ?? []) {
+    const drawer = drawerFor(entry.project);
+    let files = projects.get(drawer);
+    if (!files) {
+      files = new Map();
+      projects.set(drawer, files);
+    }
+    let symbols = files.get(entry.file);
+    if (!symbols) {
+      symbols = new Map();
+      files.set(entry.file, symbols);
+    }
+    symbols.set(entry.key, { value: entry.value, countedAt: entry.countedAt });
+  }
 
   const store: ReferenceCountStore = {
     get(project: string | null, file: string, key: string): CodeLensCount | undefined {
@@ -341,6 +373,7 @@ export function createReferenceCountStore(
       if (!entry) return undefined;
       if (now() - entry.countedAt >= options.cacheMs) {
         symbols?.delete(key);
+        options.onChange?.();
         return undefined;
       }
       return entry.value;
@@ -358,15 +391,61 @@ export function createReferenceCountStore(
         files.set(file, symbols);
       }
       symbols.set(key, { value, countedAt: now() });
+      options.onChange?.();
     },
     forgetFile(project: string | null, file: string): void {
-      projects.get(drawerFor(project))?.delete(file);
+      if (projects.get(drawerFor(project))?.delete(file)) options.onChange?.();
     },
     forgetProject(project: string | null): void {
-      projects.delete(drawerFor(project));
+      if (projects.delete(drawerFor(project))) options.onChange?.();
     },
     forgetEverything(): void {
+      if (projects.size === 0) return;
       projects.clear();
+      options.onChange?.();
+    },
+    entries(): StoredReferenceCount[] {
+      const entries: StoredReferenceCount[] = [];
+      const expired: Array<{ symbols: Map<string, RememberedCount>; key: string }> = [];
+      for (const [project, files] of projects) {
+        for (const [file, symbols] of files) {
+          for (const [key, remembered] of symbols) {
+            if (now() - remembered.countedAt >= options.cacheMs) {
+              expired.push({ symbols, key });
+              continue;
+            }
+            entries.push({
+              project: projectFor(project),
+              file,
+              key,
+              value: remembered.value,
+              countedAt: remembered.countedAt
+            });
+          }
+        }
+      }
+      for (const entry of expired) entry.symbols.delete(entry.key);
+      return entries;
+    },
+    restore(entries: readonly StoredReferenceCount[]): void {
+      for (const entry of entries) {
+        const drawer = drawerFor(entry.project);
+        let files = projects.get(drawer);
+        if (!files) {
+          files = new Map();
+          projects.set(drawer, files);
+        }
+        let symbols = files.get(entry.file);
+        if (!symbols) {
+          symbols = new Map();
+          files.set(entry.file, symbols);
+        }
+        // A count produced in this page wins over an older durable value.
+        const current = symbols.get(entry.key);
+        if (!current || current.countedAt < entry.countedAt) {
+          symbols.set(entry.key, { value: entry.value, countedAt: entry.countedAt });
+        }
+      }
     },
     drawer(whichProject: () => string | null, file: string): CountMemory {
       return {

@@ -3,9 +3,10 @@ use std::env;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use serde_json::{json, Value};
 
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 const LSP_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_millis(1200);
+const LSP_SERVER_CANCEL_RETRY_DELAY: Duration = Duration::from_millis(180);
 const MAX_LSP_HEADER_BYTES: usize = 8 * 1024;
 /// Most symbols one document-symbol answer will carry. The editor draws at most a
 /// hundred-odd margin counts per file, so this leaves plenty of room while keeping a
@@ -25,6 +27,9 @@ const MAX_LSP_DOCUMENT_SYMBOL_BYTES: u64 = 4 * 1024 * 1024;
 /// How many lines of a language server's own error output are kept, so a reader can see
 /// what it complained about without the app growing without bound.
 const MAX_LSP_LOG_LINES: usize = 200;
+/// Keep the workspace-switching path warm without allowing an unbounded number
+/// of compiler processes. The session rail commonly moves among 3-5 roots.
+const MAX_LSP_WORKSPACES_PER_LANGUAGE: usize = 5;
 const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
     "csharp",
     "typescript",
@@ -64,7 +69,6 @@ pub(crate) fn csharp_language_server_enabled() -> bool {
 pub(crate) fn set_csharp_language_server_enabled(enabled: bool) -> bool {
     let changed = CSHARP_LANGUAGE_SERVER_ENABLED.swap(enabled, Ordering::Relaxed) != enabled;
     if changed {
-        let root = read_language_server_root("csharp").unwrap_or_default();
         let (state, detail) = if enabled {
             (
                 LanguageServerState::NotRunning,
@@ -76,7 +80,14 @@ pub(crate) fn set_csharp_language_server_enabled(enabled: bool) -> bool {
                 "The C# language server is switched off in Settings.",
             )
         };
-        record_language_server_state("csharp", &root, state, Some(detail.to_string()));
+        let roots = read_language_server_roots("csharp");
+        if roots.is_empty() {
+            record_language_server_state("csharp", "", state, Some(detail.to_string()));
+        } else {
+            for root in roots {
+                record_language_server_state("csharp", &root, state, Some(detail.to_string()));
+            }
+        }
     }
     changed
 }
@@ -160,14 +171,26 @@ struct LanguageServerIdentity {
     root: String,
 }
 
-/// The last thing each language server was known to be doing. Process-wide for the same
-/// reason the C# on/off switch is: a status reading has no registry to ask.
-fn language_server_activity() -> &'static Mutex<HashMap<String, (LanguageServerState, Option<String>, String)>>
-{
-    static ACTIVITY: OnceLock<
-        Mutex<HashMap<String, (LanguageServerState, Option<String>, String)>>,
-    > = OnceLock::new();
+/// The last thing each workspace-scoped language server was known to be doing.
+///
+/// This must have the same `(language, root)` identity as `SourceLspRegistry`.
+/// Keying only by language lets one workspace's Roslyn progress overwrite another
+/// workspace's readiness, which makes the editor hold or release the wrong counts.
+type LanguageServerActivityKey = (String, String);
+type LanguageServerActivity = (LanguageServerState, Option<String>);
+
+fn language_server_activity(
+) -> &'static Mutex<HashMap<LanguageServerActivityKey, LanguageServerActivity>> {
+    static ACTIVITY: OnceLock<Mutex<HashMap<LanguageServerActivityKey, LanguageServerActivity>>> =
+        OnceLock::new();
     ACTIVITY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn language_server_activity_key(language_id: &str, root: &str) -> LanguageServerActivityKey {
+    (
+        language_id.to_string(),
+        normalized_lsp_root(root).unwrap_or_else(|| root.to_string()),
+    )
 }
 
 type SourceLspStatusListener = Arc<dyn Fn(SourceLspStatusChange) + Send + Sync>;
@@ -196,19 +219,18 @@ fn record_language_server_state(
     state: LanguageServerState,
     detail: Option<String>,
 ) {
+    let root = language_server_activity_key(language_id, root).1;
     let change = {
         let mut activity = locked(language_server_activity());
-        let entry = activity.entry(language_id.to_string()).or_insert((
-            LanguageServerState::NotRunning,
-            None,
-            root.to_string(),
-        ));
-        if entry.0 == state && entry.1 == detail && entry.2 == root {
+        let entry = activity
+            .entry((language_id.to_string(), root.clone()))
+            .or_insert((LanguageServerState::NotRunning, None));
+        if entry.0 == state && entry.1 == detail {
             None
         } else {
-            *entry = (state, detail.clone(), root.to_string());
+            *entry = (state, detail.clone());
             Some(SourceLspStatusChange {
-                root: root.to_string(),
+                root: root.clone(),
                 language: language_id.to_string(),
                 state: state.as_str().to_string(),
                 detail,
@@ -226,21 +248,24 @@ fn record_language_server_state(
     }
 }
 
-/// What this language's server was last known to be doing, and which project it is
-/// pointed at. `None` when no server for it has ever been started.
+/// What this language's server at this exact workspace was last known to be doing.
+/// `None` when that workspace slot has never been started.
 fn read_language_server_activity(
     language_id: &str,
+    root: &Path,
 ) -> Option<(LanguageServerState, Option<String>)> {
+    let key = language_server_activity_key(language_id, &root.display().to_string());
     locked(language_server_activity())
-        .get(language_id)
-        .map(|(state, detail, _)| (*state, detail.clone()))
+        .get(&key)
+        .map(|(state, detail)| (*state, detail.clone()))
 }
 
-/// Which project folder this language's server is currently pointed at.
-fn read_language_server_root(language_id: &str) -> Option<String> {
+fn read_language_server_roots(language_id: &str) -> Vec<String> {
     locked(language_server_activity())
-        .get(language_id)
-        .map(|(_, _, root)| root.clone())
+        .keys()
+        .filter(|(language, _)| language == language_id)
+        .map(|(_, root)| root.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -522,7 +547,7 @@ struct LspServerSpec {
     args: &'static [&'static str],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ResolvedLspServer {
     spec: LspServerSpec,
     command: String,
@@ -697,12 +722,7 @@ impl LspRouter {
         // The one shape that is not simply "nothing": a request for settings expects one
         // answer per setting asked about, and a bare null makes some servers give up.
         let result = if method == "workspace/configuration" {
-            let asked_about = params
-                .and_then(|params| params.get("items"))
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
-            Value::Array(vec![Value::Null; asked_about])
+            workspace_configuration_result(params)
         } else {
             Value::Null
         };
@@ -786,18 +806,68 @@ impl LspRouter {
     }
 }
 
+/// Answer one configuration value for every item the server asked about.
+///
+/// Roslyn names its CodeLens settings under `csharp|code_lens`. Reference rows
+/// stay enabled because Monaco renders those answers in the editor. Roslyn's
+/// test lenses stay off because Mac Command Bar supplies Build and Test rows
+/// that start real, workspace-owned terminal sessions instead of editor-only
+/// commands the LSP bridge cannot represent.
+fn workspace_configuration_result(params: Option<&Value>) -> Value {
+    let values = params
+        .and_then(|params| params.get("items"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    let section = item
+                        .get("section")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    match section {
+                        "csharp|background_analysis.dotnet_analyzer_diagnostics_scope"
+                        | "csharp|background_analysis.dotnet_compiler_diagnostics_scope" => {
+                            Value::String("openFiles".to_string())
+                        }
+                        "csharp|code_lens.dotnet_enable_references_code_lens" => Value::Bool(true),
+                        "csharp|code_lens.dotnet_enable_tests_code_lens" => Value::Bool(false),
+                        _ => Value::Null,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Value::Array(values)
+}
+
 /// A live connection to one language server: everything needed to ask it a question and
 /// get the answer back, with several questions allowed to be outstanding at once.
 struct LspConnection {
     router: Arc<LspRouter>,
     /// The number the next question will carry. One is spent on the opening exchange.
     next_id: AtomicI64,
-    /// Which files the server has been shown, and which version of each it last saw.
-    documents: Mutex<HashMap<String, i32>>,
+    /// Which files the server has been shown, including the exact text in its current
+    /// snapshot. Repeating a lookup against unchanged text must not manufacture a new
+    /// `didChange` notification.
+    documents: Mutex<HashMap<String, OpenDocument>>,
+    /// Roslyn and some other servers request incremental document changes. A full-text
+    /// replacement is still one valid incremental edit, but it must carry the range of
+    /// the text being replaced.
+    uses_incremental_document_sync: bool,
     semantic_token_types: Vec<String>,
+    /// Some servers expose more than one pull-diagnostics source and identify the
+    /// document source they advertised. Echoing it back selects the complete report.
+    diagnostic_identifier: Option<String>,
     /// The server's own process, when there is one. Tests wire a connection to a pipe
     /// with no process behind it.
     child: Mutex<Option<Child>>,
+}
+
+struct OpenDocument {
+    version: i32,
+    content: String,
 }
 
 impl LspConnection {
@@ -840,14 +910,29 @@ impl LspConnection {
             });
         }
 
-        let root_uri = path_to_file_uri(Path::new(&router.identity.root));
+        let root = Path::new(&router.identity.root);
+        let root_uri = path_to_file_uri(root);
+        let workspace_name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("workspace");
         let opening = ask_the_server(
             &router,
             1,
             "initialize",
             json!({
-                "processId": null,
-                "rootUri": root_uri,
+                "processId": std::process::id(),
+                "clientInfo": {
+                    "name": "Mac Command Bar",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "rootPath": router.identity.root,
+                "rootUri": root_uri.clone(),
+                "workspaceFolders": [{
+                    "uri": root_uri,
+                    "name": workspace_name
+                }],
                 "capabilities": lsp_client_capabilities()
             }),
             LSP_REQUEST_TIMEOUT,
@@ -866,6 +951,9 @@ impl LspConnection {
             return Err(error);
         }
         let semantic_token_types = lsp_semantic_token_types_from_initialize(&opening);
+        let uses_incremental_document_sync =
+            lsp_text_document_sync_kind_from_initialize(&opening) == 2;
+        let diagnostic_identifier = lsp_diagnostic_identifier_from_initialize(&opening);
         router.write_message(&json!({
             "jsonrpc": "2.0",
             "method": "initialized",
@@ -877,7 +965,9 @@ impl LspConnection {
             router,
             next_id: AtomicI64::new(2),
             documents: Mutex::new(HashMap::new()),
+            uses_incremental_document_sync,
             semantic_token_types,
+            diagnostic_identifier,
             child: Mutex::new(None),
         }))
     }
@@ -891,12 +981,30 @@ impl LspConnection {
         timeout: Duration,
         withdraw_if_late: bool,
     ) -> Result<Option<Value>, String> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let answer = ask_the_server(&self.router, id, method, params, timeout, withdraw_if_late)?;
-        if let Some(error) = answer.get("error") {
-            return Err(format!("Language server request failed: {error}"));
+        for attempt in 0..2 {
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let answer = ask_the_server(
+                &self.router,
+                id,
+                method,
+                params.clone(),
+                timeout,
+                withdraw_if_late,
+            )?;
+            if let Some(error) = answer.get("error") {
+                // Roslyn cancels otherwise-valid questions while its project snapshot is
+                // being replaced during the first load. One short retry turns that
+                // implementation detail into the same eventual answer other servers give.
+                if attempt == 0 && error.get("code").and_then(Value::as_i64) == Some(-32800) {
+                    thread::sleep(LSP_SERVER_CANCEL_RETRY_DELAY);
+                    continue;
+                }
+                return Err(format!("Language server request failed: {error}"));
+            }
+            return Ok(answer.get("result").cloned());
         }
-        Ok(answer.get("result").cloned())
+
+        Err("Language server cancelled the request twice".to_string())
     }
 
     fn request(
@@ -1080,10 +1188,14 @@ impl LspConnection {
     }
 
     fn request_pull_diagnostics(&self, file_uri: &str) -> Option<Vec<SourceLspDiagnostic>> {
+        let mut params = json!({ "textDocument": { "uri": file_uri } });
+        if let Some(identifier) = &self.diagnostic_identifier {
+            params["identifier"] = Value::String(identifier.clone());
+        }
         let result = self
             .send_request(
                 "textDocument/diagnostic",
-                json!({ "textDocument": { "uri": file_uri } }),
+                params,
                 LSP_DIAGNOSTICS_TIMEOUT,
                 true,
             )
@@ -1108,38 +1220,59 @@ impl LspConnection {
     fn ensure_document_open(&self, preview: &SourceLspPreview) -> Result<String, String> {
         let file_uri = path_to_file_uri(Path::new(&preview.path));
         let mut documents = locked(&self.documents);
-        let next_version = documents.get(&file_uri).copied().unwrap_or(0) + 1;
-
-        let message = if next_version == 1 {
-            json!({
+        let Some(open_document) = documents.get_mut(&file_uri) else {
+            let version = 1;
+            self.router.write_message(&json!({
                 "jsonrpc": "2.0",
                 "method": "textDocument/didOpen",
                 "params": {
                     "textDocument": {
                         "uri": file_uri,
                         "languageId": self.router.identity.language_id,
-                        "version": next_version,
+                        "version": version,
                         "text": preview.content
                     }
                 }
+            }))?;
+            documents.insert(
+                file_uri.clone(),
+                OpenDocument {
+                    version,
+                    content: preview.content.clone(),
+                },
+            );
+            return Ok(file_uri);
+        };
+
+        if open_document.content == preview.content {
+            return Ok(file_uri);
+        }
+
+        let next_version = open_document.version + 1;
+        let content_change = if self.uses_incremental_document_sync {
+            json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": lsp_document_end_position(&open_document.content)
+                },
+                "text": preview.content
             })
         } else {
-            json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didChange",
-                "params": {
-                    "textDocument": {
-                        "uri": file_uri,
-                        "version": next_version
-                    },
-                    "contentChanges": [
-                        { "text": preview.content }
-                    ]
-                }
-            })
+            json!({ "text": preview.content })
         };
-        self.router.write_message(&message)?;
-        documents.insert(file_uri.clone(), next_version);
+        self.router.write_message(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "version": next_version
+                },
+                "contentChanges": [content_change]
+            }
+        }))?;
+        open_document.version = next_version;
+        open_document.content.clone_from(&preview.content);
         Ok(file_uri)
     }
 
@@ -1182,8 +1315,7 @@ impl LspConnection {
             "method": "exit"
         }));
         if let Some(child) = locked(&self.child).as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_lsp_process_tree(child);
         }
     }
 }
@@ -1281,24 +1413,38 @@ fn progress_text(value: &Value, field: &str) -> Option<String> {
 #[derive(Clone, Default)]
 pub(crate) struct SourceLspRegistry {
     sessions: Arc<Mutex<HashMap<SourceLspSessionKey, Arc<Mutex<SourceLspSession>>>>>,
+    next_use: Arc<AtomicU64>,
 }
 
-/// Servers are deduped **per language** (not per-root): one warm process serves every
-/// worktree/project of that language. When a request targets a different root than the
-/// one the server is currently pointed at, the session re-points in place (see
-/// `SourceLspSession::reroot`) so we never spawn a second server for the same repo opened
-/// under two worktrees. Spec: 2026-06-17-live-agent-sessions-design.md §5.5.
+/// A warm language-server slot belongs to both a language and a workspace root.
+/// Switching among session workspaces therefore reuses their indexed processes
+/// instead of repeatedly re-pointing one process and losing its project state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SourceLspSessionKey {
     language: String,
+    root: String,
 }
 
 struct SourceLspSession {
-    server: ResolvedLspServer,
-    /// The root this server is currently pointed at. A request for a different root
-    /// re-points the session in place rather than spawning a second server.
     root: PathBuf,
     connection: Arc<LspConnection>,
+    last_used: u64,
+}
+
+fn lsp_session_key_to_evict(
+    entries: &[(SourceLspSessionKey, u64)],
+    incoming: &SourceLspSessionKey,
+) -> Option<SourceLspSessionKey> {
+    if entries.iter().any(|(key, _)| key == incoming)
+        || entries.len() < MAX_LSP_WORKSPACES_PER_LANGUAGE
+    {
+        return None;
+    }
+
+    entries
+        .iter()
+        .min_by_key(|(_, last_used)| *last_used)
+        .map(|(key, _)| key.clone())
 }
 
 impl SourceLspRegistry {
@@ -1513,21 +1659,24 @@ impl SourceLspRegistry {
         Ok(symbols.unwrap_or_default())
     }
 
-    /// The last few hundred lines this language's server printed to its own error
-    /// output. Empty when no server for it is running.
+    /// The recent output from every warm workspace server for this language.
     pub(crate) fn read_server_log(&self, language: &str) -> Result<Vec<String>, String> {
         let Some(spec) = server_spec_for_language(language) else {
             return Ok(Vec::new());
         };
-        let key = SourceLspSessionKey {
-            language: spec.language_id.to_string(),
+        let sessions = {
+            let sessions = locked(&self.sessions);
+            sessions
+                .iter()
+                .filter(|(key, _)| key.language == spec.language_id)
+                .map(|(_, session)| Arc::clone(session))
+                .collect::<Vec<_>>()
         };
-        let session = locked(&self.sessions).get(&key).cloned();
-        let Some(session) = session else {
-            return Ok(Vec::new());
-        };
-        let connection = Arc::clone(&lock_lsp_session(&session)?.connection);
-        Ok(connection.recent_log_lines())
+        let mut lines = Vec::new();
+        for session in sessions {
+            lines.extend(lock_lsp_session(&session)?.connection.recent_log_lines());
+        }
+        Ok(lines)
     }
 
     pub(crate) fn find_workspace_symbols(
@@ -1739,39 +1888,72 @@ impl SourceLspRegistry {
         if !language_server_allowed(&key.language) {
             return Ok(None);
         }
-        let Some(root) = normalized_lsp_root(&request.root) else {
+
+        let Some(server) = resolve_server_for_language(&preview.language) else {
             return Ok(None);
         };
-        let root = PathBuf::from(root);
+        self.ensure_session(key, server).map(Some)
+    }
+
+    fn ensure_session(
+        &self,
+        key: SourceLspSessionKey,
+        server: ResolvedLspServer,
+    ) -> Result<Arc<Mutex<SourceLspSession>>, String> {
+        let use_tick = self.next_use.fetch_add(1, Ordering::Relaxed) + 1;
 
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| "Language server registry lock poisoned".to_string())?;
         if let Some(session) = sessions.get(&key).cloned() {
-            // The one warm server for this language is reused across roots: if it is
-            // pointed at a different worktree, re-point it in place (never spawn a second).
             let usable = {
                 let mut guard = lock_lsp_session(&session)?;
                 if guard.connection.is_alive() {
-                    guard.reroot(&root).is_ok()
+                    guard.last_used = use_tick;
+                    true
                 } else {
                     false
                 }
             };
             if usable {
-                return Ok(Some(session));
+                return Ok(session);
             }
             sessions.remove(&key);
         }
 
-        let Some(server) = resolve_server_for_language(&preview.language) else {
-            return Ok(None);
-        };
-        let session = SourceLspSession::start(root, server)?;
+        let session = SourceLspSession::start(PathBuf::from(&key.root), server, use_tick)?;
         let session = Arc::new(Mutex::new(session));
+
+        let same_language = sessions
+            .iter()
+            .filter(|(existing_key, _)| existing_key.language == key.language)
+            .map(|(existing_key, existing_session)| {
+                Ok((
+                    existing_key.clone(),
+                    lock_lsp_session(existing_session)?.last_used,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let evicted = lsp_session_key_to_evict(&same_language, &key)
+            .and_then(|oldest| sessions.remove(&oldest).map(|session| (oldest, session)));
         sessions.insert(key, Arc::clone(&session));
-        Ok(Some(session))
+        drop(sessions);
+        // Dropping outside the registry lock performs the shutdown without
+        // blocking unrelated lookups from reading the pool.
+        if let Some((evicted_key, evicted_session)) = evicted {
+            drop(evicted_session);
+            record_language_server_state(
+                &evicted_key.language,
+                &evicted_key.root,
+                LanguageServerState::NotRunning,
+                Some(
+                    "This workspace's language server was released to keep the warm-workspace pool bounded."
+                        .to_string(),
+                ),
+            );
+        }
+        Ok(session)
     }
 
     /// Shut down the running server for one language, if there is one.
@@ -1796,12 +1978,17 @@ impl SourceLspRegistry {
                 .cloned()
                 .collect::<Vec<_>>();
             keys.into_iter()
-                .filter_map(|key| sessions.remove(&key))
+                .filter_map(|key| sessions.remove(&key).map(|session| (key, session)))
                 .collect::<Vec<_>>()
         };
 
         if !stopped.is_empty() {
-            let root = read_language_server_root(language_id).unwrap_or_default();
+            let roots = stopped
+                .iter()
+                .map(|(key, _)| key.root.clone())
+                .collect::<Vec<_>>();
+            let stopped_count = stopped.len();
+            drop(stopped);
             // A server stopped because the reader switched it off must say so, not just
             // that it is not running — the two look identical on screen otherwise, and
             // only one of them is something the reader chose.
@@ -1816,10 +2003,18 @@ impl SourceLspRegistry {
                     "The C# language server is switched off in Settings.",
                 )
             };
-            record_language_server_state(language_id, &root, state, Some(detail.to_string()));
+            for root in roots {
+                record_language_server_state(
+                    language_id,
+                    &root,
+                    state,
+                    Some(detail.to_string()),
+                );
+            }
+            return Ok(stopped_count);
         }
 
-        Ok(stopped.len())
+        Ok(0)
     }
 
     fn remove_session(
@@ -1838,75 +2033,46 @@ impl SourceLspRegistry {
         Ok(())
     }
 
-    /// Proactively re-point every currently-running language server at `root`.
+    /// Proactively warm every language that already has a running server at `root`.
     ///
-    /// This is the warm side of the lazy re-point in [`Self::session_for`]: rather than
-    /// waiting for the first file-open under a freshly-selected project to pay the cold
-    /// re-index, the frontend calls this (debounced) on project switch so the server is
-    /// already warming/warm by the time a file there is opened. It only touches servers
-    /// that are *already* running — it never spawns one for a language nobody has used yet,
-    /// so for a project whose languages have no live server this is a pure no-op. When a
-    /// server is already pointed at `root` the underlying [`SourceLspSession::reroot`] is
-    /// itself a no-op, so re-warming the active project costs nothing.
-    ///
-    /// A session whose re-point fails (e.g. its child died) is dropped from the registry so
-    /// the next real request spawns a fresh one, exactly as [`Self::session_for`] does.
-    /// Returns the number of live sessions that were re-pointed (warmed).
+    /// The frontend calls this on a project switch, before the active file is
+    /// read. Languages never used in this app stay stopped. A workspace already
+    /// in the bounded pool is only touched; a new workspace gets its own warm
+    /// slot without disturbing the roots the reader may switch back to.
     pub(crate) fn warm_running_servers_for_root(&self, root: &str) -> Result<usize, String> {
         let Some(root) = normalized_lsp_root(root) else {
             return Ok(0);
         };
-        let root = PathBuf::from(root);
-
-        // Snapshot the running sessions under a brief registry lock, then release it before
-        // re-pointing: `reroot` re-spawns the server (slow), and holding the registry lock
-        // across that would block concurrent real LSP requests for other languages.
-        let snapshot: Vec<(SourceLspSessionKey, Arc<Mutex<SourceLspSession>>)> = {
+        let languages = {
             let sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| "Language server registry lock poisoned".to_string())?;
-            sessions
-                .iter()
-                .map(|(key, session)| (key.clone(), Arc::clone(session)))
-                .collect()
+            let mut languages = sessions
+                .keys()
+                .map(|key| key.language.clone())
+                .collect::<Vec<_>>();
+            languages.sort();
+            languages.dedup();
+            languages
         };
 
         let mut warmed = 0;
-        let mut dead_keys = Vec::new();
-        for (key, session) in snapshot {
-            let usable = {
-                let mut guard = lock_lsp_session(&session)?;
-                if guard.connection.is_alive() {
-                    guard.reroot(&root).is_ok()
-                } else {
-                    false
-                }
+        for language in languages {
+            if !language_server_allowed(&language) {
+                continue;
+            }
+            let Some(server) = resolve_server_for_language(&language) else {
+                continue;
             };
-            if usable {
-                warmed += 1;
-            } else {
-                dead_keys.push(key);
-            }
-        }
-
-        if !dead_keys.is_empty() {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .map_err(|_| "Language server registry lock poisoned".to_string())?;
-            for key in dead_keys {
-                // Only drop the slot if it still holds the same dead session — a concurrent
-                // request may have already replaced it with a fresh, live one.
-                if let Some(existing) = sessions.get(&key) {
-                    let still_dead = lock_lsp_session(existing)
-                        .map(|guard| !guard.connection.is_alive())
-                        .unwrap_or(true);
-                    if still_dead {
-                        sessions.remove(&key);
-                    }
-                }
-            }
+            self.ensure_session(
+                SourceLspSessionKey {
+                    language,
+                    root: root.clone(),
+                },
+                server,
+            )?;
+            warmed += 1;
         }
 
         Ok(warmed)
@@ -1946,11 +2112,12 @@ impl SourceLspRegistry {
         Ok(sessions.len())
     }
 
-    /// OS pid of the warm server for `language`, if present (test introspection only).
+    /// OS pid of the warm server for `language` and `root`, if present.
     #[cfg(test)]
-    fn session_pid_for(&self, language: &str) -> Option<u32> {
+    fn session_pid_for(&self, language: &str, root: &Path) -> Option<u32> {
         let key = SourceLspSessionKey {
             language: server_spec_for_language(language)?.language_id.to_string(),
+            root: normalized_lsp_root(&root.display().to_string())?,
         };
         let session = self.sessions.lock().ok()?.get(&key).cloned()?;
         let pid = lock_lsp_session(&session)
@@ -1968,46 +2135,28 @@ impl SourceLspRegistry {
 impl SourceLspSessionKey {
     fn from_preview(
         preview: &SourceLspPreview,
-        _request: &SourceLspLookupRequest,
+        request: &SourceLspLookupRequest,
     ) -> Option<SourceLspSessionKey> {
         let spec = server_spec_for_language(&preview.language)?;
         Some(SourceLspSessionKey {
             language: spec.language_id.to_string(),
+            root: normalized_lsp_root(&request.root)?,
         })
     }
 }
 
 impl SourceLspSession {
-    fn start(root: PathBuf, server: ResolvedLspServer) -> Result<SourceLspSession, String> {
+    fn start(
+        root: PathBuf,
+        server: ResolvedLspServer,
+        last_used: u64,
+    ) -> Result<SourceLspSession, String> {
         let connection = start_lsp_server(&server, &root)?;
         Ok(SourceLspSession {
-            server,
             root,
             connection,
+            last_used,
         })
-    }
-
-    /// Re-point this warm server at `root` if it is currently serving a different one.
-    ///
-    /// The backend servers (rust-analyzer, csharp-ls) resolve project structure from their
-    /// init root / CWD, so a request for a different worktree cannot be served correctly by
-    /// re-using the same process as-is. Re-pointing therefore tears down the old child and
-    /// re-spawns under the new root **in place** — the registry slot (one per language) is
-    /// reused and the old process is killed before the new one is recorded, so we never hold
-    /// two servers for the same language. When the root is unchanged this is a no-op.
-    fn reroot(&mut self, root: &Path) -> Result<(), String> {
-        if self.root == root {
-            return Ok(());
-        }
-
-        let connection = start_lsp_server(&self.server, root)?;
-        // Only after the replacement is ready do we say goodbye to the old one, so a
-        // failed re-spawn leaves the existing session intact (the caller falls back to a
-        // fresh start).
-        self.connection.shut_down();
-        self.root = root.to_path_buf();
-        self.connection = connection;
-        Ok(())
     }
 }
 
@@ -2015,6 +2164,31 @@ impl Drop for SourceLspSession {
     fn drop(&mut self) {
         self.connection.shut_down();
     }
+}
+
+/// Give each language server and every helper it starts one process-group
+/// boundary owned by this connection. Roslyn starts MSBuild BuildHost children;
+/// killing only the top-level server leaves those children behind after a
+/// workspace switch or app shutdown.
+fn configure_lsp_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+/// Stop the complete language-server process tree and reap its direct child.
+fn stop_lsp_process_tree(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+
+    let process_group = -(child.id() as i32);
+    // SAFETY: `configure_lsp_process_group` makes the spawned child's PID its
+    // process-group id. A negative kill target therefore reaches only that
+    // owned language-server group, including Roslyn's BuildHost helpers.
+    let group_stopped = unsafe { libc::kill(process_group, libc::SIGKILL) } == 0;
+    if !group_stopped {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 /// Start a language server under `root` and get a connection to it that several
@@ -2044,11 +2218,12 @@ fn start_lsp_server(
         // a small in-memory list, so the pipe can never fill up and stall the server.
         .stderr(Stdio::piped());
     // Hand the server the same enriched PATH used to discover it, so servers that shell
-    // out at runtime (the `rust-analyzer` rustup proxy → toolchain; `csharp-ls` → dotnet)
+    // out at runtime (the `rust-analyzer` rustup proxy → toolchain; Roslyn → dotnet)
     // resolve their tools even when the app was Finder/Dock-launched with a minimal PATH.
     if let Some(search_path) = lsp_search_path_env() {
         command.env("PATH", search_path);
     }
+    configure_lsp_process_group(&mut command);
     let mut child = command.spawn().map_err(|error| {
         let reason = format!("Could not start {}: {error}", server.spec.server_name);
         record_language_server_state(
@@ -2076,8 +2251,7 @@ fn start_lsp_server(
             // The process is already running even though it never got as far as saying
             // hello. Nothing will ever tidy it up but us — dropping the handle does not
             // stop a process — and a stranded language server holds real memory.
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_lsp_process_tree(&mut child);
             return Err(error);
         }
     };
@@ -2196,9 +2370,8 @@ pub(crate) fn read_source_lsp_status_sync(
 
 /// What to tell the reader this server is doing, and one plain sentence about it.
 ///
-/// A server that is running but pointed at a different project is reported as not
-/// running for THIS one: it answers nothing here until it has been moved across, which
-/// happens the first time a file here is opened.
+/// Each warm workspace has its own slot. Activity from another root is irrelevant to
+/// this reading and must never make this workspace look stopped or ready.
 fn describe_language_server_activity(
     spec: LspServerSpec,
     root: &Path,
@@ -2228,21 +2401,7 @@ fn describe_language_server_activity(
         );
     }
 
-    let asked_about = normalized_lsp_root(&root.display().to_string());
-    let pointed_at = read_language_server_root(spec.language_id);
-    if let (Some(asked_about), Some(pointed_at)) = (asked_about.as_ref(), pointed_at.as_ref()) {
-        if asked_about != pointed_at {
-            return (
-                LanguageServerState::NotRunning,
-                Some(format!(
-                    "{} is running, but it is reading another project. It moves to this one the first time you open a file here.",
-                    spec.server_name
-                )),
-            );
-        }
-    }
-
-    match read_language_server_activity(spec.language_id) {
+    match read_language_server_activity(spec.language_id, root) {
         Some((state, detail)) => {
             let detail = detail.or_else(|| default_language_server_detail(spec, state));
             (state, detail)
@@ -2435,8 +2594,57 @@ fn lsp_semantic_token_types_from_initialize(response: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The LSP `TextDocumentSyncKind` advertised by the server: 0 none, 1 full,
+/// 2 incremental. Servers may send either the bare number or an options object.
+fn lsp_text_document_sync_kind_from_initialize(response: &Value) -> u64 {
+    let sync = response
+        .get("result")
+        .and_then(|result| result.get("capabilities"))
+        .and_then(|capabilities| capabilities.get("textDocumentSync"));
+
+    sync.and_then(Value::as_u64)
+        .or_else(|| {
+            sync.and_then(|sync| sync.get("change"))
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(0)
+}
+
+fn lsp_diagnostic_identifier_from_initialize(response: &Value) -> Option<String> {
+    response
+        .get("result")
+        .and_then(|result| result.get("capabilities"))
+        .and_then(|capabilities| capabilities.get("diagnosticProvider"))
+        .and_then(|provider| provider.get("identifier"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// End of a document in LSP coordinates. Characters are UTF-16 code units, not
+/// Rust bytes or Unicode scalar values.
+fn lsp_document_end_position(content: &str) -> Value {
+    let mut lines = content.split('\n');
+    let mut line = 0_u64;
+    let mut last_line = lines.next().unwrap_or_default();
+    for next in lines {
+        line += 1;
+        last_line = next;
+    }
+    json!({
+        "line": line,
+        "character": last_line.encode_utf16().count()
+    })
+}
+
 fn lsp_client_capabilities() -> Value {
     json!({
+        "workspace": {
+            "configuration": true,
+            "workspaceFolders": true
+        },
+        "window": {
+            "workDoneProgress": true
+        },
         "textDocument": {
             "codeAction": {
                 "codeActionLiteralSupport": {
@@ -2518,6 +2726,10 @@ fn lsp_client_capabilities() -> Value {
             },
             "definition": {
                 "linkSupport": true
+            },
+            "diagnostic": {
+                "dynamicRegistration": false,
+                "relatedDocumentSupport": false
             },
             "implementation": {
                 "linkSupport": true
@@ -3533,10 +3745,10 @@ fn resolve_server_for_language(language: &str) -> Option<ResolvedLspServer> {
 fn server_spec_for_language(language: &str) -> Option<LspServerSpec> {
     match language.trim().to_lowercase().as_str() {
         "csharp" | "c#" | "cs" => Some(LspServerSpec {
-            server_name: "csharp-ls",
+            server_name: "Roslyn",
             language_id: "csharp",
-            command: "csharp-ls",
-            args: &[],
+            command: "roslyn-language-server",
+            args: &["--stdio", "--autoLoadProjects", "--telemetryLevel", "off"],
         }),
         "typescript" | "ts" | "tsx" => Some(LspServerSpec {
             server_name: "typescript-language-server",
@@ -3775,7 +3987,7 @@ mod tests {
         );
         assert!(
             paths.contains(&home.join(".dotnet/tools")),
-            "~/.dotnet/tools must be searched (csharp-ls)"
+            "~/.dotnet/tools must be searched (Roslyn language server)"
         );
     }
 
@@ -3797,10 +4009,34 @@ mod tests {
     }
 
     #[test]
+    fn language_server_runs_in_an_owned_process_group() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 30 & wait")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_lsp_process_group(&mut command);
+
+        let mut child = command.spawn().expect("spawn grouped fixture");
+        let pid = child.id() as i32;
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+
+        stop_lsp_process_tree(&mut child);
+        assert!(child.try_wait().expect("read grouped fixture state").is_some());
+    }
+
+    #[test]
     fn resolves_language_server_specs() {
         let csharp = server_spec_for_language("csharp").expect("csharp spec");
-        assert_eq!(csharp.command, "csharp-ls");
+        assert_eq!(csharp.server_name, "Roslyn");
+        assert_eq!(csharp.command, "roslyn-language-server");
         assert_eq!(csharp.language_id, "csharp");
+        assert_eq!(
+            csharp.args,
+            &["--stdio", "--autoLoadProjects", "--telemetryLevel", "off"]
+        );
 
         let typescript = server_spec_for_language("typescript").expect("typescript spec");
         assert_eq!(typescript.command, "typescript-language-server");
@@ -3817,8 +4053,20 @@ mod tests {
     #[test]
     fn maps_primary_native_lsp_languages_to_commands_and_lsp_ids() {
         let cases: &[(&str, &str, &str, &str, &[&str])] = &[
-            ("csharp", "csharp-ls", "csharp", "csharp-ls", &[]),
-            ("cs", "csharp-ls", "csharp", "csharp-ls", &[]),
+            (
+                "csharp",
+                "Roslyn",
+                "csharp",
+                "roslyn-language-server",
+                &["--stdio", "--autoLoadProjects", "--telemetryLevel", "off"],
+            ),
+            (
+                "cs",
+                "Roslyn",
+                "csharp",
+                "roslyn-language-server",
+                &["--stdio", "--autoLoadProjects", "--telemetryLevel", "off"],
+            ),
             (
                 "svelte",
                 "svelte-language-server",
@@ -3884,51 +4132,75 @@ mod tests {
     #[test]
     fn lsp_status_accepts_native_lsp_server_spec_aliases() {
         let root = unique_lsp_temp_root("mcb-lsp-status-mapping");
-        let cases: &[(&str, &str, &str, &[&str])] = &[
-            ("csharp", "csharp", "csharp-ls", &[]),
-            ("cs", "csharp", "csharp-ls", &[]),
-            ("svelte", "svelte", "svelte-language-server", &["--stdio"]),
+        let cases: &[(&str, &str, &str, &str, &[&str])] = &[
+            (
+                "csharp",
+                "Roslyn",
+                "csharp",
+                "roslyn-language-server",
+                &["--stdio", "--autoLoadProjects", "--telemetryLevel", "off"],
+            ),
+            (
+                "cs",
+                "Roslyn",
+                "csharp",
+                "roslyn-language-server",
+                &["--stdio", "--autoLoadProjects", "--telemetryLevel", "off"],
+            ),
+            (
+                "svelte",
+                "svelte-language-server",
+                "svelte",
+                "svelte-language-server",
+                &["--stdio"],
+            ),
             (
                 "typescript",
+                "typescript-language-server",
                 "typescript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
             (
                 "ts",
+                "typescript-language-server",
                 "typescript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
             (
                 "tsx",
+                "typescript-language-server",
                 "typescript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
             (
                 "javascript",
+                "typescript-language-server",
                 "javascript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
             (
                 "js",
+                "typescript-language-server",
                 "javascript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
             (
                 "jsx",
+                "typescript-language-server",
                 "javascript",
                 "typescript-language-server",
                 &["--stdio"],
             ),
-            ("rust", "rust", "rust-analyzer", &[]),
-            ("rs", "rust", "rust-analyzer", &[]),
+            ("rust", "rust-analyzer", "rust", "rust-analyzer", &[]),
+            ("rs", "rust-analyzer", "rust", "rust-analyzer", &[]),
         ];
 
-        for (language, language_id, command, args) in cases {
+        for (language, server_name, language_id, command, args) in cases {
             let status = read_source_lsp_status_sync(root.clone(), (*language).to_string())
                 .expect("target LSP status");
             let reported_command = Path::new(&status.command)
@@ -3938,7 +4210,7 @@ mod tests {
 
             assert_eq!(status.language, *language);
             assert_eq!(status.language_id, *language_id);
-            assert_eq!(status.server_name, *command);
+            assert_eq!(status.server_name, *server_name);
             assert_eq!(reported_command, *command);
             assert_eq!(
                 status.args,
@@ -4067,6 +4339,20 @@ mod tests {
         let capabilities = lsp_client_capabilities();
         assert_eq!(
             capabilities
+                .get("workspace")
+                .and_then(|workspace| workspace.get("configuration"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities
+                .get("workspace")
+                .and_then(|workspace| workspace.get("workspaceFolders"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities
                 .get("textDocument")
                 .and_then(|text_document| text_document.get("publishDiagnostics"))
                 .and_then(|publish_diagnostics| publish_diagnostics.get("relatedInformation"))
@@ -4080,6 +4366,14 @@ mod tests {
                 .and_then(|definition| definition.get("linkSupport"))
                 .and_then(Value::as_bool),
             Some(true)
+        );
+        assert_eq!(
+            capabilities
+                .get("textDocument")
+                .and_then(|text_document| text_document.get("diagnostic"))
+                .and_then(|diagnostic| diagnostic.get("dynamicRegistration"))
+                .and_then(Value::as_bool),
+            Some(false)
         );
         assert_eq!(
             capabilities
@@ -4151,6 +4445,72 @@ mod tests {
                 .and_then(Value::as_str),
             Some("relative")
         );
+    }
+
+    #[test]
+    fn reads_full_and_incremental_document_sync_capabilities() {
+        assert_eq!(
+            lsp_text_document_sync_kind_from_initialize(&json!({
+                "result": { "capabilities": { "textDocumentSync": 1 } }
+            })),
+            1
+        );
+        assert_eq!(
+            lsp_text_document_sync_kind_from_initialize(&json!({
+                "result": {
+                    "capabilities": {
+                        "textDocumentSync": { "openClose": true, "change": 2 }
+                    }
+                }
+            })),
+            2
+        );
+        assert_eq!(
+            lsp_diagnostic_identifier_from_initialize(&json!({
+                "result": {
+                    "capabilities": {
+                        "diagnosticProvider": {
+                            "identifier": "document",
+                            "workspaceDiagnostics": true
+                        }
+                    }
+                }
+            }))
+            .as_deref(),
+            Some("document")
+        );
+    }
+
+    #[test]
+    fn document_end_positions_use_lines_and_utf16_characters() {
+        assert_eq!(
+            lsp_document_end_position("alpha\n😀x"),
+            json!({
+                "line": 1,
+                "character": 3
+            })
+        );
+        assert_eq!(
+            lsp_document_end_position("alpha\n"),
+            json!({
+                "line": 1,
+                "character": 0
+            })
+        );
+    }
+
+    #[test]
+    fn roslyn_configuration_enables_reference_lenses_without_native_test_commands() {
+        let answer = workspace_configuration_result(Some(&json!({
+            "items": [
+                { "section": "csharp|background_analysis.dotnet_compiler_diagnostics_scope" },
+                { "section": "csharp|code_lens.dotnet_enable_references_code_lens" },
+                { "section": "csharp|code_lens.dotnet_enable_tests_code_lens" },
+                { "section": "unknown" }
+            ]
+        })));
+
+        assert_eq!(answer, json!(["openFiles", true, false, null]));
     }
 
     #[test]
@@ -4564,7 +4924,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_session_key_from_language_only() {
+    fn builds_session_key_from_language_and_root() {
         let root = env::temp_dir();
         let preview = SourceLspPreview {
             path: root.join("App.ts").display().to_string(),
@@ -4584,14 +4944,15 @@ mod tests {
 
         let key = SourceLspSessionKey::from_preview(&preview, &request).expect("session key");
         assert_eq!(key.language, "typescript");
+        assert_eq!(key.root, std::fs::canonicalize(root).unwrap().display().to_string());
     }
 
     #[test]
-    fn session_key_is_independent_of_root_so_servers_dedupe_per_language() {
-        // Two distinct worktree roots of the same language must map to the SAME session key,
-        // so the registry keeps a single warm server instead of one per root. Spec §5.5.
+    fn session_key_separates_workspace_roots_but_collapses_language_aliases() {
+        let root_a = unique_lsp_temp_root("mcb-lsp-key-a");
+        let root_b = unique_lsp_temp_root("mcb-lsp-key-b");
         let preview = SourceLspPreview {
-            path: "/tmp/whatever/App.ts".to_string(),
+            path: root_a.join("App.ts").display().to_string(),
             relative_path: "App.ts".to_string(),
             file_name: "App.ts".to_string(),
             language: "typescript".to_string(),
@@ -4600,13 +4961,13 @@ mod tests {
             line_count: 1,
         };
         let request_root_a = SourceLspLookupRequest {
-            root: "/tmp/worktree-a".to_string(),
+            root: root_a.display().to_string(),
             line: 1,
             column: 1,
             limit: None,
         };
         let request_root_b = SourceLspLookupRequest {
-            root: "/tmp/worktree-b".to_string(),
+            root: root_b.display().to_string(),
             line: 1,
             column: 1,
             limit: None,
@@ -4616,9 +4977,9 @@ mod tests {
             SourceLspSessionKey::from_preview(&preview, &request_root_a).expect("session key a");
         let key_b =
             SourceLspSessionKey::from_preview(&preview, &request_root_b).expect("session key b");
-        assert_eq!(
+        assert_ne!(
             key_a, key_b,
-            "different roots, same language must share one session key"
+            "different workspace roots need distinct persistent server slots"
         );
 
         // Aliases that resolve to the same language id collapse to one key too (ts/tsx).
@@ -4629,6 +4990,35 @@ mod tests {
         assert_eq!(
             key_a, key_tsx,
             "ts and tsx must share the typescript server"
+        );
+
+        std::fs::remove_dir_all(root_a).unwrap();
+        std::fs::remove_dir_all(root_b).unwrap();
+    }
+
+    #[test]
+    fn workspace_pool_evicts_only_the_least_recently_used_sixth_root() {
+        let key = |root: &str| SourceLspSessionKey {
+            language: "csharp".to_string(),
+            root: root.to_string(),
+        };
+        let entries = vec![
+            (key("/workspace/a"), 10),
+            (key("/workspace/b"), 40),
+            (key("/workspace/c"), 30),
+            (key("/workspace/d"), 20),
+            (key("/workspace/e"), 50),
+        ];
+
+        assert_eq!(MAX_LSP_WORKSPACES_PER_LANGUAGE, 5);
+        assert_eq!(
+            lsp_session_key_to_evict(&entries, &key("/workspace/f")),
+            Some(key("/workspace/a"))
+        );
+        assert_eq!(
+            lsp_session_key_to_evict(&entries, &key("/workspace/c")),
+            None,
+            "reusing a warm workspace never evicts another slot"
         );
     }
 
@@ -5103,7 +5493,7 @@ mod tests {
     }
 
     #[test]
-    fn reuses_one_server_across_roots_and_repoints_per_language() {
+    fn keeps_distinct_workspace_servers_warm_and_reuses_them() {
         if resolve_server_for_language("typescript").is_none() {
             eprintln!("skipping LSP dedupe smoke: typescript-language-server not found");
             return;
@@ -5144,7 +5534,7 @@ mod tests {
         let (root_a, preview_a, request_a) = make_root("mcb-lsp-dedupe-a", "alpha");
         let (root_b, preview_b, request_b) = make_root("mcb-lsp-dedupe-b", "beta");
 
-        // First root spins the single warm server.
+        // First root spins its warm server.
         let symbols_a = registry
             .find_symbols(preview_a.clone(), request_a.clone())
             .expect("root A symbols");
@@ -5157,10 +5547,9 @@ mod tests {
             1,
             "first root must create exactly one typescript session"
         );
-        let pid_after_a = registry.session_pid_for("typescript").unwrap();
+        let pid_after_a = registry.session_pid_for("typescript", &root_a).unwrap();
 
-        // A different root must REUSE the same registry slot (one server per language),
-        // re-pointed at root B — not spawn a second server.
+        // A different root gets its own persistent slot so root A stays warm.
         let symbols_b = registry
             .find_symbols(preview_b.clone(), request_b.clone())
             .expect("root B symbols");
@@ -5170,16 +5559,16 @@ mod tests {
         );
         assert_eq!(
             registry.session_count().unwrap(),
-            1,
-            "a second root must reuse the single per-language session, not add a new one"
+            2,
+            "two workspace roots should keep two reusable sessions"
         );
-        let pid_after_b = registry.session_pid_for("typescript").unwrap();
+        let pid_after_b = registry.session_pid_for("typescript", &root_b).unwrap();
         assert_ne!(
             pid_after_a, pid_after_b,
-            "re-pointing to a new root should have replaced the child process in place"
+            "separate roots must not share one server process"
         );
 
-        // Returning to root A re-points back and still serves correct results.
+        // Returning to root A uses its original indexed process.
         let symbols_a_again = registry
             .find_symbols(preview_a, request_a)
             .expect("root A symbols again");
@@ -5189,8 +5578,13 @@ mod tests {
         );
         assert_eq!(
             registry.session_count().unwrap(),
-            1,
-            "switching back must still hold exactly one session"
+            2,
+            "switching back must retain both workspace sessions"
+        );
+        assert_eq!(
+            registry.session_pid_for("typescript", &root_a).unwrap(),
+            pid_after_a,
+            "switching back must reuse root A's original process"
         );
 
         std::fs::remove_dir_all(root_a).unwrap();
@@ -5218,7 +5612,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_repoints_a_running_server_to_a_new_root() {
+    fn warm_adds_a_workspace_slot_without_restarting_existing_roots() {
         if resolve_server_for_language("typescript").is_none() {
             eprintln!("skipping LSP warm smoke: typescript-language-server not found");
             return;
@@ -5259,12 +5653,12 @@ mod tests {
         let (root_a, preview_a, request_a) = make_root("mcb-lsp-warm-a", "alpha");
         let (root_b, _preview_b, _request_b) = make_root("mcb-lsp-warm-b", "beta");
 
-        // A real request spins the single warm server, pointed at root A.
+        // A real request spins the first warm workspace server.
         registry
             .find_symbols(preview_a, request_a)
             .expect("root A symbols");
         assert_eq!(registry.session_count().unwrap(), 1);
-        let pid_at_a = registry.session_pid_for("typescript").unwrap();
+        let pid_at_a = registry.session_pid_for("typescript", &root_a).unwrap();
 
         // Warming the SAME root re-points to where it already is — a no-op, so the child
         // process must be unchanged (no needless re-index churn).
@@ -5273,26 +5667,31 @@ mod tests {
             .expect("warm same root");
         assert_eq!(warmed_same, 1, "the running session is reported as warmed");
         assert_eq!(
-            registry.session_pid_for("typescript").unwrap(),
+            registry.session_pid_for("typescript", &root_a).unwrap(),
             pid_at_a,
             "re-warming the active root must not replace the child process"
         );
 
-        // Warming a DIFFERENT root proactively re-points the running server in place
-        // (one session, replaced child) — without any file request under root B.
+        // Warming a different root proactively creates its own slot without a
+        // file request and without disturbing root A.
         let warmed_b = registry
             .warm_running_servers_for_root(&root_b.display().to_string())
             .expect("warm new root");
-        assert_eq!(warmed_b, 1, "the running session is re-pointed to root B");
+        assert_eq!(warmed_b, 1, "the known language is warmed under root B");
         assert_eq!(
             registry.session_count().unwrap(),
-            1,
-            "warming a new root must reuse the single session, not add one"
+            2,
+            "warming a new root must preserve the original workspace slot"
         );
-        let pid_at_b = registry.session_pid_for("typescript").unwrap();
+        let pid_at_b = registry.session_pid_for("typescript", &root_b).unwrap();
         assert_ne!(
             pid_at_a, pid_at_b,
-            "proactively warming a new root should replace the child process in place"
+            "proactively warmed roots have distinct processes"
+        );
+        assert_eq!(
+            registry.session_pid_for("typescript", &root_a).unwrap(),
+            pid_at_a,
+            "warming root B must not restart root A"
         );
 
         std::fs::remove_dir_all(root_a).unwrap();
@@ -5547,7 +5946,7 @@ mod tests {
             return;
         }
         if resolve_server_for_language("csharp").is_none() {
-            eprintln!("skipping C# LSP smoke: csharp-ls not found");
+            eprintln!("skipping C# LSP smoke: roslyn-language-server not found");
             return;
         }
 
@@ -5630,18 +6029,20 @@ mod tests {
         };
         let registry = SourceLspRegistry::default();
 
-        let symbols = registry.find_symbols(preview.clone(), request.clone())?;
-        if !symbols
-            .iter()
-            .any(|symbol| symbol.name == "Widget" && symbol.kind == "class")
-        {
+        let symbols = registry
+            .find_symbols(preview.clone(), request.clone())
+            .map_err(|error| format!("C# document symbols: {error}"))?;
+        if !symbols.iter().any(|symbol| {
+            symbol.name.rsplit('.').next() == Some("Widget") && symbol.kind == "class"
+        }) {
             return Err(format!(
                 "expected C# document symbols to include Widget; got {symbols:?}"
             ));
         }
 
         let hover = registry
-            .find_hover(preview.clone(), request.clone())?
+            .find_hover(preview.clone(), request.clone())
+            .map_err(|error| format!("C# hover: {error}"))?
             .ok_or_else(|| "expected C# hover contents".to_string())?;
         if !hover.contents.join("\n").contains("Widget") {
             return Err(format!(
@@ -5649,7 +6050,9 @@ mod tests {
             ));
         }
 
-        let definitions = registry.find_definitions(preview.clone(), request.clone())?;
+        let definitions = registry
+            .find_definitions(preview.clone(), request.clone())
+            .map_err(|error| format!("C# definition: {error}"))?;
         if !definitions
             .iter()
             .any(|target| target.path == file_path.display().to_string() && target.line == 3)
@@ -5659,7 +6062,9 @@ mod tests {
             ));
         }
 
-        let references = registry.find_references(preview.clone(), request.clone())?;
+        let references = registry
+            .find_references(preview.clone(), request.clone())
+            .map_err(|error| format!("C# references: {error}"))?;
         if !references
             .iter()
             .any(|target| target.path == file_path.display().to_string() && target.line == 12)
@@ -5669,14 +6074,28 @@ mod tests {
             ));
         }
 
-        let diagnostics = registry.read_diagnostics(preview, request)?;
-        if !diagnostics.iter().any(|diagnostic| {
-            diagnostic.severity == "error"
-                && diagnostic.message.contains("string")
-                && diagnostic.message.contains("int")
-        }) {
+        let mut diagnostics = Vec::new();
+        for attempt in 0..3 {
+            diagnostics = registry
+                .read_diagnostics(preview.clone(), request.clone())
+                .map_err(|error| format!("C# diagnostics: {error}"))?;
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.line == 13 && diagnostic.message.contains("broken"))
+            {
+                break;
+            }
+            if attempt < 2 {
+                thread::sleep(Duration::from_millis(300));
+            }
+        }
+        if !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.line == 13 && diagnostic.message.contains("broken"))
+        {
+            let log = registry.read_server_log("csharp").unwrap_or_default();
             return Err(format!(
-                "expected C# diagnostics to include the broken int assignment; got {diagnostics:?}"
+                "expected Roslyn diagnostics to analyze the broken assignment; got {diagnostics:?}; Roslyn log: {log:?}"
             ));
         }
 
@@ -5906,8 +6325,9 @@ mod tests {
         }
 
         let (connection, mut server) = connect_to_a_fake_language_server(language);
+        let root = Path::new("/tmp/a-fake-project");
         assert_eq!(
-            read_language_server_activity(language).map(|activity| activity.0),
+            read_language_server_activity(language, root).map(|activity| activity.0),
             Some(LanguageServerState::Ready),
             "a server that has finished the opening exchange is ready until it says otherwise"
         );
@@ -5921,7 +6341,7 @@ mod tests {
             }
         }));
         assert!(
-            eventually(|| read_language_server_activity(language)
+            eventually(|| read_language_server_activity(language, root)
                 == Some((
                     LanguageServerState::Indexing,
                     Some("Loading the EdiPlatform solution".to_string())
@@ -5938,7 +6358,7 @@ mod tests {
             }
         }));
         assert!(
-            eventually(|| read_language_server_activity(language).map(|activity| activity.0)
+            eventually(|| read_language_server_activity(language, root).map(|activity| activity.0)
                 == Some(LanguageServerState::Ready)),
             "a server with no jobs left is ready again"
         );
@@ -5962,6 +6382,40 @@ mod tests {
 
         clear_source_lsp_status_listener();
         drop(connection);
+    }
+
+    #[test]
+    fn workspace_statuses_do_not_overwrite_each_other() {
+        let language = "fake-workspace-scoped-status";
+        let spec = LspServerSpec {
+            server_name: "a pretend server",
+            language_id: language,
+            command: "a-program-that-is-not-installed",
+            args: &[],
+        };
+        let root_a = unique_lsp_temp_root("mcb-lsp-status-root-a");
+        let root_b = unique_lsp_temp_root("mcb-lsp-status-root-b");
+        let root_a_text = root_a.display().to_string();
+        let root_b_text = root_b.display().to_string();
+
+        record_language_server_state(language, &root_a_text, LanguageServerState::Ready, None);
+        record_language_server_state(
+            language,
+            &root_b_text,
+            LanguageServerState::Indexing,
+            Some("Reading the second project".to_string()),
+        );
+
+        assert_eq!(
+            describe_language_server_activity(spec, &root_a, false, true, true).0,
+            LanguageServerState::Ready,
+            "the second workspace must not make a warm first workspace look stopped"
+        );
+        assert_eq!(
+            describe_language_server_activity(spec, &root_b, false, true, true).0,
+            LanguageServerState::Indexing,
+            "each workspace must keep its own readiness state"
+        );
     }
 
     #[test]

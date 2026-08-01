@@ -492,6 +492,73 @@ function pendingAnswers() {
   assert.equal(store.get('/projects/alpha', 'App.cs', 'RunAsync'), undefined);
 }
 
+// serialized counts hydrate a fresh page instance without another lookup
+{
+  let changes = 0;
+  const initial = [{
+    project: '/projects/alpha',
+    file: 'App.cs',
+    key: '42:RunAsync',
+    value: exactly(4),
+    countedAt: 1_000
+  }];
+  const store = createReferenceCountStore({
+    cacheMs: 30_000,
+    now: () => 2_000,
+    initial,
+    onChange: () => {
+      changes += 1;
+    }
+  });
+
+  assert.deepEqual(store.get('/projects/alpha', 'App.cs', '42:RunAsync'), exactly(4));
+  assert.deepEqual(store.entries(), initial);
+  assert.equal(changes, 0, 'hydrating must not rewrite storage immediately');
+
+  store.remember('/projects/alpha', 'App.cs', '43:Stop', exactly(2));
+  assert.equal(changes, 1, 'a new answer schedules persistence');
+  assert.equal(store.entries().length, 2);
+
+  store.forgetFile('/projects/alpha', 'App.cs');
+  assert.equal(changes, 2, 'invalidation schedules persistence too');
+  assert.deepEqual(store.entries(), []);
+}
+
+// an asynchronous IndexedDB restore keeps a newer in-page answer and discards
+// expired durable rows when the next snapshot is written
+{
+  let clock = 40_000;
+  const store = createReferenceCountStore({ cacheMs: 30_000, now: () => clock });
+  store.remember('/projects/alpha', 'App.cs', '42:RunAsync', exactly(8));
+  store.restore([
+    {
+      project: '/projects/alpha',
+      file: 'App.cs',
+      key: '42:RunAsync',
+      value: exactly(4),
+      countedAt: 35_000
+    },
+    {
+      project: '/projects/alpha',
+      file: 'Old.cs',
+      key: '1:Old',
+      value: exactly(1),
+      countedAt: 1_000
+    }
+  ]);
+
+  assert.deepEqual(
+    store.get('/projects/alpha', 'App.cs', '42:RunAsync'),
+    exactly(8),
+    'a result counted in this page wins over an older durable value'
+  );
+  assert.deepEqual(
+    store.entries().map((entry) => entry.file),
+    ['App.cs'],
+    'expired durable rows are not written back'
+  );
+}
+
 // the reader edited one file: only that file's numbers are counted again
 {
   const store = createReferenceCountStore({ cacheMs: 30_000 });

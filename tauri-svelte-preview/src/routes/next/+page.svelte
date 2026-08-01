@@ -952,6 +952,13 @@
     onFileOpened={() => {
       if (!restoringWorkspace) frameControls?.showCenterPanel('editor');
     }}
+    onStartWorkspaceCommand={(request) =>
+      onStartStack({
+        stackId: request.id,
+        cwd: request.cwd,
+        script: request.script,
+        title: request.title
+      })}
   />
 {/snippet}
 {#snippet browserArea()}<BrowserPanel />{/snippet}

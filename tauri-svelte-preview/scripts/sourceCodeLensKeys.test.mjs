@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
 	formatSourceCodeLensTitle,
+	settledSourceCodeLensCount,
 	sourceCodeLensCountKey,
 	sourceCodeLensId,
 	sourceCodeLensPendingTitle,
@@ -27,6 +28,14 @@ const {
 );
 const sourceIntelligenceSource = await readFile(
 	new URL('../src/lib/shell/editor/sourceIntelligence.ts', import.meta.url),
+	'utf8'
+);
+const monacoEditorSource = await readFile(
+	new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
+	'utf8'
+);
+const editorPanelSource = await readFile(
+	new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
 	'utf8'
 );
 
@@ -86,11 +95,59 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 }
 
-// what the margin says while it is still waiting: a whole phrase, and no digit
-// anywhere in it, because a number nobody has counted must never be shown
+// Match VS Code's zero placeholder while the Roslyn answer is still arriving.
 {
-	assert.equal(sourceCodeLensPendingTitle, 'counting references…');
-	assert.ok(!/\d/.test(sourceCodeLensPendingTitle), 'the waiting line must not contain a number');
+	assert.equal(sourceCodeLensPendingTitle, '0 references');
+}
+
+// A superseded request cannot erase a newer Roslyn count, and a transient
+// no-answer from the newest request does not replace an already settled count.
+{
+	const roslynCount = { count: 7, atLeast: false };
+	assert.deepEqual(settledSourceCodeLensCount(undefined, roslynCount, true), roslynCount);
+	assert.deepEqual(settledSourceCodeLensCount(roslynCount, null, false), roslynCount);
+	assert.deepEqual(settledSourceCodeLensCount(roslynCount, null, true), roslynCount);
+	assert.equal(settledSourceCodeLensCount(undefined, null, true), null);
+}
+
+// changing editor models keeps the URI-keyed numbers; destroying the editor is
+// the only lifecycle event that clears the local paint cache
+{
+	assert.match(
+		monacoEditorSource,
+		/editor\.onDidChangeModel\(\(\) => \{[\s\S]*?forgetCodeLensRows\(\)/
+	);
+	assert.match(monacoEditorSource, /editor\?\.dispose\(\);[\s\S]*?forgetCodeLensRows\(true\)/);
+	assert.match(
+		monacoEditorSource,
+		/answer = onReferenceCountLookup\?\.\(spot\);[\s\S]*?acceptCountAnswer\(modelUri, key, requestId, answer\)/,
+		'a warm non-Promise count must reach the first CodeLens paint synchronously'
+	);
+	assert.match(
+		monacoEditorSource,
+		/codeLensCountRequestIds\.get\(key\) === requestId/,
+		'an older count request must not repaint over the newest Roslyn answer'
+	);
+	assert.match(
+		editorPanelSource,
+		/\$effect\(\(\) => \{[\s\S]*?editorState\.projectRoot;[\s\S]*?syncIntelligenceWithActiveFile\(\)/,
+		'restored tabs and session project switches must keep the extracted service synchronized'
+	);
+	assert.match(
+		monacoEditorSource,
+		/const codeLensNamedSymbolsByModel = new Map<string, SourceSymbol\[\] \| null>\(\)/,
+		'authoritative language-server anchors must be cached per real file model'
+	);
+	assert.match(
+		monacoEditorSource,
+		/const waitingForAuthoritativeAnchors =[\s\S]*?const spots = waitingForAuthoritativeAnchors \? \[\] : codeLensSpotsForModel\(model\)/,
+		'the quick parser must not paint a competing set of rows while language-server anchors load'
+	);
+	assert.match(
+		monacoEditorSource,
+		/if \(clearRememberedCounts\) \{[\s\S]*?codeLensNamedSymbolsByModel\.clear\(\)/,
+		'tab switches retain anchors and editor teardown clears them'
+	);
 }
 
 // a number that was counted in full is stated plainly, singular and plural
@@ -135,6 +192,51 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 	assert.match(sourceIntelligenceSource, /waitingSpots\.get\(key\) !== spot/);
 	assert.match(sourceIntelligenceSource, /semanticScheduler\.request\(\[key\]\)/);
+	assert.match(
+		sourceIntelligenceSource,
+		/countStore\.remember\(root, filePath, countKeyFor\(request\), count\)/,
+		'a completed offscreen semantic lookup must retain the number paired with its Peek targets'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/const referenceCountBatcher = isNativeTauriRuntime\(\)[\s\S]*?\? null[\s\S]*?: createReferenceCountBatcher/,
+		'the legacy project text counter must not be wired in the native editor'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/if \(isNativeTauriRuntime\(\)\) return \[\];[\s\S]*?indexedReferences\(symbolName\)/,
+		'native Peek must not fall back to the legacy text reference finder'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/const uniqueUses = new Map<string, SourceReferenceTarget>\(\)/,
+		'duplicate language-server locations must count once'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/const semanticReferenceRequests = new Map<[\s\S]*?resolveSemanticReferences\(/,
+		'the margin and Peek must share one in-flight semantic reference request'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/findReferences[\s\S]*?resolveSemanticReferences\(preview, request, root\)/,
+		'a Peek click must consume the shared semantic answer'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/askLanguageServerToCount[\s\S]*?resolveSemanticReferences\([\s\S]*?spot\.projectRoot/,
+		'the CodeLens count must consume the same answer using its captured project'
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/root: root \?\? ''/,
+		'a request queued before a project switch must not use the new active root'
+	);
+	assert.match(
+		monacoEditorSource,
+		/showCodeLensReferences[\s\S]*?askForOneCount\(modelUri, key, request\)/,
+		'a populated Peek must immediately repaint its count from the shared answer'
+	);
 }
 
 console.log('sourceCodeLensKeys tests passed');
