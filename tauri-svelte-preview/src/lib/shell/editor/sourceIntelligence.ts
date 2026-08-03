@@ -145,6 +145,15 @@ export const semanticCountRetryDelaysMs = [2_000, 6_000, 12_000];
  */
 export const codeLensReferenceCountCacheMs = 24 * 60 * 60 * 1_000;
 /**
+ * Native reference counts belong to the live Roslyn workspace and cannot be
+ * validated across app/page lifetimes. Keep them warm in memory, but never
+ * restore an older solution's answer from IndexedDB. Browser preview counts
+ * are plain-text project scans and may use the durable cache.
+ */
+export function referenceCountPersistenceEnabled(nativeRuntime: boolean): boolean {
+  return !nativeRuntime;
+}
+/**
  * Where the plain-text counts are filed. They are counted by NAME across the
  * whole project, so the same name has the same number in every file and they
  * all belong in one drawer — unlike the language server's numbers, which are
@@ -476,8 +485,11 @@ export function createSourceIntelligence(): SourceIntelligence {
   let countStore: ReferenceCountStore;
   let persistCountsTimer: number | null = null;
   let persistenceWrite = Promise.resolve();
+  const persistReferenceCounts = referenceCountPersistenceEnabled(isNativeTauriRuntime());
   const scheduleCountPersistence = () => {
-    if (typeof window === 'undefined' || persistCountsTimer !== null) return;
+    if (!persistReferenceCounts || typeof window === 'undefined' || persistCountsTimer !== null) {
+      return;
+    }
     persistCountsTimer = window.setTimeout(() => {
       persistCountsTimer = null;
       const entries = countStore.entries();
@@ -490,12 +502,14 @@ export function createSourceIntelligence(): SourceIntelligence {
     cacheMs: codeLensReferenceCountCacheMs,
     onChange: scheduleCountPersistence
   });
-  let persistedCountsLoaded = false;
-  const persistedCountsHydration = loadPersistedReferenceCounts()
-    .then((entries) => countStore.restore(entries))
-    .catch(() => {
-      // Durable caching is an optimization; storage failure never blocks counts.
-    });
+  let persistedCountsLoaded = !persistReferenceCounts;
+  const persistedCountsHydration = persistReferenceCounts
+    ? loadPersistedReferenceCounts()
+        .then((entries) => countStore.restore(entries))
+        .catch(() => {
+          // Durable caching is an optimization; storage failure never blocks counts.
+        })
+    : Promise.resolve();
   const persistedCountsReady = Promise.race([
     persistedCountsHydration,
     new Promise<void>((resolve) => setTimeout(resolve, 100))
@@ -969,10 +983,8 @@ export function createSourceIntelligence(): SourceIntelligence {
   async function lookupCodeLensAnchors(asked: SourcePreview): Promise<SourceSymbol[] | null> {
     if (!isNativeTauriRuntime() || !projectRoot) return null;
 
-    // Ask about the file on screen, not about the copy the editor handed us:
-    // the editor describes a file by the language Monaco paints it in, and
-    // Monaco paints Svelte as HTML. The language server needs to be told it is
-    // Svelte, and only this side knows that.
+    // Ask about the file on screen, not about the copy the editor handed us.
+    // The preview is the authoritative source of the workspace language id.
     const preview = activePreview;
     if (!preview) return null;
     if (normalizeProjectPath(asked.path) !== normalizeProjectPath(preview.path)) return null;

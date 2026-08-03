@@ -10,6 +10,8 @@
 export interface OpenFileRequest {
   /** Absolute path of the file to open. */
   path: string;
+  /** Workspace that owns the file, when the producer already knows it. */
+  projectRoot?: string;
   /** 1-based line to reveal, if any. */
   line?: number;
   /** 1-based column to reveal, if any. */

@@ -23,6 +23,26 @@
  */
 import { loadLayout, saveLayout, type LayoutStorage } from './layout/layoutStorage.ts';
 
+export interface SessionConversationWorkspace {
+  mode: 'structured' | 'raw';
+  draft: string;
+  selectedChildId?: string | null;
+  scrollTop?: number;
+  providerGeneration?: number;
+  lastSequence?: number;
+}
+
+export interface SessionBrowserWorkspace {
+  url: string;
+  inputUrl: string;
+  activated: boolean;
+}
+
+export interface SessionCenterWorkspace {
+  activePanelId: string | null;
+  layout: object;
+}
+
 /** What one session had open, small enough to store for every session at once. */
 export interface SessionWorkspaceSnapshot {
   /** Editor tabs in strip order, newest at the end. */
@@ -50,6 +70,12 @@ export interface SessionWorkspaceSnapshot {
    * project's file that happens to have the same name".
    */
   diffRoot: string | null;
+  /** Small conversation UI state only. Provider history is never stored here. */
+  conversation?: SessionConversationWorkspace;
+  /** The embedded Browser state owned by this session. */
+  browser?: SessionBrowserWorkspace;
+  /** The center Dockview arrangement and active tab owned by this session. */
+  center?: SessionCenterWorkspace;
 }
 
 export const SESSION_WORKSPACES_STORAGE_KEY = 'mac-command-bar.next.session-workspaces';
@@ -94,6 +120,9 @@ export function captureWorkspace(input: {
   diffPath?: string | null;
   /** The project folder that diff came from. See `diffRoot` on the record. */
   diffRoot?: string | null;
+  conversation?: SessionConversationWorkspace;
+  browser?: SessionBrowserWorkspace;
+  center?: SessionCenterWorkspace | null;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -103,7 +132,7 @@ export function captureWorkspace(input: {
   const diffPath = pathOf(input.diffPath);
   const diffRoot = pathOf(input.diffRoot);
   const bothKnown = diffPath !== null && diffRoot !== null;
-  return {
+  const snapshot: SessionWorkspaceSnapshot = {
     openPaths: cappedPaths(
       input.openFiles.map((file) => file.path),
       activePath
@@ -115,6 +144,10 @@ export function captureWorkspace(input: {
     diffPath: bothKnown ? diffPath : null,
     diffRoot: bothKnown ? diffRoot : null
   };
+  if (input.conversation) snapshot.conversation = normalizeConversation(input.conversation);
+  if (input.browser) snapshot.browser = normalizeBrowser(input.browser);
+  if (input.center) snapshot.center = normalizeCenter(input.center) ?? undefined;
+  return snapshot;
 }
 
 function stringsOf(value: unknown): string[] {
@@ -124,6 +157,53 @@ function stringsOf(value: unknown): string[] {
 
 function pathOf(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeConversation(value: unknown): SessionConversationWorkspace {
+  const entry = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    mode: entry.mode === 'raw' ? 'raw' : 'structured',
+    draft: typeof entry.draft === 'string' ? entry.draft.slice(0, 20_000) : '',
+    ...(typeof entry.selectedChildId === 'string' || entry.selectedChildId === null
+      ? { selectedChildId: entry.selectedChildId as string | null }
+      : {}),
+    ...(typeof entry.scrollTop === 'number' && entry.scrollTop >= 0
+      ? { scrollTop: entry.scrollTop }
+      : {}),
+    ...(nonNegativeInteger(entry.providerGeneration) !== undefined
+      ? { providerGeneration: nonNegativeInteger(entry.providerGeneration) }
+      : {}),
+    ...(nonNegativeInteger(entry.lastSequence) !== undefined
+      ? { lastSequence: nonNegativeInteger(entry.lastSequence) }
+      : {})
+  };
+}
+
+function normalizeBrowser(value: unknown): SessionBrowserWorkspace {
+  const entry = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    url: typeof entry.url === 'string' ? entry.url : '',
+    inputUrl: typeof entry.inputUrl === 'string' ? entry.inputUrl : '',
+    activated: entry.activated === true
+  };
+}
+
+function normalizeCenter(value: unknown): SessionCenterWorkspace | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entry = value as Record<string, unknown>;
+  if (!entry.layout || typeof entry.layout !== 'object' || Array.isArray(entry.layout)) return null;
+  return {
+    activePanelId: typeof entry.activePanelId === 'string' ? entry.activePanelId : null,
+    layout: entry.layout as object
+  };
 }
 
 /** One stored entry, or null if it is not a record at all. Fields of the wrong
@@ -141,7 +221,7 @@ function snapshotOf(value: unknown): SessionWorkspaceSnapshot | null {
   const diffPath = pathOf(entry.diffPath);
   const diffRoot = pathOf(entry.diffRoot);
   const bothKnown = diffPath !== null && diffRoot !== null;
-  return {
+  const snapshot: SessionWorkspaceSnapshot = {
     openPaths: cappedPaths(stringsOf(entry.openPaths), activePath),
     activePath,
     expandedFolderIds: stringsOf(entry.expandedFolderIds),
@@ -150,6 +230,11 @@ function snapshotOf(value: unknown): SessionWorkspaceSnapshot | null {
     diffPath: bothKnown ? diffPath : null,
     diffRoot: bothKnown ? diffRoot : null
   };
+  if ('conversation' in entry) snapshot.conversation = normalizeConversation(entry.conversation);
+  if ('browser' in entry) snapshot.browser = normalizeBrowser(entry.browser);
+  const center = normalizeCenter(entry.center);
+  if (center) snapshot.center = center;
+  return snapshot;
 }
 
 /** Trailing slashes make two spellings of one folder look different. */

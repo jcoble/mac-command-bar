@@ -2189,15 +2189,15 @@ assert.ok(
   'Editor should support quiet reference counts for CodeLens without opening result drawers'
 );
 
-// ── The margin's "N references" row paints first and fills in afterwards ────
+// ── The margin's "N references" row appears only after a real answer ────────
 //
-// The row must be on screen the moment the file is, saying it is counting, and
-// each real number must replace that line as it arrives rather than the reader
-// waiting for the last one. These check the wiring that makes that true, since
-// none of it can be exercised without a browser and a live Monaco.
+// VS Code does not paint a fake zero while Roslyn is still counting. Each real
+// number appears as it arrives. These check the wiring that makes that true,
+// since none of it can be exercised without a browser and a live Monaco.
 assert.ok(
-  editorSource.includes('title: sourceCodeLensPendingTitle'),
-  'A reference row should be drawn straight away saying it is still counting'
+  editorSource.includes('if (counted === undefined) return undefined;') &&
+    !editorSource.includes('title: sourceCodeLensPendingTitle'),
+  'An unresolved reference count should not draw a placeholder CodeLens row'
 );
 assert.ok(
   editorSource.includes('onDidChange: codeLensChangeEmitter.event') &&

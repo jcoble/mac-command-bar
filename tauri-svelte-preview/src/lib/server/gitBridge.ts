@@ -40,7 +40,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -98,6 +98,28 @@ export interface GitBridgeDiff {
   status: string;
   diff: string;
   isBinary: boolean;
+  originalContent: string | null;
+  modifiedContent: string | null;
+}
+
+const MAX_DIFF_MODEL_BYTES = 512 * 1024;
+
+function boundedDiffModel(text: string): string | null {
+  return Buffer.byteLength(text, 'utf8') <= MAX_DIFF_MODEL_BYTES && !text.includes('\0')
+    ? text
+    : null;
+}
+
+async function revisionTextOrEmpty(
+  root: string,
+  revision: string,
+  relativePath: string
+): Promise<string | null> {
+  try {
+    return boundedDiffModel(await runGit(root, ['show', `${revision}:${relativePath}`]));
+  } catch {
+    return '';
+  }
 }
 
 // ── guards ──────────────────────────────────────────────────────────────────
@@ -496,7 +518,15 @@ export async function readGitCommitFileDiff(
   ]);
 
   const status = listed?.status || (diff.trim() === '' ? 'clean' : 'modified');
-  return { relativePath: filePath, status, diff, isBinary: looksBinary(diff) };
+  const isBinary = looksBinary(diff);
+  return {
+    relativePath: filePath,
+    status,
+    diff,
+    isBinary,
+    originalContent: isBinary ? null : await revisionTextOrEmpty(folder, `${commitId}^`, filePath),
+    modifiedContent: isBinary ? null : await revisionTextOrEmpty(folder, commitId, filePath)
+  };
 }
 
 /** Mirrors `read_source_git_diff`, whole-path-on-disk and all. */
@@ -545,7 +575,15 @@ export async function readGitFileDiff(
   const diff = combineDiffs(stagedDiff, workingDiff);
 
   const status = listed?.status || (diff.trim() === '' ? 'clean' : 'modified');
-  return { relativePath, status, diff, isBinary: looksBinary(diff) };
+  const isBinary = looksBinary(diff);
+  return {
+    relativePath,
+    status,
+    diff,
+    isBinary,
+    originalContent: isBinary ? null : await revisionTextOrEmpty(folder, 'HEAD', relativePath),
+    modifiedContent: isBinary ? null : boundedDiffModel(await readFile(resolvedPath, 'utf8'))
+  };
 }
 
 // ── the routes ──────────────────────────────────────────────────────────────

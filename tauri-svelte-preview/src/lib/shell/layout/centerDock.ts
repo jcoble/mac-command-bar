@@ -56,8 +56,15 @@ export interface CenterDockOptions {
 export interface CenterDock {
   api: DockviewApi;
   activatePanel(id: string): void;
+  captureLayout(): CenterDockSnapshot | null;
+  restoreLayout(snapshot: CenterDockSnapshot | null | undefined): void;
   resetLayout(): void;
   dispose(): void;
+}
+
+export interface CenterDockSnapshot {
+  activePanelId: string | null;
+  layout: object;
 }
 
 const COMPONENT = 'center-panel';
@@ -301,6 +308,28 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     api,
     activatePanel(id: string): void {
       panelById(id)?.api.setActive();
+    },
+    captureLayout(): CenterDockSnapshot | null {
+      try {
+        return {
+          activePanelId: api.activePanel?.id ?? null,
+          layout: api.toJSON() as object
+        };
+      } catch {
+        return null;
+      }
+    },
+    restoreLayout(snapshot: CenterDockSnapshot | null | undefined): void {
+      // Sessions saved before per-session layouts existed have no layout to
+      // restore. Leaving the live dock alone keeps every roster tab visible;
+      // the next capture gives that session its own starting arrangement.
+      if (!snapshot) return;
+      // Keep the one live four-tab roster mounted. Replaying a serialized
+      // Dockview tree during a session switch intermittently retained the
+      // panel bodies but dropped their tab renderers. The active tab is the
+      // session-specific state the reader needs; editor/browser/diff content is
+      // restored by their own stores without replacing this navigation tree.
+      if (snapshot.activePanelId) panelById(snapshot.activePanelId)?.api.setActive();
     },
     resetLayout(): void {
       clearLayout(options.storage, CENTER_LAYOUT_KEY);

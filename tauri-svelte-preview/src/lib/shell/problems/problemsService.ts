@@ -30,6 +30,7 @@ import { sourceSupportsLanguageIntelligence } from '../../sourceData.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { editorState } from '../editor/editorStore.svelte.ts';
 import { listProblemsForRoot, readProblemsForFile } from './problemsBackend.ts';
+import { nativeCsharpDiagnosticsForRoot } from './csharpDiagnosticsAdapter.ts';
 import {
   applyProblems,
   beginProblemsLoad,
@@ -102,7 +103,12 @@ async function load(): Promise<void> {
       await loadFromOpenFiles(ticket, root);
       return;
     }
-    applyProblems(ticket, rowsFrom(answer.diagnostics, root), 'workspace', 0);
+    applyProblems(
+      ticket,
+      rowsFrom([...answer.diagnostics, ...nativeCsharpDiagnosticsForRoot(root)], root),
+      'workspace',
+      0
+    );
   } catch (error) {
     failProblemsLoad(ticket, `Could not read problems: ${describeError(error)}`);
   }

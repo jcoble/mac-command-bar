@@ -9,7 +9,11 @@
   import 'dockview-core/dist/styles/dockview.css';
   import { onMount, type Snippet } from 'svelte';
 
-  import { createCenterDock, type CenterDock } from '$lib/shell/layout/centerDock';
+  import {
+    createCenterDock,
+    type CenterDock,
+    type CenterDockSnapshot
+  } from '$lib/shell/layout/centerDock';
   import {
     createShellFrame,
     type RegionHeightLimits,
@@ -34,6 +38,8 @@
     onReady?: (controls: {
       resetLayout: () => void;
       showCenterPanel: (id: string) => void;
+      captureCenterLayout: () => CenterDockSnapshot | null;
+      restoreCenterLayout: (snapshot: CenterDockSnapshot | null | undefined) => void;
       /** Give one region a width — how a column asks to be folded up or
        * opened out. See `setRegionWidth` in `frame.ts`. */
       setRegionWidth: (id: ShellRegionId, width: number, limits?: RegionWidthLimits) => void;
@@ -119,6 +125,8 @@
           centerDock?.resetLayout();
         },
         showCenterPanel: (id: string) => centerDock?.activatePanel(id),
+        captureCenterLayout: () => centerDock?.captureLayout() ?? null,
+        restoreCenterLayout: (snapshot) => centerDock?.restoreLayout(snapshot),
         setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
         setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
         setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
@@ -199,6 +207,7 @@
     --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-tab-unfocused-surface);
     --dv-inactivegroup-hiddenpanel-tab-background-color: var(--color-bg);
     --dv-tab-divider-color: transparent;
+    --dv-tabs-and-actions-container-height: 35px;
     --dv-activegroup-visiblepanel-tab-color: var(--color-text);
     --dv-activegroup-hiddenpanel-tab-color: var(--color-text-2);
     --dv-inactivegroup-visiblepanel-tab-color: var(--color-tab-unfocused-text);
@@ -225,6 +234,13 @@
   .shell-frame :global(.dv-tab) {
     border-color: transparent;
     box-shadow: none;
+  }
+
+  /* The four center tabs are permanent navigation. A restored Dockview layout
+     must never collapse their strip to zero height. */
+  .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
+    min-height: 35px;
+    visibility: visible;
   }
 
   /* Every center tab is permanent this slice (a close is undone on the next

@@ -20,6 +20,8 @@ use orchestration::{
 };
 use tauri::Emitter;
 
+mod agent_conversation;
+mod git_diff_models;
 mod lsp;
 mod orchestration;
 mod terminal;
@@ -215,6 +217,8 @@ struct SourceGitDiff {
     status: String,
     diff: String,
     is_binary: bool,
+    original_content: Option<String>,
+    modified_content: Option<String>,
 }
 
 /// One file touched by one commit. Same three fields the working-copy status list
@@ -641,6 +645,24 @@ async fn read_source_file(path: String) -> Result<SourcePreview, String> {
         .map_err(|error| format!("Source preview task failed: {error}"))?
 }
 
+/// Read one UTF-8 source file for native C# Peek, confined to the canonical
+/// workspace root. This command is intentionally read-only.
+#[tauri::command]
+async fn read_native_csharp_file(root: String, path: String) -> Result<SourcePreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = std::fs::canonicalize(root)
+            .map_err(|error| format!("Could not resolve C# workspace root: {error}"))?;
+        let path = std::fs::canonicalize(path)
+            .map_err(|error| format!("Could not resolve C# source path: {error}"))?;
+        if !path.starts_with(&root) {
+            return Err("C# source path is outside the workspace root".to_string());
+        }
+        read_source_file_sync(path)
+    })
+    .await
+    .map_err(|error| format!("Native C# source read task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn write_source_file(path: String, content: String) -> Result<SourcePreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -800,6 +822,28 @@ async fn warm_source_lsp_for_root(
     tauri::async_runtime::spawn_blocking(move || registry.warm_running_servers_for_root(&root))
         .await
         .map_err(|error| format!("Source LSP warm task failed: {error}"))?
+}
+
+/// Ensure the one native C# language-client endpoint for this canonical root.
+/// Both workspace warming and editor startup call this command; the registry
+/// coalesces them into the same bounded slot.
+#[tauri::command]
+async fn ensure_native_csharp_language_client(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<Option<lsp::NativeCsharpEndpoint>, String> {
+    if !lsp::workspace_has_csharp_project_marker(&root) {
+        return Ok(None);
+    }
+    registry.ensure_native_csharp_endpoint(&root).map(Some)
+}
+
+#[tauri::command]
+async fn mark_native_csharp_language_client_ready(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<(), String> {
+    registry.mark_native_csharp_client_ready(&root)
 }
 
 /// Turn the C# language server off or on, and stop it now if it is running.
@@ -2641,6 +2685,14 @@ fn read_git_commit_file_diff_sync(
         ],
     )?;
     let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
+    let models = if is_binary {
+        git_diff_models::GitDiffModels {
+            original_content: None,
+            modified_content: None,
+        }
+    } else {
+        git_diff_models::commit_models(&root, &sha, &relative_path)?
+    };
     let status = if status.is_empty() && !diff.is_empty() {
         "modified".to_string()
     } else if status.is_empty() {
@@ -2654,6 +2706,8 @@ fn read_git_commit_file_diff_sync(
         status,
         diff,
         is_binary,
+        original_content: models.original_content,
+        modified_content: models.modified_content,
     })
 }
 
@@ -2820,6 +2874,14 @@ fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDi
     )?;
     let diff = combine_source_git_diffs(&staged_diff, &working_diff);
     let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
+    let models = if is_binary {
+        git_diff_models::GitDiffModels {
+            original_content: None,
+            modified_content: None,
+        }
+    } else {
+        git_diff_models::working_tree_models(&canonical_root, &relative_path, &canonical_path)?
+    };
     let status = if status.is_empty() && !diff.is_empty() {
         "modified".to_string()
     } else if status.is_empty() {
@@ -2833,6 +2895,8 @@ fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDi
         status,
         diff,
         is_binary,
+        original_content: models.original_content,
+        modified_content: models.modified_content,
     })
 }
 
@@ -4165,7 +4229,11 @@ fn process_command_name(pid: u32) -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// The panel shows short names ("node") while `ps` answers with full paths
@@ -4210,8 +4278,7 @@ where
     if pid == own_pid {
         return ProcessKillResult {
             ok: false,
-            message: "That number belongs to this app itself, so nothing was stopped."
-                .to_string(),
+            message: "That number belongs to this app itself, so nothing was stopped.".to_string(),
         };
     }
 
@@ -5106,6 +5173,7 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
 fn main() {
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
+        .manage(agent_conversation::AgentConversationRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
@@ -5125,6 +5193,7 @@ fn main() {
             cancel_source_scan,
             validate_project_root,
             read_source_file,
+            read_native_csharp_file,
             write_source_file,
             open_source_file,
             reveal_source_file,
@@ -5139,6 +5208,8 @@ fn main() {
             read_source_lsp_status,
             list_source_lsp_statuses,
             warm_source_lsp_for_root,
+            ensure_native_csharp_language_client,
+            mark_native_csharp_language_client_ready,
             set_csharp_language_server_enabled,
             find_source_lsp_definitions,
             find_source_lsp_completions,
@@ -5182,6 +5253,14 @@ fn main() {
             kill_process,
             list_orchestration_runs,
             record_orchestration_event,
+            agent_conversation::ensure_agent_conversation,
+            agent_conversation::send_agent_conversation_message,
+            agent_conversation::respond_agent_conversation_approval,
+            agent_conversation::stop_agent_conversation_turn,
+            agent_conversation::close_agent_conversation,
+            agent_conversation::read_agent_conversation_snapshot,
+            agent_conversation::read_agent_conversation_transcript,
+            agent_conversation::save_agent_conversation_attachment,
             start_terminal_session,
             list_terminal_sessions,
             read_terminal_session_scrollback,
@@ -7008,8 +7087,14 @@ mod tests {
             !process_commands_match("/usr/bin/python3", "node"),
             "comparing file names must not match across different programs"
         );
-        assert!(!process_commands_match("", "node"), "no name is never a match");
-        assert!(!process_commands_match("node", ""), "and neither is no expectation");
+        assert!(
+            !process_commands_match("", "node"),
+            "no name is never a match"
+        );
+        assert!(
+            !process_commands_match("node", ""),
+            "and neither is no expectation"
+        );
         assert!(!process_commands_match("   ", "node"));
     }
 

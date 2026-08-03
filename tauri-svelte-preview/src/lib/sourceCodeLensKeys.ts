@@ -76,17 +76,6 @@ export function sourceCodeLensCountKey(modelUri: string, spot: SourceCodeLensSpo
 	return `${modelUri}::${spot.line}:${spot.symbolName}`;
 }
 
-/**
- * What the margin says before anyone has counted anything.
- *
- * The row appears the moment the file does, so the reader can see there is
- * something to click, and the real number replaces this line as soon as it
- * arrives. There is deliberately no number in this sentence: a placeholder
- * digit would be a number nobody counted, and the reader has no way to tell
- * one of those from a real one.
- */
-export const sourceCodeLensPendingTitle = '0 references';
-
 export type SettledSourceCodeLensCount = {
 	count: number;
 	atLeast: boolean;

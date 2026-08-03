@@ -223,6 +223,14 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
 
+  function publishSourceControl(): void {
+    if (typeof window === 'undefined') return;
+    const snapshot = { root: state.root, status: state.status };
+    void import('../extensions/rustGitScmProvider.ts').then(({ syncRustGitSourceControl }) => {
+      syncRustGitSourceControl(snapshot);
+    });
+  }
+
   /** The repository is unchanged AND this request is still the newest one. */
   function stillCurrent(guard: RequestGuard, id: number, root: string): boolean {
     return guard.isCurrent(id) && state.root === root;
@@ -237,6 +245,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyComplete = false;
     state.historyPaged = false;
     state.historyCeiling = false;
+    publishSourceControl();
   }
 
   async function refreshStatus(): Promise<void> {
@@ -255,10 +264,12 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       }
       state.desktopOnly = false;
       state.status = status;
+      publishSourceControl();
     } catch (error) {
       if (!stillCurrent(statusGuard, id, root)) return;
       state.status = null;
       state.statusError = describeError(error, 'Could not read the repository status.');
+      publishSourceControl();
     } finally {
       if (stillCurrent(statusGuard, id, root)) state.statusLoading = false;
     }
@@ -384,6 +395,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     historyGuard.invalidate();
     diffGuard.invalidate();
     resetGitPanelState(state, root);
+    publishSourceControl();
     if (!root) return;
     state.activated = true;
     void refresh();
@@ -470,6 +482,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       state.desktopOnly = false;
       state.status = result.status;
       state.actionStatus = result.message;
+      publishSourceControl();
       refreshSelectedDiff();
       if (options.reloadHistory) void refreshHistory();
     } catch (error) {
