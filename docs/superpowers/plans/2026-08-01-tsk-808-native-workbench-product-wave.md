@@ -18,7 +18,9 @@ Git service, worktree manager, settings store/host, or agent runtime.
 
 **Tech stack:** Svelte 5.56, TypeScript 6, Vite 8, Tauri 2.11, Rust, Dockview 6.6, bits-ui
 2.18, Monaco plus the installed VS Code-compatible services, monaco-languageclient 10.7,
-vscode-ws-jsonrpc 3.5, xterm 6, authenticated gh CLI, and focused Node/Rust tests.
+vscode-ws-jsonrpc 3.5, pinned VS Code declarative language contributions 25.1.2,
+typescript-language-server 5.3.0, svelte-language-server 0.18.3, xterm 6, authenticated gh
+CLI, and focused Node/Rust tests.
 
 **External API checks:** Browser profile constraints use the official
 [Tauri Webview API](https://v2.tauri.app/reference/javascript/api/namespacewebview/);
@@ -28,16 +30,18 @@ opening uses the official [Tauri Opener guide](https://v2.tauri.app/plugin/opene
 
 **Plan authority:** Notion task TSK-808, its 19 linked rapid-fire items, its 30-image evidence
 gallery, the merged TSK-799 contract, the current repository, and this file. This plan was
-re-audited on 2026-08-03 against branch `tsk-799-code-intelligence` at `916c6dc`; remote
-`origin/main` was `2e09399` while the local tracking ref was stale. The checkout contains 50
-tracked or untracked protected-WIP paths, including TSK-799 and TSK-809/810 conversation work.
-Re-run the anchor command in Work Package 0 after that WIP is released; symbols and behavior
-are authoritative when a line number moves.
+re-audited on 2026-08-03 against branch `tsk-799-code-intelligence` at checkpoint
+`588413980b68d62622b1dee2bab2a4e881741059`; `origin/main` was `2e09399` and the branch's remote
+tracking ref was `bd0f9d2`. The working tree is clean and three local commits ahead of that
+tracking ref. The formerly dirty TSK-799/808/809/810 work is now recoverable in local commits
+`6a3af55` and `5884139`; it is not yet pushed, merged, or a claim that TSK-808 is complete.
+Re-run the anchor command in Work Package 0 after the integration base is selected; symbols and
+behavior are authoritative when a line number moves.
 
-**2026-08-03 extension/diff checkpoint:** The user subsequently authorized the bounded
-extension-compatibility experiment in this protected checkout. The work is present but remains
-uncommitted/unmerged protected WIP; it is evidence to reconcile, not permission to overwrite the
-checkout or declare TSK-808 complete. The checkpoint implemented the official Houston theme as a
+**2026-08-03 extension/diff/language checkpoint:** The user subsequently authorized the bounded
+extension-compatibility experiment in this protected checkout. The work is preserved by local
+checkpoint `5884139` but remains unpushed/unmerged; it is evidence to reconcile, not permission
+to declare TSK-808 complete. The checkpoint implemented the official Houston theme as a
 declarative contribution, a singleton curated extension registry, a read-only VS Code SCM
 projection over the existing Rust Git state, bounded original/modified Git text models, and a
 native Monaco DiffEditor. The same singleton now also registers pinned VS Code declarative
@@ -68,9 +72,11 @@ Every dispatch expands shorthand into absolute or repository-relative exact file
    work. Contrast remains the first broad product UI milestone, not polish. No other UI lane may
    invent local text, border, status, focus, or action-button colors before the contrast tokens
    and shared primitives land.
-2. The present TSK-799 checkout is protected WIP. TSK-808 implementation begins only from a
-   clean integration worktree based on refreshed origin/main, after the current owner has
-   committed, merged, or explicitly handed off every overlapping path.
+2. The present TSK-799 checkout is now a clean, recoverable local checkpoint at `5884139`, not a
+   dirty working tree. Broad TSK-808 implementation begins only after choosing an integration
+   base that contains this checkpoint, either through its merged descendant or through an
+   explicitly approved branch from this SHA. Do not create a worktree from `origin/main` alone;
+   that would silently omit the approved extension, language, conversation, and native-diff work.
 3. Already-shipped rapid-fire items are verified and closed, not rebuilt. The Notion ledger is
    stale for several tasks; Work Package 0 determines the exact disposition using tests and a
    real Tauri pass.
@@ -185,18 +191,22 @@ Current protected checkout:
 
 - Path: /Users/blackcolours/dev/work/mac-command-bar
 - Branch: tsk-799-code-intelligence
-- HEAD: 916c6dcacfa458cbec9cda09113eb06d72d1fe4e
-- State: 50 tracked and untracked protected-WIP paths, including package manifests,
-  Cargo manifests, main.rs, lsp.rs, Monaco/editor files, shellPanels.ts, tauriSource.ts,
-  the legacy route, TSK-809/810 conversation files, output, .codex, and .vscode.
+- HEAD: 588413980b68d62622b1dee2bab2a4e881741059
+- State: clean working tree; three commits ahead of `origin/tsk-799-code-intelligence`.
+- Recovery points: `6a3af55` ignores machine-local agent/editor state; `5884139` preserves the
+  interleaved native workbench implementation, tests, documentation, and evidence.
+- Intentionally ignored local state: `.codex/`, `.vscode/`,
+  `tauri-svelte-preview/.superpowers/`, and local `*.code-workspace` files.
 
-Do not stash, reset, stage, rewrite, delete, or build over that state. After its owner releases
-it:
+Do not reset, rewrite, squash, or delete these checkpoints merely to obtain a smaller diff. The
+large legacy `src/routes/+page.svelte` change is interleaved WIP and must be reviewed separately
+before any history cleanup. Once the user or branch owner selects a base that contains `5884139`,
+create the TSK-808 integration worktree from that exact commit or its merged descendant:
 
     git fetch origin
     git worktree add \
       /Users/blackcolours/dev/work/worktrees/mac-command-bar/tsk-808-native-workbench \
-      -b tsk-808-native-workbench-product-wave origin/main
+      -b tsk-808-native-workbench-product-wave <approved-sha-containing-5884139>
 
 Use one controller-owned integration worktree to save disk. File-independent agents may share
 that worktree only under the ownership table in section 5. Before every dispatch, the controller
@@ -503,6 +513,11 @@ path-scoped diff; a directory-level row alone is not edit authority.
 
 ### 5.3 Planned commit order
 
+The recovery commits `6a3af55` and `5884139` precede this sequence and preserve the formerly
+dirty shared WIP. They are checkpoints, not the desired final feature-level history. Do not
+rewrite them until their mixed task ownership has been reviewed and an integration branch safely
+contains the same tree.
+
 1. plan: record TSK-808 native-workbench execution contract
 2. spike: reconcile the implemented extension/API checkpoint and its reports; selection is
    Houston contribution + native DiffEditor + SCM adapter, with GitLens/Git Graph embedding out
@@ -526,14 +541,17 @@ Each commit contains only its owned paths plus the controller wiring required fo
 ## 6. Work Package 0 — reconcile WIP, verify shipped tasks, and re-anchor
 
 **Purpose:** Do not rebuild features that are already present, and do not overwrite the
-uncommitted CodeLens/Roslyn work.
+checkpointed CodeLens/Roslyn, extension, language, conversation, and native-diff work.
 
-**Owner:** Controller. Read-only until the current TSK-799 owner releases the checkout.
+**Owner:** Controller. Preservation is complete; integration-base selection and reconciliation
+remain controller-owned.
 
 ### Current anchors to inventory
 
-- TSK-799 merge: PR #13, merged commit `2e09399`; current checkout HEAD `916c6dc` is one local
-  docs commit ahead of its remote branch and has 50 additional protected dirty/untracked paths.
+- TSK-799 merge: PR #13, merged commit `2e09399`; current checkout HEAD `5884139` is clean and
+  three commits ahead of its remote branch. The implementation checkpoint includes TSK-799,
+  TSK-808, and TSK-809/810 paths and therefore must be reconciled, not assumed to be a release
+  commit for any one task.
 - Existing shell: ShellFrame.svelte:21-155, centerDock.ts:26-323, frame.ts.
 - New-session flow: newSessionFlow.ts:24-200, ownedSessions.ts:13-106,
   /next/+page.svelte:477-563.
@@ -549,7 +567,10 @@ uncommitted CodeLens/Roslyn work.
 
 ### Steps
 
-1. Capture the current lease:
+1. **Completed preservation receipt, 2026-08-03:** the prior dirty state was classified as
+   interleaved protected product WIP. Machine-local state was ignored in `6a3af55`; all product
+   code, tests, plans, reports, and screenshots were committed in `5884139`. No file was reset,
+   discarded, stashed, or pushed. Reconfirm the current lease before the next implementation:
 
    git branch --show-current
    git rev-parse HEAD
@@ -558,18 +579,19 @@ uncommitted CodeLens/Roslyn work.
    git ls-files --others --exclude-standard
    git worktree list --porcelain
 
-   Save the output in the execution log, not in this plan. Ask the current owner to classify
-   each dirty path as committed/merged, keep, discard, or still active. No controller guess.
-   A discard classification is not deletion authority: obtain the user’s explicit approval
-   before removing, reverting, or overwriting any current dirty or untracked content.
-2. Compare merged origin/main and the dirty checkout:
+   Save future output in the execution log, not in this plan. If new dirty paths appear, ask the
+   current owner to classify them. A discard classification is not deletion authority: obtain
+   the user’s explicit approval before removing, reverting, or overwriting content.
+2. Compare merged origin/main, the tracking branch, and checkpoint `5884139`:
 
    git fetch origin
-   git diff --name-status origin/main...HEAD
-   git diff --name-status origin/main
+   git diff --name-status origin/main...5884139
+   git diff --name-status origin/tsk-799-code-intelligence...5884139
 
-   Read-only comparison is allowed. Do not merge, stash, or reset.
-3. Once released, create the clean TSK-808 worktree from origin/main. Record:
+   Read-only comparison is allowed. Do not merge, rebase, squash, or reset until the integration
+   base and ownership of the mixed checkpoint are explicit.
+3. Select a commit that contains `5884139` or its reviewed/merged equivalent, then create the
+   clean TSK-808 worktree from that exact SHA. Record:
 
    git rev-parse HEAD
    git status --short
@@ -611,14 +633,16 @@ uncommitted CodeLens/Roslyn work.
 
 ### Stop conditions
 
-- Stop before implementation if TSK-799 ownership is not released.
+- Stop before broad implementation if the selected integration base does not contain the
+  approved checkpoint or its reviewed equivalent.
 - Stop if origin/main does not contain PR #13; resolve branch authority first.
 - Stop if the Notion status of TSK-808 is Done/closed.
 - Stop if a planned shared file is dirty in the new worktree.
 
 ### Done
 
-- Clean TSK-808 worktree exists at the mandated path.
+- The checkpoint is preserved and the present checkout is clean. Work Package 0 is fully done
+  only when a clean TSK-808 worktree exists at the mandated path from an approved containing SHA.
 - Each of the 19 tasks has one disposition: closed with evidence, active in a named work
   package, or explicitly retained as later scope.
 - Current line anchors and collision table are recorded.
@@ -986,8 +1010,9 @@ entry points without creating a parallel surface:
      is wired.
    - Reconcile `settings.general.terminalApp` with the legacy route's separate
      `sourceTerminalApp`/storage path through one canonical value and compatibility migration.
-     Because the legacy route is protected dirty WIP, Work Package 0 records the exact shared
-     bridge as a controller receipt before any edit; do not rewrite that route opportunistically.
+     Because the legacy route is a large interleaved change preserved in checkpoint `5884139`,
+     Work Package 0 records the exact shared bridge as a controller receipt before any edit; do
+     not rewrite or reformat that route opportunistically.
    - The C# switch commits the new stored value only when the capability response confirms the
      same enabled state. Unsupported capability, thrown/rejected request, or a mismatched returned
      state restores the previous value and shows the plain-English reason. Do not change native
@@ -1018,8 +1043,8 @@ Extend `scripts/nextTokens.test.mjs` only for token/portal/static ownership asse
   canonical external-terminal selection and legacy migration, Problems placement, theme repaint,
   and C# success/unsupported/throw/mismatched-state rollback without duplicate Roslyn processes.
 - Package scripts `test:settings-store` and `test:settings-reachability` in the controller-owned
-  `package.json`, plus `test:settings-application`; do not edit the current dirty manifest until
-  Work Package 0 releases it.
+  `package.json`, plus `test:settings-application`; edit the clean checkpointed manifest only in
+  the selected integration worktree after Work Package 0 records its starting SHA.
 
 Run in the focused Node slot:
 
@@ -3282,6 +3307,29 @@ tabs, Source Control loading, native DiffEditor rendering, and multi-color JSON/
 The existing development Tauri binary compiled/launched, but macOS UI automation could not see
 that development bundle; therefore native visual parity and performance remain open.
 
+#### 18.0A Language capability matrix fixed by the checkpoint
+
+The editor now has a broad declarative syntax baseline, but syntax and semantic intelligence are
+separate capabilities. Preserve that distinction in UI status, acceptance evidence, and future
+language work:
+
+| Capability tier | Languages now covered | Authority and lifecycle |
+| --- | --- | --- |
+| Syntax grammar, language metadata, brackets/comments, and bundled snippets where supplied | Batch/shell, C/C++, C#, CSS, Dockerfile, F#, Go, HTML, INI, Java, JavaScript, JSON, Make, Markdown, npm, PHP, PowerShell, Python, Razor, Ruby, Rust, shellscript, SQL, Svelte, Swift, TypeScript, XML, and YAML | Pinned declarative VS Code packages at 25.1.2 plus official Svelte 110.3.0 assets, registered exactly once by the existing Monaco/VS Code service singleton |
+| Semantic definitions, references, symbols, diagnostics, and workspace intelligence | C# through Roslyn; JavaScript/TypeScript through `typescript-language-server` 5.3.0; Svelte through `svelte-language-server` 0.18.3 using executable `svelteserver` | Rust-owned persistent stdio JSON-RPC registry, keyed by canonical workspace and language; one process per active workspace/language, never one per editor tab |
+| Monaco standalone fallback needed during compatible-service startup | JSON and TypeScript tokenization/features | Imported once by `MonacoSourceEditor.svelte`; it must not create a second service container or override Houston after initialization |
+| Future semantic languages | Rust, Go, Python, Java, C/C++, F#, Razor, PHP, Ruby, Swift, PowerShell, shell, SQL, YAML/XML schema intelligence, and others selected by product need | Add an explicit workspace-scoped server adapter and packaged executable strategy per language. A grammar package alone must never be labeled “Go to Definition” or “Find References” support |
+
+All editor documents keep real canonical `file://` Monaco model URIs. Workspace switching must
+reuse or change the correct language/root process generation, dispose stale listeners/results,
+and preserve one Monaco model per file. Rapid switching across three to five workspaces remains
+a native acceptance case, not an excuse to start duplicate servers.
+
+The development dependency lookup intentionally checks the app's `node_modules/.bin` first so
+the pinned TypeScript/Svelte servers win over arbitrary GUI-app PATH contents. Packaged builds
+still need a reviewed sidecar or explicit executable-location strategy; local dependency
+resolution is verified development behavior, not packaged-distribution proof.
+
 ### 18.1 Existing host baseline to preserve
 
 - `shell/editor/csharpLanguageClient.ts`:1-2 already imports `vscode/localExtensionHost` and the
@@ -3981,10 +4029,12 @@ After merge:
 
 ### Milestone A — sequential foundation
 
-1. Work Package 0: reconcile WIP and close shipped tasks.
+1. Work Package 0: use clean checkpoint `5884139` as the preservation anchor, select an approved
+   containing integration base, re-anchor symbols, and close only shipped tasks with native proof.
 2. Reconcile the completed Work Package 12 checkpoint: preserve the two extension reports,
    official Houston registration, native DiffEditor, and read-only SCM projection; record the
-   already-made decision against GitLens/Git Graph embedding. Do not run generic 18.3-18.5 work.
+   declarative language baseline, TypeScript/Svelte semantic adapters, and the already-made
+   decision against GitLens/Git Graph embedding. Do not run generic 18.3-18.5 work.
 3. Work Package 1: contrast/tokens/primitives after that choice is recorded.
 4. Work Package 2: restore Settings, then freeze typed shell roster/minimize/quick-open.
 5. Controller freezes interfaces and commits.
@@ -4053,7 +4103,8 @@ Stop implementation and ask for a decision when:
   fix, or milestone-review agent;
 - TSK-808 is already closed or the user declines revival;
 - direct/null-safe Notion status cannot prove TSK-808 is open;
-- TSK-799/current dirty WIP ownership is unresolved;
+- the approved `5884139` checkpoint or a reviewed equivalent is absent from the selected
+  integration base;
 - a lane needs an unlisted shared file while another lane owns it;
 - the controller cannot attribute the shared-worktree diff to the dispatched exact path list;
 - more than two heavy runners would overlap;
@@ -4064,8 +4115,8 @@ Stop implementation and ask for a decision when:
 - process ownership cannot be revalidated;
 - Markdown sanitization or local-path containment is uncertain;
 - CodeLens count/Peek behavior changes without a trace proving why;
-- the implemented extension/DiffEditor/SCM checkpoint cannot be attributed and reconciled from
-  the protected WIP before broad TSK-808 work;
+- the implemented extension/DiffEditor/SCM/language checkpoint cannot be attributed and
+  reconciled from commit `5884139` before broad TSK-808 work;
 - a newly proposed extension/API path has not been classified and selected; the 2026-08-03
   selection covers only Houston, native DiffEditor, bounded SCM projection, and the decision not
   to embed GitLens/Git Graph;
@@ -4078,10 +4129,13 @@ Stop implementation and ask for a decision when:
 
 ## 24. First implementation action
 
-Do not add more broad product code to the current checkout. First classify and release the
-existing TSK-799/809/810 dirty WIP, including attribution of the user-authorized extension,
-Houston, SCM, and native-diff checkpoint recorded above. Then create the clean TSK-808
-integration worktree and execute Work Package 0. Reconcile the checkpoint instead of re-running
-the compatibility decision or rebuilding its seams. The next broad product UI commit is Work
-Package 1: contrast tokens and shared controls; Work Package 5 then completes the native Git
-graph/query/clipboard/actions over the retained DiffEditor and Rust Git authority.
+Do not add more broad product code to the current checkout. The dirty-WIP preservation step is
+complete: `6a3af55` records local-state exclusions and `5884139` records the product WIP,
+language baseline, semantic TypeScript/Svelte adapters, tests, reports, and native-diff work.
+Next, review the mixed checkpoint against its task ownership and select an integration SHA that
+contains it or its reviewed equivalent. Create the clean TSK-808 integration worktree from that
+SHA, not bare `origin/main`, then execute the remaining Work Package 0 native audit and
+re-anchoring. Reconcile the checkpoint instead of re-running the compatibility decision or
+rebuilding its seams. The next broad product UI commit remains Work Package 1: contrast tokens
+and shared controls; Work Package 5 then completes the native Git graph/query/clipboard/actions
+over the retained DiffEditor and Rust Git authority.
