@@ -24,6 +24,10 @@
 
   import ActivityBar from '$lib/shell/components/ActivityBar.svelte';
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
+  import {
+    captureBrowserState,
+    restoreBrowserState
+  } from '$lib/shell/browser/browserStore.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
   import GitDiffView from '$lib/shell/components/GitDiffView.svelte';
@@ -31,11 +35,26 @@
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
-  import TerminalSurface from '$lib/shell/components/TerminalSurface.svelte';
+  import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import RunButton from '$lib/shell/components/run/RunButton.svelte';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
   import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
+  import {
+    captureConversationWorkspace,
+    removeConversationSession,
+    restoreConversationWorkspace,
+    setConversationMode
+  } from '$lib/shell/conversation/conversationStore.svelte';
+  import {
+    closeStructuredConversation,
+    ensureStructuredConversation,
+    startConversationEvents,
+    startConversationTranscriptMirror,
+    stopConversationTranscriptMirror,
+    stopConversationEvents
+  } from '$lib/shell/conversation/conversationService';
+  import type { AgentConversationProvider } from '$lib/shell/conversation/conversationTypes';
   import {
     editorState,
     resetEditorState,
@@ -55,6 +74,7 @@
     type RegionWidthLimits,
     type ShellRegionId
   } from '$lib/shell/layout/frame';
+  import type { CenterDockSnapshot } from '$lib/shell/layout/centerDock';
   import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
   import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
   import { requestOpenFile } from '$lib/shell/openFileBus';
@@ -137,6 +157,8 @@
   let frameControls: {
     resetLayout(): void;
     showCenterPanel(id: string): void;
+    captureCenterLayout(): CenterDockSnapshot | null;
+    restoreCenterLayout(snapshot: CenterDockSnapshot | null | undefined): void;
     setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
     setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
     setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
@@ -371,6 +393,11 @@
    */
   let retainedTabs: RetainedWorkspaces<OpenEditorFile> = emptyRetainedWorkspaces();
 
+  function conversationProviderFor(ownedId: string): AgentConversationProvider | null {
+    const agent = rail.owned.find((session) => session.ownedId === ownedId)?.agent;
+    return agent === 'codex' || agent === 'claude' ? agent : null;
+  }
+
   /** Remember the editor tabs and file tree this session is leaving behind.
    * Stored straight away: a reload can come at any moment, and the write is a
    * few hundred bytes. */
@@ -388,7 +415,10 @@
         selectedPath: explorer.selectedPath,
         scrollTop: explorer.scrollTop,
         diffPath: gitPanel.selectedPath || null,
-        diffRoot: gitPanel.root
+        diffRoot: gitPanel.root,
+        conversation: captureConversationWorkspace(ownedId),
+        browser: captureBrowserState(),
+        center: frameControls?.captureCenterLayout() ?? null
       })
     };
     writeWorkspaces(window.localStorage, workspaces);
@@ -429,6 +459,12 @@
       void gitService.showStoredDiff(sessionRoot, rememberedDiff);
     }
     const snapshot = workspaces[ownedId];
+    const conversationProvider = conversationProviderFor(ownedId);
+    if (conversationProvider) {
+      restoreConversationWorkspace(ownedId, conversationProvider, snapshot?.conversation);
+    }
+    restoreBrowserState(snapshot?.browser);
+    if (snapshot?.center) frameControls?.restoreCenterLayout(snapshot.center);
     const taken = takeRetainedTabs(retainedTabs, ownedId);
     retainedTabs = taken.retained;
     const plan = planWorkspaceRestore(snapshot ?? null, taken.tabs);
@@ -461,6 +497,7 @@
     // session actually had (rows are clickable for seconds while the first
     // scan runs — including the close button, which switches sessions too).
     if (switching && previous !== null && shellPanels.loadsAllowed()) snapshotWorkspace(previous);
+    if (switching && previous !== null) stopConversationTranscriptMirror(previous);
     setActiveOwned(ownedId);
     service?.show(ownedId);
     // Point the file tree, the context cards and any tab the user has already
@@ -471,6 +508,36 @@
     // stored record back here would throw away every file opened since the last
     // switch, which is the opposite of what a click on your own row means.
     if (switching) restoreWorkspace(ownedId);
+    const selected = rail.owned.find((session) => session.ownedId === ownedId);
+    const provider = conversationProviderFor(ownedId);
+    if (selected && provider) {
+      // A running PTY is already the owner of this agent session. Starting a
+      // second `claude --resume` / `codex app-server` here makes two agents
+      // append different answers to one conversation. Until the structured
+      // surface mirrors the PTY's transcript, keep the real terminal visible.
+      if (selected.ptySessionId) {
+        void closeStructuredConversation(ownedId);
+        if (selected.nativeSessionId) {
+          setConversationMode(ownedId, 'structured');
+          startConversationTranscriptMirror({
+            ownedId,
+            provider,
+            nativeSessionId: selected.nativeSessionId
+          });
+        } else {
+          setConversationMode(ownedId, 'raw');
+        }
+        return;
+      }
+      void ensureStructuredConversation({
+        ownedId,
+        provider,
+        cwd: selected.cwd,
+        nativeSessionId: selected.nativeSessionId
+      }).catch((error) => {
+        rail.error = `could not open structured ${provider}: ${describeError(error)}`;
+      });
+    }
   }
 
   /** EXPLICIT IO: adopt a scanned session, spawn its PTY, replay the resume command. */
@@ -750,6 +817,8 @@
     pendingHosts.delete(ownedId);
     awaitingReattach.delete(ownedId);
     removeOwnedSession(ownedId);
+    removeConversationSession(ownedId);
+    stopConversationTranscriptMirror(ownedId);
     // A removed row takes its stack tag with it, rather than leaving one
     // pointing at a session that is gone.
     noteSessionRemoved(ownedId);
@@ -767,6 +836,7 @@
     // paints in the theme it sets.
     applyStoredTheme();
     disposed = false;
+    void startConversationEvents();
     // Honour where the reader last put the Problems list. The frame and the
     // tool column both mount before this runs, so both have handed over their
     // controls by now. Without it the bottom strip comes back open on every
@@ -876,6 +946,7 @@
       // last chance to remember what the session on screen had open.
       if (!disposed && rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
       disposed = true;
+      stopConversationEvents();
       // dispose() drops views + the listener ONLY. Every PTY survives.
       service?.dispose();
       service = null;
@@ -937,7 +1008,7 @@
        a hidden host, where one character measures zero pixels wide, so the fit
        that runs when the panel is shown does nothing. The surface says when a
        host appears, changes size, or the terminal font lands. -->
-  <TerminalSurface
+  <ConversationSurface
     owned={rail.owned}
     activeOwnedId={rail.activeOwnedId}
     {registerHost}

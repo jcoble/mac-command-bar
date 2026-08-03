@@ -104,6 +104,10 @@ export type SourceGitDiff = {
   status: string;
   diff: string;
   isBinary: boolean;
+  /** Full bounded text from HEAD (or the selected commit's first parent). */
+  originalContent: string | null;
+  /** Full bounded text from the working tree (or the selected commit). */
+  modifiedContent: string | null;
 };
 
 export type ProjectWorktree = {
@@ -520,6 +524,29 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
     language: record.language,
     byteCount: record.byteCount
   };
+}
+
+export async function readNativeCsharpFileFromTauri(
+  root: string,
+  path: string
+): Promise<SourcePreview | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourcePreview>('read_native_csharp_file', { root, path });
+}
+
+export async function ensureNativeCsharpLanguageClientFromTauri(
+  root: string
+): Promise<{ wsUrl: string; root: string } | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<{ wsUrl: string; root: string }>('ensure_native_csharp_language_client', { root });
+}
+
+export async function markNativeCsharpLanguageClientReadyFromTauri(root: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('mark_native_csharp_language_client_ready', { root });
 }
 
 export async function writeSourceToTauri(

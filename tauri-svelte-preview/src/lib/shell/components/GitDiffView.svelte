@@ -8,15 +8,13 @@
    * `gitService`, which the panel and the integrator drive. Nothing is loaded or
    * measured while hidden, so it is safe inside a parked (display:none) host.
    *
-   * It renders the diff as text with the added and removed lines coloured, which
-   * is the honest view of what the backend gives us: a unified diff carries only
-   * a few lines of context around each change, so a side-by-side editor would be
-   * showing fragments of the file with the wrong line numbers. The parsed
-   * `before`/`after` strings are ready in `parseUnifiedDiff` for the day a
-   * side-by-side view is added.
+   * Text files use Monaco's real diff editor with full bounded models supplied
+   * by Rust. The unified-text renderer stays only as a fallback for an older
+   * backend or a file whose full models are intentionally unavailable.
    */
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { parseUnifiedDiff, summarizeParsedDiff } from '$lib/shell/git/parseUnifiedDiff';
+  import NativeGitDiffEditor from '$lib/shell/components/git/NativeGitDiffEditor.svelte';
 
   /** Long diffs are trimmed so one huge file cannot stall the panel. */
   const MAX_RENDERED_LINES = 2000;
@@ -24,6 +22,13 @@
   const diff = $derived(gitPanel.selectedDiff);
   const parsed = $derived(diff ? parseUnifiedDiff(diff.diff) : null);
   const summary = $derived(parsed ? summarizeParsedDiff(parsed) : '');
+  const hasNativeModels = $derived(
+    diff?.originalContent !== null &&
+      diff?.originalContent !== undefined &&
+      diff?.modifiedContent !== null &&
+      diff?.modifiedContent !== undefined &&
+      Boolean(gitPanel.root)
+  );
   const renderedLineCount = $derived(
     parsed ? parsed.hunks.reduce((total, hunk) => total + hunk.lines.length, 0) : 0
   );
@@ -76,6 +81,15 @@
       <p class="notice">This is a binary file, so there is no line-by-line comparison.</p>
     {:else if parsed.isEmpty}
       <p class="notice">This file has no line changes compared with the last commit.</p>
+    {:else if hasNativeModels && diff && gitPanel.root}
+      <div class="native-body">
+        <NativeGitDiffEditor
+          root={gitPanel.root}
+          relativePath={diff.relativePath}
+          originalContent={diff.originalContent ?? ''}
+          modifiedContent={diff.modifiedContent ?? ''}
+        />
+      </div>
     {:else}
       <div class="body">
         {#each sections as section, sectionIndex (sectionIndex)}
@@ -163,6 +177,12 @@
     min-height: 0;
     overflow: auto;
     padding-bottom: 10px;
+  }
+
+  .native-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
   }
 
   .section-label {

@@ -1,8 +1,6 @@
 <script lang="ts">
 	import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
-	import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-	import "monaco-editor/esm/vs/editor/contrib/gotoSymbol/browser/goToCommands";
-	import "monaco-editor/esm/vs/editor/standalone/browser/referenceSearch/standaloneReferenceSearch";
+	import "@codingame/monaco-vscode-api/vscode/vs/editor/contrib/gotoSymbol/browser/goToCommands";
 	// Deep imports for the lazy target-model resolver (Task A2, design-monaco.md §4.2,
 	// Route 1). The standalone `ITextModelService` is a global eager singleton
 	// (standaloneServices.js: registerSingleton(ITextModelService, …, Eager)) and is
@@ -10,18 +8,13 @@
 	// (referencesWidget.js __param(4, ITextModelService) → DataSource →
 	// FileReferences.resolve → createModelReference). Overriding its on-miss behaviour
 	// makes peek read each file group lazily on expand instead of eagerly up front.
-	import { StandaloneServices } from "monaco-editor/esm/vs/editor/standalone/browser/standaloneServices";
-	import { ITextModelService } from "monaco-editor/esm/vs/editor/common/services/resolverService";
-	import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-	import TypeScriptWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
-	import "monaco-editor/min/vs/editor/editor.main.css";
+	import { ITextModelService, StandaloneServices } from "@codingame/monaco-vscode-api/services";
 	import { onDestroy, onMount } from "svelte";
 	import {
 		formatSourceCodeLensTitle,
 		settledSourceCodeLensCount,
 		sourceCodeLensCountKey,
 		sourceCodeLensId,
-		sourceCodeLensPendingTitle,
 	} from "./sourceCodeLensKeys";
 	import {
 		dotnetWorkspaceCommandIds,
@@ -31,6 +24,10 @@
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
 	import { listThemes } from "$lib/shell/themes/themeRegistry";
 	import { currentTheme, registerMonacoApplier } from "$lib/shell/themes/themeService";
+	import {
+		configureMonacoWorkers,
+		monacoVscodeApiIsInitialized,
+	} from "$lib/shell/editor/monacoWorkers";
 	import { isNativeTauriRuntime } from "./tauriSource";
 	import {
 		extractSourceSemanticTokens,
@@ -207,7 +204,7 @@
 		executeCommand: (id: string, ...args: unknown[]) => unknown;
 	};
 
-	type TypeScriptContribution = typeof import("monaco-editor/esm/vs/language/typescript/monaco.contribution");
+	type TypeScriptContribution = typeof import("@codingame/monaco-vscode-standalone-typescript-language-features");
 
 	type Props = {
 		preview: SourcePreview;
@@ -226,6 +223,7 @@
 			lineHeight?: number;
 		};
 		externalDiagnostics?: SourceDiagnostic[];
+		nativeCsharpLanguageClient?: boolean;
 		loading?: boolean;
 		targetLine?: number | null;
 		targetLineRequestId?: number;
@@ -276,6 +274,7 @@
 		editable = false,
 		appearanceOverride,
 		externalDiagnostics = [],
+		nativeCsharpLanguageClient = false,
 		loading = false,
 		targetLine = null,
 		targetLineRequestId = 0,
@@ -372,10 +371,15 @@
 	const externalTargetModelLru = new Map<string, Monaco.editor.ITextModel>();
 	// The standalone text-model resolver we shim for lazy materialization. Saved so
 	// we can restore the original on destroy and delegate the wrap-as-reference work.
+	type ModelReference<T> = {
+		object: T;
+		dispose(): void;
+	};
+
 	type StandaloneTextModelResolver = {
 		createModelReference: (
 			resource: Monaco.Uri
-		) => Promise<Monaco.editor.IReference<{ object: Monaco.editor.ITextModel }>>;
+		) => Promise<ModelReference<{ object: Monaco.editor.ITextModel }>>;
 	};
 	let textModelResolverService: StandaloneTextModelResolver | null = null;
 	let originalCreateModelReference:
@@ -464,7 +468,9 @@
 	 */
 	const disposeThemeApplier = registerMonacoApplier((theme) => {
 		activeTheme = theme;
-		monacoApi?.editor.setTheme(theme.monaco.id);
+		if (!monacoVscodeApiIsInitialized()) {
+			monacoApi?.editor.setTheme(theme.monaco.id);
+		}
 	});
 	/** The colour behind the editor before Monaco has painted a frame. It follows
 	 * the theme, or a Dracula editor flashes Houston's background on the way in. */
@@ -478,6 +484,11 @@
 		"rust",
 		"html",
 	];
+	function customProviderLanguageIDs(): string[] {
+		return nativeCsharpLanguageClient
+			? sourceLspMonacoLanguageIDs.filter((language) => language !== "csharp")
+			: sourceLspMonacoLanguageIDs;
+	}
 	const sourceCodeLensSymbolKinds = new Set([
 		"class",
 		"constructor",
@@ -492,17 +503,7 @@
 	]);
 
 	function installWorker() {
-		const target = self as unknown as {
-			MonacoEnvironment?: { getWorker: (_moduleId: string, _label: string) => Worker };
-		};
-
-		target.MonacoEnvironment = {
-			getWorker: (_moduleId, label) => {
-				if (label === "json") return new JsonWorker();
-				if (label === "typescript" || label === "javascript") return new TypeScriptWorker();
-				return new EditorWorker();
-			},
-		};
+		configureMonacoWorkers();
 	}
 
 	/**
@@ -512,6 +513,7 @@
 	 * however many editors exist.
 	 */
 	function configureMonaco(monaco: typeof Monaco) {
+		if (monacoVscodeApiIsInitialized()) return;
 		for (const theme of listThemes()) {
 			const { id, ...definition } = theme.monaco;
 			monaco.editor.defineTheme(id, {
@@ -557,7 +559,7 @@
 	function registerSourceSemanticTokens(monaco: typeof Monaco) {
 		semanticTokensDisposable?.dispose();
 		semanticTokensDisposable = monaco.languages.registerDocumentSemanticTokensProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				getLegend: () => ({
 					tokenTypes: [...sourceSemanticTokenLegend.tokenTypes],
@@ -580,7 +582,7 @@
 	function registerSourceHoverProvider(monaco: typeof Monaco) {
 		hoverProviderDisposable?.dispose();
 		hoverProviderDisposable = monaco.languages.registerHoverProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideHover: async (model, position) => {
 					const word = model.getWordAtPosition(position);
@@ -668,7 +670,7 @@
 	function registerSourceDefinitionProvider(monaco: typeof Monaco) {
 		definitionProviderDisposable?.dispose();
 		definitionProviderDisposable = monaco.languages.registerDefinitionProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideDefinition: async (model, position, token) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -696,7 +698,7 @@
 	function registerSourceReferenceProvider(monaco: typeof Monaco) {
 		referenceProviderDisposable?.dispose();
 		referenceProviderDisposable = monaco.languages.registerReferenceProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideReferences: async (model, position, _context, token) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -737,6 +739,15 @@
 					return { lenses: [], dispose() {} };
 				}
 
+				const workspaceLenses = dotnetWorkspaceCodeLenses(monaco, model);
+				// Reference counts are intentionally disconnected unless a caller
+				// explicitly supplies the custom counter. This keeps the retained
+				// implementation dormant while the VS Code-compatible CodeLens path
+				// is evaluated, and prevents placeholder "0 references" rows.
+				if (!onReferenceCountLookup) {
+					return { lenses: workspaceLenses, dispose() {} };
+				}
+
 				requestCodeLensNamedSymbols(model);
 				const modelUri = model.uri.toString();
 				const waitingForAuthoritativeAnchors =
@@ -748,7 +759,7 @@
 
 				return {
 					lenses: [
-						...dotnetWorkspaceCodeLenses(monaco, model),
+						...workspaceLenses,
 						...spots.map((spot) => ({
 							id: sourceCodeLensId(spot),
 							range: new monaco.Range(spot.line, 1, spot.line, 1),
@@ -768,7 +779,7 @@
 		};
 
 		codeLensProviderDisposable = monaco.languages.registerCodeLensProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			sourceCodeLensProvider
 		);
 	}
@@ -828,15 +839,9 @@
 		spot: SourceEditorLookupRequest
 	): Monaco.languages.Command | undefined {
 		const counted = codeLensCounts.get(sourceCodeLensCountKey(model.uri.toString(), spot));
-		// Match VS Code: zero is the placeholder while the Roslyn answer is still
-		// arriving, and remains the correct display when the settled answer is zero.
-		if (counted === undefined) {
-			return {
-				id: codeLensReferenceCommandId,
-				title: sourceCodeLensPendingTitle,
-				arguments: [spot],
-			};
-		}
+		// Match VS Code: an unresolved Roslyn request has no CodeLens row. A real
+		// settled zero is still displayed below as "0 references".
+		if (counted === undefined) return undefined;
 		// We asked and were told the number cannot be worked out. Nothing on the
 		// row beats a wrong number on it.
 		if (counted === null) return undefined;
@@ -903,13 +908,19 @@
 			return;
 		}
 
-		if (answer && typeof (answer as Promise<unknown>).then === "function") {
+		if (isPromiseLike<number | SourceEditorReferenceCount | null>(answer)) {
 			void Promise.resolve(answer)
 				.then((settled) => acceptCountAnswer(modelUri, key, requestId, settled))
 				.catch(() => acceptCountAnswer(modelUri, key, requestId, null));
 			return;
 		}
 		acceptCountAnswer(modelUri, key, requestId, answer);
+	}
+
+	function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+		return Boolean(
+			value && typeof (value as { then?: unknown }).then === "function"
+		);
 	}
 
 	function acceptCountAnswer(
@@ -1062,7 +1073,7 @@
 	function registerSourceDocumentHighlightProvider(monaco: typeof Monaco) {
 		documentHighlightProviderDisposable?.dispose();
 		documentHighlightProviderDisposable = monaco.languages.registerDocumentHighlightProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideDocumentHighlights: async (model, position) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -1080,7 +1091,7 @@
 	function registerSourceImplementationProvider(monaco: typeof Monaco) {
 		implementationProviderDisposable?.dispose();
 		implementationProviderDisposable = monaco.languages.registerImplementationProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideImplementation: async (model, position, token) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -1107,7 +1118,7 @@
 	function registerSourceTypeDefinitionProvider(monaco: typeof Monaco) {
 		typeDefinitionProviderDisposable?.dispose();
 		typeDefinitionProviderDisposable = monaco.languages.registerTypeDefinitionProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideTypeDefinition: async (model, position, token) => {
 					const request = lookupRequestForModelPosition(model, position);
@@ -1134,7 +1145,7 @@
 	function registerSourceFormattingProvider(monaco: typeof Monaco) {
 		formattingProviderDisposable?.dispose();
 		formattingProviderDisposable = monaco.languages.registerDocumentFormattingEditProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideDocumentFormattingEdits: async () => {
 					const edits = await onFormatDocument?.();
@@ -1147,7 +1158,7 @@
 	function registerSourceRenameProvider(monaco: typeof Monaco) {
 		renameProviderDisposable?.dispose();
 		renameProviderDisposable = monaco.languages.registerRenameProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideRenameEdits: async (model, position, newName) => {
 					const normalizedName = newName.trim();
@@ -1176,7 +1187,7 @@
 	function registerSourceCodeActionProvider(monaco: typeof Monaco) {
 		codeActionProviderDisposable?.dispose();
 		codeActionProviderDisposable = monaco.languages.registerCodeActionProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideCodeActions: async (_model, range, context) => {
 					const actions = await onCodeActionLookup?.({
@@ -1210,7 +1221,7 @@
 	function registerSourceSignatureHelpProvider(monaco: typeof Monaco) {
 		signatureHelpProviderDisposable?.dispose();
 		signatureHelpProviderDisposable = monaco.languages.registerSignatureHelpProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				signatureHelpTriggerCharacters: ["(", ",", "<"],
 				signatureHelpRetriggerCharacters: [","],
@@ -1231,7 +1242,7 @@
 	function registerSourceInlayHintsProvider(monaco: typeof Monaco) {
 		inlayHintsProviderDisposable?.dispose();
 		inlayHintsProviderDisposable = monaco.languages.registerInlayHintsProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				displayName: "MacCommandBar LSP",
 				provideInlayHints: async (_model, range) => {
@@ -1254,7 +1265,7 @@
 	function registerSourceCompletionProvider(monaco: typeof Monaco) {
 		completionProviderDisposable?.dispose();
 		completionProviderDisposable = monaco.languages.registerCompletionItemProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				triggerCharacters: [".", ":", "<", '"', "'", "/"],
 				provideCompletionItems: async (model, position) => {
@@ -1281,7 +1292,7 @@
 	function registerSourceDocumentSymbolProvider(monaco: typeof Monaco) {
 		documentSymbolProviderDisposable?.dispose();
 		documentSymbolProviderDisposable = monaco.languages.registerDocumentSymbolProvider(
-			sourceLspMonacoLanguageIDs,
+			customProviderLanguageIDs(),
 			{
 				provideDocumentSymbols: (model) =>
 					extractSourceSymbols(previewForModel(model), model.getValue()).map((symbol) =>
@@ -1697,6 +1708,7 @@
 			name: symbol.name,
 			detail: symbol.detail,
 			kind: sourceSymbolKind(monaco, symbol.kind),
+			tags: [],
 			range,
 			selectionRange: range,
 		};
@@ -1807,9 +1819,13 @@
 			// The theme in force, NOT the shipped one: this runs again whenever the
 			// font changes, and naming the shipped theme here would snap a switched
 			// editor back to it mid-session.
-			theme: activeTheme.monaco.id,
+			...(monacoVscodeApiIsInitialized()
+				? {}
+				: { theme: activeTheme.monaco.id }),
 		});
-		monacoApi.editor.setTheme(activeTheme.monaco.id);
+		if (!monacoVscodeApiIsInitialized()) {
+			monacoApi.editor.setTheme(activeTheme.monaco.id);
+		}
 	}
 
 	function applyPreview() {
@@ -2416,42 +2432,14 @@
 		window.addEventListener("unhandledrejection", handleMonacoCancellationRejection);
 		installWorker();
 
-		const modules = await Promise.all([
+		const vscodeServicesReady = monacoVscodeApiIsInitialized();
+		const [monaco, _standaloneLanguages, _jsonLanguage, typeScriptLanguage] = await Promise.all([
 			import("monaco-editor/esm/vs/editor/editor.api"),
-			import("monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/css/css.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/dart/dart.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/fsharp/fsharp.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/go/go.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/graphql/graphql.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/hcl/hcl.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/html/html.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/ini/ini.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/java/java.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/kotlin/kotlin.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/less/less.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/lua/lua.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/mdx/mdx.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/php/php.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/powershell/powershell.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/protobuf/protobuf.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/python/python.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/razor/razor.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/rust/rust.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/scss/scss.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/shell/shell.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/sql/sql.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/swift/swift.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/xml/xml.contribution"),
-			import("monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution"),
-			import("monaco-editor/esm/vs/language/json/monaco.contribution"),
-			import("monaco-editor/esm/vs/language/typescript/monaco.contribution"),
+			vscodeServicesReady
+				? Promise.resolve(null)
+				: import("@codingame/monaco-vscode-standalone-languages"),
+			import("@codingame/monaco-vscode-standalone-json-language-features"),
+			import("@codingame/monaco-vscode-standalone-typescript-language-features"),
 		]);
 		if (
 			componentDestroyed ||
@@ -2460,12 +2448,11 @@
 		) {
 			return;
 		}
-		const monaco = modules[0] as typeof Monaco;
-		const typeScriptLanguage = modules[modules.length - 1] as TypeScriptContribution;
-
 		monacoApi = monaco;
 		configureMonaco(monaco);
-		configureTypeScriptLanguageService(typeScriptLanguage);
+		if (typeScriptLanguage) {
+			configureTypeScriptLanguageService(typeScriptLanguage);
+		}
 		registerSourceSemanticTokens(monaco);
 		registerSourceHoverProvider(monaco);
 		registerSourceDefinitionProvider(monaco);
@@ -2524,7 +2511,9 @@
 			smoothScrolling: true,
 			stickyScroll: { enabled: true },
 			tabSize: 4,
-			theme: activeTheme.monaco.id,
+			...(monacoVscodeApiIsInitialized()
+				? {}
+				: { theme: activeTheme.monaco.id }),
 			wordWrap: "off",
 		});
 
@@ -2532,19 +2521,27 @@
 			editor.addCommand(0, (_accessor, action?: SourceCodeAction) => {
 				if (action) void onWorkspaceEditAction?.(action);
 			}) ?? "";
-		registerSourceCodeLensReferenceCommand(monaco);
-		registerDotnetWorkspaceCodeLensCommands(monaco);
-		registerSourceCodeLensProvider(monaco);
+		if (!nativeCsharpLanguageClient && onReferenceCountLookup) {
+			registerSourceCodeLensReferenceCommand(monaco);
+		}
+		if (!nativeCsharpLanguageClient) {
+			registerDotnetWorkspaceCodeLensCommands(monaco);
+			registerSourceCodeLensProvider(monaco);
+		}
 		installExternalEditorOpener(monaco);
-		installLazyTargetModelResolver(monaco);
+		if (!nativeCsharpLanguageClient) installLazyTargetModelResolver(monaco);
 
 		editorActionDisposables = [
-			editor.addAction({
-				id: codeLensReferenceCommandId,
-				label: "Find CodeLens References",
-				run: (_editor, request?: SourceEditorLookupRequest) =>
-					runCodeLensReferenceCommand(monaco, request),
-			}),
+			...(onReferenceCountLookup
+				? [
+						editor.addAction({
+							id: codeLensReferenceCommandId,
+							label: "Find CodeLens References",
+							run: (_editor, request?: SourceEditorLookupRequest) =>
+								runCodeLensReferenceCommand(monaco, request),
+						}),
+					]
+				: []),
 			editor.addAction({
 				id: "mcb.source.goToDefinition",
 				label: "Go to Definition",

@@ -1145,7 +1145,8 @@ assert.deepEqual(parseQuickOpenQuery('FormatDetector:0'), {
 assert.equal(monacoLanguageForSource('csharp'), 'csharp');
 assert.equal(monacoLanguageForSource('tsx'), 'typescript');
 assert.equal(monacoLanguageForSource('jsx'), 'javascript');
-assert.equal(monacoLanguageForSource('svelte'), 'html');
+assert.equal(monacoLanguageForSource('svelte'), 'svelte');
+assert.equal(monacoLanguageForSource('shell'), 'shellscript');
 assert.equal(monacoLanguageForSource('toml'), 'ini');
 assert.equal(monacoLanguageForSource('plain'), 'plaintext');
 assert.equal(sourceSupportsLanguageIntelligence('typescript'), true);

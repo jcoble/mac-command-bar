@@ -113,7 +113,10 @@
       return;
     }
     selectPath(node.file.path);
-    requestOpenFile({ path: node.file.path });
+    requestOpenFile({
+      path: node.file.path,
+      projectRoot: explorer.root ?? undefined
+    });
   }
 
   function onRetry(): void {

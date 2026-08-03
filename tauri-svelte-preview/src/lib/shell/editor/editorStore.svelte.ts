@@ -114,9 +114,27 @@ export function markEditorFileLoading(path: string): void {
 export function setEditorFilePreview(path: string, preview: SourcePreview): void {
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     preview,
+    draftContent: preview.content,
+    dirty: false,
+    saving: false,
     loading: false,
     error: null
   });
+}
+
+/** Keep an unsaved Monaco edit with the session that owns this editor tab. */
+export function setEditorFileDraft(path: string, content: string): void {
+  const file = editorFileFor(path);
+  if (!file?.preview) return;
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
+    draftContent: content,
+    dirty: content !== file.preview.content
+  });
+}
+
+/** Mark or clear the save spinner without replacing the draft. */
+export function setEditorFileSaving(path: string, saving: boolean): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, { saving });
 }
 
 /** A read failed: `message` is shown to the user as-is, so keep it plain. */

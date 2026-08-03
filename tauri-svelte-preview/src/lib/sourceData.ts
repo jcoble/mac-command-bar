@@ -1486,7 +1486,9 @@ export function monacoLanguageForSource(language: SourceLanguage): string {
     case 'jsx':
       return 'javascript';
     case 'svelte':
-      return 'html';
+      return 'svelte';
+    case 'shell':
+      return 'shellscript';
     case 'toml':
       return 'ini';
     case 'plain':
@@ -1511,6 +1513,11 @@ export function sourceLanguageForPath(path: string): SourceLanguage {
       return 'jsx';
     case 'svelte':
       return 'svelte';
+    case 'html':
+    case 'htm':
+      return 'html';
+    case 'css':
+      return 'css';
     case 'json':
       return 'json';
     case 'md':

@@ -25,6 +25,7 @@
  * works for this run, it just will not come back after a reload.
  */
 import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
+import type { SessionBrowserWorkspace } from '../sessionWorkspaces.ts';
 
 /** localStorage key holding the last URL the browser panel showed. */
 export const BROWSER_URL_STORAGE_KEY = 'mac-command-bar.next.browser.url';
@@ -98,6 +99,29 @@ export function loadStoredBrowserUrl(): string {
   } catch {
     return '';
   }
+}
+
+/** Capture the state that belongs to the currently selected owned session. */
+export function captureBrowserState(): SessionBrowserWorkspace {
+  return {
+    url: browser.url,
+    inputUrl: browser.inputUrl,
+    activated: browser.activated
+  };
+}
+
+/**
+ * Put one owned session's Browser back on screen without touching the global
+ * legacy URL key. Session switching is bookkeeping, not a new navigation.
+ */
+export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | undefined): void {
+  const nextUrl = normalizeBrowserUrl(snapshot?.url ?? '');
+  const changed = browser.url !== nextUrl;
+  browser.url = nextUrl;
+  browser.inputUrl = snapshot?.inputUrl ?? nextUrl;
+  browser.activated = snapshot?.activated === true && nextUrl.length > 0;
+  browser.error = '';
+  if (changed) browser.frameKey += 1;
 }
 
 // ── Mutations ─────────────────────────────────────────────────────────────────

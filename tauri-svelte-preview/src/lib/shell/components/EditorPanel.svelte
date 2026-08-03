@@ -43,8 +43,10 @@
     openEditorFile,
     revealEditorLine,
     setActiveEditorFile,
+    setEditorFileDraft,
     setEditorFileError,
     setEditorFilePreview,
+    setEditorFileSaving,
     setEditorSymbols
   } from '$lib/shell/editor/editorStore.svelte';
   import { needsRead } from '$lib/shell/editor/editorStoreOps';
@@ -57,7 +59,8 @@
     isNativeTauriRuntime,
     readSourceFromTauri,
     readSourceLspStatusFromTauri,
-    warmSourceLspForRootFromTauri
+    warmSourceLspForRootFromTauri,
+    writeSourceToTauri
   } from '$lib/tauriSource';
   import {
     dotnetWorkspaceSessionRequest,
@@ -94,6 +97,10 @@
   let CodeEditor = $state<CodeEditorComponent | null>(null);
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
+  let nativeCsharpRoot = $state<string | null>(null);
+  let nativeCsharpPath = $state<string | null>(null);
+  let stopNativeCsharpActions: (() => void) | null = null;
+  let stopNativeCsharpDiagnostics: (() => void) | null = null;
 
   /** Paths whose read is in flight, so a double click cannot read twice. */
   const readsInFlight = new Set<string>();
@@ -103,6 +110,11 @@
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
+  const nativeCsharpActive = $derived(
+    activeFile?.language === 'csharp' &&
+      nativeCsharpRoot === editorState.projectRoot &&
+      nativeCsharpPath === activeFile.path
+  );
 
   /**
    * What the language server says is wrong, per file. Kept per file rather than
@@ -311,16 +323,84 @@
 
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {
-    if (CodeEditor || loadingEditorComponent) return;
+    if (loadingEditorComponent) return;
     loadingEditorComponent = true;
     try {
-      const module = await import('$lib/MonacoSourceEditor.svelte');
-      if (!destroyed) CodeEditor = module.default;
+      const root = editorState.projectRoot;
+      let native: typeof import('$lib/shell/editor/csharpLanguageClient') | null = null;
+      if (root) {
+        try {
+          const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
+          await editorServices.prepareNativeCsharpEditorServices(root);
+          if (isNativeTauriRuntime()) native = editorServices;
+        } catch (error) {
+          console.error('Could not prepare Monaco editor services', error);
+        }
+      }
+      if (!CodeEditor) {
+        const module = await import('$lib/MonacoSourceEditor.svelte');
+        if (!destroyed) CodeEditor = module.default;
+      }
+      // Roslyn project loading is deliberately not on the file-rendering path.
+      // The editor appears as soon as Monaco is ready; native CodeLens cuts over
+      // only after this background attachment has opened the real document.
+      if (native && activeFileLanguage() === 'csharp' && editorState.activePath) {
+        void ensureNativeCsharpForActiveFile(editorState.activePath, native).catch((error) => {
+          console.error('Could not attach the native C# document', error);
+        });
+      }
     } catch (error) {
       if (!destroyed) editorLoadError = `Could not start the code editor: ${describeError(error)}`;
     } finally {
       loadingEditorComponent = false;
     }
+  }
+
+  async function ensureNativeCsharpForActiveFile(
+    path = editorState.activePath,
+    loadedNative?: typeof import('$lib/shell/editor/csharpLanguageClient')
+  ): Promise<void> {
+    const root = editorState.projectRoot;
+    const entry = path ? editorFileFor(path) : null;
+    if (
+      !root ||
+      !path ||
+      entry?.language !== 'csharp' ||
+      !isNativeTauriRuntime() ||
+      (nativeCsharpRoot === root && nativeCsharpPath === path)
+    ) {
+      return;
+    }
+    const native = loadedNative ?? (await import('$lib/shell/editor/csharpLanguageClient'));
+    const ensured = await native.ensureNativeCsharpDocument(root, path);
+    if (
+      destroyed ||
+      editorState.projectRoot !== root ||
+      editorState.activePath !== path ||
+      activeFileLanguage() !== 'csharp'
+    ) {
+      return;
+    }
+    nativeCsharpRoot = ensured.root;
+    nativeCsharpPath = ensured.path;
+    stopNativeCsharpActions?.();
+    stopNativeCsharpActions = native.setNativeCsharpDocumentActions({
+      build: (documentUri) => runDotnetWorkspaceAction('build', documentUri),
+      test: (documentUri) => runDotnetWorkspaceAction('test', documentUri)
+    });
+    stopNativeCsharpDiagnostics?.();
+    stopNativeCsharpDiagnostics = native.subscribeNativeCsharpDiagnostics((diagnostics) => {
+      if (destroyed || editorState.projectRoot !== root) return;
+      const next = { ...diagnosticsByPath };
+      for (const path of Object.keys(next)) {
+        if (path.endsWith('.cs')) delete next[path];
+      }
+      for (const diagnostic of diagnostics) {
+        const current = next[diagnostic.path] ?? [];
+        next[diagnostic.path] = [...current, diagnostic];
+      }
+      diagnosticsByPath = next;
+    });
   }
 
   /**
@@ -358,7 +438,9 @@
     if (readsInFlight.has(record.path)) return;
     readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
-    warmLanguageServer(editorState.projectRoot);
+    if (record.language !== 'csharp' || !isNativeTauriRuntime()) {
+      warmLanguageServer(editorState.projectRoot);
+    }
     try {
       // The record has to be built first: the read wrapper copies the relative
       // path, language and size back out of it onto the preview it returns.
@@ -378,6 +460,29 @@
       readsInFlight.delete(record.path);
       syncIntelligenceWithActiveFile();
       void refreshEditorIntelligenceForActiveFile();
+    }
+  }
+
+  function updateActiveDraft(content: string): void {
+    const file = activeEditorFile();
+    if (!file) return;
+    setEditorFileDraft(file.path, content);
+  }
+
+  async function saveActiveFile(): Promise<void> {
+    const file = activeEditorFile();
+    if (!file?.preview || !file.dirty || file.saving) return;
+    const content = file.draftContent ?? file.preview.content;
+    setEditorFileSaving(file.path, true);
+    try {
+      const saved = await writeSourceToTauri(recordForPath(file.path), content);
+      if (!saved) throw new Error('The file could not be written from here.');
+      if (!destroyed && editorFileFor(file.path)) setEditorFilePreview(file.path, saved);
+    } catch (error) {
+      if (!destroyed && editorFileFor(file.path)) {
+        setEditorFileSaving(file.path, false);
+        setEditorFileError(file.path, `Could not save this file: ${describeError(error)}`);
+      }
     }
   }
 
@@ -402,9 +507,13 @@
    *
    * Returns whether the file was actually taken on — a blank path opens nothing.
    */
-  function openPath(path: string, line?: number | null): boolean {
+  function openPath(
+    path: string,
+    line?: number | null,
+    projectRoot?: string
+  ): boolean {
     if (!path.trim()) return false;
-    activateEditor();
+    activateEditor(projectRoot);
     const record = recordForPath(path);
     const entry = openEditorFile(record);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
@@ -417,7 +526,7 @@
   function handleOpenFileRequest(request: OpenFileRequest): void {
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
-    if (openPath(request.path, request.line)) onFileOpened?.();
+    if (openPath(request.path, request.line, request.projectRoot)) onFileOpened?.();
   }
 
   function selectOpenFile(path: string): void {
@@ -425,6 +534,7 @@
     syncIntelligenceWithActiveFile();
     void refreshEditorIntelligenceForActiveFile();
     const entry = editorFileFor(path);
+    if (entry?.language === 'csharp') void ensureCodeEditor();
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(recordForPath(path));
     }
@@ -459,9 +569,23 @@
     setEditorSymbols(symbols);
   }
 
-  async function runDotnetWorkspaceAction(action: DotnetWorkspaceAction): Promise<void> {
+  async function runDotnetWorkspaceAction(
+    action: DotnetWorkspaceAction,
+    documentUri?: string
+  ): Promise<void> {
     const root = editorState.projectRoot;
     if (!root) throw new Error('No workspace is active.');
+    if (documentUri) {
+      const documentPath = decodeURIComponent(new URL(documentUri).pathname);
+      const normalizedRoot = root.replaceAll('\\', '/').replace(/\/+$/, '');
+      const normalizedDocument = documentPath.replaceAll('\\', '/');
+      if (
+        normalizedDocument !== normalizedRoot &&
+        !normalizedDocument.startsWith(`${normalizedRoot}/`)
+      ) {
+        throw new Error('The CodeLens document is outside the active workspace.');
+      }
+    }
     if (!onStartWorkspaceCommand) {
       throw new Error('The shell has not wired workspace commands to terminal sessions.');
     }
@@ -490,6 +614,8 @@
       if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
       diagnosticsTimer = null;
       stopStatusUpdates?.();
+      stopNativeCsharpActions?.();
+      stopNativeCsharpDiagnostics?.();
       // Anything still waiting on the server has nowhere to go now.
       languageServerGate.releaseAll();
       unsubscribe();
@@ -558,21 +684,26 @@
         </div>
       {:else if activeFile?.preview}
         {#if CodeEditor}
-          <CodeEditor
-            {...sourceIntelligence.callbacks}
-            onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
-            preview={activeFile.preview}
-            content={activeFile.preview.content}
-            editable={false}
-            loading={activeFile.loading}
-            targetLine={activeFile.targetLine}
-            targetLineRequestId={activeFile.targetLineRequestId}
-            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
-            onExternalNavigation={navigateToExternalSource}
-            onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
-            onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
-            onSymbolsChange={handleSymbolsChange}
-          />
+          {#key nativeCsharpActive}
+            <CodeEditor
+              {...sourceIntelligence.callbacks}
+              onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
+              preview={activeFile.preview}
+              content={activeFile.draftContent ?? activeFile.preview.content}
+              editable={true}
+              loading={activeFile.loading}
+              targetLine={activeFile.targetLine}
+              targetLineRequestId={activeFile.targetLineRequestId}
+              externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
+              nativeCsharpLanguageClient={nativeCsharpActive}
+              onExternalNavigation={navigateToExternalSource}
+              onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
+              onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
+              onContentChange={updateActiveDraft}
+              onSaveRequest={() => void saveActiveFile()}
+              onSymbolsChange={handleSymbolsChange}
+            />
+          {/key}
         {:else}
           <p class="canvas-message">Starting the code editor…</p>
         {/if}
@@ -589,7 +720,13 @@
           · {editorState.symbols.length}
           {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
         {/if}
-        · read only
+        {#if activeFile?.saving}
+          · saving
+        {:else if activeFile?.dirty}
+          · unsaved
+        {:else}
+          · editable
+        {/if}
       </span>
     </div>
   {/if}

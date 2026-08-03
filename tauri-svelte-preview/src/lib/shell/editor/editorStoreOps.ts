@@ -23,6 +23,12 @@ export interface OpenEditorFile {
   language: SourceLanguage;
   /** File contents once read. `null` until the read finishes. */
   preview: SourcePreview | null;
+  /** Current editor text. It can differ from `preview.content` until saved. */
+  draftContent: string | null;
+  /** Whether `draftContent` differs from the last content read or saved. */
+  dirty: boolean;
+  /** A native write is in flight. */
+  saving: boolean;
   /** A read is in flight. */
   loading: boolean;
   /** Why the last read failed, in plain words, or `null`. */
@@ -39,6 +45,9 @@ export interface OpenEditorFile {
 /** Fields of an open file that a load or a reveal may change. */
 export interface OpenEditorFilePatch {
   preview?: SourcePreview | null;
+  draftContent?: string | null;
+  dirty?: boolean;
+  saving?: boolean;
   loading?: boolean;
   error?: string | null;
   targetLine?: number | null;
@@ -52,6 +61,9 @@ export function openEditorFileFromRecord(record: SourceRecord): OpenEditorFile {
     relativePath: record.relativePath,
     language: record.language,
     preview: null,
+    draftContent: null,
+    dirty: false,
+    saving: false,
     loading: false,
     error: null,
     targetLine: null,

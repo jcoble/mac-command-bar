@@ -31,11 +31,31 @@ const stripOf = (...names) => names.reduce((files, name) => upsertOpenFile(files
 {
   const file = openEditorFileFromRecord(recordFor('a.ts'));
   assert.equal(file.preview, null);
+  assert.equal(file.draftContent, null);
+  assert.equal(file.dirty, false);
+  assert.equal(file.saving, false);
   assert.equal(file.loading, false);
   assert.equal(file.error, null);
   assert.equal(file.targetLine, null);
   assert.equal(file.targetLineRequestId, 0);
   assert.equal(needsRead(file), true);
+}
+
+// drafts remain local until save, and dirty is computed against disk content
+{
+  const record = recordFor('draft.ts');
+  let files = [openEditorFileFromRecord(record)];
+  const preview = { ...record, content: 'saved', lineCount: 1 };
+  files = patchOpenFile(files, record.path, {
+    preview,
+    draftContent: preview.content,
+    dirty: false
+  });
+  files = patchOpenFile(files, record.path, { draftContent: 'edited', dirty: true });
+  const edited = findOpenFile(files, record.path);
+  assert.equal(edited.preview.content, 'saved');
+  assert.equal(edited.draftContent, 'edited');
+  assert.equal(edited.dirty, true);
 }
 
 // opening appends in click order; opening the same file again changes nothing

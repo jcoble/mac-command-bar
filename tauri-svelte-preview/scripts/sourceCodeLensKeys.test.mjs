@@ -11,7 +11,6 @@ import {
 	settledSourceCodeLensCount,
 	sourceCodeLensCountKey,
 	sourceCodeLensId,
-	sourceCodeLensPendingTitle,
 	sourceCodeLensSpotFromId
 } from '../src/lib/sourceCodeLensKeys.ts';
 
@@ -21,6 +20,7 @@ import {
 globalThis.$state = (value) => value;
 const {
 	countingReadinessForStatus,
+	referenceCountPersistenceEnabled,
 	semanticCountRetryDelaysMs,
 	semanticCountRetryLimit
 } = await import(
@@ -38,8 +38,14 @@ const editorPanelSource = await readFile(
 	new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
 	'utf8'
 );
-
 const spot = (symbolName, line, column) => ({ symbolName, line, column });
+
+// Match VS Code's cold behavior: there is no reference lens until Roslyn has
+// returned a real count. A settled zero is still formatted and shown later.
+{
+	assert.match(monacoEditorSource, /if \(counted === undefined\) return undefined;/);
+	assert.doesNotMatch(monacoEditorSource, /sourceCodeLensPendingTitle/);
+}
 
 // an id carries the spot back intact when the user clicks the number
 {
@@ -95,9 +101,42 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 }
 
-// Match VS Code's zero placeholder while the Roslyn answer is still arriving.
+// The editor's one source-intelligence service must hand its Roslyn-backed
+// count, anchor, and invalidation callbacks to Monaco. Without these callbacks,
+// removing the pending placeholder would leave no reference lenses forever.
 {
-	assert.equal(sourceCodeLensPendingTitle, '0 references');
+	assert.match(
+		sourceIntelligenceSource,
+		/const callbacks:[\s\S]*?onReferenceCountLookup:\s*countReferencesForCodeLens/
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/const callbacks:[\s\S]*?onCodeLensAnchorLookup:\s*lookupCodeLensAnchors/
+	);
+	assert.match(
+		sourceIntelligenceSource,
+		/const callbacks:[\s\S]*?onReferenceCountsOutOfDate:\s*forgetFileReferenceCounts/
+	);
+	assert.match(
+		monacoEditorSource,
+		/const workspaceLenses = dotnetWorkspaceCodeLenses[\s\S]*?if \(!onReferenceCountLookup\) \{[\s\S]*?return \{ lenses: workspaceLenses/
+	);
+	assert.match(
+		monacoEditorSource,
+		/if \(!nativeCsharpLanguageClient && onReferenceCountLookup\)[\s\S]*?registerSourceCodeLensReferenceCommand/
+	);
+	assert.match(
+		monacoEditorSource,
+		/if \(!nativeCsharpLanguageClient\) \{[\s\S]*?registerSourceCodeLensProvider/
+	);
+}
+
+// A native editor must never repaint a stale count from an earlier app/page
+// lifetime. Roslyn owns native counts; only the browser text counter may use
+// durable storage. Both modes still retain their same-process memory cache.
+{
+	assert.equal(referenceCountPersistenceEnabled(true), false);
+	assert.equal(referenceCountPersistenceEnabled(false), true);
 }
 
 // A superseded request cannot erase a newer Roslyn count, and a transient

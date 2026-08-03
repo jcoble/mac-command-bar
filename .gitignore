@@ -13,5 +13,11 @@ tauri-svelte-preview/src-tauri/target/
 *.xcuserstate
 .DS_Store
 
+# Local agent/editor state (machine-specific, not product source)
+.codex/
+.vscode/
+tauri-svelte-preview/.superpowers/
+docs/superpowers/plans/*.code-workspace
+
 # playwright-cli verification artifacts (regenerable)
 .playwright-cli/

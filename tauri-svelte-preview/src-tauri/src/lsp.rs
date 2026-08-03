@@ -11,7 +11,18 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use axum::extract::ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, oneshot};
 
 const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 const LSP_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_millis(1200);
@@ -30,6 +41,12 @@ const MAX_LSP_LOG_LINES: usize = 200;
 /// Keep the workspace-switching path warm without allowing an unbounded number
 /// of compiler processes. The session rail commonly moves among 3-5 roots.
 const MAX_LSP_WORKSPACES_PER_LANGUAGE: usize = 5;
+/// Project activation only needs enough filesystem discovery to know which
+/// language server to preload. Keep this deliberately shallow and bounded: it
+/// is not a source scan and it never reads file contents.
+const MAX_LSP_PRELOAD_DISCOVERY_DEPTH: usize = 4;
+const MAX_LSP_PRELOAD_DISCOVERY_ENTRIES: usize = 20_000;
+const MAX_NATIVE_CSHARP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
     "csharp",
     "typescript",
@@ -95,6 +112,15 @@ pub(crate) fn set_csharp_language_server_enabled(enabled: bool) -> bool {
 /// May a server for this language be started or reused right now?
 fn language_server_allowed(language_id: &str) -> bool {
     language_id != "csharp" || csharp_language_server_enabled()
+}
+
+/// C# is owned by the VS Code-compatible Monaco language client in the desktop app.
+///
+/// Keep the original stdio router compiled for now, but do not let ordinary source-
+/// intelligence requests or workspace warming start a second Roslyn process beside
+/// the native client. Other languages still use the legacy registry unchanged.
+fn legacy_language_server_allowed(language_id: &str) -> bool {
+    language_id != "csharp" && language_server_allowed(language_id)
 }
 
 /// Did the reader start the app asking to be told how long things take?
@@ -756,7 +782,10 @@ impl LspRouter {
         let Some(value) = params.get("value") else {
             return;
         };
-        let kind = value.get("kind").and_then(Value::as_str).unwrap_or_default();
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
 
         let still_running = {
             let mut jobs = locked(&self.running_jobs);
@@ -1172,7 +1201,13 @@ impl LspConnection {
                 .copied()
                 .unwrap_or(0);
             if times_said > already_said {
-                return Some(diagnostics.by_uri.get(file_uri).cloned().unwrap_or_default());
+                return Some(
+                    diagnostics
+                        .by_uri
+                        .get(file_uri)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
             }
             let now = Instant::now();
             if now >= deadline {
@@ -1358,12 +1393,7 @@ fn ask_the_server(
                     "method": "$/cancelRequest",
                     "params": { "id": id }
                 }));
-                log_lsp_timing(
-                    router,
-                    method,
-                    started,
-                    "took too long and was withdrawn",
-                );
+                log_lsp_timing(router, method, started, "took too long and was withdrawn");
             } else {
                 log_lsp_timing(router, method, started, "took too long");
             }
@@ -1371,7 +1401,12 @@ fn ask_the_server(
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             router.stop_waiting_for(id);
-            log_lsp_timing(router, method, started, "went unanswered because the server stopped");
+            log_lsp_timing(
+                router,
+                method,
+                started,
+                "went unanswered because the server stopped",
+            );
             Err(router
                 .stop_reason()
                 .unwrap_or_else(|| "Language server exited before responding".to_string()))
@@ -1413,7 +1448,46 @@ fn progress_text(value: &Value, field: &str) -> Option<String> {
 #[derive(Clone, Default)]
 pub(crate) struct SourceLspRegistry {
     sessions: Arc<Mutex<HashMap<SourceLspSessionKey, Arc<Mutex<SourceLspSession>>>>>,
+    native_csharp_sessions: Arc<Mutex<HashMap<String, Arc<NativeCsharpSession>>>>,
+    preload_languages_by_root: Arc<Mutex<HashMap<String, Vec<String>>>>,
     next_use: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeCsharpEndpoint {
+    ws_url: String,
+    root: String,
+}
+
+struct NativeCsharpSession {
+    endpoint: NativeCsharpEndpoint,
+    last_used: AtomicU64,
+    shutdown: Mutex<Option<oneshot::Sender<()>>>,
+    stop_clients: broadcast::Sender<()>,
+}
+
+impl Drop for NativeCsharpSession {
+    fn drop(&mut self) {
+        let _ = self.stop_clients.send(());
+        if let Some(shutdown) = locked(&self.shutdown).take() {
+            let _ = shutdown.send(());
+        }
+    }
+}
+
+#[derive(Clone)]
+struct NativeCsharpBridgeState {
+    token: Arc<str>,
+    root: Arc<PathBuf>,
+    server: ResolvedLspServer,
+    connected: Arc<AtomicBool>,
+    stop_clients: broadcast::Sender<()>,
+}
+
+#[derive(Deserialize)]
+struct NativeCsharpAuth {
+    token: String,
 }
 
 /// A warm language-server slot belongs to both a language and a workspace root.
@@ -1448,6 +1522,109 @@ fn lsp_session_key_to_evict(
 }
 
 impl SourceLspRegistry {
+    /// Return the one authenticated native C# language-client endpoint for a
+    /// canonical workspace root. The registry lock covers lookup and insertion,
+    /// so concurrent frontend and Rust warm calls cannot create duplicate slots.
+    pub(crate) fn ensure_native_csharp_endpoint(
+        &self,
+        root: &str,
+    ) -> Result<NativeCsharpEndpoint, String> {
+        if !csharp_language_server_enabled() {
+            return Err("The C# language server is switched off in Settings.".to_string());
+        }
+        let root = normalized_lsp_root(root)
+            .ok_or_else(|| "Project root is not a directory".to_string())?;
+        let use_tick = self.next_use.fetch_add(1, Ordering::Relaxed) + 1;
+
+        let mut sessions = self
+            .native_csharp_sessions
+            .lock()
+            .map_err(|_| "Native C# registry lock poisoned".to_string())?;
+        if let Some(session) = sessions.get(&root) {
+            session.last_used.store(use_tick, Ordering::Relaxed);
+            return Ok(session.endpoint.clone());
+        }
+
+        let server = resolve_server_for_language("csharp")
+            .ok_or_else(|| "roslyn-language-server is not installed or not on PATH".to_string())?;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("Could not bind native C# bridge: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("Could not configure native C# bridge: {error}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("Could not read native C# bridge address: {error}"))?;
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let endpoint = NativeCsharpEndpoint {
+            ws_url: format!("ws://{address}/lsp?token={token}"),
+            root: root.clone(),
+        };
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+        let (stop_clients, _) = broadcast::channel(1);
+        let state = NativeCsharpBridgeState {
+            token: Arc::<str>::from(token),
+            root: Arc::new(PathBuf::from(&root)),
+            server,
+            connected: Arc::new(AtomicBool::new(false)),
+            stop_clients: stop_clients.clone(),
+        };
+        let listener = TcpListener::from_std(listener)
+            .map_err(|error| format!("Could not start native C# bridge: {error}"))?;
+        tauri::async_runtime::spawn(async move {
+            let router = Router::new()
+                .route("/lsp", get(upgrade_native_csharp_lsp))
+                .with_state(state);
+            let server = axum::serve(listener, router).with_graceful_shutdown(async move {
+                let _ = shutdown_receiver.await;
+            });
+            if let Err(error) = server.await {
+                eprintln!("[native-csharp-bridge] {error}");
+            }
+        });
+
+        let session = Arc::new(NativeCsharpSession {
+            endpoint: endpoint.clone(),
+            last_used: AtomicU64::new(use_tick),
+            shutdown: Mutex::new(Some(shutdown_sender)),
+            stop_clients,
+        });
+        let evicted = if sessions.len() >= MAX_LSP_WORKSPACES_PER_LANGUAGE {
+            sessions
+                .iter()
+                .min_by_key(|(_, session)| session.last_used.load(Ordering::Relaxed))
+                .map(|(root, _)| root.clone())
+                .and_then(|root| sessions.remove(&root))
+        } else {
+            None
+        };
+        sessions.insert(root.clone(), session);
+        drop(sessions);
+        drop(evicted);
+        record_language_server_state(
+            "csharp",
+            &root,
+            LanguageServerState::Starting,
+            Some("The native C# client endpoint is ready.".to_string()),
+        );
+        Ok(endpoint)
+    }
+
+    pub(crate) fn mark_native_csharp_client_ready(&self, root: &str) -> Result<(), String> {
+        let root = normalized_lsp_root(root)
+            .ok_or_else(|| "Project root is not a directory".to_string())?;
+        let sessions = self
+            .native_csharp_sessions
+            .lock()
+            .map_err(|_| "Native C# registry lock poisoned".to_string())?;
+        if !sessions.contains_key(&root) {
+            return Err("The native C# language client is not running for this root.".to_string());
+        }
+        drop(sessions);
+        record_language_server_state("csharp", &root, LanguageServerState::Ready, None);
+        Ok(())
+    }
+
     pub(crate) fn find_definitions(
         &self,
         preview: SourceLspPreview,
@@ -1809,10 +1986,9 @@ impl SourceLspRegistry {
         preview: SourceLspPreview,
         request: SourceLspLookupRequest,
     ) -> Result<Vec<SourceLspDiagnostic>, String> {
-        let diagnostics =
-            self.run_on_server(&preview, &request, |connection| {
-                connection.read_diagnostics(&preview)
-            })?;
+        let diagnostics = self.run_on_server(&preview, &request, |connection| {
+            connection.read_diagnostics(&preview)
+        })?;
         Ok(diagnostics.unwrap_or_default())
     }
 
@@ -1885,7 +2061,7 @@ impl SourceLspRegistry {
         // A language whose server the reader has switched off answers nothing,
         // which sends every lookup down to the plain-text tier instead of
         // starting the server behind their back.
-        if !language_server_allowed(&key.language) {
+        if !legacy_language_server_allowed(&key.language) {
             return Ok(None);
         }
 
@@ -1981,14 +2157,27 @@ impl SourceLspRegistry {
                 .filter_map(|key| sessions.remove(&key).map(|session| (key, session)))
                 .collect::<Vec<_>>()
         };
+        let stopped_native = if language_id == "csharp" {
+            let mut sessions = self
+                .native_csharp_sessions
+                .lock()
+                .map_err(|_| "Native C# registry lock poisoned".to_string())?;
+            sessions.drain().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
-        if !stopped.is_empty() {
-            let roots = stopped
+        if !stopped.is_empty() || !stopped_native.is_empty() {
+            let mut roots = stopped
                 .iter()
                 .map(|(key, _)| key.root.clone())
                 .collect::<Vec<_>>();
-            let stopped_count = stopped.len();
+            roots.extend(stopped_native.iter().map(|(root, _)| root.clone()));
+            roots.sort();
+            roots.dedup();
+            let stopped_count = stopped.len() + stopped_native.len();
             drop(stopped);
+            drop(stopped_native);
             // A server stopped because the reader switched it off must say so, not just
             // that it is not running — the two look identical on screen otherwise, and
             // only one of them is something the reader chose.
@@ -2004,12 +2193,7 @@ impl SourceLspRegistry {
                 )
             };
             for root in roots {
-                record_language_server_state(
-                    language_id,
-                    &root,
-                    state,
-                    Some(detail.to_string()),
-                );
+                record_language_server_state(language_id, &root, state, Some(detail.to_string()));
             }
             return Ok(stopped_count);
         }
@@ -2033,17 +2217,18 @@ impl SourceLspRegistry {
         Ok(())
     }
 
-    /// Proactively warm every language that already has a running server at `root`.
+    /// Proactively warm every known language at `root`.
     ///
     /// The frontend calls this on a project switch, before the active file is
-    /// read. Languages never used in this app stay stopped. A workspace already
-    /// in the bounded pool is only touched; a new workspace gets its own warm
-    /// slot without disturbing the roots the reader may switch back to.
+    /// read. Existing server languages follow the reader between roots, while a
+    /// cheap cached project-marker probe lets a C# workspace start Roslyn before
+    /// its first file is opened. A new workspace gets its own bounded warm slot
+    /// without disturbing the roots the reader may switch back to.
     pub(crate) fn warm_running_servers_for_root(&self, root: &str) -> Result<usize, String> {
         let Some(root) = normalized_lsp_root(root) else {
             return Ok(0);
         };
-        let languages = {
+        let mut languages = {
             let sessions = self
                 .sessions
                 .lock()
@@ -2057,9 +2242,19 @@ impl SourceLspRegistry {
             languages
         };
 
+        // The native Monaco client owns C#. Never carry an old C# session into
+        // another workspace or preload another Roslyn through this legacy pool.
+        languages.retain(|language| language != "csharp");
+        let preload_languages = self.preload_languages_for_root(&root)?;
+        for language in preload_languages {
+            if legacy_language_server_allowed(&language) && !languages.contains(&language) {
+                languages.push(language);
+            }
+        }
+
         let mut warmed = 0;
         for language in languages {
-            if !language_server_allowed(&language) {
+            if !legacy_language_server_allowed(&language) {
                 continue;
             }
             let Some(server) = resolve_server_for_language(&language) else {
@@ -2076,6 +2271,29 @@ impl SourceLspRegistry {
         }
 
         Ok(warmed)
+    }
+
+    fn preload_languages_for_root(&self, root: &str) -> Result<Vec<String>, String> {
+        if let Some(languages) = self
+            .preload_languages_by_root
+            .lock()
+            .map_err(|_| "Language server preload cache lock poisoned".to_string())?
+            .get(root)
+            .cloned()
+        {
+            return Ok(languages);
+        }
+
+        let languages = if workspace_contains_csharp_project(Path::new(root)) {
+            vec!["csharp".to_string()]
+        } else {
+            Vec::new()
+        };
+        self.preload_languages_by_root
+            .lock()
+            .map_err(|_| "Language server preload cache lock poisoned".to_string())?
+            .insert(root.to_string(), languages.clone());
+        Ok(languages)
     }
 
     /// Every diagnostic the running language servers currently hold for files under
@@ -2130,6 +2348,192 @@ impl SourceLspRegistry {
             .id();
         Some(pid)
     }
+}
+
+async fn upgrade_native_csharp_lsp(
+    ws: WebSocketUpgrade,
+    Query(auth): Query<NativeCsharpAuth>,
+    State(state): State<NativeCsharpBridgeState>,
+) -> Response {
+    if auth.token.as_str() != state.token.as_ref() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if state.connected.swap(true, Ordering::AcqRel) {
+        return StatusCode::CONFLICT.into_response();
+    }
+    let connected = Arc::clone(&state.connected);
+    ws.max_message_size(MAX_NATIVE_CSHARP_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(error) = proxy_native_csharp_lsp(socket, state).await {
+                eprintln!("[native-csharp-bridge] {error}");
+            }
+            connected.store(false, Ordering::Release);
+        })
+        .into_response()
+}
+
+async fn proxy_native_csharp_lsp(
+    socket: WebSocket,
+    state: NativeCsharpBridgeState,
+) -> Result<(), String> {
+    let mut command = tokio::process::Command::new(&state.server.command);
+    command
+        .args(state.server.spec.args)
+        .current_dir(state.root.as_ref())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(search_path) = lsp_search_path_env() {
+        command.env("PATH", search_path);
+    }
+    configure_lsp_process_group(command.as_std_mut());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start Roslyn for native C# client: {error}"))?;
+    let mut roslyn_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Roslyn stdin unavailable".to_string())?;
+    let roslyn_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Roslyn stdout unavailable".to_string())?;
+    if let Some(stderr) = child.stderr.take() {
+        tauri::async_runtime::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                eprintln!("[native-csharp-roslyn] {line}");
+            }
+        });
+    }
+
+    record_language_server_state(
+        "csharp",
+        &state.root.display().to_string(),
+        LanguageServerState::Starting,
+        Some("The native C# client is connecting to Roslyn.".to_string()),
+    );
+    let (mut websocket_sender, mut websocket_receiver) = socket.split();
+    let mut roslyn_stdout = tokio::io::BufReader::new(roslyn_stdout);
+    let mut stop_clients = state.stop_clients.subscribe();
+
+    let browser_to_roslyn = async {
+        while let Some(frame) = websocket_receiver.next().await {
+            match frame.map_err(|error| error.to_string())? {
+                WebSocketMessage::Text(text) => {
+                    write_native_lsp_message(&mut roslyn_stdin, text.as_bytes()).await?;
+                }
+                WebSocketMessage::Binary(bytes) => {
+                    write_native_lsp_message(&mut roslyn_stdin, bytes.as_ref()).await?;
+                }
+                WebSocketMessage::Close(_) => break,
+                WebSocketMessage::Ping(_) | WebSocketMessage::Pong(_) => {}
+            }
+        }
+        Ok::<(), String>(())
+    };
+    let roslyn_to_browser = async {
+        while let Some(body) = read_native_lsp_message(&mut roslyn_stdout).await? {
+            let json = String::from_utf8(body)
+                .map_err(|error| format!("Roslyn returned invalid UTF-8: {error}"))?;
+            websocket_sender
+                .send(WebSocketMessage::Text(json.into()))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok::<(), String>(())
+    };
+
+    tokio::select! {
+        result = browser_to_roslyn => result?,
+        result = roslyn_to_browser => result?,
+        _ = stop_clients.recv() => {},
+        status = child.wait() => {
+            let status = status.map_err(|error| format!("Could not wait for Roslyn: {error}"))?;
+            return Err(format!("Roslyn exited with {status}"));
+        }
+    }
+    if let Some(pid) = child.id() {
+        // The process was placed in its own group before spawn, so this reaches
+        // Roslyn and its BuildHost children without touching unrelated processes.
+        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    }
+    let _ = child.wait().await;
+    record_language_server_state(
+        "csharp",
+        &state.root.display().to_string(),
+        LanguageServerState::NotRunning,
+        Some("The native C# client disconnected.".to_string()),
+    );
+    Ok(())
+}
+
+async fn write_native_lsp_message<W>(writer: &mut W, body: &[u8]) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    if body.len() > MAX_NATIVE_CSHARP_MESSAGE_BYTES {
+        return Err("Native C# LSP message exceeds size limit".to_string());
+    }
+    writer
+        .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_all(body)
+        .await
+        .map_err(|error| error.to_string())?;
+    writer.flush().await.map_err(|error| error.to_string())
+}
+
+async fn read_native_lsp_message<R>(reader: &mut R) -> Result<Option<Vec<u8>>, String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut content_length = None;
+    let mut header_bytes = 0usize;
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .await
+            .map_err(|error| error.to_string())?;
+        if bytes_read == 0 {
+            return if content_length.is_none() {
+                Ok(None)
+            } else {
+                Err("EOF while reading native C# LSP headers".to_string())
+            };
+        }
+        header_bytes += bytes_read;
+        if header_bytes > MAX_LSP_HEADER_BYTES {
+            return Err("Native C# LSP header exceeded size limit".to_string());
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|error| error.to_string())?,
+                );
+            }
+        }
+    }
+    let length = content_length.ok_or_else(|| "Missing Content-Length".to_string())?;
+    if length > MAX_NATIVE_CSHARP_MESSAGE_BYTES {
+        return Err("Native C# LSP message exceeds size limit".to_string());
+    }
+    let mut body = vec![0; length];
+    reader
+        .read_exact(&mut body)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some(body))
 }
 
 impl SourceLspSessionKey {
@@ -2193,10 +2597,7 @@ fn stop_lsp_process_tree(child: &mut Child) {
 
 /// Start a language server under `root` and get a connection to it that several
 /// questions can share.
-fn start_lsp_server(
-    server: &ResolvedLspServer,
-    root: &Path,
-) -> Result<Arc<LspConnection>, String> {
+fn start_lsp_server(server: &ResolvedLspServer, root: &Path) -> Result<Arc<LspConnection>, String> {
     if !root.is_dir() {
         return Err("Project root is not a directory".to_string());
     }
@@ -2337,13 +2738,8 @@ pub(crate) fn read_source_lsp_status_sync(
     let resolved = resolve_command(spec.command);
     let available = root_exists && resolved.is_some() && !switched_off;
     let command = resolved.unwrap_or_else(|| spec.command.to_string());
-    let (state, detail) = describe_language_server_activity(
-        spec,
-        &root,
-        switched_off,
-        root_exists,
-        available,
-    );
+    let (state, detail) =
+        describe_language_server_activity(spec, &root, switched_off, root_exists, available);
     Ok(SourceLspStatus {
         language,
         language_id: spec.language_id.to_string(),
@@ -3771,7 +4167,7 @@ fn server_spec_for_language(language: &str) -> Option<LspServerSpec> {
         "svelte" => Some(LspServerSpec {
             server_name: "svelte-language-server",
             language_id: "svelte",
-            command: "svelte-language-server",
+            command: "svelteserver",
             args: &["--stdio"],
         }),
         _ => None,
@@ -3803,6 +4199,71 @@ fn normalized_lsp_root(root: &str) -> Option<String> {
     )
 }
 
+fn workspace_contains_csharp_project(root: &Path) -> bool {
+    let mut pending = VecDeque::from([(root.to_path_buf(), 0usize)]);
+    let mut visited_entries = 0usize;
+
+    while let Some((directory, depth)) = pending.pop_front() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited_entries += 1;
+            if visited_entries > MAX_LSP_PRELOAD_DISCOVERY_ENTRIES {
+                return false;
+            }
+
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("sln")
+                            || extension.eq_ignore_ascii_case("slnx")
+                            || extension.eq_ignore_ascii_case("csproj")
+                    })
+            {
+                return true;
+            }
+
+            if !file_type.is_dir() || depth >= MAX_LSP_PRELOAD_DISCOVERY_DEPTH {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if matches!(
+                name.as_ref(),
+                ".git"
+                    | ".idea"
+                    | ".svelte-kit"
+                    | ".vscode"
+                    | "bin"
+                    | "build"
+                    | "coverage"
+                    | "dist"
+                    | "node_modules"
+                    | "obj"
+                    | "output"
+                    | "target"
+            ) {
+                continue;
+            }
+            pending.push_back((path, depth + 1));
+        }
+    }
+
+    false
+}
+
+pub(crate) fn workspace_has_csharp_project_marker(root: &str) -> bool {
+    normalized_lsp_root(root)
+        .is_some_and(|root| workspace_contains_csharp_project(Path::new(&root)))
+}
+
 fn executable_path(path: PathBuf) -> Option<String> {
     let metadata = std::fs::metadata(&path).ok()?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
@@ -3812,6 +4273,16 @@ fn executable_path(path: PathBuf) -> Option<String> {
 }
 
 fn command_search_paths() -> Vec<PathBuf> {
+    // In development, language servers are pinned application dependencies.
+    // Resolve those before system locations so the editor does not silently use
+    // an incompatible global version. Packaged builds can replace this location
+    // with a bundled resource/sidecar without changing the LSP registry.
+    let mut paths = vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("node_modules")
+            .join(".bin"),
+    ];
     // Start from the user's *login-shell* PATH (the same environment the embedded
     // terminal loads with `-l`), not just the PATH this process inherited. A
     // Finder/Dock-launched .app inherits only the minimal launchd PATH
@@ -3819,9 +4290,11 @@ fn command_search_paths() -> Vec<PathBuf> {
     // (rust-analyzer), nvm node bins, `~/.dotnet/tools` — would be invisible and a
     // real, installed language server would be misreported as "not installed,"
     // forcing the regex index fallback. See spec §5.5 / §9 (login-shell `-l` fix).
-    let mut paths = login_shell_path()
-        .map(|path| split_paths(OsString::from(path)))
-        .unwrap_or_default();
+    paths.extend(
+        login_shell_path()
+            .map(|path| split_paths(OsString::from(path)))
+            .unwrap_or_default(),
+    );
     if let Some(inherited) = env::var_os("PATH") {
         paths.extend(split_paths(inherited));
     }
@@ -3992,6 +4465,17 @@ mod tests {
     }
 
     #[test]
+    fn command_search_paths_prefer_pinned_application_language_servers() {
+        let expected = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("node_modules")
+            .join(".bin");
+        assert_eq!(command_search_paths().first(), Some(&expected));
+        assert!(expected.join("svelteserver").is_file());
+        assert!(expected.join("typescript-language-server").is_file());
+    }
+
+    #[test]
     fn command_search_paths_are_deduped_and_joinable_into_a_path_env() {
         // The same combined set is handed to spawned servers as their PATH, so it must
         // contain no duplicates and round-trip through env::join_paths.
@@ -4024,7 +4508,10 @@ mod tests {
         assert_eq!(unsafe { libc::getpgid(pid) }, pid);
 
         stop_lsp_process_tree(&mut child);
-        assert!(child.try_wait().expect("read grouped fixture state").is_some());
+        assert!(child
+            .try_wait()
+            .expect("read grouped fixture state")
+            .is_some());
     }
 
     #[test]
@@ -4046,7 +4533,7 @@ mod tests {
         assert_eq!(rust.command, "rust-analyzer");
 
         let svelte = server_spec_for_language("svelte").expect("svelte spec");
-        assert_eq!(svelte.command, "svelte-language-server");
+        assert_eq!(svelte.command, "svelteserver");
         assert_eq!(svelte.args, &["--stdio"]);
     }
 
@@ -4071,7 +4558,7 @@ mod tests {
                 "svelte",
                 "svelte-language-server",
                 "svelte",
-                "svelte-language-server",
+                "svelteserver",
                 &["--stdio"],
             ),
             (
@@ -4151,7 +4638,7 @@ mod tests {
                 "svelte",
                 "svelte-language-server",
                 "svelte",
-                "svelte-language-server",
+                "svelteserver",
                 &["--stdio"],
             ),
             (
@@ -4944,7 +5431,10 @@ mod tests {
 
         let key = SourceLspSessionKey::from_preview(&preview, &request).expect("session key");
         assert_eq!(key.language, "typescript");
-        assert_eq!(key.root, std::fs::canonicalize(root).unwrap().display().to_string());
+        assert_eq!(
+            key.root,
+            std::fs::canonicalize(root).unwrap().display().to_string()
+        );
     }
 
     #[test]
@@ -5340,7 +5830,8 @@ mod tests {
             .expect("the server should start and list this file's symbols");
 
         thread::scope(|scope| {
-            let references = scope.spawn(|| registry.find_references(preview.clone(), request.clone()));
+            let references =
+                scope.spawn(|| registry.find_references(preview.clone(), request.clone()));
             let hover = scope.spawn(|| registry.find_hover(preview.clone(), request.clone()));
             let highlights =
                 scope.spawn(|| registry.find_document_highlights(preview.clone(), request.clone()));
@@ -5352,7 +5843,10 @@ mod tests {
                 )
             });
 
-            let references = references.join().expect("references thread").expect("references");
+            let references = references
+                .join()
+                .expect("references thread")
+                .expect("references");
             assert!(
                 references.iter().any(|target| target.line == 1),
                 "the declaration of greet should be among its mentions; got {references:?}"
@@ -5365,7 +5859,10 @@ mod tests {
                 .expect("hover text");
             assert!(hover.contents.join("\n").contains("greet"));
 
-            let highlights = highlights.join().expect("highlights thread").expect("highlights");
+            let highlights = highlights
+                .join()
+                .expect("highlights thread")
+                .expect("highlights");
             assert!(!highlights.is_empty());
 
             let document_symbols = document_symbols
@@ -5593,8 +6090,8 @@ mod tests {
 
     #[test]
     fn warm_with_no_running_server_is_a_noop() {
-        // Warming a root before any server has spun up must NOT spawn one — proactive
-        // warming only re-points servers that are already running.
+        // A workspace without a recognized project marker must not speculatively
+        // start every language server the app happens to support.
         let registry = SourceLspRegistry::default();
         let root = unique_lsp_temp_root("mcb-lsp-warm-noop");
 
@@ -5605,8 +6102,92 @@ mod tests {
         assert_eq!(
             registry.session_count().unwrap(),
             0,
-            "warming must never spawn a server when none is running"
+            "warming an unrecognized workspace must not spawn a server"
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn csharp_project_markers_are_detected_without_reading_source_files() {
+        let root = unique_lsp_temp_root("mcb-lsp-csharp-preload");
+        let project = root.join("src").join("App");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("App.csproj"), "<Project />").unwrap();
+
+        assert!(workspace_contains_csharp_project(&root));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn csharp_preload_discovery_is_cached_by_canonical_root() {
+        let registry = SourceLspRegistry::default();
+        let root = unique_lsp_temp_root("mcb-lsp-csharp-preload-cache");
+        let marker = root.join("App.csproj");
+        std::fs::write(&marker, "<Project />").unwrap();
+        let canonical_root = normalized_lsp_root(&root.display().to_string()).unwrap();
+
+        assert_eq!(
+            registry
+                .preload_languages_for_root(&canonical_root)
+                .unwrap(),
+            vec!["csharp"]
+        );
+        std::fs::remove_file(marker).unwrap();
+        assert_eq!(
+            registry
+                .preload_languages_for_root(&canonical_root)
+                .unwrap(),
+            vec!["csharp"],
+            "revisiting a workspace should use its marker result without scanning again"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_native_csharp_ensure_calls_share_one_canonical_root_endpoint() {
+        if resolve_server_for_language("csharp").is_none() {
+            eprintln!("skipping native C# endpoint coalescing: roslyn-language-server not found");
+            return;
+        }
+        let registry = SourceLspRegistry::default();
+        let root = unique_lsp_temp_root("mcb-native-csharp-coalesce");
+        std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
+        let root_text = root.display().to_string();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut calls = Vec::new();
+        for _ in 0..2 {
+            let registry = registry.clone();
+            let root = root_text.clone();
+            let barrier = Arc::clone(&barrier);
+            calls.push(tokio::task::spawn_blocking(move || {
+                barrier.wait();
+                registry.ensure_native_csharp_endpoint(&root)
+            }));
+        }
+        barrier.wait();
+        let left = calls.remove(0).await.unwrap().unwrap();
+        let right = calls.remove(0).await.unwrap().unwrap();
+        assert_eq!(left.ws_url, right.ws_url);
+        assert_eq!(left.root, right.root);
+        assert_eq!(locked(&registry.native_csharp_sessions).len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_warm_does_not_start_a_second_roslyn_for_csharp_workspace() {
+        let registry = SourceLspRegistry::default();
+        let root = unique_lsp_temp_root("mcb-lsp-csharp-warm");
+        std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
+
+        let warmed = registry
+            .warm_running_servers_for_root(&root.display().to_string())
+            .expect("legacy warm C# workspace");
+        assert_eq!(warmed, 0, "the native Monaco client owns C# warming");
+        assert_eq!(registry.session_count().unwrap(), 0);
+        assert!(registry.session_pid_for("csharp", &root).is_none());
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -5894,7 +6475,7 @@ mod tests {
     #[test]
     fn svelte_language_server_smoke_reads_document_symbols_when_available() {
         if resolve_server_for_language("svelte").is_none() {
-            eprintln!("skipping Svelte LSP smoke: svelte-language-server not found");
+            eprintln!("skipping Svelte LSP smoke: svelteserver not found");
             return;
         }
 
@@ -5924,19 +6505,46 @@ mod tests {
             root: root.display().to_string(),
             line: 1,
             column: 1,
-            limit: Some(40),
+            limit: Some(5_000),
         };
         let registry = SourceLspRegistry::default();
 
-        match registry.find_symbols(preview, request) {
+        match registry.find_symbols(preview.clone(), request) {
             Ok(symbols) => assert!(
                 symbols.iter().any(|symbol| symbol.name == "installWorker"),
                 "expected Svelte document symbols to include installWorker; got {symbols:?}"
             ),
             Err(error) => {
                 eprintln!("skipping Svelte LSP smoke: {error}");
+                return;
             }
         }
+
+        let navigation_request = SourceLspLookupRequest {
+            root: root.display().to_string(),
+            line: 2433,
+            column: 4,
+            limit: Some(100),
+        };
+        let definitions = registry
+            .find_definitions(preview.clone(), navigation_request.clone())
+            .expect("Svelte definitions");
+        assert!(
+            definitions
+                .iter()
+                .any(|target| target.path == file_path.display().to_string() && target.line == 505),
+            "expected installWorker definition at line 505; got {definitions:?}"
+        );
+
+        let references = registry
+            .find_references(preview, navigation_request)
+            .expect("Svelte references");
+        assert!(
+            references.iter().any(|target| {
+                target.path == file_path.display().to_string() && target.line == 2433
+            }),
+            "expected installWorker references to include line 2433; got {references:?}"
+        );
     }
 
     #[test]
@@ -6214,7 +6822,12 @@ mod tests {
         let asking_for_hover = {
             let connection = Arc::clone(&connection);
             thread::spawn(move || {
-                connection.send_request("textDocument/hover", json!({}), Duration::from_secs(5), true)
+                connection.send_request(
+                    "textDocument/hover",
+                    json!({}),
+                    Duration::from_secs(5),
+                    true,
+                )
             })
         };
 
@@ -6358,8 +6971,10 @@ mod tests {
             }
         }));
         assert!(
-            eventually(|| read_language_server_activity(language, root).map(|activity| activity.0)
-                == Some(LanguageServerState::Ready)),
+            eventually(
+                || read_language_server_activity(language, root).map(|activity| activity.0)
+                    == Some(LanguageServerState::Ready)
+            ),
             "a server with no jobs left is ready again"
         );
 
