@@ -1,28 +1,34 @@
 # TSK-809 and TSK-810 Conversation Workbench Implementation Plan
 
+> **Superseded again by the 2026-08-04 product-direction amendment:** Product direction now requires
+> structured ACP-owned sessions by default, explicit structured/native-CLI single-writer handoff,
+> provider-advertised model/effort/permission selectors, real image content blocks, rich tool/plan
+> events, and app-owned workflow orchestration. Execute this work through
+> `docs/superpowers/plans/2026-08-04-assembly-acp-workflows-orca-workbench-amendment.md`, which also
+> amends Work Packages 2, 3, 8, 9, 10A, and 11 plus the parallel schedule of the TSK-808 master
+> plan. The PTY-only architecture below is retained solely as historical discovery and as the
+> fallback/import path for terminal-owned sessions.
+
 > **Superseded execution authority (2026-08-03):** This file remains discovery/reference
-> evidence. Execute TSK-809 and TSK-810 only through Work Package 10A and the cost-aware dispatch
-> manifest in
-> `docs/superpowers/plans/2026-08-01-tsk-808-native-workbench-product-wave.md`. Do not dispatch
-> from this older file independently or create a second conversation runtime, store, composer,
-> provider host, transcript pane, or child-agent registry.
+> evidence. Do not dispatch from this older file independently or create a second conversation
+> runtime, store, composer, provider host, transcript pane, or child-agent registry.
 
 > **Historical task breakdown only:** The checkboxes below are not an active dispatch queue.
 
 **Goal:** Upgrade the existing transcript-backed Claude/Codex Session surface with a Codex-like composer, attachments, commands, truthful runtime controls, telemetry, and read-only child-agent transcripts.
 
-**Architecture:** Keep the existing PTY as the only writer and expand the Rust JSONL reader into a snapshot API containing display messages, telemetry, and child descriptors. Keep all UI state keyed by `ownedId`; child inspection reads transcript files only and never launches or controls a process.
+**Architecture:** Historical only: keep the existing PTY as the only writer and expand the Rust JSONL reader into a snapshot API containing display messages, telemetry, and child descriptors. The active amendment replaces this universal PTY-only rule with one writer lease that may belong to the structured ACP runtime or the native CLI. The JSONL reader remains the terminal projection/import/recovery path. All UI state remains keyed by `ownedId`.
 
 **Tech Stack:** Tauri 2, Rust/serde_json, Svelte 5 runes, TypeScript 6, existing dockview/session workspace store.
 
 ## Global Constraints
 
-- Never launch a second Claude/Codex process for an existing owned session.
+- Never run structured ACP and native CLI writers concurrently for one native session.
 - Never scrape terminal pixels for transcript or runtime state.
 - Do not remove or replace the Editor, Browser, Diff, or Session dock tabs.
 - Missing provider metadata is shown as unknown, never guessed.
 - Clipboard images are copied only into an app-managed per-session directory after Rust validates the session identifier and image payload.
-- Child inspection is read-only and cannot start, resume, interrupt, approve, send to, or kill an agent.
+- Provider-native child inspection remains read-only unless the provider advertises an exact typed control; Assembly workflow children are controlled only through the workflow engine.
 
 ---
 
