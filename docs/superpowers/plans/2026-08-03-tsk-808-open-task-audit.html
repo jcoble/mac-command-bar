@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>TSK-808 Assembly open-task consolidation audit</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0c10;
+      --panel: #13151b;
+      --panel-2: #1a1d25;
+      --border: #3c4252;
+      --text: #f4f6fb;
+      --muted: #bdc3d1;
+      --cyan: #73d8ff;
+      --green: #8ee5a1;
+      --amber: #ffd281;
+      --purple: #c9a7ff;
+      --danger: #ff8aa1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 85% 0%, #182030 0, transparent 34rem), var(--bg);
+      color: var(--text);
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1500px, calc(100% - 40px)); margin: 0 auto; padding: 40px 0 72px; }
+    header { display: grid; grid-template-columns: 1.7fr 1fr; gap: 24px; align-items: end; }
+    h1 { margin: 8px 0 12px; font-size: clamp(30px, 5vw, 60px); line-height: 1.04; letter-spacing: -0.04em; }
+    h2 { margin: 0 0 16px; font-size: 22px; letter-spacing: -0.02em; }
+    p { margin: 0; }
+    .eyebrow { color: var(--cyan); font-size: 12px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .lead { max-width: 74ch; color: var(--muted); font-size: 16px; }
+    .stop { border: 1px solid var(--amber); border-radius: 14px; background: #211b11; padding: 18px; color: #ffe5b0; }
+    .stop strong { display: block; color: #fff3d6; margin-bottom: 4px; }
+    .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 28px 0; }
+    .stat { min-height: 112px; padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: color-mix(in srgb, var(--panel) 92%, transparent); }
+    .stat b { display: block; font-size: 32px; line-height: 1; margin-bottom: 10px; }
+    .stat span { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0 28px; }
+    .card { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); padding: 20px; }
+    .card ul { margin: 12px 0 0; padding-left: 18px; }
+    .card li + li { margin-top: 8px; }
+    .brand-card { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(240px, .72fr) 1.28fr; gap: 24px; align-items: center; border-color: #5b6c8d; background: linear-gradient(135deg, #172033, #13151b 58%); }
+    .brand-lockup { padding: 10px 0; }
+    .brand-name { display: block; color: #fff; font-size: clamp(34px, 6vw, 66px); line-height: .95; letter-spacing: -.055em; }
+    .brand-tagline { display: block; margin-top: 12px; color: var(--cyan); font-size: clamp(17px, 2.5vw, 24px); font-weight: 750; }
+    .brand-copy { color: var(--muted); }
+    .brand-copy p + p { margin-top: 10px; }
+    .route { display: grid; grid-template-columns: 130px 1fr; gap: 12px; align-items: start; }
+    .route + .route { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .capability-intro { max-width: 90ch; margin-bottom: 16px; color: var(--muted); font-size: 15px; }
+    .capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 0 0 28px; }
+    .lane-card { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); padding: 20px; }
+    .lane-card.priority { border-color: #647089; background: linear-gradient(145deg, #171b24, #12151b); }
+    .lane-card.priority::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--cyan); }
+    .lane-head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 10px; }
+    .lane-letter { color: var(--cyan); font-size: 12px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+    .lane-card h3 { margin: 0; color: #fff; font-size: 18px; letter-spacing: -.01em; }
+    .lane-card p { color: var(--muted); }
+    .lane-card ul { margin: 12px 0 0; padding-left: 18px; }
+    .lane-card li + li { margin-top: 6px; }
+    .lane-footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+    .parallel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .phase-card { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); padding: 20px; }
+    .phase-card.wide { grid-column: 1 / -1; }
+    .phase-card h3 { margin: 0 0 8px; font-size: 18px; }
+    .phase-card > p { color: var(--muted); }
+    .phase-card ol, .phase-card ul { margin: 12px 0 0; padding-left: 20px; }
+    .phase-card li + li { margin-top: 7px; }
+    .slot-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+    .agent-slot { min-height: 96px; border: 1px solid #353b49; border-radius: 10px; background: var(--panel-2); padding: 12px; }
+    .agent-slot b { display: block; color: #fff; margin-bottom: 4px; }
+    .agent-slot span { color: var(--muted); font-size: 12px; }
+    .guardrail { border-color: #735f3e; background: #1f1b14; }
+    .pill { display: inline-flex; width: fit-content; align-items: center; min-height: 25px; border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 800; }
+    .luna { background: #102b31; color: #9eeaff; border: 1px solid #2f7180; }
+    .sol { background: #261d38; color: #dec7ff; border: 1px solid #7452a8; }
+    .controller { background: #24301d; color: #c7f6a9; border: 1px solid #54763e; }
+    .deferred { background: #302719; color: #ffe1a4; border: 1px solid #79613b; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; min-width: 1180px; }
+    caption { text-align: left; padding: 18px 20px; color: var(--muted); }
+    th, td { padding: 12px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid #303541; }
+    th { position: sticky; top: 0; z-index: 1; background: #20242d; color: #fff; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+    tbody tr:hover { background: var(--panel-2); }
+    tbody tr:last-child td { border-bottom: 0; }
+    .task { white-space: nowrap; color: var(--cyan); font-weight: 800; }
+    .state { white-space: nowrap; }
+    .doing { color: var(--amber); }
+    .todo { color: var(--muted); }
+    .latest { color: var(--green); }
+    .dependency { color: var(--purple); }
+    .older { color: var(--muted); }
+    code { color: #fff; background: #222631; border: 1px solid #3b4250; border-radius: 5px; padding: 1px 5px; }
+    footer { margin-top: 20px; color: var(--muted); }
+    @media (max-width: 900px) {
+      header, .grid, .capability-grid, .parallel-grid, .brand-card { grid-template-columns: 1fr; }
+      .slot-list { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      main { width: min(100% - 24px, 1500px); padding-top: 24px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="eyebrow">MacCommandBar repository · Assembly product plan · 2026-08-03</div>
+      <h1>TSK-808 Assembly consolidation audit</h1>
+      <p class="lead">All currently open MacCommandBar repository records are accounted for in one execution authority, including the app's public rename to Assembly. The master plan supplies exact implementation packets; this page is the scan-friendly audit and routing index.</p>
+    </div>
+    <div class="stop">
+      <strong>Planning only</strong>
+      No product implementation, build, native app launch, branch, or worktree was started. A docs-only Playwright pass verifies this dashboard. The next authorized action is only the extension/API comparison, followed by a user decision.
+    </div>
+  </header>
+
+  <section class="stats" aria-label="Audit totals">
+    <div class="stat"><b>37</b><span>open Notion tasks audited</span></div>
+    <div class="stat"><b>22</b><span>latest consolidation boundary</span></div>
+    <div class="stat"><b>2</b><span>separate active dependencies</span></div>
+    <div class="stat"><b>13</b><span>older open records disposed explicitly</span></div>
+    <div class="stat"><b>25 / 12</b><span>Rapid-fire / Idea records</span></div>
+  </section>
+
+  <section class="grid">
+    <article class="card">
+      <h2>Cost-aware agent routing</h2>
+      <div class="route"><span class="pill luna">Luna Max</span><p><code>gpt-5.6-luna</code>, max reasoning, no forked context. Default for detailed straightforward implementation, discovery, audits, preparation, fixtures, and bounded probes.</p></div>
+      <div class="route"><span class="pill sol">SOL-medium</span><p><code>gpt-5.6-sol</code>, medium reasoning, no forked context. Used only where a named implementation decision remains and for every milestone code review.</p></div>
+      <div class="route"><span class="pill controller">Controller</span><p>Owns shared seams, integration, Notion mutations, heavy-runner scheduling, native certification, and final task disposition.</p></div>
+    </article>
+    <article class="card">
+      <h2>Restored requirements</h2>
+      <ul>
+        <li>Contrast and subtext legibility are Milestone 1, with computed ratios and shared semantic tokens.</li>
+        <li>The existing Settings screen is restored and certified; no replacement store or schema.</li>
+        <li>The confirmed CodeLens Peek regression must preserve both tab layers and active-file identity.</li>
+        <li>The bottom floating control is app-global, fans over the whole shell, and drives browser annotation/change/question workflows.</li>
+        <li>The public app becomes Assembly without changing bundle IDs, storage keys, Application Support paths, Keychain services, repository IDs, or internal module names.</li>
+        <li>TSK-809/810 conversation composer and read-only child hierarchy execute through the same master plan.</li>
+        <li>Extension/API work stops after a real-Tauri comparison so the user can choose what to adopt.</li>
+      </ul>
+    </article>
+    <article class="card brand-card" aria-labelledby="assembly-brand-heading">
+      <div class="brand-lockup">
+        <span class="brand-name" id="assembly-brand-heading">Assembly</span>
+        <span class="brand-tagline">Build in parallel.</span>
+      </div>
+      <div class="brand-copy">
+        <p><strong>Long descriptor:</strong> The workspace for parallel software development.</p>
+        <p><strong>Narrative variant:</strong> Agents, worktrees, and code—working together.</p>
+        <p><strong>Execution boundary:</strong> Work Package 1B changes public titles, labels, runtime self-identification, and app artifacts. It preserves every compatibility identity so existing settings, sessions, layouts, ledgers, permissions, and credentials remain attached to the same app.</p>
+        <p><span class="pill luna">Luna packet 1B</span> <span class="pill sol">SOL review M1</span></p>
+      </div>
+    </article>
+  </section>
+
+  <section aria-labelledby="capability-lanes-heading">
+    <div class="eyebrow">Direct TSK-808 scope</div>
+    <h2 id="capability-lanes-heading">Original capability lanes A–G</h2>
+    <p class="capability-intro">These lanes come directly from the TSK-808 task body and remain first-class deliverables. The task ledger below tracks records; this section shows the product capabilities those records roll up into. Lane C, Lane E, and Lane G are emphasized because they were not visible enough in the first dashboard.</p>
+    <div class="capability-grid">
+      <article class="lane-card">
+        <div class="lane-head"><span class="lane-letter">Lane A</span><h3>Sessions, workspace navigation, history, status, and notifications</h3></div>
+        <ul>
+          <li>Compact, higher-contrast saved, active, done, and settled session rows with deterministic project, repository, worktree, branch, model, activity, PR, runtime, and checkpoint facts.</li>
+          <li>Explicit resume, open, inspect, terminal, logs, PR, and copy actions; Find a Session expands details and never starts a process implicitly.</li>
+          <li>Resizable sections, accessible hover/focus action islands, semantic status families, and native completion, bell, attention, approval, and failure notifications.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Packages 1–3</span><span class="pill luna">Luna packets 1A–3A</span><span class="pill sol">SOL review M1/M2</span></div>
+      </article>
+
+      <article class="lane-card">
+        <div class="lane-head"><span class="lane-letter">Lane B</span><h3>Source control, Git graph, diffs, files, and worktrees</h3></div>
+        <ul>
+          <li>Full center Git graph with repository, branch, author, history search, lanes, commit details, refs, task links, and changed files over the existing Rust Git authority.</li>
+          <li>Selectable/copyable native DiffEditor content, staged/unstaged/untracked groups, inline and keyboard/context actions, and disposable-repository proof.</li>
+          <li>New, rename, copy, move, delete, reveal, path, terminal, and find operations with canonical containment, dirty-buffer reconciliation, typed confirmation, and one worktree-safety authority.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Packages 5–6</span><span class="pill luna">Luna packets 5A–6A</span><span class="pill sol">SOL review M2</span></div>
+      </article>
+
+      <article class="lane-card priority" id="lane-c">
+        <div class="lane-head"><span class="lane-letter">Lane C</span><h3>Pull requests, automated review, and GitHub budget</h3></div>
+        <ul>
+          <li>Unified cross-project PR queue with Open, Mine, and Needs Review filters; project/search/reviewer/check/merge-readiness/updated state; Start and Resume actions.</li>
+          <li>PR detail with Conversation, Checks, and Files Changed; comments, annotations, job details and reruns, file tree, selectable side-by-side diffs, viewed state, and collapse controls.</li>
+          <li>Create, edit, close, and merge preparation; conflict visibility; typed prepare/preview/confirm/execute mutations naming repository, PR, base, head, and head SHA.</li>
+          <li>Pure agent recipes for code review, unresolved comments, merge conflicts, failed checks, and PR title/body generation with explicit model, effort, approval policy, CLI arguments, and prompt.</li>
+          <li>Separate GitHub REST, Search, and GraphQL budget display with Retry-After handling, bounded jittered backoff, graceful degradation, and no frontend token.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Package 7, section 13</span><span class="pill luna">Luna packet 7A</span><span class="pill sol">SOL review M3</span></div>
+      </article>
+
+      <article class="lane-card">
+        <div class="lane-head"><span class="lane-letter">Lane D</span><h3>Embedded browser and visual feedback</h3></div>
+        <ul>
+          <li>Workspace-isolated native child webviews with multiple tabs, normal navigation, profile lifecycle, auth/session proof, external open, viewport presets, free resize, and correct mouse/trackpad/keyboard/nested scrolling.</li>
+          <li>One app-global bottom floating control mounted above the whole shell; it fans across Session, Editor, Browser, Resources, and History and expands the browser over every workbench surface.</li>
+          <li>Element inspection, Change/Question annotation cards, queued feedback, Copy/Send/Ask Agent, and owner/generation-safe staging into the one conversation draft without auto-submit.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Package 8, section 14</span><span class="pill luna">Luna packet 8A</span><span class="pill sol">SOL decision only on native architecture failure</span></div>
+      </article>
+
+      <article class="lane-card priority" id="lane-e">
+        <div class="lane-head"><span class="lane-letter">Lane E</span><h3>Resource manager, provider usage, and Roslyn lifecycle</h3></div>
+        <ul>
+          <li>Compact resource popup and expanded view showing CPU, RSS, process tree, ports, disk, and exact app/editor/workspace/project/session ownership from one-shot native snapshots.</li>
+          <li>Truthful Claude and Codex usage with timestamp/source/unavailable reason; architecture permits later providers without guessing or scraping undocumented state.</li>
+          <li>One authoritative Roslyn owner per compatible canonical workspace root, never per file or tab; warm only the active session and bounded recent roots under configurable concurrency/RSS policies.</li>
+          <li>Clean process-group shutdown, orphan detection, per-workspace stop/restart, crash logs, stale-generation rejection, and memory-pressure response before swap or freeze.</li>
+          <li>Baseline/final evidence for cold start, warm file switch, top-tab, session, workspace, project, refresh, semantic CodeLens/Peek timing, process count, CPU, and RSS.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Package 9, section 15</span><span class="pill luna">Luna packet 9A</span><span class="pill sol">SOL packet 9B + review M3</span></div>
+      </article>
+
+      <article class="lane-card">
+        <div class="lane-head"><span class="lane-letter">Lane F</span><h3>Rich Markdown display and editing</h3></div>
+        <ul>
+          <li>Safe, high-quality GFM, highlighted fenced code, tables, tasks, footnotes, alerts, autolinks, strikethrough, Mermaid, local images, outline, and anchors.</li>
+          <li>Read, Edit, and Split modes with synchronized scrolling, selection, copy, find, context actions, safe links, large-document responsiveness, file watching, and explicit external-edit conflicts.</li>
+          <li>Repository content remains untrusted: sanitized HTML, canonical local resource roots, blocked scripts/custom protocols, and hostile fixtures in both themes.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Package 10, section 16</span><span class="pill luna">Luna packet 10A</span><span class="pill sol">SOL review M3</span></div>
+      </article>
+
+      <article class="lane-card priority" id="lane-g">
+        <div class="lane-head"><span class="lane-letter">Lane G</span><h3>Integrated agent foundation and contextual actions</h3></div>
+        <ul>
+          <li>One transcript-backed Claude/Codex conversation surface answers questions about settings, projects, worktrees, sessions, run configurations, and current deterministic state without a second PTY, provider, store, or transcript pane.</li>
+          <li>Contextual Ask Agent actions stage inspectable context from the active session/editor/browser/PR/resource surface into the correct owned-session draft; they never auto-submit.</li>
+          <li>Allow-listed proposals cover PR creation, commit cleanup/reorganization/squash, worktree operations, common Git repairs, and repository-specific run configurations.</li>
+          <li>Deterministic services remain the source of facts. Every mutation is previewed, confirmed when required, and revalidated at the native boundary; destructive and remote actions cannot bypass policy.</li>
+          <li>Short model summaries are explicitly labelled summaries, while append-only receipts record scope, tool, target, result, failure, owner, generation, and confirmation evidence.</li>
+        </ul>
+        <div class="lane-footer"><span>Authority: Work Package 10A and Work Package 11, sections 16A–17</span><span class="pill luna">Luna packets 10B–11A</span><span class="pill sol">SOL review M3</span></div>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="parallel-execution-heading">
+    <div class="eyebrow">Parallel execution</div>
+    <h2 id="parallel-execution-heading">How implementation agents run concurrently</h2>
+    <p class="capability-intro">The plan freezes shared contracts first, then uses a rolling queue of at most six file-independent implementation agents. Luna Max handles detailed, straightforward packets; SOL-medium takes the Roslyn lifecycle decision and every milestone code review.</p>
+    <div class="parallel-grid">
+      <article class="phase-card">
+        <h3>Gate A · sequential foundation</h3>
+        <p>No feature agent starts until this controller-owned sequence is stable.</p>
+        <ol>
+          <li>Reconcile the shipped baseline and native proof.</li>
+          <li>Run the extension/API comparison and stop for the user's selection.</li>
+          <li>Land contrast tokens and shared primitives.</li>
+          <li>Rebrand the public app and artifacts to Assembly while preserving compatibility state.</li>
+          <li>Restore Settings and freeze shell, roster, minimize, and quick-open contracts.</li>
+          <li>Commit the controller-owned interfaces.</li>
+        </ol>
+      </article>
+
+      <article class="phase-card guardrail">
+        <h3>Concurrency guardrails</h3>
+        <ul>
+          <li>Maximum six implementation agents; an optional seventh slot is read-only only.</li>
+          <li>Maximum two simultaneous heavy build/test runners; never a third.</li>
+          <li>Every agent receives an exact file allow-list; only the controller edits shared seams.</li>
+          <li>Native certification and milestone SOL-medium reviews are serialized.</li>
+          <li>Any data lane must execute filtering, joining, grouping, sorting, aggregation, and paging DB-side in one translated statement or a database view, with generated SQL inspected.</li>
+        </ul>
+      </article>
+
+      <article class="phase-card wide">
+        <h3>Round B1 · six independent implementation slots</h3>
+        <p>These exact packets can begin together after Gate A. A heavy token is held only while its focused build or test command runs.</p>
+        <div class="slot-list">
+          <div class="agent-slot"><b>1 · Sessions</b><span>Lifecycle, rail store, metadata, notifications · Luna Max · Node-light</span></div>
+          <div class="agent-slot"><b>2 · Editor and run</b><span>Editor helpers, configurations, formatting, Problems · Luna Max · Node-focused</span></div>
+          <div class="agent-slot"><b>3 · Local Git</b><span>Git graph, explorer, worktrees, named Rust modules · Luna Max · heavy token 1 only when needed</span></div>
+          <div class="agent-slot"><b>4 · Hosted GitHub</b><span>PR queue/detail/review/budgets and named GitHub Rust module · Luna Max · heavy token 2 only when needed</span></div>
+          <div class="agent-slot"><b>5 · Markdown</b><span>Markdown model, component, fixtures, and tests · Luna Max · Node-light</span></div>
+          <div class="agent-slot"><b>6 · Conversation UI</b><span>Frontend packets A–D first; Rust parser waits in B2 · Luna Max · Node-light initially</span></div>
+        </div>
+      </article>
+
+      <article class="phase-card">
+        <h3>Round B2 · rolling native queue</h3>
+        <p>Finished slots are reused only after ownership and dependency checks.</p>
+        <ol>
+          <li>Conversation Rust parser and attachments take the first released heavy token.</li>
+          <li>Browser and the app-global floating fan take one token when the shell contract is free.</li>
+          <li>Resource model/UI preparation may run beside Browser.</li>
+          <li>SOL-medium runs Roslyn registry consolidation alone after the required baselines.</li>
+        </ol>
+      </article>
+
+      <article class="phase-card">
+        <h3>Milestone C · dependent integration</h3>
+        <ul>
+          <li>The controller applies shared-seam receipts once, after parallel agents return.</li>
+          <li>Integrated Agent begins only after sessions, GitHub, resources, Browser annotations, and conversation authority are certified.</li>
+          <li>A selected extension adapter may run beside Integrated Agent because its owned paths do not overlap.</li>
+          <li>The database console remains conditional and requires DB-side query/view design plus generated-SQL review.</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Complete open-task ledger</h2>
+    <div class="table-wrap">
+      <table>
+        <caption>Status/source are the audited Notion snapshot. “Disposition” names the execution or verification boundary; it does not close a task.</caption>
+        <thead><tr><th>Task</th><th>Status</th><th>Source</th><th>Boundary</th><th>Disposition in master plan</th><th>Default route</th></tr></thead>
+        <tbody>
+          <tr><td class="task">TSK-810</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 10A packet D: recursive, parent-scoped, read-only child hierarchy and transcripts.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-809</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 10A packets A–C: no-box composer, controls, telemetry, attachments, commands, safe rendering.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-808</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>Master execution authority for Work Packages 0–14; remains open through certification.</td><td><span class="pill controller">Controller</span></td></tr>
+          <tr><td class="task">TSK-784</td><td class="state todo">To Do · Medium</td><td>Idea</td><td class="latest">Latest</td><td>WP 0 verifies the shipped language-server status; WP 4 fixes only evidenced residuals.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-783</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 4: paint readable editor text before Monaco without changing model/LSP ownership.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-780</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 2: typed right-pane/tab roster and shared shell contracts.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-779</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 2: top-bar Session, Editor, and Browser destinations with shortcuts and restore.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-773</td><td class="state todo">To Do · Medium</td><td>Idea</td><td class="latest">Latest</td><td>WP 0 verifies the focused Svelte type-check gate before closure.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-771</td><td class="state todo">To Do · Medium</td><td>Idea</td><td class="latest">Latest</td><td>WP 0 verifies bounded prefiltering before the 512-file scan budget.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-770</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 4: ingest bounded build output into Problems with source ownership and stale guards.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-769</td><td class="state todo">To Do · Low</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 13 deferred. If promoted, DB-side query/view design precedes implementation.</td><td><span class="pill deferred">Deferred</span></td></tr>
+          <tr><td class="task">TSK-768</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 4: wire Format Document to the existing LSP command and dirty/save flow.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-767</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 0 verifies stack-runner base; WP 4 fills only runtime/readiness/failure gaps.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-766</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 0 records CMUX recommendation; WP 11 implements guarded product actions.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-765</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>API comparison first; contrast WP 1 next; extension graduation only after explicit selection.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-764</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 0 verifies process-card ownership and exact browser/Playwright cleanup.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-763</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 6 preserves one worktree safety authority and adds explicit Git context/actions.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-762</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 0 proves rail/file/session/workspace correctness; residuals go to WP 3 only.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-761</td><td class="state doing">Doing · Medium</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 3: explicit reversible Working, Done, and Settled lifecycle plus notifications.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-760</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 0 verifies project picker/new-session cwd, browse/known project, persistence, no implicit worktree.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-759</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="latest">Latest</td><td>WP 0 verifies the actual /next frame and routes only residual shell defects to WP 2.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-758</td><td class="state todo">To Do · Low</td><td>Idea</td><td class="latest">Latest</td><td>WP 2: shared edge-minimize model for all applicable shell regions.</td><td><span class="pill luna">Luna</span></td></tr>
+
+          <tr><td class="task">TSK-802</td><td class="state todo">To Do · Low</td><td>Idea</td><td class="dependency">Dependency</td><td>Separate deferred LSP protocol-hardening packet; not silently absorbed by TSK-808.</td><td><span class="pill deferred">Deferred</span></td></tr>
+          <tr><td class="task">TSK-789</td><td class="state doing">Doing · High</td><td>Idea</td><td class="dependency">Dependency</td><td>WP 0 baseline plus WP 4/9 cancellation, stale-response, re-arm, and native Peek proof.</td><td><span class="pill sol">Split route</span></td></tr>
+
+          <tr><td class="task">TSK-378</td><td class="state doing">Doing · Medium</td><td>Idea</td><td class="older">Older</td><td>Verify existing Menu/ContextMenu/Tooltip; add only missing shared primitives in WP 1–2.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-369</td><td class="state todo">To Do · Medium</td><td>Idea</td><td class="older">Older</td><td>WP 0 diagnosis/proof of terminal hide/show/resize/reattach; no speculative rewrite.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-360</td><td class="state todo">To Do · High</td><td>Idea</td><td class="older">Older</td><td>WP 2 packet 8.2A: real nested Dockview file panels with one Monaco model per URI.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-344</td><td class="state doing">Doing · High</td><td>Rapid-fire</td><td class="older">Older</td><td>WP 5–6 reuse existing Rust Git service for graph, diffs, files, and safe actions.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-324</td><td class="state doing">Doing · High</td><td>Rapid-fire</td><td class="older">Older</td><td>WP 2 verifies/finishes contextual panel stacking and per-section resize.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-315</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="older">Older</td><td>WP 3 packet 9.2A: exact deterministic resumable-session metadata and stale reason.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-312</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="older">Older</td><td>WP 0 verifies cleanup runbook output; WP 6 preserves its single safety authority.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-307</td><td class="state todo">To Do · Medium</td><td>Idea</td><td class="older">Older</td><td>WP 0 verifies helper; WP 5 reuses it for the native Git graph surface.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-283</td><td class="state todo">To Do · High</td><td>Rapid-fire</td><td class="older">Older</td><td>WP 0 verifies native activity facts and individually closes only with real-Tauri proof.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-280</td><td class="state doing">Doing · Medium</td><td>Rapid-fire</td><td class="older">Older</td><td>WP 6 filesystem/terminal integration and WP 8 native browser/global overlay.</td><td><span class="pill luna">Luna</span></td></tr>
+          <tr><td class="task">TSK-253</td><td class="state todo">To Do · Medium</td><td>Rapid-fire</td><td class="older">Older</td><td>Keep open for semantic language-server matrix gaps; grammar packages do not close it.</td><td><span class="pill deferred">Separate</span></td></tr>
+          <tr><td class="task">TSK-192</td><td class="state todo">To Do · Medium</td><td>Idea</td><td class="older">Older</td><td>WP 0 verifies workspace restore; WP 10A adds only new composer/child fields.</td><td><span class="pill luna">Luna audit</span></td></tr>
+          <tr><td class="task">TSK-127</td><td class="state doing">Doing · Medium</td><td>Idea</td><td class="older">Older</td><td>Separate Swift/AppKit umbrella; TSK-808 does not claim or close that migration.</td><td><span class="pill deferred">Separate</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    Dashboard revision v4. Repository base at audit: <code>main</code> = <code>origin/main</code> = <code>167a30ae389a2280501011186f245a08d28c6725</code>. Master plan: <code>2026-08-01-tsk-808-native-workbench-product-wave.md</code>.
+  </footer>
+</main>
+</body>
+</html>

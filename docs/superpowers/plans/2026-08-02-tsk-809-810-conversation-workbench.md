@@ -1,6 +1,13 @@
 # TSK-809 and TSK-810 Conversation Workbench Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Superseded execution authority (2026-08-03):** This file remains discovery/reference
+> evidence. Execute TSK-809 and TSK-810 only through Work Package 10A and the cost-aware dispatch
+> manifest in
+> `docs/superpowers/plans/2026-08-01-tsk-808-native-workbench-product-wave.md`. Do not dispatch
+> from this older file independently or create a second conversation runtime, store, composer,
+> provider host, transcript pane, or child-agent registry.
+
+> **Historical task breakdown only:** The checkboxes below are not an active dispatch queue.
 
 **Goal:** Upgrade the existing transcript-backed Claude/Codex Session surface with a Codex-like composer, attachments, commands, truthful runtime controls, telemetry, and read-only child-agent transcripts.
 

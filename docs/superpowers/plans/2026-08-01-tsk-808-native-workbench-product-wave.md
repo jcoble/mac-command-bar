@@ -1,14 +1,15 @@
-# TSK-808 Native Workbench Product Wave Implementation Plan
+# TSK-808 Assembly Native Workbench Product Wave Implementation Plan
 
 > For implementation agents: follow this plan one work package at a time. Use Luna Max for
 > straightforward, scope-locked implementation and SOL-medium when substantial design choices or
 > judgment remain. SOL-medium performs every milestone code review. Set `agent_type`, `model`,
 > `reasoning_effort`, and `fork_turns: "none"` explicitly; stop before editing if an override fails.
 
-**Goal:** Turn the existing /next shell into a legible, native-feeling workbench that joins
-sessions, projects, Git, pull requests, browser feedback, resources, Markdown, run
-configurations, diagnostics, and guarded agent actions without replacing the working shell or
-regressing the semantic Roslyn CodeLens behavior delivered by TSK-799.
+**Goal:** Rebrand the app to **Assembly** and turn the existing /next shell into a legible,
+native-feeling workbench that joins sessions, projects, Git, pull requests, browser feedback,
+resources, Markdown, run configurations, diagnostics, and guarded agent actions without
+replacing the working shell, losing existing user state, or regressing the semantic Roslyn
+CodeLens behavior delivered by TSK-799.
 
 **Architecture:** Keep Svelte components as views, plain TypeScript services as imperative
 orchestrators, Svelte rune stores as state-only containers, and Rust/Tauri modules as the
@@ -28,20 +29,22 @@ permission/notification behavior uses the official
 [Tauri Notifications guide](https://v2.tauri.app/plugin/notification/); and external HTTP/S
 opening uses the official [Tauri Opener guide](https://v2.tauri.app/plugin/opener/).
 
-**Plan authority:** Notion task TSK-808, its 19 linked rapid-fire items, its 30-image evidence
-gallery, the merged TSK-799 contract, the current repository, and this file. This plan was
-re-audited on 2026-08-03 against branch `tsk-799-code-intelligence` at checkpoint
-`588413980b68d62622b1dee2bab2a4e881741059`; `origin/main` was `2e09399` and the branch's remote
-tracking ref was `bd0f9d2`. The working tree is clean and three local commits ahead of that
-tracking ref. The formerly dirty TSK-799/808/809/810 work is now recoverable in local commits
-`6a3af55` and `5884139`; it is not yet pushed, merged, or a claim that TSK-808 is complete.
-Re-run the anchor command in Work Package 0 after the integration base is selected; symbols and
-behavior are authoritative when a line number moves.
+**Plan authority:** The live MacCommandBar Notion inventory, TSK-808 and its 32-image evidence
+gallery, the 19-task TSK-758-through-TSK-784 rapid-fire seed, the newer TSK-809/810 conversation
+tasks, every older task that remains open, the merged TSK-799 contract, current `origin/main`, and
+this file. The all-open-task audit on 2026-08-03 found 37 open MacCommandBar records: 25 marked
+Rapid-fire and 12 marked Idea. The current checkout is clean `main` at
+`167a30ae389a2280501011186f245a08d28c6725`, equal to `origin/main`; PR #14 merged the prior
+native-workbench checkpoint. No product implementation or task-owned worktree was started by
+this planning pass. The scan-friendly 37-task disposition and routing dashboard is
+`docs/superpowers/plans/2026-08-03-tsk-808-open-task-audit.html`; the Markdown plan remains the
+execution authority. Re-run the anchor command in Work Package 0 immediately before implementation;
+symbols and behavior are authoritative when a line number moves.
 
-**2026-08-03 extension/diff/language checkpoint:** The user subsequently authorized the bounded
-extension-compatibility experiment in this protected checkout. The work is preserved by local
-checkpoint `5884139` but remains unpushed/unmerged; it is evidence to reconcile, not permission
-to declare TSK-808 complete. The checkpoint implemented the official Houston theme as a
+**2026-08-03 extension/diff/language checkpoint:** The user authorized the bounded
+extension-compatibility experiment, and PR #14 has since merged its checkpoint into `main` at
+`167a30a`. That merge is current repository evidence, not permission to declare TSK-808 complete.
+The checkpoint implemented the official Houston theme as a
 declarative contribution, a singleton curated extension registry, a read-only VS Code SCM
 projection over the existing Rust Git state, bounded original/modified Git text models, and a
 native Monaco DiffEditor. The same singleton now also registers pinned VS Code declarative
@@ -65,18 +68,18 @@ Every dispatch expands shorthand into absolute or repository-relative exact file
 
 ## 1. Decision summary
 
-1. The first bounded extension/API checkpoint has run in the protected WIP and the user selected
-   the product direction: use declarative contributions such as Houston whole; use Monaco/VS Code
-   APIs such as DiffEditor and SCM over existing services; do not embed Git Graph; and do not make
-   GitLens a dependency of the current workbench. Reconcile this checkpoint before broad TSK-808
-   work. Contrast remains the first broad product UI milestone, not polish. No other UI lane may
-   invent local text, border, status, focus, or action-button colors before the contrast tokens
-   and shared primitives land.
-2. The present TSK-799 checkout is now a clean, recoverable local checkpoint at `5884139`, not a
-   dirty working tree. Broad TSK-808 implementation begins only after choosing an integration
-   base that contains this checkpoint, either through its merged descendant or through an
-   explicitly approved branch from this SHA. Do not create a worktree from `origin/main` alone;
-   that would silently omit the approved extension, language, conversation, and native-diff work.
+1. The first bounded extension/API checkpoint produced useful prior evidence for Houston,
+   DiffEditor, declarative language contributions, and a read-only SCM projection. It did not
+   settle the user's current extension/API choice. After authorization, the next action is the
+   real-Tauri API/adapter comparison in packet 18.2B; it stops with a rendered report and waits
+   for the user's selection before any broad implementation. After that selection, contrast is
+   the first broad product UI milestone, not polish. No other UI lane may invent local text,
+   border, status, focus, or action-button colors before the contrast tokens and shared primitives
+   land.
+2. PR #14 merged the protected TSK-799/native-workbench checkpoint. The present checkout is clean
+   `main` at `167a30a`, equal to `origin/main`, so future TSK-808 implementation starts from a newly
+   refreshed descendant of that commit. This audit does not create the implementation branch or
+   worktree; the user has explicitly paused implementation.
 3. Already-shipped rapid-fire items are verified and closed, not rebuilt. The Notion ledger is
    stale for several tasks; Work Package 0 determines the exact disposition using tests and a
    real Tauri pass.
@@ -106,6 +109,14 @@ Every dispatch expands shorthand into absolute or repository-relative exact file
    renders their commit/parent/ref data and opens the existing Monaco DiffEditor. A later graph
    rendering library may replace only the visual lane-layout layer after license, bundle, and
    accessibility review.
+10. The public product name becomes **Assembly**. The default compact lockup is **Assembly — Build
+    in parallel.** The longer descriptor is **The workspace for parallel software development.**
+    The narrative variant is **Agents, worktrees, and code—working together.** Work Package 1B
+    changes visible product copy, runtime self-identification, and public app artifacts, but the
+    first Assembly release deliberately preserves bundle identifiers, storage keys, Application
+    Support paths, Keychain services, repository/project IDs, extension IDs, and internal
+    package/crate/module names. This is a compatibility migration, never a blind repository-wide
+    replacement.
 
 ## 2. Non-negotiable execution contract
 
@@ -165,8 +176,8 @@ The same prompt must say:
     the at-most-two heavy-runner slots; the default schedule uses one. Use focused tests only;
     the controller owns the serialized integration build. Set
     MSBUILDDISABLENODEREUSE=1 for dotnet commands, RUST_TEST_THREADS=1 for Rust tests, run
-    dotnet build-server shutdown after a heavy batch, and clean task-owned build artifacts and
-    task-owned build artifacts before returning. The controller owns the shared integration
+    dotnet build-server shutdown after a heavy batch, and clean task-owned build artifacts before
+    returning. The controller owns the shared integration
     worktree; report Worktree cleanup: not applicable and do not remove it.
 
 If the routed model or effort selection is unavailable, rejected, or silently downgraded, that
@@ -185,28 +196,63 @@ Read-only Luna audit dispatches use:
       message: "Inspect only. Do not edit, build, test, browse, create a worktree, or mutate Notion."
     })
 
+### 2.1A Luna-executable task-packet contract
+
+The default implementation route is Luna Max. A task is not ready for Luna because it is small;
+it is ready when the controller has removed every material product/architecture choice. Before a
+Luna dispatch, the corresponding task packet in this plan must contain all of the following:
+
+1. **Outcome and non-goals:** one observable result, the exact behavior preserved, and adjacent
+   work that is forbidden.
+2. **Repository baseline:** current SHA plus the existing implementation to extend. Never tell an
+   agent to “add” a component, service, store, or command until the packet states whether one
+   already exists.
+3. **Ownership:** exact editable files, exact controller-owned/shared files that may not be edited,
+   and the expected returned diff. One packet cannot quietly expand into a neighboring lane.
+4. **Symbol contract:** exact existing classes/functions/components to change; exact new type,
+   field, function, event, command, and component names; parameter and return shapes; persistence
+   key/version; and the owner of every side effect.
+5. **Ordered edits:** a numbered implementation sequence detailed enough that no step asks Luna to
+   “design,” “decide,” “choose a library,” “figure out the UX,” or “wire as appropriate.”
+6. **States and failure behavior:** loading, empty, success, stale-response, unsupported, denied,
+   retry, cancellation, cleanup, and destructive-confirmation behavior where relevant.
+7. **Data and security invariants:** input bounds, canonicalization, capability checks, remote-text
+   handling, no duplicate runtime/service/store, and the global DB-side SQL rule even when the
+   packet says no database is touched.
+8. **Focused verification:** exact test files to add/change, named cases, exact commands, expected
+   receipts, and whether the controller must grant the sole heavy-runner slot.
+9. **Real acceptance:** exact rebuilt-Tauri interaction, fixture/setup, screenshot/recording or
+   timing/process evidence, cleanup receipt, and the defect that fails the lane even if compilation
+   passes.
+10. **Stop and return contract:** stop before editing on a missing symbol, overlapping WIP, rejected
+    model override, new architecture choice, or unplanned shared seam. Return changed files, test
+    output, remaining risks, and cleanup status.
+
+If any item is unresolved, the controller first performs discovery or assigns a narrowly bounded
+SOL-medium decision packet. The controller then writes the chosen answer back into this plan and
+dispatches the resulting mechanical implementation to Luna Max. SOL-medium is not selected merely
+because a packet contains many files or many lines of code. Every milestone still receives a
+read-only SOL-medium code review after the Luna implementation packets are integrated.
+
 ### 2.2 Worktree and dirty-WIP contract
 
-Current protected checkout:
+Current authoritative checkout:
 
-- Path: /Users/blackcolours/dev/work/mac-command-bar
-- Branch: tsk-799-code-intelligence
-- HEAD: 588413980b68d62622b1dee2bab2a4e881741059
-- State: clean working tree; three commits ahead of `origin/tsk-799-code-intelligence`.
-- Recovery points: `6a3af55` ignores machine-local agent/editor state; `5884139` preserves the
-  interleaved native workbench implementation, tests, documentation, and evidence.
-- Intentionally ignored local state: `.codex/`, `.vscode/`,
-  `tauri-svelte-preview/.superpowers/`, and local `*.code-workspace` files.
+- Path: `/Users/blackcolours/dev/work/mac-command-bar`
+- Branch: `main`
+- HEAD: `167a30ae389a2280501011186f245a08d28c6725`
+- Remote: `origin/main` at the same SHA.
+- State at audit start: clean; no TSK-808 implementation worktree exists.
+- PR #14 contains the former `5884139` native-workbench checkpoint and the follow-up contract fix.
 
-Do not reset, rewrite, squash, or delete these checkpoints merely to obtain a smaller diff. The
-large legacy `src/routes/+page.svelte` change is interleaved WIP and must be reviewed separately
-before any history cleanup. Once the user or branch owner selects a base that contains `5884139`,
-create the TSK-808 integration worktree from that exact commit or its merged descendant:
+Do not reset, rewrite, squash, or delete the merged checkpoint history merely to obtain a smaller
+diff. When the user authorizes implementation, refresh `origin/main`, verify it still contains
+`167a30a`, and create the integration worktree from the refreshed SHA:
 
     git fetch origin
     git worktree add \
       /Users/blackcolours/dev/work/worktrees/mac-command-bar/tsk-808-native-workbench \
-      -b tsk-808-native-workbench-product-wave <approved-sha-containing-5884139>
+      -b tsk-808-native-workbench-product-wave origin/main
 
 Use one controller-owned integration worktree to save disk. File-independent agents may share
 that worktree only under the ownership table in section 5. Before every dispatch, the controller
@@ -251,7 +297,28 @@ status --short, and the named owner of the next action.
 
 ## 3. Source-of-truth task coverage
 
-### 3.1 The 19 rapid-fire items
+### 3.1 Latest-round boundary and complete open-task disposition
+
+The consolidation boundary is exact:
+
+- **Latest rapid-fire wave — implement from this plan:** the 19-task seed TSK-758 through
+  TSK-784, the TSK-808 orchestration epic, and the newer TSK-809/810 conversation tasks. These
+  are 22 open records even though four of the 19 seed records are currently labeled `Idea` in
+  Notion.
+- **Current dependencies — do not silently absorb:** TSK-789 and TSK-802. TSK-789 supplies the
+  CodeLens/Roslyn performance contract and is verified before closure; TSK-802 remains a separate
+  low-priority LSP protocol-hardening packet.
+- **Older open records — audit, link, and dispose explicitly:** TSK-127, 192, 253, 280, 283, 307,
+  312, 315, 324, 344, 360, 369, and 378. Their overlapping product behavior is implemented or
+  verified in the named package below, but the records are never closed merely because TSK-808
+  exists.
+
+This yields the live 2026-08-03 inventory of **37 open tasks: 25 Rapid-fire and 12 Idea**. Work
+Package 0 re-queries the database server-side immediately before execution and updates this ledger
+if the live status changed. It never materializes the task database and then filters, groups, or
+sorts it in application code.
+
+#### 3.1A The 19-task seed
 
 | Task                                        | Notion state on 2026-08-01 | Repository evidence                                                                                                                                                                                                                 | Planned disposition                                                                |
 | ------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -273,9 +340,37 @@ status --short, and the named owner of the next action.
 | TSK-779 Top-bar quick open                  | To Do, Medium              | ShellFrame exposes showCenterPanel at lines 116-125; top bar does not surface the three primary destinations                                                                                                                        | Finish in Work Package 2                                                           |
 | TSK-780 Right pane tabbed surface           | To Do, Medium              | ShellSidebar/sidebarViews and Dockview tools exist; roster needs extension-safe contract                                                                                                                                            | Verify base and freeze roster contract in Work Package 2                           |
 | TSK-783 Editor paints text instantly        | To Do, High                | EditorPanel waits for Monaco and displays “Starting the code editor” at lines 659-683                                                                                                                                             | Finish in Work Package 4                                                           |
-| TSK-784 Language-server status              | To Do, Medium              | Dirty TSK-799 WIP contains LanguageServerStatusChip at EditorPanel lines 637-642                                                                                                                                                    | Reconcile against merged PR#13, verify, then close or finish in Work Package 4     |
+| TSK-784 Language-server status              | To Do, Medium              | Merged PR #13 contains LanguageServerStatusChip at EditorPanel lines 637-642                                                                                                                                                         | Verify the merged path, then close or finish in Work Package 4                     |
 
-### 3.1b Immediate /next regressions (post-WIP parity)
+#### 3.1B Complete ledger for the remaining 18 open records
+
+| Task and live state | Relationship to this plan | Exact disposition and Luna packet |
+| --- | --- | --- |
+| TSK-810, To Do, High, Rapid-fire — child-agent hierarchy and transcripts | Latest wave | Implement Work Package 10A packet 10A.4. Reuse the existing authoritative transcript mirror and owned-session identity; add recursive parent-scoped read-only children, elapsed/state/relationship fields, Claude and Codex fixtures, stale-generation guards, and native proof. |
+| TSK-809, To Do, High, Rapid-fire — conversation composer | Latest wave | Implement Work Package 10A packets 10A.1–10A.3. Remove both composer boxes, add real per-session controls/attachments/commands/context telemetry, and prove one authoritative PTY without a duplicate provider host. |
+| TSK-808, To Do, High, Rapid-fire — native-workbench wave | Latest wave and execution authority | Execute Work Packages 0–14 in milestone order. Keep To Do until every non-deferred acceptance row has proof and linked tasks have been disposed individually. |
+| TSK-802, To Do, Low, Idea — per-method server-initiated LSP replies | Separate dependency | Keep separately open and deferred by default. If promoted, execute packet 15.9: replace the blanket `null` branch in `src-tauri/src/lsp.rs` with allow-listed per-method replies, retain unknown-method `MethodNotFound`, add Rust fixtures, and run native initialize/configuration proof. |
+| TSK-789, Doing, High, Idea — CodeLens cancellation and re-arm performance | Dependency with possible shipped overlap | Work Package 0 captures baseline semantic/placeholder counts and click timings, then packet 10.1A/15.8 proves cancellation, stale-response discard, and no per-keystroke re-arm. Close only when baseline/final evidence and native two-second Peek acceptance pass. |
+| TSK-378, Doing, Medium, Idea — reusable Menu/ContextMenu/Tooltip | Older shared-primitives overlap, likely implemented | Work Package 0 verifies the existing `components/Menu.svelte`, `ContextMenu.svelte`, and `Tooltip.svelte` with `check:svelte` plus rebuilt-native pointer, keyboard, Escape/focus-return, VoiceOver, portal/z-order, touch/trackpad, and contrast proof. Work Packages 1–2 add only genuinely missing compact row/card, detail popover, status, and icon-button primitives; do not fork a second overlay family. Restore the missing `[TSK-378]` title prefix before closure. |
+| TSK-369, To Do, Medium, Idea — Dockview terminal render failures | Older read-only diagnosis, likely superseded by an implemented fix | Work Package 0 records the actual diagnosis—destroyed/hidden xterm hosts, stale fit/geometry, and Dockview teleport/visibility—and verifies `TerminalSurface.svelte`, `terminalService.ts`, `ShellFrame.svelte`, and `centerDock.ts` through hide/show, switch, resize, reattach, reload, and layout restore. Close with the diagnosis plus continuous native receipt; do not turn this research task into a new terminal architecture. |
+| TSK-360, To Do, High, Idea — editor open files as Dockview tabs | Older genuine editor/shell gap | Work Package 0 confirms that `/next` still uses the custom `.file-strip`; packet 8.2A then migrates each open file to a real nested Dockview panel while preserving one Monaco model per URI, dirty/close/active/recent/restore state, drag/split/stack behavior, and the outer center destination. Packet 10.1A proves Peek never obscures either Dockview layer. |
+| TSK-344, Doing, High, Rapid-fire — VS Code-style Git source-control panel | Older Git overlap | Implement residual presentation/actions in Work Package 5 over the one Rust Git authority. Reuse the merged SCM projection and native DiffEditor; add staged/unstaged/untracked groups, selection, inline actions, keyboard/context actions, and disposable-repository proof. |
+| TSK-324, Doing, High, Rapid-fire — stack and resize context panels | Older shell overlap | Implement Work Package 2 shared right-dock roster and per-section resize persistence. Prove stacked sections, min/max bounds, keyboard access, restored ratios, and no terminal/editor re-creation. |
+| TSK-315, To Do, High, Rapid-fire — resumable-session metadata | Older partial session-rail dependency | Packet 9.2A enriches the existing `OwnedSession`/`sessionCardModel` path—not `ConversationSessionSnapshot`—with model, exact repo/worktree/cwd, dirty/saved-workspace readiness, provider, branch, PR/task, and resumable/stale reason. Use deterministic scanner/workspace facts; native proof must identify the exact session without guessing. |
+| TSK-312, To Do, Medium, Rapid-fire — worktree cleanup runbook helper | Older worktree overlap, likely implemented | Work Package 0 verifies `worktreeCleanupPlan.ts` and `worktreeCleanupRunbook.ts` with safe/backup/active/protected/saved/review fixtures and native copy-only output. Work Package 6 reuses them and adds nothing unless proof finds a named gap; the helper never executes cleanup. |
+| TSK-307, To Do, Medium, Idea — reusable Git graph view-model helper | Older Git overlap, likely implemented | Work Package 0 verifies the existing `gitGraphViewModel.ts` and fixtures, including refs, task IDs, parents, merges, and root rows, then closes only with native graph use. Work Package 5 reuses that helper; it does not rebuild or move repository IO into TypeScript. |
+| TSK-283, To Do, High, Rapid-fire — native activity-card data regression | Older legacy/native-backend verification lane | Work Package 0 proves `list_agent_sessions`, `list_runtime_contexts`, and `list_project_worktrees` return nonempty native facts and that the legacy activity cards show explicit data/empty/error states. `/next` does not recreate the legacy card UI; any scanner/bridge fix stays backend-only and preserves the route-owner boundary. |
+| TSK-280, Doing, Medium, Rapid-fire — terminal and browser session integration | Older partial dependency | Work Package 0 separately certifies existing PTY lifecycle, workspace URL normalization, and Playwright process-group safety. Work Package 8 owns only the missing child-webview/profile/annotation half and owner-safe conversation-draft staging; it does not absorb legacy-route ownership or replace the existing terminal. |
+| TSK-253, To Do, Medium, Rapid-fire — native LSP language matrix | Separate partial/deferred LSP task | Keep open outside TSK-808 unless explicitly promoted. Current support covers C#, TypeScript/JavaScript, Rust, and Svelte/HTML paths but not the requested Python/Go server specs. A future packet must edit `MonacoSourceEditor.svelte`, `src-tauri/src/lsp.rs`, `scripts/sourceUi.test.mjs`, and Rust LSP fixtures, with clean skip when `pyright`/`gopls` is absent and real native proof per claimed language. |
+| TSK-192, To Do, Medium, Idea — conversation workspace restore snapshots | Older broad workspace-restore overlap, likely implemented | Work Package 0 verifies `sessionWorkspaces.ts` and `/next/+page.svelte` restore provider/session, project/worktree/cwd, open and selected files, layout/dock, terminal, browser, and conversation without blocking startup. Missing/moved worktrees must produce a safe recovery action. Work Package 10A adds only the newer composer/child state fields. |
+| TSK-127, Doing, Medium, Idea — native macOS menu-bar diff app | Separate Swift/AppKit umbrella/parent | Explicitly retain outside TSK-808. TSK-808 is the Tauri/Svelte native workbench and may link shared Rust facts, but it does not claim the SwiftUI/AppKit menu-bar shell, signing, clipboard/keychain, launcher, or native-helper acceptance. TSK-127 has its own owner and closes only under its full Swift/Rust/signed-app contract. |
+
+Every `verify then close` row is a real task packet: read the full current Notion body, run the
+named focused checks, perform the named rebuilt-Tauri interaction, attach the evidence receipt,
+then close only that task. A green compile, an older screenshot, or overlap with TSK-808 is not
+closure evidence.
+
+### 3.1C Immediate /next regressions (post-WIP parity)
 
 | Task                         | Notion state | Repository evidence                                                                                                             | Disposition                                                                                       |
 | ---------------------------  | ------------  | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -285,21 +380,20 @@ status --short, and the named owner of the next action.
 ### 3.2 Dependencies and stale states
 
 - TSK-785, TSK-798, and TSK-799 are Done and are dependencies, not reopened work.
-- TSK-809 and TSK-810 are separate open conversation-workbench tasks. They own composer/model/
-  attachment controls, the canonical conversation runtime/store, child-agent hierarchy, and
-  transcript inspection. TSK-808 owns deterministic workbench context, capability-gated action
-  proposals, and their audit receipts. It must reuse the TSK-809/810 contracts after merge or
-  defer its chat UI; it must not create a second conversation store, provider host, composer,
-  child tree, or transcript pane.
-- TSK-789 is still Doing in Notion even though TSK-799 absorbed its remaining queue,
-  cancellation, and CodeLens lifecycle scope. Work Package 0 verifies the merged behavior and
-  closes TSK-789 if nothing remains.
+- TSK-809 and TSK-810 remain individually tracked conversation-workbench tasks, but Work Package
+  10A in this master plan is their single implementation authority. It extends the merged
+  conversation runtime/store, composer, child hierarchy, and transcript inspection rather than
+  creating a parallel surface. TSK-808 owns the cross-workbench context/action integration and
+  must consume that one certified conversation authority.
+- TSK-789 remains Doing. TSK-799 shipped part of its queue/CodeLens lifecycle, but that does not
+  prove cancellation, stale-response discard, or prevention of per-keystroke re-arm. Work Package
+  0 captures a baseline and packet 10.1A plus 15.8 close only the evidenced remainder.
 - TSK-307, TSK-312, TSK-315, TSK-344, and other older task records overlap individual
   components. TSK-808 must not silently close them. Work Package 0 links evidence and asks
   capture-task to update only when durable tracking truth changes.
 - TSK-802 is a separate low-priority LSP hardening item and is not absorbed.
 
-The Notion task and its 30 attachments are the evidence-gallery authority. Only two image files
+The Notion task and its 32 attachments are the evidence-gallery authority. Only two image files
 are currently mirrored under this plan's local `image/2026-08-01-tsk-808-native-workbench-product-wave`
 folder; local absence is not evidence that the remaining Notion attachments do not exist. At
 execution time, record the Notion attachment reference used for each acceptance row without
@@ -307,7 +401,8 @@ copying or renumbering the gallery.
 
 ### 3.3 TSK-808 capability lanes
 
-The epic adds seven capability lanes beyond the 19 task cleanup:
+The epic adds eight product capability lanes beyond the 19-task seed and one sequential
+extension/API decision checkpoint:
 
 1. Sessions, navigation, status, and notifications.
 2. Local Git, graph, diffs, files, and worktrees.
@@ -315,7 +410,31 @@ The epic adds seven capability lanes beyond the 19 task cleanup:
 4. Workspace-isolated browser, annotations, and native webview lifecycle.
 5. Resources, provider usage, ports, disk visibility, and Roslyn ownership.
 6. Rich Markdown reading/editing.
-7. Guarded integrated-agent actions and an isolated web-extension-host proof.
+7. One transcript-backed conversation composer and read-only child-agent hierarchy.
+8. Guarded integrated-agent actions and audit receipts.
+
+The extension/API checkpoint runs first after Work Package 0, produces the HTML comparison, and
+stops for user selection. It is not counted as a product lane because its result determines which
+later extension work, if any, is authorized.
+
+### 3.3A Original TSK-808 Lane A–G crosswalk
+
+The task body’s original capability lanes remain first-class scope. The work-package numbering
+does not replace or hide them:
+
+| Original TSK-808 lane | Master-plan implementation authority | Required product outcome |
+| --- | --- | --- |
+| Lane A — sessions, workspace navigation, history, status, and notifications | Work Packages 1–3 | Compact legible session/workspace navigation; deterministic metadata; reversible Working/Done/Settled state; explicit actions; accessible native notifications. |
+| Lane B — source control, Git graph, diffs, files, and worktrees | Work Packages 5–6 | Full native Git graph/diff/files workspace over the existing Rust Git authority, plus canonical filesystem and worktree safety. |
+| Lane C — pull requests, automated review, and GitHub budget | Work Package 7 | Cross-project PR queue/detail/checks/files/review workflows; create/edit/close/merge preparation; agent review recipes; REST/Search/GraphQL budget visibility and backoff. |
+| Lane D — embedded browser and visual feedback | Work Package 8 | Workspace-isolated native child webviews, tabs/navigation/auth/profile lifecycle, app-global bottom control/full-shell fan, element annotations, and owner-safe draft staging. |
+| Lane E — resource manager, provider usage, and Roslyn lifecycle | Work Package 9 | CPU/RSS/process/port/disk ownership, truthful Claude/Codex usage, one Roslyn owner per canonical root, warm/recent policies, cleanup/restart, and baseline/final metrics. |
+| Lane F — rich Markdown display and editing | Work Package 10 | Safe high-quality GFM/Mermaid/local-image rendering, Read/Edit/Split, selection/copy/find, outline, scroll sync, watch/conflict handling, and large-document proof. |
+| Lane G — integrated agent foundation and contextual actions | Work Package 10A plus Work Package 11 | One transcript-backed conversation authority; deterministic workbench context; contextual Ask Agent; guarded Git/PR/worktree/run-config proposals; confirmation/revalidation; append-only audit receipts. |
+
+Lane C, Lane E, and Lane G are not optional cleanup items. Their detailed files, types, methods,
+tests, security boundaries, native acceptance, and Luna/SOL routing are specified in sections 13,
+15, 16A, and 17 respectively. They remain open until their own native proof rows pass.
 
 ---
 
@@ -430,20 +549,22 @@ boundary revalidates facts before any mutation.
 - Do not reject extensions. Reuse the installed `vscode/localExtensionHost` and emitted
   `extensionHost.worker` for capability-reviewed, browser-compatible extensions and declarative
   theme/grammar/icon contributions.
-- The exact Houston theme JSON is an approved declarative contribution. Register it once before
+- The exact Houston theme JSON is the currently proven declarative contribution from PR #14,
+  pending the user's new API/extension comparison. Preserve it while testing alternatives.
+  Register it once before
   `MonacoVscodeApiWrapper.start`, exclude Houston's activation/webview extras, and let the theme
   own workbench, TextMate, and semantic-token colors. Do not layer the old hand-authored Monaco
   approximation over it; that caused the visible Houston-then-old-theme repaint.
-- Do not embed the Git Graph extension. It has no compatible browser entry for the present
-  LocalWebWorker host, assumes a desktop/workspace Node and Git environment, and is not the
-  repository authority this product needs. Implement the graph described in Work Package 5 over
-  the existing Rust Git model. Treat its product behavior as inspiration, not reusable shipped
-  extension code.
-- Do not make GitLens part of the current product baseline. Its browser entry proves only that
-  activation in a web extension host is possible; its valuable views still depend on a larger VS
-  Code workbench/view/storage/repository-provider/auth surface than the current editor-service
-  host exposes. Reconsider it only through a separately approved full-workbench compatibility
-  spike with measured startup, memory, bundle, and adapter cost.
+- The prior checkpoint found that the Git Graph extension has no compatible browser entry for
+  the present LocalWebWorker host, assumes a desktop/workspace Node and Git environment, and is
+  not the repository authority this product needs. Implement the graph described in Work Package
+  5 over the existing Rust Git model. Treat its product behavior as inspiration, not reusable
+  shipped extension code.
+- The prior checkpoint did not make GitLens part of the current product baseline. Its browser
+  entry proves only that activation in a web extension host is possible; its valuable views still
+  depend on a larger VS Code workbench/view/storage/repository-provider/auth surface than the
+  current editor-service host exposes. Reconsider it only through a separately approved
+  full-workbench compatibility spike with measured startup, memory, bundle, and adapter cost.
 - A Node/local-process host, remote extension host, or automatic marketplace download is not
   categorically rejected; it is deferred until a separate security, resource, and distribution
   decision proves that host class. It is not silently introduced by the LocalWebWorker lane.
@@ -470,8 +591,12 @@ Only the controller edits these after Wave 1:
 
 - tauri-svelte-preview/package.json and pnpm-lock.yaml
 - tauri-svelte-preview/src-tauri/Cargo.toml and Cargo.lock
+- tauri-svelte-preview/src-tauri/tauri.conf.json
+- tauri-svelte-preview/src-tauri/tauri.dev.next.conf.json
 - tauri-svelte-preview/src-tauri/src/main.rs
+- tauri-svelte-preview/src-tauri/src/product_identity.rs
 - tauri-svelte-preview/src/lib/tauriSource.ts
+- tauri-svelte-preview/src/lib/productIdentity.ts
 - tauri-svelte-preview/src/routes/next/+page.svelte
 - tauri-svelte-preview/src/lib/shell/components/ShellFrame.svelte
 - tauri-svelte-preview/src/lib/shell/layout/centerDock.ts
@@ -493,46 +618,91 @@ applies all receipts in one serialized integration step.
 
 ### 5.2 File-independent implementation lanes
 
-| Lane                     | Agent-owned paths after contracts freeze                                                               | Heavy work                   |
-| ------------------------ | ------------------------------------------------------------------------------------------------------ | ---------------------------- |
-| A Contrast/primitives    | styles/nextTokens.css, styles/themeChrome.css, themes/themeRegistry.ts, components/shared, token tests | Node only                    |
-| B Sessions/notifications | components/SessionsColumn.svelte, components/sessions, stores/sessionRailStore, notifications          | Node only                    |
-| C Editor/run/problems    | stacks, problems, editor helper modules, new editor components; EditorPanel only after TSK-799 release | Node focused                 |
-| D Git/files/worktrees    | shell/git, components/git, explorer, components/explorer, worktree presentation, `src-tauri/src/git_diff_models.rs`, `src-tauri/src/workspace_entries.rs`, `src-tauri/src/workspace_file_watch.rs` | Node plus focused Rust       |
-| E Hosted GitHub          | new shell/github, components/github, `src-tauri/src/github.rs`                                         | One focused Rust lane        |
-| F Browser                | shell/browser, components/browser, `src-tauri/src/browser.rs`, and `src-tauri/src/browser_inspector.js` | One focused Rust lane        |
-| G Resources/Roslyn       | new resources modules, `core/src/scanners/resources.rs`, provider usage; `lsp.rs` only after TSK-799 release | One focused Rust lane        |
-| H Markdown               | sourceMarkdownPreview.ts, SourceMarkdownPreview.svelte, new shell/markdown, Markdown tests             | Node only                    |
-| I Integrated agent       | new shell/agent fact/action helpers and action preview only; existing conversation files remain TSK-809/810-owned | Node focused                 |
-| J Curated extensions     | existing `shell/extensions`, Houston asset/license, compatibility tests/reports; `csharpLanguageClient.ts` only after editor work. Add `src-tauri/src/vsix_import.rs`, a generic broker, or executable fixtures only after a new explicit package selection | Node now; focused Rust/native proof only if VSIX graduation is resumed |
+| Lane | Agent-owned paths after contracts freeze | Heavy work |
+| --- | --- | --- |
+| A Contrast/primitives | `styles/nextTokens.css`, `styles/themeChrome.css`, `themes/themeRegistry.ts`, `components/shared`, token tests | Node only |
+| A2 Assembly identity | `productIdentity.ts`, `product_identity.rs`, product-identity tests, public labels in explicitly leased routes/configs/native modules and legacy Swift shell | Node plus focused Rust/Swift only if active |
+| B Sessions/notifications | `components/SessionsColumn.svelte`, `components/sessions`, `stores/sessionRailStore`, notification modules | Node only |
+| C Editor/run/problems | stacks, problems, editor helper modules, new editor components; `EditorPanel.svelte` only after its exact receipt is approved | Node focused |
+| D Git/files/worktrees | `shell/git`, `components/git`, explorer presentation, worktree presentation, `src-tauri/src/git_diff_models.rs`, `workspace_entries.rs`, `workspace_file_watch.rs` | Node plus focused Rust |
+| E Hosted GitHub | new `shell/github`, `components/github`, `src-tauri/src/github.rs` | One focused Rust lane |
+| F Browser/global action surface | `shell/browser`, `components/browser`, `shell/actions/actionSurfaceModel.ts`, `actionSurfaceStore.svelte.ts`, `WorkbenchActionFab.svelte`, `src-tauri/src/browser.rs`, `browser_inspector.js` | One focused Rust lane |
+| G Resources/Roslyn | new resources modules, `core/src/scanners/resources.rs`, provider usage; `lsp.rs` only for an approved packet after the TSK-799 contract is re-proven | One focused Rust lane |
+| H Markdown | `sourceMarkdownPreview.ts`, `SourceMarkdownPreview.svelte`, new `shell/markdown`, Markdown tests | Node only |
+| I Conversation | existing `shell/conversation`, `components/ConversationSurface.svelte`, new `ConversationAgentTree.svelte`, existing `src-tauri/src/agent_conversation`, conversation tests/fixtures | Node plus focused Rust |
+| J Integrated agent | new `shell/agent` fact/action/audit helpers and action-preview components; consume lane I and never create another conversation store/provider | Node focused |
+| K Extension/API probe | existing `shell/extensions`, the internal probe fixture, compatibility tests/report; post-selection adapter files only after the selected row is written into this plan | Node plus at most one focused Rust/native proof |
 
-No more than two Rust lanes run tests at the same time; the default is one. Lanes B, D, H, and
-I may run in parallel only after Lane A and Work Package 2 contracts land. Every dispatch
+No more than two Rust lanes run tests at the same time; the default is one. Lanes B, D, H, I,
+and J may run in parallel only after lane A and Work Package 2 contracts land. Every dispatch
 expands these directory summaries into an exact path allow-list and records the starting
 path-scoped diff; a directory-level row alone is not edit authority.
 
-### 5.3 Planned commit order
+### 5.3 Cost-aware dispatch manifest
 
-The recovery commits `6a3af55` and `5884139` precede this sequence and preserve the formerly
-dirty shared WIP. They are checkpoints, not the desired final feature-level history. Do not
-rewrite them until their mixed task ownership has been reviewed and an integration branch safely
-contains the same tree.
+This manifest is the controller's routing checklist. “Luna” means explicit `gpt-5.6-luna`,
+`max`, `fork_turns: "none"`. “SOL decision” and “SOL review” mean explicit `gpt-5.6-sol`,
+`medium`, `fork_turns: "none"`. A SOL decision packet returns only the named design answer and
+plan amendment; the controller then gives the now-mechanical code packet to Luna. A SOL review
+is read-only and returns findings to the controller. No agent silently changes route.
+
+| Dispatch packet | Task scope | Default route | Exact handoff and stop boundary |
+| --- | --- | --- | --- |
+| 0A inventory/re-anchor | All 37 open tasks; TSK-759/760/764/771/773/784 and older verification candidates | Luna read-only, then controller for Notion/shared-plan edits | Run section 6 evidence commands; return one disposition per task. Stop on closed TSK-808, changed base, dirty overlap, or unreadable live task status. |
+| 12A API/adapter comparison | TSK-765 and the user's extension/API prerequisite | Luna implementation/probe | Implement only 18.2B's internal fixture and thin adapters, render the fixed metric matrix, clean up native/browser processes, and stop. No third-party VSIX, marketplace, elevated host, or broad product lane before user selection. |
+| M0 extension decision review | Evidence from 0A and 12A | SOL review | Check singleton host, security boundary, metrics, editor/Peek safety, and classification accuracy. Return findings only; controller presents the report and waits for the user. |
+| 1A contrast tokens/primitives | TSK-765, contrast/legibility, shared semantic controls | Luna | Implement section 7 in its exact files and tests. Stop if a theme contribution must be replaced, a new token category is needed, or an information-bearing state has no specified semantic role. |
+| 1B Assembly product identity | TSK-808 public rebrand and compatibility boundary | Luna, sequential | Implement section 7A after contrast. Rename only the enumerated public surfaces and artifacts; preserve every compatibility identity in 7A.4. Stop before changing a bundle ID, storage key, Application Support path, Keychain service, repository/project identity, extension ID, or internal module/package/crate name. |
+| 2A shell/shared controls | TSK-758/779/780/378/324 | Luna | Implement 8.1–8.4 after controller freezes roster/action interfaces. Return shared-seam receipts; do not edit controller-owned shell files. |
+| 2B file Dockview | TSK-360 and Peek tab precondition | Luna | Implement 8.2A's `editorFileDock.ts` contract, one model per URI, close/dirty/restore behavior, and nested-Dockview tests. Stop if Dockview cannot preserve the outer center destination without a new architecture. |
+| 2C Settings restoration | Missing Settings regression | Luna | Follow 8.5's existing route/store/schema only; restore reachability, persistence, keyboard/focus, and native proof. Do not create another Settings component or store. |
+| M1 shell-foundation review | 1A, 1B, and 2A–2C integrated diff | SOL review | Review contrast, Assembly identity/compatibility, focus, overlay ownership, Dockview nesting, Settings authority, accessibility, and shared-seam edits before any later UI lane. |
+| 3A session lifecycle | TSK-761/762/315 and session portions of TSK-192 | Luna | Implement section 9's exact state, migration, reversible actions, notification rules, and metadata. Stop if a lifecycle state cannot be derived from the named deterministic facts. |
+| 4A editor first paint/format/run/problems | TSK-783/768/767/770/784 | Luna | Implement 10.1 and 10.2–10.4 in separate exact-file packets; preserve Monaco/LSP ownership and run only focused tests. |
+| 4B Peek preservation | Confirmed tab-loss regression plus TSK-789 | Luna discovery/instrumentation, then Luna fix when the cause matches 10.1A | Capture before/during/after roster and geometry. If the cause is outside the named clipping/z-order/layout paths or requires changing editor/center identity, stop for a SOL decision; do not guess. |
+| 5A local Git/diff | TSK-307/344 and TSK-808 Git surface | Luna | Implement section 11 over existing Rust Git authority and the current `gitGraphViewModel`. If a new graph library is required, stop for a SOL license/accessibility/layout decision, then resume in Luna. |
+| 6A explorer/worktrees | TSK-763/312 and filesystem parts of TSK-280 | Luna | Implement section 12 with canonical containment, typed confirmations, dirty-buffer reconciliation, and one existing worktree-safety authority. |
+| M2 core-workbench review | 3A–6A integrated diff | SOL review | Review session truth, LSP/Peek behavior, Git/filesystem safety, SQL declaration, test adequacy, and native evidence. |
+| 7A hosted GitHub | Hosted PR/review/check/budget capability | Luna | Implement section 13 as small Rust model/query/prepare/execute and frontend packets. Any mutation not representable by the specified typed prepare/confirm/execute contract stops for SOL decision. |
+| 8A browser/global fan | Browser portion of TSK-280 plus the app-wide bottom floating control and annotation queue | Luna after 14.1 proves the specified child-view API | Implement 14.2–14.5 exactly. If z-order, clipping, cookie partitioning, inspector bridge, or whole-app overlay behavior cannot meet 14.1 without a new native architecture, stop for a SOL decision packet; Luna resumes only after the decision is written here. |
+| 9A resource facts/UI | Resource ownership, pressure, ports, disk, provider usage | Luna | Implement 15.2–15.5 and 15.7 as bounded snapshot/model/UI packets with explicit owner identities and cleanup. |
+| 9B Roslyn registry consolidation | TSK-789 residual lifecycle and one LSP owner | SOL decision/implementation for 15.6 only; Luna may implement resulting mechanical cleanup | This is intentionally SOL because registry consolidation can change process ownership and stale-generation semantics. Stop on any second owner or unexplained CodeLens count change. |
+| 10A Markdown | Rich safe Markdown workbench | Luna | Implement section 16 with the named parser/sanitizer, root containment, conflict states, scroll sync, and hostile fixtures. |
+| 10B conversation | TSK-809/810 | Luna | Implement 16A packets A–D independently after shared types freeze; reuse one PTY/provider/store and stop on an unsupported live-control protocol or unprovable child-parent association. |
+| 11A guarded agent | TSK-766 product outcome and TSK-808 agent actions | Luna | Implement section 17 only after deterministic services and 10B are certified. Never let the model supply facts or bypass native revalidation/confirmation. |
+| M3 capability review | 7A–11A integrated diff | SOL review | Review remote/local mutation safety, browser isolation/cleanup, resource ownership, conversation single-runtime proof, Markdown security, and append-only action receipts. |
+| 12B selected extension path | Only the exact API/extension row the user chooses after 12A | Luna when classification is Works now, Bounded adapter, or Declarative only | Controller writes the selected ID/capability, files, adapters, permissions, tests, and resource budget into 18.2A first. Elevated-host requirements receive a SOL decision and separate approval; rejected rows do not execute. |
+| 13A database console | TSK-769, deferred unless explicitly promoted | SOL query/view design, then Luna implementation | One translated SQL statement/view for filtering, sorting, grouping, joining, aggregation, and paging; inspect generated SQL and covering index. No in-memory shaping or N+1. |
+| 14A controller integration | TSK-808 final wiring and closure ledger | Controller only | Apply returned receipts once, serialize heavy gates/native proof, and keep every independently tracked task open until its own evidence meets section 20.10. |
+| M4 final review | Entire integrated wave | SOL review | Perform milestone code, relevance, security, native-evidence, data-query, cleanup, and task-disposition review. Findings return to the controller; SOL does not silently edit product code. |
+
+The controller copies the complete packet contract from 2.1A into every dispatch, plus the exact
+subsection named above. A task is not dispatched from this summary row alone. If its detailed
+subsection lacks a concrete symbol, state, failure behavior, test, or native acceptance step at
+dispatch time, the controller re-anchors or amends it before assigning Luna.
+
+### 5.4 Planned commit order
+
+PR #14 already merged the former `5884139` checkpoint and its contract follow-up into current
+`main` at `167a30a`; `6a3af55` remains historical ancestry. Do not rewrite that merged history.
 
 1. plan: record TSK-808 native-workbench execution contract
-2. spike: reconcile the implemented extension/API checkpoint and its reports; selection is
-   Houston contribution + native DiffEditor + SCM adapter, with GitLens/Git Graph embedding out
+2. spike: run the real-Tauri extension/API comparison, review the report, and record the user's
+   exact selected capability row; preserve the prior Houston/DiffEditor/SCM evidence meanwhile
 3. feat: establish accessible workbench tokens and shared controls
-4. fix: restore Settings reachability and freeze typed shell panel/action contracts
-5. feat: finish sessions, lifecycle, and notifications
-6. feat: finish editor, run configurations, format, and problems
-7. feat: add full Git graph and safe workspace explorer
-8. feat: add guarded hosted pull-request workflows
-9. feat: add workspace-isolated native browser
-10. feat: add resource ownership and Roslyn lifecycle controls
-11. feat: replace Markdown preview with safe rich workbench
-12. feat: add guarded integrated-agent actions
-13. feat: enable the user-selected compatible extension/API paths
-14. test: certify TSK-808 in the native desktop app
+4. feat: rebrand public product identity and app artifacts to Assembly without moving user state
+5. fix: restore Settings reachability and freeze typed shell panel/action contracts
+6. feat: finish sessions, lifecycle, and notifications
+7. feat: finish editor, run configurations, format, and problems
+8. feat: add full Git graph and safe workspace explorer
+9. feat: add guarded hosted pull-request workflows
+10. feat: add workspace-isolated native browser
+11. feat: add resource ownership and Roslyn lifecycle controls
+12. feat: replace Markdown preview with safe rich workbench
+13. feat: add guarded integrated-agent actions
+14. feat: certify the one conversation surface and read-only child-agent hierarchy
+15. feat: enable only the user-selected compatible extension/API path
+16. test: certify TSK-808 in the native desktop app
 
 Each commit contains only its owned paths plus the controller wiring required for that lane.
 
@@ -548,10 +718,10 @@ remain controller-owned.
 
 ### Current anchors to inventory
 
-- TSK-799 merge: PR #13, merged commit `2e09399`; current checkout HEAD `5884139` is clean and
-  three commits ahead of its remote branch. The implementation checkpoint includes TSK-799,
-  TSK-808, and TSK-809/810 paths and therefore must be reconciled, not assumed to be a release
-  commit for any one task.
+- Integration base: clean `main` and `origin/main` at
+  `167a30ae389a2280501011186f245a08d28c6725`. PR #13 merged the original TSK-799 work; PR #14
+  merged the later native-workbench checkpoint and contract fix. The old `5884139` anchor is
+  historical evidence only, not the implementation base.
 - Existing shell: ShellFrame.svelte:21-155, centerDock.ts:26-323, frame.ts.
 - New-session flow: newSessionFlow.ts:24-200, ownedSessions.ts:13-106,
   /next/+page.svelte:477-563.
@@ -563,14 +733,13 @@ remain controller-owned.
 - Svelte gate: package.json scripts check and check:svelte.
 - Run configurations: stacks/stackService.ts:61-293 and stackStore.svelte.ts.
 - Problems: problemsService.ts:63-179.
-- Language status: dirty EditorPanel.svelte:637-642.
+- Language status: `LanguageServerStatusChip.svelte` mounted from `EditorPanel.svelte`.
 
 ### Steps
 
-1. **Completed preservation receipt, 2026-08-03:** the prior dirty state was classified as
-   interleaved protected product WIP. Machine-local state was ignored in `6a3af55`; all product
-   code, tests, plans, reports, and screenshots were committed in `5884139`. No file was reset,
-   discarded, stashed, or pushed. Reconfirm the current lease before the next implementation:
+1. **Current preservation receipt, 2026-08-03:** PR #14 merged the former protected checkpoint;
+   `main` and `origin/main` now point to `167a30a`. Reconfirm the lease immediately before any
+   implementation:
 
    git branch --show-current
    git rev-parse HEAD
@@ -582,16 +751,16 @@ remain controller-owned.
    Save future output in the execution log, not in this plan. If new dirty paths appear, ask the
    current owner to classify them. A discard classification is not deletion authority: obtain
    the user’s explicit approval before removing, reverting, or overwriting content.
-2. Compare merged origin/main, the tracking branch, and checkpoint `5884139`:
+2. Fetch and prove that the selected base contains the merge before creating any worktree:
 
    git fetch origin
-   git diff --name-status origin/main...5884139
-   git diff --name-status origin/tsk-799-code-intelligence...5884139
+   git merge-base --is-ancestor 5884139 origin/main
+   git rev-parse origin/main
 
-   Read-only comparison is allowed. Do not merge, rebase, squash, or reset until the integration
-   base and ownership of the mixed checkpoint are explicit.
-3. Select a commit that contains `5884139` or its reviewed/merged equivalent, then create the
-   clean TSK-808 worktree from that exact SHA. Record:
+   A zero exit from `merge-base` and the recorded SHA are required. Do not merge, rebase, squash,
+   or reset the current checkout during this check.
+3. Only after the user authorizes implementation, create the clean TSK-808 worktree from the
+   refreshed `origin/main`. Record:
 
    git rev-parse HEAD
    git status --short
@@ -604,7 +773,13 @@ remain controller-owned.
    rg -n "SourceLspRegistry|ensure_native_csharp_endpoint|stop_server" tauri-svelte-preview/src-tauri/src/lsp.rs
 
    Update only moved line references in this file; do not change scope during re-anchoring.
-5. Run the existing focused tests for candidate shipped tasks, serially:
+5. Query the live Notion Tasks data source in one server-side statement: filter `Status <> Done`
+   and the MacCommandBar Project relation in SQL, order in SQL, and return Task ID, Name, Status,
+   Priority, Source, and URL. Confirm TSK-808 is still open, confirm all 37 rows or update section
+   3 when the count changed, and fetch each task body before disposition. Never load all tasks and
+   then filter/group/sort in the client. Repair missing visible `[TSK-NNN]` title prefixes when a
+   task is otherwise being updated; do not rewrite unrelated task bodies.
+6. Run the existing focused tests for candidate shipped tasks, serially:
 
    cd tauri-svelte-preview
    pnpm test:new-session-flow
@@ -615,16 +790,31 @@ remain controller-owned.
    pnpm test:stack-store
    pnpm test:problems-store
    pnpm test:language-server-status
+   pnpm test:git-graph-view-model
+   pnpm test:worktree-cleanup-runbook
+   pnpm test:worktree-safety
+   pnpm test:next-terminal-service
+   pnpm test:source-dockview
+   pnpm test:source-dock-layout
+   pnpm test:source-pane-sizing
+   pnpm test:tauri-source
+   pnpm test:source-ui
    pnpm check:svelte
    pnpm check
-6. Run one real-Tauri audit for TSK-759, 760, 762, 764, 767, 771, 773, and 784. Evidence must
+7. Run one real-Tauri audit for TSK-192, 283, 307, 312, 369, 378, 759, 760, 762, 764, 767, 771,
+   773, and 784. Evidence must
    show cold launch, project pick, new session, session switch with exact workspace restore,
    file click into Editor, Playwright card status and stop flow in a disposable named session,
-   Run configuration start/exit state, and language-server status.
-7. Read TSK-808 directly and null-safely before relying on project-list output. The current
-   `list-tasks.sh` helper can fail on a malformed TSK-795 row with null status/title. If TSK-808's
-   status cannot be read directly, stop; never infer that the task is open. Update Notion only
-   from evidence:
+   Run configuration start/exit state, language-server status, session/worktree/cwd/file/layout/
+   terminal/browser restoration, native activity facts, Git graph helper use, cleanup-runbook
+   copy-only output, terminal hide/show/resize/reattach, and reusable overlay input/focus behavior.
+   TSK-127, 253, 280, 315, 324, 344, 360, 789, 802, 809, and 810 are not closure candidates in
+   this audit; their named residual packets or separate owners remain open.
+8. Read TSK-808 directly and null-safely before relying on project-list output. The current
+   `list-tasks.sh` helper fails against the present schema with `Cannot index object with null`;
+   record that as a tooling limitation, then use the connected Notion data-source query rather
+   than treating the failure as an empty worklist. If TSK-808's status cannot be read directly,
+   stop. Update Notion only from evidence:
 
    - Close a task that is wholly shipped and verified.
    - Keep a task open when a named acceptance behavior still fails.
@@ -633,18 +823,18 @@ remain controller-owned.
 
 ### Stop conditions
 
-- Stop before broad implementation if the selected integration base does not contain the
-  approved checkpoint or its reviewed equivalent.
-- Stop if origin/main does not contain PR #13; resolve branch authority first.
+- Stop before broad implementation if the selected `origin/main` does not contain `5884139` and
+  the PR #14 merge receipt.
 - Stop if the Notion status of TSK-808 is Done/closed.
 - Stop if a planned shared file is dirty in the new worktree.
 
 ### Done
 
-- The checkpoint is preserved and the present checkout is clean. Work Package 0 is fully done
-  only when a clean TSK-808 worktree exists at the mandated path from an approved containing SHA.
-- Each of the 19 tasks has one disposition: closed with evidence, active in a named work
-  package, or explicitly retained as later scope.
+- The checkpoint is merged and the present checkout is clean. Work Package 0 is fully done only
+  when implementation is authorized and a clean TSK-808 worktree exists at the mandated path from
+  refreshed `origin/main`.
+- Every one of the 37 open tasks has one current disposition: closed with its own evidence,
+  active in a named packet, linked to a separate owner, or explicitly retained/deferred.
 - Current line anchors and collision table are recorded.
 - No current user WIP was changed.
 
@@ -655,6 +845,9 @@ remain controller-owned.
 **Covers:** TSK-765 contrast and theme correctness; the user’s primary usability blocker.
 
 **Dependencies:** Work Package 0 complete. This package lands before every other UI package.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule so a discovered data path cannot be materialized or shaped in memory.
 
 **Owner paths:**
 
@@ -754,12 +947,274 @@ Native visual proof must include matching Houston and Dracula screenshots at:
 
 ---
 
+## 7A. Work Package 1B — Assembly product identity and compatibility migration
+
+**Covers:** The requested MacCommandBar-to-Assembly app rename, public runtime identity, app
+artifacts, copy hierarchy, and preservation of all existing settings/session/layout/keychain data.
+
+**Owner and route:** One explicit Luna Max implementation packet, run sequentially after Work
+Package 1 and before Work Package 2. The controller leases the shared config/route/native seams
+listed below for this packet only, reviews its path-scoped diff, and commits it before parallel
+feature lanes start. SOL-medium reviews the integrated result at M1; SOL is not the default
+implementer because all product and compatibility decisions are fixed here.
+
+**Dependencies:** Work Package 0 must re-anchor the line references and verify both the Tauri
+shell and legacy Swift shell build paths. The user's extension/API selection gate and Work
+Package 1 contrast foundation must be complete. No other UI lane may run while this packet edits
+window titles, root routes, or native self-identification.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule. Local browser storage, Application Support files, Keychain services,
+and environment variables are compatibility state, not database work, and must be preserved as
+specified below.
+
+### 7A.1 Locked product copy
+
+Create `tauri-svelte-preview/src/lib/productIdentity.ts` as the only TypeScript source for public
+brand copy:
+
+```ts
+export const PRODUCT_NAME = 'Assembly' as const;
+export const PRODUCT_TAGLINE = 'Build in parallel.' as const;
+export const PRODUCT_DESCRIPTOR =
+  'The workspace for parallel software development.' as const;
+export const PRODUCT_NARRATIVE =
+  'Agents, worktrees, and code—working together.' as const;
+
+export const PRODUCT_DOCUMENT_TITLE = PRODUCT_NAME;
+export const PRODUCT_UI_LIBRARY_TITLE = `${PRODUCT_NAME} UI Library`;
+```
+
+Copy placement is fixed:
+
+1. `Assembly` is the app name in native window titles, menu-bar title, visible app headings,
+   Tauri `productName`, LSP `clientInfo.name`, `TERM_PROGRAM`, public provider labels, errors,
+   and app-artifact display names.
+2. `Build in parallel.` is the primary compact tagline for an existing subtitle, About row, or
+   product-lockup slot. Do not add a splash screen, hero, modal, or permanent chrome merely to
+   display it.
+3. `The workspace for parallel software development.` is the longer descriptor for existing
+   descriptive metadata or product copy where one sentence already belongs.
+4. `Agents, worktrees, and code—working together.` is an approved narrative/marketing variant;
+   store it in the identity module, but do not show multiple taglines in the same surface.
+5. Repository/project labels may still say `MacCommandBar` when they identify this repository,
+   a fixture project, or its current on-disk path. Product name and repository name are different
+   concepts until a separately authorized repository migration exists.
+
+Create `tauri-svelte-preview/src-tauri/src/product_identity.rs` as the Rust source for native
+self-identification:
+
+```rust
+pub(crate) const PRODUCT_NAME: &str = "Assembly";
+pub(crate) const TERM_PROGRAM: &str = PRODUCT_NAME;
+pub(crate) const LSP_CLIENT_NAME: &str = PRODUCT_NAME;
+pub(crate) const STARTUP_FAILURE_CONTEXT: &str = "failed to run Assembly";
+```
+
+`tauri-svelte-preview/src-tauri/src/main.rs` declares `mod product_identity;` beside the existing
+native modules. Rust code imports these constants; do not duplicate new public strings across
+`terminal.rs`, `lsp.rs`, and `main.rs`. JSON and Swift cannot import either identity module, so
+the product-identity test in 7A.6 enforces exact parity across those boundaries.
+
+### 7A.2 Exact public rename surfaces
+
+Line numbers below describe the audited `167a30a` baseline plus the current planning diff. Work
+Package 0 must re-run `rg -n` and record moved anchors before dispatch; symbols and semantics win
+when a line moves.
+
+| Path and current anchor | Required Assembly edit |
+| --- | --- |
+| `tauri-svelte-preview/src-tauri/tauri.conf.json:3,16` | Set `productName` and the main window `title` to `Assembly`. Keep line 5 `identifier` byte-for-byte unchanged. |
+| `tauri-svelte-preview/src-tauri/tauri.dev.next.conf.json:12` | Set the development window title to `Assembly`. |
+| `tauri-svelte-preview/src/routes/next/+page.svelte:966` | Import `PRODUCT_DOCUMENT_TITLE`; render it in `<svelte:head><title>`. Do not add a second visible brand region. |
+| `tauri-svelte-preview/src/routes/+page.svelte:14843,15018` | Replace the legacy preview document title and visible eyebrow through `productIdentity.ts`; update the user-facing terminal preview at line 5909 and rescan instruction at line 6263. Preserve repository IDs, paths, storage keys, authors, and fixture data elsewhere in this file. |
+| `tauri-svelte-preview/src/routes/preview/+page.svelte:73` | Render `Assembly UI Library — visual verification` through `PRODUCT_UI_LIBRARY_TITLE`. |
+| `tauri-svelte-preview/src/lib/MonacoSourceEditor.svelte:1247` | Change the public LSP display name to `Assembly LSP`, preferably through `PRODUCT_NAME`. |
+| `tauri-svelte-preview/src/lib/shell/extensions/extensionCatalog.ts:2,47` | Change only public prose/label to `Assembly Git provider`; keep contribution IDs and activation contracts unchanged. |
+| `tauri-svelte-preview/src/lib/shell/extensions/rustGitScmProvider.ts:57` | Change the visible source-control label to `Assembly Git`; keep internal ID `mcb-rust-git`. |
+| `tauri-svelte-preview/src-tauri/src/terminal.rs:98` | Set `TERM_PROGRAM` from `product_identity::TERM_PROGRAM`; add a focused test named `product_identity_terminal_uses_assembly`. |
+| `tauri-svelte-preview/src-tauri/src/lsp.rs:842,956` | Update public comment terminology and set `clientInfo.name` from `product_identity::LSP_CLIENT_NAME`; add/assert a `product_identity_lsp_client_name_is_assembly` fixture. |
+| `tauri-svelte-preview/src-tauri/src/main.rs:5272` | Use `product_identity::STARTUP_FAILURE_CONTEXT` in the final `.expect(...)`; do not change fixture projects named MacCommandBar at lines 6473 onward. |
+| `tauri-svelte-preview/src-tauri/Cargo.toml:4` | Describe the crate as the Tauri shell for Assembly; preserve crate `name = "mac-command-bar-webview-preview"`. |
+| `tauri-svelte-preview/src-tauri/capabilities/default.json:4` | Change the human-readable description to the Assembly window; preserve capability identifier/permissions. |
+| `Sources/MacCommandBar/MacCommandBarApp.swift:5,9` | Keep the Swift type/module names; change `MenuBarExtra`'s public title to `Assembly`. |
+| `Sources/MacCommandBar/CommandCenterView.swift:99` | Change only the visible product heading to `Assembly`. |
+| `scripts/build-app.sh:5,26,30,32,52` | Emit `dist/Assembly.app`; keep internal executable `MacCommandBar` and `CFBundleExecutable` unchanged; keep bundle ID unchanged; set `CFBundleName`/`CFBundleDisplayName` and final receipt to `Assembly`. |
+| `tauri-svelte-preview/src/app.css:4`, `src/lib/styles/tokens.css:2`, and current public docs/comments | Update stale product prose only where it describes the app. Do not use comment cleanup as permission to rename identifiers. |
+
+`Package.swift`, Swift source directory names, Swift type names, and the internal executable remain
+unchanged in this wave. `Assembly.app` is the public artifact; `MacCommandBar` inside its
+`Contents/MacOS` directory is a compatibility implementation detail. A later internal-module
+cleanup requires its own migration plan because it changes package products, imports, test
+targets, build scripts, and downstream automation without improving the public rebrand.
+
+### 7A.3 New environment variable with legacy fallback
+
+At `tauri-svelte-preview/src-tauri/src/orchestration.rs:8-12`, introduce:
+
+```rust
+const ASSEMBLY_ORCHESTRATION_EVENTS_ENV: &str = "ASSEMBLY_ORCHESTRATION_EVENTS";
+const LEGACY_ORCHESTRATION_EVENTS_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
+```
+
+Replace the single-variable check in `orchestration_event_store_path` at lines 265-280 with a
+small helper that checks the Assembly variable first, then the legacy variable, ignores blank
+values, and otherwise returns the existing
+`~/Library/Application Support/MacCommandBar/orchestration-events.jsonl` path. Do not move or
+copy the default file. Add focused tests named:
+
+- `product_identity_orchestration_prefers_assembly_env`;
+- `product_identity_orchestration_falls_back_to_legacy_env`;
+- `product_identity_orchestration_preserves_legacy_support_path`.
+
+The tests serialize environment mutation inside the existing Rust test process and restore both
+variables in cleanup. They use temporary paths and never read or overwrite the user's real
+Application Support ledger.
+
+### 7A.4 Compatibility identities that must not change
+
+The following values intentionally retain their old spelling during the first Assembly release.
+The Luna packet stops rather than editing one accidentally.
+
+| Compatibility identity | Exact examples | Why it remains stable |
+| --- | --- | --- |
+| Tauri/macOS bundle identifiers | `dev.blackcolours.MacCommandBarWebviewPreview` in `tauri.conf.json:5`; `dev.blackcolours.MacCommandBar` in `scripts/build-app.sh:28` | Changing either makes macOS treat Assembly as another app and can detach permissions, webview state, and Keychain access. |
+| Local/browser storage keys | `mac-command-bar.settings` in `settingsStore.svelte.ts:96`; every `mac-command-bar.next.*` and `mac-command-bar.source-browser.*` key | Existing Settings, tabs, sessions, layout, project selection, and drafts must open unchanged after the visual rename. |
+| Application Support directories | `MacCommandBar` in `orchestration.rs:279`, `AppStorageRepository.swift:68`, and `LocalFileContentCipher.swift:32` | Preserves ledgers, app state, and encrypted local content without a risky file migration. |
+| Keychain and queue service IDs | `dev.blackcolours.MacCommandBar` in `KeychainContentCipher.swift:17` and `CoreClient.swift:97` | Prevents new credential prompts or loss of encrypted-content access. |
+| Repository/project identity | repository slug/path, project ID `mac-command-bar`, project display/fixture value `MacCommandBar`, Git author fixtures | The app product is Assembly; the repository has not been renamed. History and orchestration joins depend on stable IDs. |
+| Internal package/module/crate names | npm `mac-command-bar-tauri-svelte-preview`, Rust `mac-command-bar-webview-preview`, `mcb-core`, Swift `MacCommandBar`/`MacCommandBarKit` | These are build/API compatibility names, not user-facing product copy. |
+| Extension/native IDs | `mcb-rust-git`, Tauri command names, capability IDs, event names | Renaming IDs can orphan registrations, persisted view state, or permissions. Change labels only. |
+| Legacy environment input | `MAC_COMMAND_BAR_ORCHESTRATION_EVENTS` | Existing scripts keep working; the new Assembly variable wins when both are nonblank. |
+
+Do not add key-copy migrations, dual writes, symlinks, directory moves, Keychain copies, or a
+second settings namespace in this package. Preservation is achieved by leaving the compatibility
+identities in place. Any later desire to change them is a separate, explicitly approved migration
+with rollback and on-disk data proof.
+
+### 7A.5 Ordered implementation steps
+
+1. Re-run the Work Package 0 brand inventory with exact paths. Classify every match as public
+   product copy, compatibility identity, repository/fixture identity, or stale comment. Save the
+   classification in the packet receipt; an unclassified match is a stop condition.
+2. Add the TypeScript and Rust identity modules and their focused tests before changing consumers.
+3. Update Tauri JSON titles and the existing `scripts/tauriDevConfig.test.mjs` assertions while
+   preserving identifiers and permissions.
+4. Update `/next`, legacy `/`, and `/preview` document/visible copy by importing the TypeScript
+   constants. Do not rename routes, components, storage keys, Dockview IDs, session IDs, or URLs.
+5. Update the Monaco LSP display name and extension/SCM labels. Keep provider/contribution IDs.
+6. Update Rust terminal, LSP, startup context, Cargo description, capability description, and the
+   orchestration environment alias. Add `mod product_identity;` in the controller-owned main seam.
+7. Update the legacy Swift shell's visible menu/title and public `.app` directory/plist display
+   name. Keep package, target, module, executable, bundle identifier, support directory, Keychain
+   service, and queue label unchanged.
+8. Run the allow-listed stale-public-brand scan and focused tests in 7A.6. Review every remaining
+   match rather than applying a global replacement.
+9. Run the upgrade/native proof in 7A.7 with the controller's single native runner. Record the old
+   and new visible identity plus preservation receipts. Stop and revert only this packet if state
+   appears missing; do not create compensating copy logic during certification.
+
+### 7A.6 Focused tests and automated guardrails
+
+Create `tauri-svelte-preview/scripts/productIdentity.test.mjs`. It must:
+
+1. import `productIdentity.ts` with Node type stripping and assert the four locked strings;
+2. parse both Tauri config files and assert `productName`/window titles are `Assembly` while the
+   Tauri identifier remains `dev.blackcolours.MacCommandBarWebviewPreview`;
+3. inspect `product_identity.rs`, the LSP initialize fixture, terminal builder, extension catalog,
+   SCM provider, route heads, capability description, Cargo description, Swift visible strings,
+   and `scripts/build-app.sh` public plist/artifact values;
+4. assert the compatibility table's exact storage prefixes, support directories, Keychain
+   service, bundle IDs, environment fallback, crate/package/module names, and `mcb-rust-git` ID
+   still exist;
+5. scan only the enumerated public-runtime files for stale public `MacCommandBar`, `Mac Command
+   Bar`, or `CommandBar · next` copy. The test carries a path-and-literal allow-list for
+   compatibility/repository identities; it must not suppress a whole file or use a generic regex
+   exemption.
+
+Update `tauri-svelte-preview/scripts/tauriDevConfig.test.mjs` for `Assembly` titles and the
+unchanged identifier. Add `product_identity_*` Rust tests close to the affected functions so one
+filter exercises the native identity contract. Run in this order, with no parallel heavy command:
+
+```bash
+cd tauri-svelte-preview
+node --experimental-strip-types scripts/productIdentity.test.mjs
+pnpm test:tauri-config
+pnpm check:svelte
+pnpm check
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml product_identity -- --nocapture
+cd ..
+swift test --filter MacCommandBarKitTests
+```
+
+The Swift command is required only if Work Package 0 confirms the Swift shell remains a supported
+build/release surface; otherwise the packet still updates its public strings/build script and
+records the shell as legacy. Do not run `pnpm build`, `cargo build`, and `swift build` in parallel.
+The controller owns any later full build and calls `dotnet build-server shutdown` only if a
+separate .NET lane used MSBuild.
+
+### 7A.7 Native upgrade and artifact proof
+
+Browser-preview proof alone cannot close the rename. In the real rebuilt Tauri app, capture:
+
+1. macOS app/window identity, title bar, app switcher/process display where available, and the
+   `/next` document title showing `Assembly` rather than a preview-era product name;
+2. an integrated terminal command that prints `TERM_PROGRAM=Assembly`;
+3. a captured LSP initialize request showing `clientInfo.name = Assembly`, followed by successful
+   semantic navigation and CodeLens/Peek to prove the server did not fork or reset;
+4. the same pre-existing theme, Settings values, session/workspace selection, open tabs, active
+   file, Dockview layout, terminal metadata, and conversation draft before and after the rebuild;
+5. the same legacy orchestration ledger visible from the preserved Application Support path, plus
+   proof that both the new environment override and legacy fallback resolve as specified;
+6. no new empty storage namespace, duplicate Application Support directory, Keychain prompt,
+   permission reset, or second app identity;
+7. if the Swift artifact is still supported, `dist/Assembly.app` with
+   `CFBundleDisplayName=Assembly`, unchanged `CFBundleIdentifier` and internal executable, an
+   `Assembly` menu-bar title, and successful launch.
+
+Use non-secret sentinel values for comparison and record key names/counts or redacted hashes, not
+settings contents, tokens, or Keychain values. Preserve the user's real data; do not delete or
+reset it to make the proof pass.
+
+### 7A.8 Stop conditions
+
+Stop the Luna packet and return an exact receipt without improvising if:
+
+- any required public rename appears to require changing a bundle identifier, storage origin/key,
+  Application Support path, Keychain service, repository/project ID, extension ID, or internal
+  package/crate/module/API name;
+- existing settings, sessions, layouts, drafts, permissions, or encrypted content disappear or a
+  new Keychain prompt appears after the renamed build;
+- Tauri and Swift public artifact names cannot both be `Assembly` while preserving their current
+  identifiers and internal executable/module contracts;
+- an unclassified old-brand match remains in a public-runtime surface;
+- displaying a tagline would require inventing a new splash/About/modal/chrome surface;
+- a model or effort override cannot be proven, another agent owns an overlapping path, or native
+  proof/process cleanup cannot be completed.
+
+### 7A Done
+
+- Public app, window, document, menu, LSP, terminal, provider, error, metadata, and artifact names
+  consistently say `Assembly`.
+- The copy constants preserve all three approved lines, with `Build in parallel.` as the primary
+  compact tagline and no duplicate tagline clutter.
+- Every compatibility identity in 7A.4 is unchanged and tested.
+- The rebuilt native app opens existing user state without migration, duplication, reset, or
+  credential prompt.
+- Focused tests pass, native evidence is attached, the public-brand scan has no unexplained match,
+  and all Tauri/browser/test processes opened for proof are stopped by their owner.
+
+---
+
 ## 8. Work Package 2 — shared controls, shell roster, quick open, and edge minimization
 
 **Covers:** TSK-758, TSK-779, TSK-780, the TSK-808 missing-Settings regression, and shared
 contracts required by every later lane.
 
-**Dependencies:** Work Package 1.
+**Dependencies:** Work Packages 1 and 1B.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
 ### 8.1 Shared action primitives
 
@@ -768,8 +1223,18 @@ Create:
 - src/lib/shell/components/shared/ShellIconButton.svelte
 - src/lib/shell/components/shared/ShellStatusBadge.svelte
 - src/lib/shell/components/shared/ShellToolbar.svelte
+- src/lib/shell/components/shared/ShellCompactRow.svelte
+- src/lib/shell/components/shared/ShellCompactCard.svelte
+- src/lib/shell/components/shared/ShellDetailPopover.svelte
+- src/lib/shell/components/shared/ShellAccordionSection.svelte
 - src/lib/shell/components/shared/ShellEdgeStrip.svelte
 - scripts/shellPrimitives.test.mjs
+
+Reuse and certify the existing bits-ui v2 wrappers at `src/lib/components/Menu.svelte`,
+`ContextMenu.svelte`, and `Tooltip.svelte`; do not create another menu/tooltip/context-menu
+family under `shell/components/shared`. Consolidate their duplicated portal/menu surface styles
+into the Work Package 1 tokens only after tests prove current consumers. One app-level Tooltip
+provider owns skip-delay behavior; individual consumers do not mount competing providers.
 
 ShellIconButton props:
 
@@ -813,6 +1278,15 @@ ShellStatusBadge props:
 The component renders label text and an aria-hidden dot. Pulse is ignored under Reduced
 Motion. It never communicates through color alone.
 
+`ShellCompactRow` and `ShellCompactCard` own the shared desktop information hierarchy used by
+sessions, Git, resources, worktrees, and hosted reviews: leading identity, primary text,
+secondary text, status slot, trailing action island, selected/current state, and a full-row
+keyboard target. The action island is visible on row focus-within as well as hover, remains
+reachable by touch/trackpad, and never steals the row's primary action. `ShellDetailPopover`
+owns bounded supplementary facts; `ShellAccordionSection` owns labelled expand/collapse and
+per-section measured height. No lane invents a local hover-only ellipsis, tooltip, border, or
+details surface after this package lands.
+
 ### 8.2 Typed center roster
 
 Modify ShellFrame.svelte:25-164 and centerDock.ts:26-73, 85-175, 298-333:
@@ -831,7 +1305,7 @@ Modify ShellFrame.svelte:25-164 and centerDock.ts:26-73, 85-175, 298-333:
 7. Change close behavior from “every roster tab is permanent” to per-registration permanent.
 8. Add roster version to layoutStorage.ts. Bump once to include gitGraph, pullRequests, and
    markdown.
-9. Preserve the dirty TSK-799 `CenterDockSnapshot` capture/restore and existing conversation/
+9. Preserve the merged TSK-799 `CenterDockSnapshot` capture/restore and existing conversation/
    browser workspace restoration. Migrate old snapshot IDs and per-registration permanent
    policy explicitly; do not discard saved layouts or re-add hidden panels through the current
    permanent-roster guard.
@@ -844,6 +1318,41 @@ Tests:
 - activePanelId follows user selection.
 - Stored layouts with the old panel set fall back once and persist the new roster.
 - No panel activation causes backend IO before allowSessionLoads.
+
+### 8.2A Real per-file Dockview panels for TSK-360
+
+Do not treat the outer `editor` destination tab as completion of TSK-360. The current `/next`
+`EditorPanel.svelte` owns a custom `.file-strip` above one Monaco host. Replace that inner strip
+with a nested editor-file Dockview using the existing SourceDockview patterns; do not add a third
+docking library and do not turn every file into a new Monaco process.
+
+Exact contract:
+
+1. Create `shell/editor/editorFileDock.ts` with `EditorFilePanelId = string`,
+   `EditorFileDockSnapshotV1`, `createEditorFileDock`, `openEditorFilePanel`,
+   `activateEditorFilePanel`, `closeEditorFilePanel`, `captureEditorFileDock`, and
+   `restoreEditorFileDock`. Panel identity is the canonical file URI/path, never the display name.
+2. Modify `EditorPanel.svelte` to render one Svelte-owned host per open file and let Dockview move
+   those hosts. The existing editor store remains the one authority for open, active, recent,
+   dirty, model version, selection, and close-confirmation state.
+3. Preserve one Monaco text model per canonical URI. Splitting a file creates another view over
+   the same model and view-specific selection/scroll state; it does not create another language
+   client, Roslyn server, dirty buffer, or file watcher.
+4. Closing the last view runs the existing dirty-file confirmation. Closing one of several views
+   does not close the model. A failed/cancelled close leaves the Dockview panel and active identity
+   unchanged.
+5. Add the editor-file layout to the existing versioned session workspace snapshot. Old snapshots
+   hydrate a single active file panel; missing files render a recoverable missing-file panel and
+   do not retarget another path.
+6. Drag, split, stack, activate, and restore must coexist with the outer center destinations
+   Session/Editor/Browser/Diff/Git/PR/Markdown. CodeLens Peek stays inside the active editor-file
+   panel and may not cover the inner tabs or outer destination switch.
+
+Add `scripts/editorFileDock.test.mjs` for identity, reuse, split-view/model sharing, dirty close,
+snapshot migration, missing file, and restore. Native proof opens three files, splits one, edits
+it, switches outer destinations, opens/closes Peek, restarts, restores the layout, and proves the
+same dirty model and visible tab layers. Stop if implementation requires replacing the current
+editor store or language-client owner; return that as a SOL-medium decision packet.
 
 ### 8.3 Top-bar quick open
 
@@ -912,11 +1421,24 @@ destroy the region’s component or service state. The controller maps state to 
 Restore the last nonzero dimensions from the frame before minimization. If no measured value
 exists, use the frame defaults. Persist only after a real measured layout.
 
+For TSK-324, add per-section resizing inside the right context/tool region without a second
+layout engine. Extend the existing `paneStack.ts` model with `SectionSizeSnapshotV1`,
+`resizeSection(id, delta, bounds)`, `collapseSection(id)`, and `restoreSection(id)`. Persist only
+measured sizes, clamp each section to its declared minimum/maximum, and expose a keyboard-operable
+separator with `aria-valuenow`. Hide/show, resize, preset restore, and app restart must preserve
+the same terminal/editor/browser/resource instances.
+
+For TSK-369, do not dispatch a redesign. First record whether the existing persistent
+`TerminalSurface.svelte` host, `terminalService.ts` single listener, ResizeObserver/
+MutationObserver/font callbacks, and Dockview parking stage already fix the former blank canvas.
+The diagnosis receipt names destroyed/hidden host plus stale fit/geometry as the cause or records
+the actual alternative. Only an evidenced missing visibility/refit hook may be changed.
+
 ### 8.5 Restore and certify the existing Settings screen
 
 **Reported regression:** The user previously had a Settings screen and can no longer see or
 reach it. Treat this as a native product regression to reproduce, not as evidence that Settings
-must be designed from scratch. The 2026-08-03 dirty snapshot already contains two deliberate
+must be designed from scratch. The merged PR #14 snapshot already contains two deliberate
 route-specific views over one canonical store:
 
 - The legacy route imports `src/lib/SettingsPanel.svelte` at `/routes/+page.svelte:2`, owns
@@ -944,7 +1466,7 @@ storage path alongside `settings.general.terminalApp`. The C# adapter also needs
 rollback contract for unsupported, thrown, and response-state-mismatch cases. These are acceptance
 gaps to reconcile, not permission to replace TSK-799's dirty Roslyn lifecycle work.
 
-Work Package 0 must refresh these line anchors after protected WIP is released. It must also
+Work Package 0 must refresh these line anchors immediately before dispatch. It must also
 record the exact failure class from a rebuilt Tauri app before an implementation agent edits a
 file:
 
@@ -1118,9 +1640,12 @@ Native proof:
 
 ## 9. Work Package 3 — sessions, semantic status, and native notifications
 
-**Covers:** TSK-761 and any evidenced TSK-762 remainder; TSK-808 Lane A.
+**Covers:** TSK-761, any evidenced TSK-762 remainder, and the session capability lane.
 
 **Dependencies:** Work Packages 1 and 2.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
 **Current anchors:**
 
@@ -1166,6 +1691,25 @@ Create src/lib/shell/sessions/sessionActivity.ts:
 
     export function deriveSessionActivity(input: SessionActivityInput): SessionActivity;
 
+User lifecycle and live activity are separate dimensions. Add to the existing owned-session
+record and persistence migration:
+
+    export type SessionLifecycleState = "working" | "done" | "settled";
+
+    export interface SessionLifecycleFields {
+      lifecycle: SessionLifecycleState;
+      completedAt: string | null;
+      settledAt: string | null;
+      checkpointDetail: string | null;
+    }
+
+Old records map `completedAt != null` to `done` and otherwise `working`; no old record becomes
+`settled` automatically. `done` means the user considers the work complete even if the terminal
+is still inspectable. `settled` is the reversible archive tier and never deletes transcript,
+workspace snapshot, terminal receipt, or action history. `Move to Working`, `Mark Done`, and
+`Settle` are explicit idempotent actions. Permanent Remove remains a separate destructive action
+with the existing confirmation and worktree-safety checks.
+
 Precedence:
 
 1. failed when a natural terminal exit has nonzero code.
@@ -1198,11 +1742,13 @@ Changes:
 
 - Primary card button is the only workspace-navigation target and has aria-current when
   active.
-- Working, Done, and Find are labelled sections/lists.
+- Working, Done, Settled, and Find are labelled sections/lists. Done and Settled remain visible,
+  actionable, and reversible; collapsing either section does not change lifecycle state.
 - Card summary shows project, repository/worktree, branch, agent, model, activity label,
   relative time, PR/check hint, runtime/ports, and message-count floor when available.
 - Expanded detail shows first prompt, full path, timestamps, terminal/session IDs, last
-  activity, and explicit actions.
+  activity, the last checkpoint detail/commit or explicit `No checkpoint recorded`, and explicit
+  actions.
 - Keep Find a session collapsed until the user opens it. Its row only expands; it never starts
   or resumes a session.
 - Resume/restart/continue are named separate actions in the overflow menu.
@@ -1227,14 +1773,39 @@ Add a pure sessionActionMenu.ts that returns action descriptors from determinist
       | "open-folder"
       | "copy-session-id"
       | "copy-log-path"
+      | "open-terminal"
+      | "inspect-session"
+      | "open-pull-request"
       | "mark-done"
       | "move-to-working"
+      | "settle"
       | "remove";
 
     export function sessionActions(
       session: SessionCardViewModel,
       capabilities: SessionActionCapabilities
     ): SessionActionDescriptor[];
+
+`open-terminal` activates the existing owned PTY; `inspect-session` opens the existing read-only
+transcript/detail surface; `open-pull-request` is present only when deterministic hosted-Git facts
+contain a PR URL. None may launch an agent or infer a URL from prose.
+
+### 9.2A Exact resumable metadata for TSK-315
+
+Extend the existing `OwnedSession`, scanner bridge, `sessionCardModel.ts`, and session card; do not
+create a parallel resume DTO. The compact row must distinguish the exact resumable target with:
+
+- provider and model/effort when recorded, otherwise `Unknown`;
+- canonical project/repository root, exact worktree/cwd, branch, task ID, and PR;
+- dirty/clean fact from the existing Git authority and whether a saved workspace snapshot exists;
+- active, stopped-resumable, stale-log-only, missing-worktree, and nonresumable reasons;
+- checkpoint detail and age.
+
+Scanner/store fields are optional and additive. UI never guesses model, worktree, repo, dirty
+state, or resumability from a title/path substring. Add named fixtures for two same-title sessions
+in different worktrees, missing model, missing worktree, stale transcript, active owned terminal,
+and saved snapshot. Native acceptance selects the correct one of the same-title pair and proves
+the resume action uses its exact provider/session/worktree tuple.
 
 ### 9.3 Native notifications
 
@@ -1255,6 +1826,11 @@ Create:
 - src/lib/shell/components/notifications/NotificationSettings.svelte
 - src/lib/shell/components/notifications/NotificationCenter.svelte
 - scripts/sessionNotifications.test.mjs
+
+`NotificationSettings.svelte` includes a **Send test notification** action. It is enabled only
+after permission is granted, uses a fixed local test event with a unique ID, records the same
+decision/center receipt as a real event, and never impersonates a session completion. Denial or
+unsupported platform leaves the button disabled with the reason.
 
 Settings shape:
 
@@ -1313,9 +1889,10 @@ claim an OS action that the API cannot prove.
     pnpm check
     RUST_TEST_THREADS=1 cargo check --manifest-path src-tauri/Cargo.toml
 
-Test state precedence, exact labels/tones, selection semantics, rescan disabled state,
+Test lifecycle migration and reversible Working/Done/Settled transitions, state precedence,
+exact labels/tones, selection semantics, rescan disabled state,
 notification permission transitions, every suppression reason, deduplication, focused-app
-behavior, and old persisted settings.
+behavior, test-notification behavior, and old persisted settings.
 
 ### Native acceptance
 
@@ -1328,6 +1905,10 @@ behavior, and old persisted settings.
    session.
 7. Keyboard-only and VoiceOver navigation announces sections, selected session, action names,
    and all states.
+8. Mark a live/inspectable row Done, Settle it, restore it to Working, and prove transcript,
+   workspace, terminal receipt, checkpoint detail, and actions were never deleted.
+9. Open Terminal, Inspect, and Open Pull Request from the context menu and prove each targets the
+   exact owned session; send the fixed test notification after permission is granted.
 
 ### Done
 
@@ -1343,6 +1924,9 @@ behavior, and old persisted settings.
 TSK-808 CodeLens Peek/tab-retention regression.
 
 **Dependencies:** TSK-799 files released; Work Packages 1 and 2.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
 ### 10.1 Editor paints readable text before Monaco
 
@@ -1553,6 +2137,16 @@ Native acceptance:
 9. Select a result in another file. Only that explicit selection may open/reuse a file tab; merely
    opening Peek must not add, remove, reorder, or activate a file.
 
+**TSK-789 cancellation/re-arm contract:** preserve one in-flight reference lookup per canonical
+root/model URI/position/generation in `csharpLanguageClient.ts`. A newer click cancels/supersedes
+the previous request; a late response is discarded before calling the display command. CodeLens
+registration is attached once per editor/model generation and refreshed only by semantic-result,
+document-version, server-generation, or explicit refresh events—not every keystroke or render.
+Add named assertions to `csharpLanguageClient.test.mjs` for superseded cancellation, late-result
+drop, single registration across edits, one settled answer reused by count/Peek, and cleanup on
+model/root disposal. Close TSK-789 only when baseline/final metrics in 15.8 and the native two-
+second acceptance prove this behavior; do not infer closure from existing code.
+
 ### 10.2 Wire Format Document
 
 Existing backend/wrapper:
@@ -1714,7 +2308,11 @@ overlap without reopening their task ownership.
 
 **Dependencies:** Work Package 2 roster contract; local Git lane owns its files exclusively.
 
-**2026-08-03 checkpoint already present in protected WIP:**
+**Data declaration:** No database is touched in this package. Git history filtering/sorting/paging
+occurs in the bounded Rust Git request, not after fetching an entire repository. The
+implementation dispatch still copies the global SQL rule.
+
+**2026-08-03 checkpoint already present on current `main`:**
 
 - `src-tauri/src/git_diff_models.rs` now reads bounded original/modified text for working-tree
   and commit diffs. Each side is capped at 512 KiB; binary/NUL and invalid UTF-8 content returns
@@ -1947,6 +2545,10 @@ copy, full Copy Patch, keyboard focus, and Dockview restoration.
 
 **Dependencies:** Work Packages 2 and 5; TSK-799 open-file/editor boundaries released.
 
+**Data declaration:** No database is touched in this package. Directory filtering/sorting/paging
+occurs in the bounded Rust traversal/request. The implementation dispatch still copies the global
+SQL rule.
+
 ### 12.1 Separate workspace tree from source index
 
 The current `shell/components/ExplorerPanel.svelte`:1-18 and
@@ -2119,9 +2721,13 @@ repository. Each operation changes only the intended path.
 
 ## 13. Work Package 7 — hosted pull requests, reviews, checks, and API budgets
 
-**Covers:** TSK-808 Lane C.
+**Covers:** TSK-808 hosted GitHub capability.
 
 **Dependencies:** Work Packages 2 and 5. Local Git stays separate.
+
+**Data declaration:** No database is touched in this package. PR filtering, sorting, and paging
+run in the GitHub API/Search/GraphQL request, not after fetching all PRs. The implementation
+dispatch still copies the global SQL rule.
 
 ### 13.1 Rust hosted-GitHub module
 
@@ -2152,6 +2758,9 @@ Models:
 
     pub(crate) struct GithubPullRequestQuery {
         pub state: String,
+        pub mode: String,
+        pub project_roots: Vec<String>,
+        pub project_filter: Option<String>,
         pub search: Option<String>,
         pub page_size: u16,
         pub cursor: Option<String>,
@@ -2159,6 +2768,7 @@ Models:
 
     pub(crate) enum GithubActionRequest {
         CreateDraftPullRequest { base: String, title: String, body: String },
+        UpdatePullRequest { number: u64, title: Option<String>, body: Option<String>, base: Option<String> },
         SubmitReview { number: u64, event: String, body: String },
         ReplyReviewThread { number: u64, thread_id: String, body: String },
         ResolveReviewThread { number: u64, thread_id: String },
@@ -2182,6 +2792,7 @@ Commands:
     read_github_connection(root) -> GithubConnection
     read_github_rate_limits(root) -> Vec<GithubRateBudget>
     list_github_pull_requests(root, query) -> GithubPullRequestPage
+    list_github_pull_requests_across_projects(query) -> GithubPullRequestPage
     read_github_pull_request(root, number) -> GithubPullRequestDetail
     prepare_github_action(root, action, registry) -> GithubActionConfirmation
     execute_github_action(root, confirmed_action, registry) -> GithubActionResult
@@ -2203,6 +2814,13 @@ list. Bound and sanitize stdout/stderr. Return only host, account login, reposit
 required-scope status, and plain remediation. Never serialize token text, environment values,
 credential paths, headers, or raw auth output.
 
+`mode` is exactly `open`, `mine`, or `needs-review`. The across-project command accepts at most 32
+canonical known Git roots, resolves their GitHub owner/repo identities first, and sends one
+server-side Search/GraphQL query with state, author/review-requested, project/repository, search,
+sort, and cursor variables. It does not list each repository and concatenate/filter/sort in
+Svelte. The response carries repository identity and maps only exact returned owner/repo pairs to
+local roots; unknown repositories remain hosted-only and get no local mutation action.
+
 ### 13.2 Confirmation and rate policy
 
 Every external mutation is two calls:
@@ -2210,7 +2828,8 @@ Every external mutation is two calls:
 1. prepare_github_action re-reads PR, head SHA, checks, and mergeability and returns a
    human-readable summary plus random single-use short-lived confirmation ID.
 2. execute_github_action verifies ID, exact action payload, repo, PR, expected/current head
-   SHA, and expiry before the fixed mutation.
+   SHA, current base branch, current head branch, pull-request number, and expiry before the fixed
+   mutation. The confirmation preview names repository, PR, base, head, and expected head SHA.
 
 Never auto-retry a write. A timeout is “outcome unknown”; refresh before another offer.
 Idempotent reads retry at most twice for 429, 502, 503, 504, or secondary-limit response.
@@ -2246,6 +2865,7 @@ Interfaces:
         root: string,
         query: GithubPullRequestQuery
       ): Promise<GithubPullRequestPage | null>;
+      listAcrossProjects(query: GithubPullRequestQuery): Promise<GithubPullRequestPage | null>;
       detail(root: string, number: number): Promise<GithubPullRequestDetail | null>;
       prepare(
         root: string,
@@ -2269,12 +2889,15 @@ Interfaces:
 
 UI:
 
-- List filters/search/reviewers/check/merge state/updated time and Start or Resume.
+- List begins with Open, Mine, and Needs Review modes plus project and text filters. Filtering,
+  sorting, and paging remain server-side. Rows show repository/project, reviewers, checks, merge
+  state, updated time, and Start or Resume.
 - Detail tabs: Conversation, Checks, Files.
 - Conversation: threads, comments, resolve/reply after confirmation.
 - Checks: jobs, annotations, logs/link, rerun failed after confirmation.
 - Files: scalable tree, filter, collapse, viewed state, side-by-side/unified, selectable diff.
-- Header: base/head, branch/worktree, mergeability, close, draft/edit/merge.
+- Header: repository, base/head, branch/worktree, mergeability, close, draft/edit PR, and merge.
+  Edit PR changes title/body/base only through `UpdatePullRequest` prepare/execute confirmation.
 - Settings: per-action agent, CLI args, prompt recipe, and separate budget panels.
 
 GitHub-side filter/search/sort/page occurs through REST Search or GraphQL variables. Do not
@@ -2285,7 +2908,9 @@ fetch every PR and filter locally.
     export type GithubAgentRecipeKind =
       | "address-review"
       | "fix-checks"
-      | "resolve-conflicts";
+      | "resolve-conflicts"
+      | "review-code"
+      | "draft-pr-title-body";
 
     export interface GithubAgentRecipe {
       id: string;
@@ -2293,6 +2918,10 @@ fetch every PR and filter locally.
       title: string;
       cwd: string;
       pullRequestNumber: number;
+      model: string | null;
+      effort: string | null;
+      approvalPolicy: string | null;
+      cliArgs: string[];
       initialPrompt: string;
       untrustedContext: string;
       stopCondition: string;
@@ -2301,11 +2930,16 @@ fetch every PR and filter locally.
     export function buildGithubAgentRecipe(
       kind: GithubAgentRecipeKind,
       detail: GithubPullRequestDetail,
-      cwd: string
+      cwd: string,
+      settings: GithubAgentRecipeSettings
     ): GithubAgentRecipe;
 
 Hosted text is delimited and labelled untrusted. It is never interpolated into a shell
 command. Work Package 11 launches the recipe through the existing PTY/session abstraction.
+Model, effort, approval policy, and fixed CLI args come from the visible per-recipe Settings
+record and are validated against the selected provider; remote/repository text can never add an
+argument. `review-code` prepares review findings only. `draft-pr-title-body` returns a bounded
+title/body proposal into Edit PR/Create Draft preview and never publishes it automatically.
 
 ### Tests
 
@@ -2319,15 +2953,20 @@ command. Work Package 11 launches the recipe through the existing PTY/session ab
     RUST_TEST_THREADS=1 cargo test
     --manifest-path src-tauri/Cargo.toml github -- --nocapture
 
-Test argument injection, canonical remote, redaction, all three rate formats, budget gates,
+Test argument injection, canonical remote, cross-project Open/Mine/Needs Review modes with
+server-side project/search/sort/cursor variables, unknown-repo local-action refusal, Edit PR,
+recipe model/effort/approval/CLI-arg validation, title/body proposal no-auto-publish, redaction,
+all three rate formats, budget gates,
 read-only retries, no write retries, confirmation expiry/single-use/payload/repo/head mismatch,
 request supersession, pagination, old-build/auth unavailable states, and recipe delimiters.
 
 ### Native acceptance
 
-Use a disposable test repository/PR or read-only fixture first. Remote write proof requires
+Use disposable test repositories/PRs or a read-only fixture first. Remote write proof requires
 the user’s explicit confirmation at each prepared action. Prove list/detail/check/files,
-budgets, exact local worktree mapping, stale-head refusal, and outcome-unknown behavior.
+cross-project modes/project filter, Edit PR plus cancelled title/body proposal, budgets, exact
+local worktree mapping, confirmation naming repository/PR/base/head/SHA, stale-head refusal, and
+outcome-unknown behavior.
 
 ### Done
 
@@ -2339,13 +2978,19 @@ budgets, exact local worktree mapping, stale-head refusal, and outcome-unknown b
 
 ## 14. Work Package 8 — workspace-isolated native browser and annotations
 
-**Covers:** TSK-808 Lane D and the browser portion of TSK-280.
+**Covers:** TSK-808 browser capability and the browser portion of TSK-280.
 
 **Critical decision:** The current BrowserPanel is a sandboxed iframe and cannot meet the
-requirement. Replace it with managed Tauri child webviews. Google sign-in uses the system
-browser; do not claim embedded Chrome parity.
+requirement. Replace it with managed, workspace-profile-isolated Tauri child webviews. The
+native browser must first prove the requested Google sign-in redirect/cookie persistence flow
+inside the real app. Use an explicit system-browser fallback only when the identity provider or
+platform capability rejects an embedded user agent; never silently bounce the user out of the
+app and never claim embedded Chrome parity without evidence.
 
 **Dependencies:** Work Package 2. First execute the child-webview clipping spike below.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
 **Current anchors:**
 
@@ -2418,6 +3063,7 @@ Commands:
     go_forward_browser_tab
     close_browser_tab
     open_browser_tab_devtools
+    open_browser_tab_external
     clear_browser_workspace_data
     arm_browser_element_picker
     cancel_browser_element_picker
@@ -2425,6 +3071,10 @@ Commands:
 Each accepts workspaceId and tabId where relevant. Events browser-tab-navigation,
 browser-tab-load, browser-element-selected, and browser-tab-closed carry both IDs and a
 monotonic generation. No arbitrary eval command.
+
+`open_browser_tab_external` reads the current URL from the registry instead of trusting a second
+frontend URL, repeats the HTTP/S/no-userinfo validation, and calls the official opener. It never
+passes `file:`, `data:`, `javascript:`, custom schemes, credentials, or a stale tab URL to the OS.
 
 Inspector payload:
 
@@ -2463,20 +3113,50 @@ Create:
 - shell/browser/browserBackend.ts
 - shell/browser/browserBounds.ts
 - shell/browser/browserAnnotations.ts
+- shell/browser/browserPresentation.ts
+- shell/overlay/actionSurfaceModel.ts
+- shell/overlay/actionSurfaceStore.svelte.ts
 - components/browser/BrowserTabs.svelte
 - components/browser/BrowserToolbar.svelte
 - components/browser/BrowserViewport.svelte
 - components/browser/BrowserFeedbackPanel.svelte
+- components/browser/BrowserAnnotationToolbar.svelte
+- components/browser/BrowserAnnotationCard.svelte
+- components/browser/BrowserOverlayHost.svelte
 - components/browser/BrowserExpandedOverlay.svelte
+- components/overlays/WorkbenchActionFab.svelte
 
 Replace global state with:
 
     export type BrowserViewportPreset =
       | "responsive"
-      | "mobile"
+      | "mobile-s"
+      | "mobile-m"
+      | "mobile-l"
       | "tablet"
+      | "laptop"
+      | "laptop-l"
       | "desktop"
       | "custom";
+
+    export interface BrowserProfileSummary {
+      id: string;
+      label: string;
+      persistent: boolean;
+      platformSupport: "supported" | "session-only" | "unsupported";
+    }
+
+    export type BrowserPresentationMode = "docked" | "expanded" | "collapsed";
+    export type BrowserInteractionMode = "browse" | "picking" | "annotating";
+
+    export interface BrowserPresentationState {
+      mode: BrowserPresentationMode;
+      interaction: BrowserInteractionMode;
+      fanOrigin: { x: number; y: number } | null;
+      pendingSelection: BrowserElementSelection | null;
+      annotationDraft: string;
+      annotationIntent: "change" | "question";
+    }
 
     export interface BrowserAnnotation {
       id: string;
@@ -2518,6 +3198,13 @@ Service functions:
     closeBrowserTab(workspaceId, tabId)
     navigateActiveBrowserTab(value)
     setBrowserViewport(preset, custom)
+    setBrowserPresentationMode(mode, fanOrigin)
+    expandBrowserFrom(triggerRect)
+    restoreBrowserToDock()
+    collapseBrowserToControl()
+    beginBrowserElementPicker()
+    acceptBrowserElementSelection(selection)
+    cancelBrowserAnnotation()
     queueBrowserAnnotation(selection, note, intent)
     removeBrowserAnnotation(annotationId)
     captureBrowserWorkspace(workspaceId)
@@ -2530,12 +3217,187 @@ view before a teleport/overlay move and show only after final bounds.
 Presets:
 
 - responsive: host size
-- mobile: 390 by 844
+- mobile-s: Mobile S, 320 by 568
+- mobile-m: Mobile M, 375 by 667
+- mobile-l: Mobile L, 425 by 812
 - tablet: 768 by 1024
-- desktop: 1440 by 900
+- laptop: 1024 by 768
+- laptop-l: 1440 by 900
+- desktop: 1920 by 1080
 - custom: clamp 320–2560 by 480–1600
 
 Verify actual window.innerWidth/innerHeight inside the fixture.
+
+`BrowserToolbar.svelte` matches the evidenced contract: profile menu, viewport menu, Import,
+element picker, annotation/queue badge, tag/label action, development-only Devtools, Open in
+External Browser, overflow, Expand/Restore, and Collapse. Restore exposes `Cmd+Shift+A` and the
+tooltip `Restore (⌘⇧A)`. The profile menu lists Default, New Profile…, Import Cookies, and Browser
+Settings…. New Profile creates an approved isolated profile. Import Cookies is disabled with a
+plain-English security reason until a separate explicit product/security decision defines source,
+format, secret handling, scope, and deletion; do not add a cookie importer to satisfy a screenshot.
+Browser Settings opens the one Settings host when the Browser section exists.
+
+### 14.3A Required bottom-control, full-app fan, and annotation interaction
+
+This interaction is a product requirement from the TSK-808 rapid-fire evidence, not optional
+polish. A generic Expand button in the Browser toolbar or a BrowserPanel-only floating button
+does not satisfy it. The floating control is app-wide and context-driven; Browser expansion and
+annotation are one branch of that global action surface.
+
+**Global action-surface types**
+
+    export type WorkbenchActionContextKind =
+      | "session"
+      | "editor"
+      | "browser"
+      | "resources"
+      | "history";
+
+    export type ActionSurfaceMode = "collapsed" | "fan-open" | "action-pending";
+
+    export interface WorkbenchActionContext {
+      kind: WorkbenchActionContextKind;
+      centerPanelId: CenterPanelId;
+      ownedId: string | null;
+      workspaceId: string | null;
+      targetId: string | null;
+      generation: number | null;
+    }
+
+    export interface WorkbenchAction {
+      id: string;
+      label: string;
+      icon: Component;
+      contexts: WorkbenchActionContextKind[];
+      shortcut: string | null;
+      confirmation: "none" | "preview" | "destructive";
+      enabled(context: WorkbenchActionContext): { enabled: boolean; reason: string | null };
+      run(context: WorkbenchActionContext): Promise<void>;
+    }
+
+    export type ActionFanLayout =
+      | { kind: "fan"; items: Array<{ id: string; x: number; y: number }> }
+      | { kind: "horizontal"; items: Array<{ id: string; x: number; y: number }> }
+      | { kind: "bottom-sheet"; items: string[] };
+
+`actionSurfaceModel.ts` exports `reduceActionSurface`, `actionsForContext`, and
+`layoutActionFan(viewport, anchor, itemSizes, occlusionRects)`. Geometry is derived from the
+actual viewport, bottom/right safe areas, dock/composer height, and open overlays. It chooses a
+fan only when every target is fully reachable, otherwise a horizontal arc or labelled bottom
+sheet. Do not hard-code screenshot-specific angles or silently clip actions.
+
+Register only existing/planned commands: Session Inspect/Open Terminal/Open Pull Request; Editor
+Quick Open/Format/Source Control; Browser Expand-or-Restore/Annotate/Review Feedback/Ask Agent;
+Resources Refresh/Inspect/confirm-gated Stop Owned Process; History Open Commit/Open Diff/Copy SHA.
+The registry holds descriptors and routes to the existing services. It never forks the command
+palette registry or implements business logic inside the FAB.
+
+**Mounting and ownership**
+
+1. `BrowserPanel.svelte` remains the docked composition surface. It does not own expanded state,
+   a second webview, or a second annotation queue.
+2. Add one `BrowserOverlayHost.svelte` and one `WorkbenchActionFab.svelte` under the existing
+   `ShellOverlays.svelte`, next to `SettingsHost` and `NewSessionHost`. `/routes/next/+page.svelte`
+   continues to mount `ShellOverlays` once at the `.next-shell` root. The overlay root is
+   `position:absolute; inset:0; isolation:isolate; pointer-events:none`; interactive descendants
+   opt into pointer events. The Browser host reads the same active workspace/tab state as
+   `BrowserPanel`; it never copies browser state into component-local variables.
+3. `WorkbenchActionFab.svelte` is the persistent bottom-right control across Session, Editor,
+   Browser, Resources, and History. Its target is at least 44 by 44 CSS pixels and sits 16 pixels
+   from the safe bottom/right edge without covering the composer, edge strip, or system chrome.
+   Enter, Space, or click opens the context fan; Escape or outside click closes it and restores
+   focus. Its accessible name states the active context and available-action count. In Browser
+   context it also announces the active page and queued annotation count.
+4. `BrowserExpandedOverlay.svelte` is a fixed, root-level surface with `inset: 0` inside
+   `.next-shell`. Expanded browser content covers the top bar, session rail, center Dockview, tool
+   panes, and status overlays. Only the macOS window/title-bar chrome remains outside it. Settings,
+   confirmation dialogs, and destructive-action previews still render above it.
+
+**Fan transition and presentation state machine**
+
+- `collapsed -> fan-open`: `WorkbenchActionFab` captures its bounds, computes the collision-safe
+  layout, and renders labelled actions above the entire `.next-shell`, not inside a Dockview panel.
+  With reduced motion it appears in one frame. Otherwise it uses opacity/transform for 160–220ms.
+  Arrow keys traverse visual order; Home/End and type-ahead work in the labelled fallback.
+- `fan-open -> browser action -> docked|expanded`: selecting Browser Expand calls
+  `expandBrowserFrom(triggerRect)`. Capture the global control center in shell coordinates, hide
+  the native child view, mount the root overlay,
+  measure its final viewport, then show the same native tab in the final bounds. Animate only the
+  HTML chrome from the captured bottom origin using opacity plus transform/clip-path for 160–220ms;
+  the browser visually fans from the bottom control across the entire app instead of appearing as
+  an unrelated modal. With reduced motion, switch in one frame with no scale animation.
+- `expanded -> docked`: Restore hides the child view, removes the expanded bounds, measures the
+  docked `BrowserViewport`, shows the same tab there, and returns focus to the bottom control. URL,
+  history, scroll, forms, cookies, selected tab, viewport preset, and annotations do not reload.
+- `docked|expanded -> collapsed`: Browser Collapse hides the child view and browser chrome but the
+  global FAB remains in the current app context. It preserves the workspace profile, tabs,
+  navigation history, viewport, and queued feedback. Re-selecting Browser Expand restores the
+  prior non-collapsed mode; a long idle period must not silently discard state.
+- A session/workspace switch first hides the outgoing child view, cancels any armed picker, captures
+  the outgoing snapshot, activates the incoming workspace, and shows only its active tab. Expanded
+  mode is coerced to docked during cold application restore so the app never launches behind an
+  unexpected full-screen browser; collapsed/docked state may restore per owned workspace.
+- Escape is deterministic: cancel element picking first, then close an unsaved annotation card,
+  then the feedback review, then restore expanded browser to docked, then close the action fan.
+  It never closes a tab or discards queued annotations.
+
+Implement browser transitions in `browserPresentation.ts` and global transitions/geometry in
+`actionSurfaceModel.ts`; `browserModel.ts` invokes the browser transitions, and overlay components
+only render resulting state. Unit tests enumerate every transition/context/layout and prove no
+path creates a second browser tab, loses annotations, clips fan actions, or targets a stale owner.
+
+**Annotation flow inside the expanded browser**
+
+1. The expanded toolbar exposes **Annotate**. Activating it calls
+   `beginBrowserElementPicker()`, then `arm_browser_element_picker(workspaceId, tabId,
+   generation)`. The toolbar announces “Select an element” and exposes Cancel; the page cursor and
+   hover outline are owned by `browser_inspector.js`, not simulated from an iframe.
+2. `browser-element-selected` must match workspace, tab, and generation. Stale events are dropped.
+   A valid selection calls `acceptBrowserElementSelection(selection)`, disarms picking, freezes the
+   selected outline, and opens `BrowserAnnotationCard.svelte` above the lower browser edge without
+   covering the selected element when an alternate edge is available.
+3. The card shows page title/URL, accessible element name, bounded selector, and bounded text
+   snippet. It provides a multiline note, Change/Question intent, Add, and Cancel; `Cmd+Enter`
+   invokes Add. Add is disabled until the trimmed note is nonempty. Nothing is sent to an agent
+   when the element is merely selected.
+4. Save calls `queueBrowserAnnotation(selection, note, intent)`, clears the draft, returns to
+   browse mode, and increments the badge on the bottom control and feedback panel. The queue is
+   scoped to workspace and tab. Navigating away retains the original URL on the annotation and
+   marks it as belonging to an earlier page; it must not retarget selectors to the new page.
+5. `BrowserFeedbackPanel.svelte` lists queued cards in creation order and exposes the evidenced
+   strip copy: `N annotations ready. Select another element or copy all feedback.` It supports
+   edit, remove, Cancel, Copy All, Send, and Ask Agent. Copy All writes bounded Markdown. Send
+   captures workspace/ownedId/generation, activates the existing Session destination, and calls
+   `setConversationDraft` for that exact authoritative owned conversation; it never presses Enter,
+   writes to another PTY, or replaces an existing nonempty draft without a merge preview. Owner
+   mismatch, stale generation, no active owned session, or draft conflict keeps the queue and
+   shows the reason. Ask Agent attaches the same immutable facts to Work Package 11 and also never
+   auto-submits.
+6. The inspector may return element metadata only. It must not expose arbitrary page evaluation,
+   cookies, storage, tokens, complete HTML, or cross-origin DOM content.
+
+**Layering and input contract**
+
+- The bottom control, toolbar, card, feedback panel, tooltips, and focus ring are HTML owned by the
+  main webview and must render above the child browser view. The mandatory native spike is failed
+  if WKWebView z-order prevents these controls from receiving input.
+- While a dialog or confirmation is open, hide/lower the child view before mounting the dialog and
+  restore it only after the dialog closes. Do not solve z-order by giving remote child views Tauri
+  capabilities.
+- Expanded mode traps focus only within its visible browser chrome while the web page itself can
+  receive normal keyboard input. Tab/Shift+Tab cross the toolbar, page, feedback controls, and
+  bottom control in a documented order. Restore/Collapse returns focus to the triggering control.
+- The fan and picker must work at minimum window size, 200% display scaling, both themes, reduced
+  motion, trackpad/mouse scrolling, keyboard-only input, and VoiceOver. No control may depend on
+  hover alone.
+
+Input ownership is explicit: wheel and two-finger trackpad gestures scroll the page under the
+pointer; wheel over HTML toolbar/card/feedback scrolls that HTML region; Space/PageUp/PageDown/
+Home/End scroll the focused page or focused HTML region; arrow keys belong to open menus/fan/tree;
+the native page scrollbar remains draggable; nested remote scroll containers retain their own
+wheel chain until an edge. The main webview may not globally cancel these events. Native proof
+records mouse wheel, trackpad inertia, keyboard page scrolling, scrollbar drag, and a nested
+scroll fixture in docked and expanded modes.
 
 ### 14.4 Session/workspace and feedback integration
 
@@ -2547,10 +3409,11 @@ On session switch:
 3. Restore selected workspace state without network reload.
 4. Show only its active tab if Browser is visible.
 
-Add terminalService.writeOwned(ownedId, data): Promise<boolean>. Send All formats a bounded
-Markdown feedback block and pastes it into only the active owned session. It does not append
-carriage return; the user reviews and submits. Copy All uses clipboard. Switching tab or
-workspace cannot leak annotations.
+Send formats a bounded Markdown feedback block and stages it with the existing
+`setConversationDraft(ownedId, draft)` only after the owner/generation and nonempty-draft policy
+pass. The user reviews and submits in the existing conversation. Copy All uses clipboard.
+Switching tab or workspace cannot leak annotations. Do not add a browser-specific terminal write
+API or a second conversation store.
 
 ### 14.5 Security/profile lifecycle
 
@@ -2569,8 +3432,13 @@ workspace cannot leak annotations.
 - Removing a session and forgetting browser data are separate choices.
 - Never serialize cookies, local storage, form values, tokens, or page HTML.
 - Popups become managed tabs or external HTTP/S opens.
-- Google authentication opens in system browser. A future OAuth callback needs a separate
-  deep-link design.
+- Google authentication uses the active workspace's isolated persistent child-webview profile
+  when the provider allows embedded user agents. Prove the complete redirect chain, SameSite and
+  secure-cookie behavior, storage persistence, restart persistence, and workspace A/B isolation.
+  If Google or another provider explicitly rejects the embedded user agent or requires an
+  unsupported passkey/deep-link capability, show that reason and offer **Continue in system
+  browser** as a user-selected fallback. Returning authenticated state to the embedded profile
+  requires a separately designed callback; do not pretend the external login authenticated it.
 
 ### Tests
 
@@ -2583,6 +3451,7 @@ Extend sessionWorkspaces, panelActivation, and tauriDevConfig tests.
     node --experimental-strip-types scripts/browserBounds.test.mjs
     node --experimental-strip-types scripts/browserAnnotations.test.mjs
     node --experimental-strip-types scripts/browserBackend.test.mjs
+    node --experimental-strip-types scripts/actionSurfaceModel.test.mjs
     pnpm test:session-workspaces
     pnpm test:panel-activation
     pnpm test:tauri-config
@@ -2593,11 +3462,28 @@ Extend sessionWorkspaces, panelActivation, and tauriDevConfig tests.
 
 ### Native proof
 
-Prove cold/no-network, frame-denied remote rendering, input/nested scroll, three independent
-tabs, back/forward/reload, external open, external Google auth route, workspace A/B cookie
-isolation and restart persistence, exact presets, expand/restore/collapse, element picker,
-annotation queue, Copy All, Send All, devtools decision, child-view capability isolation, and
-workspace-only Clear data.
+Prove cold/no-network, frame-denied remote rendering, mouse-wheel/trackpad/keyboard/scrollbar/
+nested scrolling, three independent tabs, back/forward/reload, the validated
+`open_browser_tab_external` action, embedded Google auth persistence plus the explicit
+unsupported-provider system-browser fallback, workspace A/B cookie
+isolation and restart persistence, and exact presets. Record one continuous interaction showing:
+
+1. the global bottom-right FAB opening an unclipped, context-correct fan from Session, Editor,
+   Browser, Resources, and History without obscuring the current work;
+2. the Browser action fanning the same live page across the entire app shell;
+3. Annotate entering element-pick mode and highlighting a real fixture element;
+4. the annotation card saving a Change note without sending it;
+5. the queued badge and feedback panel showing the exact selection;
+6. Copy All producing the bounded payload and Send staging, but not submitting, the same text in
+   the exact matching owned conversation; owner mismatch and nonempty-draft conflict retain it;
+7. Restore returning the live page to the dock without reload, then Collapse leaving only the
+   bottom control;
+8. workspace A/B switching with no cookie, tab, annotation, picker, or navigation leakage;
+9. Escape, keyboard focus, VoiceOver labels, reduced motion, collision-free fan fallback, and a
+   narrow/minimum-height window;
+10. Settings and confirmation dialogs rendering above the browser with no click interception.
+
+Also prove devtools policy, child-view capability isolation, and workspace-only Clear data.
 
 Cleanup receipts:
 
@@ -2610,17 +3496,22 @@ Cleanup receipts:
 - No iframe remains in the /next Browser path.
 - Remote child views have no Tauri command capability.
 - Workspaces do not share browsing state.
-- Browser feedback is exact, bounded, reviewable, and sent only to the active session.
+- Browser feedback is exact, bounded, reviewable, and staged only to the matching owned session.
+- The global bottom-right control, app-wide fan, restore/collapse states, and in-browser annotation workflow are
+  present and proven in the rebuilt Tauri app; a toolbar-only Expand button is not accepted.
 
 ---
 
 ## 15. Work Package 9 — resources, provider usage, and one Roslyn lifecycle authority
 
-**Covers:** TSK-808 Lane E and the memory/resource pressure shown in evidence refs 11, 19, 22,
+**Covers:** TSK-808 resource capability and the memory/resource pressure shown in evidence refs 11, 19, 22,
 and 30.
 
 **Dependencies:** TSK-799 reconciliation complete. Instrument before changing CodeLens or LSP
 lifecycle behavior.
+
+**Data declaration:** No database is touched in this package. Process/file/provider snapshots are
+bounded native reads. The implementation dispatch still copies the global SQL rule.
 
 ### 15.1 Current Roslyn facts to preserve
 
@@ -2677,10 +3568,19 @@ Create src-tauri/src/resources.rs:
         OwnedSession {
             owned_id: String,
             terminal_session_id: String,
+            session_id: Option<String>,
+            workspace_id: Option<String>,
+            project_root: Option<String>,
+            editor_id: Option<String>,
         },
         LanguageServer {
             language: String,
             root: String,
+            owned_id: Option<String>,
+            session_id: Option<String>,
+            workspace_id: Option<String>,
+            project_root: String,
+            editor_id: Option<String>,
         },
         Playwright { pgid: u32 },
         External,
@@ -2705,6 +3605,11 @@ Persist owned_id in TerminalSessionInfo and TerminalSessionHandle. Ownership is 
 the PTY/LSP/Playwright registries and PPID ancestry. A Roslyn-looking process without registry
 proof is External and not stoppable. Every stop/restart revalidates PID, PGID, root, language,
 and registry generation.
+
+The session/workspace/project/editor fields come only from existing owned-session,
+`sessionWorkspaces`, editor, terminal, and LSP registries. A missing join is `None`/Unknown, never a
+path/name guess. Resource UI groups using the returned snapshot in memory only because the OS
+snapshot is already bounded and is not SQL data; it performs no per-row follow-up process query.
 
 Capabilities:
 
@@ -2790,6 +3695,19 @@ Add to SourceLspRegistry:
         &self, language: &str, root: &str
     ) -> Result<Vec<String>, String>;
 
+    pub struct ResourcePolicy {
+        pub max_warm_roots: usize,
+        pub max_inactive_warm_roots: usize,
+        pub rss_budget_bytes: u64,
+        pub recent_warm_window_seconds: u64,
+        pub max_parallel_starts: usize,
+        pub graceful_shutdown_ms: u64,
+        pub term_shutdown_ms: u64,
+    }
+
+    pub fn resource_policy(&self) -> ResourcePolicy;
+    pub fn set_resource_policy(&self, policy: ResourcePolicy) -> Result<ResourcePolicy, String>;
+
 Policy:
 
 - Native VS Code language-client transport is the sole C# Roslyn owner.
@@ -2800,7 +3718,11 @@ Policy:
   same backend-owned process.
 - Inactive/saved rail sessions start zero language servers. Merely restoring rail metadata or
   constructing hidden panels never warms Roslyn.
-- Normal pressure keeps at most five inactive warm roots.
+- Defaults are explicit: five total warm roots, four inactive warm roots, one parallel start, a
+  conservative measured RSS budget, a 15-minute recent-window, and bounded graceful/TERM waits.
+  Settings validation clamps safe product ranges and shows units/restart impact.
+- Normal pressure keeps active and recently used roots warm only within both root-count and RSS
+  budgets. A hard-coded `five` outside the default policy is a defect.
 - Warning evicts oldest inactive roots until under RSS/root budget.
 - Critical stops all inactive roots.
 - Frontend disposal follows backend eviction events; delete its independent LRU authority.
@@ -2808,6 +3730,10 @@ Policy:
   fallback, reap, verify BuildHosts gone.
 - Keep a root-specific 200-line stderr ring.
 - Bridge crash records crashed/not-running before returning.
+
+Expose policy fields in `LanguageServerControls.svelte` through the one Settings store. Apply
+changes through the registry, show the effective clamped policy, and never persist live PID/RSS.
+Failure restores the previous effective policy.
 
 ### 15.7 Resource UI
 
@@ -2864,6 +3790,24 @@ Do not change count/Peek semantics unless the trace proves a defect. Acceptance 
 semantic answer shared by visible count and Peek, with no repeat lookup on Peek. C# to
 TypeScript to the same C# file retains settled counts unless invalidated.
 
+Capture one baseline artifact before lifecycle/Peek changes and one final artifact after them at
+`docs/superpowers/evidence/tsk-808/resources-code-lens-{baseline,final}.json`. Each contains the
+same named rows and monotonic durations:
+
+| Flow | Start/stop markers | Required evidence |
+| --- | --- | --- |
+| Cold app launch | process start -> shell interactive | duration, process count, total RSS, Roslyn/BuildHost count |
+| Cold first C# file | open request -> readable text -> semantic lens ready | first-text ms, placeholder count, semantic count, click-ready ms, PID/PGID |
+| Warm file switch | active file change -> readable/semantic ready | duration, same-root PID reuse, no remount |
+| Top editor-file tab switch | Dockview activation -> readable/semantic ready | duration, tab identity, model URI, no lookup if valid |
+| Session switch | ownedId activation -> workspace/editor settled | duration, root/PID choice, no stale results |
+| Workspace/project switch | root selection -> files/Git/editor settled | duration, process/RSS delta, exact canonical root |
+| Page/app refresh | pagehide snapshot -> restored interactive state | duration, process/RSS delta, no duplicate Roslyn |
+| CodeLens click | click -> populated Peek ready | target count, request/cache count, placeholder/semantic count, under 2 seconds |
+
+`final` must not regress a named latency by more than the agreed fixture tolerance and must meet
+the two-second CodeLens SLA. Raw before/after values, not “felt faster,” are the acceptance record.
+
 ### Tests
 
     cd tauri-svelte-preview
@@ -2885,9 +3829,10 @@ TypeScript to the same C# file retains settled counts unless invalidated.
     RUST_TEST_THREADS=1 cargo test
     --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml resources -- --nocapture
 
-Test one ps/lsof join, PPID ownership, stale PID refusal, external protection, disk classes,
+Test one ps/lsof join, full session/workspace/project/editor identity, missing-join Unknown,
+PPID ownership, stale PID refusal, external protection, disk classes,
 provider states, inactive-saved-session zero Roslyn, active-session single-root warm and reuse,
-native-plus-legacy one Roslyn, sixth-root eviction,
+native-plus-legacy one Roslyn, policy validation, RSS/recent-window behavior, sixth-root eviction,
 pressure, root stop/restart isolation, crash logs, graceful cleanup, and CodeLens stability.
 
 ### Native proof
@@ -2897,8 +3842,10 @@ Use pgrep, ps, and lsof evidence for:
 1. Cold launch restoring only saved/inactive sessions: zero Roslyn.
 2. Explicitly start/select the active session: at most one canonical root warms; opening its
    first C# file reuses that exact parent rather than spawning another.
-3. Tab and workspace switch: same PID and settled count/Peek.
-4. Six roots: at most five warm; active survives; evicted group/BuildHosts exit.
+3. Warm file, top editor-file tab, session, workspace, project, and refresh flows populate the
+   baseline/final table with stable identity and no duplicate process.
+4. Six roots under default policy: at most five warm; active survives; evicted group/BuildHosts
+   exit. Change the policy and prove the effective count/RSS/recent-window bounds follow it.
 5. Warning/critical pressure: only inactive roots evict.
 6. Root stop/restart does not disturb others.
 7. Crash records state/log and leaves no false ready status.
@@ -2914,10 +3861,13 @@ Use pgrep, ps, and lsof evidence for:
 
 ## 16. Work Package 10 — safe, rich Markdown workbench
 
-**Covers:** TSK-808 Lane F and supersedes only the limited renderer, not TSK-345’s completed
+**Covers:** TSK-808 Markdown capability and supersedes only the limited renderer, not TSK-345’s completed
 basic-preview history.
 
 **Dependencies:** Work Packages 1 and 2.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
 **Current anchors:**
 
@@ -3084,13 +4034,260 @@ choices.
 
 ---
 
+## 16A. Work Package 10A — certify the conversation workbench (TSK-809 and TSK-810)
+
+**Covers:** TSK-809, TSK-810, the conversation-only residuals of TSK-192/315, and the one
+authoritative conversation target required by browser feedback and integrated-agent proposals.
+
+**Dependencies:** Work Packages 1–3. This package must pass before Work Package 11 exposes an Ask
+Agent surface. The former standalone TSK-809/810 plan is retained as discovery evidence; this
+section is the execution authority.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
+
+### 16A.0 Baseline, ownership, and forbidden duplication
+
+Extend these existing authorities:
+
+- `src/lib/shell/conversation/conversationTypes.ts`
+- `conversationReducer.ts`
+- `conversationStore.svelte.ts`
+- `conversationService.ts`
+- `components/ConversationSurface.svelte`
+- `src-tauri/src/agent_conversation/{mod.rs,protocol.rs,transcript.rs,attachments.rs}`
+- `sessionWorkspaces.ts` and the existing owned-session/terminal service
+
+The merged checkpoint already has a timeline reducer, ownedId-keyed state, transcript mirror,
+structured approval events, screenshot attachment vault, metadata/usage parsing, child discovery,
+and provider writes through the existing PTY. Preserve them. `agent_conversation/provider.rs`
+contains process-launch code that is not the authoritative running-session path; do not wire it,
+start it, or use it to create a second Claude/Codex process.
+
+Forbidden:
+
+- a second conversation store, transcript pane, composer, provider host, PTY, child-session
+  registry, or attachment directory;
+- starting, resuming, interrupting, approving for, or killing a child transcript;
+- treating requested model/effort/approval values as observed runtime facts;
+- retaining arbitrary pasted paths or exposing files outside the managed attachment root;
+- sending a browser annotation, slash command, attachment, or agent proposal to a different
+  ownedId because the user switched sessions during an async operation.
+
+### 16A.1 Packet A — versioned per-session state and stale guards
+
+Extend, do not replace, `ConversationWorkspaceState` and its capture/restore functions:
+
+    export interface ConversationControlState {
+      observed: ConversationMetadata;
+      requested: Partial<ConversationMetadata> | null;
+      applying: "model" | "effort" | "approval" | null;
+      error: string | null;
+    }
+
+    export interface ConversationContextTelemetry {
+      usedTokens: number | null;
+      contextWindow: number | null;
+      remainingTokens: number | null;
+      remainingPercent: number | null;
+      updatedAt: string | null;
+    }
+
+    export interface ConversationWorkspaceSnapshotV2 {
+      version: 2;
+      ownedId: string;
+      generation: number;
+      mode: "terminal" | "structured";
+      draft: string;
+      attachmentIds: string[];
+      controls: ConversationControlState;
+      selectedChildId: string | null;
+      transcriptScroll: Record<string, number>;
+      telemetry: ConversationContextTelemetry;
+      sequence: number;
+    }
+
+1. Add one migration from the existing snapshot to v2. Missing controls/attachments/telemetry map
+   to explicit unknown/empty values; a snapshot never supplies fake observed metadata.
+2. Key every operation by `ownedId` plus terminal/transcript `generation`. Capture the key before
+   async paste, transcript read, control change, command discovery, child selection, or send; drop
+   a response when either changed.
+3. Persist attachment IDs/managed paths, never blob URLs. Recreate preview URLs after restore and
+   revoke them on removal, session deletion, or app teardown. A missing managed file becomes a
+   removable unavailable attachment and does not block the draft.
+4. Store scroll separately for parent and each child transcript. Selection/scroll/draft/
+   attachments/controls remain isolated between two owned sessions and survive app restart.
+5. Derive remaining tokens/percentage only when both usage and a positive context window exist;
+   otherwise render `Context remaining unknown`. Clamp corrupted values and never invent a model
+   default.
+
+Tests extend `agentConversationStore.test.mjs`, `conversationSessionIsolation.test.mjs`, and
+`conversationWorkspaceRestore.test.mjs` with migration, two-session isolation, stale async
+responses, attachment recreation/cleanup, parent/child scroll, and unknown telemetry cases.
+
+### 16A.2 Packet B — no-box composer and authoritative controls
+
+Modify `ConversationSurface.svelte`; do not create another composition surface.
+
+1. Remove border, rounded surface, fill, and drop shadow from both `.composer-row` and its textarea.
+   The composer is one bottom-anchored writing area over the existing fade, with no enclosing card
+   and no textarea box. A focus-visible underline/caret treatment may indicate focus without
+   drawing another rectangle. Attach, Send, and explicit selectors remain discrete accessible
+   controls.
+2. Preserve multiline Shift+Enter, Enter-to-send, IME composition, selectable/copyable transcript,
+   and textarea growth. Disable Send for empty draft, child selection, stale ownedId/generation,
+   or an in-flight send. Failure restores the exact draft and attachments.
+3. Replace the three generic metadata buttons with labelled Model, Effort, and Approval selectors.
+   Their displayed value comes from `controls.observed`; requested values display `Applying …`
+   until a later transcript metadata event confirms the same value. Timeout, rejection, process
+   exit, or mismatched observed value restores the observed value and keeps a readable error.
+4. Implement `requestConversationControlChange(ownedId, generation, kind, value)` in
+   `conversationService.ts`. It validates the provider-specific allow-list and writes the existing
+   provider command through `terminalService.writeOwned` to the authoritative PTY. It never edits
+   process launch flags in memory or restarts a session silently. Unsupported live mutation is
+   disabled with the reason; a future-session default belongs in New Session settings, not here.
+5. The provider/model/effort/approval menus are populated from recorded capabilities for that
+   running provider. Unknown values remain selectable only through the provider's own picker; do
+   not hard-code a claim that a model exists. All controls, draft, attachment list, and errors are
+   per ownedId.
+
+Add `scripts/conversationControls.test.mjs` for confirmed, mismatched, timeout, unsupported,
+process-exit, stale-generation, per-session isolation, and one-write/no-restart behavior. Static
+UI assertions fail on `.composer-row` border/background/radius/shadow or a textarea border.
+
+### 16A.3 Packet C — attachments, slash/skill discovery, and safe message rendering
+
+1. Keep paste/upload in `agent_conversation/attachments.rs`. Validate PNG/JPEG/WebP MIME by
+   decoded bytes, cap individual and aggregate size/count, generate opaque IDs, canonicalize the
+   managed destination, use owner-only permissions, and reject symlinks/path traversal. Add
+   `delete_conversation_attachment` and `prune_conversation_attachments` for exact ownedId paths;
+   no broad directory delete.
+2. Create `conversationCommandCatalog.ts` with `ConversationCommandDescriptor` and pure merge/
+   filter/rank functions. Create Rust `agent_conversation/commands.rs` command
+   `list_agent_conversation_commands(owned_id, provider, project_root)` that returns the current
+   built-ins plus skill names/descriptions discovered only from canonical, allow-listed global and
+   project skill roots. Read only manifest/front-matter metadata, cap 500 entries and 4 KiB per
+   description, return source/provider, and never execute a skill or return its body/secrets.
+3. The menu opens from `/`, filters as the user types, supports arrows/Enter/Escape, exposes
+   command source, and inserts the selected command into the existing draft. Re-fetch explicitly
+   or when the owned project changes; no import-time IO and no Svelte-effect IO.
+4. `/model` and `/permissions` call the control path above. `/skills`, `/agent`, `/apps`, and
+   `/plugins` remain provider commands only when supported; selecting a discovery-only skill
+   inserts its invocation text and does not auto-send.
+5. Paste shows a local preview before send. Send appends the managed attachment paths exactly once
+   to the same draft/PTY write and clears/revokes them only after the write succeeds. Removing a
+   preview deletes only its managed file after owner validation.
+6. Extend `ConversationMessage.svelte` to render bounded Markdown with the Work Package 10
+   sanitizer/link policy. Transcript text stays selectable. Raw HTML, scripts, remote images,
+   credential-like links, and repository/page content never become executable DOM.
+
+Tests: extend Rust attachment/protocol fixtures; add `conversationCommandCatalog.test.mjs` and
+`conversationMessageSafety.test.mjs`; prove traversal/symlink/MIME spoof/oversize/aggregate cap,
+skill-root boundary, duplicate command merge, keyboard menu, no auto-send, exact one-write, cleanup,
+and hostile Markdown.
+
+### 16A.4 Packet D — recursive, parent-scoped, read-only child hierarchy
+
+Extend `ConversationChildAgent`; do not store a flat display-only row:
+
+    export interface ConversationChildAgent {
+      childId: string;
+      parentId: string;
+      provider: "claude" | "codex";
+      label: string;
+      identity: string | null;
+      relationship: "spawned" | "sidechain" | "thread" | "unknown";
+      state: "queued" | "active" | "completed" | "failed" | "unknown";
+      startedAtMs: number | null;
+      updatedAtMs: number | null;
+      depth: number;
+      transcriptAvailable: boolean;
+    }
+
+1. `transcript.rs` parses Claude parent/sidechain association from the existing parent transcript
+   and canonical parent-owned subagent directory. Codex parsing requires a parent event naming the
+   spawned child/thread; a globally discovered transcript with a matching-looking title is not a
+   child.
+2. Authorize every child transcript path against the canonical parent-associated root and stored
+   provider/session mapping. Reject symlink escape, `..`, absolute injected paths, cross-provider
+   IDs, and a child requested under another ownedId.
+3. Build the recursive tree deterministically by parentId, then state/start time/ID. Break cycles,
+   cap depth and child count, label unknown metadata truthfully, and return elapsed time from
+   recorded timestamps rather than a frontend timer fact.
+4. Replace the flat `.agent-tree` buttons in `ConversationSurface.svelte` with
+   `ConversationAgentTree.svelte`. It uses tree/treeitem semantics, expand/collapse, roving
+   tabindex, arrows/Home/End, state plus elapsed text, and per-session selected child.
+5. Selecting a child calls the existing read-only transcript service and swaps only the visible
+   timeline/scroll. The composer and approval actions are hidden/disabled. No child row offers
+   start, resume, interrupt, kill, approve, or write.
+6. Preserve current parent timeline and provider metadata if child parsing fails. Show a bounded
+   per-child unavailable reason; never blank the whole conversation.
+
+Add real redacted Claude and Codex fixture files under `src-tauri/fixtures/agent_conversation/`:
+parent with nested Claude sidechain; parent with Codex spawned-by/thread events; same-title
+unrelated transcript; missing child file; cycle; symlink/path escape; active/completed/failed
+states. Rust tests assert association and authorization. Frontend tests assert recursive display,
+elapsed/unknown states, keyboard tree, session isolation, stale response rejection, and absence of
+mutating child controls.
+
+The controller adds `test:conversation-workspace-restore` to `package.json`, pointing at the
+existing `scripts/conversationWorkspaceRestore.test.mjs`; the other three conversation scripts
+already exist and are reused.
+
+### 16A.5 Focused gate and native acceptance
+
+Run serially:
+
+    cd tauri-svelte-preview
+    pnpm test:agent-conversation-protocol
+    pnpm test:agent-conversation-store
+    pnpm test:conversation-session-isolation
+    pnpm test:conversation-workspace-restore
+    node --experimental-strip-types scripts/conversationControls.test.mjs
+    node --experimental-strip-types scripts/conversationCommandCatalog.test.mjs
+    node --experimental-strip-types scripts/conversationMessageSafety.test.mjs
+    pnpm check:svelte
+    pnpm check
+    RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml agent_conversation
+
+One rebuilt-Tauri recording uses one Claude and one Codex owned session and proves:
+
+1. Transcript selection/copy, scrolling, hostile Markdown safety, and no composer/text-area boxes.
+2. Paste two screenshots, preview/remove one, restart, restore the other, send once to the same
+   authoritative PTY, and verify managed-file cleanup without a duplicate runtime.
+3. Dynamic slash/skill search, keyboard selection, insertion without auto-send, and exact provider
+   filtering.
+4. Model/effort/approval success when supported plus unsupported, mismatch, and timeout behavior;
+   process-tree evidence shows no second Claude/Codex process.
+5. Two sessions retain independent drafts, attachments, observed/requested controls, telemetry,
+   child selection, and parent/child scroll across switches and restart.
+6. Recursive Claude and Codex children show provider, identity, state, elapsed time, and relation;
+   child transcripts are read-only and an unrelated same-title transcript is excluded.
+7. Context remaining is computed from observed telemetry or says unknown; it never presents a
+   guessed percentage.
+
+Stop and return a decision packet if the running provider exposes no safe supported way to change
+a required control, if current transcript formats cannot prove parent association, or if a shared
+session/workspace seam is dirty. Do not guess, wire `provider.rs`, or make children mutable.
+
+### 16A Done
+
+- TSK-809 and TSK-810 close individually only after the native recording and process-tree receipt.
+- The active owned session remains the only writer/runtime authority.
+- Browser feedback and Work Package 11 can target the one conversation draft/service safely.
+
+---
+
 ## 17. Work Package 11 — guarded integrated agent
 
-**Covers:** TSK-808 Lane G and the product outcome of TSK-766 research.
+**Covers:** TSK-808 guarded-agent capability and the product outcome of TSK-766 research.
 
 **Dependencies:** Service contracts from Work Packages 3, 5, 7, 8, and 9 are stable. TSK-809
 and TSK-810 conversation contracts are merged and reusable, or this package ships only the
 headless context/action/audit layer and defers conversation UI wiring.
+
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
 **Current anchors:**
 
@@ -3142,9 +4339,50 @@ Snapshot:
       problems: ProblemFact[];
     }
 
+    export interface BrowserAnnotationFact {
+      annotationId: string;
+      workspaceId: string;
+      tabId: string;
+      generation: number;
+      pageUrl: string;
+      pageTitle: string;
+      selector: string;
+      accessibleName: string | null;
+      textSnippet: string;
+      note: string;
+      intent: "change" | "question";
+      sourceHash: string;
+      createdAt: string;
+    }
+
 Every fact includes source, capturedAt, and staleAfter. The snapshot service reads existing
 stores/services and makes no independent backend calls unless the user explicitly presses
 Refresh context.
+
+Browser facts are copied immutably from the bounded annotation queue and carry the matching
+workspace/tab/generation/hash. Revalidation rejects a changed or removed annotation. Page text is
+delimited untrusted input, never instruction, and Ask Agent stages the attachment into the matching
+owned conversation without auto-submit.
+
+Add bounded summary contracts without making prose authoritative:
+
+    export type AgentSummaryKind = "old-session" | "worktree" | "pull-request" | "project";
+
+    export interface AgentSummaryReceipt {
+      id: string;
+      kind: AgentSummaryKind;
+      targetId: string;
+      factsHash: string;
+      sourceRefs: AgentFactReference[];
+      summary: string;
+      generatedAt: string;
+      staleAfter: string;
+    }
+
+Summaries are user-triggered or generated only for an explicitly visible stale row, bounded to the
+named fact snapshot, visibly marked generated, source-linked, and invalidated when `factsHash`
+changes. They cover old sessions, worktree shape/safety, PR state, and project state; they never
+replace status, dirty, checks, ownership, or process facts.
 
 ### 17.2 Allow-listed actions
 
@@ -3159,7 +4397,17 @@ Refresh context.
       | "resolve-conflicts"
       | "prepare-worktree-cleanup"
       | "prepare-git-reorganization"
-      | "prepare-squash";
+      | "prepare-squash"
+      | "prepare-git-repair"
+      | "generate-run-configuration";
+
+    export type GitRepairClass =
+      | "unfinished-merge"
+      | "unfinished-rebase"
+      | "detached-head"
+      | "missing-upstream"
+      | "conflicted-index"
+      | "stale-lock";
 
     export interface AgentActionProposal {
       id: string;
@@ -3181,6 +4429,42 @@ unmerged, or capability checks.
 
 There is no arbitrary shell action. A user-created Run configuration remains the sole
 user-authored command path.
+
+`prepare-git-repair` requires one named `GitRepairClass`, deterministic repository facts proving
+that class, an exact preview, and the normal confirmation boundary. It may propose abort/continue/
+restore/set-upstream/inspect-lock operations already modeled by the Git service; it never runs a
+generic `git` string, deletes a lock it cannot prove stale, resets user changes, or guesses a
+branch. Add refusal fixtures for every mismatched repair class.
+
+`generate-run-configuration` produces a proposal, not a runnable command. Create
+`shell/agent/runConfigurationProposal.ts`:
+
+    export interface RepositoryStackSnapshot {
+      root: string;
+      packageScripts: string[];
+      dotnetProjects: string[];
+      cargoManifests: string[];
+      knownPorts: number[];
+      existingConfigurations: RunConfigurationFact[];
+      preferences: RunConfigurationPreferences;
+      factsHash: string;
+    }
+
+    export interface GeneratedRunConfiguration {
+      name: string;
+      executable: string;
+      args: string[];
+      cwd: string;
+      environmentKeys: string[];
+      readiness: RunReadinessRule | null;
+      evidence: AgentFactReference[];
+    }
+
+Deterministic scanners read bounded `package.json` scripts, solution/project filenames, Cargo
+manifests, existing configurations, and user preferences. The agent may choose among those facts
+but cannot invent an executable/path/port/env secret. The preview validates the current facts hash,
+allows edits, and saves through the existing run-configuration service only after explicit Accept;
+it never starts the configuration automatically.
 
 ### 17.3 Contextual Ask Agent through the existing conversation
 
@@ -3214,11 +4498,21 @@ Extend OrchestrationEvent additively:
     pub facts_hash: Option<String>,
     pub expected_state_hash: Option<String>,
     pub outcome: Option<String>,
+    pub scope: Option<String>,
+    pub tool: Option<String>,
+    pub target: Option<String>,
+    pub result: Option<String>,
+    pub failure: Option<String>,
 
 Append events for proposed, confirmed, started, succeeded, failed, refused, expired, and
 outcome-unknown. Never rewrite a prior event. UI shows the human preview, confirmer, exact
 deterministic receipt, and links to PR/commit/worktree/artifact. Do not log credentials,
 cookies, full process environments, or untrusted secrets.
+
+`scope` is the capability/lane, `tool` is the typed service/command name, `target` is the canonical
+bounded identity, `result` is the redacted deterministic receipt, and `failure` is a bounded
+plain-English/code pair. Old events deserialize all five as null. Replay tests prove proposal ->
+confirmation -> start -> result/failure ordering without mutation or secret leakage.
 
 ### Tests
 
@@ -3235,7 +4529,9 @@ cookies, full process environments, or untrusted secrets.
     --manifest-path src-tauri/Cargo.toml orchestration -- --nocapture
 
 Test stale facts, prompt-injection text, non-allow-listed action refusal, every confirmation
-gate, expected-state mismatch, expiry, append-only replay, redaction, and outcome unknown.
+gate, expected-state mismatch, all Git repair-class refusals, run-configuration fact/accept/save
+behavior, summary invalidation/source receipts, browser annotation owner/hash checks, expiry,
+append-only replay, audit-field migration/redaction, and outcome unknown.
 
 ### Native proof
 
@@ -3244,6 +4540,10 @@ gate, expected-state mismatch, expiry, append-only replay, redaction, and outcom
 - Prepare but cancel a worktree cleanup and PR mutation; prove zero external change.
 - Confirm one disposable safe action; prove one audit receipt.
 - Feed hostile review/page text; prove it remains data.
+- Generate but cancel a repository-tailored run configuration, then accept one safe fixture and
+  prove it was saved but not started.
+- Generate old-session/worktree/PR/project summaries, mutate the fixture facts, and prove each
+  becomes stale rather than continuing as truth.
 - Restart app and replay the audit transcript.
 
 ### Done
@@ -3255,29 +4555,33 @@ gate, expected-state mismatch, expiry, append-only replay, redaction, and outcom
 
 ## 18. Work Package 12 — VSIX import and compatible extension-host graduation
 
-**Covers:** TSK-765’s import remainder and the approved lightweight extension-host spike. The
-user explicitly allows extensions; this package graduates the compatible LocalWebWorker path
-instead of treating extension support as rejected.
+**Covers:** TSK-765’s import remainder and an API-first compatibility decision. The user wants to
+inspect which extensions and APIs are usable before any new graduation/installer work; this
+package therefore stops at a real-Tauri comparison and explicit user selection.
 
 **Dependencies:** Reconcile the already-run API-first checkpoint in 18.2 immediately after Work
 Package 0 once the TSK-799 Monaco singleton is stable. Optional VSIX staging and product
 enablement in 18.3-18.5 wait for Work Packages 1, 4, and 10 plus a new explicit selection of an
 exact package/capability need; the 2026-08-03 decision does not authorize a generic installer.
 
-**Checkpoint state, 2026-08-03:** The user authorized and reviewed a bounded implementation in
-the protected TSK-799 checkout. Selection is no longer open:
+**Data declaration:** No database is touched in this package. The implementation dispatch still
+copies the global SQL rule.
 
-1. Use declarative contributions whole when they do not require an activation runtime. The
-   official Houston theme is the first approved example.
-2. Prefer stable Monaco/VS Code APIs over embedding feature extensions. Native DiffEditor is the
-   selected diff path; a read-only SCM projection over the existing Rust service is the selected
-   source-control compatibility path.
+**Prior checkpoint state, 2026-08-03:** PR #14 merged a bounded experiment from the protected
+TSK-799 work. That evidence records earlier choices but does **not** close the user's current
+extension/API selection:
+
+1. The prior checkpoint used declarative contributions whole when they did not require an
+   activation runtime. The official Houston theme is its first proven example.
+2. The prior checkpoint preferred stable Monaco/VS Code APIs over embedding feature extensions.
+   Native DiffEditor and a read-only SCM projection over the existing Rust service are the
+   preserved baseline candidates for the new comparison.
 3. Do not embed Git Graph. Build the native graph panel in Work Package 5 over Rust history data.
 4. Do not productize GitLens in this wave. A browser entry is insufficient without its expected
    view/storage/repository/auth/workbench services; a later full-workbench spike needs separate
    approval and resource measurements.
 5. Do not build a generic VSIX installer merely to prove extension support. Sections 18.3-18.5
-   remain optional graduation work for a later explicitly selected package/capability need.
+   remain blocked graduation blueprints for a later explicitly selected package/capability need.
 6. Use pinned declarative default-extension packages for grammar/snippet/language metadata.
    Semantic navigation remains a separate workspace-scoped LSP concern; do not mistake syntax
    contribution packages for language servers or add one process per editor.
@@ -3346,11 +4650,11 @@ one local extension host, and one Monaco/VS Code service singleton across editor
 workspace switch. Stop if the baseline creates duplicate hosts or changes C# diagnostics,
 semantic CodeLens counts, Peek rows, or the selected source.
 
-### 18.2 API-first compatibility checkpoint — selected paths recorded, matrix remainder open
+### 18.2 API-first compatibility checkpoint — prior evidence plus a new user decision gate
 
 The bounded first action has completed for Houston, native DiffEditor, and the read-only SCM
-projection. Do not repeat those probes or reopen the GitLens/Git Graph decision without new
-evidence. Do not build the VSIX installer, settings UI, marketplace surface, Node host, or
+projection. Preserve that evidence, but do not interpret it as the user's new extension/API
+selection. Do not build the VSIX installer, settings UI, marketplace surface, Node host, or
 product broker merely because the generic matrix below is incomplete.
 
 Existing reports are authoritative for the completed candidate decision:
@@ -3405,15 +4709,54 @@ Run each remaining API probe in the rebuilt Tauri app, record command results an
 verify C# syntax/diagnostics/semantic CodeLens/Peek before and after. The HTML report must let
 the user compare candidates, APIs, missing adapters, risk, and expected value at a glance.
 
-**Recorded decision:** the user selected Houston, native DiffEditor, and the bounded SCM adapter;
-declined Git Graph embedding; and accepted deferring GitLens/full-workbench adoption. No code
-from 18.3 onward starts without a new explicit package/capability choice. A generic probe is not
-a reason to build an installer. Candidate rows remain “awaiting package,” never “unsupported.”
+#### 18.2B Mandatory real-Tauri API/adapter spike and metrics
+
+Before asking the user to select anything, prove the candidate APIs inside the rebuilt desktop
+app, not browser preview:
+
+1. Activate the internal `mcbExtensionApiProbe` once in the existing LocalWebWorker. Prove
+   allow-listed commands, bounded tree/view contribution, workspace-folder switch, in-root
+   `workspace.fs`, file event generation, notification/progress adapter, and disposal without a
+   duplicate command/view/service registration.
+2. Add a **thin terminal adapter probe** over the existing owned PTY service. It may create/show/
+   write/resize/dispose only a disposable probe terminal under an exact ownedId and generation;
+   it never spawns a second terminal backend, exposes arbitrary process APIs, or touches another
+   session.
+3. Extend the **thin SCM adapter probe** over the existing Rust Git service with read-only status,
+   groups, selection, refresh, and disposal. Mutation stays disabled unless a later selected
+   extension has a named need and Work Package 5's typed operations can satisfy it. It never runs
+   Git or owns a repository independently.
+4. Switch three to five real workspaces, close/reopen Editor, disable/reactivate the probe, and
+   verify Monaco/Roslyn CodeLens/Peek counts, selected source, worker count, command registrations,
+   PTY count, and Git owner remain stable.
+5. Write `output/tsk-808-extension-compatibility/index.html` with this exact metric table for each
+   candidate/API set:
+
+| Metric | Baseline and candidate evidence |
+| --- | --- |
+| Cold app/host launch | shell interactive ms, worker activation ms, process count, Roslyn count |
+| Warm app/host launch | reactivation ms, duplicate registration count, Roslyn count |
+| Command latency | p50/p95 for internal command and adapter round trip |
+| Workspace switch | small and large fixture response ms, stale-event count, UI responsiveness |
+| CPU/RSS | idle and peak app/worker/Roslyn values from Work Package 9 snapshot |
+| Disk | installed extension bytes plus generated/bundler/build-cache bytes |
+| Lifecycle | disable/re-enable/dispose ms, remaining worker/listener/PTY/SCM owners |
+| Editor safety | CodeLens placeholder/semantic counts, Peek ready ms, tab/source preservation |
+
+The spike stops after writing and rendering the comparison. It does not stage a third-party VSIX,
+enable a marketplace, or edit 18.3–18.5. Present Works now/Bounded adapter/Declarative only/
+Elevated host required/Rejected rows and wait for the user's explicit extension/API selection.
+
+**Recorded prior decision:** Houston, native DiffEditor, native Git graph, and the bounded read-only
+SCM adapter remain preserved. The current candidate selection is open. No code from 18.3 onward
+starts without a new explicit package/capability choice. Candidate rows remain `Awaiting user
+selection`, never `unsupported` by default.
 
 ### 18.2A Remaining research and decision register
 
-These are the evidenced unknowns. They are not prerequisites for the already-selected Houston,
-DiffEditor, native Git graph, or read-only SCM paths:
+These are the evidenced unknowns. They do not invalidate the already-working Houston,
+DiffEditor, native Git graph, or read-only SCM baseline while the user's current selection is
+open:
 
 | Question | Why it remains open | Decision/stop condition |
 | --- | --- | --- |
@@ -3548,17 +4891,23 @@ prove its command/view contribution uses the same host that serves the C# extens
 
 ### Tests
 
+Current API-first gate:
+
     cd tauri-svelte-preview
     node --experimental-strip-types scripts/extensionApiCompatibility.test.mjs
-    node --experimental-strip-types scripts/vsixImport.test.mjs
-    node --experimental-strip-types scripts/webExtensionHost.test.mjs
+    pnpm test:extension-integration
     pnpm test:csharp-language-client
     pnpm test:source-code-lens-keys
     pnpm test:source-ui
     pnpm check:svelte
     pnpm check
 
-### Graduation gate
+Only after an explicit VSIX/package selection resumes 18.3–18.5:
+
+    node --experimental-strip-types scripts/vsixImport.test.mjs
+    node --experimental-strip-types scripts/webExtensionHost.test.mjs
+
+### Conditional graduation gate — blocked until explicit selection
 
 In real Tauri:
 
@@ -3582,7 +4931,9 @@ unsupported; report the missing host/capability tier precisely.
 
 ### Done
 
-- The approved official Houston declarative contribution imports through the fast path exactly
+- The current API-first stage is done when the real-Tauri probe, adapter receipts, complete metrics,
+  and rendered HTML comparison are presented and the implementation stops for the user's choice.
+- The currently proven official Houston declarative contribution imports through the fast path exactly
   once, remains stable, and no legacy customizations repaint it.
 - Native DiffEditor and the read-only SCM projection reuse the existing Monaco and Rust Git
   authorities without adding a second process/backend.
@@ -3695,8 +5046,10 @@ terminal cleanup.
 
 ### Done
 
-- TSK-769 has a lightweight, honest database console.
-- No application-side row aggregation/filtering/paging exists.
+- While unpromoted: TSK-769 remains open/later, no database files, UI, dependencies, profiles, or
+  console commands are added, and Work Package 14 does not require its native proof.
+- If the user explicitly promotes it: TSK-769 closes only after the lightweight console/native
+  proof above, with no application-side row aggregation/filtering/paging.
 
 ---
 
@@ -3710,6 +5063,10 @@ with unresolved choices or design judgment route to explicit SOL-medium. Every m
 review uses explicit SOL-medium. Read-only proof roles may use their installed fixed role models
 when they are not the milestone code reviewer and do not implement.
 
+**Data declaration:** Integration must not introduce a database path. If TSK-769 is later promoted,
+its separate conditional packet supplies the SQL rule and proof; otherwise the controller receipt
+states `No database touched`. Every lane dispatch/review still copies the global SQL rule.
+
 This may remain one TSK-808 branch, but it is not one unreviewable change. Each work package has
 its own commit, focused acceptance receipt, native-proof status, and rollback boundary. Do not
 begin a package whose dependency receipt is failing. A capability may be split into its own PR
@@ -3719,15 +5076,17 @@ disposition ledger and leaves the epic open.
 
 ### 20.1 Integrate Rust modules in one pass
 
-After Work Package 0 re-anchors current `main.rs` (8,171 lines in the 2026-08-03 dirty snapshot),
+After Work Package 0 re-anchors the current `main.rs` (8,171 lines in the older checkpoint),
 add these modules at its module declaration seam:
 
     mod browser;
     mod github;
     mod resources;
-    mod vsix_import;
     mod workspace_entries;
     mod workspace_file_watch;
+
+Add `mod vsix_import;` only if the user explicitly selects a package that resumes Work Package
+12 sections 18.3–18.5. The API-first internal probe does not require a generic installer module.
 
 At the builder state section around main.rs:5146-5151:
 
@@ -3752,8 +5111,8 @@ the work packages:
 - providerUsage
 - lspRootLifecycle
 - lspProcessInventory
-- vsixInspectV1
-- compatibleWebExtensionsV1
+- compatibleWebExtensionsV1 for the approved internal API probe;
+- vsixInspectV1 only after explicit VSIX graduation;
 - workspaceFileWatchV1
 - notificationV1
 
@@ -3791,8 +5150,8 @@ In SettingsDialog:
 - Source Control and Hosted Review section with per-action recipes and three budget cards.
 - Browser section for profile/data/devtools policy.
 - Resources section for display and LSP root budget.
-- Extensions and Themes section for the selected compatible VSIX/API paths and declarative
-  preview/import.
+- Extensions and Themes section shows the rendered API comparison and the selected compatible
+  API/declarative paths. VSIX preview/import controls appear only after explicit graduation.
 - Database Console section only when TSK-769 is promoted.
 
 All section metadata meets Work Package 1 contrast.
@@ -3829,6 +5188,10 @@ Controller changes:
    settings section.
 10. Keep src/routes/+page.svelte, the legacy shell, frozen unless a compatibility test proves
    a shared renderer wrapper must change it. Do not port new work into the old route.
+11. Mount one `WorkbenchActionFab` and `BrowserOverlayHost` through the existing `ShellOverlays`;
+    provide context/command receipts rather than embedding business logic in `/next`.
+12. Mount the certified TSK-809/810 `ConversationSurface` once and route Browser/Agent draft
+    staging to its existing ownedId-keyed store; no second provider or composer.
 
 ### 20.4 Package scripts
 
@@ -3854,16 +5217,23 @@ Add focused scripts:
 - test:browser-bounds
 - test:browser-annotations
 - test:browser-backend
+- test:action-surface-model
+- test:agent-conversation-protocol
+- test:agent-conversation-store
+- test:conversation-session-isolation
+- test:conversation-workspace-restore
+- test:conversation-controls
+- test:conversation-command-catalog
+- test:conversation-message-safety
 - test:resources
 - test:markdown-renderer
 - test:markdown-sanitizer
 - test:markdown-scroll-sync
 - test:agent-context
 - test:agent-actions
-- test:vsix-import
 - test:extension-api-compatibility
 - test:extension-integration
-- test:web-extension-host
+- test:vsix-import and test:web-extension-host only after explicit VSIX graduation
 - test:database-profiles, only when TSK-769 is promoted
 
 Do not hide failures behind an always-successful aggregator. If adding test:tsk-808, implement
@@ -3920,6 +5290,8 @@ Run one relevance review against this plan. Reject:
   surface not explicitly approved;
 - DB grid/driver work before TSK-769 promotion;
 - unapproved remote mutations;
+- accidental changes to the Assembly compatibility identities in section 7A.4 or a blind
+  MacCommandBar-to-Assembly replacement of repository/fixture/internal identifiers;
 - changes to TSK-799 semantic count or Peek behavior without evidence;
 - CodeLens Peek fixes that populate rows while the center editor tab strip, active file identity,
   or top-bar destination controls are hidden, clipped, covered, or replaced.
@@ -3934,32 +5306,54 @@ when a fixed-model role would violate the required model/effort pairing.
 Use a rebuilt Tauri app, not a browser preview. Record cold/warm timing, process inventory,
 CPU/RSS, screenshots, and a short screen recording.
 
+The final-flow matrix is mandatory; every row records baseline/final duration, active ownedId/
+workspace/project/file, process count/RSS, Roslyn/BuildHost count, screenshot/recording marker,
+and pass/fail reason in the proof ledger:
+
+| Flow | Exact interaction and invariant |
+| --- | --- |
+| Cold launch | Restore metadata only; no eager Browser/GitHub/Problems/resource/Roslyn work |
+| Warm launch | Reopen after certified snapshot; exact layout/session/file state, no duplicate owner |
+| Warm file switch | Readable text and semantic state return on the correct model/root |
+| Top editor-file tab switch | Real nested Dockview tab changes without model/server duplication |
+| Center destination switch | Session/Editor/Browser/Git/PR/Markdown preserve parked component state |
+| Session switch | Exact owned conversation, worktree/cwd, browser, files, terminal, and controls restore |
+| Workspace switch | Stale events rejected; Git/files/LSP/browser/resources bind to the new workspace only |
+| Project switch | Canonical project/root changes once; local/hosted/resource facts map exactly |
+| Page refresh | Snapshot/replay restores state and leaves no duplicate PTY/webview/worker/Roslyn process |
+
 Core flow:
 
-1. Cold launch restoring only inactive/saved sessions: no browser, GitHub, resource scan,
+1. Assembly upgrade proof from Work Package 1B: public window/document/menu/runtime/artifact
+   identity is Assembly while the same Settings, sessions, tabs, layout, drafts, ledger,
+   permissions, and credential access remain available with no duplicate data namespace.
+2. Cold launch restoring only inactive/saved sessions: no browser, GitHub, resource scan,
    Problems scan, or Roslyn. Explicit active-session start may warm exactly one canonical C#
    root, and the first C# file must reuse it.
-2. Open file: readable first text, Monaco swap, syntax, format, diagnostics, CodeLens/Peek.
+3. Open file: readable first text, Monaco swap, syntax, format, diagnostics, CodeLens/Peek.
    The CodeLens Peek proof must include before/after screenshots and a short recording showing
    populated Peek rows while the center editor tab strip/top-bar destination controls and active
    file identity remain visible and usable.
-3. Switch center tabs with top-bar buttons and shortcuts.
-4. Start, resume, restart, mark done/reopen, and switch session; exact workspace returns.
-5. Run configuration starts/stops and Problems receives build output.
-6. Minimize/restore sessions, tools, and dock without state loss.
-7. Restore Settings and run the complete gear/palette/Cmd-or-Ctrl-comma, focus, persistence,
+4. Switch center tabs with top-bar buttons and shortcuts.
+5. Start, resume, restart, move Working -> Done -> Settled -> Working, and switch session; exact
+   workspace returns without deleting history/checkpoint/terminal receipt.
+6. Run configuration starts/stops and Problems receives build output.
+7. Minimize/restore sessions, tools, and dock without state loss.
+8. Restore Settings and run the complete gear/palette/Cmd-or-Ctrl-comma, focus, persistence,
    reset, lazy-load failure/retry, contrast, and native-child-webview proof from Work Package 2.
-8. Git graph/filter/page/detail/diff/explorer/worktree flow in disposable repo.
-9. PR list/detail/check/files plus prepare/cancel and one explicitly approved fixture action.
-10. Browser full proof from Work Package 8.
-11. Resources/Roslyn full proof from Work Package 9.
-12. Markdown full proof from Work Package 10.
-13. Guarded-agent proposal/cancel/one safe confirmed action through the TSK-809/810 surface.
-14. Reconciled Houston + native DiffEditor + SCM-adapter proof. Run the broader extension API
-    matrix only if a newly selected package needs it; do not require a generic VSIX installer for
-    TSK-808 closure.
-15. Both themes, keyboard-only, VoiceOver, Reduced Motion, narrow window.
-16. Quit and verify all task-owned Tauri, Roslyn, BuildHost, child-webview, browser, fixture,
+9. Git graph/filter/page/detail/diff/explorer/worktree flow in disposable repo.
+10. PR list/detail/check/files plus prepare/cancel and one explicitly approved fixture action.
+11. Browser full proof from Work Package 8.
+12. TSK-809/810 no-box composer, attachments, real controls, context telemetry, per-session state,
+    and recursive read-only Claude/Codex child-transcript proof with one authoritative PTY.
+13. Resources/Roslyn full proof from Work Package 9, including the baseline/final timing table.
+14. Markdown full proof from Work Package 10.
+15. Guarded-agent proposal/cancel/one safe confirmed action through the TSK-809/810 surface,
+    including Git repair refusal, run-config proposal, summaries, browser fact hash, and audit fields.
+16. Reconciled Houston + native DiffEditor + thin terminal/SCM/API-host proof and rendered
+    extension comparison; stop for the user's selection and do not require a generic VSIX installer.
+17. Both themes, keyboard-only, touch/trackpad, VoiceOver, Reduced Motion, narrow window.
+18. Quit and verify all task-owned Tauri, Roslyn, BuildHost, child-webview, browser, fixture,
     and helper processes exit.
 
 ### 20.9 Evidence-to-reference matrix
@@ -3973,9 +5367,11 @@ Core flow:
 | 18                       | Notification toggles, focus suppression, sound, and test notification                                |
 | 23–30                   | PR queue/detail/check annotations/files/settings/recipes/rate buckets                                |
 | 21                       | Markdown/editor readability and command tooltip density                                              |
+| 31–32                    | Global bottom-right FAB/fan and latest Browser/annotation interaction references; Work Package 0 records the exact attachment filenames before implementation |
 | User report, 2026-08-03 | Existing Settings screen is reachable, readable, persistent, modal, and not duplicated in Tauri      |
 | `output/extension-integration-results.html`, 2026-08-03 | Official Houston remains stable; native Monaco DiffEditor and one-root read-only SCM projection reuse existing authorities; Git Graph/GitLens extensions are not embedded |
 | `codex-clipboard-WBFL58.png`, 2026-08-03 | Populated CodeLens Peek leaves both center destination tabs and open-file tabs visible, ordered, selected, and usable in rebuilt Tauri |
+| User request, 2026-08-03 | Public product identity is `Assembly`; compact tagline is `Build in parallel.`; longer approved variants remain available; compatibility identifiers and all existing user state survive the rename |
 
 Do not copy the screenshots pixel-for-pixel. Use them as capability and information-density
 evidence under the contrast contract.
@@ -3992,7 +5388,7 @@ Before push:
     git log -1 --oneline
 
 Push and open a draft PR carrying TSK-808 in branch/title/body. The PR body links this plan,
-the 19-task disposition ledger, test receipts, native proof, resource/process cleanup, and
+the 37-task disposition ledger, test receipts, native proof, resource/process cleanup, and
 remaining explicitly deferred items.
 
 Immediately after the branch is pushed and the draft PR exists, verify the tree is clean,
@@ -4029,41 +5425,75 @@ After merge:
 
 ### Milestone A — sequential foundation
 
-1. Work Package 0: use clean checkpoint `5884139` as the preservation anchor, select an approved
-   containing integration base, re-anchor symbols, and close only shipped tasks with native proof.
-2. Reconcile the completed Work Package 12 checkpoint: preserve the two extension reports,
-   official Houston registration, native DiffEditor, and read-only SCM projection; record the
-   declarative language baseline, TypeScript/Svelte semantic adapters, and the already-made
-   decision against GitLens/Git Graph embedding. Do not run generic 18.3-18.5 work.
+1. Work Package 0: refresh `origin/main` from current `167a30a`, prove it contains the PR #14/
+   `5884139` checkpoint, re-anchor symbols, and close only shipped tasks with native proof.
+2. Reconcile Work Package 12 prior evidence, then run only the explicitly authorized API-first
+   real-Tauri comparison. Preserve Houston/native DiffEditor/read-only SCM; stop for the user's
+   new extension/API selection. Do not run 18.3–18.5.
 3. Work Package 1: contrast/tokens/primitives after that choice is recorded.
-4. Work Package 2: restore Settings, then freeze typed shell roster/minimize/quick-open.
-5. Controller freezes interfaces and commits.
+4. Work Package 1B: rename public product identity and artifacts to Assembly, prove existing user
+   state survives unchanged, and preserve every compatibility identity in section 7A.4.
+5. Work Package 2: restore Settings, then freeze typed shell roster/minimize/quick-open.
+6. Controller freezes interfaces and commits.
 
 Stop if any shared contract remains disputed. Do not dispatch feature lanes against a moving
-ShellFrame, settings schema, capability list, or shared button primitive.
+product identity, ShellFrame, settings schema, capability list, or shared button primitive.
 
 ### Milestone B — parallel product lanes
 
-After Milestone A, dispatch at most these independent groups:
+After Milestone A, dispatch at most six implementation agents concurrently; a seventh slot may be
+used only for read-only audit/preparation. Parallelism is a rolling queue, not permission to run
+every Rust/native gate simultaneously. Never allow more than two heavy build/test runners.
 
-- Group 1, Node-light: sessions/notifications plus Markdown.
-- Group 2, Node-light: local Git/explorer/worktree presentation.
-- Group 3, one Rust slot: hosted GitHub.
-- Group 4, second Rust slot only after Group 3 pauses builds: Browser.
-- Group 5, Rust-heavy: Resources/Roslyn, serialized after Browser Rust tests.
-- Group 6, Node-light after contracts: editor/run/problems.
+#### Round B1 — six file-independent implementation agents
+
+| Agent slot | Exact packet | Owned area | Build/test token |
+| --- | --- | --- | --- |
+| 1 | 3A session lifecycle | Implementation-lane B paths: sessions, rail store, session metadata, notifications | Node-light; no heavy token |
+| 2 | 4A editor/run/problems | Implementation-lane C paths: editor helpers, run configurations, formatting, Problems | Node focused; no heavy token until controller integration |
+| 3 | 5A plus 6A local Git/explorer/worktrees | Implementation-lane D paths: Git view-model/presentation, explorer, worktree presentation, named focused Rust modules | Heavy token 1 only for its focused Rust command |
+| 4 | 7A hosted GitHub | Implementation-lane E paths: `shell/github`, `components/github`, `src-tauri/src/github.rs` | Heavy token 2 only for its focused Rust command |
+| 5 | 10A Markdown | Implementation-lane H paths: Markdown model/component/tests | Node-light; no heavy token |
+| 6 | 10B conversation frontend packets A–D | Implementation-lane I TypeScript/Svelte/tests first; Rust parser/attachment work waits in the rolling queue | Node-light initially; requests a heavy token later |
+
+Each agent receives an exact file allow-list from section 5.2 and returns shared-seam receipts
+instead of editing controller-owned files. Slots 1, 2, 5, and the frontend portion of 6 can run
+while slots 3 and 4 use the two heavy tokens. A lane releases its heavy token immediately after
+its focused command; it does not retain the token while writing or waiting for review.
+
+#### Round B2 — rolling native/resource/browser queue
+
+1. When slot 3 or 4 releases a heavy token, run the queued conversation Rust parser/attachment
+   gate for packet 10B.
+2. When a Rust slot and the frozen shell/browser contract are available, dispatch 8A
+   Browser/global fan. Its implementation may proceed beside Node lanes, but its Rust/native proof
+   owns only one heavy token.
+3. Start 9A resource snapshot/model/UI as Node/Rust-light preparation while Browser runs. Do not
+   begin 9B Roslyn registry consolidation until Browser and conversation Rust gates release their
+   tokens and the TSK-799/789 baseline is recorded.
+4. Dispatch 9B to SOL-medium alone for the high-judgment registry decision/implementation. Luna
+   receives only any mechanical follow-up written back into the packet.
+5. A completed agent slot may be reused for focused fixes or a selected extension adapter, but the
+   controller rechecks ownership and dependency state before reusing it.
 
 Agents may edit concurrently only within the ownership table. The controller pauses new work
-when a lane needs a shared seam.
+when a lane needs a shared seam, when an allow-list overlaps an active lease, or when a third heavy
+runner would start.
 
 ### Milestone C — dependent capabilities
 
-1. Integrated agent after GitHub/resources/session contracts.
-2. Keep the selected Houston contribution aligned with contrast/editor contracts; add no other
+1. Integrate the controller-owned shared-seam receipts from Round B before starting dependent
+   cross-lane UI. One controller integration pass wires registrations, capabilities, shell roster,
+   and package scripts; agents do not race those files.
+2. Dispatch 11A Integrated Agent after GitHub, resources, sessions, Browser annotation facts, and
+   the one conversation authority are certified. This lane may run beside an extension adapter
+   because their owned paths do not overlap.
+3. Keep the existing Houston contribution aligned with contrast/editor contracts; add no other
    theme/grammar package without selection.
-3. Compatible extension staging/enablement remains deferred after the API report and user
+4. Compatible extension staging/enablement remains deferred after the API report and user
    choice; resume only for a newly selected package with an evidenced need.
-4. Database console only if promoted.
+5. Database console only if promoted. Its DB-side query/view design and generated-SQL review run
+   separately from the product UI lanes.
 
 ### Milestone D — one integration and proof cycle
 
@@ -4076,6 +5506,19 @@ removes the worktree.
 
 ## 22. Standard lane receipt
 
+The controller maintains `docs/superpowers/evidence/tsk-808/proof-ledger.md` as execution evidence,
+not a second plan. It contains one row per acceptance ID:
+
+    Task ID | Work package/packet | Acceptance ID | Dependency state | Status
+    Source Notion block/attachment | Exact test command/result | Native step/result
+    Baseline metric | Final metric | Screenshot/recording path | Reviewer/model
+    Cleanup receipt | Notion closure URL/state
+
+Rows begin Pending, become Proven only from current test/native evidence, and become Blocked with
+the exact failed condition. They are never marked Proven from overlap, compilation, an older
+screenshot, or an agent summary. Every SOL-medium milestone review reads the ledger and records
+accepted/rejected row IDs. Work Package 14 requires the ledger artifact and links it from the PR.
+
 Every implementation agent returns:
 
     Lane:
@@ -4084,6 +5527,12 @@ Every implementation agent returns:
     Shared-seam receipt:
     Focused tests run:
     Exact result:
+    Acceptance rows proven:
+    Baseline/final metrics artifact:
+    Screenshot/recording artifact:
+    Evidence/Notion attachment references:
+    Dependency status:
+    No database touched OR generated SQL inspected + sibling sweep result:
     Build/test processes stopped:
     Browser cleanup:
     Worktree cleanup: not applicable - controller owns the shared integration worktree
@@ -4117,9 +5566,8 @@ Stop implementation and ask for a decision when:
 - CodeLens count/Peek behavior changes without a trace proving why;
 - the implemented extension/DiffEditor/SCM/language checkpoint cannot be attributed and
   reconciled from commit `5884139` before broad TSK-808 work;
-- a newly proposed extension/API path has not been classified and selected; the 2026-08-03
-  selection covers only Houston, native DiffEditor, bounded SCM projection, and the decision not
-  to embed GitLens/Git Graph;
+- a newly proposed extension/API path has not been classified and selected; PR #14 preserves only
+  the prior Houston/native DiffEditor/read-only SCM evidence and is not the user's current choice;
 - a selected extension needs Node, LocalProcess, remote host, native code, or broad unbrokered
   access without a separately approved elevated-host plan;
 - DB work would materialize then filter/group/sort/page rows;
@@ -4129,13 +5577,17 @@ Stop implementation and ask for a decision when:
 
 ## 24. First implementation action
 
-Do not add more broad product code to the current checkout. The dirty-WIP preservation step is
-complete: `6a3af55` records local-state exclusions and `5884139` records the product WIP,
-language baseline, semantic TypeScript/Svelte adapters, tests, reports, and native-diff work.
-Next, review the mixed checkpoint against its task ownership and select an integration SHA that
-contains it or its reviewed equivalent. Create the clean TSK-808 integration worktree from that
-SHA, not bare `origin/main`, then execute the remaining Work Package 0 native audit and
-re-anchoring. Reconcile the checkpoint instead of re-running the compatibility decision or
-rebuilding its seams. The next broad product UI commit remains Work Package 1: contrast tokens
-and shared controls; Work Package 5 then completes the native Git graph/query/clipboard/actions
-over the retained DiffEditor and Rust Git authority.
+Do not start implementation now. The repository is on clean `main`/`origin/main` at `167a30a`,
+which already contains the former `5884139` checkpoint through PR #14; no task worktree exists.
+
+After the user explicitly authorizes the next action, refresh and re-anchor Work Package 0, create
+the mandated clean TSK-808 worktree from refreshed `origin/main`, and run only the Work Package
+12 API-first real-Tauri probe/comparison. Render the HTML capability/metrics report, present the
+Works now/Bounded adapter/Declarative/Elevated/Rejected rows, and stop for the user's extension/API
+selection. Do not run 18.3–18.5 or any broad UI product package before that choice.
+
+After the choice is recorded, the first broad UI implementation is Work Package 1 contrast and
+shared primitives. Work Package 1B then rebrands the public app and artifacts to Assembly while
+preserving every compatibility identity and existing user state; Work Package 2 follows with the
+shared shell contracts. Straightforward packets default to Luna Max; only unresolved
+high-judgment choices and every milestone code review use SOL-medium.
