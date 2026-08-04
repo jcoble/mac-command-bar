@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-04  
 **Status:** Superseding product and implementation amendment; implementation is not authorized by this document alone.  
-**Repository baseline reviewed:** `jcoble/mac-command-bar` at `4e8192e0cdce791f53e93af39a6d2d2e2c322911`.  
+**Repository baseline reviewed:** `jcoble/mac-command-bar` at `beebda6c4dad60cd2782374a36f24737cefda605`; the product-source diff from the earlier `4e8192e0cdce791f53e93af39a6d2d2e2c322911` review baseline is empty.
 **Primary affected tasks:** TSK-808, TSK-809, TSK-810, the TSK-766 orchestration outcome, and the browser/resource/session portions already routed into the TSK-808 master plan.
 
 ## 0. Authority and supersession
@@ -391,7 +391,10 @@ ACP-specific protocol objects remain inside the adapter. The frontend receives A
 
 ### 5.5 Tool terminals are separate from native CLI terminals
 
-Add `ToolTerminalRegistry` beside, not inside, the existing `TerminalRegistry` unless the existing registry can be safely extended with an explicit terminal kind.
+Extend the existing `TerminalRegistry` with an explicit terminal kind and optional tool identity.
+It remains the one process/output registry for user PTYs and Assembly-owned tool terminals;
+`AgentRuntimeManager` requests tool-terminal creation through a typed registry API and does not
+own a second process map, listener, scrollback store, or cleanup authority.
 
 ```rust
 pub enum TerminalKind {
@@ -986,8 +989,14 @@ Rules:
 - parallel read-only reviewers may share a snapshot/current worktree;
 - two write nodes cannot claim overlapping file leases in one worktree;
 - worktree cleanup uses existing dirty/unmerged/locked checks and confirmation;
-- a workflow can complete while retaining worktrees for review;
-- removal is never automatic merely because an agent finished.
+- a node finishing does not by itself prove that its worktree is integrated, pushed, or safe to
+  remove, so the workflow may retain that still-active worktree for review;
+- the moment the worktree's result is merged, cherry-picked, pushed to its PR/remote branch, or
+  abandoned, the node owner removes it through the existing worktree authority and prunes it;
+- dirty, locked, or unmerged worktrees are never deleted silently: the receipt records path,
+  branch, `git status --short`, blocking reason, and the exact controller/agent that owns cleanup;
+- workflow completion is not allowed to normalize an orphaned worktree. The final workflow and
+  A12 receipts enumerate every created worktree as `removed` or `not removed` with its owner.
 
 ### 9.7 Output contracts and gates
 
@@ -1179,7 +1188,10 @@ Only one placement is mounted at a time; moving it reuses the same store/service
 
 Use Dockview Paneview for primary left/right vertical sections.
 
-Create a generic side-pane registry:
+Extend the existing `tauri-svelte-preview/src/lib/shell/layout/paneStack.ts` and
+`layoutStorage.ts` authority with one generic side-pane registry. Do not create a second Paneview
+factory, layout store, persistence key family, parking mechanism, or side-shell service. The
+registry is a typed roster consumed by the existing `createPaneStack(...)` implementation:
 
 ```ts
 export type SidePaneRegion = 'left' | 'right' | 'bottom';
@@ -1389,7 +1401,7 @@ Viewport selection changes actual child-view dimensions and is validated inside 
 
 ### 13.1 Separate compact and full surfaces
 
-Create three distinct product areas over shared deterministic services:
+Create five distinct product areas over shared deterministic services:
 
 1. **Resource Manager popover** — compact live CPU/RSS/process tree and quick actions;
 2. **Resources center workspace** — full process/port/LSP/runtime ownership and controls;
@@ -1675,174 +1687,707 @@ Never persist or expose through conversation/workflow/usage/browser telemetry:
 
 ## 16. Exact work packages
 
-### Work Package A0 — re-anchor, prove adapters, and settle packaging
+### 16.0 Dispatch contract and cost-aware model manifest
 
-**Sequential. No broad implementation before completion.**
+Every implementation dispatch copies this complete contract into the agent prompt. A heading in
+this document is not sufficient authorization.
 
-1. Re-anchor the latest `main` symbols and current task/plan state.
-2. Record the current Codex/Claude CLI and transcript versions/shapes.
-3. Build a minimal Rust ACP client spike using the official SDK.
-4. Start pinned Codex ACP and Claude ACP adapters in disposable sessions.
-5. Record capabilities and prove:
-   - new session;
-   - image prompt;
-   - model option;
-   - effort/thought option;
-   - mode/permission option;
-   - assistant/thought stream;
-   - command/file-change tool;
-   - approval request;
-   - plan/task update where supported;
-   - subagent/nested transcript where supported;
-   - cancel;
-   - close;
-   - load/resume.
-6. Prove no user-visible PTY is created unless requested.
-7. Choose Claude adapter packaging: packaged executable or bundled pinned Node 22 runtime.
-8. Record cold start, warm start, RSS, child process tree, shutdown, and app-exit cleanup.
-9. Render a capability matrix and stop if a top-priority requirement cannot be demonstrated.
+1. Record base SHA, assigned owned paths, forbidden controller seams, dependencies, exact existing
+   symbols, exact new symbols, ordered edits, focused tests, native acceptance, stop conditions,
+   and the return-receipt template.
+2. Use `fork_turns: "none"` and the explicit model/reasoning pair below. Never silently substitute
+   Terra, an unrequested reasoning level, or an unspecified model. Luna Fast is preferred, never
+   blocking: request `service_tier: "fast"` when the native spawn API exposes it; otherwise
+   continue with explicit Luna Max/max/no-fork and do not claim Fast.
+3. Feature agents edit only their leased files. They return exact integration receipts for
+   `main.rs`, `tauriSource.ts`, public conversation/session/orchestration types, Settings, shell
+   rosters, Tauri capabilities, package/Cargo manifests, and lockfiles. The controller applies
+   each shared seam once after review.
+4. No agent creates a second runtime, conversation store, orchestration ledger/reducer, Paneview
+   factory/layout store, Dockview roster, settings authority, worktree authority, terminal
+   registry, Browser child-view owner, resource owner, usage index, or confirmation executor.
+5. No more than two build/test-heavy agents run concurrently; the default is one. Provider-native,
+   Browser-native, and final Tauri proofs are serialized. A feature-agent packet may author focused
+   tests but runs heavy commands only when the controller explicitly assigns a runner slot.
+6. Every data lane repeats the hard query rule: filtering, joins, grouping, aggregation, sorting,
+   and paging execute DB-side in one translated SQL query or database view; no materialize-then-
+   shape, client evaluation, lazy loading, per-row follow-up, or N+1. Inspect generated SQL, add a
+   view plus covering index when translation is insufficient, sweep sibling paths, and keep a
+   roughly 20-row page to 1-3 total DB queries.
+7. Whoever opens a Browser/native proof session stops that exact named daemon/process tree before
+   returning. Whoever creates a worktree removes and prunes it immediately after merge,
+   cherry-pick, push-to-PR, or abandonment; dirty/locked/unmerged trees are reported with exact
+   path, branch, status, reason, and owner rather than deleted.
 
-**Outputs:**
+| Packet | Route | Release gate | Shared-seam owner |
+| --- | --- | --- | --- |
+| master WP0, WP12A | Luna Max / max / no fork, read-only or bounded preparation | explicit implementation authorization; current task/base | controller |
+| A0-ACP, A0-Browser | Luna Max / max / no fork, evidence-only | R1 | controller |
+| master WP1 contrast | SOL-medium / medium / no fork | R0 applies resolved extension policy | controller integrates |
+| master WP1B identity | Luna Max / max / no fork | WP1 | controller integrates |
+| master WP2 shell/shared contracts | SOL-medium / medium / no fork | WP1B | controller integrates |
+| master WP2 file Dockview + Settings restoration | Luna Max / max / no fork | frozen WP2 shell contracts | controller integrates |
+| A1 contracts | SOL-medium / medium / no fork | A0 evidence | controller |
+| A2 runtime/ACP transport | SOL-medium / medium / no fork | R2 | controller integrates |
+| A3-Codex, A3-Claude | Luna Max / max / no fork | A2 contract tests | controller integrates |
+| A3-terminal | SOL-medium / medium / no fork | A2 contract tests | controller integrates |
+| A4 conversation UI | Luna Max / max / no fork | A1 fixtures; native gate waits for A3 | controller integrates |
+| A5 native handoff | SOL-medium / medium / no fork | A2+A3+A4 native proof | controller integrates |
+| A6 WorkflowEngine | SOL-medium / medium / no fork | stable A2/A3 lifecycle | controller integrates |
+| A7 Agent Control Center | Luna Max / max / no fork | A6 event/control API | controller integrates |
+| A8 Paneview/session shell | Luna Max / max / no fork | A1 roster/snapshot contracts | controller integrates |
+| A9 Browser product lane | Luna Max / max / no fork | A0-Browser+A1 | controller integrates; SOL owns native exception |
+| A10 resources/space/usage | Luna Max / max / no fork | A1 resource identity | controller integrates |
+| A10 Roslyn lifecycle | SOL-medium / medium / no fork | isolated lifecycle decision | controller integrates |
+| A11 assistance recipes | Luna Max / max / no fork | deterministic A2/A4+A9/product adapters | controller integrates |
+| A12 | controller only | R5 | controller |
+| R0-R6 reviews | SOL-medium / medium / no fork, read-only | preceding milestone | no edits |
 
-- `docs/superpowers/evidence/tsk-808/acp-runtime-spike.md`;
-- redacted protocol fixtures;
-- exact adapter versions/hashes;
-- packaging decision;
-- no product wiring.
+Each Luna lane stops and returns a bounded SOL decision packet when it encounters a genuinely
+high-judgment runtime, security, process-ownership, persistence, schema, native feasibility, or
+mutation-boundary choice. SOL does not absorb straightforward implementation merely because it
+reviews the milestone.
+
+### Work Package A0 — two evidence-only feasibility packets
+
+**Sequential gate, parallel probes. No product wiring.** A0-ACP and A0-Browser may run after R1
+as separate Luna Max agents with separate process/Browser ownership. Neither may edit current
+product files, manifests, capabilities, routes, conversation/terminal/browser authorities, or
+`main.rs`.
+
+#### A0-ACP — adapter and packaging evidence
+
+Current anchors are `agent_conversation/process.rs:8-92` (`ConversationProcess::spawn/stop`), the
+dead spike in `provider.rs` (`run_provider`, `run_codex`, `normalize_codex`, `run_claude`,
+`normalize_claude`), old public types in `protocol.rs:3-166`, and the intentionally unwired
+`ensure_agent_conversation` at `mod.rs:283-293`. Cargo has no ACP SDK dependency. A0 must not
+activate this spike or spawn a provider from the app.
+
+Create only evidence under `docs/superpowers/evidence/tsk-808/acp-runtime-spike.md` and redacted
+`acp-fixtures/{codex,claude}/`. In disposable external probes, record exact executable, version,
+content hash, initialize/new/load/resume, text/image, model, effort/thought, mode/permissions,
+assistant/reasoning/tool/file-change, approval/input, plan/task, child identity, cancel/close,
+cold/warm time, RSS, process tree, stderr bounds, shutdown, and app-exit cleanup. Prove a structured
+session creates no visible or hidden user PTY. Select a packaged Claude executable or bundled and
+pinned Node 22 runtime; per-launch network install is forbidden.
+
+Stop on unsupported image/config/load-resume/child identity, unpinned packaging, credential/root
+overreach, leaked descendants, or inability to prove no PTY. Return evidence paths, versions/
+hashes, capability matrix, unsupported features, packaging decision, process-cleanup receipt, and
+`No product source changed`.
+
+#### A0-Browser — native capture and overlay evidence
+
+Current frontend anchors are `browserStore.svelte.ts` (`browser`, `activateBrowser`,
+`setBrowserUrl`, `reloadBrowserFrame`, `captureBrowserState`, `restoreBrowserState`), the iframe at
+`components/BrowserPanel.svelte:99-109`, `/next/+page.svelte:26-29,420,466,1035`, and
+`sessionWorkspaces.ts:35-39,74-78`. No Rust WebView/WKWebView Browser bridge exists.
+
+Create only `docs/superpowers/evidence/tsk-808/native-browser-spike.md`. In a uniquely named,
+rebuilt-Tauri probe, prove one child-view identity across docked/floating/maximized/collapsed,
+z-order and pointer/keyboard delivery, same/cross-origin inspector bounds, profile/cookie
+isolation, no launch IO, native viewport snapshot scale/crop after scroll/zoom, exact
+owner/generation/hash staging, and child cleanup. Capture only bounded selector/URL/title/rect data;
+never cookies, full HTML, storage, tokens, or arbitrary script. An honest fallback is metadata-only
+or user-selected whole-window capture, never a fabricated crop.
+
+Stop and return U2 evidence if safe snapshot/overlay needs broad AppKit/WebKit control, z-order/
+isolation fails, or the locked same-live-page behavior is impossible. The opener reports the named
+Browser/Tauri process-tree cleanup. No `browser.rs`, inspector bridge, frontend model, capability,
+or route is created during A0.
 
 ### Work Package A1 — freeze runtime, event, ownership, and config contracts
 
-**Sequential controller-owned seam.**
+**Route/owner:** SOL-medium on a sequential controller-owned seam. Current anchors are
+`ownedSessions.ts:10-68,85-237`, `sessionWorkspaces.ts:26-79,166-237`,
+`conversationTypes.ts:1-148`, `conversationReducer.ts:8-181`,
+`conversationStore.svelte.ts:23-236`, and Rust `agent_conversation/protocol.rs:3-166` plus
+`mod.rs:34-215,283-380`.
 
-- add the types in sections 5 and 6;
-- migrate `OwnedSession` and conversation workspace snapshots;
-- define provider manifest/capability/config types;
-- define writer-lease transitions;
-- define canonical event/item/request types;
-- define tool-terminal identity;
-- add pure reducer/migration tests;
-- do not start a real provider yet.
+Add `AgentExecutionOwner`, `AgentRuntimeState`, additive `OwnedAgentRuntimeFields`, revisioned
+`AgentCapabilities`, provider manifests/config options/commands, canonical event/item/content/
+request/approval/input types, writer-lease transitions, and `ToolTerminalIdentity` in the existing
+public type authorities with matching Rust serde types. ACP-native frames do not escape adapters.
+Migrate live PTYs to terminal owner and exited processes to stopped; structured is assigned only
+after ACP init plus session/new. Version `SessionConversationWorkspace` for generation, owner,
+draft, attachment IDs, config, child/parent scroll, sequence, and telemetry; preserve old unknowns
+instead of inventing facts. Failed migration preserves PTY/native/transcript/draft/workspace/
+attachments.
+
+Add `scripts/agentRuntimeContracts.test.mjs` and extend protocol, reducer, isolation, workspace,
+owned-session, and serde tests. Prove two `ownedId`s remain isolated; stale generation/sequence is
+refused/repaired; unknown capability categories round-trip; migrations are lossless; and no test
+starts a provider. Stop before A2 on any need for a second store/runtime or inability to express one
+owner/generation/writer lease. Return exact public symbols, migration fixtures, tests/results, and
+the controller commit SHA that freezes the seam.
 
 ### Work Package A2 — Rust `AgentRuntimeManager` and ACP transport
 
-- refactor the existing `agent_conversation` registry;
-- add process supervision and ACP client connection;
-- add initialization, session lifecycle, prompt, image, cancellation, config, permission, user-input, and close;
-- emit canonical events;
-- retain bounded snapshots/journal;
-- process cleanup and stale-generation tests;
-- no frontend UI changes beyond adapter tests.
+**Route:** SOL-medium after R2. Refactor, do not coexist with, the current
+`AgentConversationRegistry`, `ConversationSession`, `ProviderCommand`, `ensure`, `emit_payload`,
+`send_command`, `snapshot`, and `close` in `agent_conversation/mod.rs`. `TerminalRegistry` remains
+the sole user-PTY authority.
+
+Own new `agent_conversation/manager.rs` (`AgentRuntimeManager`, `ManagedAgentSession`, writer lease,
+generation/sequence, bounded event snapshot), `capabilities.rs` (manifest/capability/config
+validation), `journal.rs` (bounded append/rebuild/repair), `providers/mod.rs` (`ProviderRegistry`),
+`providers/acp.rs` (transport boundary), `providers/acp_client.rs` (initialize/session/prompt/
+image/config/approval/input/cancel/close), and `providers/process.rs` (piped sidecar supervision,
+bounded stderr, process-group cleanup). Tool terminals carry `TerminalKind` plus
+`ToolTerminalIdentity` through the existing `TerminalRegistry`; they never set
+`OwnedSession.ptySessionId` or appear as user PTYs.
+
+Implement one manager per app, one current-generation lease per `ownedId`, full-state capability
+replacement, canonical events, bounded snapshots/journal, stale-response rejection, close and
+app-exit cleanup. Return controller receipts for `mod.rs`, `main.rs`, capabilities and manifests;
+do not edit frontend, provider-specific mapping, terminal projection, handoff, Browser, or shared
+A1 types.
+
+Run `RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml agent_conversation` in one
+heavy slot. Tests cover initialization/new/load/resume, prompt/image, correlated approval/input,
+config replacement, cancel/close, sequence repair, generation rejection, journal recovery, process
+tree exit, no user PTY, and distinct tool-terminal identity. Native proof starts one pinned ACP
+sidecar per structured `ownedId` with no PTY or leaked descendant. Stop on arbitrary credential/
+root authority, duplicate runtime, cleanup failure, or stale-writer ambiguity. Return files,
+symbols, registrations, dependency receipts, tests/results, native process evidence, and cleanup.
 
 ### Work Package A3 — provider adapters and capability mapping
 
-**Parallel after A2 contract freeze:**
+**Parallel only after A2 contract tests pass.** A3-Codex and A3-Claude are Luna Max; A3-terminal is
+SOL-medium. All consume A1/A2 public contracts, edit separate provider/parser files, and return
+shared-seam receipts.
 
-- A3-Codex: Codex ACP mapping and fixtures;
-- A3-Claude: Claude ACP mapping and fixtures;
-- A3-terminal: incremental transcript projection and imported-session reconciliation.
+**A3-Codex:** own `providers/codex.rs`, redacted
+`src-tauri/fixtures/agent_conversation/codex/*.jsonl`, and optional
+`scripts/agentConversationCodex.test.mjs`. Map authoritative ACP text/image/model/effort/mode,
+assistant/reasoning/tool/file, approval/input, plan/task, nested child, cancel/close/load/resume into
+canonical events. Never activate the dead `provider.rs` or fall back to a PTY. Run focused Rust
+fixture tests plus the public protocol test. Native proof shows ordered IDs, one manager writer, no
+PTY, and cleanup.
 
-Each lane edits separate provider/parser files and returns shared-seam receipts.
+**A3-Claude:** own `providers/claude.rs`, redacted
+`src-tauri/fixtures/agent_conversation/claude/*.jsonl`, and optional
+`scripts/agentConversationClaude.test.mjs`. Apply the same mapping/acceptance to A0's pinned Claude
+packaging; no per-launch install or legacy `claude -p` path. Stop on unproven packaging, config,
+image, child association, load/resume, or cleanup.
+
+**A3-terminal:** replace whole-tail `agent_conversation/transcript.rs` with
+`transcript/{mod,codex,claude}.rs` and add `terminal_projection.rs`. Cache canonical path plus file
+identity, offset and partial final line; parse appended durable JSONL only; detect truncation,
+rotation, archive, gaps and duplicates; perform bounded reconciliation; and emit canonical events
+only from durable evidence. Add Rust fixture tests and
+`scripts/agentConversationTerminalProjection.test.mjs`. Preserve `terminal.rs`/
+`terminalService.ts` as the PTY authority. After event proof, return exact controller receipts to
+remove `transcriptMirrors`, `refreshTranscript`, `startConversationTranscriptMirror`, and
+`stopConversationTranscriptMirror` from `conversationService.ts:24-102`,
+`ConversationSurface.svelte:64-67`, and `/next/+page.svelte:491-539`; do not remove polling first.
+
+Stop any lane on invented capability/item data, stale owner/generation, duplicate writer/runtime,
+or leaked reader/process/timer. Return mapping table, owned files/fixtures, public-seam receipts,
+focused results, native evidence, and cleanup.
 
 ### Work Package A4 — conversation UI and screenshot input
 
-**Can run in parallel with A3 over deterministic fixtures.**
+**Route:** Luna Max over frozen A1 fixtures; native provider acceptance waits for all A3 lanes.
+Extend the existing `ConversationSurface.svelte`, `ConversationMessage.svelte`, conversation store
+helpers, and service adapters. Add `ConversationHeader.svelte`, `AgentConfigBar.svelte`,
+`ConversationTimeline.svelte`, `TimelineItem.svelte`, typed item components for user/assistant/
+reasoning/plan/tasks/command/file/tool/subagent/approval/input/error, `ConversationComposer.svelte`,
+`AgentCommandMenu.svelte`, and `ConversationAgentTree.svelte`. A pure
+`conversationCommandCatalog.ts` is allowed; a second store/runtime/provider service is not.
 
-Order inside the lane:
+Ordered edits are screenshot paste/preview/send/restore/cleanup first; capability-driven model/
+effort/mode/permissions; ordered typed timeline and safe Markdown/code; correlated approvals and
+structured input; plan/task state; recursive read-only child tree; virtualized history/scroll
+follow; then provider-advertised plus local command discovery. Slash commands are not a substitute
+for controls, unsupported controls remain absent/disabled with reason, and screenshot paste never
+auto-sends.
 
-1. screenshot paste/preview/send/restore/cleanup;
-2. config bar and model/effort/mode options;
-3. typed timeline and Markdown;
-4. approvals/structured input;
-5. plans/tasks;
-6. live subagent tree;
-7. virtualized history and scroll-follow;
-8. provider/local command menu.
-
-Native provider proof waits for A3 integration.
+Extend existing protocol/store/isolation/workspace/paste tests and add
+`conversationControls.test.mjs`, `conversationCommandCatalog.test.mjs`,
+`conversationMessageSafety.test.mjs`, and `conversationTimeline.test.mjs`; run focused Node tests,
+`pnpm check:svelte`, and `pnpm check` serially. Final rebuilt-Tauri proof shows image input,
+capability controls, typed ordering, recursive child state, virtualization/scroll, commands, exact
+owner isolation, and no hidden PTY. Stop on unbacked controls, flattening, cross-owner response,
+unsafe Markdown/secret display, or automatic send. Return owned files, consumed contracts,
+controller receipts, tests/results, native evidence, and cleanup.
 
 ### Work Package A5 — native CLI handoff
 
-- structured -> terminal;
-- terminal -> structured;
-- rollback on failure;
-- same-session and fork flows;
-- one-writer process/tree assertions;
-- exact history reconciliation;
-- optional Codex shared-daemon spike kept separate.
+**Route:** SOL-medium only after integrated A2+A3+A4 native proof. Add
+`agent_conversation/handoff.rs` for structured-to-terminal, terminal-to-structured, same-session/
+fork, rollback, writer-lease/process-tree assertions, and exact history boundary/reconciliation;
+add Rust tests and `scripts/agentConversationHandoff.test.mjs`. Extend the existing
+`conversationService.ts` with typed calls through a controller receipt; do not create a second
+handoff/provider service.
+
+The controller wires actions into `ConversationSurface.svelte` and `/next/+page.svelte` while
+preserving `terminal.rs`, `terminalService.ts`, `ownedSessions.ts`, workspace/draft/attachment
+state, and generation. Structured-to-terminal opens the same native provider session only after
+ACP writer release; terminal-to-structured loads/resumes only after TUI writer release. Same-
+session and fork choices are distinct and labeled. Failure restores the prior owner/process and
+preserves all state. The optional Codex shared-daemon optimization is a separate later probe.
+
+Run focused handoff, owned-session, isolation, workspace, live-terminal, terminal-service, and
+Rust agent-conversation tests serially. Native acceptance performs both directions, same/fork,
+rollback, restart/recovery, exact native ID/history boundary, and proves one process-tree writer
+with no duplicate sidecar/PTY. Stop on dual writer, stale generation, destructive failure, or
+history mismatch. Return lease transitions, files, controller receipts, tests/results, native
+process evidence, rollback evidence, and cleanup.
 
 ### Work Package A6 — WorkflowEngine core
 
-- versioned workflow/role/node contracts;
-- deterministic scheduler/reducer;
-- existing orchestration-ledger integration;
-- concurrency/budget/depth/retry/gate policy;
-- worktree/lease integration through existing services;
-- ACP child session dispatch;
-- restart recovery;
-- no UI except fixtures/CLI test harness.
+**Route:** SOL-medium. Start only after A1 contracts and A2/A3 lifecycle APIs are stable. No UI
+except fixtures and a test harness. The current anchors at `beebda6` are
+`src-tauri/src/orchestration.rs:8-16` (`ORCHESTRATION_SCHEMA_VERSION`, store constants,
+`OrchestrationEvent`), `:100-228` (`OrchestrationRun`, list/record entry points), `:230-365`
+(normalized append-only JSONL read/write/reduce), and `:1096+` tests. `main.rs:1399-1413` wraps the
+two commands and `:5173-5270` owns managed state/registration. `orchestrationView.ts` remains a
+presentation adapter; its regex phase inference is never scheduling authority.
+
+**Owned files and symbols:** implement `src-tauri/src/workflow.rs`; split only when size warrants
+into `workflow/{types,reducer,policy}.rs`. Define `WorkflowDefinitionV1`,
+`AgentRoleDefinition`, `WorkflowNodeDefinition`, `WorkflowRunState`, `WorkflowNodeState`,
+`WorkflowLoopPhase`, `WorkflowRunRecord`, `WorkflowNodeRunRecord`, `WorkflowGateRecord`,
+`WorkflowArtifactRef`, `WorkflowReducer`, `WorkflowScheduler`, `WorkflowPolicy`, `WorkflowEngine`,
+`WorkflowCommand`, `WorkflowError`, injected `AgentRuntimePort`, `WorktreeLeasePort`, `Clock`, and
+`IdGenerator`. Engine entry points are `create_run`, `start`, `pause`, `resume`, `cancel`,
+`retry_node`, `skip_node`, `approve_gate`, `submit_result`, `dispatch_ready`,
+`rebuild_from_events`, and `list_runs`; all are explicit and idempotent.
+
+**Ordered edits:** validate definitions and cycles; freeze the input snapshot/hash; implement the
+pure reducer; implement deterministic ready-node ordering; enforce global/workflow/provider
+concurrency, depth, attempt, wall/token/tool-terminal/worktree budgets; map role policy to A2
+capabilities; acquire/release existing worktree/file leases; dispatch through the single
+`AgentRuntimeManager`; validate one of `ImplementationReceipt`, `ReviewReceipt`,
+`SpecComplianceReceipt`, `VerificationReceipt`, or `PlanReceipt`; append every transition to the
+existing ledger; rebuild exact state after restart. Markdown is display/overflow, never gate input.
+
+**Controller receipts:** extend the existing `OrchestrationEvent` additively with serde-defaulted
+workflow identity, node/parent, `ownedId`, attempt/depth, input hash, output contract/artifacts,
+gate, lease, provider instance, provenance, sequence, and idempotency fields. Preserve old rows,
+event kinds, JSONL path, CLI presets, and `OrchestrationRun`. Register one managed engine and the
+commands `list_workflow_runs`, `create_workflow_run`, `start_workflow_run`,
+`pause_workflow_run`, `resume_workflow_run`, `cancel_workflow_run`, `retry_workflow_node`,
+`skip_workflow_node`, `approve_workflow_gate`, and `submit_workflow_result` through `main.rs` and
+`tauriSource.ts`. The frontend cannot append transitions directly.
+
+**Tests:** add Rust tests for DAG/cycle rejection, ready ordering, concurrency/provider/depth/
+budget/timeouts, worktree/file leases, role mapping, retry/cancel/skip/gates, restart replay,
+phase derivation, structured-output refusal, hostile prose, delegation authorization, and audit
+order. Run serially:
+
+```bash
+cargo test --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml workflow -- --nocapture
+cargo test --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml orchestration -- --nocapture
+pnpm --dir tauri-svelte-preview test:orchestration-event
+pnpm --dir tauri-svelte-preview test:workflow-contracts
+```
+
+Stop if a child bypasses A2, worktree/file leases, policy, or typed output; phase/gate decisions
+depend on prose/regex; multi-writer ordering cannot be made deterministic in the same ledger; or a
+second ledger/reducer/store/process path appears. Return exact files, symbols, ledger migration,
+command receipts, tests/results, recovery evidence, process/worktree cleanup, and stop result.
 
 ### Work Package A7 — Agent Control Center and MCP delegation companion
 
-- run list, graph/lane board, hierarchy, timeline, inspectors, template editor;
-- compact AgentActivity Paneview;
-- pause/resume/cancel/retry/skip/approve/steer;
-- optional allow-listed MCP companion for agent-directed delegation;
-- provider-native and workflow-agent provenance;
-- no direct process/worktree mutation from MCP tools.
+**Route:** Luna Max after A6 event/control APIs pass. The lane consumes typed engine snapshots;
+it does not read/reduce JSONL, infer state from `orchestrationView.ts`, or create another
+conversation/workflow store.
+
+**Owned files/symbols:** add `shell/workflows/workflowTypes.ts` with `WorkflowRunView`,
+`WorkflowNodeView`, `WorkflowAgentView`, `WorkflowGateView`, `WorkflowArtifactView`, typed command
+DTOs, and `provider-native|workflow` provenance; keep `workflowRunId` distinct from `ownedId`.
+Add `workflowService.ts` for Tauri invokes/subscription only and `workflowStore.svelte.ts` as a
+snapshot cache plus selection/filter state only. Add `WorkflowControlCenter.svelte`,
+`WorkflowRunList.svelte`, `WorkflowRunHeader.svelte`, `WorkflowGraph.svelte`,
+`WorkflowLaneBoard.svelte`, `AgentHierarchy.svelte`, `WorkflowTimeline.svelte`,
+`WorkflowNodeInspector.svelte`, `AgentRuntimeInspector.svelte`, `WorkflowTemplateEditor.svelte`,
+and `AgentActivityPane.svelte`.
+
+If A6 approves the optional companion, add `src-tauri/src/workflow_mcp.rs` with only
+`workflow_list_roles`, `workflow_delegate_agent`, `workflow_get_agent_status`,
+`workflow_cancel_agent`, `workflow_submit_result`, and `workflow_request_gate`. Validate caller,
+parent tool call, `ownedId`, generation, capability revision, role, depth, concurrency, budget,
+workspace, provider, permission, and output contract before asking `WorkflowEngine`. It exposes no
+arbitrary executable, path, Git, worktree, credential, secret, or raw process function.
+
+**Controller receipts:** register one Agents/Workflows center panel in `centerDock.ts` and one
+AgentActivity right pane through A8's registry; wire `main.rs`/`tauriSource.ts` commands once; open
+existing child conversation/worktree surfaces by `ownedId`/lease ID. Do not edit shared rosters,
+`ShellFrame.svelte`, `ShellSidebar.svelte`, or manifests in the Luna lane.
+
+**Tests and native acceptance:** add `scripts/agentControlCenter.test.mjs` and
+`scripts/workflowMcp.test.mjs`; prove snapshot-only state, provenance, typed phase, all control
+actions, allow-list enforcement, hostile-output isolation, and absence of direct `invoke` outside
+the service. In rebuilt Tauri, prove the run list, DAG/lanes/hierarchy/timeline/inspectors reflect
+engine truth; pause/resume/cancel/retry/skip/approve/steer are real; provider-native and workflow
+children are distinct; a child opens existing conversation/worktree surfaces; one child can be
+pinned to Working; and MCP refusals/accepted actions have ledger receipts.
+
+Stop if controls are no-op, identity/provenance is ambiguous, UI re-reduces raw events, MCP gains
+unbounded authority, or a second store/ledger/runtime appears. Return owned files, service DTOs,
+controller roster/command receipts, tests/results, native proof, cleanup, and stop result.
 
 ### Work Package A8 — Paneview shell and session navigation
 
-- side-pane registry;
-- Working/Done/Settled as left Paneview panes;
-- right tool sections as Paneview registrations;
-- compact worktree/agent rows and hover/focus details;
-- Session Library separate center/right movable surface;
-- persisted sizes/order/collapse;
-- migrate old layout without losing workspace state.
+**Route:** Luna Max after A1 freezes `ownedId`, Settled semantics, session snapshots, and roster
+contracts. Extend `layout/paneStack.ts:1-274`, the sole `createPaneview` primitive, and
+`layout/layoutStorage.ts:10-127`, the sole persistence authority. `ShellFrame.svelte:85-164`
+continues to create one outer Gridview and one center Dockview. `ShellSidebar.svelte:67-313`
+remains the only right-column Paneview caller. Do not introduce a second factory/store/key family.
+
+**Owned files/symbols:** add pure `layout/sidePaneRegistry.ts` with `SidePaneRegion` and
+`SidePaneRegistration`; it validates unique ID/region/order/size/persistence and maps to `PaneSpec`
+without creating UI, storing state, or doing IO. Add `WorkingPane.svelte`, `DonePane.svelte`,
+`SettledPane.svelte`, `WorktreeAgentRow.svelte`, and `SessionsPaneview.svelte`, which creates one
+`PaneStack` and receives all data/actions as props. Add `sessionLibrary/
+SessionLibraryWorkspace.svelte`, `sessionLibraryModel.ts`, `sessionLibraryService.ts`, and an
+ephemeral `sessionLibraryStore.svelte.ts` for query/selection/page state only.
+
+**Frozen contracts:** stable left IDs are `working`, `done`, `settled`; right registrations retain
+Files/Source Control/Worktrees/Run/Context/Problems and add `agents` only when A7 exists. A1 adds an
+explicit additive `settledAt: string|null` or reviewed `railSection` field to `OwnedSession`; old
+records default safely and lose no PTY/native/transcript/workspace/attachment data. Never infer
+Settled from age, title, or process state. Session Library deduplicates by `ownedId`, then
+`(provider,nativeSessionId,canonicalCwd)`—never title—and derives current state from the existing
+rail/runtime authorities rather than persisting a second archive.
+
+**Ordered edits/controller receipts:** extend `PaneStackOptions` with an injected layout store,
+retaining `storageKey` only as a compatibility adapter; migrate valid `viewPanesKey(id)` layouts
+into one reviewed side-pane v1 map or retain that registry-generated family as the only keys;
+preserve `ACTIVE_VIEW_KEY`, `SESSIONS_COLLAPSED_KEY`, and `RAIL_GROUPS_STORAGE_KEY` owners. Replace
+the primary Working/Done Collapsibles and archive drawer in `SessionsColumn.svelte` with the left
+Paneview host. Add `agents` and `session-library` to the existing center roster, bump
+`CENTER_LAYOUT_KEY` v3 to v4 for the changed exact panel set, and leave outer grid v2 unchanged.
+Move the one Session Library mount center-to-right through parking/reparenting without duplicate
+IO or state. The controller alone changes `ownedSessions.ts`, `sessionRailStore`, `centerDock.ts`,
+`sidebarViews.ts`, `ShellFrame.svelte`, `ShellSidebar.svelte`, and shared manifests.
+
+**Tests:** add `sidePaneRegistry.test.mjs` and `sessionLibrary.test.mjs`; extend
+`paneLayout.test.mjs`, `layout-storage.test.mjs`, `sidebar-views.test.mjs`,
+`owned-sessions.test.mjs`, `session-strip.test.mjs`, and `session-groups.test.mjs`. Prove exact-set
+migration/fallback, one Paneview factory, stable IDs, no construction IO, explicit Settled
+migration, same-title/different-worktree identity, center/right one-mount movement, keyboard/focus,
+and state preservation. Run focused scripts first and `pnpm --dir tauri-svelte-preview check` once
+in the controller's serialized slot.
+
+Native proof resizes/reorders/collapses/restores all left/right panes after restart; opens Agents
+and Session Library; resumes exact same-title/different-worktree sessions; moves the one library
+host without duplicate IO; pins one workflow child; and proves editor/browser/conversation/
+workspace state survives. Stop on duplicate layout authority, implicit IO, invented Settled
+semantics, title-based dedupe, double-mounted library, lost migration, or an unowned shared seam.
+Return exact files, roster/key/migration receipts, tests/results, native proof, cleanup, and stop
+result.
 
 ### Work Package A9 — Browser presentation and feedback
 
-- preserve original Work Package 8 native child-view safety;
-- add floating/maximized modes;
-- toolbar actions;
-- element grab/annotation;
-- native snapshot spike;
-- screenshot markup;
-- exact conversation staging;
-- profile/viewport/settings;
-- global floating action island integration.
+**Route:** Luna Max after a signed A0-Browser receipt and A1 identity contracts. Stop before dispatch
+if A0 did not prove the rebuilt-native same-page child view, z-order/input, snapshot/inspector
+boundary, profile isolation, and cleanup. The current anchors are
+`browserStore.svelte.ts` (iframe-era state/snapshot helpers),
+`components/BrowserPanel.svelte` (one `/next` singleton iframe), `/next/+page.svelte` (workspace
+capture/restore and one Browser mount), `ShellOverlays.svelte` (one overlay root),
+`ShellFrame.svelte`/`centerDock.ts` (one Browser center panel), `panelActivation.ts`/
+`shellPanels.ts` (lazy activation), and `sessionWorkspaces.ts` (old optional URL snapshot). The
+legacy `/` Browser panel stays frozen.
+
+**Owned files/symbols:** add `shell/browser/browserTypes.ts`, `browserModel.ts`,
+`browserBounds.ts`, `browserPresentation.ts`, `browserAnnotations.ts`, `browserBackend.ts`; migrate
+`browserStore.svelte.ts` only as a compatibility facade preserving its snapshot exports. Add
+`components/browser/BrowserTabs.svelte`, `BrowserToolbar.svelte`, `BrowserViewport.svelte`,
+`BrowserFeedbackPanel.svelte`, `BrowserAnnotationToolbar.svelte`, `BrowserAnnotationCard.svelte`,
+`BrowserOverlayHost.svelte`, and `BrowserExpandedOverlay.svelte`; make `BrowserPanel.svelte`
+composition-only. Add Rust `src-tauri/src/browser.rs` and A0-approved
+`browser_inspector.js`. `main.rs`, capabilities/config/manifests, shared shell/layout/route,
+conversation, and Settings files are controller-owned receipts.
+
+Use exact contracts `BrowserPresentationMode = 'docked'|'floating'|'maximized'|'collapsed'`,
+`BrowserInteractionMode = 'browse'|'picking'|'annotating'|'drawing'`, viewport presets
+`responsive|mobile-s|mobile-m|mobile-l|tablet|laptop|laptop-l|desktop|custom`,
+`BrowserFloatingBounds`, and immutable `BrowserFeedbackAttachment` carrying workspace/tab/
+generation/URL/title/selector/name/snippet/note/intent/image/source hash. `BrowserTabState` carries
+identity, navigation/load, viewport, annotations, generation and error; workspace state carries
+one ordered tab map, active ID, presentation/previous mode, floating bounds, interaction, pending
+selection/markup, queue, opaque profile summary, and active generation. Enforce selector <=2 KB,
+snippet <=500 characters, <=32 classes and <=100 annotations per tab.
+
+`browserModel.ts` exports `activateBrowserWorkspace`, `deactivateBrowserWorkspace`,
+`createBrowserTab`, `selectBrowserTab`, `closeBrowserTab`, `navigateActiveBrowserTab`,
+`setBrowserViewport`, `setBrowserPresentationMode`, `expandBrowserFrom`,
+`restoreBrowserToDock`, `minimizeBrowserToPrevious`, `collapseBrowserToControl`,
+`beginBrowserElementPicker`, `acceptBrowserElementSelection`, `cancelBrowserAnnotation`,
+`queueBrowserAnnotation`, `removeBrowserAnnotation`, `captureBrowserWorkspace`,
+`formatBrowserFeedback`, and `stageBrowserFeedbackPreview`. One native child view exists per tab;
+hide/measure/show the same view for overlays and movement, never create a second iframe/WebView.
+
+Rust owns bounded commands `create_browser_tab`, `set_browser_tab_bounds`, `show_browser_tab`,
+`hide_browser_workspace`, `navigate_browser_tab`, `reload_browser_tab`, `go_back_browser_tab`,
+`go_forward_browser_tab`, `close_browser_tab`, release-gated `open_browser_tab_devtools`,
+`open_browser_tab_external`, `clear_browser_workspace_data`, `arm_browser_element_picker`,
+`cancel_browser_element_picker`, and only A0-approved viewport capture. Events carry workspace,
+tab and monotonic generation; stale events are dropped. Reject non-HTTP/S, userinfo, file/data/
+javascript/custom protocols. Profiles are opaque and workspace-isolated; import cookies stays
+disabled absent a separate security decision.
+
+Grab stages bounded metadata without a note or send; Annotate requires note plus Change/Question
+and queues immutable metadata/crop; Draw uses a native visible-viewport snapshot and local markup,
+then restores the same live view without reload. Feedback targets exact `ownedId`/generation through
+the existing conversation draft and attachment vault with preview/merge; mismatch/draft conflict
+retains the queue and never PTY-writes or auto-sends. No cookies, storage, form values, full HTML,
+tokens or provider screenshots are captured.
+
+The controller mounts exactly one Browser overlay and one global `WorkbenchActionFab` under the
+existing `ShellOverlays`; it derives a `WorkbenchActionContext` from the current center/owner/
+workspace/target/generation and routes existing services. The island owns layout/focus/
+confirmation only, remains >=44 px and 16 px from safe edges, and uses fan/horizontal/bottom-sheet
+collision fallbacks. Browser actions expand/restore the same page. It never duplicates the command
+palette or business logic.
+
+Add `browserModel.test.mjs`, `browserBounds.test.mjs`, `browserAnnotations.test.mjs`,
+`browserFeedback.test.mjs`, `browserBackend.test.mjs`, and `actionSurfaceModel.test.mjs`; extend
+URL normalization, session-workspace, activation and Tauri-config tests. Prove four-state
+transitions, bounds/presets, no-reload identity, bounded immutable feedback, stale target/draft
+conflict, unsafe URL refusal, profile/capability behavior, and no secret fields. Rebuilt-Tauri
+acceptance covers three tabs, real navigation, same/cross-origin selection, profile A/B isolation,
+all viewports, drag/resize/max/min/restore/collapse, Grab/Annotate/Draw, exact draft staging,
+global actions across Session/Editor/Browser/Resources/History, accessibility, dialog z-order, and
+complete named child-view/Browser/Tauri cleanup. Browser preview is never acceptance.
+
+Stop on absent A0 proof, unsafe inspector/snapshot, z-order/input/scroll failure, broad capability,
+unproven profile isolation, owner/generation ambiguity, second view/store/palette, guessed capture,
+or unclean process tree. Return exact files, state/command/event contracts, controller receipts,
+migrations/security notes, focused results, native artifact, `No SQL/database touched`, cleanup,
+and stop result.
 
 ### Work Package A10 — Resources, space, and usage
 
-Parallel sublanes after shared data contracts:
+Split after A1 resource identity into four Luna Max sublanes and one isolated SOL-medium Roslyn
+lane. Compact/full surfaces share one service/store; opening a full page never starts a second
+scan/index. Current anchors are `main.rs:4028-4044,4190-4250,4546-4557`,
+`terminal.rs:23-164`, `lsp.rs:1448-1611,2145-2274`, the existing Playwright process service/store,
+`shellPanels.ts`, `panelActivation.ts`, and the single `centerDock.ts` roster. No SQLite dependency
+exists at `src-tauri/Cargo.toml:1-35`; A10 therefore creates a reviewed database explicitly rather
+than pretending JSONL or IndexedDB is an analytics authority.
 
-- A10-resources: process ownership and compact/full resource UI;
-- A10-space: disk scan/treemap/cleanup integration;
-- A10-usage-current: authoritative provider quota popover;
-- A10-usage-history: incremental normalized usage events and analytics workspace;
-- A10-Roslyn: preserve the master plan’s separately reviewed high-judgment lifecycle consolidation.
+#### A10-resources — one bounded process snapshot
+
+Own `core/src/scanners/resources.rs`, `src-tauri/src/resources.rs`,
+`shell/resources/{resourceTypes,resourceBackend,resourceService,resourceViewModel}.ts`,
+`resourceStore.svelte.ts`, and compact/full resource components. Parse exactly one bounded
+`ps -axo pid=,ppid=,pgid=,%cpu=,rss=,etime=,user=,command=` and one
+`lsof -nP -iTCP -sTCP:LISTEN -Fpcn`, then join by PID once in Rust. Never run per-PID `ps`/`lsof`
+or hidden mount-time scans. Join only proven `TerminalRegistry`, A2 manager, LSP registry and
+Playwright identities. `TerminalSessionInfo` currently omits `owned_id` despite the start request;
+provider PID/PGID is private. A1/controller must expose those fields additively; until then mark the
+process External, never guess from name/path.
+
+Define `ProcessOwner` variants App, OwnedSession, LanguageServer, ProviderSidecar, Playwright and
+External plus a single `ResourceSnapshot`. Controller receipts add `read_resource_snapshot`,
+`read_resource_disk_scan`, `stop_owned_resource`, `restart_language_server_root`,
+`set_active_source_root`, `apply_resource_memory_pressure`, and `read_language_server_log` once.
+Stop/restart revalidates PID, PGID, root, owner and registry generation; external rows never expose
+Stop. Compact and full UI use one coalesced explicit/visible refresh and identical owner IDs.
+
+#### A10-space — bounded manual disk scan
+
+Own `core/src/scanners/disk.rs` or an explicitly leased part of `resources.rs`,
+`src-tauri/src/resources_disk.rs`, and `shell/resources/workspaceSpace*` types/service/store/view.
+Scan only explicit repository/worktree/build/dependency/agent roots with bounded depth/entries; no
+broad `du`, Docker prune, repository-wide prune, or unowned deletion. Each `WorkspaceDiskEntry`
+carries stable repository/workspace ID, path, kind, bytes, reclaimable bytes, top-level items and
+`DiskProtection = Active|Dirty|Unmerged|Locked|UserData|SafeCandidate|Unknown`. Only
+SafeCandidate is reclaimable. Deletion routes the existing `remove_project_worktree`/archive safety
+and confirmation after a fresh identity/protection check; primary, active, dirty, unmerged, locked,
+unknown and user data are refused. Return before/after byte and cleanup receipts.
+
+#### A10-usage-current — authoritative quota only
+
+Own `src-tauri/src/usage_current.rs` plus the shared usage-card adapter. Define
+`ProviderUsageReader` and `ProviderUsageState = Available|Unavailable|Error`. Consume only A1 ACP
+provider-authored quota windows or a documented stable local API; current input/output token fields
+are not quota. Include provider/account/instance, semantics, authoritative percentages/reset,
+capture time, source/version, and unavailable reason. Never infer remaining quota from transcript
+size, local tokens, turns or elapsed time; never expose credentials/private args/raw output.
+
+#### A10-usage-history — SQLite, incremental cursors, and DB-side analytics
+
+Own `src-tauri/src/{usage_db,usage_sources,usage_indexer,usage_history}.rs`, migration
+`migrations/0001_usage_history.sql` (or the exact embedded equivalent), and
+`shell/usage/{usageTypes,usageBackend,usageService,usageAnalytics}.ts`,
+`usageStore.svelte.ts`, and Usage workspace components. Controller adds `rusqlite`, state,
+commands, capabilities and `tauriSource.ts` wrappers once. Open
+`app_data_dir()/usage-history.sqlite3` with test-only `MAC_COMMAND_BAR_USAGE_DB`; migrations are
+transactional. Money is integer micros, never float.
+
+Migration 0001 creates `usage_events` with primary `id`, provider/instance, nullable owner/workflow/
+turn/project/workspace IDs, event time, nonnegative input/output/cache/reasoning tokens, model,
+nullable estimated-cost micros plus rate version, source kind/event ID/key and inserted time; add
+`UNIQUE(provider,provider_instance_id,source_kind,source_event_id)`. Create covering indexes for
+time/provider/model, provider/model/time, owner/time, workflow/time and project/time. Create
+`usage_source_cursors` keyed by provider/instance/source kind/opaque source key with file identity,
+offset, size, mtime, last event and update time; `usage_rate_versions` with provider/model/effective
+range and integer rates plus lookup index; and `usage_daily_rollups` keyed by
+day/provider/model/project with token/cost/event/session/turn/workflow aggregates. Expose a
+`usage_daily_provider_model` view. Store no raw path, prompt, content, provider JSON, cookie,
+credential or auth data.
+
+ACP rich usage is primary. Codex/Claude JSONL fallback reads only bytes after a durable cursor;
+truncation/rotation resets safely. One transaction bulk `INSERT OR IGNORE`s events, updates cursors,
+then rebuilds affected rollups with set-based `DELETE` plus `INSERT ... SELECT ... GROUP BY` or an
+equivalent DB-side upsert. Cumulative counters become deltas only with proven semantics. App start,
+runtime event, or explicit refresh coalesces the index; opening a popover never full-scans tails.
+
+`read_usage_summary` is one prepared `SELECT` containing `COUNT`, `COUNT(DISTINCT ...)`, and
+`SUM(...)` over `usage_events` with date/provider/model/project/workflow filters. The breakdown page
+is one prepared statement with `filtered` and `grouped` CTEs, SQL `GROUP BY`, deterministic
+`ORDER BY`, `LIMIT/OFFSET`, `COUNT(*) OVER()` and filtered window totals. Daily/calendar/export
+queries read the view with SQL filters/sort/page. A roughly 20-row page uses 1-3 total statements
+for summary, rows and calendar. Rust maps rows only; TypeScript formats labels only. Neither may
+group, aggregate, filter, sort or page results. Capture `EXPLAIN QUERY PLAN` and redacted SQL under
+`MCB_SQL_TRACE=1`; reject client evaluation, N+1, full-table scans that ignore available indexes,
+or any materialize-then-shape sibling. Estimated cost exists only when a versioned rate matches and
+is labeled Estimated; no match is null/Unavailable, never zero.
+
+#### A10-Roslyn — isolated lifecycle consolidation
+
+SOL-medium owns `lsp.rs` lifecycle/process/public inventory, `csharpLanguageClient.ts` frontend
+pool removal, `shellPanels.ts` hidden-warm removal, and exact EditorPanel/CodeLens compatibility.
+Add `SourceLspProcessInfo`, `set_active_source_root`, `source_lsp_processes`,
+`stop_server_for_root`, `restart_server_for_root`, `apply_memory_pressure`,
+`read_server_log`, and clamped `ResourcePolicy`. Native C# is the sole process owner; active root is
+pinned, inactive saved rows start zero Roslyn, warning evicts oldest inactive, critical stops all
+inactive. Shutdown is LSP shutdown/exit, bounded wait, group TERM, bounded wait, KILL only fallback,
+reap and prove no BuildHost descendants. Preserve semantic CodeLens/Peek and record
+`MCB_TIMING=1` baseline/final evidence; a populated lens/Peek remains under two seconds without tab,
+source, session, or workspace snapshot calls.
+
+Focused tests cover parser/join bounds, exact ownership/refusal, disk protection/totals, quota
+Unavailable semantics, DB migration/cursors/rotation/dedupe/no-secret rows, rollup equivalence,
+rates, generated query/index plans and single-statement endpoints, plus Roslyn lifecycle/CodeLens.
+Rebuilt-Tauri acceptance proves compact/full single state, exact owned stop/external refusal,
+manual protected disk cleanup, authoritative-or-unavailable quota, restart-safe incremental usage,
+DB-side filters/paging/export, no duplicate tokens, Roslyn pressure/cleanup, and no second scan.
+Stop on guessed ownership/quota, per-PID query, broad disk deletion, duplicate scan/store, unstable
+usage IDs/deltas, cursor duplication, raw secret persistence, DB-side rule violation, unverified
+query plan, Roslyn duplicate/hard-kill-only lifecycle, CodeLens/Peek regression, or unclean native
+proof. Each sublane returns owned files, shared receipts, focused/native results, SQL trace or
+`No database touched`, and process/worktree cleanup.
 
 ### Work Package A11 — Assistance recipes throughout product
 
-- typed recipe registry;
-- PR and review recipes;
-- Git/diff/Problems/run-config/browser/form/save recipes;
-- reusable AI action slot/popover;
-- field-level proposal UI;
-- confirmation/revalidation/audit integration;
-- hostile-context tests;
-- no automatic consequential mutation.
+**Route:** Luna Max after A2/A4 expose one correlated structured-output request and A9/product fact
+and action adapters are deterministic. Current `conversationService.ts::sendStructuredMessage` is
+free text and is insufficient; do not scrape timeline prose or create a second provider/runtime.
+No database is touched.
+
+Own `shell/assistance/assistanceTypes.ts` with stable `AssistanceRecipeId`s for PR draft/review,
+review comments, checks, conflicts, commit, diff/file/problem explanation, run-config generate/
+review, workspace summary, Browser feedback, form suggestion, save/spec review, worktree cleanup and
+test plan; `AssistanceSurface`, `AssistanceTargetRef`, hashed `AssistanceFactRef`, bounded
+`AssistanceContext`, allow-listed `AssistanceFieldPatch`, and expiring `AssistanceProposal`.
+Own `assistanceSchemas.ts` with strict input/output validators; reject unknown/prototype-bearing/
+oversized objects, shell fragments in typed fields and non-allow-listed patches. Own
+`assistanceRecipeRegistry.ts` with one versioned registration per recipe and mutation policy
+`none|proposal`; no initial recipe executes directly.
+
+Own `assistanceContext.ts` (`captureAssistanceContext`, `hashAssistanceFacts`,
+`isAssistanceContextCurrent`, `revalidateAssistanceTarget`) and capture existing stores
+synchronously with no implicit IO. Treat repository/diff/diagnostic/Browser/task/model text as
+delimited untrusted data; exclude secrets, environment, prompts, cookies, hidden DOM and unrestricted
+files. Own `assistanceStore.svelte.ts` for request presentation state only and
+`assistanceService.ts` (`requestAssistance`, `applySelectedAssistancePatches`,
+`cancelAssistanceRequest`). The service verifies request/owner/generation/facts/output hashes,
+expiry and expected-value hash, then delegates selected fields to the existing typed surface
+adapter. It never invokes Tauri, Git, shell, worktree, GitHub, filesystem, Browser, save or
+confirmation directly.
+
+Own `assistanceAudit.ts` for redacted additive requested/proposed/dismissed/stale/apply-started/
+applied/refused/failed/outcome-unknown events and components `AssistanceAction.svelte`,
+`AssistanceProposal.svelte`, and one `AssistanceHost.svelte`. The proposal shows provenance,
+confidence, select/deselect, Apply selected, Dismiss, Retry and Continue without AI. Provider
+failure never disables deterministic Save. Consequential proposals go through the existing
+preview/confirmation/revalidation/audit executor.
+
+Return controller receipts for the A2/A4 structured-output symbol; additive nullable recipe/hash/
+confirmation/result fields in the existing orchestration event; exactly one host in
+`ShellOverlays.svelte`; contextual insertion in Conversation, Git/diff, Problems, Run Configuration,
+Browser, Context and form/save surfaces; and discovery-only `shellCommands.ts` entries. The agent
+must not edit these shared seams, `main.rs`, capabilities, Settings, rosters, manifests or locks.
+
+Add `assistanceRecipes.test.mjs`, `assistanceContext.test.mjs`,
+`assistanceService.test.mjs`, `assistanceAudit.test.mjs`, and `assistanceUiContract.test.mjs`.
+Cover every registration/version, bounded/untrusted context, secret redaction, correlation, stale
+owner/generation/facts, schema/patch refusal, expiry/cancel/retry, expected-value mismatch,
+advisory nonblocking behavior, audit order/outcome-unknown and zero direct mutation. Native proof
+drafts/reviews several surfaces, resists hostile text, invalidates a changed target, applies one
+safe field through the existing executor, cancels a consequential proposal with zero external
+change, survives restart with audit receipts, and keeps deterministic actions usable when the
+provider fails.
+
+Stop on missing correlated structured output, target/hash identity, typed executor, bounded
+context, allow-listed fields, or required shared-seam edit; stop on a second runtime/store/action
+authority or direct mutation. Return recipe versions, owned files, consumed services, integration
+receipts, tests/results, native/hostile/stale/audit evidence, `No database touched`, `No direct
+mutation path`, cleanup, limitations and stop result.
 
 ### Work Package A12 — controller integration and certification
 
-- register Rust commands/capabilities once;
-- wire frontend adapters once;
-- integrate center/side rosters once;
-- add settings sections only for implemented capabilities;
-- serialized build/test/native proof;
-- security/relevance/SOL review;
-- proof ledger and task disposition;
-- PR and worktree cleanup.
+**Owner:** controller only. Reject any A0-A11 receipt that lacks base SHA, owned files, exact symbol,
+registration/capability/migration, focused result, native evidence where required, known limits,
+and cleanup. Freeze dispatches; inventory `git status --short`; attribute every path; reject stale,
+overlapping or unowned changes.
+
+Integrate in this order: Rust public contracts; Tauri state/setup/commands; frontend adapters/types;
+Settings migrations/sections; center/side/session/library/action rosters; dependency manifests and
+locks once; focused lane gates; one serialized full frontend/Rust gate; rebuilt-Tauri scenarios one
+at a time; security, relevance, SQL/data, cleanup and R6 reviews; bounded fixes and repeated failed
+gates; proof ledger/PR/task disposition; immediate worktree removal after merge, push-to-PR or
+abandonment.
+
+For `main.rs`, every receipt names the module/import, `.manage` singleton, setup listener and owner,
+exact handler, capability marker, app-exit cleanup, bounds/identity/generation/permission and test.
+Prove one `AgentRuntimeManager`, WorkflowEngine/ledger, terminal registry, Browser child-view owner,
+resource/process owner and usage index. `capabilities/default.json` remains scoped to main and adds
+only exact command/plugin permissions; never blanket shell/filesystem/process/HTTP/global-shortcut/
+IPC or remote URLs. Backend feature detection remains distinct from Tauri ACL.
+
+For package/Cargo receipts, deduplicate exact package/crate/version/features, consuming symbol,
+license/security, process/network/filesystem and size effects; run each package manager once; reject
+hand-edited locks or unrelated churn. Settings extends the existing `settingsStore.svelte.ts`
+storage key and `SettingsDialog.svelte`/`SettingsHost`; each field has safe old-backend default,
+enum validation, `mergeWithDefaults` migration, capability truth, UI row, reset, runtime apply/
+rollback, persistence test and native restart proof. A11 adds no automatic-assistance default.
+
+Integrate center IDs through `centerDock.ts`/`ShellFrame.svelte`, side IDs through
+`sidebarViews.ts`/`ShellSidebar.svelte`, icons through `ActivityBar.svelte`, activation through
+`panelActivation.ts`/`shellPanels.ts`, commands through `shellCommands.ts`, and singleton overlays
+through `ShellOverlays.svelte`. Every roster receipt supplies stable ID/title, region, order/size/
+collapse, parking host, activation/loader, migration, command/icon/accessibility, and teardown.
+Reject IDs missing from a companion roster or any second Dockview/Paneview/layout authority.
+
+After focused gates, run serially:
+
+```bash
+cd tauri-svelte-preview
+pnpm check:svelte
+pnpm check
+pnpm build
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml
+pnpm tauri:build
+```
+
+The rebuilt app must pass section 19.7 plus cold upgrade, truthful old-backend controls, one Codex
+and Claude structured session without PTY, one-writer handoff, workflow restart/retry/cancel,
+Browser owner/annotation, resource/usage identity and generated-SQL proof, A11 cancel/apply/audit,
+complete app-exit cleanup, both themes, narrow window, keyboard, VoiceOver, Reduced Motion and
+reload/restart. Run R6 as explicit read-only SOL-medium; route fixes and repeat until no blocker.
+
+The final receipt lists base/final SHA, all lane receipts, unowned-diff result, Rust registrations/
+ACLs/capabilities, package/Cargo/settings/rosters/actions, focused/full/native results, security,
+relevance, SOL review, SQL trace or no-DB results, process/Browser/worktree cleanup, proof-ledger
+rows, task/PR states and limitations. TSK-808 closes only after its whole deliverable is actually
+complete and verified; planning completion alone leaves it open.
 
 ---
 
@@ -1867,72 +2412,280 @@ Feature agents return exact receipts for these files; the controller applies the
 
 | Lane | Owned paths | Heavy runner |
 | --- | --- | --- |
+| A0-ACP | evidence directory only; disposable external probe | one named provider-probe slot |
+| A0-Browser | evidence file only; disposable native probe | one named native-Browser slot |
+| Runtime/ACP | `agent_conversation/{manager,capabilities,journal}.rs`, provider transport/process | focused Rust slot |
 | Codex provider | `agent_conversation/providers/codex*`, fixtures/tests | focused Rust slot |
 | Claude provider | `agent_conversation/providers/claude*`, fixtures/tests | focused Rust slot |
-| Terminal projection/handoff | transcript parsers, `terminal_projection.rs`, handoff tests | focused Rust slot |
+| Terminal projection | transcript parsers, `terminal_projection.rs`, fixtures/tests | focused Rust slot |
+| Native handoff | `handoff.rs` and handoff tests after provider proof | focused Rust/native slot |
 | Conversation UI | conversation components/store helpers/tests excluding shared type seam | Node-light |
 | Workflow engine | new workflow/orchestration engine files and reducer tests | focused Rust slot |
 | Agent UI | new agent/workflow Svelte modules and tests | Node-light |
 | Paneview/session shell | side-pane registry, session row/library components/tests | Node-light |
 | Browser | browser Rust/frontend modules and tests | focused Rust/native slot |
 | Resources/space | resources/disk modules and UI | focused Rust slot |
-| Usage | usage index/analytics modules and UI | Rust-light/Node |
+| Usage current/history | provider quota adapter, SQLite/index/query modules and UI | focused Rust/SQL slot |
+| Roslyn lifecycle | `lsp.rs`, C# client/panel lifecycle and evidence | isolated SOL Rust/native slot |
 | AI recipes | recipe/context/proposal modules and tests | Node-light |
+| A12 integration | all returned shared-seam receipts | controller; serialized full/native |
 
 No more than two heavy runners. Native browser and provider integration proofs run one at a time.
 
 ---
 
-## 18. Parallel execution schedule
+## 18. Combined dependency graph and execution schedule
 
-### Milestone 0 — sequential decisions
+This is the single execution schedule for the amendment and the still-authoritative foundation in
+the TSK-808 master plan. It does not permit ACP, conversation, Paneview, Browser, resource, usage,
+or workflow work to bypass R0's application of the resolved Works now/Bounded adapter policy,
+contrast foundation, Assembly identity migration, restored Settings authority, or frozen shell
+contracts.
 
-1. A0 re-anchor and ACP/native-browser feasibility spikes.
-2. User reviews capability/packaging matrix if a top-priority behavior differs from expectation.
-3. A1 freezes shared contracts.
-4. Controller commits the contracts and opens file leases.
+The controller owns shared seams, integration commits, heavy-runner assignment, proof-ledger
+updates, and review/fix routing. At most six file-independent agents may work concurrently, at most
+two heavy build/test runners may overlap, and the default is one. Provider integration proof,
+native Browser proof, and final rebuilt-Tauri certification run one at a time.
 
-### Milestone 1 — first parallel wave
+```text
+explicit implementation authorization; Luna Fast preferred and tier absence nonblocking
+  -> master WP0 re-anchor/reconcile
+  -> master WP12A API/adapter comparison
+  -> R0 SOL-medium read-only review
+  -> apply RESOLVED U1: release Works now/Bounded adapter; skip all other new rows; no pause
+  -> master WP1 contrast/tokens/shared primitives
+  -> master WP1B Assembly identity/compatibility migration
+  -> master WP2 SOL shell contracts -> Luna file Dockview + Settings restoration
+  -> R1 SOL-medium read-only review
+  -> A0-ACP and A0-Browser feasibility packets
+  -> U2 only if a locked requirement or native/security architecture changes
+  -> A1 shared contract freeze
+  -> R2 SOL-medium read-only review
+  -> A2 AgentRuntimeManager/ACP transport
+       -> A3-Codex ─┐
+       -> A3-Claude ├─> A2+A3+A4 integration -> structured-session native proof -> A5
+       -> A3-terminal┘
+  A1 -> A4 fixture-driven conversation UI
+  A1 -> A8 Paneview/session shell
+  A0-Browser+A1 -> A9 Browser product lane
+  A1 -> A10 resources/space/current-usage/history; isolated A10-Roslyn gate
+  -> R3 SOL-medium read-only review
+  A2+A3 stable runtime APIs -> A6 WorkflowEngine
+  A6 stable events/control API -> A7 Agent Control Center
+  A4 exact targeting + deterministic product services -> A11 assistance recipes
+  -> R4 SOL-medium read-only review
+  A5+A6+A7+A8+A9+A10+A11 -> controller cross-surface integration
+  -> R5 SOL-medium read-only review
+  -> A12 controller certification
+  -> R6 SOL-medium final read-only review
+  -> bounded fixes, rerun failed gates, PR/task disposition, immediate cleanup
+```
 
-Run up to six lanes, with at most two heavy runners:
+Every `R0`-`R6` review is a separate native-agent dispatch with
+`agent_type: "default"`, `fork_turns: "none"`, `model: "gpt-5.6-sol"`, and
+`reasoning_effort: "medium"`. The prompt grants no edit, build, test, browser, worktree, Notion,
+commit, or fix authority. A milestone does not release dependents while its review has a blocking
+finding. Straightforward fixes return to Luna Max; unresolved design/process-ownership choices go
+to a bounded SOL-medium decision or implementation packet. The same review is rerun after fixes.
 
-| Slot | Packet | Dependencies |
-| --- | --- | --- |
-| 1 | A3 Codex provider | A2 transport contract |
-| 2 | A3 Claude provider | A2 transport contract |
-| 3 | A4 conversation UI over fixtures | A1 event/config contract |
-| 4 | A8 Paneview/session shell | A1 owned/session/roster contract |
-| 5 | A9 browser HTML/state plus native spike | browser roster and attachment contract |
-| 6 | A10 resources/space data model/UI | resource identity contract |
+### Milestone 0 — re-anchor and apply resolved extension/API policy
 
-The two provider focused Rust lanes share the heavy slots first. Browser native proof waits until one provider releases a slot. Node-only lanes continue.
+1. Execute master Work Package 0 from refreshed `origin/main`; reconcile live task/code/native
+   evidence and re-anchor every named shared symbol.
+2. Execute only master packet 12A's API-first real-Tauri comparison. Do not execute generic VSIX
+   stages 18.3-18.5.
+3. Run R0 over the singleton host/security boundary, comparison classifications and metrics,
+   editor/Peek safety, repository evidence, and cleanup receipts.
+4. Apply the recorded U1 decision: release only Works now and Bounded adapter, then continue to
+   Milestone 1 without another user pause.
+5. Preserve existing declarative assets, but skip new Declarative only, Elevated host required,
+   and Rejected rows without blocking other work. A future exact third-party package/hash or
+   elevated-host proposal is separate deferred scope, not a gate on this wave.
 
-### Milestone 2 — runtime integration and product capabilities
+### Milestone 1 — contrast, identity, Settings, and shell foundation
 
-1. Integrate A2/A3/A4 and run one Codex plus one Claude structured session proof.
-2. Run A5 handoff after structured sessions pass.
-3. Dispatch A6 WorkflowEngine while A9 browser product work and A10 usage work continue.
-4. Dispatch A7 Agent Control Center after workflow events and runtime APIs stabilize.
-5. Dispatch A11 assistance recipes after conversation targeting and deterministic context services pass.
-6. Roslyn high-judgment consolidation remains isolated under the master plan’s review gate.
+Sequentially after R0 applies the resolved policy:
 
-### Milestone 3 — cross-surface integration
+1. Master Work Package 1: contrast, legibility, focus, and shared semantic primitives.
+2. Master Work Package 1B: public Assembly identity/artifacts while preserving every compatibility
+   identity and existing user state.
+3. Master Work Package 2: SOL-medium freezes the high-judgment shell roster, shared-action,
+   quick-open, edge-minimization, and nested-Dockview contracts; Luna Max then executes the fully
+   specified file-Dockview and existing-Settings restoration packets against those contracts.
+4. Run R1 over contrast, focus, identity compatibility, Settings authority, shell/action ownership,
+   Dockview nesting, accessibility, migrations, and controller-owned seams.
 
-- browser annotations and marked screenshots attach to exact ACP conversations;
-- workflow agents appear in control center and optional pinned left rail;
-- resource process tree links to agent/session/workflow/tool terminal;
-- usage links to provider/model/project/workflow;
-- Session Library merges ACP and scanner history;
-- AI recipe slots are added to PR/Git/browser/forms/save/Problems/run-config surfaces;
-- all side regions use Paneview and all center destinations use the one Dockview roster.
+No amendment UI packet or later master-plan UI packet starts before R1 passes.
 
-### Milestone 4 — one certification cycle
+### Milestone 2 — ACP/Browser feasibility and shared contracts
 
-Controller applies shared receipts, runs focused tests, serialized full gates, security and relevance review, native evidence, proof ledger, PR, and cleanup.
+1. Run A0-ACP and A0-Browser as separate bounded evidence packets. They may share no process,
+   Browser, temporary directory, or cleanup ownership.
+2. Trigger U2 only if a probe contradicts a locked top-priority behavior or requires a new native,
+   packaging, trust, or security architecture. Successful probes create no ceremonial pause.
+3. Execute A1. The controller freezes `ownedId`, writer lease, provider/config/capability,
+   canonical event/item/request, tool-terminal, snapshot migration, resource identity, and
+   center/side roster contracts, commits them, and opens exact file leases.
+4. Run R2 over A0 evidence and A1 contracts, including capability truth, no-hidden-TUI proof,
+   process/Browser cleanup, migration safety, Browser feasibility, and shared seams.
+
+### Milestone 3 — A2 first, then the first parallel implementation wave
+
+1. Execute A2 before any A3 lane. A2 implements the single Rust `AgentRuntimeManager`, ACP
+   supervision/transport, canonical events, bounded recovery, stale-generation handling, and
+   process cleanup. It owns one heavy slot when its focused Rust test runs.
+2. Only after the A2 transport contract passes, fan out A3-Codex, A3-Claude, and A3-terminal.
+   A3-terminal is mandatory; it owns incremental transcript projection, imported-session
+   reconciliation, and native/tool-terminal identity fixtures.
+3. A4 may develop over frozen A1 fixtures while A2/A3 run, but provider-native acceptance waits
+   for all three A3 lanes and controller integration.
+4. A8 may run after A1's roster/snapshot contract; it must extend the existing Paneview authority.
+5. A9 HTML/state work may run after A0-Browser+A1. Native child-view work and proof use one heavy
+   slot and preserve the master Browser safety contract.
+6. A10 resources, space, current usage, and history may fan out after A1 resource identity. The
+   A10-Roslyn sublane remains isolated and high-judgment.
+7. Unaffected master lanes may run only when their own dependencies pass and their exact files do
+   not overlap A2-A10 leases. Conflicting older conversation/Browser/resource packets are replaced,
+   never run as parallel authorities.
+8. Run R3 over A2, all three A3 lanes, A4 fixture/native parity, A8 migration, A9 isolation and
+   cleanup, A10 ownership/query behavior, focused evidence, and shared-seam receipts.
+
+### Milestone 4 — runtime integration, handoff, workflows, and assistance
+
+1. The controller integrates A2, all A3 lanes, and A4 once, then proves one Codex and one Claude
+   structured session with image input, advertised config, typed events, plans/tasks, subagents,
+   cancel/close/load, and no user-visible PTY.
+2. Execute A5 only after that proof. Prove structured/native round trip, same-session/fork behavior,
+   rollback, one writer, exact history reconciliation, and process-tree cleanup.
+3. Execute A6 after A2/A3 lifecycle APIs stabilize. It extends the existing orchestration ledger
+   with deterministic scheduling, budgets, retries, gates, worktree/file leases, recovery, and ACP
+   children; it may not create a second ledger.
+4. Execute A7 only after A6 event/control APIs pass.
+5. Finish A9/A10 integrations without exceeding the heavy-runner limit.
+6. Execute A11 only after A4 exact targeting and its consumed Git, PR, Browser, form/save,
+   Problems, run-configuration, confirmation, revalidation, and audit services are deterministic.
+7. Run R4 over one-writer handoff, workflow determinism, delegation boundaries, worktree/file-lease
+   enforcement, control-center truth, Browser/resource/usage joins, assistance-recipe safety,
+   native evidence, and cleanup.
+
+### Milestone 5 — cross-surface integration
+
+After R4, the controller applies reviewed receipts once and proves:
+
+- Browser grab, annotation, and marked screenshots target the exact ACP conversation;
+- provider-native children and workflow agents retain distinct provenance;
+- workflow agents appear in Agent Control Center, optional Working pins, and Session Library;
+- resource/usage facts join exact agent/session/workflow/tool-terminal identities;
+- Session Library unifies structured/imported history without becoming the active left rail;
+- assistance slots reuse deterministic product services and existing mutation boundaries;
+- every primary side region uses the single Paneview authority and every center destination uses
+  the single Dockview roster;
+- only Works now and Bounded adapter extension/API paths execute for new candidates; existing
+  declarative assets remain preserved.
+
+Run R5 over the complete cross-surface diff and proof ledger. Fix and rerun R5 before A12.
+
+### Milestone 6 — A12 certification and closure
+
+A12 is controller-owned:
+
+1. apply remaining Rust registrations, frontend adapters, roster entries, Settings sections,
+   capabilities, and dependency-lock receipts once;
+2. run focused tests, serialized full gates, rebuilt-Tauri native acceptance, security/relevance
+   review, generated-query proof where applicable, and complete process/Browser cleanup;
+3. run R6 over the integrated diff, proof ledger, native evidence, security/data boundaries,
+   cleanup, and task disposition;
+4. route bounded fixes by the model manifest and repeat failed gates/R6 until no blocker remains;
+5. open/merge a PR only under explicit authorization, verify each independent task's closure, and
+   remove/prune the integration worktree immediately when merged, pushed to the PR, or abandoned.
 
 ---
 
 ## 19. Focused tests and acceptance
+
+### 19.0 Exact controller command matrix
+
+Future script names below are added to `tauri-svelte-preview/package.json` exactly once by A12
+after their files exist. Until then, execute a new test with
+`node --experimental-strip-types scripts/<file>.test.mjs`; do not claim an absent package script
+passed. Run focused commands before full gates and do not overlap more than two heavy runners.
+
+```bash
+cd tauri-svelte-preview
+
+# A1/A2/A3/A4/A5 conversation and runtime
+pnpm test:agent-conversation-protocol
+pnpm test:agent-conversation-store
+pnpm test:conversation-session-isolation
+node --experimental-strip-types scripts/conversationWorkspaceRestore.test.mjs
+node --experimental-strip-types scripts/agentRuntimeContracts.test.mjs
+pnpm test:paste-cleanup
+node --experimental-strip-types scripts/agentConversationTerminalProjection.test.mjs
+node --experimental-strip-types scripts/conversationControls.test.mjs
+node --experimental-strip-types scripts/conversationCommandCatalog.test.mjs
+node --experimental-strip-types scripts/conversationMessageSafety.test.mjs
+node --experimental-strip-types scripts/conversationTimeline.test.mjs
+node --experimental-strip-types scripts/agentConversationHandoff.test.mjs
+pnpm test:live-terminals
+pnpm test:next-terminal-service
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml agent_conversation -- --nocapture
+
+# A6/A7 workflow and control center
+pnpm test:orchestration-event
+node --experimental-strip-types scripts/agentControlCenter.test.mjs
+node --experimental-strip-types scripts/workflowMcp.test.mjs
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml workflow -- --nocapture
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml orchestration -- --nocapture
+
+# A8 shell/session layout
+node --experimental-strip-types scripts/sidePaneRegistry.test.mjs
+pnpm test:pane-layout
+pnpm test:layout-storage
+pnpm test:sidebar-views
+pnpm test:owned-sessions
+pnpm test:session-strip
+pnpm test:session-groups
+node --experimental-strip-types scripts/sessionLibrary.test.mjs
+
+# A9 Browser/action surface
+pnpm test:normalize-browser-url
+node --experimental-strip-types scripts/browserModel.test.mjs
+node --experimental-strip-types scripts/browserBounds.test.mjs
+node --experimental-strip-types scripts/browserAnnotations.test.mjs
+node --experimental-strip-types scripts/browserFeedback.test.mjs
+node --experimental-strip-types scripts/browserBackend.test.mjs
+node --experimental-strip-types scripts/actionSurfaceModel.test.mjs
+pnpm test:session-workspaces
+pnpm test:panel-activation
+pnpm test:tauri-config
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml browser -- --nocapture
+
+# A10 resource, disk, usage and Roslyn
+RUST_TEST_THREADS=1 cargo test --manifest-path ../core/Cargo.toml resources -- --nocapture
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml resources -- --nocapture
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml usage -- --nocapture
+RUST_TEST_THREADS=1 cargo test --manifest-path src-tauri/Cargo.toml lsp -- --nocapture
+pnpm test:csharp-language-client
+pnpm test:source-code-lens-keys
+pnpm test:source-ui
+pnpm test:tauri-source
+
+# A11 assistance
+node --experimental-strip-types scripts/assistanceRecipes.test.mjs
+node --experimental-strip-types scripts/assistanceContext.test.mjs
+node --experimental-strip-types scripts/assistanceService.test.mjs
+node --experimental-strip-types scripts/assistanceAudit.test.mjs
+node --experimental-strip-types scripts/assistanceUiContract.test.mjs
+
+# Shared static gate after each integrated light batch
+pnpm check:svelte
+pnpm check
+```
+
+A10 usage tests run with a disposable `MAC_COMMAND_BAR_USAGE_DB`, enable `MCB_SQL_TRACE=1`, inspect
+each generated statement and `EXPLAIN QUERY PLAN`, assert indexes used, assert one query per endpoint
+and 1-3 total queries for a typical page, then remove only that test database. A10 Roslyn proof uses
+`MCB_TIMING=1`. Browser/provider/native sessions use unique names and report their exact cleanup.
 
 ### 19.1 Runtime/ACP tests
 
@@ -2040,46 +2793,93 @@ One rebuilt-Tauri proof must show:
 
 ---
 
-## 20. Stop conditions
+## 20. Stop conditions and explicit user decision gates
 
-Stop and return a decision packet rather than improvising when:
+A stop condition is not automatically a user decision. The controller first returns a bounded
+evidence or repair packet for routing, ownership, dirty-seam, capability, test, cleanup, and
+implementation failures. U0 and U1 are resolved and nonblocking. U2 is conditional evidence,
+not an up-front selection or a reason to pause independent lanes.
 
-- Codex or Claude ACP cannot demonstrate first-class image input;
-- required model/effort/mode controls cannot be discovered and updated authoritatively;
-- the adapter requires an unpinned network-installed runtime at every launch;
-- a structured session creates or requires a hidden native TUI as its ordinary transport;
-- one-writer handoff cannot be proven;
-- a provider-native session cannot be safely loaded/resumed from the intended source;
-- subagent parent identity cannot be proven;
-- workflow scheduling would depend on parsing agent prose;
-- workflow child creation would bypass worktree/concurrency/permission policy;
-- an LLM delegation tool would gain arbitrary process, path, Git, or worktree access;
-- Paneview cannot preserve existing panel state/layout without replacing the shell architecture;
-- native WKWebView snapshot/annotation controls cannot render above the child view safely;
-- resource ownership cannot be revalidated;
-- provider quota data is unavailable and the UI would need to guess;
-- AI save/form assistance would silently mutate or block without explicit policy;
-- more than two heavy runners overlap;
-- a controller-owned seam is dirty or concurrently leased;
-- native proof cannot be run and cleaned up.
+### 20.1 Explicit user gates
+
+- **U0 — resolved, nonblocking:** Luna Fast is preferred. Request and report
+  `service_tier: "fast"` when available; if the native API has no tier field, immediately continue
+  with explicit `gpt-5.6-luna`, `max`, `fork_turns: "none"` and make no Fast claim. Missing or
+  unreported Fast tier never pauses an implementation lane. Model and reasoning-effort overrides
+  remain the previously approved routing contract.
+- **U1 — resolved, nonblocking extension/API selection:** release new candidates classified as
+  `Works now` or `Bounded adapter`. Preserve existing declarative assets, but skip new
+  `Declarative only`, `Elevated host required`, and `Rejected` rows without blocking the wave.
+  The comparison and R0 are evidence/review gates, not a new user-selection pause. A future exact
+  third-party package/hash or elevated-host proposal remains separate deferred scope.
+- **U2 — A0 architecture exception:** ask only if ACP or Browser feasibility contradicts a locked
+  top-priority behavior or requires a new native, packaging, trust, or security architecture. A
+  successful A0 creates no ceremonial pause.
+
+If live TSK-808 is already closed, continuation requires explicit user revival; do not reopen it
+or keep implementing from historical plan text.
+
+### 20.2 Controller stop and repair conditions
+
+Stop the affected lane, preserve evidence, and do not release dependents when:
+
+- the required Luna Max or SOL-medium model/effort route is unavailable, rejected, or downgraded;
+- refreshed `origin/main`, current task state, or a protected merged checkpoint cannot be safely
+  attributed;
+- a packet needs an unlisted or controller-owned file, overlaps an active lease, or the controller
+  cannot attribute its diff;
+- more than two heavy build/test runners would overlap;
+- A2 has not passed its contract tests before any A3 provider or A3-terminal lane starts;
+- provider capability/config values would be guessed, hard-coded, or shown without effect;
+- image input, load/resume, subagent parent identity, cancel/close, cleanup, or no-hidden-TUI
+  behavior cannot be demonstrated;
+- structured/native handoff cannot prove one writer, rollback, and exact history reconciliation;
+- workflow scheduling/recovery would parse agent prose or bypass worktree, concurrency, budget,
+  permission, output-schema, or file-lease policy;
+- delegation would gain arbitrary process, path, Git, worktree, credential, executable, or IPC
+  authority;
+- Paneview/Dockview migration would create a second layout/store authority or lose persisted state;
+- Browser clipping, profile/capability isolation, snapshot/overlay safety, exact ownership, or
+  cleanup fails;
+- resource/process ownership cannot be revalidated or provider quota would be guessed;
+- assistance would silently mutate, block, or bypass preview/confirmation/revalidation/audit;
+- CodeLens/Peek counts, editor identity, or tab-strip visibility changes without an attributable
+  trace;
+- SQL aggregation, grouping, filtering, joins, sorting, or paging would occur in memory, generated
+  SQL cannot be inspected, or an N+1/load-then-loop path remains;
+- focused, full, or native proof cannot be run, attributed, and cleaned up.
+
+If one of these conditions requires U2, the review card contains exact alternatives, evidence,
+security/resource consequences, and a recommended choice for the affected lane. Independent lanes
+continue. Otherwise route the bounded repair under section 16's model manifest without
+interrupting the user.
 
 ---
 
 ## 21. First implementation action
 
-Do not begin the broad feature wave from the old Work Package 10A PTY-only packet.
+Do not begin with amendment A0 and do not revive the retired PTY-only Work Package 10A packet.
 
-After explicit implementation authorization:
+After implementation is explicitly authorized, with Fast preferred already recorded and tier
+absence nonblocking:
 
-1. refresh `origin/main` and re-anchor current symbols;
-2. create the controller-owned TSK-808 integration worktree under the existing mandated worktree root;
-3. execute **Work Package A0 only**;
-4. produce the Codex/Claude ACP capability and packaging report, including image input, config options, tools, plans/tasks, subagents, resource cost, and proof that a structured session creates no user PTY;
-5. execute the native Browser snapshot/overlay spike required by section 12.4;
-6. stop for a decision only if one of the locked top-priority requirements fails or requires a new native/security architecture;
-7. otherwise freeze A1 contracts and then begin the parallel schedule in section 18.
+1. refresh `origin/main`, verify TSK-808 is still open, record the exact base SHA, and create the
+   controller-owned worktree only under
+   `/Users/blackcolours/dev/work/worktrees/mac-command-bar/<task-slug>`;
+2. execute master Work Package 0 only and preserve merged CodeLens/Roslyn, extension, DiffEditor,
+   SCM, conversation, and native-proof boundaries;
+3. execute master packet 12A's API-first real-Tauri comparison only;
+4. run R0 with explicit `gpt-5.6-sol`, `medium`, `fork_turns: "none"`, and no edit authority;
+5. apply the resolved U1 policy: release Works now/Bounded adapter, skip every other new row, and
+   continue without another user pause;
+6. execute master Work Package 1, then Work Package 1B, then Work Package 2;
+7. run R1 with the same explicit SOL-medium read-only contract;
+8. only after R1 passes, execute A0-ACP and A0-Browser, then continue through section 18.
 
-The first broad user-visible implementation after those contracts is screenshot paste plus structured conversation controls, not slash-command expansion or cosmetic transcript work.
+The first broad UI work remains contrast/shared primitives, Assembly identity compatibility, and
+the restored Settings/shell authority. Screenshot paste and structured conversation controls are
+the first amendment-owned user-visible work after A0/A1/A2 contracts; slash-command expansion and
+cosmetic transcript work are not substitutes.
 
 ---
 

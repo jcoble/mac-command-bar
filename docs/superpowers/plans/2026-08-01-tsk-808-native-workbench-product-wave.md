@@ -14,8 +14,9 @@ CodeLens behavior delivered by TSK-799.
 **Architecture:** Keep Svelte components as views, plain TypeScript services as imperative
 orchestrators, Svelte rune stores as state-only containers, and Rust/Tauri modules as the
 validated native boundary. Expand existing Dockview, session-workspace, local-Git, PTY, LSP,
-and append-only orchestration abstractions. Do not add a second shell, editor, session router,
-Git service, worktree manager, settings store/host, or agent runtime.
+append-only orchestration abstractions, and the one app-owned `AgentRuntimeManager` defined by the
+2026-08-04 amendment. Do not add a second shell, editor, session router, Git service, worktree
+manager, settings store/host, agent runtime, workflow ledger, or Paneview authority.
 
 **Tech stack:** Svelte 5.56, TypeScript 6, Vite 8, Tauri 2.11, Rust, Dockview 6.6, bits-ui
 2.18, Monaco plus the installed VS Code-compatible services, monaco-languageclient 10.7,
@@ -33,10 +34,11 @@ opening uses the official [Tauri Opener guide](https://v2.tauri.app/plugin/opene
 gallery, the 19-task TSK-758-through-TSK-784 rapid-fire seed, the newer TSK-809/810 conversation
 tasks, every older task that remains open, the merged TSK-799 contract, current `origin/main`, and
 this file. The all-open-task audit on 2026-08-03 found 37 open MacCommandBar records: 25 marked
-Rapid-fire and 12 marked Idea. The current checkout is clean `main` at
-`167a30ae389a2280501011186f245a08d28c6725`, equal to `origin/main`; PR #14 merged the prior
-native-workbench checkpoint. No product implementation or task-owned worktree was started by
-this planning pass. The scan-friendly 37-task disposition and routing dashboard is
+Rapid-fire and 12 marked Idea. The reviewed product-source baseline is `main` at
+`beebda6c4dad60cd2782374a36f24737cefda605`, equal to `origin/main`; PR #14 merged the prior
+native-workbench checkpoint. The current working tree contains only the three uncommitted planning
+document edits named in `docs/superpowers/plans/README.md`; no product implementation or task-owned
+worktree was started by this planning pass. The scan-friendly 37-task disposition and routing dashboard is
 `docs/superpowers/plans/2026-08-03-tsk-808-open-task-audit.html`; the Markdown plan remains the
 execution authority. Re-run the anchor command in Work Package 0 immediately before implementation;
 symbols and behavior are authoritative when a line number moves.
@@ -69,17 +71,19 @@ Every dispatch expands shorthand into absolute or repository-relative exact file
 ## 1. Decision summary
 
 1. The first bounded extension/API checkpoint produced useful prior evidence for Houston,
-   DiffEditor, declarative language contributions, and a read-only SCM projection. It did not
-   settle the user's current extension/API choice. After authorization, the next action is the
-   real-Tauri API/adapter comparison in packet 18.2B; it stops with a rendered report and waits
-   for the user's selection before any broad implementation. After that selection, contrast is
-   the first broad product UI milestone, not polish. No other UI lane may invent local text,
+   DiffEditor, declarative language contributions, and a read-only SCM projection. The user has
+   selected `Works now` and `Bounded adapter` for this wave. After authorization, packet 18.2B and
+   R0 classify the real-Tauri evidence, release only those two rows, and continue without another
+   user-selection pause. Existing declarative assets remain preserved, but no new `Declarative
+   only`, `Elevated host required`, or `Rejected` candidate enters this wave. Contrast is the first
+   broad product UI milestone, not polish. No other UI lane may invent local text,
    border, status, focus, or action-button colors before the contrast tokens and shared primitives
    land.
-2. PR #14 merged the protected TSK-799/native-workbench checkpoint. The present checkout is clean
-   `main` at `167a30a`, equal to `origin/main`, so future TSK-808 implementation starts from a newly
-   refreshed descendant of that commit. This audit does not create the implementation branch or
-   worktree; the user has explicitly paused implementation.
+2. PR #14 merged the protected TSK-799/native-workbench checkpoint. The product-source base is
+   `main` at `beebda6`, equal to `origin/main`; the working tree is dirty only with the three current
+   planning documents. Future TSK-808 implementation starts in a newly refreshed descendant of
+   that commit. This audit does not create the implementation branch or worktree; the user has
+   explicitly paused implementation.
 3. Already-shipped rapid-fire items are verified and closed, not rebuilt. The Notion ledger is
    stale for several tasks; Work Package 0 determines the exact disposition using tests and a
    real Tauri pass.
@@ -182,8 +186,8 @@ The same prompt must say:
 
 If the routed model or effort selection is unavailable, rejected, or silently downgraded, that
 implementation or milestone-review lane does not start. Planning and read-only discovery may
-continue. The current stable orchestrator can explicitly select Luna Max but does not expose a
-per-agent Fast service-tier field; this plan does not pretend Fast was selected.
+continue. Luna Fast is preferred but never blocking: request it when the spawn API exposes the
+tier; otherwise continue with explicit Luna Max/max/no-fork and do not claim Fast.
 
 Read-only Luna audit dispatches use:
 
@@ -240,14 +244,14 @@ Current authoritative checkout:
 
 - Path: `/Users/blackcolours/dev/work/mac-command-bar`
 - Branch: `main`
-- HEAD: `167a30ae389a2280501011186f245a08d28c6725`
+- HEAD: `beebda6c4dad60cd2782374a36f24737cefda605`
 - Remote: `origin/main` at the same SHA.
 - State at audit start: clean; no TSK-808 implementation worktree exists.
 - PR #14 contains the former `5884139` native-workbench checkpoint and the follow-up contract fix.
 
 Do not reset, rewrite, squash, or delete the merged checkpoint history merely to obtain a smaller
 diff. When the user authorizes implementation, refresh `origin/main`, verify it still contains
-`167a30a`, and create the integration worktree from the refreshed SHA:
+PR #14's `167a30a`, and create the integration worktree from the refreshed SHA:
 
     git fetch origin
     git worktree add \
@@ -413,9 +417,10 @@ extension/API decision checkpoint:
 7. One transcript-backed conversation composer and read-only child-agent hierarchy.
 8. Guarded integrated-agent actions and audit receipts.
 
-The extension/API checkpoint runs first after Work Package 0, produces the HTML comparison, and
-stops for user selection. It is not counted as a product lane because its result determines which
-later extension work, if any, is authorized.
+The extension/API checkpoint runs first after Work Package 0 and produces the HTML comparison.
+R0 applies the recorded `Works now` plus `Bounded adapter` policy and immediately releases the
+next milestone. It is not counted as a product lane because it classifies which later extension
+work is authorized and which rows are skipped.
 
 ### 3.3A Original TSK-808 Lane A–G crosswalk
 
@@ -649,11 +654,11 @@ is read-only and returns findings to the controller. No agent silently changes r
 | Dispatch packet | Task scope | Default route | Exact handoff and stop boundary |
 | --- | --- | --- | --- |
 | 0A inventory/re-anchor | All 37 open tasks; TSK-759/760/764/771/773/784 and older verification candidates | Luna read-only, then controller for Notion/shared-plan edits | Run section 6 evidence commands; return one disposition per task. Stop on closed TSK-808, changed base, dirty overlap, or unreadable live task status. |
-| 12A API/adapter comparison | TSK-765 and the user's extension/API prerequisite | Luna implementation/probe | Implement only 18.2B's internal fixture and thin adapters, render the fixed metric matrix, clean up native/browser processes, and stop. No third-party VSIX, marketplace, elevated host, or broad product lane before user selection. |
-| M0 extension decision review | Evidence from 0A and 12A | SOL review | Check singleton host, security boundary, metrics, editor/Peek safety, and classification accuracy. Return findings only; controller presents the report and waits for the user. |
-| 1A contrast tokens/primitives | TSK-765, contrast/legibility, shared semantic controls | Luna | Implement section 7 in its exact files and tests. Stop if a theme contribution must be replaced, a new token category is needed, or an information-bearing state has no specified semantic role. |
+| 12A API/adapter comparison | TSK-765 and the user's extension/API prerequisite | Luna implementation/probe | Implement only 18.2B's internal fixture and thin adapters, render the fixed metric matrix, and clean up native/browser processes. Return classifications to M0; do not stage a third-party VSIX, marketplace, elevated host, or pause for another selection. |
+| M0 extension policy review | Evidence from 0A and 12A | SOL review | Check singleton host, security boundary, metrics, editor/Peek safety, and classification accuracy. Release Works now/Bounded adapter, skip every other new row, and continue to 1A without a user pause. |
+| 1A contrast tokens/primitives | TSK-765, contrast/legibility, shared semantic controls | SOL implementation | Implement section 7 in its exact files and tests, resolving the named semantic-role and contrast choices. Stop if a theme contribution must be replaced or the packet needs a new product-level token category. |
 | 1B Assembly product identity | TSK-808 public rebrand and compatibility boundary | Luna, sequential | Implement section 7A after contrast. Rename only the enumerated public surfaces and artifacts; preserve every compatibility identity in 7A.4. Stop before changing a bundle ID, storage key, Application Support path, Keychain service, repository/project identity, extension ID, or internal module/package/crate name. |
-| 2A shell/shared controls | TSK-758/779/780/378/324 | Luna | Implement 8.1–8.4 after controller freezes roster/action interfaces. Return shared-seam receipts; do not edit controller-owned shell files. |
+| 2A shell/shared controls | TSK-758/779/780/378/324 | SOL implementation | Freeze and implement the high-judgment roster/action/minimize/quick-open contracts in 8.1–8.4. Return shared-seam receipts; do not race controller-owned shell files. |
 | 2B file Dockview | TSK-360 and Peek tab precondition | Luna | Implement 8.2A's `editorFileDock.ts` contract, one model per URI, close/dirty/restore behavior, and nested-Dockview tests. Stop if Dockview cannot preserve the outer center destination without a new architecture. |
 | 2C Settings restoration | Missing Settings regression | Luna | Follow 8.5's existing route/store/schema only; restore reachability, persistence, keyboard/focus, and native proof. Do not create another Settings component or store. |
 | M1 shell-foundation review | 1A, 1B, and 2A–2C integrated diff | SOL review | Review contrast, Assembly identity/compatibility, focus, overlay ownership, Dockview nesting, Settings authority, accessibility, and shared-seam edits before any later UI lane. |
@@ -671,7 +676,7 @@ is read-only and returns findings to the controller. No agent silently changes r
 | 10B conversation | TSK-809/810 | Luna | Implement 16A packets A–D independently after shared types freeze; reuse one PTY/provider/store and stop on an unsupported live-control protocol or unprovable child-parent association. |
 | 11A guarded agent | TSK-766 product outcome and TSK-808 agent actions | Luna | Implement section 17 only after deterministic services and 10B are certified. Never let the model supply facts or bypass native revalidation/confirmation. |
 | M3 capability review | 7A–11A integrated diff | SOL review | Review remote/local mutation safety, browser isolation/cleanup, resource ownership, conversation single-runtime proof, Markdown security, and append-only action receipts. |
-| 12B selected extension path | Only the exact API/extension row the user chooses after 12A | Luna when classification is Works now, Bounded adapter, or Declarative only | Controller writes the selected ID/capability, files, adapters, permissions, tests, and resource budget into 18.2A first. Elevated-host requirements receive a SOL decision and separate approval; rejected rows do not execute. |
+| 12B approved extension path | Only rows classified as Works now or Bounded adapter | Luna | Controller writes each exact ID/capability, files, adapters, permissions, tests, and resource budget into 18.2A first. Preserve existing declarative assets, but skip new Declarative only/Elevated/Rejected rows without blocking other work. A future third-party VSIX still needs exact package/hash approval. |
 | 13A database console | TSK-769, deferred unless explicitly promoted | SOL query/view design, then Luna implementation | One translated SQL statement/view for filtering, sorting, grouping, joining, aggregation, and paging; inspect generated SQL and covering index. No in-memory shaping or N+1. |
 | 14A controller integration | TSK-808 final wiring and closure ledger | Controller only | Apply returned receipts once, serialize heavy gates/native proof, and keep every independently tracked task open until its own evidence meets section 20.10. |
 | M4 final review | Entire integrated wave | SOL review | Perform milestone code, relevance, security, native-evidence, data-query, cleanup, and task-disposition review. Findings return to the controller; SOL does not silently edit product code. |
@@ -684,7 +689,8 @@ dispatch time, the controller re-anchors or amends it before assigning Luna.
 ### 5.4 Planned commit order
 
 PR #14 already merged the former `5884139` checkpoint and its contract follow-up into current
-`main` at `167a30a`; `6a3af55` remains historical ancestry. Do not rewrite that merged history.
+`main`; `167a30a` is the historical merge anchor and `6a3af55` remains earlier ancestry. The
+reviewed current base is `beebda6`. Do not rewrite that merged history.
 
 1. plan: record TSK-808 native-workbench execution contract
 2. spike: run the real-Tauri extension/API comparison, review the report, and record the user's
@@ -719,7 +725,7 @@ remain controller-owned.
 ### Current anchors to inventory
 
 - Integration base: clean `main` and `origin/main` at
-  `167a30ae389a2280501011186f245a08d28c6725`. PR #13 merged the original TSK-799 work; PR #14
+  `beebda6c4dad60cd2782374a36f24737cefda605`. PR #13 merged the original TSK-799 work; PR #14
   merged the later native-workbench checkpoint and contract fix. The old `5884139` anchor is
   historical evidence only, not the implementation base.
 - Existing shell: ShellFrame.svelte:21-155, centerDock.ts:26-323, frame.ts.
@@ -738,7 +744,7 @@ remain controller-owned.
 ### Steps
 
 1. **Current preservation receipt, 2026-08-03:** PR #14 merged the former protected checkpoint;
-   `main` and `origin/main` now point to `167a30a`. Reconfirm the lease immediately before any
+   `main` and `origin/main` pointed to `beebda6` at the final planning audit. Reconfirm the lease immediately before any
    implementation:
 
    git branch --show-current
@@ -830,9 +836,9 @@ remain controller-owned.
 
 ### Done
 
-- The checkpoint is merged and the present checkout is clean. Work Package 0 is fully done only
-  when implementation is authorized and a clean TSK-808 worktree exists at the mandated path from
-  refreshed `origin/main`.
+- The checkpoint is merged and product source had no uncommitted changes before this planning
+  diff. Work Package 0 is fully done only when implementation is authorized and a clean TSK-808
+  worktree exists at the mandated path from refreshed `origin/main`.
 - Every one of the 37 open tasks has one current disposition: closed with its own evidence,
   active in a named packet, linked to a separate owner, or explicitly retained/deferred.
 - Current line anchors and collision table are recorded.
@@ -959,9 +965,9 @@ feature lanes start. SOL-medium reviews the integrated result at M1; SOL is not 
 implementer because all product and compatibility decisions are fixed here.
 
 **Dependencies:** Work Package 0 must re-anchor the line references and verify both the Tauri
-shell and legacy Swift shell build paths. The user's extension/API selection gate and Work
-Package 1 contrast foundation must be complete. No other UI lane may run while this packet edits
-window titles, root routes, or native self-identification.
+shell and legacy Swift shell build paths. R0 must apply the recorded Works now/Bounded adapter
+policy, and Work Package 1 contrast foundation must be complete. No other UI lane may run while
+this packet edits window titles, root routes, or native self-identification.
 
 **Data declaration:** No database is touched in this package. The implementation dispatch still
 copies the global SQL rule. Local browser storage, Application Support files, Keychain services,
@@ -1018,7 +1024,7 @@ the product-identity test in 7A.6 enforces exact parity across those boundaries.
 
 ### 7A.2 Exact public rename surfaces
 
-Line numbers below describe the audited `167a30a` baseline plus the current planning diff. Work
+Line numbers below describe the audited `beebda6` baseline plus the current planning diff. Work
 Package 0 must re-run `rg -n` and record moved anchors before dispatch; symbols and semantics win
 when a line moves.
 
@@ -4555,9 +4561,9 @@ append-only replay, audit-field migration/redaction, and outcome unknown.
 
 ## 18. Work Package 12 — VSIX import and compatible extension-host graduation
 
-**Covers:** TSK-765’s import remainder and an API-first compatibility decision. The user wants to
-inspect which extensions and APIs are usable before any new graduation/installer work; this
-package therefore stops at a real-Tauri comparison and explicit user selection.
+**Covers:** TSK-765’s import remainder and an API-first compatibility decision. The user selected
+`Works now` and `Bounded adapter` for this wave. This package produces the real-Tauri comparison,
+applies that policy through R0, and continues without another selection pause.
 
 **Dependencies:** Reconcile the already-run API-first checkpoint in 18.2 immediately after Work
 Package 0 once the TSK-799 Monaco singleton is stable. Optional VSIX staging and product
@@ -4568,8 +4574,8 @@ exact package/capability need; the 2026-08-03 decision does not authorize a gene
 copies the global SQL rule.
 
 **Prior checkpoint state, 2026-08-03:** PR #14 merged a bounded experiment from the protected
-TSK-799 work. That evidence records earlier choices but does **not** close the user's current
-extension/API selection:
+TSK-799 work. That evidence records earlier choices. The 2026-08-04 `Works now` plus `Bounded
+adapter` decision now closes the wave-level extension/API selection:
 
 1. The prior checkpoint used declarative contributions whole when they did not require an
    activation runtime. The official Houston theme is its first proven example.
@@ -4650,12 +4656,12 @@ one local extension host, and one Monaco/VS Code service singleton across editor
 workspace switch. Stop if the baseline creates duplicate hosts or changes C# diagnostics,
 semantic CodeLens counts, Peek rows, or the selected source.
 
-### 18.2 API-first compatibility checkpoint — prior evidence plus a new user decision gate
+### 18.2 API-first compatibility checkpoint — prior evidence plus resolved row policy
 
 The bounded first action has completed for Houston, native DiffEditor, and the read-only SCM
-projection. Preserve that evidence, but do not interpret it as the user's new extension/API
-selection. Do not build the VSIX installer, settings UI, marketplace surface, Node host, or
-product broker merely because the generic matrix below is incomplete.
+projection. Preserve that evidence. New candidates may proceed only when R0 classifies them as
+`Works now` or `Bounded adapter`. Do not build the VSIX installer, settings UI, marketplace
+surface, Node host, or product broker merely because the generic matrix below is incomplete.
 
 Existing reports are authoritative for the completed candidate decision:
 
@@ -4743,20 +4749,21 @@ app, not browser preview:
 | Lifecycle | disable/re-enable/dispose ms, remaining worker/listener/PTY/SCM owners |
 | Editor safety | CodeLens placeholder/semantic counts, Peek ready ms, tab/source preservation |
 
-The spike stops after writing and rendering the comparison. It does not stage a third-party VSIX,
-enable a marketplace, or edit 18.3–18.5. Present Works now/Bounded adapter/Declarative only/
-Elevated host required/Rejected rows and wait for the user's explicit extension/API selection.
+The spike ends after writing and rendering the comparison. It does not stage a third-party VSIX,
+enable a marketplace, or edit 18.3–18.5. R0 reviews all five classifications, releases only
+`Works now` and `Bounded adapter`, and continues the next milestone without another user pause.
 
-**Recorded prior decision:** Houston, native DiffEditor, native Git graph, and the bounded read-only
-SCM adapter remain preserved. The current candidate selection is open. No code from 18.3 onward
-starts without a new explicit package/capability choice. Candidate rows remain `Awaiting user
-selection`, never `unsupported` by default.
+**Recorded selection, 2026-08-04:** Houston, native DiffEditor, native Git graph, the bounded
+read-only SCM adapter, and other existing declarative assets remain preserved. New `Works now`
+and `Bounded adapter` rows are approved. New `Declarative only`, `Elevated host required`, and
+`Rejected` rows are skipped without blocking the wave. No code from 18.3 onward starts without a
+new exact third-party package/hash choice. Candidate rows are classified by evidence, never
+labeled `unsupported` by default.
 
 ### 18.2A Remaining research and decision register
 
 These are the evidenced unknowns. They do not invalidate the already-working Houston,
-DiffEditor, native Git graph, or read-only SCM baseline while the user's current selection is
-open:
+DiffEditor, native Git graph, read-only SCM baseline, or recorded row policy:
 
 | Question | Why it remains open | Decision/stop condition |
 | --- | --- | --- |
@@ -4932,7 +4939,8 @@ unsupported; report the missing host/capability tier precisely.
 ### Done
 
 - The current API-first stage is done when the real-Tauri probe, adapter receipts, complete metrics,
-  and rendered HTML comparison are presented and the implementation stops for the user's choice.
+  rendered HTML comparison, and M0/R0 classification review pass. The controller then releases
+  Works now/Bounded adapter and continues without a user pause.
 - The currently proven official Houston declarative contribution imports through the fast path exactly
   once, remains stable, and no legacy customizations repaint it.
 - Native DiffEditor and the read-only SCM projection reuse the existing Monaco and Rust Git
@@ -5286,8 +5294,8 @@ Run one relevance review against this plan. Reject:
 
 - new shell/session/editor/Git/worktree/agent abstractions duplicating existing ones;
 - implementation of TSK-802 or unrelated task scope;
-- extension paths not selected in the API compatibility report or an automatic marketplace
-  surface not explicitly approved;
+- extension paths outside the recorded Works now/Bounded adapter policy or an automatic
+  marketplace surface not explicitly approved;
 - DB grid/driver work before TSK-769 promotion;
 - unapproved remote mutations;
 - accidental changes to the Assembly compatibility identities in section 7A.4 or a blind
@@ -5351,7 +5359,8 @@ Core flow:
 15. Guarded-agent proposal/cancel/one safe confirmed action through the TSK-809/810 surface,
     including Git repair refusal, run-config proposal, summaries, browser fact hash, and audit fields.
 16. Reconciled Houston + native DiffEditor + thin terminal/SCM/API-host proof and rendered
-    extension comparison; stop for the user's selection and do not require a generic VSIX installer.
+    extension comparison; apply the recorded Works now/Bounded adapter policy and do not require
+    a generic VSIX installer.
 17. Both themes, keyboard-only, touch/trackpad, VoiceOver, Reduced Motion, narrow window.
 18. Quit and verify all task-owned Tauri, Roslyn, BuildHost, child-webview, browser, fixture,
     and helper processes exit.
@@ -5423,84 +5432,16 @@ After merge:
 
 ## 21. Parallel execution schedule
 
-### Milestone A — sequential foundation
+This schedule is retired as an independent dispatch authority. Use section 18, "Combined dependency
+graph and execution schedule," in the 2026-08-04 amendment. That graph incorporates the still-valid
+master packages in the required order and supplies A0-A12, A2-before-A3, A3-terminal, model routes,
+R0-R6 reviews, user gates, heavy-runner limits, and controller integration.
 
-1. Work Package 0: refresh `origin/main` from current `167a30a`, prove it contains the PR #14/
-   `5884139` checkpoint, re-anchor symbols, and close only shipped tasks with native proof.
-2. Reconcile Work Package 12 prior evidence, then run only the explicitly authorized API-first
-   real-Tauri comparison. Preserve Houston/native DiffEditor/read-only SCM; stop for the user's
-   new extension/API selection. Do not run 18.3–18.5.
-3. Work Package 1: contrast/tokens/primitives after that choice is recorded.
-4. Work Package 1B: rename public product identity and artifacts to Assembly, prove existing user
-   state survives unchanged, and preserve every compatibility identity in section 7A.4.
-5. Work Package 2: restore Settings, then freeze typed shell roster/minimize/quick-open.
-6. Controller freezes interfaces and commits.
-
-Stop if any shared contract remains disputed. Do not dispatch feature lanes against a moving
-product identity, ShellFrame, settings schema, capability list, or shared button primitive.
-
-### Milestone B — parallel product lanes
-
-After Milestone A, dispatch at most six implementation agents concurrently; a seventh slot may be
-used only for read-only audit/preparation. Parallelism is a rolling queue, not permission to run
-every Rust/native gate simultaneously. Never allow more than two heavy build/test runners.
-
-#### Round B1 — six file-independent implementation agents
-
-| Agent slot | Exact packet | Owned area | Build/test token |
-| --- | --- | --- | --- |
-| 1 | 3A session lifecycle | Implementation-lane B paths: sessions, rail store, session metadata, notifications | Node-light; no heavy token |
-| 2 | 4A editor/run/problems | Implementation-lane C paths: editor helpers, run configurations, formatting, Problems | Node focused; no heavy token until controller integration |
-| 3 | 5A plus 6A local Git/explorer/worktrees | Implementation-lane D paths: Git view-model/presentation, explorer, worktree presentation, named focused Rust modules | Heavy token 1 only for its focused Rust command |
-| 4 | 7A hosted GitHub | Implementation-lane E paths: `shell/github`, `components/github`, `src-tauri/src/github.rs` | Heavy token 2 only for its focused Rust command |
-| 5 | 10A Markdown | Implementation-lane H paths: Markdown model/component/tests | Node-light; no heavy token |
-| 6 | 10B conversation frontend packets A–D | Implementation-lane I TypeScript/Svelte/tests first; Rust parser/attachment work waits in the rolling queue | Node-light initially; requests a heavy token later |
-
-Each agent receives an exact file allow-list from section 5.2 and returns shared-seam receipts
-instead of editing controller-owned files. Slots 1, 2, 5, and the frontend portion of 6 can run
-while slots 3 and 4 use the two heavy tokens. A lane releases its heavy token immediately after
-its focused command; it does not retain the token while writing or waiting for review.
-
-#### Round B2 — rolling native/resource/browser queue
-
-1. When slot 3 or 4 releases a heavy token, run the queued conversation Rust parser/attachment
-   gate for packet 10B.
-2. When a Rust slot and the frozen shell/browser contract are available, dispatch 8A
-   Browser/global fan. Its implementation may proceed beside Node lanes, but its Rust/native proof
-   owns only one heavy token.
-3. Start 9A resource snapshot/model/UI as Node/Rust-light preparation while Browser runs. Do not
-   begin 9B Roslyn registry consolidation until Browser and conversation Rust gates release their
-   tokens and the TSK-799/789 baseline is recorded.
-4. Dispatch 9B to SOL-medium alone for the high-judgment registry decision/implementation. Luna
-   receives only any mechanical follow-up written back into the packet.
-5. A completed agent slot may be reused for focused fixes or a selected extension adapter, but the
-   controller rechecks ownership and dependency state before reusing it.
-
-Agents may edit concurrently only within the ownership table. The controller pauses new work
-when a lane needs a shared seam, when an allow-list overlaps an active lease, or when a third heavy
-runner would start.
-
-### Milestone C — dependent capabilities
-
-1. Integrate the controller-owned shared-seam receipts from Round B before starting dependent
-   cross-lane UI. One controller integration pass wires registrations, capabilities, shell roster,
-   and package scripts; agents do not race those files.
-2. Dispatch 11A Integrated Agent after GitHub, resources, sessions, Browser annotation facts, and
-   the one conversation authority are certified. This lane may run beside an extension adapter
-   because their owned paths do not overlap.
-3. Keep the existing Houston contribution aligned with contrast/editor contracts; add no other
-   theme/grammar package without selection.
-4. Compatible extension staging/enablement remains deferred after the API report and user
-   choice; resume only for a newly selected package with an evidenced need.
-5. Database console only if promoted. Its DB-side query/view design and generated-SQL review run
-   separately from the product UI lanes.
-
-### Milestone D — one integration and proof cycle
-
-Controller applies receipts, runs the serialized gate, sends the milestone code review to
-SOL-medium, routes straightforward fixes to Luna Max and high-judgment fixes to SOL-medium,
-reruns focused failures plus the full gate, proves Tauri, opens PR, verifies Notion closure, and
-removes the worktree.
+The detailed work-package sections in this file remain scope/acceptance evidence. They do not
+authorize the former B1/B2 rounds, older 10A/10B runtime split, or any parallel packet that
+conflicts with an amendment lease. When a master package and an amendment packet touch the same
+product authority, the amendment packet replaces that implementation lane while inheriting the
+master acceptance rows.
 
 ---
 
@@ -5566,8 +5507,8 @@ Stop implementation and ask for a decision when:
 - CodeLens count/Peek behavior changes without a trace proving why;
 - the implemented extension/DiffEditor/SCM/language checkpoint cannot be attributed and
   reconciled from commit `5884139` before broad TSK-808 work;
-- a newly proposed extension/API path has not been classified and selected; PR #14 preserves only
-  the prior Houston/native DiffEditor/read-only SCM evidence and is not the user's current choice;
+- a newly proposed extension/API path has not been classified or falls outside the recorded Works
+  now/Bounded adapter policy;
 - a selected extension needs Node, LocalProcess, remote host, native code, or broad unbrokered
   access without a separately approved elevated-host plan;
 - DB work would materialize then filter/group/sort/page rows;
@@ -5577,16 +5518,18 @@ Stop implementation and ask for a decision when:
 
 ## 24. First implementation action
 
-Do not start implementation now. The repository is on clean `main`/`origin/main` at `167a30a`,
-which already contains the former `5884139` checkpoint through PR #14; no task worktree exists.
+Do not start implementation now. The product-source base is `main`/`origin/main` at `beebda6`,
+which already contains the former `5884139` checkpoint through PR #14. The current tree is dirty
+only with the three planning documents from this audit; no product implementation or task worktree
+exists.
 
 After the user explicitly authorizes the next action, refresh and re-anchor Work Package 0, create
 the mandated clean TSK-808 worktree from refreshed `origin/main`, and run only the Work Package
-12 API-first real-Tauri probe/comparison. Render the HTML capability/metrics report, present the
-Works now/Bounded adapter/Declarative/Elevated/Rejected rows, and stop for the user's extension/API
-selection. Do not run 18.3–18.5 or any broad UI product package before that choice.
+12 API-first real-Tauri probe/comparison. Render the HTML capability/metrics report and run R0.
+R0 releases Works now/Bounded adapter and skips all other new rows without pausing the wave. Do
+not run 18.3–18.5 without a new exact third-party package/hash choice.
 
-After the choice is recorded, the first broad UI implementation is Work Package 1 contrast and
+After R0, the first broad UI implementation is Work Package 1 contrast and
 shared primitives. Work Package 1B then rebrands the public app and artifacts to Assembly while
 preserving every compatibility identity and existing user state; Work Package 2 follows with the
 shared shell contracts. Straightforward packets default to Luna Max; only unresolved
