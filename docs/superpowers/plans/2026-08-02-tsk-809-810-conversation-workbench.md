@@ -1,5 +1,14 @@
 # TSK-809 and TSK-810 Conversation Workbench Implementation Plan
 
+> **Superseded again by the 2026-08-04 ACP/workflow amendment:** Product direction now requires
+> structured ACP-owned sessions by default, explicit structured/raw single-writer handoff,
+> provider-advertised model/effort/permission selectors, real image content blocks, rich tool/plan
+> events, and app-owned workflow orchestration. Execute this work through
+> `docs/superpowers/plans/2026-08-04-assembly-acp-workflows-shell-amendment.md`, which also
+> amends the conflicting shell, browser, resources, Work Package 10A, and Work Package 11 decisions
+> in the TSK-808 master plan. The PTY-only architecture below remains historical discovery and the
+> fallback/import design for terminal-owned sessions.
+
 > **Superseded execution authority (2026-08-03):** This file remains discovery/reference
 > evidence. Execute TSK-809 and TSK-810 only through Work Package 10A and the cost-aware dispatch
 > manifest in
