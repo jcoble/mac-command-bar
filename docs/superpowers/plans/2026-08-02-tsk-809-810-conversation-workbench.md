@@ -1,118 +1,113 @@
-# TSK-809 and TSK-810 Conversation Workbench Implementation Plan
+# TSK-809 and TSK-810 Conversation Workbench — Historical Discovery Plan
 
-> **Superseded execution authority (2026-08-03):** This file remains discovery/reference
-> evidence. Execute TSK-809 and TSK-810 only through Work Package 10A and the cost-aware dispatch
-> manifest in
-> `docs/superpowers/plans/2026-08-01-tsk-808-native-workbench-product-wave.md`. Do not dispatch
-> from this older file independently or create a second conversation runtime, store, composer,
-> provider host, transcript pane, or child-agent registry.
+**Status:** Superseded for implementation on 2026-08-04.  
+**Current execution authority:**
+`docs/superpowers/plans/2026-08-04-assembly-acp-orchestration-and-orca-shell-amendment.md`  
+**Master plan retained for unaffected work:**
+`docs/superpowers/plans/2026-08-01-tsk-808-native-workbench-product-wave.md`
 
-> **Historical task breakdown only:** The checkboxes below are not an active dispatch queue.
+Do not dispatch implementation agents from the old PTY-only checklist that previously lived in
+this file. Its useful findings were folded into the current amendment, and its detailed history
+remains available in Git.
 
-**Goal:** Upgrade the existing transcript-backed Claude/Codex Session surface with a Codex-like composer, attachments, commands, truthful runtime controls, telemetry, and read-only child-agent transcripts.
+## Why this plan was superseded
 
-**Architecture:** Keep the existing PTY as the only writer and expand the Rust JSONL reader into a snapshot API containing display messages, telemetry, and child descriptors. Keep all UI state keyed by `ownedId`; child inspection reads transcript files only and never launches or controls a process.
+The earlier plan correctly protected the running native CLI from a duplicate provider process,
+but it made the existing PTY the permanent writer for every future conversation. The clarified
+product requires a richer and more general contract:
 
-**Tech Stack:** Tauri 2, Rust/serde_json, Svelte 5 runes, TypeScript 6, existing dockview/session workspace store.
+- new Codex and Claude sessions start as structured ACP sessions by default;
+- the native CLI is an explicit single-writer handoff/fallback, not the hidden transport behind
+  every rendered conversation;
+- model, effort/thought level, permissions/mode, Fast/service tier, and related options are
+  capability-driven selectors rather than slash commands;
+- pasted screenshots are sent as first-class image content where the provider supports them;
+- tool calls, approvals, reasoning, plans, task lists, file changes, command output, and
+  structured user input remain typed timeline items;
+- provider-native child agents have live nested output where the adapter exposes it;
+- Assembly also owns a separate deterministic workflow engine for configurable orchestrator,
+  implementer, tester, reviewer, spec-compliance, security, fixer, and verifier roles;
+- future ACP providers use the same app-owned runtime and canonical event model.
 
-## Global Constraints
+The old architecture remains useful only for terminal-owned sessions, imported/external sessions,
+read-only history, and recovery.
 
-- Never launch a second Claude/Codex process for an existing owned session.
-- Never scrape terminal pixels for transcript or runtime state.
-- Do not remove or replace the Editor, Browser, Diff, or Session dock tabs.
-- Missing provider metadata is shown as unknown, never guessed.
-- Clipboard images are copied only into an app-managed per-session directory after Rust validates the session identifier and image payload.
-- Child inspection is read-only and cannot start, resume, interrupt, approve, send to, or kill an agent.
+## Preserved repository decisions
 
----
+The current amendment continues to preserve these findings from this plan:
 
-### Task 1: Transcript snapshot and child discovery
+1. `ownedId` is the stable app identity. Provider session IDs, PTY IDs, workflow IDs, and child
+   IDs remain metadata.
+2. Conversation, draft, attachment, control, child-selection, and scroll state are isolated by
+   `ownedId` and generation.
+3. The existing TerminalService/TerminalRegistry remains the native CLI and user-terminal
+   authority.
+4. The existing attachment vault remains the validated per-session image-storage boundary.
+5. The JSONL transcript parser remains the terminal projection/import/recovery adapter, but moves
+   from repeated full-tail frontend polling to incremental Rust-side updates.
+6. The raw native terminal remains one explicit action away and its scrollback/process lifecycle
+   are preserved.
+7. Child association must be proven from provider-native parent metadata and canonical transcript
+   roots. Similar names are not parentage.
+8. Provider-native child sessions are read-only unless the active provider explicitly advertises
+   direct input. Assembly-managed workflow agents are controlled only by WorkflowEngine.
+9. Missing metadata remains unknown; the UI never invents a model, effort, context percentage,
+   parent relation, or runtime state.
+10. Browser feedback and other product surfaces target the exact current `ownedId` and generation
+    and never auto-submit a draft.
 
-**Files:**
-- Modify: `tauri-svelte-preview/src-tauri/src/agent_conversation/transcript.rs`
-- Modify: `tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs`
-- Modify: `tauri-svelte-preview/src-tauri/src/main.rs`
+## Current routing for TSK-809
 
-**Interfaces:**
-- Produces: `TranscriptSnapshot { messages, metadata, children }`
-- Produces: `read_agent_conversation_transcript(provider, native_session_id, child_session_id)`
-- Produces: `ConversationMetadata { model, effort, approval_policy, used_tokens, context_window }`
-- Produces: `ChildAgentDescriptor { child_id, parent_id, provider, label, state, updated_at_ms }`
+Use the 2026-08-04 amendment:
 
-- [ ] Add failing Rust fixtures for Codex `session_meta`, `turn_context`, token-count events, and spawned-thread metadata.
-- [ ] Add failing Rust fixtures for Claude parent messages, sidechain metadata, child lifecycle evidence, and child-only transcript reads.
-- [ ] Replace the vector-only return with a serializable snapshot while retaining chronological text normalization.
-- [ ] Restrict child lookup to validated transcript roots and exact safe session IDs.
-- [ ] Register the updated Tauri command and run `cargo test --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml agent_conversation`.
+- **A0:** prove pinned Codex/Claude ACP adapters, image input, configuration options, typed events,
+  resume/load, subagents, packaging, resource cost, and absence of a user-visible PTY.
+- **A1–A3:** freeze and implement the one `AgentRuntimeManager`, canonical capabilities/events,
+  provider adapters, and incremental terminal projection.
+- **A4:** implement screenshot paste first, then model/effort/mode controls, typed timeline,
+  approvals, plans/tasks, safe Markdown, live children, long-history behavior, and the reduced
+  provider/Assembly command menu.
+- **A5:** implement structured/native-CLI single-writer handoff and fork behavior.
+- **A12:** certify the real Tauri app and close TSK-809 only from current evidence.
 
-### Task 2: Session-scoped composer state and services
+## Current routing for TSK-810
 
-**Files:**
-- Modify: `tauri-svelte-preview/src/lib/shell/conversation/conversationTypes.ts`
-- Modify: `tauri-svelte-preview/src/lib/shell/conversation/conversationStore.svelte.ts`
-- Modify: `tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts`
-- Modify: `tauri-svelte-preview/src/lib/shell/sessionWorkspaces.ts`
-- Modify: `tauri-svelte-preview/scripts/agentConversationStore.test.mjs`
-- Modify: `tauri-svelte-preview/scripts/conversationSessionIsolation.test.mjs`
+Use the 2026-08-04 amendment:
 
-**Interfaces:**
-- Consumes: Rust `TranscriptSnapshot`.
-- Produces: `ConversationComposerState`, `ConversationAttachment`, `ConversationMetadata`, and `ConversationChildAgent` keyed by `ownedId`.
-- Produces: store mutations for draft, attachment, model, effort, approval, selected child, and scroll position.
+- provider-native subagents are normalized and rendered live through A3/A4;
+- terminal-owned historical children remain available through incremental transcript projection;
+- Assembly workflow agents are created and controlled by A6/A7;
+- the Agent Control Center shows parent/child hierarchy, provenance, provider/model/config,
+  workflow node, plan/tasks, tools, worktree, output, timing, state, retry/cancel/gate controls,
+  and exact artifacts;
+- child association, cycle/depth/count limits, stale generations, and cross-owner/path escape are
+  fixture-tested;
+- TSK-810 closes only after both provider-native and Assembly-managed children are proven in the
+  rebuilt desktop app.
 
-- [ ] Extend the store tests to prove two owned sessions cannot share drafts, attachments, controls, selected children, or scroll positions.
-- [ ] Add snapshot mapping that retains the last valid transcript when a refresh fails and ignores stale child responses.
-- [ ] Persist lightweight composer selections and child selection through `SessionConversationWorkspace`.
-- [ ] Add provider command catalogs and insertion helpers with no execution-on-selection behavior.
-- [ ] Run `pnpm test:agent-conversation-store` and `pnpm test:conversation-session-isolation` from `tauri-svelte-preview`.
+## Non-negotiable runtime rule
 
-### Task 3: Safe clipboard attachments
+One native provider conversation has one writer at a time:
 
-**Files:**
-- Create: `tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs`
-- Modify: `tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs`
-- Modify: `tauri-svelte-preview/src-tauri/src/main.rs`
-- Modify: `tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts`
+```text
+Structured ACP owner
+    ⇅ explicit handoff with reconciliation and rollback
+Native Claude Code or Codex CLI owner
+```
 
-**Interfaces:**
-- Produces: `save_agent_conversation_attachment(owned_id, mime_type, bytes) -> SavedConversationAttachment`.
-- Consumes: PNG, JPEG, GIF, and WebP clipboard payloads under an explicit size cap.
+Tool terminals created for ACP command/tool calls are separate app-owned processes. They do not
+become the native CLI session and do not occupy `OwnedSession.ptySessionId`.
 
-- [ ] Add Rust tests for safe IDs, supported MIME types, size limits, canonical app-managed paths, and unique filenames.
-- [ ] Decode the frontend byte array in Rust, validate magic bytes, and write it under the application data directory.
-- [ ] Return canonical path, MIME type, byte length, and attachment ID.
-- [ ] Compose outgoing PTY text from the draft plus exact attachment paths while leaving the draft intact on failure.
-- [ ] Run the focused Rust and TypeScript tests.
+## Implementation stop
 
-### Task 4: Codex-like transcript and composer UI
+Stop rather than returning to this historical checklist if the current amendment cannot prove:
 
-**Files:**
-- Create: `tauri-svelte-preview/src/lib/shell/components/conversation/ConversationComposer.svelte`
-- Create: `tauri-svelte-preview/src/lib/shell/components/conversation/ConversationMessage.svelte`
-- Create: `tauri-svelte-preview/src/lib/shell/components/conversation/AgentTree.svelte`
-- Modify: `tauri-svelte-preview/src/lib/shell/components/ConversationSurface.svelte`
-- Modify: `tauri-svelte-preview/src/lib/shell/styles/next.css`
+- first-class image input for Codex and Claude;
+- authoritative model/effort/mode discovery and updates;
+- one-writer handoff;
+- provider-native child correlation;
+- pinned/packaged adapter lifecycle and complete cleanup;
+- deterministic workflow scheduling outside agent prose.
 
-**Interfaces:**
-- Consumes: session-scoped store state and service functions from Tasks 1–3.
-- Produces: selectable transcript, screenshot previews, slash menu, runtime status controls, context meter, and child-agent tree.
-
-- [ ] Render selectable user/assistant text with safe lightweight Markdown formatting for paragraphs, lists, inline code, and fenced code.
-- [ ] Add clipboard-image capture, removable previews, slash command filtering, keyboard selection, and accessible labels.
-- [ ] Remove both composer borders and use the existing Houston variables for Codex-like spacing, hierarchy, and restrained semantic color.
-- [ ] Show metadata controls as pending until the authoritative transcript confirms a change; render unsupported controls read-only.
-- [ ] Render child agents beneath the parent and open child transcript content without exposing write or process controls.
-
-### Task 5: Compile and native acceptance
-
-**Files:**
-- Modify only files required by reproduced failures.
-
-**Interfaces:**
-- Verifies: TSK-809 and TSK-810 acceptance criteria in the real Tauri desktop target.
-
-- [ ] Run `pnpm check`, the focused conversation tests, and focused Rust tests one at a time.
-- [ ] Start `pnpm tauri:dev:next` and verify Claude and Codex parent transcripts, message submission, session switching, screenshot paste, copy selection, metadata, and child inspection.
-- [ ] Verify Editor, Browser, Diff, and Session tabs remain present and Monaco/Roslyn still opens an existing C# file.
-- [ ] Fix only reproduced failures and repeat the failing proof.
-- [ ] Close TSK-809 and TSK-810 only after the native evidence passes and both task statuses read back as Done.
+All unaffected accessibility, security, worktree, Git, Roslyn, browser-isolation, cleanup,
+parallel-runner, and native-evidence rules remain inherited from the TSK-808 master plan.
