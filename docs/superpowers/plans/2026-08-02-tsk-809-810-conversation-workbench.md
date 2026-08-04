@@ -4,7 +4,7 @@
 > structured ACP-owned sessions by default, explicit structured/raw single-writer handoff,
 > provider-advertised model/effort/permission selectors, real image content blocks, rich tool/plan
 > events, and app-owned workflow orchestration. Execute this work through
-> `docs/superpowers/plans/2026-08-04-assembly-acp-orchestration-shell-amendment.md`, which also
+> `docs/superpowers/plans/2026-08-04-assembly-acp-workflows-shell-amendment.md`, which also
 > amends Work Packages 10A and 11 of the TSK-808 master plan. The PTY-only architecture below is
 > retained solely as historical discovery and as the fallback/import path for terminal-owned
 > sessions.
