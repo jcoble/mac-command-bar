@@ -61,6 +61,14 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
    */
   completedAt: string | null;
   /**
+   * When the user archived this session out of the Done list into Settled, as
+   * an ISO stamp; `null` while it still belongs in Working or Done. Written
+   * only by the user's explicit "Settle"/"Unsettle" actions — never inferred
+   * from age, title, or process state. Old records without the field load as
+   * `null`.
+   */
+  settledAt: string | null;
+  /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
    * record when the session is adopted so a row keeps showing them afterwards,
@@ -147,6 +155,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     capabilityRevision: 0,
     lastRuntimeError: null,
     completedAt: null,
+    settledAt: null,
     branch: isNonEmptyString(record.branchHint) ? record.branchHint : null,
     taskId: isNonEmptyString(record.taskId) ? record.taskId : null,
     pullRequest: isNonEmptyString(record.pullRequestHint) ? record.pullRequestHint : null,
@@ -181,6 +190,7 @@ export function createFreshSession(
     capabilityRevision: 0,
     lastRuntimeError: null,
     completedAt: null,
+    settledAt: null,
     branch: null,
     taskId: null,
     pullRequest: null,
@@ -276,6 +286,9 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       // Sessions saved before this field existed have no value here at all, and
       // that reads exactly like "not done" — which is the right answer for them.
       completedAt: isNonEmptyString(candidate.completedAt) ? candidate.completedAt : null,
+      // Same "not there means not settled" reading for records saved before
+      // the Settled shelf existed.
+      settledAt: isNonEmptyString(candidate.settledAt) ? candidate.settledAt : null,
       // Same story here: a session saved before the scanner sent these, or one
       // the scanner had nothing to say about, simply shows no chips.
       branch: isNonEmptyString(candidate.branch) ? candidate.branch : null,
