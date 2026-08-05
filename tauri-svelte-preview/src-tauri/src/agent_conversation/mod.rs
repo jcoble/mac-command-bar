@@ -4,6 +4,7 @@ pub mod journal;
 pub mod manager;
 pub mod protocol;
 pub mod providers;
+pub mod terminal_projection;
 mod transcript;
 
 use manager::AgentRuntimeManager;
@@ -101,6 +102,23 @@ pub async fn read_agent_conversation_transcript(
     child_session_id: Option<String>,
 ) -> Result<transcript::TranscriptSnapshot, String> {
     transcript::read(&provider, &native_session_id, child_session_id.as_deref())
+}
+
+#[tauri::command]
+pub async fn start_agent_conversation_terminal_projection(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, terminal_projection::TerminalProjectionRegistry>,
+    request: terminal_projection::StartTerminalProjectionRequest,
+) -> Result<terminal_projection::TerminalProjectionRegistration, String> {
+    registry.start(app, request)
+}
+
+#[tauri::command]
+pub async fn stop_agent_conversation_terminal_projection(
+    registry: tauri::State<'_, terminal_projection::TerminalProjectionRegistry>,
+    owned_id: String,
+) -> Result<bool, String> {
+    registry.stop(&owned_id)
 }
 
 #[tauri::command]

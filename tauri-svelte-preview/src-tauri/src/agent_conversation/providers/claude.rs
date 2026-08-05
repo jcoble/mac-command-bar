@@ -130,6 +130,23 @@ mod tests {
             event.event_type == AgentEventType::UserInputRequested
                 && event.request_id.as_deref() == Some("5")
         }));
+        assert!(events.iter().any(|event| {
+            event.event_type == AgentEventType::SessionStarted
+                && event.request_id.as_deref() == Some("2")
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_type == AgentEventType::TurnCompleted
+                && event.request_id.as_deref() == Some("3")
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_type == AgentEventType::SessionClosed
+                && event.request_id.as_deref() == Some("6")
+        }));
+        let sequences: Vec<_> = events.iter().map(|event| event.sequence).collect();
+        let mut sorted = sequences.clone();
+        sorted.sort_unstable();
+        assert_eq!(sequences, sorted);
+        assert!(sequences.windows(2).all(|window| window[0] < window[1]));
         let ordered_items = adapter.ordered_items();
         let item_ids: Vec<_> = ordered_items.iter().map(|item| item.id.as_str()).collect();
         assert_eq!(
@@ -169,6 +186,16 @@ mod tests {
             .ordered_items()
             .iter()
             .any(|item| item.item_type == AgentItemType::Review));
+        assert!(events.iter().any(|event| {
+            event.event_type == AgentEventType::ChildrenUpdated
+                && event.payload["child"]["childSessionId"] == "claude-child-fixture"
+                && event.payload["child"]["parentToolCallId"] == "mcp-claude-1"
+        }));
+        assert!(adapter
+            .capabilities()
+            .commands
+            .iter()
+            .any(|command| command.id == "/review"));
         assert!(!adapter.uses_pty());
     }
 
@@ -202,6 +229,25 @@ mod tests {
             option.provider_metadata.as_ref().unwrap()["claude.acp.config"]["vendorField"],
             "kept"
         );
+        let lifecycle_events: Vec<_> = batches
+            .iter()
+            .flat_map(|batch| batch.events.iter())
+            .collect();
+        assert!(lifecycle_events.iter().any(|event| {
+            event.event_type == AgentEventType::SessionStarted
+                && event.payload["operation"] == "session/load"
+        }));
+        assert!(lifecycle_events.iter().any(|event| {
+            event.event_type == AgentEventType::SessionStarted
+                && event.payload["operation"] == "session/resume"
+        }));
+        assert!(lifecycle_events.iter().any(|event| {
+            event.event_type == AgentEventType::TurnInterrupted
+                && event.turn_id.as_deref() == Some("turn-old")
+        }));
+        assert!(lifecycle_events
+            .iter()
+            .any(|event| event.event_type == AgentEventType::SessionClosed));
     }
 
     #[test]

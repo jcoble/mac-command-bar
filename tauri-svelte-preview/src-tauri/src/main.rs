@@ -5177,6 +5177,7 @@ fn main() {
             agent_conversation::providers::ProviderRegistry::bundled_from_environment()
                 .expect("packaged ACP adapter configuration is invalid"),
         ))
+        .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
@@ -5263,6 +5264,8 @@ fn main() {
             agent_conversation::close_agent_conversation,
             agent_conversation::read_agent_conversation_snapshot,
             agent_conversation::read_agent_conversation_transcript,
+            agent_conversation::start_agent_conversation_terminal_projection,
+            agent_conversation::stop_agent_conversation_terminal_projection,
             agent_conversation::save_agent_conversation_attachment,
             start_terminal_session,
             list_terminal_sessions,

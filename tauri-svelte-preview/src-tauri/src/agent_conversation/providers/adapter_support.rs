@@ -276,14 +276,19 @@ impl AcpProjectionState {
             .as_deref()
             .and_then(|id| self.pending_requests.remove(id));
         let Some(pending) = pending else {
-            if frame.get("error").is_some() {
-                return self.error_from_frame(frame, "unmatched-response");
-            }
-            return self.unknown(frame, "response");
+            let mut batch = if frame.get("error").is_some() {
+                self.error_from_frame(frame, "unmatched-response")
+            } else {
+                self.unknown(frame, "response")
+            };
+            set_request_id(&mut batch, request_id.as_deref());
+            return batch;
         };
 
         if frame.get("error").is_some() {
-            return self.error_from_frame(frame, &pending.method);
+            let mut batch = self.error_from_frame(frame, &pending.method);
+            set_request_id(&mut batch, request_id.as_deref());
+            return batch;
         }
         let result = frame.get("result").cloned().unwrap_or(Value::Null);
         let mut batch = ProjectionBatch::new();
@@ -397,6 +402,7 @@ impl AcpProjectionState {
             }
             _ => batch.extend(self.unknown(frame, "response")),
         }
+        set_request_id(&mut batch, request_id.as_deref());
         batch
     }
 
@@ -614,7 +620,7 @@ impl AcpProjectionState {
             .or_else(|| string_at(params, &["messageId", "message_id", "itemId", "item_id"]))
             .unwrap_or_else(|| format!("{}-item-{}", self.namespace, self.sequence + 1));
         let new_item = !self.item_index.contains_key(&item_id);
-        self.ensure_item(&item_id, item_type, turn_id.clone(), None);
+        self.ensure_item(&item_id, item_type, turn_id.clone(), Some(update.clone()));
         if new_item {
             self.emit_item(
                 &mut batch,
@@ -1178,7 +1184,17 @@ impl AcpProjectionState {
     fn merge_item_metadata(&mut self, index: usize, value: Value) {
         let item = &mut self.items[index];
         let metadata = item.provider_metadata.get_or_insert_with(BTreeMap::new);
-        metadata.insert(format!("{}.item", self.namespace), value);
+        let key = format!("{}.item", self.namespace);
+        let Some(existing) = metadata.get_mut(&key) else {
+            metadata.insert(key, value);
+            return;
+        };
+        match (existing, value) {
+            (Value::Object(existing), Value::Object(incoming)) => {
+                existing.extend(incoming);
+            }
+            (existing, incoming) => *existing = incoming,
+        }
     }
 
     fn touch_item_metadata(&mut self, id: &str, value: Value) {
@@ -1710,6 +1726,17 @@ fn object_payload(value: Value) -> BTreeMap<String, Value> {
     match value {
         Value::Object(map) => map.into_iter().collect(),
         other => BTreeMap::from([("value".to_string(), other)]),
+    }
+}
+
+fn set_request_id(batch: &mut ProjectionBatch, request_id: Option<&str>) {
+    let Some(request_id) = request_id else {
+        return;
+    };
+    for event in &mut batch.events {
+        if event.request_id.is_none() {
+            event.request_id = Some(request_id.to_string());
+        }
     }
 }
 
