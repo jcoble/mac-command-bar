@@ -4,7 +4,6 @@ import {
   applyAgentConversationEvent,
   applyAgentConversationSnapshot,
   applyChildConversationTranscript,
-  applyConversationTranscript,
   ensureConversationSession,
   getConversationSession,
   setConversationConnection,
@@ -33,29 +32,12 @@ import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();
-const transcriptMirrors = new Map<string, ReturnType<typeof setInterval>>();
+const terminalProjections = new Map<string, string>();
 
-async function refreshTranscript(
-  ownedId: string,
-  provider: AgentConversationProvider,
-  nativeSessionId: string
-): Promise<void> {
-  const snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
-    provider,
-    nativeSessionId,
-    childSessionId: null
-  });
-  applyConversationTranscript(ownedId, provider, snapshot);
-  const childSessionId = getConversationSession(ownedId)?.selectedChildId;
-  if (childSessionId) {
-    const child = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
-      provider,
-      nativeSessionId,
-      childSessionId
-    });
-    applyChildConversationTranscript(ownedId, childSessionId, child.messages);
-  }
-}
+type TerminalProjectionRegistration = {
+  generation: number;
+  events: AgentEvent[];
+};
 
 export async function readChildConversationTranscript(input: {
   ownedId: string;
@@ -254,29 +236,30 @@ export async function setConversationConfigOption(
   }
 }
 
-export function startConversationTranscriptMirror(input: {
+export function startConversationTerminalProjection(input: {
   ownedId: string;
   provider: AgentConversationProvider;
   nativeSessionId: string;
 }): void {
-  if (!isTauri() || transcriptMirrors.has(input.ownedId)) return;
-  const refresh = (): void => {
-    void refreshTranscript(input.ownedId, input.provider, input.nativeSessionId).catch(() => {
-      // The transcript may not exist until Claude accepts its first prompt.
-      // The next poll retries without breaking the conversation surface.
-    });
-  };
-  refresh();
-  const timer = setInterval(() => {
-    refresh();
-  }, 500);
-  transcriptMirrors.set(input.ownedId, timer);
+  if (!isTauri()) return;
+  const signature = `${input.provider}:${input.nativeSessionId}`;
+  if (terminalProjections.get(input.ownedId) === signature) return;
+  terminalProjections.set(input.ownedId, signature);
+  const generation = getConversationSession(input.ownedId)?.generation ?? 0;
+  void invoke<TerminalProjectionRegistration>('start_agent_conversation_terminal_projection', {
+    request: { ...input, generation }
+  }).then((registration) => {
+    for (const event of registration.events) applyAgentConversationEvent(event);
+  }).catch(() => {
+    // The transcript may not exist until the agent accepts its first prompt.
+    // Dropping the signature lets the next activation register again.
+    if (terminalProjections.get(input.ownedId) === signature) terminalProjections.delete(input.ownedId);
+  });
 }
 
-export function stopConversationTranscriptMirror(ownedId: string): void {
-  const timer = transcriptMirrors.get(ownedId);
-  if (timer) clearInterval(timer);
-  transcriptMirrors.delete(ownedId);
+export function stopConversationTerminalProjection(ownedId: string): void {
+  if (!terminalProjections.delete(ownedId) || !isTauri()) return;
+  void invoke<boolean>('stop_agent_conversation_terminal_projection', { ownedId });
 }
 
 async function resyncConversation(ownedId: string): Promise<void> {
@@ -315,7 +298,7 @@ export async function startConversationEvents(): Promise<void> {
 export function stopConversationEvents(): void {
   unlisten?.();
   unlisten = null;
-  for (const ownedId of transcriptMirrors.keys()) stopConversationTranscriptMirror(ownedId);
+  for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);
 }
 
 export async function closeStructuredConversation(ownedId: string): Promise<void> {

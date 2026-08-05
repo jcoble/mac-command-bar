@@ -25,7 +25,7 @@
     saveConversationClipboardImage,
     sendStructuredMessage,
     setConversationConfigOption,
-    startConversationTranscriptMirror
+    startConversationTerminalProjection
   } from '$lib/shell/conversation/conversationService';
   import {
     filterConversationCommandCatalog,
@@ -104,7 +104,7 @@
 
   $effect(() => {
     if (structured && (active?.agent === 'claude' || active?.agent === 'codex') && active.nativeSessionId && active.ptySessionId) {
-      startConversationTranscriptMirror({ ownedId: active.ownedId, provider: active.agent, nativeSessionId: active.nativeSessionId });
+      startConversationTerminalProjection({ ownedId: active.ownedId, provider: active.agent, nativeSessionId: active.nativeSessionId });
     }
   });
 

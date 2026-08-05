@@ -50,8 +50,8 @@
     closeStructuredConversation,
     ensureStructuredConversation,
     startConversationEvents,
-    startConversationTranscriptMirror,
-    stopConversationTranscriptMirror,
+    startConversationTerminalProjection,
+    stopConversationTerminalProjection,
     stopConversationEvents
   } from '$lib/shell/conversation/conversationService';
   import type { AgentConversationProvider } from '$lib/shell/conversation/conversationTypes';
@@ -507,7 +507,7 @@
     // session actually had (rows are clickable for seconds while the first
     // scan runs — including the close button, which switches sessions too).
     if (switching && previous !== null && shellPanels.loadsAllowed()) snapshotWorkspace(previous);
-    if (switching && previous !== null) stopConversationTranscriptMirror(previous);
+    if (switching && previous !== null) stopConversationTerminalProjection(previous);
     if (switching && selected) {
       const root = selected.cwd.trim() || (selected.projectPath ?? '').trim();
       if (root) await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root });
@@ -532,7 +532,7 @@
         void closeStructuredConversation(ownedId);
         if (selected.nativeSessionId) {
           setConversationMode(ownedId, 'structured');
-          startConversationTranscriptMirror({
+          startConversationTerminalProjection({
             ownedId,
             provider,
             nativeSessionId: selected.nativeSessionId
@@ -831,7 +831,7 @@
     awaitingReattach.delete(ownedId);
     removeOwnedSession(ownedId);
     removeConversationSession(ownedId);
-    stopConversationTranscriptMirror(ownedId);
+    stopConversationTerminalProjection(ownedId);
     // A removed row takes its stack tag with it, rather than leaving one
     // pointing at a session that is gone.
     noteSessionRemoved(ownedId);
