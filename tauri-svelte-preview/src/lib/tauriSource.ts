@@ -25,6 +25,15 @@ import type {
   SourceTextEdit,
   SourceWorkspaceSymbol
 } from './sourceData';
+import type {
+  ImplementationReceipt,
+  PlanReceipt,
+  ReviewReceipt,
+  SpecComplianceReceipt,
+  VerificationReceipt,
+  WorkflowDefinitionV1,
+  WorkflowRunRecord
+} from './shell/workflows/workflowTypes';
 
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
@@ -841,6 +850,80 @@ export async function recordOrchestrationEventToTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<OrchestrationRun>('record_orchestration_event', { event });
+}
+
+export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord[]>('list_workflow_runs');
+}
+
+export async function createWorkflowRunFromTauri(
+  definition: WorkflowDefinitionV1,
+  input: Record<string, unknown>,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('create_workflow_run', { definition, input, idempotencyKey });
+}
+
+export async function startWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('start_workflow_run', { runId, idempotencyKey });
+}
+
+export async function pauseWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('pause_workflow_run', { runId, idempotencyKey });
+}
+
+export async function resumeWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('resume_workflow_run', { runId, idempotencyKey });
+}
+
+export async function cancelWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('cancel_workflow_run', { runId, idempotencyKey });
+}
+
+export async function retryWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('retry_workflow_node', { runId, nodeId, idempotencyKey });
+}
+
+export async function skipWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('skip_workflow_node', { runId, nodeId, idempotencyKey });
+}
+
+export async function approveWorkflowGateFromTauri(
+  runId: string,
+  nodeId: string,
+  approval: { approved: boolean; [key: string]: unknown },
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('approve_workflow_gate', { runId, nodeId, approval, idempotencyKey });
+}
+
+export async function submitWorkflowResultFromTauri(
+  runId: string,
+  nodeId: string,
+  result: ImplementationReceipt | ReviewReceipt | SpecComplianceReceipt | VerificationReceipt | PlanReceipt,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('submit_workflow_result', { runId, nodeId, result, idempotencyKey });
 }
 
 export async function searchSourceFilesFromTauri(
