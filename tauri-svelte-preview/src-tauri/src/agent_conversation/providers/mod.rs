@@ -1,5 +1,8 @@
 pub mod acp;
 pub mod acp_client;
+mod adapter_support;
+pub mod claude;
+pub mod codex;
 pub mod process;
 
 pub use acp::{AcpRuntimeAdapter, StructuredRuntimeHandle};
