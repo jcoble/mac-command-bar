@@ -69,6 +69,22 @@ impl AgentRuntimeManager {
         &self.providers
     }
 
+    /// Returns the capability snapshot advertised by the active ACP session. WorkflowEngine uses
+    /// this to map role policy onto provider-owned config options without guessing option ids.
+    pub fn capabilities(
+        &self,
+        owned_id: &str,
+        generation: u64,
+    ) -> Result<AgentCapabilities, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        Ok(current_session(&sessions, owned_id, generation)?
+            .capabilities
+            .clone())
+    }
+
     pub fn ensure(
         &self,
         request: EnsureAgentConversationRequest,

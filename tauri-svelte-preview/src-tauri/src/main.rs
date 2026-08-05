@@ -19,12 +19,14 @@ use orchestration::{
     OrchestrationRun,
 };
 use tauri::Emitter;
+use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 mod agent_conversation;
 mod git_diff_models;
 mod lsp;
 mod orchestration;
 mod terminal;
+mod workflow;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 10_000;
@@ -1410,6 +1412,123 @@ async fn record_orchestration_event(event: OrchestrationEvent) -> Result<Orchest
     tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(event))
         .await
         .map_err(|error| format!("Orchestration event task failed: {error}"))?
+}
+
+#[tauri::command]
+fn list_workflow_runs(
+    engine: tauri::State<'_, WorkflowEngine>,
+) -> Result<Vec<WorkflowRunRecord>, String> {
+    engine.list_runs().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    definition: WorkflowDefinitionV1,
+    input: serde_json::Value,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .create_run(definition, input, idempotency_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn start_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .start(&run_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn pause_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .pause(&run_id, &idempotency_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn resume_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .resume(&run_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn cancel_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .cancel(&run_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn retry_workflow_node(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .retry_node(&run_id, &node_id, &idempotency_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn skip_workflow_node(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .skip_node(&run_id, &node_id, &idempotency_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn approve_workflow_gate(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    approval: serde_json::Value,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .approve_gate(&run_id, &node_id, approval, &idempotency_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn submit_workflow_result(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    result: serde_json::Value,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine
+        .submit_result(&run_id, &node_id, result, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -5171,12 +5290,15 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
 }
 
 fn main() {
+    let agent_runtime = agent_conversation::manager::AgentRuntimeManager::new(
+        agent_conversation::providers::ProviderRegistry::bundled_from_environment()
+            .expect("packaged ACP adapter configuration is invalid"),
+    );
+    let workflow_engine = WorkflowEngine::managed(agent_runtime.clone());
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
-        .manage(agent_conversation::manager::AgentRuntimeManager::new(
-            agent_conversation::providers::ProviderRegistry::bundled_from_environment()
-                .expect("packaged ACP adapter configuration is invalid"),
-        ))
+        .manage(agent_runtime)
+        .manage(workflow_engine)
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
@@ -5257,6 +5379,16 @@ fn main() {
             kill_process,
             list_orchestration_runs,
             record_orchestration_event,
+            list_workflow_runs,
+            create_workflow_run,
+            start_workflow_run,
+            pause_workflow_run,
+            resume_workflow_run,
+            cancel_workflow_run,
+            retry_workflow_node,
+            skip_workflow_node,
+            approve_workflow_gate,
+            submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
             agent_conversation::send_agent_conversation_message,
             agent_conversation::respond_agent_conversation_approval,

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::RuntimeContextProject;
 
@@ -11,7 +12,7 @@ const ORCHESTRATION_EVENT_STORE_FILE: &str = "orchestration-events.jsonl";
 /// Set this to 1 to see the made-up sample runs on a machine that has never recorded one.
 const DEMO_ORCHESTRATION_RUNS_ENV: &str = "MCB_DEMO_RUNS";
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OrchestrationEvent {
     #[serde(rename = "schemaVersion", alias = "schema_version", default)]
@@ -95,6 +96,45 @@ pub(crate) struct OrchestrationEvent {
     approval_count: Option<u32>,
     #[serde(alias = "failed_count")]
     failed_count: Option<u32>,
+    // WorkflowEngine fields are additive so schema-v1 rows and the existing presentation
+    // reducer keep their exact meaning. The authoritative workflow read model is rebuilt from
+    // these same rows; there is deliberately no workflow-side event file.
+    #[serde(alias = "workflow_id", default)]
+    workflow_id: Option<String>,
+    #[serde(alias = "workflow_version", default)]
+    workflow_version: Option<u16>,
+    #[serde(alias = "node_id", default)]
+    node_id: Option<String>,
+    #[serde(alias = "node_run_id", default)]
+    node_run_id: Option<String>,
+    #[serde(alias = "parent_node_run_id", default)]
+    parent_node_run_id: Option<String>,
+    #[serde(rename = "ownedId", alias = "owned_id", default)]
+    owned_id: Option<String>,
+    #[serde(default)]
+    attempt: Option<u32>,
+    #[serde(default)]
+    depth: Option<u32>,
+    #[serde(alias = "input_hash", default)]
+    input_hash: Option<String>,
+    #[serde(alias = "output_contract", default)]
+    output_contract: Option<String>,
+    #[serde(alias = "workflow_artifacts", default)]
+    workflow_artifacts: Option<serde_json::Value>,
+    #[serde(alias = "gate_id", default)]
+    gate_id: Option<String>,
+    #[serde(alias = "lease_id", default)]
+    lease_id: Option<String>,
+    #[serde(alias = "provider_instance_id", default)]
+    provider_instance_id: Option<String>,
+    #[serde(default)]
+    provenance: Option<String>,
+    #[serde(default)]
+    sequence: Option<u64>,
+    #[serde(alias = "idempotency_key", default)]
+    idempotency_key: Option<String>,
+    #[serde(alias = "workflow_payload", default)]
+    workflow_payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -218,6 +258,12 @@ fn demo_orchestration_runs_requested(value: Option<&str>) -> bool {
 pub(crate) fn record_orchestration_event_sync(
     mut event: OrchestrationEvent,
 ) -> Result<OrchestrationRun, String> {
+    if event.workflow_id.is_some() || event.kind.starts_with("workflow.") {
+        return Err("Workflow transitions may only be appended by WorkflowEngine".to_string());
+    }
+    let _writer = orchestration_writer_lock()
+        .lock()
+        .map_err(|_| "Orchestration event writer is unavailable".to_string())?;
     normalize_orchestration_event(&mut event)?;
     append_orchestration_event(&event)?;
 
@@ -225,6 +271,76 @@ pub(crate) fn record_orchestration_event_sync(
     runs.into_iter()
         .find(|run| run.id == event.run_id)
         .ok_or_else(|| "Recorded orchestration event, but could not rebuild its run".to_string())
+}
+
+fn orchestration_writer_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Append a WorkflowEngine transition to the one orchestration ledger. Sequence allocation and
+/// idempotency are guarded by the same writer lock so a single app process has one total order.
+pub(crate) fn append_workflow_event_value(
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let _writer = orchestration_writer_lock()
+        .lock()
+        .map_err(|_| "Orchestration event writer is unavailable".to_string())?;
+    let mut event = serde_json::from_value::<OrchestrationEvent>(value)
+        .map_err(|error| format!("Invalid workflow event: {error}"))?;
+    if event
+        .workflow_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+        || !event.kind.starts_with("workflow.")
+    {
+        return Err("Workflow event requires workflowId and a workflow.* kind".to_string());
+    }
+    normalize_orchestration_event(&mut event)?;
+    let existing = read_orchestration_events()?;
+    if let Some(key) = event.idempotency_key.as_deref() {
+        if let Some(prior) = existing.iter().find(|candidate| {
+            candidate.run_id == event.run_id && candidate.idempotency_key.as_deref() == Some(key)
+        }) {
+            return serde_json::to_value(prior)
+                .map_err(|error| format!("Could not serialize workflow event: {error}"));
+        }
+    }
+    let current_sequence = existing
+        .iter()
+        .filter(|candidate| candidate.run_id == event.run_id)
+        .filter_map(|candidate| candidate.sequence)
+        .max()
+        .unwrap_or_default();
+    let expected_sequence = event
+        .workflow_payload
+        .as_ref()
+        .and_then(|payload| payload.get("run"))
+        .and_then(|run| run.get("lastSequence"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    if expected_sequence != current_sequence {
+        return Err(format!(
+            "Stale workflow transition: expected sequence {expected_sequence}, current sequence {current_sequence}"
+        ));
+    }
+    event.sequence = Some(current_sequence.saturating_add(1));
+    append_orchestration_event(&event)?;
+    serde_json::to_value(event)
+        .map_err(|error| format!("Could not serialize workflow event: {error}"))
+}
+
+pub(crate) fn read_workflow_event_values() -> Result<Vec<serde_json::Value>, String> {
+    read_orchestration_events()?
+        .into_iter()
+        .filter(|event| event.workflow_id.is_some() && event.kind.starts_with("workflow."))
+        .map(|event| {
+            serde_json::to_value(event)
+                .map_err(|error| format!("Could not serialize workflow event: {error}"))
+        })
+        .collect()
 }
 
 fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), String> {
@@ -738,6 +854,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 },
                 OrchestrationEvent {
                     schema_version: ORCHESTRATION_SCHEMA_VERSION,
@@ -782,6 +899,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 },
                 OrchestrationEvent {
                     schema_version: ORCHESTRATION_SCHEMA_VERSION,
@@ -826,6 +944,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 },
             ];
 
@@ -873,6 +992,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 });
             }
 
