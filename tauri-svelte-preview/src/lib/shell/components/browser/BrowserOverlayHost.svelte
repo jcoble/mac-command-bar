@@ -28,6 +28,7 @@
     onPresentation?: (mode: BrowserPresentationMode) => void;
     onCollapse?: () => void;
     onCancelFeedback?: () => void;
+    onMarkupTool?: (tool: 'pen' | 'highlighter' | 'arrow' | 'rectangle' | 'text' | 'undo' | 'clear' | 'crop') => void;
     onRemoveFeedback?: (id: string) => void;
     onCopyFeedback?: (attachment: BrowserFeedbackAttachment) => void;
     onStageFeedback?: (attachment: BrowserFeedbackAttachment) => void;
@@ -55,6 +56,7 @@
     onPresentation,
     onCollapse,
     onCancelFeedback,
+    onMarkupTool,
     onRemoveFeedback,
     onCopyFeedback,
     onStageFeedback,
@@ -92,6 +94,7 @@
     {onPresentation}
     {onCollapse}
     {onCancelFeedback}
+    {onMarkupTool}
     {onRemoveFeedback}
     {onCopyFeedback}
     {onStageFeedback}

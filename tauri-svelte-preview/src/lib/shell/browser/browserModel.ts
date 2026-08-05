@@ -77,8 +77,10 @@ export interface BrowserFeedbackStageOptions {
   generation?: number;
   attachmentId?: string;
   bridge?: BrowserConversationBridge;
+  conversation?: BrowserConversationBridge;
   /** The draft snapshot shown by the confirmation preview. */
   draftSnapshot?: string;
+  draft?: string;
   /** When true, apply the preview immediately; otherwise return a preview. */
   confirm?: boolean;
 }
@@ -762,14 +764,14 @@ export function stageBrowserFeedbackPreview(
 ): BrowserFeedbackPreview {
   const context = isWorkspace(first) || isContext(first) ? contextFor(first, second) : contextFor();
   const options = (isWorkspace(first) || isContext(first) ? second : first) as BrowserFeedbackStageOptions | undefined;
-  const bridge = options?.bridge ?? context.conversation;
+  const bridge = options?.bridge ?? options?.conversation ?? context.conversation;
   const attachment = context.workspace.queue.find((item) => !options?.attachmentId || item.id === options.attachmentId) ?? null;
   const ownedId = options?.ownedId ?? context.workspace.ownedId;
   const generation = options?.generation ?? context.workspace.activeGeneration;
   const conversation = ownedId ? readConversation(bridge, ownedId) : null;
   const currentDraft = conversation?.draft ?? '';
   const currentAttachments = conversation?.attachments ? [...conversation.attachments] : [];
-  const expectedDraft = options?.draftSnapshot;
+  const expectedDraft = options?.draftSnapshot ?? options?.draft;
   const stale =
     !attachment ||
     !ownedId ||

@@ -146,35 +146,39 @@
 </script>
 
 <section class="browser-panel" aria-label="Browser" data-testid="browser-panel">
-  <BrowserTabs workspace={browserWorkspace} onSelect={chooseTab} onClose={closeTab} onCreate={newTab} />
-  <BrowserToolbar
-    workspace={browserWorkspace}
-    onNavigate={navigate}
-    onReload={reloadBrowserFrame}
-    onBack={goBack}
-    onForward={goForward}
-    onGrab={grab}
-    onAnnotate={annotate}
-    onDraw={draw}
-    onOpenDevtools={openDevtools}
-    onOpenExternal={openExternal}
-    onViewport={viewport}
-    onPresentation={presentation}
-    onCollapse={collapse}
-  />
-  {#if browser.error}
-    <p class="browser-error" role="alert">{browser.error}</p>
-  {/if}
-  <BrowserAnnotationToolbar workspace={browserWorkspace} onGrab={grab} onAnnotate={annotate} onDraw={draw} onCancel={() => cancelBrowserAnnotation(browserModelContext())} />
-  <div class="browser-panel-body">
-    <BrowserViewport workspace={browserWorkspace} />
-    <BrowserFeedbackPanel
+  {#if browserWorkspace.presentation === 'docked'}
+    <BrowserTabs workspace={browserWorkspace} onSelect={chooseTab} onClose={closeTab} onCreate={newTab} />
+    <BrowserToolbar
       workspace={browserWorkspace}
-      onRemove={(id) => removeBrowserAnnotation(browserModelContext(), id)}
-      onCopy={copy}
-      onStage={stage}
+      onNavigate={navigate}
+      onReload={reloadBrowserFrame}
+      onBack={goBack}
+      onForward={goForward}
+      onGrab={grab}
+      onAnnotate={annotate}
+      onDraw={draw}
+      onOpenDevtools={openDevtools}
+      onOpenExternal={openExternal}
+      onViewport={viewport}
+      onPresentation={presentation}
+      onCollapse={collapse}
     />
-  </div>
+    {#if browser.error}
+      <p class="browser-error" role="alert">{browser.error}</p>
+    {/if}
+    <BrowserAnnotationToolbar workspace={browserWorkspace} onGrab={grab} onAnnotate={annotate} onDraw={draw} onCancel={() => cancelBrowserAnnotation(browserModelContext())} />
+    <div class="browser-panel-body">
+      <BrowserViewport workspace={browserWorkspace} />
+      <BrowserFeedbackPanel
+        workspace={browserWorkspace}
+        onRemove={(id) => removeBrowserAnnotation(browserModelContext(), id)}
+        onCopy={copy}
+        onStage={stage}
+      />
+    </div>
+  {:else}
+    <div class="browser-docked-hidden" aria-hidden="true"></div>
+  {/if}
 </section>
 
 <style>
@@ -206,5 +210,10 @@
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
+  }
+
+  .browser-docked-hidden {
+    width: 100%;
+    height: 100%;
   }
 </style>

@@ -8,6 +8,7 @@
     onAnnotate?: () => void;
     onDraw?: () => void;
     onCancel?: () => void;
+    onMarkupTool?: (tool: 'pen' | 'highlighter' | 'arrow' | 'rectangle' | 'text' | 'undo' | 'clear' | 'crop') => void;
   }
 
   let {
@@ -15,7 +16,8 @@
     onGrab,
     onAnnotate,
     onDraw,
-    onCancel
+    onCancel,
+    onMarkupTool
   }: Props = $props();
 
   const mode = $derived<BrowserInteractionMode>(workspace.interaction);
@@ -64,6 +66,21 @@
       Cancel
     </button>
   {/if}
+  {#if mode === 'drawing'}
+    <div class="markup-tools" aria-label="Screenshot markup tools">
+      {#each ['pen', 'highlighter', 'arrow', 'rectangle', 'text', 'undo', 'clear', 'crop'] as tool}
+        <button
+          class="markup-tool"
+          type="button"
+          title={tool === 'highlighter' ? 'Highlighter' : tool[0].toUpperCase() + tool.slice(1)}
+          data-testid={`browser-markup-${tool}`}
+          onclick={() => onMarkupTool?.(tool as 'pen' | 'highlighter' | 'arrow' | 'rectangle' | 'text' | 'undo' | 'clear' | 'crop')}
+        >
+          {tool[0].toUpperCase() + tool.slice(1)}
+        </button>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -105,5 +122,29 @@
     color: var(--color-disabled-text, #858599);
     cursor: not-allowed;
     opacity: 0.65;
+  }
+
+  .markup-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: auto;
+  }
+
+  .markup-tool {
+    min-height: 28px;
+    padding: 0 7px;
+    border: 1px solid var(--color-border, #858599);
+    border-radius: 4px;
+    background: var(--color-surface, #17171d);
+    color: var(--color-text-2, #a7a7b5);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .markup-tool:hover {
+    background: var(--color-hover, #25252e);
+    color: var(--color-text, #eef0f9);
   }
 </style>
