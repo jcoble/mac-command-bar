@@ -25,7 +25,13 @@
   interface Props {
     /** The left column: the sessions list, and nothing else. */
     sessions: Snippet;
-    center: { session: Snippet; editor: Snippet; browser: Snippet; diff: Snippet };
+    center: {
+      session: Snippet;
+      editor: Snippet;
+      browser: Snippet;
+      diff: Snippet;
+      sessionLibrary: Snippet;
+    };
     /** The right column: whichever tool view the icon strip has open. */
     tools: Snippet;
     /** The icon strip on the far right edge, which picks that view. */
@@ -77,6 +83,7 @@
   let editorSlot: HTMLElement;
   let browserSlot: HTMLElement;
   let diffSlot: HTMLElement;
+  let sessionLibrarySlot: HTMLElement;
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
@@ -106,7 +113,13 @@
           { id: 'session', title: 'Session', element: sessionSlot },
           { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
           { id: 'browser', title: 'Browser', element: browserSlot, group: 'display' },
-          { id: 'diff', title: 'Diff', element: diffSlot, group: 'display' }
+          { id: 'diff', title: 'Diff', element: diffSlot, group: 'display' },
+          {
+            id: 'session-library',
+            title: 'Session Library',
+            element: sessionLibrarySlot,
+            group: 'display'
+          }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
@@ -161,6 +174,7 @@
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
   <div class="slot" bind:this={browserSlot}>{@render center.browser()}</div>
   <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
+  <div class="slot" bind:this={sessionLibrarySlot}>{@render center.sessionLibrary()}</div>
 </div>
 
 <style>
@@ -236,7 +250,7 @@
     box-shadow: none;
   }
 
-  /* The four center tabs are permanent navigation. A restored Dockview layout
+  /* The five center tabs are permanent navigation. A restored Dockview layout
      must never collapse their strip to zero height. */
   .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
     min-height: 35px;

@@ -37,6 +37,7 @@
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import RunButton from '$lib/shell/components/run/RunButton.svelte';
+  import SessionLibraryWorkspace from '$lib/shell/sessionLibrary/SessionLibraryWorkspace.svelte';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
   import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -104,6 +105,10 @@
     type SessionWorkspaceSnapshot
   } from '$lib/shell/sessionWorkspaces';
   import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
+  import {
+    createSessionLibraryService
+  } from '$lib/shell/sessionLibrary/sessionLibraryService';
+  import type { SessionLibraryRecord } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import { registerShellCommands } from '$lib/shell/shellCommands';
   import { readSelection, shellPanels } from '$lib/shell/shellPanels';
   import {
@@ -193,6 +198,51 @@
    * start-up, and `scanRail` clears `rail.error` — which would erase a mount
    * failure on every launch and leave a blank shell with no message. */
   let layoutError = $state<string | null>(null);
+
+  /** Settled is an explicit rail transition, persisted by the existing update
+   * path. Age, process state, and title never infer this shelf. */
+  function settleOwnedSession(ownedId: string): void {
+    updateOwnedSession(ownedId, { settledAt: new Date().toISOString() });
+  }
+
+  function unsettleOwnedSession(ownedId: string): void {
+    updateOwnedSession(ownedId, { settledAt: null });
+  }
+
+  /** The center library reuses the rail's imperative actions; construction of
+   * this adapter is inert and does not scan, start, or mutate anything. */
+  const sessionLibraryService = createSessionLibraryService(
+    {
+      getOwnedSessions: () => rail.owned,
+      getAvailableSessions: () => rail.available
+    },
+    {
+      onOpen: async (record: SessionLibraryRecord) => {
+        if (record.ownedId) {
+          await selectOwned(record.ownedId);
+        } else if (record.available) {
+          await adopt(record.available);
+        }
+      },
+      onResume: async (record: SessionLibraryRecord) => {
+        if (record.ownedId) {
+          const owned = rail.owned.find((session) => session.ownedId === record.ownedId);
+          if (owned?.state === 'exited') await restartOwned(record.ownedId);
+          else await selectOwned(record.ownedId);
+        } else if (record.available) {
+          await adopt(record.available);
+        }
+      },
+      onArchive: (record: SessionLibraryRecord) => {
+        if (!record.ownedId) return;
+        if (record.state === 'settled') unsettleOwnedSession(record.ownedId);
+        else if (record.state === 'done') settleOwnedSession(record.ownedId);
+      },
+      onDelete: async (record: SessionLibraryRecord) => {
+        if (record.ownedId) await removeSession(record.ownedId);
+      }
+    }
+  );
 
   /** Palette actions for the panels. Pure bookkeeping — nothing runs until the
    * user picks one — so it belongs here at component init, not in an effect. */
@@ -1000,7 +1050,8 @@
     scanning={rail.scanning} collapsed={sessionsCollapsed}
     onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal} onRestart={restartOwned}
     onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
-    onReopen={reopenOwnedSession} onRemove={removeSession}
+    onReopen={reopenOwnedSession} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
+    onRemove={removeSession}
     onRescan={scanRail} onCollapse={collapseSessions}
     onNewSession={() => overlays?.openNewSession()}
   />
@@ -1063,6 +1114,14 @@
      as a tab of its own — which is what gives a diff the width of the middle
      instead of a column. -->
 {#snippet diffArea()}<GitDiffView />{/snippet}
+{#snippet sessionLibraryArea()}
+  <SessionLibraryWorkspace
+    owned={rail.owned}
+    available={rail.available}
+    service={sessionLibraryService}
+    onRefresh={() => void scanRail()}
+  />
+{/snippet}
 
 <main class="next-shell">
   <!-- The strip along the top. It holds the play button that runs a saved
@@ -1079,7 +1138,8 @@
       session: sessionArea,
       editor: editorArea,
       browser: browserArea,
-      diff: diffArea
+      diff: diffArea,
+      sessionLibrary: sessionLibraryArea
     }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}

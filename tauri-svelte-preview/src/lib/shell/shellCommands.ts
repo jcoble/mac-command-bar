@@ -77,6 +77,12 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       perform: () => hooks.showPanel('diff')
     },
     {
+      id: 'show-session-library',
+      label: 'Show the Session Library',
+      detail: 'Open the complete session and history library in the center',
+      perform: () => hooks.showPanel('session-library')
+    },
+    {
       id: 'new-session',
       label: 'Start a new session',
       detail: 'Pick a project folder and start an agent in it',

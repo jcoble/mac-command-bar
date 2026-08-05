@@ -6,7 +6,9 @@ import {
   gridPanelIds,
   dockPanelIds,
   paneviewPanelIds,
-  panelSetMatches
+  panelSetMatches,
+  CENTER_LAYOUT_KEY,
+  CENTER_LAYOUT_KEY_V3
 } from '../src/lib/shell/layout/layoutStorage.ts';
 import {
   SIDE_PANE_LAYOUT_KEY,
@@ -189,6 +191,32 @@ function memoryStorage(initial = {}) {
   assert.equal(saveLayout(storage, SIDE_PANE_LAYOUT_KEY, payload), true);
   assert.deepEqual([...storage._map.keys()], [SIDE_PANE_LAYOUT_KEY], 'one side-pane storage key');
   assert.deepEqual(loadLayout(storage, SIDE_PANE_LAYOUT_KEY), payload);
+}
+
+// The center roster bump is exact-set based: the current v4 roster restores
+// unchanged, the v3 four-panel roster is the only eligible migration source, and any
+// partial/extra set falls back to defaults in centerDock.
+{
+  assert.equal(CENTER_LAYOUT_KEY_V3, 'mac-command-bar.next.center-layout-v3');
+  assert.equal(CENTER_LAYOUT_KEY, 'mac-command-bar.next.center-layout-v4');
+  assert.equal(
+    panelSetMatches(
+      ['session', 'editor', 'browser', 'diff', 'session-library'],
+      ['session-library', 'diff', 'browser', 'editor', 'session']
+    ),
+    true,
+    'the v4 roster is an exact set, regardless of stored order'
+  );
+  assert.equal(
+    panelSetMatches(['session', 'editor', 'browser', 'diff'], ['session', 'editor', 'browser', 'diff']),
+    true,
+    'the v3 roster is an exact migration source'
+  );
+  assert.equal(
+    panelSetMatches(['session', 'editor', 'browser'], ['session', 'editor', 'browser', 'diff']),
+    false,
+    'a partial center roster must fall back safely'
+  );
 }
 
 console.log('layoutStorage: all tests passed');

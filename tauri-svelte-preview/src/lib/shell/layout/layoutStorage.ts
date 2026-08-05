@@ -27,15 +27,21 @@ export interface LayoutStorage {
  */
 export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v2';
 /**
- * Bumped to `-v2` when the center dock stopped being one group of tabs and
- * became a conversation group beside a display group, and to `-v3` when the
- * Diff tab joined the display group. A stored layout is only restored when its
- * tabs are exactly the tabs the shell now builds, so without the bump every
- * existing install would keep its three-tab arrangement and the Diff tab would
- * never appear. Layouts saved under either older key are left where they are,
- * harmless and unread.
+ * The previous center roster. `centerDock.ts` reads this key only when its
+ * payload is the exact four-panel roster it knows how to extend with the new
+ * Session Library tab; malformed, partial, or unrelated layouts are ignored.
+ * Keeping the old key named makes the migration explicit without introducing
+ * another storage-key family.
  */
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v3';
+export const CENTER_LAYOUT_KEY_V3 = 'mac-command-bar.next.center-layout-v3';
+
+/**
+ * Bumped to `-v4` when Session Library joined the center roster. The current
+ * key is restored only when its panel set is exact; the v3 key is migrated by
+ * adding the new tab through Dockview so the user's existing groups, sizes,
+ * order, and active panel survive the roster change.
+ */
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v4';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {

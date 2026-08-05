@@ -11,6 +11,7 @@
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
     onClose?(ownedId: string): void;
+    onAskRemove?(ownedId: string): void;
   }
   let {
     sessions,
@@ -19,7 +20,8 @@
     onRestart,
     onReopen,
     onSettle,
-    onClose
+    onClose,
+    onAskRemove
   }: Props = $props();
 
   const done = $derived(
@@ -52,6 +54,7 @@
         onReopen={() => onReopen?.(session.ownedId)}
         onSettle={() => onSettle?.(session.ownedId)}
         onClose={() => onClose?.(session.ownedId)}
+        onAskRemove={() => onAskRemove?.(session.ownedId)}
       />
     {/each}
     {#if done.length === 0}

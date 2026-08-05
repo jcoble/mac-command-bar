@@ -10,6 +10,7 @@
   import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Archive from '@lucide/svelte/icons/archive';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import Undo2 from '@lucide/svelte/icons/undo-2';
   import Terminal from '@lucide/svelte/icons/terminal';
 
@@ -29,6 +30,7 @@
     onSettle?(): void;
     onUnsettle?(): void;
     onClose?(): void;
+    onAskRemove?(): void;
   }
 
   let {
@@ -42,7 +44,8 @@
     onReopen,
     onSettle,
     onUnsettle,
-    onClose
+    onClose,
+    onAskRemove
   }: Props = $props();
 
   const label = $derived(sessionLabel(session));
@@ -147,6 +150,16 @@
           title="Move back to Done"
           onclick={(event) => stopPropagation(event, onUnsettle)}
         ><RotateCcw class="size-3" aria-hidden="true" /></button>
+      {/if}
+      {#if shelf === 'done' && onAskRemove}
+        <button
+          data-testid="worktree-agent-remove"
+          type="button"
+          class="action-button"
+          aria-label={`Remove ${label} from sessions`}
+          title="Remove from sessions"
+          onclick={(event) => stopPropagation(event, onAskRemove)}
+        ><Trash2 class="size-3" aria-hidden="true" /></button>
       {/if}
       {#if onClose && session.state !== 'exited'}
         <button
