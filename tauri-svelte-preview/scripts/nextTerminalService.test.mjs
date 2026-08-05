@@ -917,4 +917,141 @@ const ownedA = {
   );
 }
 
+{
+  // R0 probe lease: a probe is an opaque, generation-bound handle over the
+  // existing singleton service. It forwards only while its exact ownedId ->
+  // generation -> PTY mapping is still current.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({
+    backend,
+    createView: (_host, hooks) =>
+      makeView(log, `probe${log.filter((e) => e[0] === 'start').length}`, { hooks })
+  });
+  await svc.attach();
+  const probe = await svc.createProbe({ ...ownedA, ownedId: 'probe', resumeCommand: null }, {});
+  assert.ok(probe, 'a probe is created over the existing backend');
+  assert.equal(probe.ownedId, 'probe', 'the probe exposes only owned identity');
+  assert.equal(probe.generation, 1, 'the first probe gets the first generation token');
+
+  probe.show();
+  assert.ok(
+    log.some((e) => e[0] === 'probe1' && e[1] === 'focus'),
+    'show delegates to the existing terminal view manager'
+  );
+
+  assert.equal(await probe.write('echo probe\r'), true, 'live probe write succeeds');
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'write'),
+    [['write', 'pty-1', 'echo probe\r']],
+    'probe write reaches the fake existing backend PTY'
+  );
+  assert.equal(await probe.write(''), false, 'empty probe writes fail closed');
+  assert.equal(
+    await probe.write('x'.repeat(64 * 1024 + 1)),
+    false,
+    'oversized probe writes fail closed'
+  );
+  assert.equal(await probe.resize(100.9, 30.2), true, 'live probe resize succeeds');
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'resize'),
+    [['resize', 'pty-1', 100, 30]],
+    'probe resize is bounded and reaches the fake backend once'
+  );
+  assert.equal(await probe.resize(100, 30), true, 'same-size probe resize is a successful no-op');
+  assert.equal(
+    log.filter((e) => e[0] === 'resize').length,
+    1,
+    'probe resize preserves the service-wide resize dedupe'
+  );
+  assert.equal(await probe.resize(19, 30), false, 'out-of-range columns fail closed');
+  assert.equal(await probe.resize(100, 101), false, 'out-of-range rows fail closed');
+  assert.equal(log.filter((e) => e[0] === 'listen').length, 1, 'there is still one listener');
+}
+
+{
+  // R0 probe replacement: replacing a live probe first closes the exact old
+  // probe PTY, then a newer PTY for the same ownedId invalidates every
+  // operation on the old lease, including dispose. Only the live probe closes
+  // the replacement PTY.
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'replace') });
+  await svc.attach();
+  const oldProbe = await svc.createProbe({ ...ownedA, ownedId: 'same', resumeCommand: null }, {});
+  const newProbe = await svc.createProbe({ ...ownedA, ownedId: 'same', resumeCommand: null }, {});
+  assert.ok(oldProbe && newProbe, 'both probe creations succeed');
+  assert.equal(newProbe.generation, oldProbe.generation + 1, 'replacement advances generation');
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'close'),
+    [['close', 'pty-1']],
+    'replacement closes the abandoned old probe PTY before starting the new lease'
+  );
+
+  assert.equal(await oldProbe.write('stale\r'), false, 'stale write fails closed');
+  assert.equal(await oldProbe.resize(110, 31), false, 'stale resize fails closed');
+  const staleDispose = await oldProbe.dispose();
+  assert.equal(staleDispose.error, null, 'stale dispose is a no-op close result');
+  assert.equal(
+    log.filter((e) => e[0] === 'close' && e[1] === 'pty-2').length,
+    0,
+    'stale dispose cannot close the replacement PTY'
+  );
+
+  assert.equal(await newProbe.write('current\r'), true, 'the replacement lease remains live');
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'write'),
+    [['write', 'pty-2', 'current\r']],
+    'only the replacement PTY receives current probe input'
+  );
+  const closed = await newProbe.dispose();
+  assert.equal(closed.error, null, 'live probe dispose closes cleanly');
+  assert.deepEqual(
+    log.filter((e) => e[0] === 'close'),
+    [
+      ['close', 'pty-1'],
+      ['close', 'pty-2']
+    ],
+    'live probe dispose closes the replacement after the old PTY was already reaped'
+  );
+  assert.equal(await newProbe.write('after\r'), false, 'disposed probe write fails closed');
+  assert.equal(await newProbe.resize(120, 32), false, 'disposed probe resize fails closed');
+  assert.equal(log.filter((e) => e[0] === 'close').length, 2, 'zero probe PTYs remain open');
+}
+
+{
+  // R0 global dispose: service teardown remains non-closing. Probe ownership is
+  // invalidated, but neither a normal PTY nor a probe-created PTY is killed by
+  // service.dispose().
+  const log = [];
+  const { backend } = makeBackend(log);
+  const svc = createTerminalService({ backend, createView: () => makeView(log, 'global') });
+  await svc.attach();
+  await svc.startOwned({ ...ownedA, ownedId: 'normal', resumeCommand: null }, {});
+  const probe = await svc.createProbe(
+    { ...ownedA, ownedId: 'probe-dispose', resumeCommand: null },
+    {}
+  );
+  assert.ok(probe, 'probe setup succeeds before global dispose');
+  svc.dispose();
+  assert.equal(log.filter((e) => e[0] === 'close').length, 0, 'service.dispose still closes no PTY');
+  assert.equal(
+    await probe.write('after dispose\r'),
+    false,
+    'global dispose invalidates the probe token'
+  );
+  assert.equal(await probe.resize(120, 40), false, 'global dispose blocks probe resize');
+  const closed = await probe.dispose();
+  assert.deepEqual(
+    closed,
+    { successor: null, error: null },
+    'probe dispose after global dispose is a no-op'
+  );
+  assert.equal(
+    log.filter((e) => e[0] === 'listen').length,
+    1,
+    'service-wide listener ownership remains singular'
+  );
+}
+
 console.log('terminalService tests passed');

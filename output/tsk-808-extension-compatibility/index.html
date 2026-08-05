@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSK-808 · Extension/API compatibility native proof</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0e12;
+      --panel: #12171d;
+      --panel-2: #171e26;
+      --line: #29333e;
+      --text: #edf2f7;
+      --muted: #9aa8b6;
+      --mint: #66e3c4;
+      --blue: #84b6ff;
+      --gold: #e8be65;
+      --rose: #ff8da6;
+      --green-bg: #102820;
+      --gold-bg: #2c2517;
+      --red-bg: #2b171d;
+      --violet-bg: #251b30;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 92% -8%, rgba(102, 227, 196, .10), transparent 34rem),
+        radial-gradient(circle at -8% 25%, rgba(132, 182, 255, .08), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+      font: 15px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1320px, calc(100% - 38px)); margin: 0 auto; padding: 46px 0 76px; }
+    header { display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: start; }
+    .eyebrow { color: var(--mint); font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { max-width: 960px; margin: 10px 0 14px; font-size: clamp(38px, 5vw, 68px); line-height: 1; letter-spacing: -.035em; }
+    h2 { margin: 44px 0 7px; font-size: 28px; letter-spacing: -.02em; }
+    h3 { margin: 0 0 7px; font-size: 16px; }
+    p { margin: 0; }
+    .lede { max-width: 880px; color: #c9d3dc; font-size: 18px; }
+    .stamp { border: 1px solid var(--line); background: rgba(18, 23, 29, .84); padding: 10px 13px; color: var(--muted); font: 12px/1.45 ui-monospace, monospace; white-space: nowrap; }
+    .decision { margin: 28px 0; padding: 20px 24px; border: 1px solid rgba(102, 227, 196, .32); border-left: 4px solid var(--mint); border-radius: 0 8px 8px 0; background: linear-gradient(100deg, var(--green-bg), var(--panel)); }
+    .decision strong { display: block; margin-bottom: 6px; font-size: 18px; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 38px; }
+    nav a { padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: rgba(18, 23, 29, .78); color: #c9d3dc; text-decoration: none; }
+    nav a:hover { border-color: var(--mint); color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .card { padding: 17px; border: 1px solid var(--line); border-radius: 8px; background: rgba(18, 23, 29, .92); }
+    .card p, .card li, .muted { color: var(--muted); }
+    .number { margin-bottom: 11px; color: var(--mint); font: 700 12px/1 ui-monospace, monospace; }
+    .table-wrap { overflow-x: auto; margin-top: 18px; border: 1px solid var(--line); border-radius: 8px; background: rgba(18, 23, 29, .94); }
+    table { width: 100%; min-width: 1120px; border-collapse: collapse; }
+    th, td { padding: 12px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); background: #10151a; font: 700 11px/1.28 ui-monospace, monospace; letter-spacing: .07em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { min-width: 170px; font-weight: 700; }
+    code { color: #bed8ff; font: .92em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .pill { display: inline-block; padding: 3px 8px; border: 1px solid currentColor; border-radius: 999px; font: 700 10px/1.35 ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+    .works { color: var(--mint); background: var(--green-bg); }
+    .bounded { color: var(--gold); background: var(--gold-bg); }
+    .declarative { color: var(--blue); background: #142238; }
+    .elevated { color: #e9a7ff; background: var(--violet-bg); }
+    .rejected { color: var(--rose); background: var(--red-bg); }
+    .passed { color: var(--mint); font-weight: 700; }
+    .deferred { color: var(--gold); font-weight: 700; }
+    .observed { border-left: 3px solid var(--gold); background: #201b13; }
+    .observed code { color: #f2d18a; }
+    .flow { display: grid; grid-template-columns: 1fr 34px 1fr 34px 1fr; gap: 0; align-items: stretch; margin-top: 18px; }
+    .flow-box { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .flow-box span { color: var(--muted); font-size: 13px; }
+    .arrow { display: grid; place-items: center; color: var(--mint); font-size: 21px; }
+    .metrics td { min-width: 150px; }
+    .metrics td:first-child { min-width: 190px; }
+    .metrics td:not(:first-child) { color: var(--muted); font-size: 13px; }
+    .metrics .candidate { color: var(--text); }
+    ul, ol { margin: 10px 0 0; padding-left: 20px; }
+    li + li { margin-top: 7px; }
+    .receipt { display: grid; gap: 10px; margin-top: 16px; }
+    .receipt-item { padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--mint); border-radius: 0 8px 8px 0; background: var(--panel); }
+    .receipt-item.deferred { border-left-color: var(--gold); color: var(--text); }
+    .receipt-item strong { display: block; margin-bottom: 4px; }
+    .receipt-item p { color: var(--muted); }
+    footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    @media (max-width: 900px) {
+      header { grid-template-columns: 1fr; }
+      .stamp { justify-self: start; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: 1fr; gap: 8px; }
+      .arrow { transform: rotate(90deg); }
+    }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="eyebrow">TSK-808 · WP12A native evidence refresh</div>
+      <h1>Bounded adapters passed; elevated workbench projections stay skipped.</h1>
+      <p class="lede">The live `/next` app proved the internal worker, guarded workspace filesystem, app-owned accessible status, terminal lease, Rust Git/GitService adapter, and Roslyn CodeLens/Peek continuity. Tree/view projection and VS Code `vscode.scm` projection remain elevated host/service work, not hidden passes.</p>
+    </div>
+    <div class="stamp">BASE<br><code>5eadb6d</code><br>2026-08-04<br>APP PID <code>51821</code><br><span class="passed">NATIVE PASSED</span></div>
+  </header>
+
+  <div class="decision">
+    <strong>Decision</strong>
+    Release only <b>Works now</b> and <b>Bounded adapter</b> rows. Keep the one LocalWebWorker/service container, keep the app-owned PTY and Rust Git authorities, and keep unavailable VS Code workbench projections classified as <b>Elevated host/service override required</b>. Controller verification passed; no SQL or database path is in scope.
+  </div>
+
+  <nav aria-label="Report sections">
+    <a href="#evidence">Native evidence</a>
+    <a href="#matrix">API matrix</a>
+    <a href="#metrics">Metrics</a>
+    <a href="#architecture">Adapter shape</a>
+    <a href="#sequence">Sequence</a>
+  </nav>
+
+  <section id="evidence">
+    <h2>Native evidence</h2>
+    <p class="muted">Evidence reflects the provided native run. The app remains running for user inspection.</p>
+    <div class="grid" style="margin-top:18px">
+      <article class="card"><div class="number">01 · APP</div><h3>`/next` Tauri</h3><p>PID <code>51821</code> from <code>tauri:dev:next</code>. EdiPlatform C# reached ready state.</p></article>
+      <article class="card"><div class="number">02 · WORKER</div><h3>Generation guards</h3><p>Worker activation generation <code>1</code>; lifecycle <code>EdiPlatform -> rental-management -> EdiPlatform</code> reached generation <code>3</code>.</p></article>
+      <article class="card"><div class="number">03 · FILESYSTEM</div><h3>Bounded read</h3><p>EdiPlatform README returned <code>1478</code> bytes. Outside-root and stale-generation requests were rejected.</p></article>
+      <article class="card"><div class="number">04 · CLEANUP</div><h3>Process guard</h3><p>Full disposal samples <code>106/104/104ms</code>; app/WebContent/two Roslyn/DevTools gone; OS-level remaining owners <code>0</code>.</p></article>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Area</th><th>Native receipt</th><th>Boundary</th></tr></thead>
+        <tbody>
+          <tr><td>Terminal</td><td><span class="passed">Passed</span>: show/write/resize/dispose.</td><td>No shell command, executable field, process API, or second backend.</td></tr>
+          <tr><td>Internal Rust Git/GitService SCM</td><td><span class="passed">Passed</span>: read/refresh/dispose with <code>2</code> groups.</td><td>Read-only adapter only; not VS Code <code>vscode.scm</code>; no mutation.</td></tr>
+          <tr><td>Notification/progress</td><td><span class="passed">Passed</span>: worker invocation plus app-owned accessible status receipt.</td><td>No native VS Code dialog/progress UI behavior claimed.</td></tr>
+          <tr><td>Roslyn CodeLens/Peek</td><td><span class="passed">Passed</span>: CodeLens <code>15/20/24/26/27/28</code>; clicked <code>27</code>; Peek found <code>28</code> symbols in <code>9</code> files; warm Peek <code>46ms</code>.</td><td>Exactly two warm Roslyn processes in distinct cwd roots; no second semantic owner.</td></tr>
+          <tr><td>Console</td><td><span class="passed">Passed</span>: fresh DevTools showed only Vite/Svelte warning/info.</td><td>No unsupported SCM/view, extension-host startup, <code>file:///src</code>, load-failed, or disposed-model errors.</td></tr>
+          <tr><td>Resource sample</td><td><span class="passed">Measured</span>: app idle <code>0.0%/119,216 KiB</code>, peak <code>0.1%/119,232 KiB</code>; WebKit worker host idle <code>0.0%/889,728 KiB</code>, peak <code>0.1%/889,744 KiB</code>.</td><td>Sample receipt only; not a continuous profiler trace.</td></tr>
+          <tr><td>Disk footprint</td><td><span class="passed">Measured</span>: feature source <code>70,486</code> bytes; emitted probe asset <code>13,163</code> bytes; build <code>28,940 KiB</code>; <code>.svelte-kit</code> <code>40,572 KiB</code>; <code>src-tauri/target</code> <code>2,421,200 KiB</code>.</td><td>Directory/artifact measurements only; not a generic extension package budget.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="matrix">
+    <h2>API and capability matrix</h2>
+    <p class="muted">SCM is intentionally split: the internal Rust Git/GitService adapter passed; VS Code <code>vscode.scm</code> projection remains an elevated host/service item.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>API / capability</th><th>Classification</th><th>Evidence or adapter boundary</th><th>Native status</th></tr></thead>
+        <tbody>
+          <tr><td>Houston theme contribution</td><td><span class="pill works">Works now</span></td><td>Pinned declarative JSON in the existing LocalWebWorker registration.</td><td>Existing baseline preserved.</td></tr>
+          <tr><td>Grammar / language metadata / snippets</td><td><span class="pill declarative">Declarative only</span></td><td>Pinned default-extension packages and official Svelte assets; no Node entrypoint or semantic process.</td><td>No activation probe required.</td></tr>
+          <tr><td>Native Monaco DiffEditor</td><td><span class="pill works">Works now</span></td><td>Existing paired models and Rust-owned bounded content.</td><td>Existing implementation evidence preserved.</td></tr>
+          <tr><td>Activation / readiness / dispose</td><td><span class="pill bounded">Bounded adapter</span></td><td>Existing registration handle and LocalWebWorker readiness; no duplicate service container.</td><td><span class="passed">Passed</span>: worker generation <code>1</code>; no extension-host startup errors.</td></tr>
+          <tr><td>Commands</td><td><span class="pill bounded">Bounded adapter</span></td><td>Deterministic shared command service path; generation-tagged results.</td><td><span class="passed">Passed</span> through active worker generation.</td></tr>
+          <tr><td>Workspace folders/events</td><td><span class="pill bounded">Bounded adapter</span></td><td>Canonical roots, generation changes, stale rejection, one listener path.</td><td><span class="passed">Passed</span>: lifecycle <code>EdiPlatform -> rental-management -> EdiPlatform</code>, generation <code>3</code>.</td></tr>
+          <tr><td><code>workspace.fs</code></td><td><span class="pill bounded">Bounded adapter</span></td><td>Active-root membership, path boundary, exact allow-list, generation guard.</td><td><span class="passed">Passed</span>: README <code>1478</code> bytes; outside/stale rejected.</td></tr>
+          <tr><td>Notifications / progress</td><td><span class="pill bounded">Bounded adapter</span></td><td>Worker invokes app-owned accessible status/progress surface.</td><td><span class="passed">Passed</span>; no VS Code dialog behavior claimed.</td></tr>
+          <tr><td>Tree/view projection</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>EditorService reports no registered view. Runtime/manifest attempt removed; no second service container.</td><td><span class="deferred">Skipped</span> without blocking bounded adapters.</td></tr>
+          <tr><td>Terminal API</td><td><span class="pill bounded">Bounded adapter</span></td><td>Exact owned ID + generation over existing terminal service; show/write/resize/dispose only.</td><td><span class="passed">Passed</span>; no lingering PTY process.</td></tr>
+          <tr><td>Internal Rust Git/GitService adapter</td><td><span class="pill bounded">Bounded adapter</span></td><td>Read/select/refresh/dispose over existing Rust Git active-root provider; bounded groups/resources.</td><td><span class="passed">Passed</span>: <code>2</code> groups; no lingering Git probe process.</td></tr>
+          <tr><td>VS Code <code>vscode.scm</code> projection</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>Current host does not provide the VS Code SCM projection without elevated service override.</td><td><span class="deferred">Skipped</span>; kept separate from internal SCM adapter.</td></tr>
+          <tr><td>Roslyn CodeLens / Peek</td><td><span class="pill bounded">Bounded adapter</span></td><td>Existing Roslyn client remains sole semantic owner; probe adds no LSP.</td><td><span class="passed">Passed</span>: CodeLens lines <code>15/20/24/26/27/28</code>, Peek <code>28</code> symbols in <code>9</code> files, selected source preserved, warm Peek <code>46ms</code>.</td></tr>
+          <tr><td>Webview / custom editor</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>CSP, z-order, resource roots, and untrusted content are not proven here.</td><td><span class="deferred">Skipped</span>.</td></tr>
+          <tr><td>Network / auth / secrets</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>Worker/CSP boundary is not an implicit network or credential policy.</td><td><span class="deferred">Skipped</span>.</td></tr>
+          <tr><td>GitLens / full workbench</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>Expected views/storage/repository/auth services exceed this bounded host.</td><td><span class="deferred">Separate spike only</span>.</td></tr>
+          <tr><td>Generic VSIX lifecycle</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>No exact package/hash selected; consent, traversal, size, rollback, and cleanup remain deferred.</td><td><span class="deferred">Skipped</span>.</td></tr>
+          <tr><td>Git Graph extension</td><td><span class="pill rejected">Rejected</span></td><td>Node/workspace-oriented extension with no browser entry, Git-executable dependency, and unsuitable redistribution evidence.</td><td>Not a native probe candidate.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="metrics">
+    <h2>Comparison metrics</h2>
+    <p class="muted">Every metric cell contains a measured value, measured failure, or explicit measurement limit. Focused contracts, TypeScript, diff hygiene, and one serialized production build passed.</p>
+    <div class="table-wrap">
+      <table class="metrics">
+        <thead><tr><th>Candidate / API set</th><th>Class</th><th>Host / lifecycle</th><th>Workspace / FS</th><th>Terminal / SCM</th><th>Resource / disk</th><th>Editor safety</th><th>Console / cleanup</th></tr></thead>
+        <tbody>
+          <tr><td class="candidate">Houston + declarative baseline</td><td><span class="pill works">Works now</span></td><td>Existing singleton retained; cold product benchmark limit: dirty-HMR attempt showed window/top bar but <code>MY WORK</code> failed within <code>99,000ms</code>, so discarded as stale-dev-runtime evidence.</td><td>No activation path required.</td><td>No PTY/Git ownership.</td><td>Feature source total <code>70,486</code> bytes; emitted probe asset <code>13,163</code> bytes.</td><td>Roslyn continuity checked in full flow.</td><td>No related console errors in fresh run.</td></tr>
+          <tr><td class="candidate">Internal commands / workspace / feedback</td><td><span class="pill bounded">Bounded adapter</span></td><td>Current app hydrated: PID <code>51821</code>; worker generation <code>1</code>. Command benchmark limit: AX automation produced <code>0</code> valid samples, so no percentile claimed.</td><td>README <code>1478</code> bytes; outside/stale rejected; lifecycle generation <code>3</code>. Restored native <code>/next</code> timing: Source Control in <code>936.2ms</code> and <code>C#: ready</code> in <code>1,177.3ms</code> after selecting EdiPlatform. Exact small-versus-large percentile samples remain a limit; earlier warm switches succeeded with no hang.</td><td>No separate process owner.</td><td>App idle <code>0.0%/119,216 KiB</code>, peak <code>0.1%/119,232 KiB</code>; WebKit worker idle <code>0.0%/889,728 KiB</code>, peak <code>0.1%/889,744 KiB</code>.</td><td>Center tabs and selected file preserved.</td><td>No extension-host startup, <code>file:///src</code>, load-failed, or disposed-model errors.</td></tr>
+          <tr><td class="candidate">Owned PTY adapter</td><td><span class="pill bounded">Bounded adapter</span></td><td>Existing terminal service owner; current app hydrated under PID <code>51821</code>.</td><td>Exact owned ID + generation boundary.</td><td>Show/write/resize/dispose passed.</td><td>OS-level remaining PTY owners after disposal: <code>0</code>.</td><td>Editor/session preserved.</td><td>No lingering PTY process.</td></tr>
+          <tr><td class="candidate">Internal Rust Git/GitService adapter</td><td><span class="pill bounded">Bounded adapter</span></td><td>Existing Rust Git service owner; no VS Code SCM service projection.</td><td>Active-root, generation-bounded read model.</td><td>Read/refresh/dispose passed with <code>2</code> groups.</td><td>SCM adapter source <code>4,380</code> bytes; OS-level remaining Git owners after disposal: <code>0</code>.</td><td>CodeLens/Peek preserved after SCM flow.</td><td>No lingering Git probe process.</td></tr>
+          <tr><td class="candidate">Roslyn semantic continuity</td><td><span class="pill bounded">Bounded adapter</span></td><td>Exactly two warm Roslyn processes in distinct cwd roots.</td><td><code>EdiPlatform -> rental-management -> EdiPlatform</code> completed without a hang. A restored native <code>/next</code> selection reached <code>C#: ready</code> in <code>1,177.3ms</code>; exact small-versus-large percentile samples remain unavailable.</td><td>No Git/PTY side effects.</td><td>Roslyn EdiPlatform <code>0.0%/730,432 KiB</code>; Roslyn rental-management <code>0.0%/164,960 KiB</code>.</td><td>CodeLens <code>15/20/24/26/27/28</code>; clicked <code>27</code>; Peek <code>28</code> symbols in <code>9</code> files; <code>2</code> in <code>EmailAlertDispatcherTests</code>; <code>19</code> in <code>EdiPlatformDbContext</code>; selected <code>public class AdminAlertConfiguration</code>; warm Peek <code>46ms</code>.</td><td>Full disposal <code>106/104/104ms</code>; app/WebContent/two Roslyn/DevTools gone; OS-level remaining app/worker/Roslyn owners <code>0</code>. In-process owner enumeration after process death unavailable; Node contracts assert cleanup.</td></tr>
+          <tr><td class="candidate">Tree/view and VS Code SCM projections</td><td><span class="pill elevated">Elevated host/service override required</span></td><td>Runtime/manifest attempt removed; no second service container.</td><td>Measured skipped path: EditorService reports no registered view.</td><td>VS Code service projections skipped; internal Rust Git/GitService adapter is the supported SCM path.</td><td>Build output <code>28,940 KiB</code>; <code>.svelte-kit</code> <code>40,572 KiB</code>; <code>src-tauri/target</code> <code>2,421,200 KiB</code>.</td><td>No native projection support claimed.</td><td>No unsupported SCM/view errors in fresh console.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <h2>Single-owner adapter shape</h2>
+    <p class="muted">The probe adds policy and receipts around existing app authorities. It does not create another Monaco service container, Roslyn owner, terminal backend, Git owner, or database path.</p>
+    <div class="flow" role="img" aria-label="Internal fixture through one LocalWebWorker into existing application authorities">
+      <div class="flow-box"><strong>Internal probe fixture</strong><br><span>Commands · roots/fs · events · accessible feedback · bounded leases</span></div>
+      <div class="arrow">-></div>
+      <div class="flow-box"><strong>One LocalWebWorker / Monaco host</strong><br><span>Existing registration handle, worker URL, service singleton, activation generation</span></div>
+      <div class="arrow">-></div>
+      <div class="flow-box"><strong>Existing trusted authorities</strong><br><span>Roslyn client · C# filesystem · owned PTY · Rust Git/GitService · workspace generation</span></div>
+    </div>
+  </section>
+
+  <section id="sequence">
+    <h2>Acceptance sequence: performed versus deferred</h2>
+    <div class="receipt">
+      <div class="receipt-item"><strong>Performed: native app and worker</strong><p>Verified `/next` app PID <code>51821</code>, EdiPlatform C# ready, worker activation generation <code>1</code>, lifecycle generation <code>3</code>, center tabs and selected file preserved.</p></div>
+      <div class="receipt-item"><strong>Performed: guarded adapters</strong><p>README read <code>1478</code> bytes; outside/stale rejected; terminal show/write/resize/dispose passed; internal Rust Git/GitService read/refresh/dispose passed with <code>2</code> groups.</p></div>
+      <div class="receipt-item"><strong>Performed: Roslyn and console proof</strong><p>Exactly two warm Roslyn processes in distinct cwd roots; CodeLens <code>15/20/24/26/27/28</code>; clicked <code>27</code>; Peek found <code>28</code> symbols in <code>9</code> files; fresh console had only Vite/Svelte warning/info.</p></div>
+      <div class="receipt-item deferred"><strong>Deferred/skipped: elevated workbench projections</strong><p>Tree/view projection requires elevated host/service override because EditorService reports no registered view. VS Code <code>vscode.scm</code> projection requires elevated host/service override. Runtime/manifest attempt removed; no second service container.</p></div>
+      <div class="receipt-item"><strong>Passed: controller build and focused checks</strong><p>Focused extension/SCM/terminal/CodeLens/dockview contracts, <code>pnpm check</code>, <code>git diff --check</code>, and one serialized <code>pnpm build</code> passed. Existing unrelated Svelte accessibility/chunk-size warnings did not fail the build.</p></div>
+    </div>
+  </section>
+
+  <footer>Native report refresh only. Files changed: <code>docs/research/tsk-808-extension-compatibility.md</code> and <code>output/tsk-808-extension-compatibility/index.html</code>. The live app remains running for user inspection. No SQL/database work is in scope; DB-side SQL rules remain unchanged.</footer>
+</main>
+</body>
+</html>

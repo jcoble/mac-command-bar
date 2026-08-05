@@ -91,12 +91,23 @@ function readDeclarations(css) {
 
 // ── Every theme sets every color the shell reads ───────────────────────────
 {
+  const semanticNames = [
+    '--color-selected',
+    '--color-selected-border',
+    '--color-hover',
+    '--color-focus-solid',
+    '--color-disabled-text',
+    '--color-status-idle'
+  ];
   const expected = [...TOKEN_NAMES].sort();
   assert.deepEqual(
     [...PALETTE_TOKEN_NAMES, ...CHROME_TOKEN_NAMES].sort(),
     expected,
     'TOKEN_NAMES must be the palette names plus the extra chrome names, nothing else'
   );
+  for (const name of semanticNames) {
+    assert.ok(PALETTE_TOKEN_NAMES.includes(name), `${name} must be part of the theme palette`);
+  }
 
   for (const theme of THEMES) {
     assert.deepEqual(

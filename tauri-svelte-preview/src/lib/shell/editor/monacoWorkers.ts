@@ -1,12 +1,12 @@
 import editorWorkerUrl from "monaco-editor/esm/vs/editor/editor.worker?worker&url";
-import extensionHostWorkerUrl from "@codingame/monaco-vscode-api/workers/extensionHost.worker?worker&url";
+import extensionHostWorkerUrl from "@codingame/monaco-vscode-api/workers/extensionHost.worker?url";
 import textMateWorkerUrl from "@codingame/monaco-vscode-textmate-service-override/worker?worker&url";
 import jsonWorkerUrl from "@codingame/monaco-vscode-standalone-json-language-features/worker?worker&url";
 import typeScriptWorkerUrl from "@codingame/monaco-vscode-standalone-typescript-language-features/worker?worker&url";
 
 type MonacoWorkerEnvironment = {
   getWorker?: (moduleId: string, label: string) => Worker;
-  getWorkerUrl?: (moduleId: string, label: string) => string;
+  getWorkerUrl?: (moduleId: string, label: string) => string | undefined;
   getWorkerOptions?: (
     moduleId: string,
     label: string
@@ -15,8 +15,12 @@ type MonacoWorkerEnvironment = {
   [key: string]: unknown;
 };
 
-function workerUrlFor(label: string): string {
+function workerUrlFor(label: string): string | undefined {
   switch (label) {
+    case "webWorkerExtensionHostIframe":
+      // Vite 8 returns HTTP 500 for the package's pnpm-nested HTML URL in dev.
+      // The self-contained, version-pinned copy is shipped with the native app.
+      return "/vscode/webWorkerExtensionHostIframe.html";
     case "extensionHostWorkerMain":
       return extensionHostWorkerUrl;
     case "TextMateWorker":

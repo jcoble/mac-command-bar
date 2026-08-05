@@ -62,6 +62,13 @@
     type OpenEditorFile
   } from '$lib/shell/editor/editorStore.svelte';
   import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    configureExtensionApiProbeRuntime,
+    disposeExtensionApiProbeRuntime,
+    onExtensionApiProbeObservation,
+    setExtensionApiProbeWorkspace,
+    type ExtensionApiProbeObservation
+  } from '$lib/shell/editor/extensionApiProbeController';
   import { explorer, selectPath, setScrollTop } from '$lib/shell/explorer/explorerStore.svelte';
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService } from '$lib/shell/git/gitService';
@@ -153,6 +160,8 @@
   let restoringWorkspace = false;
 
   let service: ReturnType<typeof createTerminalService> | null = null;
+  let extensionApiProbeTerminalHost: HTMLElement | null = null;
+  let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
   let disposed = false;
   let frameControls: {
     resetLayout(): void;
@@ -491,6 +500,7 @@
   async function selectOwned(ownedId: string): Promise<void> {
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
+    const selected = rail.owned.find((session) => session.ownedId === ownedId);
     // Save the session being left BEFORE anything points the panels elsewhere.
     // Gated the same way as the restore below: during start-up the panels are
     // still empty, and saving that emptiness would overwrite the tabs the
@@ -498,6 +508,10 @@
     // scan runs — including the close button, which switches sessions too).
     if (switching && previous !== null && shellPanels.loadsAllowed()) snapshotWorkspace(previous);
     if (switching && previous !== null) stopConversationTranscriptMirror(previous);
+    if (switching && selected) {
+      const root = selected.cwd.trim() || (selected.projectPath ?? '').trim();
+      if (root) await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root });
+    }
     setActiveOwned(ownedId);
     service?.show(ownedId);
     // Point the file tree, the context cards and any tab the user has already
@@ -508,7 +522,6 @@
     // stored record back here would throw away every file opened since the last
     // switch, which is the opposite of what a click on your own row means.
     if (switching) restoreWorkspace(ownedId);
-    const selected = rail.owned.find((session) => session.ownedId === ownedId);
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
       // A running PTY is already the owner of this agent session. Starting a
@@ -836,6 +849,9 @@
     // paints in the theme it sets.
     applyStoredTheme();
     disposed = false;
+    const stopExtensionApiProbeObservations = onExtensionApiProbeObservation((observation) => {
+      extensionApiProbeObservation = observation;
+    });
     void startConversationEvents();
     // Honour where the reader last put the Problems list. The frame and the
     // tool column both mount before this runs, so both have handed over their
@@ -875,6 +891,12 @@
         });
         await service.attach();
         if (disposed) return;
+        if (extensionApiProbeTerminalHost) {
+          await configureExtensionApiProbeRuntime({
+            terminalService: service,
+            terminalHost: extensionApiProbeTerminalHost
+          });
+        }
 
         // Rail hydration — the ONLY launch IO (constitution).
         const live = (await backend.list()) ?? [];
@@ -941,15 +963,18 @@
     window.addEventListener('pagehide', saveOnLeaving);
 
     return () => {
+      stopExtensionApiProbeObservations();
       window.removeEventListener('pagehide', saveOnLeaving);
       // Navigating away inside the app ends here instead, and it is the same
       // last chance to remember what the session on screen had open.
       if (!disposed && rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
       disposed = true;
       stopConversationEvents();
-      // dispose() drops views + the listener ONLY. Every PTY survives.
-      service?.dispose();
+      // Probe teardown closes only its disposable PTY first. The product
+      // service then drops views + its listener while every user PTY survives.
+      const serviceToDispose = service;
       service = null;
+      void disposeExtensionApiProbeRuntime().finally(() => serviceToDispose?.dispose());
       pendingHosts.clear();
       awaitingReattach.clear();
       livePtySizes.clear();
@@ -1104,6 +1129,17 @@
     message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}
   />
+  <div
+    bind:this={extensionApiProbeTerminalHost}
+    class="extension-api-probe-terminal-host"
+    aria-hidden="true"
+  ></div>
+  {#if extensionApiProbeObservation}
+    <div class="extension-api-probe-observation" role="status" aria-live="polite">
+      <strong>{extensionApiProbeObservation.summary}</strong>
+      <span>{extensionApiProbeObservation.detail}</span>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -1119,8 +1155,8 @@
     height: 100vh;
     width: 100vw;
     overflow: hidden;
-    background: #101014;
-    color: #d8d8e0;
+    background: var(--color-bg);
+    color: var(--color-text);
   }
 
   .top-bar {
@@ -1139,5 +1175,36 @@
   .frame-area {
     flex: 1 1 auto;
     min-height: 0;
+  }
+
+  .extension-api-probe-terminal-host {
+    position: fixed;
+    left: -10000px;
+    top: -10000px;
+    width: 800px;
+    height: 480px;
+    pointer-events: none;
+  }
+
+  .extension-api-probe-observation {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    z-index: 120;
+    display: grid;
+    max-width: min(560px, calc(100vw - 32px));
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg) 96%, transparent);
+    color: var(--color-text);
+    box-shadow: 0 12px 28px rgb(0 0 0 / 38%);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .extension-api-probe-observation span {
+    color: var(--color-text-2);
   }
 </style>

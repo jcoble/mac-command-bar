@@ -34,8 +34,9 @@
  * SCOPE: colors and elevation only. Spacing, font sizes, weights
  * and radii are identical in both shells and keep coming from
  * tokens.css — this file deliberately does not restate them.
- * Every name below already exists in tokens.css; nothing new is
- * invented here.
+ * Most names below already exist in tokens.css. The semantic interaction
+ * and status names are owned by the /next theme registry until the old shell
+ * adopts them deliberately.
  * ============================================================ */
 
 :is(:root:has(.next-shell), .next-shell) {
@@ -50,53 +51,58 @@
    *           both. Derived for /next; the old palette used a
    *           translucent white, which washes out on near-black.
    * ------------------------------------------------------------------ */
-  --color-bg:       #101014;
-  --color-surface:  #17171d;
+  --color-bg: #101014;
+  --color-surface: #17171d;
   --color-elevated: #1f1f27;
 
   /* ------------------------------------------------------------------
-   * Text hierarchy — primary, secondary, and the faint third tier
-   * used for hints and disabled labels.
+   * Text hierarchy — primary and secondary carry information. The faint
+   * third tier is decorative-only; disabled labels have their own token.
    * ------------------------------------------------------------------ */
-  --color-text:   #d8d8e0;
-  --color-text-2: #6d6d7d;
-  --color-text-3: #4c4c5a;
+  --color-text: #eef0f9;
+  --color-text-2: #a7a7b5;
+  --color-text-3: #767687;
+  --color-disabled-text: #858599;
 
   /* ------------------------------------------------------------------
    * Accent, hairlines and the focus tint.
-   * Accent and focus are carried over unchanged from tokens.css —
-   * the mint reads well on near-black and keeps one accent across
-   * both shells. The hairline is the /next border (#22222c), the
-   * same line the dock draws between groups.
+   * Accent and focus keep the Houston mint. The boundary tone is
+   * intentionally brighter so a meaningful one-pixel divider clears
+   * 3:1 even when it borders a selected or hovered surface.
    * ------------------------------------------------------------------ */
   --color-accent: #4bf3c8;
-  --color-border: #22222c;
-  --color-focus:  rgba(75, 243, 200, 0.45);
+  --color-border: #858599;
+  --color-focus: rgba(75, 243, 200, 0.45);
+  --color-focus-solid: #4bf3c8;
+
+  /* Interaction surfaces are opaque so text contrast is deterministic. */
+  --color-selected: #26302f;
+  --color-selected-border: #4bbd9f;
+  --color-hover: #25252e;
 
   /* ------------------------------------------------------------------
-   * Status tones — copied unchanged from tokens.css so a running
-   * session, a passing check and a failure look the same in both
-   * shells. Only the idle tone is nudged brighter: a 12% white on
-   * #101014 is nearly invisible.
+   * Status tones — live is blue and good is green so running and done
+   * never collapse into the same signal. Idle is opaque so its computed
+   * contrast remains stable on every interaction surface.
    * ------------------------------------------------------------------ */
-  --color-live:      #4bf3c8;
-  --color-good:      #8bdc9b;
-  --color-bad:       #ff6d91;
+  --color-live: #54b9ff;
+  --color-good: #8bdc9b;
+  --color-bad: #ff6d91;
   --color-attention: #ffd493;
-  --color-idle:      rgba(255, 255, 255, 0.16);
+  --color-idle: #9494a5;
+  --color-status-idle: #9494a5;
 
   /* ------------------------------------------------------------------
-   * Derived color — text printed on top of the accent, plus the
-   * translucent status fills. Copied unchanged from tokens.css;
-   * they are tints of the status tones above and land correctly on
-   * the darker background without adjustment.
+   * Derived color — text printed on top of the accent, plus translucent
+   * status fills. Live follows the blue live tone; the others retain the
+   * established Houston tints.
    * ------------------------------------------------------------------ */
-  --color-on-accent:     #0e1013;
-  --color-live-bg:       rgba(75, 243, 200, 0.12);
-  --color-good-bg:       rgba(139, 220, 155, 0.12);
-  --color-bad-bg:        rgba(255, 109, 145, 0.12);
-  --color-bad-bg-strong: rgba(255, 109, 145, 0.20);
-  --color-attention-bg:  rgba(255, 212, 147, 0.12);
+  --color-on-accent: #0e1013;
+  --color-live-bg: rgba(84, 185, 255, 0.12);
+  --color-good-bg: rgba(139, 220, 155, 0.12);
+  --color-bad-bg: rgba(255, 109, 145, 0.12);
+  --color-bad-bg-strong: rgba(255, 109, 145, 0.2);
+  --color-attention-bg: rgba(255, 212, 147, 0.12);
 
   /* ------------------------------------------------------------------
    * Focus ring — same shorthand as tokens.css, restated here so it
@@ -110,13 +116,9 @@
    * are invisible and a dialog looks pasted on rather than lifted.
    * ------------------------------------------------------------------ */
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.45);
-  --shadow-md:
-    0 4px 16px rgba(0, 0, 0, 0.55),
-    0 1px 4px rgba(0, 0, 0, 0.4);
-  --shadow-lg:
-    0 8px 32px rgba(0, 0, 0, 0.6),
-    0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-thumb:    0 1px 4px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.55), 0 1px 4px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.5);
   --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
-  --color-scrim:     rgba(0, 0, 0, 0.62);
+  --color-scrim: rgba(0, 0, 0, 0.62);
 }

@@ -66,6 +66,15 @@ export type CloseOwnedResult = {
   error: unknown;
 };
 
+export type OwnedTerminalProbe = {
+  readonly ownedId: string;
+  readonly generation: number;
+  show(): void;
+  write(data: string): Promise<boolean>;
+  resize(cols: number, rows: number): Promise<boolean>;
+  dispose(): Promise<CloseOwnedResult>;
+};
+
 /** Side effects a view reports back to the service (mirrors `xtermFactory`). */
 export type TerminalViewHooks = {
   onData(data: string): void;
@@ -121,6 +130,7 @@ export type TerminalService = {
     host: HTMLElement,
     size?: { cols: number; rows: number } | null
   ): Promise<boolean>;
+  createProbe(owned: OwnedSession, host: HTMLElement): Promise<OwnedTerminalProbe | null>;
   /** Make one owned session's terminal the visible one. */
   show(ownedId: string): void;
   /**
@@ -214,6 +224,11 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
  * re-attach at a quarter of the ring.
  */
 const REPLAY_TAIL_MAX_CHARS = 4 * 1024 * 1024;
+const PROBE_WRITE_MAX_CHARS = 64 * 1024;
+const TERMINAL_MIN_COLS = 20;
+const TERMINAL_MAX_COLS = 300;
+const TERMINAL_MIN_ROWS = 4;
+const TERMINAL_MAX_ROWS = 100;
 
 /**
  * The tail of `scrollback` that can plausibly fill a view, at most
@@ -228,6 +243,30 @@ function replayTail(scrollback: string): string {
   const tail = scrollback.slice(-REPLAY_TAIL_MAX_CHARS);
   const first = tail.charCodeAt(0);
   return first >= 0xdc00 && first <= 0xdfff ? tail.slice(1) : tail;
+}
+
+function normalizeProbeWrite(data: string): string | null {
+  if (typeof data !== 'string' || data.length === 0 || data.length > PROBE_WRITE_MAX_CHARS) {
+    return null;
+  }
+  return data;
+}
+
+function normalizeProbeSize(cols: number, rows: number): { cols: number; rows: number } | null {
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
+    return null;
+  }
+  const nextCols = Math.trunc(cols);
+  const nextRows = Math.trunc(rows);
+  if (
+    nextCols < TERMINAL_MIN_COLS ||
+    nextCols > TERMINAL_MAX_COLS ||
+    nextRows < TERMINAL_MIN_ROWS ||
+    nextRows > TERMINAL_MAX_ROWS
+  ) {
+    return null;
+  }
+  return { cols: nextCols, rows: nextRows };
 }
 
 export function createTerminalService(opts: {
@@ -282,6 +321,11 @@ export function createTerminalService(opts: {
    * can cancel it instead of resizing a PTY nobody owns any more.
    */
   const nudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const probesByOwned = new Map<
+    string,
+    { ownedId: string; generation: number; ptyId: string; disposed: boolean }
+  >();
+  let nextProbeGeneration = 0;
   /**
    * The ownedId whose view is currently being constructed. `createTerminal` is
    * `(host) => view` with no key, so this hands the key to the closure that
@@ -324,6 +368,42 @@ export function createTerminalService(opts: {
     }
     ptyByOwned.set(ownedId, ptyId);
     ownedByPty.set(ptyId, ownedId);
+  }
+
+  function invalidateProbeForOwned(ownedId: string): void {
+    const probe = probesByOwned.get(ownedId);
+    if (probe) {
+      probe.disposed = true;
+      probesByOwned.delete(ownedId);
+    }
+  }
+
+  function liveProbePty(ownedId: string, generation: number): string | null {
+    const probe = probesByOwned.get(ownedId);
+    if (
+      probe == null ||
+      probe.disposed ||
+      probe.generation !== generation ||
+      ptyByOwned.get(ownedId) !== probe.ptyId
+    ) {
+      return null;
+    }
+    return probe.ptyId;
+  }
+
+  async function closeLiveProbeForOwned(ownedId: string): Promise<void> {
+    const probe = probesByOwned.get(ownedId);
+    if (probe == null) {
+      return;
+    }
+    const ptyId = liveProbePty(probe.ownedId, probe.generation);
+    if (ptyId == null) {
+      invalidateProbeForOwned(ownedId);
+      return;
+    }
+    probe.disposed = true;
+    probesByOwned.delete(ownedId);
+    await closeOwned(ownedId, ptyId);
   }
 
   /** Forget everything keyed by `ptyId`. Called when a session stops being ours. */
@@ -642,6 +722,66 @@ export function createTerminalService(opts: {
     return true;
   }
 
+  async function createProbe(
+    owned: OwnedSession,
+    host: HTMLElement
+  ): Promise<OwnedTerminalProbe | null> {
+    await closeLiveProbeForOwned(owned.ownedId);
+    let ptyId: string | null;
+    if (owned.ptySessionId) {
+      ptyId = (await adoptExisting(owned, host)) ? owned.ptySessionId : null;
+    } else {
+      ptyId = await startOwned(owned, host);
+    }
+    if (!ptyId) {
+      return null;
+    }
+
+    const generation = ++nextProbeGeneration;
+    const token = { ownedId: owned.ownedId, generation, ptyId, disposed: false };
+    probesByOwned.set(owned.ownedId, token);
+
+    return {
+      ownedId: owned.ownedId,
+      generation,
+      show(): void {
+        if (liveProbePty(owned.ownedId, generation) != null) {
+          show(owned.ownedId);
+        }
+      },
+      async write(data: string): Promise<boolean> {
+        const bounded = normalizeProbeWrite(data);
+        const currentPty = bounded == null ? null : liveProbePty(owned.ownedId, generation);
+        if (currentPty == null || bounded == null) {
+          return false;
+        }
+        return backend.write(currentPty, bounded);
+      },
+      async resize(cols: number, rows: number): Promise<boolean> {
+        const size = normalizeProbeSize(cols, rows);
+        const currentPty = size == null ? null : liveProbePty(owned.ownedId, generation);
+        if (currentPty == null || size == null) {
+          return false;
+        }
+        resizePty(currentPty, size.cols, size.rows);
+        return true;
+      },
+      async dispose(): Promise<CloseOwnedResult> {
+        const currentPty = liveProbePty(owned.ownedId, generation);
+        if (currentPty == null) {
+          token.disposed = true;
+          if (probesByOwned.get(owned.ownedId) === token) {
+            probesByOwned.delete(owned.ownedId);
+          }
+          return { successor: manager.activeKey(), error: null };
+        }
+        token.disposed = true;
+        probesByOwned.delete(owned.ownedId);
+        return closeOwned(owned.ownedId, currentPty);
+      }
+    };
+  }
+
   function show(ownedId: string): void {
     manager.showView(ownedId);
   }
@@ -685,6 +825,7 @@ export function createTerminalService(opts: {
       ptySessionIdHint !== '' &&
       !Array.from(ptyByOwned.values()).includes(ptySessionIdHint);
     const ptyId = mapped ?? (hintUsable ? ptySessionIdHint : null);
+    invalidateProbeForOwned(ownedId);
     // Drop the mapping first so a concurrent close can't double-kill the PTY.
     ptyByOwned.delete(ownedId);
     if (mapped) {
@@ -725,6 +866,10 @@ export function createTerminalService(opts: {
     manager.disposeAll();
     ptyByOwned.clear();
     ownedByPty.clear();
+    for (const probe of probesByOwned.values()) {
+      probe.disposed = true;
+    }
+    probesByOwned.clear();
     // The PTYs live on but the VIEWS do not: the next mount rebuilds them from
     // scratch, and a remembered size would suppress the resize that new view
     // legitimately needs.
@@ -732,5 +877,14 @@ export function createTerminalService(opts: {
     scrollbackCache.clear();
   }
 
-  return { attach, startOwned, adoptExisting, show, refit, closeOwned, dispose };
+  return {
+    attach,
+    startOwned,
+    adoptExisting,
+    createProbe,
+    show,
+    refit,
+    closeOwned,
+    dispose
+  };
 }

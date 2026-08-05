@@ -36,6 +36,11 @@ import {
   waitForCuratedExtensions,
 } from "../extensions/extensionRuntime";
 import { markRustGitScmApiReady } from "../extensions/rustGitScmProvider";
+import {
+  MCB_EXTENSION_API_PROBE_MARKER_FILE
+} from "./fixtures/mcbExtensionApiProbe";
+import { ensureExtensionApiProbeWorkspaceRoot } from "./extensionApiProbeController";
+import { registerExtensionApiProbeBridgeCommands } from "./extensionApiProbeBridge";
 
 const MAX_WARM_CSHARP_ROOTS = 5;
 const BUILD_COMMAND = "mcb.nativeCsharp.build";
@@ -265,8 +270,8 @@ function registerBrowserWorkspaceRoot(root: string): void {
   browserWorkspaceRoots.add(root);
   browserWorkspaceFileSystem.registerFile(
     new RegisteredMemoryFile(
-      vscode.Uri.file(`${root}/.mcb-browser-workspace`),
-      ""
+      vscode.Uri.file(`${root}/${MCB_EXTENSION_API_PROBE_MARKER_FILE}`),
+      `root=${root}\n`
     )
   );
 }
@@ -355,10 +360,10 @@ function registerDocumentActions(): void {
 }
 
 async function ensureApi(root: string): Promise<void> {
+  const workspaceContext = await ensureExtensionApiProbeWorkspaceRoot(root);
+  registerBrowserWorkspaceRoot(workspaceContext.activeRoot);
   if (isNativeTauriRuntime()) {
-    registerNativeCsharpFileSystem(root);
-  } else {
-    registerBrowserWorkspaceRoot(root);
+    registerNativeCsharpFileSystem(workspaceContext.activeRoot);
   }
   if (!apiReady) {
     apiReady = (async () => {
@@ -384,6 +389,9 @@ async function ensureApi(root: string): Promise<void> {
         userConfiguration: {
           json: JSON.stringify(vscodeEditorConfiguration()),
         },
+        advanced: {
+          enableExtHostWorker: true
+        },
         monacoWorkerFactory: configureMonacoWorkers,
       };
       await new MonacoVscodeApiWrapper(config).start();
@@ -391,22 +399,10 @@ async function ensureApi(root: string): Promise<void> {
       markRustGitScmApiReady();
       registerVscodeThemeApplier();
       registerDocumentActions();
+      registerExtensionApiProbeBridgeCommands();
     })();
   }
   await apiReady;
-
-  const workspaceUri = vscode.Uri.file(root).toString();
-  if (
-    !vscode.workspace.workspaceFolders?.some(
-      (folder) => folder.uri.toString() === workspaceUri
-    )
-  ) {
-    vscode.workspace.updateWorkspaceFolders(
-      vscode.workspace.workspaceFolders?.length ?? 0,
-      0,
-      { uri: vscode.Uri.file(root), name: root.split("/").pop() || root }
-    );
-  }
 }
 
 /**

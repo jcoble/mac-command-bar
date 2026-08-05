@@ -1,6 +1,8 @@
 import {
   ExtensionHostKind,
+  getBuiltinExtensions,
   registerExtension,
+  type IExtensionManifest,
   type RegisterExtensionResult
 } from '@codingame/monaco-vscode-api/extensions';
 
@@ -12,8 +14,35 @@ import svelteJavascriptSnippetsUrl from './svelte/snippets/javascript.json?url';
 import svelteSnippetsUrl from './svelte/snippets/svelte.json?url';
 import svelteTypescriptSnippetsUrl from './svelte/snippets/typescript.json?url';
 import { enabledCuratedExtensions } from './extensionCatalog';
+import mcbExtensionApiProbeBrowserUrl from '../editor/fixtures/mcbExtensionApiProbe.browser.cjs?url';
+import {
+  MCB_EXTENSION_API_PROBE_BROWSER_ENTRY,
+  MCB_EXTENSION_API_PROBE_MANIFEST
+} from '../editor/fixtures/mcbExtensionApiProbe';
 
-const registrations = new Map<string, RegisterExtensionResult>();
+type ExtensionRuntimeGlobal = typeof globalThis & {
+  __mcbCuratedExtensionRegistrations?: Map<string, RegisterExtensionResult>;
+};
+
+const runtimeGlobal = globalThis as ExtensionRuntimeGlobal;
+const registrations =
+  runtimeGlobal.__mcbCuratedExtensionRegistrations ?? new Map<string, RegisterExtensionResult>();
+runtimeGlobal.__mcbCuratedExtensionRegistrations = registrations;
+
+function existingRegistration(id: string): RegisterExtensionResult {
+  return {
+    id,
+    async dispose() {},
+    async isEnabled() {
+      return true;
+    },
+    async whenReady() {}
+  };
+}
+
+function registrationAlreadyLoaded(id: string): boolean {
+  return getBuiltinExtensions().some((extension) => extension.identifier.id === id);
+}
 
 /**
  * Register the curated declarative extensions exactly once.
@@ -26,6 +55,25 @@ export function registerCuratedExtensions(): void {
   if (registrations.size > 0) return;
 
   for (const extension of enabledCuratedExtensions()) {
+    if (registrationAlreadyLoaded(extension.id)) {
+      registrations.set(extension.id, existingRegistration(extension.id));
+      continue;
+    }
+
+    if (extension.id === 'mac-command-bar.extension-api-probe') {
+      const registration = registerExtension(
+        MCB_EXTENSION_API_PROBE_MANIFEST as unknown as IExtensionManifest,
+        ExtensionHostKind.LocalWebWorker,
+        { system: true }
+      );
+      registration.registerFileUrl(
+        MCB_EXTENSION_API_PROBE_BROWSER_ENTRY,
+        new URL(mcbExtensionApiProbeBrowserUrl, globalThis.location.href).href
+      );
+      registrations.set(extension.id, registration);
+      continue;
+    }
+
     if (extension.id === 'svelte.svelte-vscode-syntax') {
       const registration = registerExtension(
         {

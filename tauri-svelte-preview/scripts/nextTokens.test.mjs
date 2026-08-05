@@ -46,6 +46,14 @@ const CONSUMER_PATHS = [
 
 const nextTokensSource = read(NEXT_TOKENS_PATH);
 const sharedTokensSource = read(SHARED_TOKENS_PATH);
+const NEXT_ONLY_SEMANTIC_TOKENS = new Set([
+  '--color-selected',
+  '--color-selected-border',
+  '--color-hover',
+  '--color-focus-solid',
+  '--color-disabled-text',
+  '--color-status-idle'
+]);
 
 // ── Tiny CSS reader ────────────────────────────────────────────────────────
 // Enough to walk `selector { --name: value; }` blocks, which is all either
@@ -135,23 +143,35 @@ for (const rule of sharedRules) {
   const expected = {
     '--color-bg': '#101014',
     '--color-surface': '#17171d',
-    '--color-border': '#22222c',
-    '--color-text': '#d8d8e0',
-    '--color-text-2': '#6d6d7d',
-    '--color-text-3': '#4c4c5a'
+    '--color-border': '#858599',
+    '--color-text': '#eef0f9',
+    '--color-text-2': '#a7a7b5',
+    '--color-text-3': '#767687',
+    '--color-selected': '#26302f',
+    '--color-selected-border': '#4bbd9f',
+    '--color-hover': '#25252e',
+    '--color-focus-solid': '#4bf3c8',
+    '--color-disabled-text': '#858599',
+    '--color-status-idle': '#9494a5'
   };
   for (const [name, value] of Object.entries(expected)) {
     assert.equal(nextTokens.get(name), value, `${name} should be ${value}`);
   }
 }
 
-// ── Nothing new is invented ───────────────────────────────────────────────
-// Every name here must already exist in the shared token file, otherwise it
-// is a name no component reads.
+// ── Only the six planned semantic names are /next-only ────────────────────
+// Everything else remains a shared token; broadening this list is an explicit
+// product-level theme-contract decision.
 {
+  const nextOnly = new Set([...nextTokens.keys()].filter((name) => !sharedTokens.has(name)));
+  assert.deepEqual(
+    [...nextOnly].sort(),
+    [...NEXT_ONLY_SEMANTIC_TOKENS].sort(),
+    'the /next palette may add only the six approved semantic theme tokens'
+  );
   for (const name of nextTokens.keys()) {
     assert.ok(
-      sharedTokens.has(name),
+      sharedTokens.has(name) || NEXT_ONLY_SEMANTIC_TOKENS.has(name),
       `${name} is not a name any component reads (missing from ${SHARED_TOKENS_PATH})`
     );
   }

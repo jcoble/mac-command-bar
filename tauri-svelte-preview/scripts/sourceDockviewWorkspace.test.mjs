@@ -45,7 +45,8 @@ assert.deepEqual(
     ['context', 'Context', 'source-panel'],
     ['insights', 'Insights', 'source-panel'],
     ['terminal', 'Terminal', 'source-panel'],
-    ['browser', 'Browser', 'source-panel']
+    ['browser', 'Browser', 'source-panel'],
+    ['markdown', 'Markdown', 'source-panel']
   ],
   'Dockview panel descriptors should expose all stable workspace panels'
 );
@@ -319,12 +320,14 @@ assert.deepEqual(
   'A missing Dockview active panel should leave app layout state unchanged'
 );
 
-assert.ok(
-  pageSource.includes("import 'dockview-core/dist/styles/dockview.css';"),
+assert.match(
+  pageSource,
+  /import\s+["']dockview-core\/dist\/styles\/dockview\.css["'];/,
   'Source page should load Dockview base CSS'
 );
-assert.ok(
-  pageSource.includes("from '$lib/sourceDockviewWorkspace'"),
+assert.match(
+  pageSource,
+  /from\s+["']\$lib\/sourceDockviewWorkspace["']/,
   'Source page should import the Dockview workspace bridge'
 );
 

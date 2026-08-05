@@ -43,6 +43,17 @@ export const CURATED_EXTENSIONS: readonly CuratedExtension[] = [
       'Registers the official Svelte grammar, language configuration, and snippets only. The Node extension entrypoint and language server are managed separately by the workspace LSP adapter.'
   },
   {
+    id: 'mac-command-bar.extension-api-probe',
+    label: 'Mac Command Bar extension API probe',
+    version: '0.1.0',
+    kind: 'web',
+    license: 'Internal',
+    source: 'src/lib/shell/editor/fixtures/mcbExtensionApiProbe.browser.cjs',
+    enabled: true,
+    notes:
+      'Internal browser entrypoint activated by command inside the existing LocalWebWorker. It proves bounded VS Code APIs without adding terminal, SCM, Git, Roslyn, or workspace-folder owners.'
+  },
+  {
     id: 'mcb.rust-git-scm',
     label: 'Mac Command Bar Git provider',
     version: '0.1.0',

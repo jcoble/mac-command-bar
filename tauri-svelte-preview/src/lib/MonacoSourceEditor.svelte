@@ -358,6 +358,7 @@
 	let dotnetCodeLensCommandDisposables: Monaco.IDisposable[] = [];
 	let monacoCancellationSuppressionDepth = 0;
 	let monacoCancellationSuppressionTimer = 0;
+	let reconciledNativeCsharpMode: boolean | null = null;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const inFlightTargetModels = new Map<string, Promise<Monaco.editor.ITextModel | null>>();
 	// Bounded LRU of lazily-materialized EXTERNAL target models (design-monaco.md
@@ -2424,6 +2425,54 @@
 		return !componentDestroyed && host === mountHost && mountHost.isConnected;
 	}
 
+	/**
+	 * Transfer C# feature ownership without replacing the editor or its active model.
+	 *
+	 * The Monaco language registries are global, while the native Roslyn client becomes
+	 * ready after the editor has already painted. Re-registering the existing custom
+	 * providers changes only their language selector: native mode excludes C#, and
+	 * fallback mode includes it again. The custom CodeLens commands and lazy resolver
+	 * follow the same ownership boundary. A repeated value is a strict no-op.
+	 */
+	function reconcileLanguageProviderOwnership(monaco: typeof Monaco, nativeMode: boolean) {
+		if (reconciledNativeCsharpMode === nativeMode) return;
+
+		registerSourceSemanticTokens(monaco);
+		registerSourceHoverProvider(monaco);
+		registerSourceDefinitionProvider(monaco);
+		registerSourceDocumentHighlightProvider(monaco);
+		registerSourceImplementationProvider(monaco);
+		registerSourceTypeDefinitionProvider(monaco);
+		registerSourceFormattingProvider(monaco);
+		registerSourceRenameProvider(monaco);
+		registerSourceCodeActionProvider(monaco);
+		registerSourceSignatureHelpProvider(monaco);
+		registerSourceInlayHintsProvider(monaco);
+		registerSourceReferenceProvider(monaco);
+		registerSourceCompletionProvider(monaco);
+		registerSourceDocumentSymbolProvider(monaco);
+
+		if (nativeMode) {
+			codeLensReferenceCommandDisposable?.dispose();
+			codeLensReferenceCommandDisposable = null;
+			for (const disposable of dotnetCodeLensCommandDisposables) disposable.dispose();
+			dotnetCodeLensCommandDisposables = [];
+			codeLensProviderDisposable?.dispose();
+			codeLensProviderDisposable = null;
+			codeLensChangeEmitter?.dispose();
+			codeLensChangeEmitter = null;
+			sourceCodeLensProvider = null;
+			uninstallLazyTargetModelResolver();
+		} else {
+			if (onReferenceCountLookup) registerSourceCodeLensReferenceCommand(monaco);
+			registerDotnetWorkspaceCodeLensCommands(monaco);
+			registerSourceCodeLensProvider(monaco);
+			installLazyTargetModelResolver(monaco);
+		}
+
+		reconciledNativeCsharpMode = nativeMode;
+	}
+
 	onMount(async () => {
 		const mountHost = host;
 		if (!mountHost) return;
@@ -2453,21 +2502,6 @@
 		if (typeScriptLanguage) {
 			configureTypeScriptLanguageService(typeScriptLanguage);
 		}
-		registerSourceSemanticTokens(monaco);
-		registerSourceHoverProvider(monaco);
-		registerSourceDefinitionProvider(monaco);
-		registerSourceDocumentHighlightProvider(monaco);
-		registerSourceImplementationProvider(monaco);
-		registerSourceTypeDefinitionProvider(monaco);
-		registerSourceFormattingProvider(monaco);
-		registerSourceRenameProvider(monaco);
-		registerSourceCodeActionProvider(monaco);
-		registerSourceSignatureHelpProvider(monaco);
-		registerSourceInlayHintsProvider(monaco);
-		registerSourceReferenceProvider(monaco);
-		registerSourceCompletionProvider(monaco);
-		registerSourceDocumentSymbolProvider(monaco);
-
 		editor = monaco.editor.create(mountHost, {
 			automaticLayout: false,
 			bracketPairColorization: { enabled: true },
@@ -2521,15 +2555,8 @@
 			editor.addCommand(0, (_accessor, action?: SourceCodeAction) => {
 				if (action) void onWorkspaceEditAction?.(action);
 			}) ?? "";
-		if (!nativeCsharpLanguageClient && onReferenceCountLookup) {
-			registerSourceCodeLensReferenceCommand(monaco);
-		}
-		if (!nativeCsharpLanguageClient) {
-			registerDotnetWorkspaceCodeLensCommands(monaco);
-			registerSourceCodeLensProvider(monaco);
-		}
+		reconcileLanguageProviderOwnership(monaco, nativeCsharpLanguageClient);
 		installExternalEditorOpener(monaco);
-		if (!nativeCsharpLanguageClient) installLazyTargetModelResolver(monaco);
 
 		editorActionDisposables = [
 			...(onReferenceCountLookup
@@ -2733,6 +2760,13 @@
 		}
 	});
 
+	$effect(() => {
+		const nativeMode = nativeCsharpLanguageClient;
+		if (isReady && monacoApi) {
+			reconcileLanguageProviderOwnership(monacoApi, nativeMode);
+		}
+	});
+
 	// Re-apply appearance whenever the user-provided overrides change. Reading
 	// the fields here registers them as dependencies. No-op until the editor is
 	// ready; when no override is set this re-runs applyAppearance() with the
@@ -2811,6 +2845,7 @@
 			if (model) monacoApi.editor.setModelMarkers(model, "mcb-lsp", []);
 		}
 		editor?.dispose();
+		reconciledNativeCsharpMode = null;
 		externalWorkspaceEditCommandId = "";
 		forgetCodeLensRows(true);
 		for (const model of ownedModels) {

@@ -80,6 +80,9 @@
     "test:new-session-flow": "node --experimental-strip-types scripts/newSessionFlow.test.mjs",
     "test:theme-registry": "node --experimental-strip-types scripts/themeRegistry.test.mjs",
     "test:extension-integration": "node scripts/extensionIntegration.test.mjs",
+    "test:extension-api-compatibility": "node --experimental-strip-types scripts/extensionApiCompatibility.test.mjs",
+    "test:extension-api-probe-scm": "node --experimental-strip-types scripts/extensionApiProbeScmAdapter.test.mjs",
+    "test:extension-api-probe-controller": "node --experimental-strip-types scripts/extensionApiProbeController.test.mjs",
     "test:problems-store": "node --experimental-strip-types scripts/problemsStore.test.mjs",
     "test:language-server-status": "node --experimental-strip-types src/lib/shell/components/editor/languageServerStatus.test.ts",
     "test:editor-panel-language-server": "node --experimental-strip-types src/lib/shell/components/editor/editorPanelLanguageServer.test.ts"

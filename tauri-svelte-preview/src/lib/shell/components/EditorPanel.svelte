@@ -684,26 +684,24 @@
         </div>
       {:else if activeFile?.preview}
         {#if CodeEditor}
-          {#key nativeCsharpActive}
-            <CodeEditor
-              {...sourceIntelligence.callbacks}
-              onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
-              preview={activeFile.preview}
-              content={activeFile.draftContent ?? activeFile.preview.content}
-              editable={true}
-              loading={activeFile.loading}
-              targetLine={activeFile.targetLine}
-              targetLineRequestId={activeFile.targetLineRequestId}
-              externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
-              nativeCsharpLanguageClient={nativeCsharpActive}
-              onExternalNavigation={navigateToExternalSource}
-              onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
-              onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
-              onContentChange={updateActiveDraft}
-              onSaveRequest={() => void saveActiveFile()}
-              onSymbolsChange={handleSymbolsChange}
-            />
-          {/key}
+          <CodeEditor
+            {...sourceIntelligence.callbacks}
+            onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
+            preview={activeFile.preview}
+            content={activeFile.draftContent ?? activeFile.preview.content}
+            editable={true}
+            loading={activeFile.loading}
+            targetLine={activeFile.targetLine}
+            targetLineRequestId={activeFile.targetLineRequestId}
+            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
+            nativeCsharpLanguageClient={nativeCsharpActive}
+            onExternalNavigation={navigateToExternalSource}
+            onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
+            onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
+            onContentChange={updateActiveDraft}
+            onSaveRequest={() => void saveActiveFile()}
+            onSymbolsChange={handleSymbolsChange}
+          />
         {:else}
           <p class="canvas-message">Starting the code editor…</p>
         {/if}
