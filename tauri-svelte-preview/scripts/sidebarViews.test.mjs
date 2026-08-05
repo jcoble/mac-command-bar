@@ -10,6 +10,7 @@ import {
   viewPanesKey,
   writeActiveView
 } from '../src/lib/shell/layout/sidebarViews.ts';
+import { LEFT_SIDE_PANE_IDS } from '../src/lib/shell/layout/sidePaneRegistry.ts';
 
 /** A localStorage stand-in; `failWrites` makes every write throw like a full quota. */
 function fakeStorage({ failWrites = false } = {}) {
@@ -41,6 +42,13 @@ function fakeStorage({ failWrites = false } = {}) {
     'every view has a name to show in its tooltip'
   );
   assert.ok(isSidebarViewId(DEFAULT_SIDEBAR_VIEW));
+}
+
+// A8's left roster has three stable Paneview ids. They are not aliases for the
+// older sessions view or the right-column view ids.
+{
+  assert.deepEqual([...LEFT_SIDE_PANE_IDS], ['working', 'done', 'settled']);
+  assert.ok(!SIDEBAR_VIEWS.some((view) => LEFT_SIDE_PANE_IDS.includes(view.id)));
 }
 
 // Only the six ids are ids. Anything else — including the shapes a corrupt

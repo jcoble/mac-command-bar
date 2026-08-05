@@ -8,6 +8,7 @@ import {
   stripCells,
   writeSessionsCollapsed
 } from '../src/lib/shell/sessionStrip.ts';
+import { deriveOwnedLibraryState } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
 
 /** An owned session with only the fields these functions read. */
 function owned(ownedId, extra = {}) {
@@ -63,6 +64,13 @@ function fakeStorage({ refuse = false, unreadable = false } = {}) {
     done.map((session) => session.ownedId),
     ['c']
   );
+}
+
+// The new Settled shelf is explicit and independent of the terminal state.
+{
+  const base = owned('settled', { state: 'live', settledAt: '2026-08-01T10:00:00.000Z' });
+  assert.equal(deriveOwnedLibraryState(base), 'settled');
+  assert.equal(deriveOwnedLibraryState({ ...base, settledAt: null, completedAt: null }), 'working');
 }
 
 // Done reads most recently finished first; Working keeps the order it arrived

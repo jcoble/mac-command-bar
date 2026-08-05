@@ -14,6 +14,7 @@ import {
   worktreeParentProject,
   writeGroupExpansion
 } from '../src/lib/shell/sessionGroups.ts';
+import { buildSessionLibrary } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
 
 /** An owned-session record with only the fields the grouping reads. */
 function owned(title, { projectPath = null, cwd = '' } = {}) {
@@ -51,6 +52,31 @@ function shapeOf(groups) {
     ['/Users/me/dev/mac-command-bar', '/Users/me/other/mac-command-bar'],
     'the full path is the key, so same-named folders do not merge'
   );
+}
+
+// Session Library identity keeps same-title rows apart when their worktrees
+// differ; title is never a dedupe key.
+{
+  const rows = buildSessionLibrary(
+    [
+      {
+        ownedId: 'one', title: 'Same', agent: 'codex', viaCmux: false, source: 'fresh',
+        projectPath: '/repo/one', cwd: '/repo/one', resumeCommand: null, nativeSessionId: 'native',
+        ptySessionId: null, state: 'background', completedAt: null, settledAt: null,
+        branch: null, taskId: null, pullRequest: null, messageCount: null,
+        latestTurnPreview: null, lastActivity: null
+      },
+      {
+        ownedId: 'two', title: 'Same', agent: 'codex', viaCmux: false, source: 'fresh',
+        projectPath: '/repo/two', cwd: '/repo/two', resumeCommand: null, nativeSessionId: 'native',
+        ptySessionId: null, state: 'background', completedAt: null, settledAt: null,
+        branch: null, taskId: null, pullRequest: null, messageCount: null,
+        latestTurnPreview: null, lastActivity: null
+      }
+    ],
+    []
+  );
+  assert.equal(rows.length, 2);
 }
 
 // An owned session with no project path falls back to the folder it is

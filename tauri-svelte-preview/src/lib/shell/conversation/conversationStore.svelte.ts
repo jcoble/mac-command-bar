@@ -159,15 +159,12 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
   };
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
-    const currentItems = conversationSessions[event.ownedId].agentItems;
-    const itemIndex = currentItems.findIndex((item) => item.id === typedItem.id);
-    conversationSessions[event.ownedId].agentItems = itemIndex < 0
-      ? [...currentItems, typedItem]
-      : currentItems.map((item, index) => index === itemIndex ? {
-        ...item,
-        ...typedItem,
-        content: typedItem.content.length ? typedItem.content : item.content
-      } : item);
+    const delta = event.payload.kind === 'assistantDelta';
+    conversationSessions[event.ownedId].agentItems = upsertAgentItem(
+      conversationSessions[event.ownedId].agentItems,
+      typedItem,
+      delta
+    );
   }
   applyTypedEventPayload(conversationSessions[event.ownedId], event);
   return true;
@@ -197,19 +194,31 @@ function applyCanonicalAgentEvent(event: AgentEvent): boolean {
     writerLease: { ...current.writerLease, generation: event.generation }
   };
   conversationSessions[event.ownedId] = nextState;
+  const target = conversationSessions[event.ownedId];
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
-    const itemIndex = nextState.agentItems.findIndex((item) => item.id === typedItem.id);
-    nextState.agentItems = itemIndex < 0
-      ? [...nextState.agentItems, typedItem]
-      : nextState.agentItems.map((item, index) => index === itemIndex ? {
-        ...item,
-        ...typedItem,
-        content: typedItem.content.length ? typedItem.content : item.content
-      } : item);
+    target.agentItems = upsertAgentItem(target.agentItems, typedItem, event.type === 'content.delta');
   }
-  applyTypedEventPayload(nextState, event);
+  applyTypedEventPayload(target, event);
   return true;
+}
+
+function upsertAgentItem(items: AgentItem[], incoming: AgentItem, delta: boolean): AgentItem[] {
+  const index = items.findIndex((item) => item.id === incoming.id);
+  if (index < 0) return [...items, incoming];
+  const existing = items[index];
+  const content = delta && existing.content.length && incoming.content.length
+    && existing.content[existing.content.length - 1].channel === incoming.content[0].channel
+    ? [
+      ...existing.content.slice(0, -1),
+      {
+        ...existing.content[existing.content.length - 1],
+        text: `${existing.content[existing.content.length - 1].text}${incoming.content[0].text}`
+      },
+      ...incoming.content.slice(1)
+    ]
+    : incoming.content.length ? incoming.content : existing.content;
+  return items.map((item, itemIndex) => itemIndex === index ? { ...item, ...incoming, content } : item);
 }
 
 export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapshot): void {
@@ -258,14 +267,11 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   for (const event of snapshot.events) {
     const typedItem = agentItemFromEvent(event);
     if (typedItem) {
-      const itemIndex = restored.agentItems.findIndex((item) => item.id === typedItem.id);
-      restored.agentItems = itemIndex < 0
-        ? [...restored.agentItems, typedItem]
-        : restored.agentItems.map((item, index) => index === itemIndex ? {
-          ...item,
-          ...typedItem,
-          content: typedItem.content.length ? typedItem.content : item.content
-        } : item);
+      restored.agentItems = upsertAgentItem(
+        restored.agentItems,
+        typedItem,
+        event.payload.kind === 'assistantDelta'
+      );
     }
     applyTypedEventPayload(restored, event);
   }

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 
-import { canRestorePaneLayout } from '../src/lib/shell/layout/paneStack.ts';
+import {
+  canRestorePaneLayout,
+  migrateLegacyPaneLayout,
+  migrateViewPaneLayouts
+} from '../src/lib/shell/layout/paneStack.ts';
+import { viewPanesKey } from '../src/lib/shell/layout/sidebarViews.ts';
 
 /**
  * A stored layout in the exact shape dockview-core 6.6.1 writes — see
@@ -26,6 +31,16 @@ function storedLayout(panes) {
 
 const SECTIONS = ['sessions', 'files', 'source-control'];
 
+function memoryStorage() {
+  const map = new Map();
+  return {
+    map,
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, value) => map.set(key, value),
+    removeItem: (key) => map.delete(key)
+  };
+}
+
 // The layout the shell last wrote is restored, in any order, open or collapsed.
 {
   assert.equal(
@@ -50,6 +65,25 @@ const SECTIONS = ['sessions', 'files', 'source-control'];
     true,
     'a stack the user left fully collapsed still restores'
   );
+}
+
+// A valid legacy view-panes payload moves into the new exact pane id without
+// changing the user's size/order/expanded choice. A partial or extra roster is
+// refused rather than silently losing a pane.
+{
+  const legacy = storedLayout([['run-configurations', false]]);
+  const migrated = migrateLegacyPaneLayout(legacy, 'run-configurations', 'run');
+  assert.equal(canRestorePaneLayout(migrated, ['run']), true);
+  assert.equal(migrated.views[0].size, 22);
+  assert.equal(migrated.views[0].expanded, false);
+  assert.equal(migrated.views[0].data.id, 'run');
+
+  const storage = memoryStorage();
+  storage.setItem(viewPanesKey('explorer'), JSON.stringify(storedLayout([['files', false]])));
+  storage.setItem(viewPanesKey('source-control'), JSON.stringify(storedLayout([['source-control']])));
+  const combined = migrateViewPaneLayouts(storage, ['files', 'source-control']);
+  assert.equal(canRestorePaneLayout(combined, ['files', 'source-control']), true);
+  assert.equal(migrateViewPaneLayouts(storage, ['files', 'missing']), null);
 }
 
 // A stored layout from a different set of sections is thrown away, so the

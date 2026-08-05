@@ -117,6 +117,16 @@ const scanRecord = {
     assert.equal(parseStoredOwnedSessions(JSON.stringify([record]))[0].completedAt, null);
   }
 }
+{ // Settled is a separate explicit migration field, never inferred from age/state.
+  const settled = {
+    ...adoptAgentSession(scanRecord, mint),
+    state: 'live',
+    settledAt: '2026-08-01T10:00:00.000Z'
+  };
+  assert.equal(parseStoredOwnedSessions(serializeOwnedSessions([settled]))[0].settledAt, settled.settledAt);
+  const { settledAt, ...older } = settled;
+  assert.equal(parseStoredOwnedSessions(JSON.stringify([older]))[0].settledAt, null);
+}
 { // the branch, task and pull request survive a save and a reload
   const owned = adoptAgentSession(scanRecord, mint);
   const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));

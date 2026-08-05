@@ -8,6 +8,10 @@ import {
   paneviewPanelIds,
   panelSetMatches
 } from '../src/lib/shell/layout/layoutStorage.ts';
+import {
+  SIDE_PANE_LAYOUT_KEY,
+  SIDE_PANE_LAYOUT_VERSION
+} from '../src/lib/shell/layout/paneStack.ts';
 
 function memoryStorage(initial = {}) {
   const map = new Map(Object.entries(initial));
@@ -174,6 +178,17 @@ function memoryStorage(initial = {}) {
   assert.equal(panelSetMatches(['a'], ['a', 'b']), false);
   assert.equal(panelSetMatches(['a', 'b', 'c'], ['a', 'b']), false);
   assert.equal(panelSetMatches([], []), true);
+}
+
+// PaneStack uses the existing LayoutStorage authority through one versioned key.
+{
+  assert.equal(SIDE_PANE_LAYOUT_KEY, 'mac-command-bar.next.side-panes-v1');
+  assert.equal(SIDE_PANE_LAYOUT_VERSION, 1);
+  const storage = memoryStorage();
+  const payload = { version: SIDE_PANE_LAYOUT_VERSION, layouts: { 'left-rail': { views: [] } } };
+  assert.equal(saveLayout(storage, SIDE_PANE_LAYOUT_KEY, payload), true);
+  assert.deepEqual([...storage._map.keys()], [SIDE_PANE_LAYOUT_KEY], 'one side-pane storage key');
+  assert.deepEqual(loadLayout(storage, SIDE_PANE_LAYOUT_KEY), payload);
 }
 
 console.log('layoutStorage: all tests passed');
