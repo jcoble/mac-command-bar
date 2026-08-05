@@ -30,6 +30,7 @@ function session(overrides: Partial<OwnedSession> = {}): OwnedSession {
     ptySessionId: null,
     state: 'live',
     completedAt: null,
+    settledAt: null,
     branch: null,
     taskId: null,
     pullRequest: null,

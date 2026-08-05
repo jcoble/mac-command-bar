@@ -204,6 +204,7 @@ export async function createExtensionApiProbeTerminal(
     ptySessionId: null,
     state: 'background',
     completedAt: null,
+    settledAt: null,
     branch: null,
     taskId: null,
     pullRequest: null,
