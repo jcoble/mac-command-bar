@@ -235,12 +235,21 @@ export async function setConversationConfigOption(
       'set_agent_conversation_config_option',
       { request: { ownedId, generation: state.generation, optionId, value } }
     );
+    const latest = getConversationSession(ownedId);
+    if (!latest || latest.generation !== state.generation) {
+      throw new Error('Configuration response belongs to a stale conversation generation');
+    }
     const capabilities = response?.capabilities
       ?? (response?.configOptions ? { ...state.capabilities, configOptions: response.configOptions } as AgentCapabilities : state.capabilities);
+    if (!capabilities || capabilities.provider !== state.provider) {
+      throw new Error('Configuration response provider does not match this session');
+    }
     confirmConversationConfigChange(ownedId, optionId, value, capabilities);
     return capabilities;
   } catch (error) {
-    failConversationConfigChange(ownedId, optionId, error instanceof Error ? error.message : String(error));
+    if (getConversationSession(ownedId)?.generation === state.generation) {
+      failConversationConfigChange(ownedId, optionId, error instanceof Error ? error.message : String(error));
+    }
     throw error;
   }
 }

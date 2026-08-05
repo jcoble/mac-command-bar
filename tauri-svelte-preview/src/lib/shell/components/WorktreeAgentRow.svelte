@@ -47,6 +47,7 @@
 
   const label = $derived(sessionLabel(session));
   const shelf = $derived(deriveOwnedLibraryState(session));
+  const project = $derived(canonicalCwd(session.projectPath) || 'No project recorded');
   const location = $derived(canonicalCwd(session.cwd || session.projectPath) || 'No worktree recorded');
   const providerLabel = $derived(session.viaCmux ? `cmux · ${session.agent}` : session.agent);
   const runtimeWord = $derived(
@@ -174,15 +175,21 @@
 
   <div data-testid="worktree-agent-hover-popover" class="hover-popover" role="tooltip">
     <strong>{label}</strong>
-    <span>{location}</span>
+    <span>{project} · {location}</span>
     <span>{providerLabel} · {shelf}</span>
+    {#if session.branch || session.taskId || session.pullRequest}
+      <span>{[session.branch, session.taskId, session.pullRequest].filter(Boolean).join(' · ')}</span>
+    {/if}
     {#if session.lastActivity}<span>Last activity {session.lastActivity}</span>{/if}
   </div>
 
   {#if expanded}
     <div data-testid="worktree-agent-detail" class="detail-grid px-8 pb-2 text-[12px] text-[var(--color-text-2)]">
       <span>Worktree</span><span class="truncate" title={location}>{location}</span>
+      <span>Project</span><span class="truncate" title={project}>{project}</span>
       {#if session.branch}<span>Branch</span><span class="truncate">{session.branch}</span>{/if}
+      {#if session.taskId}<span>Task</span><span class="truncate">{session.taskId}</span>{/if}
+      {#if session.pullRequest}<span>Pull request</span><span class="truncate">{session.pullRequest}</span>{/if}
       {#if session.nativeSessionId}<span>Native session</span><span class="truncate">{session.nativeSessionId}</span>{/if}
       {#if session.latestTurnPreview}<span>Last turn</span><span class="truncate" title={session.latestTurnPreview}>{session.latestTurnPreview}</span>{/if}
     </div>

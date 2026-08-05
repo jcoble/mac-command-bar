@@ -18,7 +18,7 @@
     item: ConversationDisplayItem;
     assistantLabel?: string;
     onApprovalDecision?(requestId: string, decision: string): void;
-    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>): void;
+    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string): void;
   }
   let { item, assistantLabel = 'Assistant', onApprovalDecision, onInputSubmit, onFileLink }: Props = $props();

@@ -15,7 +15,7 @@
     emptyText?: string;
     onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
-    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>): void;
+    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string): void;
   }
 

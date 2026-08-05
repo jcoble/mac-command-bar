@@ -58,7 +58,7 @@
     if (!conversation) return [];
     if (conversation.selectedChildId) return typedConversationTimeline([], legacyTimeline);
     const items = typedConversationTimeline(conversation.agentItems, legacyTimeline);
-    const now = 0;
+    const now = items.reduce((latest, item) => Math.max(latest, item.timestampMs), 0) + 1;
     const typedKinds = new Set(items.map((item) => item.kind));
     if (conversation.planSteps.length && !typedKinds.has('plan')) {
       items.push({ kind: 'plan', itemId: 'plan:current', title: 'Plan', steps: conversation.planSteps, timestampMs: now });
@@ -187,9 +187,9 @@
     });
   }
 
-  function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>): void {
+  function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
     if (!active) return;
-    void respondToStructuredInput(active.ownedId, { requestId, values, cancelled: false }).catch((error) => {
+    void respondToStructuredInput(active.ownedId, { requestId, values, cancelled }).catch((error) => {
       attachmentError = error instanceof Error ? error.message : String(error);
     });
   }
