@@ -1,4 +1,4 @@
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   applyAgentConversationEvent,
@@ -9,13 +9,23 @@ import {
   getConversationSession,
   setConversationConnection,
   setConversationAttachments,
-  setConversationSending
+  setConversationSending,
+  beginConversationConfigChange,
+  confirmConversationConfigChange,
+  failConversationConfigChange,
+  setConversationCapabilities,
+  setConversationCapabilityError
 } from './conversationStore.svelte.ts';
 import type {
+  AgentCapabilities,
   AgentConversationConnection,
   AgentConversationEvent,
+  AgentEvent,
   AgentConversationProvider,
   AgentConversationSnapshot,
+  AgentConfigOption,
+  AgentConfigValue,
+  AgentUserInputResponse,
   ConversationTranscriptSnapshot,
   ConversationAttachment
 } from './conversationTypes.ts';
@@ -62,6 +72,44 @@ export async function readChildConversationTranscript(input: {
 }
 
 type SavedAttachment = Omit<ConversationAttachment, 'previewUrl'> & { byteLength: number };
+type AttachmentWithBytes = ConversationAttachment & { byteLength?: number; bytes?: number[] };
+
+export interface AgentPromptTextContent {
+  type: 'text';
+  text: string;
+}
+
+export interface AgentPromptImageContent {
+  type: 'image';
+  mimeType: string;
+  data: number[];
+  name: string;
+}
+
+export type AgentPromptContent = AgentPromptTextContent | AgentPromptImageContent;
+
+/** Build ordered ACP content blocks without turning typed images into Markdown. */
+export function buildConversationPrompt(
+  text: string,
+  attachments: readonly AttachmentWithBytes[],
+  supportsImages: boolean
+): { text: string; content: AgentPromptContent[] } {
+  if (attachments.length > 0 && !supportsImages) {
+    throw new Error('This conversation provider does not advertise image prompts');
+  }
+  const content: AgentPromptContent[] = [];
+  if (text.length > 0) content.push({ type: 'text', text });
+  for (const attachment of attachments) {
+    if (!attachment.bytes?.length) throw new Error(`Attachment ${attachment.name} is not available for image upload`);
+    content.push({
+      type: 'image',
+      mimeType: attachment.mimeType,
+      data: attachment.bytes,
+      name: attachment.name
+    });
+  }
+  return { text, content };
+}
 
 export async function saveConversationClipboardImage(
   ownedId: string,
@@ -73,7 +121,128 @@ export async function saveConversationClipboardImage(
     mimeType: file.type,
     bytes
   });
-  return { ...saved, previewUrl: URL.createObjectURL(file) };
+  return { ...saved, bytes, previewUrl: URL.createObjectURL(file) } as AttachmentWithBytes;
+}
+
+/** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */
+export function cleanupConversationAttachmentPreview(attachment: ConversationAttachment): void {
+  if (attachment.previewUrl.startsWith('blob:')) URL.revokeObjectURL(attachment.previewUrl);
+}
+
+async function hydrateAttachmentBytes(attachment: AttachmentWithBytes): Promise<AttachmentWithBytes> {
+  if (attachment.bytes?.length) return attachment;
+  if (!attachment.path) throw new Error(`Attachment ${attachment.name} has no managed path`);
+  const response = await fetch(isTauri() ? convertFileSrc(attachment.path) : attachment.path);
+  if (!response.ok) throw new Error(`Could not read attachment ${attachment.name}`);
+  return {
+    ...attachment,
+    bytes: Array.from(new Uint8Array(await response.arrayBuffer()))
+  };
+}
+
+/** Rebuild a preview URL from a backend-owned attachment after a workspace restore. */
+export function restoreConversationAttachmentPreview(
+  attachment: Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string }
+): ConversationAttachment {
+  const previewUrl = attachment.previewUrl
+    ?? (isTauri() ? convertFileSrc(attachment.path) : attachment.path);
+  return { ...attachment, previewUrl };
+}
+
+/** Restore attachment metadata supplied by the existing owner-scoped vault. */
+export async function restoreConversationAttachments(
+  ownedId: string,
+  saved: readonly (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[] = []
+): Promise<ConversationAttachment[]> {
+  if (saved.length > 0) {
+    const restored = saved.map(restoreConversationAttachmentPreview);
+    setConversationAttachments(ownedId, restored);
+    return restored;
+  }
+  if (!isTauri()) return [];
+  try {
+    const records = await invoke<(Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[]>(
+      'read_agent_conversation_attachments',
+      { ownedId }
+    );
+    const restored = Array.isArray(records) ? records.map(restoreConversationAttachmentPreview) : [];
+    setConversationAttachments(ownedId, restored);
+    return restored;
+  } catch {
+    // Older controller builds have no listing command. The draft and saved ids
+    // remain intact so a later controller can hydrate them without data loss.
+    return [];
+  }
+}
+
+/** Ask the owner-validated vault to delete one managed file, then revoke its URL. */
+export async function removeConversationAttachment(
+  ownedId: string,
+  attachment: ConversationAttachment
+): Promise<void> {
+  await cleanupConversationAttachment(ownedId, attachment);
+  const state = getConversationSession(ownedId);
+  if (state) setConversationAttachments(ownedId, state.attachments.filter((item) => item.id !== attachment.id));
+}
+
+/** Cleanup for a newly saved attachment that has not been added to the store yet. */
+export async function cleanupConversationAttachment(
+  ownedId: string,
+  attachment: ConversationAttachment
+): Promise<void> {
+  try {
+    if (isTauri()) {
+      await invoke('delete_agent_conversation_attachment', {
+        request: { ownedId, attachmentId: attachment.id, path: attachment.path }
+      });
+    }
+  } finally {
+    cleanupConversationAttachmentPreview(attachment);
+  }
+}
+
+export async function loadConversationCapabilities(
+  ownedId: string,
+  provider: AgentConversationProvider
+): Promise<AgentCapabilities | null> {
+  if (!isTauri()) return null;
+  try {
+    const capabilities = await invoke<AgentCapabilities>('read_agent_conversation_capabilities', { ownedId });
+    if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
+    setConversationCapabilities(ownedId, capabilities);
+    return capabilities;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setConversationCapabilityError(ownedId, message);
+    throw error;
+  }
+}
+
+export async function setConversationConfigOption(
+  ownedId: string,
+  optionId: string,
+  value: AgentConfigValue
+): Promise<AgentCapabilities | null> {
+  const state = getConversationSession(ownedId);
+  const option = state?.capabilities?.configOptions.find((candidate) => candidate.id === optionId);
+  if (!state || !option || (option.choices && !option.choices.some((choice) => JSON.stringify(choice.value) === JSON.stringify(value)))) {
+    throw new Error('This configuration value is not advertised for the session');
+  }
+  if (!beginConversationConfigChange(ownedId, optionId, value)) throw new Error('Configuration change is not available');
+  try {
+    if (!isTauri()) throw new Error('The structured conversation runtime is unavailable');
+    const response = await invoke<{ capabilities?: AgentCapabilities; configOptions?: AgentConfigOption[] }>(
+      'set_agent_conversation_config_option',
+      { request: { ownedId, generation: state.generation, optionId, value } }
+    );
+    const capabilities = response?.capabilities
+      ?? (response?.configOptions ? { ...state.capabilities, configOptions: response.configOptions } as AgentCapabilities : state.capabilities);
+    confirmConversationConfigChange(ownedId, optionId, value, capabilities);
+    return capabilities;
+  } catch (error) {
+    failConversationConfigChange(ownedId, optionId, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }
 
 export function startConversationTranscriptMirror(input: {
@@ -122,12 +291,13 @@ async function resyncConversation(ownedId: string): Promise<void> {
 
 export async function startConversationEvents(): Promise<void> {
   if (!isTauri() || unlisten) return;
-  unlisten = await listen<AgentConversationEvent>('agent-conversation-event', ({ payload }) => {
+  unlisten = await listen<AgentConversationEvent | AgentEvent>('agent-conversation-event', ({ payload }) => {
     applyAgentConversationEvent(payload);
     if (getConversationSession(payload.ownedId)?.desynchronized) {
       void resyncConversation(payload.ownedId);
     }
-    if (payload.payload.kind === 'turn' || payload.payload.kind === 'error') {
+    if (('kind' in payload.payload && (payload.payload.kind === 'turn' || payload.payload.kind === 'error'))
+      || ('type' in payload && ['turn.completed', 'turn.interrupted', 'runtime.error'].includes(payload.type))) {
       setConversationSending(payload.ownedId, false);
     }
   });
@@ -167,14 +337,19 @@ export async function sendStructuredMessage(
 ): Promise<void> {
   const state = getConversationSession(ownedId);
   if (!state) return;
-  if (!text.trim()) return;
+  if (!text.trim() && state.attachments.length === 0) return;
   setConversationSending(ownedId, true);
   try {
-    const attachmentText = state.attachments.length
-      ? `\n\nAttached screenshots:\n${state.attachments.map((item) => `- ${item.path}`).join('\n')}`
-      : '';
-    const outgoingText = `${text}${attachmentText}`;
     if (ptySessionId) {
+      if (state.writerLease.ownedId !== ownedId
+        || state.writerLease.generation !== state.generation
+        || state.writerLease.owner !== 'terminal') {
+        throw new Error('The terminal writer lease is not confirmed for this session');
+      }
+      const attachmentText = state.attachments.length
+        ? `\n\nAttached screenshots:\n${state.attachments.map((item) => `- ${item.path}`).join('\n')}`
+        : '';
+      const outgoingText = `${text}${attachmentText}`;
       // Match a real terminal paste followed by a separate Enter key. Sending
       // both in one PTY write makes Claude's TUI treat Enter as part of its
       // multiline paste buffer, leaving the prompt staged but never submitted.
@@ -186,15 +361,23 @@ export async function sendStructuredMessage(
       const submitted = await writeTerminalSessionFromTauri(ptySessionId, '\r');
       if (!submitted) throw new Error('The terminal session is no longer running');
       setConversationSending(ownedId, false);
-      state.attachments.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      state.attachments.forEach(cleanupConversationAttachmentPreview);
       setConversationAttachments(ownedId, []);
       return;
     }
-    if (state.generation < 1) return;
+    if (state.generation < 1) throw new Error('The structured conversation is not connected');
+    const hydratedAttachments = state.capabilities?.prompt.image === true
+      ? await Promise.all(state.attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
+      : state.attachments as AttachmentWithBytes[];
+    const prompt = buildConversationPrompt(
+      text,
+      hydratedAttachments,
+      state.capabilities?.prompt.image === true
+    );
     await invoke('send_agent_conversation_message', {
-      request: { ownedId, generation: state.generation, text: outgoingText }
+      request: { ownedId, generation: state.generation, text: prompt.text, content: prompt.content }
     });
-    state.attachments.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    state.attachments.forEach(cleanupConversationAttachmentPreview);
     setConversationAttachments(ownedId, []);
   } catch (error) {
     setConversationSending(ownedId, false);
@@ -205,11 +388,22 @@ export async function sendStructuredMessage(
 export async function respondToStructuredApproval(
   ownedId: string,
   requestId: string,
-  decision: 'accept' | 'decline'
+  decision: 'accept' | 'decline' | 'cancel'
 ): Promise<void> {
   const state = getConversationSession(ownedId);
   if (!state) return;
   await invoke('respond_agent_conversation_approval', {
     request: { ownedId, generation: state.generation, requestId, decision }
+  });
+}
+
+export async function respondToStructuredInput(
+  ownedId: string,
+  response: Omit<AgentUserInputResponse, 'ownedId' | 'generation'>
+): Promise<void> {
+  const state = getConversationSession(ownedId);
+  if (!state) return;
+  await invoke('respond_agent_conversation_input', {
+    request: { ...response, ownedId, generation: state.generation }
   });
 }

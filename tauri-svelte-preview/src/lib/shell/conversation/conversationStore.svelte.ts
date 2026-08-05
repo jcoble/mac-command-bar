@@ -6,11 +6,16 @@
  */
 import { applyConversationEvent, createConversationState } from './conversationReducer.ts';
 import type {
+  AgentApprovalRequest,
+  AgentCapabilities,
+  AgentEvent,
   AgentConversationConnection,
   AgentConversationEvent,
   AgentConversationProvider,
   AgentConversationSnapshot,
   AgentConfigValue,
+  AgentItem,
+  AgentUserInputRequest,
   AgentWriterLease,
   AgentWriterLeaseTransition,
   ConversationAttachment,
@@ -21,6 +26,7 @@ import type {
   ConversationSessionState,
   ConversationTimelineEntry
 } from './conversationTypes.ts';
+import { agentItemFromEvent, type AgentPlanStep, type ConversationTask } from './conversationTimeline.ts';
 import type { AgentExecutionOwner } from '../ownedSessions.ts';
 import {
   SESSION_CONVERSATION_WORKSPACE_VERSION,
@@ -46,6 +52,17 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   attachmentIds: string[];
   config: Record<string, AgentConfigValue>;
   telemetry: Record<string, AgentConfigValue>;
+  /** The provider's authoritative capability snapshot for this owned session. */
+  capabilities: AgentCapabilities | null;
+  capabilityError: string | null;
+  /** Typed ACP items are kept beside the legacy reducer projection. */
+  agentItems: AgentItem[];
+  planSteps: AgentPlanStep[];
+  tasks: ConversationTask[];
+  pendingApprovals: Record<string, AgentApprovalRequest & { state: string }>;
+  pendingInputs: Record<string, AgentUserInputRequest>;
+  pendingConfig: Record<string, AgentConfigValue>;
+  configErrors: Record<string, string>;
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -79,7 +96,16 @@ function freshState(
     writerLeaseTransition: null,
     attachmentIds: [],
     config: {},
-    telemetry: {}
+    telemetry: {},
+    capabilities: null,
+    capabilityError: null,
+    agentItems: [],
+    planSteps: [],
+    tasks: [],
+    pendingApprovals: {},
+    pendingInputs: {},
+    pendingConfig: {},
+    configErrors: {}
   };
 }
 
@@ -98,7 +124,8 @@ export function ensureConversationSession(
   return created;
 }
 
-export function applyAgentConversationEvent(event: AgentConversationEvent): boolean {
+export function applyAgentConversationEvent(event: AgentConversationEvent | AgentEvent): boolean {
+  if ('type' in event) return applyCanonicalAgentEvent(event);
   const current = ensureConversationSession(event.ownedId, event.provider);
   const next = applyConversationEvent(current, event);
   if (next === current) return false;
@@ -119,8 +146,69 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     writerLeaseTransition: current.writerLeaseTransition,
     attachmentIds: current.attachmentIds,
     config: current.config,
-    telemetry: current.telemetry
+    telemetry: current.telemetry,
+    capabilities: current.capabilities,
+    capabilityError: current.capabilityError,
+    agentItems: current.agentItems,
+    planSteps: current.planSteps,
+    tasks: current.tasks,
+    pendingApprovals: current.pendingApprovals,
+    pendingInputs: current.pendingInputs,
+    pendingConfig: current.pendingConfig,
+    configErrors: current.configErrors
   };
+  const typedItem = agentItemFromEvent(event);
+  if (typedItem) {
+    const currentItems = conversationSessions[event.ownedId].agentItems;
+    const itemIndex = currentItems.findIndex((item) => item.id === typedItem.id);
+    conversationSessions[event.ownedId].agentItems = itemIndex < 0
+      ? [...currentItems, typedItem]
+      : currentItems.map((item, index) => index === itemIndex ? {
+        ...item,
+        ...typedItem,
+        content: typedItem.content.length ? typedItem.content : item.content
+      } : item);
+  }
+  applyTypedEventPayload(conversationSessions[event.ownedId], event);
+  return true;
+}
+
+function applyCanonicalAgentEvent(event: AgentEvent): boolean {
+  const current = ensureConversationSession(event.ownedId, event.provider);
+  if (event.generation < current.generation) return false;
+  const newGeneration = event.generation > current.generation;
+  const previousSequence = newGeneration ? 0 : current.lastSequence;
+  if (!newGeneration && event.sequence <= previousSequence) return false;
+  const hasGap = event.sequence !== previousSequence + 1;
+  if (hasGap) {
+    conversationSessions[event.ownedId] = { ...current, generation: event.generation, lastSequence: event.sequence, desynchronized: true };
+    return true;
+  }
+  const payload = event.payload as Record<string, unknown>;
+  const nextState: ConversationWorkspaceState = {
+    ...current,
+    generation: event.generation,
+    lastSequence: event.sequence,
+    desynchronized: newGeneration ? false : current.desynchronized,
+    connectionState: event.type === 'session.closed' ? 'closed'
+      : event.type === 'session.started' ? 'connected'
+        : event.type === 'runtime.error' && payload.recoverable === false ? 'failed' : current.connectionState,
+    nativeSessionId: event.nativeSessionId ?? current.nativeSessionId,
+    writerLease: { ...current.writerLease, generation: event.generation }
+  };
+  conversationSessions[event.ownedId] = nextState;
+  const typedItem = agentItemFromEvent(event);
+  if (typedItem) {
+    const itemIndex = nextState.agentItems.findIndex((item) => item.id === typedItem.id);
+    nextState.agentItems = itemIndex < 0
+      ? [...nextState.agentItems, typedItem]
+      : nextState.agentItems.map((item, index) => index === itemIndex ? {
+        ...item,
+        ...typedItem,
+        content: typedItem.content.length ? typedItem.content : item.content
+      } : item);
+  }
+  applyTypedEventPayload(nextState, event);
   return true;
 }
 
@@ -155,8 +243,129 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     writerLeaseTransition: current.writerLeaseTransition,
     attachmentIds: current.attachmentIds,
     config: current.config,
-    telemetry: current.telemetry
+    telemetry: current.telemetry,
+    capabilities: current.capabilities,
+    capabilityError: current.capabilityError,
+    agentItems: current.agentItems,
+    planSteps: current.planSteps,
+    tasks: current.tasks,
+    pendingApprovals: current.pendingApprovals,
+    pendingInputs: current.pendingInputs,
+    pendingConfig: current.pendingConfig,
+    configErrors: current.configErrors
   };
+  const restored = conversationSessions[snapshot.connection.ownedId];
+  for (const event of snapshot.events) {
+    const typedItem = agentItemFromEvent(event);
+    if (typedItem) {
+      const itemIndex = restored.agentItems.findIndex((item) => item.id === typedItem.id);
+      restored.agentItems = itemIndex < 0
+        ? [...restored.agentItems, typedItem]
+        : restored.agentItems.map((item, index) => index === itemIndex ? {
+          ...item,
+          ...typedItem,
+          content: typedItem.content.length ? typedItem.content : item.content
+        } : item);
+    }
+    applyTypedEventPayload(restored, event);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function applyTypedEventPayload(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {
+  const payload = event.payload as Record<string, unknown>;
+  const raw = isRecord(payload);
+  if (!raw) return;
+  const eventType: string = 'type' in event
+    ? event.type
+    : payload.kind === 'approval' ? 'approval.requested' : payload.kind === 'error' ? 'runtime.error' : '';
+  const requestIdFromEvent = 'requestId' in event ? event.requestId : undefined;
+  const turnIdFromEvent = 'turnId' in event ? event.turnId : undefined;
+  const itemIdFromEvent = 'itemId' in event ? event.itemId : undefined;
+  const capabilities = isRecord(payload.capabilities) ? payload.capabilities as unknown as AgentCapabilities : null;
+  if (capabilities && Array.isArray(capabilities.configOptions) && Array.isArray(capabilities.commands)) {
+    current.capabilities = capabilities;
+    current.capabilityError = null;
+  }
+  if (eventType === 'plan.updated' || payload.kind === 'plan') {
+    if (Array.isArray(payload.steps)) current.planSteps = parsePlanSteps(payload.steps);
+  }
+  if (eventType === 'tasks.updated' || payload.kind === 'tasks') {
+    if (Array.isArray(payload.tasks)) current.tasks = parseTasks(payload.tasks);
+  }
+  if (eventType === 'approval.requested') {
+    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
+    const legacyState = payload.kind === 'approval' ? asString(payload.state) : null;
+    if (requestId && legacyState && legacyState !== 'requested') delete current.pendingApprovals[requestId];
+    else if (requestId) current.pendingApprovals[requestId] = {
+        ownedId: current.ownedId,
+        generation: current.generation,
+        requestId,
+        turnId: turnIdFromEvent,
+        itemId: itemIdFromEvent,
+        title: asString(payload.title) ?? 'Approval requested',
+        description: asString(payload.description) ?? undefined,
+        options: Array.isArray(payload.options) ? payload.options.filter((value): value is 'accept' | 'decline' | 'cancel' => value === 'accept' || value === 'decline' || value === 'cancel') : ['accept', 'decline'],
+        state: 'requested'
+      };
+  }
+  if (eventType === 'approval.resolved') {
+    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
+    if (requestId) delete current.pendingApprovals[requestId];
+  }
+  if (eventType === 'user-input.requested') {
+    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
+    if (requestId && Array.isArray(payload.fields)) {
+      current.pendingInputs[requestId] = {
+        ownedId: current.ownedId,
+        generation: current.generation,
+        requestId,
+        turnId: turnIdFromEvent,
+        itemId: itemIdFromEvent,
+        title: asString(payload.title) ?? 'Input requested',
+        description: asString(payload.description) ?? undefined,
+        fields: payload.fields as AgentUserInputRequest['fields']
+      };
+    }
+  }
+  if (eventType === 'user-input.resolved') {
+    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
+    if (requestId) delete current.pendingInputs[requestId];
+  }
+}
+
+function parsePlanSteps(value: unknown): AgentPlanStep[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry, index) => {
+    if (!isRecord(entry)) return [];
+    const state = asString(entry.state);
+    return [{
+      id: asString(entry.id) ?? `step-${index + 1}`,
+      title: asString(entry.title) ?? `Step ${index + 1}`,
+      detail: asString(entry.detail),
+      state: state === 'in-progress' || state === 'completed' || state === 'failed' || state === 'blocked' ? state : 'pending',
+      ownerAgentId: asString(entry.ownerAgentId),
+      startedAt: asString(entry.startedAt),
+      completedAt: asString(entry.completedAt)
+    }];
+  });
+}
+
+function parseTasks(value: unknown): ConversationTask[] {
+  return parsePlanSteps(value).map((step) => ({
+    id: step.id,
+    title: step.title,
+    detail: step.detail,
+    state: step.state,
+    ownerAgentId: step.ownerAgentId
+  }));
 }
 
 export function applyConversationTranscript(
@@ -202,6 +411,86 @@ export function setConversationAttachments(ownedId: string, attachments: Convers
   if (current) {
     current.attachments = attachments;
     current.attachmentIds = attachments.map((attachment) => attachment.id);
+  }
+}
+
+export function setConversationCapabilities(ownedId: string, capabilities: AgentCapabilities): void {
+  const current = conversationSessions[ownedId];
+  if (!current || capabilities.provider !== current.provider) return;
+  current.capabilities = capabilities;
+  current.capabilityError = null;
+}
+
+export function setConversationCapabilityError(ownedId: string, message: string | null): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.capabilityError = message;
+}
+
+export function beginConversationConfigChange(
+  ownedId: string,
+  optionId: string,
+  value: AgentConfigValue
+): boolean {
+  const current = conversationSessions[ownedId];
+  const option = current?.capabilities?.configOptions.find((candidate) => candidate.id === optionId);
+  if (!current || !option) return false;
+  if (option.choices && !option.choices.some((choice) => JSON.stringify(choice.value) === JSON.stringify(value))) return false;
+  current.pendingConfig[optionId] = value;
+  delete current.configErrors[optionId];
+  return true;
+}
+
+export function confirmConversationConfigChange(
+  ownedId: string,
+  optionId: string,
+  value: AgentConfigValue,
+  capabilities?: AgentCapabilities | null
+): boolean {
+  const current = conversationSessions[ownedId];
+  if (!current || !(optionId in current.pendingConfig)) return false;
+  current.config[optionId] = value;
+  delete current.pendingConfig[optionId];
+  delete current.configErrors[optionId];
+  if (capabilities && capabilities.provider === current.provider) current.capabilities = capabilities;
+  return true;
+}
+
+export function failConversationConfigChange(ownedId: string, optionId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (!current) return;
+  delete current.pendingConfig[optionId];
+  current.configErrors[optionId] = message;
+}
+
+export function setConversationAgentItems(ownedId: string, items: AgentItem[]): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.agentItems = [...items];
+}
+
+export function setConversationPlanSteps(ownedId: string, steps: AgentPlanStep[]): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.planSteps = [...steps];
+}
+
+export function setConversationTasks(ownedId: string, tasks: ConversationTask[]): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.tasks = [...tasks];
+}
+
+export function setConversationPendingApproval(
+  ownedId: string,
+  request: AgentApprovalRequest & { state: string }
+): void {
+  const current = conversationSessions[ownedId];
+  if (current && request.ownedId === ownedId && request.generation === current.generation) {
+    current.pendingApprovals[request.requestId] = request;
+  }
+}
+
+export function setConversationPendingInput(ownedId: string, request: AgentUserInputRequest): void {
+  const current = conversationSessions[ownedId];
+  if (current && request.ownedId === ownedId && request.generation === current.generation) {
+    current.pendingInputs[request.requestId] = request;
   }
 }
 
