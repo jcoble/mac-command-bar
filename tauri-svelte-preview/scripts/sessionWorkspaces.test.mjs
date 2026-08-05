@@ -593,4 +593,35 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
   assert.equal(takeRetainedTabs(before, 'session-b').tabs, null);
 }
 
+// Conversation snapshots retain versioned runtime fields and fields introduced
+// by a newer build without adding them to an older snapshot that never had them.
+{
+  const storage = storageStub({
+    [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({
+      current: {
+        openPaths: [], activePath: null, expandedFolderIds: [], selectedPath: null,
+        scrollTop: 0, diffPath: null, diffRoot: null,
+        conversation: {
+          mode: 'structured', draft: 'keep', version: 1, generation: 4,
+          owner: 'terminal', attachmentIds: ['attachment-a'], config: { future: 'value' },
+          parentScrollTop: 20, childScrollTopById: { child: 30 }, sequence: 12,
+          telemetry: { latencyMs: 7 }, futureField: { nested: true }
+        }
+      },
+      legacy: {
+        openPaths: [], activePath: null, expandedFolderIds: [], selectedPath: null,
+        scrollTop: 0, diffPath: null, diffRoot: null,
+        conversation: { mode: 'raw', draft: 'old', unknownLegacyField: 'preserved' }
+      }
+    })
+  });
+  const restored = readWorkspaces(storage);
+  assert.equal(restored.current.conversation.futureField.nested, true);
+  assert.equal(restored.current.conversation.config.future, 'value');
+  assert.equal(restored.legacy.conversation.unknownLegacyField, 'preserved');
+  assert.equal('version' in restored.legacy.conversation, false);
+  assert.equal('generation' in restored.legacy.conversation, false);
+  assert.equal('owner' in restored.legacy.conversation, false);
+}
+
 console.log('sessionWorkspaces: all tests passed');

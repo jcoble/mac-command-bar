@@ -22,14 +22,34 @@
  * that (see `+page.svelte`), so nothing in this file can fire on its own.
  */
 import { loadLayout, saveLayout, type LayoutStorage } from './layout/layoutStorage.ts';
+import type { AgentExecutionOwner } from './ownedSessions.ts';
+import type {
+  AgentConfigValue,
+  AgentWriterLease,
+  AgentWriterLeaseTransition
+} from './conversation/conversationTypes.ts';
+
+export const SESSION_CONVERSATION_WORKSPACE_VERSION = 1;
 
 export interface SessionConversationWorkspace {
   mode: 'structured' | 'raw';
   draft: string;
+  version?: number;
+  generation?: number;
+  owner?: AgentExecutionOwner;
+  attachmentIds?: string[];
+  config?: Record<string, AgentConfigValue>;
+  parentScrollTop?: number;
+  childScrollTopById?: Record<string, number>;
+  sequence?: number;
+  telemetry?: Record<string, AgentConfigValue>;
+  writerLease?: AgentWriterLease;
+  writerLeaseTransition?: AgentWriterLeaseTransition | null;
   selectedChildId?: string | null;
   scrollTop?: number;
   providerGeneration?: number;
   lastSequence?: number;
+  [key: string]: unknown;
 }
 
 export interface SessionBrowserWorkspace {
@@ -167,9 +187,43 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
   const entry = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+  const preserved = { ...entry };
+  for (const key of [
+    'mode', 'draft', 'version', 'generation', 'owner', 'attachmentIds', 'config',
+    'parentScrollTop', 'childScrollTopById', 'sequence', 'telemetry', 'writerLease',
+    'writerLeaseTransition', 'selectedChildId', 'scrollTop', 'providerGeneration', 'lastSequence'
+  ]) delete preserved[key];
   return {
+    ...preserved,
     mode: entry.mode === 'raw' ? 'raw' : 'structured',
     draft: typeof entry.draft === 'string' ? entry.draft.slice(0, 20_000) : '',
+    ...(nonNegativeInteger(entry.version) !== undefined
+      ? { version: nonNegativeInteger(entry.version) }
+      : {}),
+    ...(nonNegativeInteger(entry.generation) !== undefined
+      ? { generation: nonNegativeInteger(entry.generation) }
+      : {}),
+    ...(isExecutionOwner(entry.owner) ? { owner: entry.owner } : {}),
+    ...(Array.isArray(entry.attachmentIds)
+      ? { attachmentIds: stringsOf(entry.attachmentIds) }
+      : {}),
+    ...(isRecord(entry.config) ? { config: entry.config as Record<string, AgentConfigValue> } : {}),
+    ...(typeof entry.parentScrollTop === 'number' && entry.parentScrollTop >= 0
+      ? { parentScrollTop: entry.parentScrollTop }
+      : {}),
+    ...(isScrollMap(entry.childScrollTopById)
+      ? { childScrollTopById: entry.childScrollTopById }
+      : {}),
+    ...(nonNegativeInteger(entry.sequence) !== undefined
+      ? { sequence: nonNegativeInteger(entry.sequence) }
+      : {}),
+    ...(isRecord(entry.telemetry)
+      ? { telemetry: entry.telemetry as Record<string, AgentConfigValue> }
+      : {}),
+    ...(isWriterLease(entry.writerLease) ? { writerLease: entry.writerLease } : {}),
+    ...(entry.writerLeaseTransition === null || isWriterLeaseTransition(entry.writerLeaseTransition)
+      ? { writerLeaseTransition: entry.writerLeaseTransition }
+      : {}),
     ...(typeof entry.selectedChildId === 'string' || entry.selectedChildId === null
       ? { selectedChildId: entry.selectedChildId as string | null }
       : {}),
@@ -183,6 +237,43 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
       ? { lastSequence: nonNegativeInteger(entry.lastSequence) }
       : {})
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isExecutionOwner(value: unknown): value is AgentExecutionOwner {
+  return [
+    'structured',
+    'terminal',
+    'transitioning-to-structured',
+    'transitioning-to-terminal',
+    'stopped'
+  ].includes(value as string);
+}
+
+function isScrollMap(value: unknown): value is Record<string, number> {
+  return isRecord(value) && Object.values(value).every(
+    (entry) => typeof entry === 'number' && entry >= 0
+  );
+}
+
+function isWriterLease(value: unknown): value is AgentWriterLease {
+  if (!isRecord(value)) return false;
+  return typeof value.ownedId === 'string'
+    && nonNegativeInteger(value.generation) !== undefined
+    && ['structured', 'terminal', 'none'].includes(value.owner as string);
+}
+
+function isWriterLeaseTransition(value: unknown): value is AgentWriterLeaseTransition {
+  if (!isRecord(value)) return false;
+  return typeof value.ownedId === 'string'
+    && nonNegativeInteger(value.generation) !== undefined
+    && ['structured', 'terminal', 'none'].includes(value.from as string)
+    && ['structured', 'terminal', 'none'].includes(value.to as string)
+    && ['requested', 'committed', 'failed'].includes(value.state as string)
+    && (value.error === undefined || typeof value.error === 'string');
 }
 
 function normalizeBrowser(value: unknown): SessionBrowserWorkspace {

@@ -31,6 +31,8 @@ const scanRecord = {
   assert.equal(owned.resumeCommand, 'claude --resume native-9');
   assert.equal(owned.state, 'background');
   assert.equal(owned.ptySessionId, null);
+  assert.equal(owned.executionOwner, 'stopped');
+  assert.equal(owned.runtimeState, 'closed');
   // Adopting is not completing: only the user's "Mark done" sets this.
   assert.equal(owned.completedAt, null);
   // What the scanner worked out travels with the session, so a row keeps its
@@ -179,10 +181,27 @@ const scanRecord = {
   ]);
   assert.equal(owned.length, 3);
   assert.equal(owned[0].state, 'background');
+  assert.equal(owned[0].executionOwner, 'terminal');
+  assert.equal(owned[0].runtimeState, 'ready');
   assert.equal(owned[1].state, 'exited');
+  assert.equal(owned[1].executionOwner, 'stopped');
   assert.equal(owned[2].state, 'exited');
-  assert.equal(owned[2].ptySessionId, null);
+  assert.equal(owned[2].ptySessionId, 'term-3');
+  assert.equal(owned[2].executionOwner, 'stopped');
   assert.deepEqual(reattachable.map((s) => s.ownedId), ['a']);
+}
+{ // a pre-runtime record migrates without claiming structured ownership
+  const current = adoptAgentSession(scanRecord, mint);
+  const {
+    executionOwner, runtimeState, providerInstanceId, activeTurnId,
+    capabilityRevision, lastRuntimeError, ...legacy
+  } = { ...current, ptySessionId: 'term-legacy', state: 'background' };
+  const migrated = parseStoredOwnedSessions(JSON.stringify([legacy]))[0];
+  assert.equal(migrated.executionOwner, 'terminal');
+  assert.equal(migrated.runtimeState, 'ready');
+  assert.equal(migrated.ptySessionId, 'term-legacy');
+  assert.equal(migrated.nativeSessionId, 'native-9');
+  assert.deepEqual(parseStoredOwnedSessions(serializeOwnedSessions([migrated])), [migrated]);
 }
 { // a reload never marks a session done and never un-marks one
   const stamp = '2026-07-28T10:00:00.000Z';

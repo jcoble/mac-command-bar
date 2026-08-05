@@ -10,7 +10,34 @@ import type { AgentSession, TerminalSessionInfo } from '../tauriSource';
 export type AgentKind = 'codex' | 'claude' | 'gemini' | 'opencode' | 'other';
 export type OwnedSessionState = 'live' | 'background' | 'exited';
 
-export type OwnedSession = {
+export type AgentExecutionOwner =
+  | 'structured'
+  | 'terminal'
+  | 'transitioning-to-structured'
+  | 'transitioning-to-terminal'
+  | 'stopped';
+
+export type AgentRuntimeState =
+  | 'starting'
+  | 'ready'
+  | 'working'
+  | 'waiting-approval'
+  | 'waiting-input'
+  | 'interrupting'
+  | 'failed'
+  | 'closed';
+
+export interface OwnedAgentRuntimeFields {
+  executionOwner: AgentExecutionOwner;
+  runtimeState: AgentRuntimeState;
+  providerInstanceId: string | null;
+  nativeSessionId: string | null;
+  activeTurnId: string | null;
+  capabilityRevision: number;
+  lastRuntimeError: string | null;
+}
+
+export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSessionId'> & {
   ownedId: string;
   agent: AgentKind;
   viaCmux: boolean;
@@ -69,6 +96,23 @@ export type OwnedSession = {
 
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'gemini', 'opencode'];
 const KNOWN_STATES: OwnedSessionState[] = ['live', 'background', 'exited'];
+const KNOWN_EXECUTION_OWNERS: AgentExecutionOwner[] = [
+  'structured',
+  'terminal',
+  'transitioning-to-structured',
+  'transitioning-to-terminal',
+  'stopped'
+];
+const KNOWN_RUNTIME_STATES: AgentRuntimeState[] = [
+  'starting',
+  'ready',
+  'working',
+  'waiting-approval',
+  'waiting-input',
+  'interrupting',
+  'failed',
+  'closed'
+];
 
 function defaultMintId(): string {
   return globalThis.crypto.randomUUID();
@@ -96,6 +140,12 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     nativeSessionId: record.id,
     ptySessionId: null,
     state: 'background',
+    executionOwner: 'stopped',
+    runtimeState: 'closed',
+    providerInstanceId: null,
+    activeTurnId: null,
+    capabilityRevision: 0,
+    lastRuntimeError: null,
     completedAt: null,
     branch: isNonEmptyString(record.branchHint) ? record.branchHint : null,
     taskId: isNonEmptyString(record.taskId) ? record.taskId : null,
@@ -124,6 +174,12 @@ export function createFreshSession(
     nativeSessionId: null,
     ptySessionId: null,
     state: 'background',
+    executionOwner: 'stopped',
+    runtimeState: 'closed',
+    providerInstanceId: null,
+    activeTurnId: null,
+    capabilityRevision: 0,
+    lastRuntimeError: null,
     completedAt: null,
     branch: null,
     taskId: null,
@@ -182,6 +238,19 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
     const state = (KNOWN_STATES as string[]).includes(candidate.state as string)
       ? (candidate.state as OwnedSessionState)
       : 'exited';
+    const ptySessionId = isNonEmptyString(candidate.ptySessionId) ? candidate.ptySessionId : null;
+    const executionOwner = (KNOWN_EXECUTION_OWNERS as string[]).includes(
+      candidate.executionOwner as string
+    )
+      ? (candidate.executionOwner as AgentExecutionOwner)
+      : ptySessionId && state !== 'exited'
+        ? 'terminal'
+        : 'stopped';
+    const runtimeState = (KNOWN_RUNTIME_STATES as string[]).includes(candidate.runtimeState as string)
+      ? (candidate.runtimeState as AgentRuntimeState)
+      : executionOwner === 'terminal'
+        ? 'ready'
+        : 'closed';
     result.push({
       ownedId: candidate.ownedId,
       agent,
@@ -192,8 +261,18 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       cwd: candidate.cwd,
       resumeCommand: isNonEmptyString(candidate.resumeCommand) ? candidate.resumeCommand : null,
       nativeSessionId: isNonEmptyString(candidate.nativeSessionId) ? candidate.nativeSessionId : null,
-      ptySessionId: isNonEmptyString(candidate.ptySessionId) ? candidate.ptySessionId : null,
+      ptySessionId,
       state,
+      executionOwner,
+      runtimeState,
+      providerInstanceId: isNonEmptyString(candidate.providerInstanceId)
+        ? candidate.providerInstanceId
+        : null,
+      activeTurnId: isNonEmptyString(candidate.activeTurnId) ? candidate.activeTurnId : null,
+      capabilityRevision: nonNegativeInteger(candidate.capabilityRevision) ?? 0,
+      lastRuntimeError: isNonEmptyString(candidate.lastRuntimeError)
+        ? candidate.lastRuntimeError
+        : null,
       // Sessions saved before this field existed have no value here at all, and
       // that reads exactly like "not done" — which is the right answer for them.
       completedAt: isNonEmptyString(candidate.completedAt) ? candidate.completedAt : null,
@@ -212,6 +291,10 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
   return result;
 }
 
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
 export function reconcileOwnedSessions(
   stored: OwnedSession[],
   live: Pick<TerminalSessionInfo, 'sessionId' | 'exited'>[]
@@ -223,13 +306,19 @@ export function reconcileOwnedSessions(
   for (const session of stored) {
     const match = session.ptySessionId ? liveById.get(session.ptySessionId) : undefined;
     if (match && !match.exited) {
-      const next: OwnedSession = { ...session, state: 'background' };
+      const next: OwnedSession = {
+        ...session,
+        state: 'background',
+        executionOwner: 'terminal',
+        runtimeState: 'ready'
+      };
       owned.push(next);
       reattachable.push(next);
     } else if (match && match.exited) {
-      owned.push({ ...session, state: 'exited' });
+      owned.push({ ...session, state: 'exited', executionOwner: 'stopped', runtimeState: 'closed' });
     } else {
-      owned.push({ ...session, state: 'exited', ptySessionId: null });
+      // Keep the terminal id so a failed migration can be retried or diagnosed.
+      owned.push({ ...session, state: 'exited', executionOwner: 'stopped', runtimeState: 'closed' });
     }
   }
 

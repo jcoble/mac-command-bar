@@ -10,6 +10,9 @@ import type {
   AgentConversationEvent,
   AgentConversationProvider,
   AgentConversationSnapshot,
+  AgentConfigValue,
+  AgentWriterLease,
+  AgentWriterLeaseTransition,
   ConversationAttachment,
   ConversationChildAgent,
   ConversationMetadata,
@@ -18,7 +21,11 @@ import type {
   ConversationSessionState,
   ConversationTimelineEntry
 } from './conversationTypes.ts';
-import type { SessionConversationWorkspace } from '../sessionWorkspaces.ts';
+import type { AgentExecutionOwner } from '../ownedSessions.ts';
+import {
+  SESSION_CONVERSATION_WORKSPACE_VERSION,
+  type SessionConversationWorkspace
+} from '../sessionWorkspaces.ts';
 
 export type ConversationViewMode = 'structured' | 'raw';
 
@@ -32,6 +39,13 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   selectedChildId: string | null;
   childTimeline: ConversationTimelineEntry[];
   scrollTop: number;
+  childScrollTopById: Record<string, number>;
+  executionOwner: AgentExecutionOwner;
+  writerLease: AgentWriterLease;
+  writerLeaseTransition: AgentWriterLeaseTransition | null;
+  attachmentIds: string[];
+  config: Record<string, AgentConfigValue>;
+  telemetry: Record<string, AgentConfigValue>;
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -58,7 +72,14 @@ function freshState(
     children: [],
     selectedChildId: null,
     childTimeline: [],
-    scrollTop: 0
+    scrollTop: 0,
+    childScrollTopById: {},
+    executionOwner: 'stopped',
+    writerLease: { ownedId, generation: 0, owner: 'none' },
+    writerLeaseTransition: null,
+    attachmentIds: [],
+    config: {},
+    telemetry: {}
   };
 }
 
@@ -91,7 +112,14 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     children: current.children,
     selectedChildId: current.selectedChildId,
     childTimeline: current.childTimeline,
-    scrollTop: current.scrollTop
+    scrollTop: current.scrollTop,
+    childScrollTopById: current.childScrollTopById,
+    executionOwner: current.executionOwner,
+    writerLease: { ...current.writerLease, generation: next.generation },
+    writerLeaseTransition: current.writerLeaseTransition,
+    attachmentIds: current.attachmentIds,
+    config: current.config,
+    telemetry: current.telemetry
   };
   return true;
 }
@@ -101,6 +129,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
+  if (snapshot.connection.generation < current.generation) return;
   let rebuilt = createConversationState(
     snapshot.connection.ownedId,
     snapshot.connection.provider
@@ -119,7 +148,14 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     children: current.children,
     selectedChildId: current.selectedChildId,
     childTimeline: current.childTimeline,
-    scrollTop: current.scrollTop
+    scrollTop: current.scrollTop,
+    childScrollTopById: current.childScrollTopById,
+    executionOwner: current.executionOwner,
+    writerLease: { ...current.writerLease, generation: rebuilt.generation },
+    writerLeaseTransition: current.writerLeaseTransition,
+    attachmentIds: current.attachmentIds,
+    config: current.config,
+    telemetry: current.telemetry
   };
 }
 
@@ -163,7 +199,10 @@ export function applyChildConversationTranscript(
 
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
   const current = conversationSessions[ownedId];
-  if (current) current.attachments = attachments;
+  if (current) {
+    current.attachments = attachments;
+    current.attachmentIds = attachments.map((attachment) => attachment.id);
+  }
 }
 
 export function setConversationSelectedChild(ownedId: string, childId: string | null): void {
@@ -176,6 +215,34 @@ export function setConversationSelectedChild(ownedId: string, childId: string | 
 export function setConversationScrollTop(ownedId: string, scrollTop: number): void {
   const current = conversationSessions[ownedId];
   if (current) current.scrollTop = Math.max(0, scrollTop);
+}
+
+export function setChildConversationScrollTop(
+  ownedId: string,
+  childId: string,
+  scrollTop: number
+): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.childScrollTopById[childId] = Math.max(0, scrollTop);
+}
+
+export function setConversationWriterLeaseTransition(
+  transition: AgentWriterLeaseTransition
+): boolean {
+  const current = conversationSessions[transition.ownedId];
+  if (!current || transition.generation !== current.generation) return false;
+  if (transition.from !== current.writerLease.owner) return false;
+  current.writerLeaseTransition = transition;
+  if (transition.state === 'committed') {
+    current.writerLease = {
+      ownedId: transition.ownedId,
+      generation: transition.generation,
+      owner: transition.to
+    };
+    current.executionOwner = transition.to === 'none' ? 'stopped' : transition.to;
+    current.writerLeaseTransition = null;
+  }
+  return true;
 }
 
 export function setConversationDraft(ownedId: string, draft: string): void {
@@ -199,6 +266,7 @@ export function setConversationSending(ownedId: string, sending: boolean): void 
 export function setConversationConnection(connection: AgentConversationConnection): void {
   const current = ensureConversationSession(connection.ownedId, connection.provider);
   current.generation = connection.generation;
+  current.writerLease.generation = connection.generation;
   current.connectionState = connection.state;
   if (connection.nativeSessionId) current.nativeSessionId = connection.nativeSessionId;
 }
@@ -209,8 +277,19 @@ export function captureConversationWorkspace(
   const current = conversationSessions[ownedId];
   if (!current) return undefined;
   return {
+    version: SESSION_CONVERSATION_WORKSPACE_VERSION,
     mode: current.mode,
     draft: current.draft,
+    generation: current.generation,
+    owner: current.executionOwner,
+    attachmentIds: current.attachmentIds,
+    config: current.config,
+    parentScrollTop: current.scrollTop,
+    childScrollTopById: current.childScrollTopById,
+    sequence: current.lastSequence,
+    telemetry: current.telemetry,
+    writerLease: current.writerLease,
+    writerLeaseTransition: current.writerLeaseTransition,
     selectedChildId: current.selectedChildId,
     scrollTop: current.scrollTop,
     providerGeneration: current.generation,
@@ -227,7 +306,16 @@ export function restoreConversationWorkspace(
   current.mode = snapshot?.mode === 'raw' ? 'raw' : 'structured';
   current.draft = snapshot?.draft ?? '';
   current.selectedChildId = snapshot?.selectedChildId ?? null;
-  current.scrollTop = snapshot?.scrollTop ?? 0;
+  current.scrollTop = snapshot?.parentScrollTop ?? snapshot?.scrollTop ?? 0;
+  current.childScrollTopById = snapshot?.childScrollTopById ?? {};
+  current.executionOwner = snapshot?.owner ?? current.executionOwner;
+  current.attachmentIds = snapshot?.attachmentIds ?? current.attachmentIds;
+  current.config = snapshot?.config ?? current.config;
+  current.telemetry = snapshot?.telemetry ?? current.telemetry;
+  if (snapshot?.writerLease?.ownedId === ownedId) current.writerLease = snapshot.writerLease;
+  if (snapshot?.writerLeaseTransition?.ownedId === ownedId) {
+    current.writerLeaseTransition = snapshot.writerLeaseTransition;
+  }
   return current;
 }
 

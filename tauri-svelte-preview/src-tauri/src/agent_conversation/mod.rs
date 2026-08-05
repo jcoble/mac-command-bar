@@ -11,9 +11,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use protocol::{
     AgentConversationConnection, AgentConversationEvent, AgentConversationPayload,
-    AgentConversationSnapshot, ApprovalDecision, ConversationConnectionState,
-    EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
-    SendAgentConversationMessageRequest, StopAgentConversationTurnRequest,
+    AgentConversationSnapshot, AgentExecutionOwner, AgentRuntimeState, AgentWriterLease,
+    AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalDecision,
+    ConversationConnectionState, EnsureAgentConversationRequest,
+    RespondAgentConversationApprovalRequest, SendAgentConversationMessageRequest,
+    StopAgentConversationTurnRequest,
 };
 use tauri::Emitter;
 use tokio::sync::mpsc;
@@ -37,6 +39,10 @@ struct ConversationSession {
     sequence: u64,
     events: VecDeque<AgentConversationEvent>,
     command_tx: Option<mpsc::UnboundedSender<ProviderCommand>>,
+    owner: AgentExecutionOwner,
+    runtime_state: AgentRuntimeState,
+    writer_lease: AgentWriterLease,
+    writer_lease_transition: Option<AgentWriterLeaseTransition>,
 }
 
 #[derive(Clone, Default)]
@@ -88,6 +94,14 @@ impl AgentConversationRegistry {
                 sequence: 0,
                 events: VecDeque::new(),
                 command_tx: None,
+                owner: AgentExecutionOwner::Stopped,
+                runtime_state: AgentRuntimeState::Closed,
+                writer_lease: AgentWriterLease {
+                    owned_id: connection.owned_id.clone(),
+                    generation,
+                    owner: AgentWriterLeaseOwner::None,
+                },
+                writer_lease_transition: None,
             },
         );
         Ok(connection)
@@ -507,6 +521,14 @@ mod tests {
         assert_eq!(registry.close("owned-a").unwrap(), true);
         assert!(registry.snapshot("owned-a").unwrap().is_none());
         assert!(registry.snapshot("owned-b").unwrap().is_some());
+        let sessions = registry.inner.lock().unwrap();
+        let session_b = sessions.get("owned-b").unwrap();
+        assert_eq!(session_b.owner, AgentExecutionOwner::Stopped);
+        assert_eq!(session_b.runtime_state, AgentRuntimeState::Closed);
+        assert_eq!(session_b.writer_lease.owned_id, "owned-b");
+        assert_eq!(session_b.writer_lease.owner, AgentWriterLeaseOwner::None);
+        assert!(session_b.writer_lease_transition.is_none());
+        drop(sessions);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -66,6 +66,19 @@ assert.equal(store.getConversationSession('owned-b').metadata.model, null);
 assert.equal(store.getConversationSession('owned-b').children.length, 0);
 assert.equal(store.getConversationSession('owned-b').attachments.length, 0);
 
+store.setConversationConnection({
+  ownedId: 'owned-b', provider: 'claude', generation: 2, state: 'connecting'
+});
+assert.equal(store.setConversationWriterLeaseTransition({
+  ownedId: 'owned-b', generation: 2, from: 'none', to: 'terminal', state: 'committed'
+}), true);
+assert.equal(store.getConversationSession('owned-b').executionOwner, 'terminal');
+assert.equal(store.getConversationSession('owned-b').writerLease.owner, 'terminal');
+assert.equal(store.getConversationSession('owned-a').executionOwner, 'stopped');
+assert.equal(store.setConversationWriterLeaseTransition({
+  ownedId: 'owned-b', generation: 1, from: 'terminal', to: 'structured', state: 'committed'
+}), false);
+
 store.applyAgentConversationEvent({
   ownedId: 'owned-a',
   provider: 'codex',
@@ -108,6 +121,18 @@ assert.deepEqual(
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 
+// A stale snapshot cannot replace a newer generation.
+store.setConversationConnection({
+  ownedId: 'owned-a', provider: 'codex', generation: 3, state: 'reconnecting'
+});
+store.applyAgentConversationSnapshot({
+  connection: { ownedId: 'owned-a', provider: 'codex', generation: 2, state: 'connected' },
+  lastSequence: 0,
+  events: []
+});
+assert.equal(store.getConversationSession('owned-a').generation, 3);
+assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnecting');
+
 const saved = store.captureConversationWorkspace('owned-b');
 store.setConversationDraft('owned-b', 'Changed');
 store.setConversationMode('owned-b', 'structured');
@@ -115,6 +140,10 @@ store.restoreConversationWorkspace('owned-b', 'claude', saved);
 assert.equal(store.getConversationSession('owned-b').draft, 'Message B');
 assert.equal(store.getConversationSession('owned-b').mode, 'raw');
 assert.equal(store.getConversationSession('owned-b').selectedChildId, null);
+assert.equal(saved.version, 1);
+assert.equal(saved.owner, 'terminal');
+assert.equal(saved.generation, 2);
+assert.equal(saved.writerLease.owner, 'terminal');
 
 store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);

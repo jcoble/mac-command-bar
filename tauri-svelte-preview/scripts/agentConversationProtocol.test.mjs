@@ -5,6 +5,7 @@ import {
   createConversationState,
   importConversationHistory
 } from '../src/lib/shell/conversation/conversationReducer.ts';
+import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 
 const event = (overrides = {}) => ({
   ownedId: 'owned-a',
@@ -97,6 +98,15 @@ const event = (overrides = {}) => ({
   assert.equal(state.timeline[0].text, 'Still here');
   assert.equal(state.timeline[1].kind, 'error');
   assert.equal(state.timeline[1].recoverable, true);
+}
+
+// Known categories get their fixed controls and future categories remain generic.
+{
+  assert.equal(configOptionPlacement('model'), 'model-picker');
+  assert.equal(configOptionPlacement('thought_level'), 'reasoning-picker');
+  assert.equal(configOptionPlacement('mode'), 'mode-picker');
+  assert.equal(configOptionPlacement('model_config'), 'model-popover');
+  assert.equal(configOptionPlacement('provider.future/category'), 'more-options');
 }
 
 console.log('agent conversation protocol tests passed');
