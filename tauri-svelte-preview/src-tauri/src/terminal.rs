@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Runtime};
 
+pub use crate::agent_conversation::protocol::ToolTerminalIdentity;
+
 pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
 /// Per-session scrollback ring held by the backend. 16 MB is enough to survive a
 /// genuinely long agent run (256 KB was ~2 minutes of a chatty build), and it is
@@ -19,6 +21,15 @@ const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// to the cap would make every subsequent 8 KB read memmove the whole 16 MB; this
 /// way the O(n) drain amortizes over ~4 MB of output.
 const TERMINAL_SCROLLBACK_TRIM_TO_BYTES: usize = TERMINAL_SCROLLBACK_MAX_BYTES / 4 * 3;
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalKind {
+    UserPty,
+    AgentTool,
+    RunConfiguration,
+    BrowserAutomation,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +58,9 @@ pub struct TerminalSessionInfo {
     pub exited: bool,
     pub exit_code: Option<u32>,
     pub signal: Option<String>,
+    pub kind: TerminalKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_terminal_identity: Option<ToolTerminalIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,11 +91,46 @@ pub fn start_terminal_session<R: Runtime>(
     registry: &TerminalRegistry,
     request: TerminalStartRequest,
 ) -> Result<TerminalSessionInfo, String> {
+    start_terminal_session_typed(app, registry, request, TerminalKind::UserPty, None)
+}
+
+pub fn start_tool_terminal_session<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    registry: &TerminalRegistry,
+    request: TerminalStartRequest,
+    identity: ToolTerminalIdentity,
+) -> Result<TerminalSessionInfo, String> {
+    if identity.owned_id.trim().is_empty()
+        || identity.turn_id.trim().is_empty()
+        || identity.tool_call_id.trim().is_empty()
+        || identity.terminal_id.trim().is_empty()
+    {
+        return Err("Tool terminal identity is incomplete".to_string());
+    }
+    start_terminal_session_typed(
+        app,
+        registry,
+        request,
+        TerminalKind::AgentTool,
+        Some(identity),
+    )
+}
+
+fn start_terminal_session_typed<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    registry: &TerminalRegistry,
+    request: TerminalStartRequest,
+    kind: TerminalKind,
+    tool_terminal_identity: Option<ToolTerminalIdentity>,
+) -> Result<TerminalSessionInfo, String> {
     let cwd = terminal_cwd_from_request(&request.cwd)?;
     let shell = terminal_shell_from_request(request.shell);
     let run_command = terminal_command_from_request(request.command);
     let size = terminal_size_from_request(request.cols, request.rows);
-    let session_id = new_terminal_session_id();
+    let session_id = tool_terminal_identity
+        .as_ref()
+        .map(|identity| identity.terminal_id.clone())
+        .unwrap_or_else(new_terminal_session_id);
     let started_at = timestamp_millis();
 
     let pty_system = native_pty_system();
@@ -140,6 +189,8 @@ pub fn start_terminal_session<R: Runtime>(
         exited: false,
         exit_code: None,
         signal: None,
+        kind,
+        tool_terminal_identity,
     };
 
     registry.insert(
@@ -689,6 +740,24 @@ mod tests {
         assert!(!write_terminal_session(&registry, "   ", "echo nope\n").unwrap());
         assert!(!resize_terminal_session(&registry, "   ", Some(100), Some(32)).unwrap());
         assert!(!close_terminal_session(&registry, "   ").unwrap());
+    }
+
+    #[test]
+    fn agent_tool_terminals_have_distinct_typed_identities() {
+        let first = ToolTerminalIdentity {
+            owned_id: "owned-a".into(),
+            turn_id: "turn-a".into(),
+            tool_call_id: "tool-a".into(),
+            terminal_id: "terminal-a".into(),
+        };
+        let second = ToolTerminalIdentity {
+            owned_id: "owned-a".into(),
+            turn_id: "turn-a".into(),
+            tool_call_id: "tool-b".into(),
+            terminal_id: "terminal-b".into(),
+        };
+        assert_ne!(first, second);
+        assert_eq!(TerminalKind::AgentTool, TerminalKind::AgentTool);
     }
 
     #[cfg(not(windows))]

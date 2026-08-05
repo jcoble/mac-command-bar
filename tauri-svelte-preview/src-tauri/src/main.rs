@@ -5173,7 +5173,10 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
 fn main() {
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
-        .manage(agent_conversation::AgentConversationRegistry::default())
+        .manage(agent_conversation::manager::AgentRuntimeManager::new(
+            agent_conversation::providers::ProviderRegistry::bundled_from_environment()
+                .expect("packaged ACP adapter configuration is invalid"),
+        ))
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
         .plugin(tauri_plugin_dialog::init())
