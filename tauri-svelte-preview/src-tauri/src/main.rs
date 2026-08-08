@@ -18,10 +18,11 @@ use orchestration::{
     list_orchestration_runs_sync, record_orchestration_event_sync, OrchestrationEvent,
     OrchestrationRun,
 };
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 mod agent_conversation;
+mod browser;
 mod git_diff_models;
 mod lsp;
 mod orchestration;
@@ -5302,6 +5303,7 @@ fn main() {
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
+        .manage(browser::BrowserRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Every time a language server starts, finishes reading a project, or stops,
@@ -5404,8 +5406,29 @@ fn main() {
             read_terminal_session_scrollback,
             write_terminal_session,
             resize_terminal_session,
-            close_terminal_session
+            close_terminal_session,
+            browser::create_browser_tab,
+            browser::set_browser_tab_bounds,
+            browser::set_browser_tab_viewport,
+            browser::show_browser_tab,
+            browser::hide_browser_workspace,
+            browser::navigate_browser_tab,
+            browser::reload_browser_tab,
+            browser::go_back_browser_tab,
+            browser::go_forward_browser_tab,
+            browser::close_browser_tab,
+            browser::clear_browser_workspace_data,
+            browser::arm_browser_element_picker,
+            browser::cancel_browser_element_picker,
+            browser::capture_browser_viewport,
+            browser::open_browser_tab_devtools,
+            browser::open_browser_tab_external
         ])
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<browser::BrowserRegistry>().shutdown();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("failed to run MacCommandBar webview preview");
 }
