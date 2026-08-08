@@ -179,6 +179,8 @@
     if (record.firstPrompt) await copyText(record.firstPrompt);
   }
 
+  function menuPoint(event: MouseEvent): { x: number; y: number } { const rect = (event.currentTarget as HTMLElement | null)?.closest('.dv-render-overlay')?.getBoundingClientRect(); return { x: Math.max(8, Math.min(event.clientX - (rect?.left ?? 0), (rect?.width ?? window.innerWidth) - 224)), y: event.clientY - (rect?.top ?? 0) }; }
+
   function openRowMenu(record: SessionLibraryRecord, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
@@ -186,8 +188,7 @@
     contextMenu = {
       target: 'session',
       record,
-      x: event.clientX,
-      y: event.clientY,
+      ...menuPoint(event),
       items: sessionContextMenuRoster({ target: 'session', record })
     };
   }
@@ -202,8 +203,7 @@
     contextMenu = {
       target: 'center-tab',
       record: null,
-      x: event.clientX,
-      y: event.clientY,
+      ...menuPoint(event),
       items: sessionContextMenuRoster({ target: 'center-tab' })
     };
   }
