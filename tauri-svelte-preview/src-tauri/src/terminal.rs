@@ -59,6 +59,10 @@ pub struct TerminalSessionInfo {
     pub exit_code: Option<u32>,
     pub signal: Option<String>,
     pub kind: TerminalKind,
+    /// The Command Bar-owned identity supplied when this terminal was started.
+    /// This is additive so older consumers can continue to render the session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owned_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_terminal_identity: Option<ToolTerminalIdentity>,
 }
@@ -190,6 +194,7 @@ fn start_terminal_session_typed<R: Runtime>(
         exit_code: None,
         signal: None,
         kind,
+        owned_id: request.owned_id,
         tool_terminal_identity,
     };
 

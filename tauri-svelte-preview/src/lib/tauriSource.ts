@@ -77,7 +77,29 @@ export type TerminalSessionInfo = {
   exited: boolean;
   exitCode: number | null;
   signal: string | null;
+  kind?: 'user-pty' | 'agent-tool' | 'run-configuration' | 'browser-automation';
+  ownedId?: string | null;
+  toolTerminalIdentity?: {
+    ownedId: string;
+    turnId: string;
+    toolCallId: string;
+    terminalId: string;
+  } | null;
 };
+
+export type ResourceSnapshot = import('./shell/resources/resourceTypes.ts').ResourceSnapshot;
+export type ResourceDiskRoot = import('./shell/resources/resourceTypes.ts').ResourceDiskRoot;
+export type ResourceStopRequest = import('./shell/resources/resourceTypes.ts').ResourceStopRequest;
+export type ResourceCommandReceipt = import('./shell/resources/resourceTypes.ts').ResourceCommandReceipt;
+export type ResourceUnavailable = import('./shell/resources/resourceTypes.ts').ResourceUnavailable;
+export type ResourceCleanupRequest = import('./shell/resources/resourceTypes.ts').ResourceCleanupRequest;
+export type ResourceCleanupReceipt = import('./shell/resources/resourceTypes.ts').ResourceCleanupReceipt;
+export type DiskScanReport = import('./shell/resources/resourceTypes.ts').DiskScanReport;
+export type ProviderUsageSnapshot = import('./shell/usage/usageTypes.ts').ProviderUsageSnapshot;
+export type UsageHistoryQuery = import('./shell/usage/usageTypes.ts').UsageHistoryQuery;
+export type UsageSummary = import('./shell/usage/usageTypes.ts').UsageSummary;
+export type UsageBreakdownRow = import('./shell/usage/usageTypes.ts').UsageBreakdownRow;
+export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
 
 export type TerminalOutputPayload = {
   sessionId: string;
@@ -452,6 +474,95 @@ export async function listTerminalSessionsFromTauri(): Promise<TerminalSessionIn
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<TerminalSessionInfo[]>('list_terminal_sessions');
+}
+
+export async function readResourceSnapshotFromTauri(): Promise<ResourceSnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceSnapshot>('read_resource_snapshot');
+}
+
+export async function readResourceDiskScanFromTauri(
+  roots: ResourceDiskRoot[],
+  maxDepth = 3,
+  maxEntries = 2000
+): Promise<DiskScanReport | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<DiskScanReport>('read_resource_disk_scan', { roots, maxDepth, maxEntries });
+}
+
+export async function stopOwnedResourceFromTauri(
+  request: ResourceStopRequest
+): Promise<ResourceCommandReceipt | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceCommandReceipt>('stop_owned_resource', { request });
+}
+
+export async function restartLanguageServerRootFromTauri(
+  root: string
+): Promise<ResourceUnavailable | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceUnavailable>('restart_language_server_root', { request: { root } });
+}
+
+export async function applyResourceMemoryPressureFromTauri(
+  level: string
+): Promise<ResourceUnavailable | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceUnavailable>('apply_resource_memory_pressure', { level });
+}
+
+export async function readLanguageServerLogFromTauri(
+  root: string
+): Promise<ResourceUnavailable | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceUnavailable>('read_language_server_log', { request: { root } });
+}
+
+export async function cleanupWorkspaceDiskEntryFromTauri(
+  request: ResourceCleanupRequest
+): Promise<ResourceCleanupReceipt | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceCleanupReceipt>('cleanup_workspace_disk_entry', { request });
+}
+
+export async function setActiveSourceRootFromTauri(root: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('set_active_source_root', { request: { root } });
+}
+
+export async function readCurrentProviderUsageFromTauri(
+  provider: string | null,
+  instanceId: string | null
+): Promise<ProviderUsageSnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProviderUsageSnapshot>('read_current_provider_usage', { provider, instanceId });
+}
+
+export async function readUsageSummaryFromTauri(query: UsageHistoryQuery = {}): Promise<UsageSummary | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageSummary>('read_usage_summary', { query });
+}
+
+export async function readUsageBreakdownFromTauri(query: UsageHistoryQuery = {}): Promise<UsageBreakdownRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageBreakdownRow[]>('read_usage_breakdown', { query });
+}
+
+export async function readUsageDailyFromTauri(query: UsageHistoryQuery = {}): Promise<UsageDailyRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageDailyRow[]>('read_usage_daily', { query });
 }
 
 export async function readTerminalSessionScrollbackFromTauri(

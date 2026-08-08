@@ -17,6 +17,8 @@
   import BrowserOverlayHost from './browser/BrowserOverlayHost.svelte';
   import WorkbenchActionFab from './WorkbenchActionFab.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
+  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
+  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
   import type {
     BrowserFeedbackAttachment,
@@ -153,6 +155,10 @@
 />
 <WorkbenchActionFab actions={browserActions} context={workbenchActionContext} />
 <AssistanceHost />
+<div class="a10-popovers" data-testid="a10-resource-usage-popovers">
+  <ResourcePopover />
+  <UsagePopover />
+</div>
 
 {#if message}
   <!-- Something went wrong, said once, along the bottom edge. Announced to
@@ -174,6 +180,8 @@
 {/if}
 
 <style>
+  .a10-popovers { position: fixed; top: 12px; right: 14px; z-index: 60; display: flex; gap: 0.5rem; pointer-events: auto; }
+
   /* Development-only readout of how many backend calls the shell has made.
      Deliberately not part of the shared component set: it is a debugging
      instrument, not chrome, and it never ships to a user. */

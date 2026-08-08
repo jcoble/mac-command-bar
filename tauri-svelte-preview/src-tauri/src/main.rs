@@ -26,7 +26,13 @@ mod browser;
 mod git_diff_models;
 mod lsp;
 mod orchestration;
+mod resources;
 mod terminal;
+mod usage_current;
+mod usage_db;
+mod usage_history;
+mod usage_indexer;
+mod usage_sources;
 mod workflow;
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
@@ -254,7 +260,7 @@ struct ProjectWorktree {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectWorktreeActionResult {
+pub(crate) struct ProjectWorktreeActionResult {
     message: String,
     worktrees: Vec<ProjectWorktree>,
 }
@@ -1232,7 +1238,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 11] = [
+const BACKEND_CAPABILITIES: [&str; 18] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1259,6 +1265,15 @@ const BACKEND_CAPABILITIES: [&str; 11] = [
     // `read_source_lsp_log` hands back what a running language server printed to its
     // own error output.
     "lspLog",
+    // A10 resource and space inventory/action commands.
+    "resourceSnapshot",
+    "resourceDiskScan",
+    "resourceDiskCleanup",
+    "resourceStopOwned",
+    // Provider-authored quota and SQLite usage history queries.
+    "providerUsageQuota",
+    "usageHistory",
+    "usageHistoryIncremental",
 ];
 
 /// The event the app sends whenever a language server changes what it is doing.
@@ -3125,7 +3140,7 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
 /// it is locked, deletes it even when files are uncommitted or commits are unmerged, and
 /// reports in the returned message exactly what went away. Neither mode will ever touch
 /// the primary checkout.
-fn remove_project_worktree_sync(
+pub(crate) fn remove_project_worktree_sync(
     root: PathBuf,
     path: PathBuf,
     force: bool,
@@ -5304,6 +5319,8 @@ fn main() {
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
         .manage(browser::BrowserRegistry::default())
+        .manage(resources::ResourceRegistry::default())
+        .manage(usage_history::UsageHistoryState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Every time a language server starts, finishes reading a project, or stops,
@@ -5379,6 +5396,19 @@ fn main() {
             kill_playwright_session,
             kill_playwright_sessions,
             kill_process,
+            resources::read_resource_snapshot,
+            resources::read_resource_disk_scan,
+            resources::cleanup_workspace_disk_entry,
+            resources::stop_owned_resource,
+            resources::restart_language_server_root,
+            resources::set_active_source_root,
+            resources::apply_resource_memory_pressure,
+            resources::read_language_server_log,
+            usage_current::read_current_provider_usage,
+            usage_history::read_usage_summary,
+            usage_history::read_usage_breakdown,
+            usage_history::read_usage_daily,
+            usage_history::refresh_usage_history,
             list_orchestration_runs,
             record_orchestration_event,
             list_workflow_runs,
