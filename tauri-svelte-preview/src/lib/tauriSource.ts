@@ -130,6 +130,37 @@ export type GitActionResult = {
   status: ProjectGitStatus;
 };
 
+export type AgentGenerationRequest = {
+  root: string;
+  ownedId: string;
+  generation: number;
+};
+
+export type PullRequestContext = {
+  branch: string;
+  base: string;
+  commits: string;
+  diff: string;
+};
+
+export type PullRequestDetails = {
+  title: string;
+  description: string;
+};
+
+export type PullRequestCreated = {
+  number: number;
+  url: string;
+};
+
+export type PullRequestStatus = {
+  number: number;
+  url: string;
+  state: string;
+  checks: 'none' | 'pending' | 'passing' | 'failing' | string;
+  checkSummary: string;
+};
+
 export type SourceGitDiff = {
   relativePath: string;
   status: string;
@@ -862,6 +893,51 @@ export async function pushGitRepositoryFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<GitActionResult>('push_git_repository', { root });
+}
+
+export async function generateCommitMessageFromTauri(
+  request: AgentGenerationRequest
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('generate_commit_message', { request });
+}
+
+export async function readPullRequestContextFromTauri(
+  root: string
+): Promise<PullRequestContext | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestContext>('read_pull_request_context', { root });
+}
+
+export async function generatePullRequestDetailsFromTauri(
+  request: AgentGenerationRequest
+): Promise<PullRequestDetails | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestDetails>('generate_pull_request_details', { request });
+}
+
+export async function createPullRequestFromTauri(input: {
+  root: string;
+  title: string;
+  description: string;
+  base: string;
+  draft: boolean;
+}): Promise<PullRequestCreated | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestCreated>('create_pull_request', input);
+}
+
+export async function readPullRequestStatusFromTauri(
+  root: string,
+  branch: string
+): Promise<PullRequestStatus | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestStatus>('read_pull_request_status', { root, branch });
 }
 
 export async function readGitCommitHistoryFromTauri(

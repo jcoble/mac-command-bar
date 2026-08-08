@@ -21,6 +21,7 @@
   import CloudUpload from '@lucide/svelte/icons/cloud-upload';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import GitBranch from '@lucide/svelte/icons/git-branch';
+  import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import RefreshCcwDot from '@lucide/svelte/icons/refresh-ccw-dot';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
@@ -40,8 +41,10 @@
     canWrite: boolean;
     /** Said in the hover text of every button this page cannot use. */
     readOnlyReason: string;
+    /** Open the agent-backed pull request panel. */
+    onOpenPullRequest?: () => void;
   }
-  let { panel, service, canWrite, readOnlyReason }: Props = $props();
+  let { panel, service, canWrite, readOnlyReason, onOpenPullRequest }: Props = $props();
 
   const busy = $derived(panel.actionBusy !== '');
   const name = $derived(repositoryLabel(panel.root) || 'Source control');
@@ -156,6 +159,21 @@
       </button>
     {/each}
   </div>
+
+  <button
+    type="button"
+    class={cn(
+      buttonVariants({ variant: 'ghost', size: 'xs' }),
+      'mt-1.5 w-full justify-start gap-1.5 px-1.5 text-[12px] text-[var(--color-text-2)]'
+    )}
+    disabled={!panel.activated || !canWrite}
+    title={canWrite ? 'Generate the pull request title and description, then push and create it' : readOnlyReason}
+    onclick={() => onOpenPullRequest?.()}
+    data-testid="open-pull-request"
+  >
+    <GitPullRequest class="size-3.5" aria-hidden="true" />
+    New pull request
+  </button>
 
   {#if panel.actionError}
     <p class="mt-1 text-[12px] leading-[16px] text-[var(--color-bad)]">{panel.actionError}</p>

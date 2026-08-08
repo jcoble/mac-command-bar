@@ -2,8 +2,9 @@ use super::super::capabilities::{replace_config_options, validate_capabilities};
 use super::super::protocol::{AgentCapabilities, AgentProviderManifest};
 use super::{
     AcpClient, AgentConfigOption, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter,
-    AgentRuntimeError, AgentSteeringInput, InitializeAgentInput, LoadAgentSession, NewAgentSession,
-    PermissionResponse, ResumeAgentSession, StartedAgentSession, StartedTurn, UserInputResponse,
+    AgentRuntimeError, AgentSteeringInput, GeneratedText, InitializeAgentInput, LoadAgentSession,
+    NewAgentSession, PermissionResponse, ResumeAgentSession, StartedAgentSession, StartedTurn,
+    UserInputResponse,
 };
 
 pub struct AcpRuntimeAdapter {
@@ -74,6 +75,13 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
     }
     async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
         self.client_mut()?.prompt(input).await
+    }
+
+    async fn prompt_once(
+        &mut self,
+        input: AgentPrompt,
+    ) -> Result<GeneratedText, AgentRuntimeError> {
+        self.client_mut()?.prompt_once(input).await
     }
     async fn steer(&mut self, input: AgentSteeringInput) -> Result<(), AgentRuntimeError> {
         self.client_mut()?.steer(input.text).await
@@ -152,6 +160,14 @@ impl StructuredRuntimeHandle {
     pub async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
         match self {
             Self::Acp(adapter) => adapter.prompt(input).await,
+        }
+    }
+    pub async fn prompt_once(
+        &mut self,
+        input: AgentPrompt,
+    ) -> Result<GeneratedText, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.prompt_once(input).await,
         }
     }
     pub async fn cancel_turn(&mut self, turn_id: Option<&str>) -> Result<(), AgentRuntimeError> {

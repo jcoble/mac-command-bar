@@ -11,7 +11,7 @@ use super::super::protocol::{
     AgentProviderManifest, AgentSessionCapabilities,
 };
 use super::process::SidecarProcess;
-use super::{AgentPrompt, AgentRuntimeError, StartedAgentSession, StartedTurn};
+use super::{AgentPrompt, AgentRuntimeError, GeneratedText, StartedAgentSession, StartedTurn};
 
 pub struct AcpClient {
     process: SidecarProcess,
@@ -147,6 +147,98 @@ impl AcpClient {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         })
+    }
+
+    /// Send a bounded one-shot prompt and retain only assistant text updates.
+    ///
+    /// The regular `prompt` call intentionally returns as soon as ACP accepts
+    /// the request; the conversation event stream owns the rest of that turn.
+    /// Git actions need a direct result, so this narrow path consumes the same
+    /// ACP transport until the prompt response arrives and ignores tool,
+    /// reasoning, and lifecycle updates.
+    pub async fn prompt_once(
+        &mut self,
+        prompt: AgentPrompt,
+    ) -> Result<GeneratedText, AgentRuntimeError> {
+        let session_id = self.session_id()?;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let request_id = self.next_request_id;
+        let mut blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(prompt.text))];
+        blocks.extend(prompt.images.into_iter().map(|image| {
+            acp::ContentBlock::Image(acp::ImageContent::new(image.data, image.mime_type))
+        }));
+        let params = acp::PromptRequest::new(session_id, blocks);
+        let params = serde_json::to_value(params).map_err(serialization_error)?;
+        self.process
+            .write_json(&json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "session/prompt",
+                "params": params
+            }))
+            .await
+            .map_err(transport_error)?;
+
+        let mut text = String::new();
+        let mut turn_id = None;
+        loop {
+            let frame = self.process.next_json().await.map_err(transport_error)?;
+            if frame.get("id") == Some(&json!(request_id)) {
+                if let Some(error) = frame.get("error") {
+                    return Err(AgentRuntimeError::new("acp-error", error.to_string()));
+                }
+                if let Some(result_text) = frame
+                    .get("result")
+                    .and_then(extract_text_value)
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    text.push_str(&result_text);
+                }
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    return Err(AgentRuntimeError::new(
+                        "empty-response",
+                        "The active agent returned no text",
+                    ));
+                }
+                return Ok(GeneratedText { turn_id, text });
+            }
+
+            let params = frame.get("params").unwrap_or(&Value::Null);
+            let update = params
+                .get("update")
+                .or_else(|| params.get("sessionUpdate"))
+                .unwrap_or(params);
+            if let Some(id) = update
+                .get("turnId")
+                .or_else(|| update.get("turn_id"))
+                .and_then(Value::as_str)
+            {
+                turn_id = Some(id.to_string());
+            }
+            if update
+                .get("sessionUpdate")
+                .or_else(|| update.get("session_update"))
+                .or_else(|| update.get("type"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        "agent_message_chunk"
+                            | "agent-message-chunk"
+                            | "agent_message"
+                            | "assistant_message_delta"
+                    )
+                })
+            {
+                if let Some(chunk) = update.get("content").and_then(extract_text_value) {
+                    text.push_str(&chunk);
+                }
+                if let Some(message) = update.get("message").and_then(extract_text_value) {
+                    text.push_str(&message);
+                }
+            }
+        }
     }
 
     pub async fn steer(&mut self, text: String) -> Result<(), AgentRuntimeError> {
@@ -294,6 +386,33 @@ impl AcpClient {
     }
 }
 
+fn extract_text_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(values) => {
+            let text = values
+                .iter()
+                .filter_map(extract_text_value)
+                .collect::<String>();
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("text") {
+                return object
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            object
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| object.get("content").and_then(extract_text_value))
+        }
+        _ => None,
+    }
+}
+
 fn bool_at(value: &Value, path: &[&str]) -> bool {
     path.iter()
         .try_fold(value, |current, part| current.get(*part))
@@ -340,7 +459,7 @@ while IFS= read -r line; do
     *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session"}}}}\n' "$id" ;;
     *'"method":"session/load"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
     *'"method":"session/resume"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session"}}}}\n' "$id" ;;
-    *'"method":"session/prompt"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"turn-1"}}}}}}\n'; printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id" ;;
     *'"method":"session/set_config_option"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id" ;;
     *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/close"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"; exit 0 ;;
@@ -416,6 +535,15 @@ done"#,
             .await
             .unwrap();
         assert_eq!(turn.turn_id.as_deref(), Some("turn-1"));
+        let generated = adapter
+            .prompt_once(super::super::AgentPrompt {
+                text: "write a commit subject".into(),
+                images: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(generated.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(generated.text, "generated text");
         let options = adapter.set_config("model", json!("new")).await.unwrap();
         assert_eq!(options[0].value, json!("new"));
         adapter

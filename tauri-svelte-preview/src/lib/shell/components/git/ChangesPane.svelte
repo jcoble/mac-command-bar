@@ -22,6 +22,8 @@
   import Minus from '@lucide/svelte/icons/minus';
   import Plus from '@lucide/svelte/icons/plus';
   import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import {
@@ -47,8 +49,23 @@
     readOnlyReason: string;
     /** A changed file was picked, so the diff should be brought to the front. */
     onShowDiff?: () => void;
+    /** Ask the active agent for a commit subject, without opening the chat UI. */
+    onGenerateCommitMessage?: () => Promise<string>;
+    /** Whether the current active session can service an agent action. */
+    agentAvailable?: boolean;
+    /** Plain explanation for a disabled generation action. */
+    agentUnavailableReason?: string;
   }
-  let { panel, service, canWrite, readOnlyReason, onShowDiff }: Props = $props();
+  let {
+    panel,
+    service,
+    canWrite,
+    readOnlyReason,
+    onShowDiff,
+    onGenerateCommitMessage,
+    agentAvailable = false,
+    agentUnavailableReason = 'No active agent session is running. Start an agent conversation to generate this message.'
+  }: Props = $props();
 
   /** Pick a file's changes, and ask for wherever they are drawn to come forward. */
   function pickFile(file: ProjectGitFileStatus): void {
@@ -57,6 +74,8 @@
   }
 
   let open = $state(true);
+  let generatingCommitMessage = $state(false);
+  let generationError = $state('');
 
   const groups = $derived(buildGitStatusFileGroups(panel.status?.files ?? []));
   const summary = $derived(describeGitStatusGroups(groups));
@@ -108,6 +127,20 @@
     if (canCommit) void service.commit();
   }
 
+  async function generateCommitMessage(): Promise<void> {
+    if (!onGenerateCommitMessage || !agentAvailable || generatingCommitMessage) return;
+    generatingCommitMessage = true;
+    generationError = '';
+    try {
+      const message = await onGenerateCommitMessage();
+      panel.commitMessage = message.trim();
+    } catch (error) {
+      generationError = error instanceof Error ? error.message : String(error);
+    } finally {
+      generatingCommitMessage = false;
+    }
+  }
+
   const ROW_ACTION =
     'flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[var(--color-text-2)] ' +
     'opacity-0 transition-colors group-hover:opacity-100 focus-visible:opacity-100 ' +
@@ -136,20 +169,49 @@
 
   {#if open}
     <div class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-2 pt-0.5 pb-2">
-      <textarea
-        class="w-full shrink-0 resize-y rounded-[6px] border border-[var(--color-border)]
-               bg-[var(--color-surface)] px-2 py-1.5 text-[13px] leading-[18px]
-               text-[var(--color-text)] placeholder:text-[var(--color-text-3)]
-               focus-visible:border-[var(--color-accent)] focus-visible:ring-3
-               focus-visible:ring-ring/50 outline-none disabled:opacity-60"
-        rows="2"
-        placeholder="Message (⌘Enter to commit on '{branch}')"
-        aria-label="Commit message"
-        disabled={!canWrite}
-        title={canWrite ? '' : readOnlyReason}
-        bind:value={panel.commitMessage}
-        onkeydown={commitOnShortcut}
-      ></textarea>
+      <div class="flex shrink-0 flex-col gap-1">
+        <textarea
+          class="w-full resize-y rounded-[6px] border border-[var(--color-border)]
+                 bg-[var(--color-surface)] px-2 py-1.5 text-[13px] leading-[18px]
+                 text-[var(--color-text)] placeholder:text-[var(--color-text-3)]
+                 focus-visible:border-[var(--color-accent)] focus-visible:ring-3
+                 focus-visible:ring-ring/50 outline-none disabled:opacity-60"
+          rows="2"
+          placeholder="Message (⌘Enter to commit on '{branch}')"
+          aria-label="Commit message"
+          disabled={!canWrite}
+          title={canWrite ? '' : readOnlyReason}
+          bind:value={panel.commitMessage}
+          onkeydown={commitOnShortcut}
+        ></textarea>
+        <button
+          type="button"
+          class={cn(
+            buttonVariants({ variant: 'ghost', size: 'xs' }),
+            'w-fit gap-1 px-1.5 text-[12px] text-[var(--color-text-2)]'
+          )}
+          disabled={!canWrite || !agentAvailable || generatingCommitMessage}
+          title={!canWrite ? readOnlyReason : agentAvailable ? 'Ask the active agent to write a commit message from this diff' : agentUnavailableReason}
+          onclick={() => void generateCommitMessage()}
+          data-testid="generate-commit-message"
+        >
+          {#if generatingCommitMessage}
+            <LoaderCircle class="size-3 animate-spin" aria-hidden="true" />
+            Generating…
+          {:else}
+            <Sparkles class="size-3" aria-hidden="true" />
+            Generate commit message
+          {/if}
+        </button>
+        {#if !agentAvailable && onGenerateCommitMessage}
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-3)]" data-testid="commit-agent-unavailable">
+            {agentUnavailableReason}
+          </p>
+        {/if}
+        {#if generationError}
+          <p class="text-[12px] leading-[16px] text-[var(--color-bad)]" role="alert">{generationError}</p>
+        {/if}
+      </div>
 
       <button
         type="button"

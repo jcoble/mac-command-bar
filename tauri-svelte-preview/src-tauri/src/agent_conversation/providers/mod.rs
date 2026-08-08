@@ -70,6 +70,12 @@ pub struct StartedTurn {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedText {
+    pub turn_id: Option<String>,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentRuntimeError {
     pub code: &'static str,
     pub message: String,
@@ -111,6 +117,8 @@ pub trait AgentRuntimeAdapter: Send + Sync {
         input: ResumeAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError>;
     async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError>;
+    async fn prompt_once(&mut self, input: AgentPrompt)
+        -> Result<GeneratedText, AgentRuntimeError>;
     async fn steer(&mut self, input: AgentSteeringInput) -> Result<(), AgentRuntimeError>;
     async fn cancel_turn(&mut self, turn_id: Option<&str>) -> Result<(), AgentRuntimeError>;
     async fn set_config(

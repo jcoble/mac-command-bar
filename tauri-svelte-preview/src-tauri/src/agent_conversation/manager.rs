@@ -21,8 +21,8 @@ use super::protocol::{
 use super::providers::process::validated_conversation_cwd;
 use super::providers::{
     AcpRuntimeAdapter, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter, AgentSteeringInput,
-    InitializeAgentInput, LoadAgentSession, NewAgentSession, PermissionResponse, ProviderRegistry,
-    StructuredRuntimeHandle,
+    GeneratedText, InitializeAgentInput, LoadAgentSession, NewAgentSession, PermissionResponse,
+    ProviderRegistry, StructuredRuntimeHandle,
 };
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
@@ -329,6 +329,25 @@ impl AgentRuntimeManager {
         session.active_turn_id = started.turn_id;
         session.state = AgentRuntimeState::Working;
         Ok(())
+    }
+
+    /// Run one product action through the current structured agent without
+    /// writing through the conversation UI. The runtime and generation checks
+    /// remain the same as an ordinary conversation prompt.
+    pub async fn prompt_once(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        input: AgentPrompt,
+    ) -> Result<GeneratedText, String> {
+        let runtime = self.runtime(owned_id, generation)?;
+        let result = runtime
+            .lock()
+            .await
+            .prompt_once(input)
+            .await
+            .map_err(|error| error.to_string());
+        result
     }
 
     pub async fn respond_permission(&self, input: PermissionResponse) -> Result<(), String> {

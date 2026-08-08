@@ -24,6 +24,7 @@ use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 mod agent_conversation;
 mod browser;
 mod git_diff_models;
+mod git_pr;
 mod lsp;
 mod orchestration;
 mod resources;
@@ -1238,7 +1239,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 18] = [
+const BACKEND_CAPABILITIES: [&str; 23] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1274,6 +1275,12 @@ const BACKEND_CAPABILITIES: [&str; 18] = [
     "providerUsageQuota",
     "usageHistory",
     "usageHistoryIncremental",
+    // Source-control agent actions and the GitHub CLI PR lifecycle.
+    "generate_commit_message",
+    "read_pull_request_context",
+    "generate_pull_request_details",
+    "create_pull_request",
+    "read_pull_request_status",
 ];
 
 /// The event the app sends whenever a language server changes what it is doing.
@@ -5386,6 +5393,11 @@ fn main() {
             read_git_commit_history,
             read_git_commit_files,
             read_git_commit_file_diff,
+            git_pr::generate_commit_message,
+            git_pr::read_pull_request_context,
+            git_pr::generate_pull_request_details,
+            git_pr::create_pull_request,
+            git_pr::read_pull_request_status,
             list_project_worktrees,
             remove_project_worktree,
             archive_project_worktree,
@@ -8261,6 +8273,11 @@ mod tests {
                 "providerUsageQuota".to_string(),
                 "usageHistory".to_string(),
                 "usageHistoryIncremental".to_string(),
+                "generate_commit_message".to_string(),
+                "read_pull_request_context".to_string(),
+                "generate_pull_request_details".to_string(),
+                "create_pull_request".to_string(),
+                "read_pull_request_status".to_string(),
             ]
         );
     }

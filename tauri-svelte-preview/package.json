@@ -58,6 +58,7 @@
     "test:csharp-language-client": "node scripts/csharpLanguageClient.test.mjs",
     "test:workspace-code-lens": "node --experimental-strip-types scripts/workspaceCodeLens.test.mjs",
     "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.mjs",
+    "test:pr-panel": "node --experimental-strip-types scripts/prPanel.test.mjs",
     "test:parse-unified-diff": "node --experimental-strip-types scripts/parseUnifiedDiff.test.mjs",
     "test:context-store": "node --experimental-strip-types scripts/contextStore.test.mjs",
     "test:explorer": "node --experimental-strip-types scripts/explorerStore.test.mjs",
