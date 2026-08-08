@@ -17,3 +17,9 @@ export function diskProtectionLabel(protection: DiskProtection): string {
 export function reclaimableBytes(entry: Pick<WorkspaceDiskEntry, 'bytes' | 'reclaimableBytes' | 'protection'>): number {
   return entry.protection === 'safe-candidate' ? Math.min(entry.bytes, Math.max(0, entry.reclaimableBytes)) : 0;
 }
+
+export function filterWorkspaceEntries(entries: WorkspaceDiskEntry[], query: string): WorkspaceDiskEntry[] {
+  const normalized = query.trim().toLocaleLowerCase();
+  if (!normalized) return entries;
+  return entries.filter((entry) => entry.workspaceId.toLocaleLowerCase().includes(normalized));
+}

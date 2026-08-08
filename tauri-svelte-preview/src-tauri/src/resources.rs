@@ -7,10 +7,12 @@ use mcb_core::scanners::resources::{
     ResourceOwnerHint, ResourceSnapshot,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 #[derive(Default)]
@@ -181,13 +183,67 @@ fn resource_provider_label(provider: crate::agent_conversation::protocol::AgentC
     }
 }
 
-fn resource_path_labels(cwd: &str) -> (Option<String>, Option<String>) {
+type ResourceIdentity = (Option<String>, Option<String>);
+
+fn resource_path_labels(cwd: &str) -> ResourceIdentity {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, ResourceIdentity>>> = OnceLock::new();
     let path = PathBuf::from(cwd);
-    let workspace = path.file_name().map(|value| value.to_string_lossy().to_string());
-    let project = path
+    let cache_key = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(entries) = cache.lock() {
+        if let Some(identity) = entries.get(&cache_key) {
+            return identity.clone();
+        }
+    }
+
+    let identity = git_resource_path_labels(&cache_key).unwrap_or_else(|| heuristic_resource_path_labels(&cache_key));
+    if let Ok(mut entries) = cache.lock() {
+        entries.insert(cache_key, identity.clone());
+    }
+    identity
+}
+
+fn git_resource_path_labels(cwd: &Path) -> Option<ResourceIdentity> {
+    let git_root = git_rev_parse_path(cwd, "--show-toplevel")?;
+    let git_common_dir = git_rev_parse_path(cwd, "--git-common-dir")?;
+    let project = git_common_dir
         .parent()
-        .and_then(|parent| parent.file_name())
-        .map(|value| value.to_string_lossy().to_string());
+        .and_then(path_leaf)
+        .or_else(|| git_root.file_name().map(|value| value.to_string_lossy().to_string()));
+    let workspace = git_root.file_name().map(|value| value.to_string_lossy().to_string());
+    Some((project, workspace))
+}
+
+fn git_rev_parse_path(cwd: &Path, argument: &str) -> Option<PathBuf> {
+    let absolute_output = Command::new("git")
+        .current_dir(cwd)
+        .args(["rev-parse", "--path-format=absolute", argument])
+        .output()
+        .ok();
+    let output = absolute_output.filter(|output| output.status.success()).or_else(|| {
+        Command::new("git")
+            .current_dir(cwd)
+            .args(["rev-parse", argument])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+    })?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        let path = PathBuf::from(value);
+        Some(if path.is_absolute() { path } else { cwd.join(path) })
+    }
+}
+
+fn path_leaf(path: &Path) -> Option<String> {
+    path.file_name().map(|value| value.to_string_lossy().to_string())
+}
+
+fn heuristic_resource_path_labels(path: &Path) -> ResourceIdentity {
+    let workspace = path_leaf(path);
+    let project = path.parent().and_then(path_leaf);
     (project, workspace)
 }
 
@@ -468,4 +524,90 @@ fn scan_disk_entry(
         .first()
         .map(|entry| entry.bytes)
         .ok_or_else(|| "Cleanup entry disappeared during revalidation".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "mcb-resources-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after the epoch")
+                .as_nanos()
+        ))
+    }
+
+    fn git(cwd: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("fixture git command should start")
+    }
+
+    #[test]
+    fn resource_identity_uses_git_repository_and_worktree_roots() {
+        let root = fixture_root("identity");
+        let repository = root.join("fixture-repo");
+        fs::create_dir_all(&repository).expect("fixture repository should be created");
+        assert!(git(&repository, &["init", "--quiet"]).status.success());
+        fs::write(repository.join("README.md"), "fixture\n").expect("fixture file should be written");
+        assert!(git(&repository, &["add", "."]).status.success());
+        assert!(git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Resource Fixture",
+                "-c",
+                "user.email=resource-fixture@example.test",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ]
+        )
+        .status
+        .success());
+
+        let primary_nested = repository.join("src").join("nested");
+        fs::create_dir_all(&primary_nested).expect("nested primary checkout should be created");
+        assert_eq!(
+            resource_path_labels(primary_nested.to_str().expect("primary path should be UTF-8")),
+            (Some("fixture-repo".to_string()), Some("fixture-repo".to_string()))
+        );
+
+        let worktree = root.join("feature-worktree");
+        assert!(git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--quiet",
+                worktree.to_str().expect("worktree path should be UTF-8"),
+            ]
+        )
+        .status
+        .success());
+        let worktree_nested = worktree.join("src").join("nested");
+        fs::create_dir_all(&worktree_nested).expect("nested worktree checkout should be created");
+        assert_eq!(
+            resource_path_labels(worktree_nested.to_str().expect("worktree path should be UTF-8")),
+            (Some("fixture-repo".to_string()), Some("feature-worktree".to_string()))
+        );
+
+        let plain = root.join("plain").join("nested");
+        fs::create_dir_all(&plain).expect("non-git fixture should be created");
+        assert_eq!(
+            resource_path_labels(plain.to_str().expect("plain path should be UTF-8")),
+            (Some("plain".to_string()), Some("nested".to_string()))
+        );
+
+        fs::remove_dir_all(root).expect("resource identity fixture should be cleaned up");
+    }
 }
