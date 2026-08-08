@@ -123,11 +123,11 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 	assert.match(
 		monacoEditorSource,
-		/if \(!nativeCsharpLanguageClient && onReferenceCountLookup\)[\s\S]*?registerSourceCodeLensReferenceCommand/
+		/if \(nativeMode\) \{[\s\S]*?\} else \{[\s\S]*?if \(onReferenceCountLookup\) registerSourceCodeLensReferenceCommand/
 	);
 	assert.match(
 		monacoEditorSource,
-		/if \(!nativeCsharpLanguageClient\) \{[\s\S]*?registerSourceCodeLensProvider/
+		/if \(nativeMode\) \{[\s\S]*?\} else \{[\s\S]*?registerSourceCodeLensProvider\(monaco\)/
 	);
 }
 
