@@ -15,7 +15,7 @@ import {
 
 import {
   CENTER_LAYOUT_KEY,
-  CENTER_LAYOUT_KEY_V3,
+  CENTER_LAYOUT_KEY_V4,
   clearLayout,
   dockPanelIds,
   loadLayout,
@@ -70,7 +70,7 @@ export interface CenterDockSnapshot {
 
 const COMPONENT = 'center-panel';
 const PERSIST_DEBOUNCE_MS = 250;
-const CENTER_PANEL_IDS_V3 = ['session', 'editor', 'browser', 'diff'] as const;
+const CENTER_PANEL_IDS_V4 = ['session', 'editor', 'browser', 'diff', 'session-library'] as const;
 
 export function createCenterDock(container: HTMLElement, options: CenterDockOptions): CenterDock {
   const specs = new Map(options.panels.map((panel) => [panel.id, panel]));
@@ -213,7 +213,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   };
 
   /**
-   * The five roster tabs are permanent for now. dockview puts a close button on
+   * The six roster tabs are permanent for now. dockview puts a close button on
    * every tab, and closing one hands its content back to the parking stage with
    * no way left in the UI to bring it back — for the Session tab that is a LIVE
    * terminal. Put the tab straight back instead, so the close button is a no-op.
@@ -259,7 +259,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
   layoutToContainer();
 
-  let migratedFromV3 = false;
+  let migratedFromV4 = false;
 
   runSynchronized(() => {
     const stored = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY);
@@ -277,22 +277,25 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     }
 
     /**
-     * v3 had the same arrangement as the current roster minus Session
-     * Library. Restore that exact set first, then add the new tab through the
-     * live Dockview API. This preserves the serialized groups/sizes/order and
-     * avoids hand-editing Dockview's private grid tree. Any mismatch or
+     * v4 has the same arrangement as the current roster minus Agents. Restore
+     * that exact set first, then add the new tab beside Session Library through
+     * the live Dockview API. This preserves the serialized groups/sizes/order
+     * and avoids hand-editing Dockview's private grid tree. Any mismatch or
      * Dockview rejection falls through to the safe current defaults.
      */
-    const previous = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY_V3);
-    if (previous && panelSetMatches(dockPanelIds(previous), CENTER_PANEL_IDS_V3)) {
+    const previous = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY_V4);
+    if (previous && panelSetMatches(dockPanelIds(previous), CENTER_PANEL_IDS_V4)) {
       try {
         api.fromJSON(previous as never);
         const activePanelId = api.activePanel?.id ?? null;
         const library = specs.get('session-library');
-        if (!library || !panelById('diff')) throw new Error('Session Library migration roster is incomplete');
-        addPanelFor(library, { referencePanel: 'diff', direction: 'within' });
+        const agents = specs.get('agents');
+        if (!library || !agents || !panelById('session-library')) {
+          throw new Error('Agents migration roster is incomplete');
+        }
+        addPanelFor(agents, { referencePanel: 'session-library', direction: 'within' });
         if (activePanelId) panelById(activePanelId)?.api.setActive();
-        migratedFromV3 = true;
+        migratedFromV4 = true;
         return;
       } catch {
         try {
@@ -328,9 +331,9 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   };
 
   // The migrated layout is already a complete current-roster Dockview tree.
-  // Persist it under v4 immediately so a reload does not repeat the migration;
-  // the old v3 payload remains untouched as a harmless fallback record.
-  if (migratedFromV3) {
+  // Persist it under v5 immediately so a reload does not repeat the migration;
+  // the old v4 payload remains untouched as a harmless fallback record.
+  if (migratedFromV4) {
     try {
       saveLayout(options.storage, CENTER_LAYOUT_KEY, api.toJSON());
     } catch {
@@ -368,7 +371,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       // restore. Leaving the live dock alone keeps every roster tab visible;
       // the next capture gives that session its own starting arrangement.
       if (!snapshot) return;
-      // Keep the one live five-tab roster mounted. Replaying a serialized
+      // Keep the one live six-tab roster mounted. Replaying a serialized
       // Dockview tree during a session switch intermittently retained the
       // panel bodies but dropped their tab renderers. The active tab is the
       // session-specific state the reader needs; editor/browser/diff content is

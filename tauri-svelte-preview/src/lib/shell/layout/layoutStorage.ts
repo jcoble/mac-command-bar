@@ -28,20 +28,20 @@ export interface LayoutStorage {
 export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v2';
 /**
  * The previous center roster. `centerDock.ts` reads this key only when its
- * payload is the exact four-panel roster it knows how to extend with the new
- * Session Library tab; malformed, partial, or unrelated layouts are ignored.
- * Keeping the old key named makes the migration explicit without introducing
- * another storage-key family.
+ * payload is the exact five-panel roster it knows how to extend with Agents;
+ * malformed, partial, or unrelated layouts are ignored. Keeping the old key
+ * named makes the migration explicit without introducing another storage-key
+ * family.
  */
-export const CENTER_LAYOUT_KEY_V3 = 'mac-command-bar.next.center-layout-v3';
+export const CENTER_LAYOUT_KEY_V4 = 'mac-command-bar.next.center-layout-v4';
 
 /**
- * Bumped to `-v4` when Session Library joined the center roster. The current
- * key is restored only when its panel set is exact; the v3 key is migrated by
- * adding the new tab through Dockview so the user's existing groups, sizes,
- * order, and active panel survive the roster change.
+ * Bumped to `-v5` when Agents joined the center roster. The current key is
+ * restored only when its panel set is exact; the v4 key is migrated by adding
+ * the new tab through Dockview so the user's existing groups, sizes, order,
+ * and active panel survive the roster change.
  */
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v4';
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v5';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {

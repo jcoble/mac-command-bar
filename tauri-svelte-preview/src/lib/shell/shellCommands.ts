@@ -83,6 +83,12 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       perform: () => hooks.showPanel('session-library')
     },
     {
+      id: 'show-agents',
+      label: 'Show the Agents panel',
+      detail: 'Bring the workflow and agent control center to the front',
+      perform: () => hooks.showPanel('agents')
+    },
+    {
       id: 'new-session',
       label: 'Start a new session',
       detail: 'Pick a project folder and start an agent in it',

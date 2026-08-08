@@ -165,14 +165,14 @@
     void runControl('Skip node', () => skipWorkflowNode({ runId, nodeId, idempotencyKey: idempotencyKey(`skip:${nodeId}`, runId) }));
   }
 
-  function approveSelectedGate(approved: boolean): void {
+  function approveSelectedGate(approved: boolean, structuredInput: Record<string, unknown> = {}): void {
     const runId = selectedRunId();
     const nodeId = workflowState.selectedNodeId;
     if (!runId || !nodeId) return;
     void runControl(approved ? 'Approve gate' : 'Reject gate', () => approveWorkflowGate({
       runId,
       nodeId,
-      approval: { approved },
+      approval: { ...structuredInput, approved },
       idempotencyKey: idempotencyKey(`${approved ? 'approve' : 'reject'}:${nodeId}`, runId)
     }));
   }

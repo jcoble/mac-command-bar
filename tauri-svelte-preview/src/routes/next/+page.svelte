@@ -38,6 +38,7 @@
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import RunButton from '$lib/shell/components/run/RunButton.svelte';
   import SessionLibraryWorkspace from '$lib/shell/sessionLibrary/SessionLibraryWorkspace.svelte';
+  import WorkflowControlCenter from '$lib/shell/components/workflows/WorkflowControlCenter.svelte';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
   import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -1122,6 +1123,14 @@
     onRefresh={() => void scanRail()}
   />
 {/snippet}
+{#snippet agentsArea()}
+  <WorkflowControlCenter
+    onOpenConversation={(ownedId) => {
+      void selectOwned(ownedId);
+      frameControls?.showCenterPanel('session');
+    }}
+  />
+{/snippet}
 
 <main class="next-shell">
   <!-- The strip along the top. It holds the play button that runs a saved
@@ -1139,7 +1148,8 @@
       editor: editorArea,
       browser: browserArea,
       diff: diffArea,
-      sessionLibrary: sessionLibraryArea
+      sessionLibrary: sessionLibraryArea,
+      agents: agentsArea
     }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={(id) => shellPanels.panelShown(id)}

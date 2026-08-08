@@ -8,7 +8,7 @@ import {
   paneviewPanelIds,
   panelSetMatches,
   CENTER_LAYOUT_KEY,
-  CENTER_LAYOUT_KEY_V3
+  CENTER_LAYOUT_KEY_V4
 } from '../src/lib/shell/layout/layoutStorage.ts';
 import {
   SIDE_PANE_LAYOUT_KEY,
@@ -193,24 +193,27 @@ function memoryStorage(initial = {}) {
   assert.deepEqual(loadLayout(storage, SIDE_PANE_LAYOUT_KEY), payload);
 }
 
-// The center roster bump is exact-set based: the current v4 roster restores
-// unchanged, the v3 four-panel roster is the only eligible migration source, and any
+// The center roster bump is exact-set based: the current v5 roster restores
+// unchanged, the v4 five-panel roster is the only eligible migration source, and any
 // partial/extra set falls back to defaults in centerDock.
 {
-  assert.equal(CENTER_LAYOUT_KEY_V3, 'mac-command-bar.next.center-layout-v3');
-  assert.equal(CENTER_LAYOUT_KEY, 'mac-command-bar.next.center-layout-v4');
+  assert.equal(CENTER_LAYOUT_KEY_V4, 'mac-command-bar.next.center-layout-v4');
+  assert.equal(CENTER_LAYOUT_KEY, 'mac-command-bar.next.center-layout-v5');
+  assert.equal(
+    panelSetMatches(
+      ['session', 'editor', 'browser', 'diff', 'session-library', 'agents'],
+      ['agents', 'session-library', 'diff', 'browser', 'editor', 'session']
+    ),
+    true,
+    'the v5 roster is an exact set, regardless of stored order'
+  );
   assert.equal(
     panelSetMatches(
       ['session', 'editor', 'browser', 'diff', 'session-library'],
-      ['session-library', 'diff', 'browser', 'editor', 'session']
+      ['session', 'editor', 'browser', 'diff', 'session-library']
     ),
     true,
-    'the v4 roster is an exact set, regardless of stored order'
-  );
-  assert.equal(
-    panelSetMatches(['session', 'editor', 'browser', 'diff'], ['session', 'editor', 'browser', 'diff']),
-    true,
-    'the v3 roster is an exact migration source'
+    'the v4 roster is an exact migration source'
   );
   assert.equal(
     panelSetMatches(['session', 'editor', 'browser'], ['session', 'editor', 'browser', 'diff']),

@@ -31,6 +31,7 @@
       browser: Snippet;
       diff: Snippet;
       sessionLibrary: Snippet;
+      agents: Snippet;
     };
     /** The right column: whichever tool view the icon strip has open. */
     tools: Snippet;
@@ -84,6 +85,7 @@
   let browserSlot: HTMLElement;
   let diffSlot: HTMLElement;
   let sessionLibrarySlot: HTMLElement;
+  let agentsSlot: HTMLElement;
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
@@ -119,7 +121,8 @@
             title: 'Session Library',
             element: sessionLibrarySlot,
             group: 'display'
-          }
+          },
+          { id: 'agents', title: 'Agents', element: agentsSlot, group: 'display' }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
@@ -175,6 +178,7 @@
   <div class="slot" bind:this={browserSlot}>{@render center.browser()}</div>
   <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
   <div class="slot" bind:this={sessionLibrarySlot}>{@render center.sessionLibrary()}</div>
+  <div class="slot" bind:this={agentsSlot}>{@render center.agents()}</div>
 </div>
 
 <style>
@@ -250,7 +254,7 @@
     box-shadow: none;
   }
 
-  /* The five center tabs are permanent navigation. A restored Dockview layout
+  /* The six center tabs are permanent navigation. A restored Dockview layout
      must never collapse their strip to zero height. */
   .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
     min-height: 35px;

@@ -121,6 +121,25 @@
         <div data-testid="workflow-node-failure" class="failure"><strong data-testid="workflow-node-failure-code">{node.failure.code}</strong><span data-testid="workflow-node-failure-message">{node.failure.message}</span></div>
       {/if}
 
+      {#if node.artifacts.length > 0}
+        <section data-testid="workflow-node-artifacts" class="subsection">
+          <h3 data-testid="workflow-node-artifacts-heading">Artifacts</h3>
+          <ul data-testid="workflow-node-artifact-items" class="artifact-list">
+            {#each node.artifacts as artifact (artifact.id)}
+              <li data-testid={`workflow-node-artifact-${artifact.id}`}>
+                <span data-testid={`workflow-node-artifact-label-${artifact.id}`}>{artifact.kind}: {artifact.id}</span>
+                {#if artifact.url}
+                  <a data-testid={`workflow-node-artifact-link-${artifact.id}`} href={artifact.url} target="_blank" rel="noreferrer">Open</a>
+                {:else if artifact.path}
+                  <span data-testid={`workflow-node-artifact-path-${artifact.id}`} class="artifact-path">{artifact.path}</span>
+                {/if}
+                {#if artifact.digest}<span data-testid={`workflow-node-artifact-digest-${artifact.id}`} class="artifact-digest">digest {artifact.digest}</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
       <div data-testid="workflow-node-controls" class="controls">
         {#if waitingForApproval}
           <label data-testid="workflow-node-gate-input-label" class="gate-input-label">
@@ -208,5 +227,9 @@
   .review-list { display: grid; gap: 5px; margin: 0; padding-left: 16px; color: var(--color-text-2); font-size: 12px; }
   .review-list li { display: grid; gap: 2px; }
   .review-list li span:first-child { color: var(--color-text); font-weight: 600; }
+  .artifact-list { display: grid; gap: 5px; margin: 0; padding-left: 16px; color: var(--color-text-2); font-size: 12px; }
+  .artifact-list li { display: grid; gap: 2px; }
+  .artifact-list a { color: var(--color-accent); }
+  .artifact-path, .artifact-digest { overflow: hidden; color: var(--color-text-3); text-overflow: ellipsis; white-space: nowrap; }
   .empty { margin: 0; padding: 14px; color: var(--color-text-2); font-size: 13px; }
 </style>

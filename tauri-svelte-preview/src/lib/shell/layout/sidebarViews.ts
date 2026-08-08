@@ -30,6 +30,7 @@ export type SidebarViewId =
   | 'worktrees'
   | 'stacks'
   | 'context'
+  | 'agents'
   | 'problems';
 
 export interface SidebarView {
@@ -73,6 +74,7 @@ export const SIDEBAR_VIEWS: readonly SidebarView[] = [
   { id: 'worktrees', title: 'Worktrees' },
   { id: 'stacks', title: 'Run' },
   { id: 'context', title: 'Context' },
+  { id: 'agents', title: 'Agents' },
   PROBLEMS_SIDEBAR_VIEW
 ];
 

@@ -11,6 +11,7 @@
    */
   import {
     Activity,
+    Bot,
     Files,
     GitBranch,
     Layers,
@@ -41,6 +42,7 @@
     worktrees: Layers,
     stacks: Play,
     context: Activity,
+    agents: Bot,
     problems: TriangleAlert
   };
 

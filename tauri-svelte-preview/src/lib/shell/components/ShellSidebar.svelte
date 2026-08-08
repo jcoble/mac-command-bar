@@ -57,6 +57,7 @@
   import GitPanel from './GitPanel.svelte';
   import ProblemsPanel from './problems/ProblemsPanel.svelte';
   import StacksPane from './stacks/StacksPane.svelte';
+  import AgentActivityPane from './workflows/AgentActivityPane.svelte';
   import WorktreeManagerPane from './worktrees/WorktreeManagerPane.svelte';
 
   /** The view "Show source control" opens. */
@@ -91,6 +92,7 @@
     worktrees: { id: 'worktrees', title: 'Worktrees' },
     stacks: { id: 'run-configurations', title: 'Run configurations' },
     context: { id: 'context', title: 'Context' },
+    agents: { id: 'agents', title: 'Agent activity' },
     problems: PROBLEMS_SIDEBAR_PANE
   };
 
@@ -341,6 +343,7 @@
   </div>
   <div class="slot" bind:this={bodies.stacks}><StacksPane /></div>
   <div class="slot" bind:this={bodies.context}><ContextPanel /></div>
+  <div class="slot" bind:this={bodies.agents}><AgentActivityPane /></div>
   <div class="slot" bind:this={bodies.problems}><ProblemsPanel /></div>
 </div>
 
