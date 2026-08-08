@@ -354,7 +354,7 @@
     height: 100%;
     width: 100%;
     overflow: hidden;
-    background: #101014;
+    background: var(--color-bg);
   }
 
   /* Every view stacks in the same space; only the open one is displayed.
@@ -391,7 +391,7 @@
     right: 0;
     margin: 0;
     padding: 8px 10px;
-    color: #ff8f8f;
+    color: var(--color-bad);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
     font-size: 12px;
   }
@@ -454,11 +454,11 @@
   }
 
   .view-host :global(.dv-default-header:hover) {
-    color: #d8d8e0;
+    color: var(--color-text);
   }
 
   .view-host :global(.dv-pane-body) {
-    background: #101014;
+    background: var(--color-bg);
     min-height: 0;
     /* The bodies scroll themselves; a second scrollbar out here would be the
        paneview's, on content that never overflows it. */

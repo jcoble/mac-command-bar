@@ -99,7 +99,7 @@
   .workflow-row:hover, .workflow-row:focus-visible, .agent-row:hover, .agent-row:focus-visible { background: var(--color-hover); outline: none; }
   .item-title { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
   .item-meta { overflow: hidden; color: var(--color-text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
-  .pin { align-self: center; min-height: 24px; padding: 0 5px; border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text-2); background: transparent; font-size: 12px; cursor: pointer; }
+  .pin { align-self: center; min-height: 24px; padding: 0 5px; border: 0; border-radius: 4px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; cursor: pointer; }
   .pin:hover, .pin:focus-visible { color: var(--color-text); background: var(--color-hover); outline: none; }
   .empty { margin: 6px 0 0; color: var(--color-text-3); font-size: 13px; }
 </style>

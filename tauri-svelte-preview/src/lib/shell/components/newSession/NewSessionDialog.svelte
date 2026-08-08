@@ -330,7 +330,7 @@
         <div class="flex flex-wrap items-center gap-2">
           {#if canPickFolder()}
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               class="text-[13px]"
               disabled={addingFolder}
@@ -353,7 +353,7 @@
             }}
           />
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             class="text-[13px]"
             disabled={checkingTypedPath || typedPath.trim().length === 0}
@@ -443,7 +443,7 @@
                     {addWorktreeLine}
                   </code>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     size="sm"
                     class="shrink-0 text-[12px]"
                     onclick={() => void copy('worktree', addWorktreeLine)}
@@ -471,11 +471,11 @@
             <button
               type="button"
               aria-pressed={agent === option.agent}
-              class="flex flex-col gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors
+              class="flex flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition-colors
                      focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
                      {agent === option.agent
-                ? 'border-[var(--color-accent)] bg-[var(--color-elevated)]'
-                : 'border-[var(--color-border)] hover:bg-[var(--color-elevated)]'}"
+                ? 'bg-[var(--color-selected)]'
+                : 'bg-transparent hover:bg-[var(--color-hover)]'}"
               onclick={() => pickAgent(option.agent)}
             >
               <span class="text-[13px] leading-[1.3] font-medium">{option.label}</span>
@@ -505,7 +505,7 @@
             {preview || 'Pick a project to see what will run.'}
           </code>
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             class="shrink-0 text-[12px]"
             disabled={!preview}

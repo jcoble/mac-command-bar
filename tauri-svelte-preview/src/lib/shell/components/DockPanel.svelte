@@ -82,14 +82,14 @@
        as one row of controls rather than two sizes of button. */
     height: 28px;
     background: transparent;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 6px;
     color: var(--color-text-2);
     font-family: inherit;
     font-size: 12px;
     padding: 0 8px;
     cursor: pointer;
-    transition: color 120ms, background-color 120ms, border-color 120ms;
+    transition: color 120ms, background-color 120ms;
   }
 
   .dock-action:hover {
@@ -98,7 +98,7 @@
   }
 
   .dock-action:focus-visible {
-    outline: 1px solid var(--color-focus);
-    outline-offset: -2px;
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 </style>

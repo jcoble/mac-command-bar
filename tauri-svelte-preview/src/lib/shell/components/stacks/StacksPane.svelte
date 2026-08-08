@@ -485,7 +485,7 @@
     display: flex;
     align-items: center;
     gap: 3px;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--color-text-2);
@@ -505,9 +505,7 @@
     opacity: 0.45;
   }
 
-  .action.quiet {
-    border-color: transparent;
-  }
+  .action.quiet { background: transparent; }
 
   /* ── States ────────────────────────────────────────────────────────── */
   .state {

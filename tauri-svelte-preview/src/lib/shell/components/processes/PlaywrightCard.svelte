@@ -485,7 +485,7 @@
   }
 
   .stop {
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
     background: transparent;
     color: var(--color-text-2);
@@ -496,12 +496,13 @@
   }
 
   .stop:hover:not(:disabled) {
-    border-color: var(--color-bad);
+    background: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
   .stop.danger {
-    border-color: var(--color-bad);
+    border: 0;
+    background: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
@@ -572,8 +573,8 @@
   }
 
   button:focus-visible {
-    outline: 1px solid var(--color-accent);
-    outline-offset: -1px;
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   @media (prefers-reduced-motion: reduce) {

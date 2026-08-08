@@ -21,8 +21,8 @@
     gap: 4px;
     height: 100%;
     width: 100%;
-    background: #101014;
-    color: #6d6d7d;
+    background: var(--color-bg);
+    color: var(--color-text-2);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
     font-size: 12px;
     user-select: none;
@@ -31,7 +31,7 @@
     margin: 0;
   }
   .hint {
-    color: #4c4c5a;
+    color: var(--color-text-3);
     font-size: 12px;
   }
 </style>

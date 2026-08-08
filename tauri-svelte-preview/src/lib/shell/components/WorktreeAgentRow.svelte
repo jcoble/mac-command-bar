@@ -264,7 +264,7 @@
     padding: 7px 8px;
     color: var(--color-text-2);
     background: var(--color-surface);
-    box-shadow: 0 5px 18px rgb(0 0 0 / 22%);
+    box-shadow: var(--shadow-md);
     font-size: 12px;
     pointer-events: none;
   }

@@ -190,8 +190,8 @@
     bottom: 8px;
     right: 10px;
     border-radius: 5px;
-    background: rgba(16, 16, 20, 0.82);
-    color: #6d6d7d;
+    background: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg));
+    color: var(--color-text-3);
     font-family: ui-monospace, Menlo, monospace;
     font-size: 12px;
     padding: 3px 8px;

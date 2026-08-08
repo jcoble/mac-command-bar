@@ -197,10 +197,10 @@
     gap: 10px;
     max-width: min(560px, calc(100vw - 32px));
     padding: 6px 8px 6px 12px;
-    border: 1px solid #22222c;
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: #17171d;
-    color: #d8d8e0;
+    background: var(--color-surface);
+    color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 12px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
@@ -209,17 +209,17 @@
   .palette-failure button {
     flex: none;
     padding: 2px 8px;
-    border: 1px solid #22222c;
+    border: 0;
     border-radius: 5px;
     background: transparent;
-    color: #6d6d7d;
+    color: var(--color-text-2);
     font-family: ui-monospace, Menlo, monospace;
     font-size: 12px;
     cursor: pointer;
   }
 
   .palette-failure button:hover {
-    color: #d8d8e0;
-    border-color: #3a3a48;
+    color: var(--color-text);
+    background: var(--color-hover);
   }
 </style>

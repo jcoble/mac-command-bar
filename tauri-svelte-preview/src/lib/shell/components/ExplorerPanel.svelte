@@ -296,7 +296,7 @@
 
   .action {
     flex: 0 0 auto;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
     background: transparent;
     color: var(--color-text-2);
@@ -307,7 +307,7 @@
   }
 
   .action:hover:not(:disabled) {
-    border-color: var(--color-text-3);
+    background: var(--color-hover);
     color: var(--color-text);
   }
 
@@ -364,7 +364,7 @@
   }
 
   .notice.error .action {
-    border-color: var(--color-bad);
+    background: var(--color-bad-bg);
     color: var(--color-bad);
   }
 

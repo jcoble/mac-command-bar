@@ -395,7 +395,7 @@
             <button
               type="button"
               class={cn(
-                buttonVariants({ variant: 'outline', size: 'xs' }),
+                buttonVariants({ variant: 'secondary', size: 'xs' }),
                 'w-full text-[12px] font-normal'
               )}
               disabled={!canLoadMore}

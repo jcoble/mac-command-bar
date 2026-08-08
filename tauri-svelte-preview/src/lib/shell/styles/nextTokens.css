@@ -36,73 +36,74 @@
  * tokens.css — this file deliberately does not restate them.
  * Most names below already exist in tokens.css. The semantic interaction
  * and status names are owned by the /next theme registry until the old shell
- * adopts them deliberately.
+ * adopts them deliberately. The shipped Houston palette is deliberately soft:
+ * surfaces carry hierarchy, while controls use fills and focus rings instead
+ * of bright outlines. Contrast is a property of semantic roles, not a
+ * separate high-contrast theme.
  * ============================================================ */
 
 :is(:root:has(.next-shell), .next-shell) {
   /* ------------------------------------------------------------------
    * Background layers — the /next shell's three depths.
-   *   bg      the shell backdrop, same value the /next page and the
-   *           dock already paint with (#101014).
-   *   surface a raised sheet: panel bodies, the active dock tab
-   *           (#17171d, matching the dock's active-tab color).
-   *   elevated one step above a sheet: hover fills, pressed rows.
-   *           Sits between surface and border so a hover reads on
-   *           both. Derived for /next; the old palette used a
-   *           translucent white, which washes out on near-black.
+   *   bg       the quiet shell backdrop.
+   *   surface  a raised sheet for panel bodies and active tabs.
+   *   elevated one step above a sheet for hover fills and pressed rows.
+   * The values are intentionally close, opaque grays: depth comes from
+   * layering and spacing, not a grid of bright outlines.
    * ------------------------------------------------------------------ */
-  --color-bg: #101014;
-  --color-surface: #17171d;
-  --color-elevated: #1f1f27;
+  --color-bg: #161719;
+  --color-surface: #1d1f22;
+  --color-elevated: #25282d;
 
   /* ------------------------------------------------------------------
-   * Text hierarchy — primary and secondary carry information. The faint
-   * third tier is decorative-only; disabled labels have their own token.
+   * Text hierarchy — primary carries body copy; the secondary and tertiary
+   * tiers carry metadata and remain readable at the 3:1 secondary floor.
+   * Disabled labels have their own token so their state is intentional.
    * ------------------------------------------------------------------ */
-  --color-text: #eef0f9;
-  --color-text-2: #a7a7b5;
-  --color-text-3: #767687;
-  --color-disabled-text: #858599;
+  --color-text: #f1f3f5;
+  --color-text-2: #b3b7bf;
+  --color-text-3: #8b919b;
+  --color-disabled-text: #7f858e;
 
   /* ------------------------------------------------------------------
    * Accent, hairlines and the focus tint.
-   * Accent and focus keep the Houston mint. The boundary tone is
-   * intentionally brighter so a meaningful one-pixel divider clears
-   * 3:1 even when it borders a selected or hovered surface.
+   * Houston has one restrained mint accent. Borders are surface hairlines,
+   * not text or status indicators, so they stay quiet; focus and selected
+   * states carry the stronger mint signal.
    * ------------------------------------------------------------------ */
-  --color-accent: #4bf3c8;
-  --color-border: #858599;
-  --color-focus: rgba(75, 243, 200, 0.45);
-  --color-focus-solid: #4bf3c8;
+  --color-accent: #6ed8be;
+  --color-border: #4b4f57;
+  --color-focus: rgba(110, 216, 190, 0.42);
+  --color-focus-solid: #6ed8be;
 
   /* Interaction surfaces are opaque so text contrast is deterministic. */
-  --color-selected: #26302f;
-  --color-selected-border: #4bbd9f;
-  --color-hover: #25252e;
+  --color-selected: #263734;
+  --color-selected-border: #5cb29b;
+  --color-hover: #292c31;
 
   /* ------------------------------------------------------------------
    * Status tones — live is blue and good is green so running and done
    * never collapse into the same signal. Idle is opaque so its computed
    * contrast remains stable on every interaction surface.
    * ------------------------------------------------------------------ */
-  --color-live: #54b9ff;
-  --color-good: #8bdc9b;
-  --color-bad: #ff6d91;
-  --color-attention: #ffd493;
-  --color-idle: #9494a5;
-  --color-status-idle: #9494a5;
+  --color-live: #74b6d8;
+  --color-good: #85c79a;
+  --color-bad: #e28a98;
+  --color-attention: #d7b77e;
+  --color-idle: #969ca6;
+  --color-status-idle: #969ca6;
 
   /* ------------------------------------------------------------------
    * Derived color — text printed on top of the accent, plus translucent
    * status fills. Live follows the blue live tone; the others retain the
    * established Houston tints.
    * ------------------------------------------------------------------ */
-  --color-on-accent: #0e1013;
-  --color-live-bg: rgba(84, 185, 255, 0.12);
-  --color-good-bg: rgba(139, 220, 155, 0.12);
-  --color-bad-bg: rgba(255, 109, 145, 0.12);
-  --color-bad-bg-strong: rgba(255, 109, 145, 0.2);
-  --color-attention-bg: rgba(255, 212, 147, 0.12);
+  --color-on-accent: #10201b;
+  --color-live-bg: rgba(116, 182, 216, 0.12);
+  --color-good-bg: rgba(133, 199, 154, 0.12);
+  --color-bad-bg: rgba(226, 138, 152, 0.12);
+  --color-bad-bg-strong: rgba(226, 138, 152, 0.2);
+  --color-attention-bg: rgba(215, 183, 126, 0.12);
 
   /* ------------------------------------------------------------------
    * Focus ring — same shorthand as tokens.css, restated here so it
@@ -112,7 +113,7 @@
 
   /* ------------------------------------------------------------------
    * Elevation — drop shadows and the dimming layer behind a dialog.
-   * Deepened over tokens.css: on a #101014 backdrop the old shadows
+   * Deepened over tokens.css: on the quiet Houston backdrop the old shadows
    * are invisible and a dialog looks pasted on rather than lifted.
    * ------------------------------------------------------------------ */
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.45);
@@ -120,5 +121,5 @@
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.5);
   --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
-  --color-scrim: rgba(0, 0, 0, 0.62);
+  --color-scrim: rgba(8, 10, 12, 0.58);
 }

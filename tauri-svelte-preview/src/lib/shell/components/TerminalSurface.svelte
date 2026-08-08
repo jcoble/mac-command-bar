@@ -173,7 +173,7 @@
     height: 100%;
     width: 100%;
     overflow: hidden;
-    background: #282a36;
+    background: var(--color-surface);
   }
 
   .term-host {
@@ -190,8 +190,8 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    background: #101014;
-    color: #6d6d7d;
+    background: var(--color-bg);
+    color: var(--color-text-2);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
     font-size: 12px;
   }
@@ -201,7 +201,7 @@
   }
 
   .hint {
-    color: #4c4c5a;
+    color: var(--color-text-3);
     font-size: 12px;
   }
 </style>

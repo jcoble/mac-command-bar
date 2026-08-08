@@ -187,8 +187,8 @@
   .role-provider-label { color: var(--color-accent); font-size: 12px; }
   .input-editor { padding-top: 8px; border-top: 1px solid var(--color-border); }
   .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
-  .action { min-height: 29px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text-2); background: transparent; font-size: 12px; cursor: pointer; }
+  .action { min-height: 29px; padding: 0 8px; border: 0; border-radius: 5px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; cursor: pointer; }
   .action:hover, .action:focus-visible { color: var(--color-text); background: var(--color-hover); outline: none; }
-  .action.accent { color: var(--color-on-accent); border-color: var(--color-accent); background: var(--color-accent); }
+  .action.accent { color: var(--color-on-accent); background: var(--color-accent); }
   .error { margin: 0; color: var(--color-bad); font-size: 12px; }
 </style>

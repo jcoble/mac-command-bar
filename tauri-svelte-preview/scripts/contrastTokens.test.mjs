@@ -174,7 +174,12 @@ const stylesheetTokens = readDeclarations(read(NEXT_TOKENS_PATH));
   }
 }
 
-const TEXT_TOKENS = ["--color-text", "--color-text-2"];
+const TEXT_CONTRACT = [
+  { name: "--color-text", minimum: 4.5, role: "body" },
+  { name: "--color-text-2", minimum: 3, role: "secondary" },
+  { name: "--color-text-3", minimum: 3, role: "secondary" },
+  { name: "--color-disabled-text", minimum: 3, role: "secondary" },
+];
 const SURFACE_TOKENS = [
   "--color-bg",
   "--color-surface",
@@ -185,7 +190,6 @@ const SURFACE_TOKENS = [
 const BOUNDARY_TOKENS = [
   "--color-focus-solid",
   "--color-selected-border",
-  "--color-border",
 ];
 const STATUS_TOKENS = [
   "--color-live",
@@ -200,12 +204,12 @@ let lowestText = { ratio: Number.POSITIVE_INFINITY, label: "" };
 let lowestIndicator = { ratio: Number.POSITIVE_INFINITY, label: "" };
 
 for (const theme of THEMES) {
-  for (const foregroundName of TEXT_TOKENS) {
+  for (const { name: foregroundName, minimum, role } of TEXT_CONTRACT) {
     for (const backgroundName of SURFACE_TOKENS) {
-      const label = `${theme.id} ${foregroundName} on ${backgroundName}`;
+      const label = `${theme.id} ${role} ${foregroundName} on ${backgroundName}`;
       const foreground = theme.tokens[foregroundName];
       const background = theme.tokens[backgroundName];
-      assertContrast(foreground, background, 4.5, label);
+      assertContrast(foreground, background, minimum, label);
       const ratio = contrastRatio(
         parseCssColor(foreground),
         parseCssColor(background)
@@ -226,6 +230,27 @@ for (const theme of THEMES) {
       );
       if (ratio < lowestIndicator.ratio) lowestIndicator = { ratio, label };
     }
+  }
+
+  if (theme.id === "houston") {
+    // Houston's border is a surface boundary, not an attention signal. It
+    // must remain visible against the layered surfaces without becoming the
+    // bright outline that prompted this rework.
+    const borderContrast = contrastRatio(
+      parseCssColor(theme.tokens["--color-border"]),
+      parseCssColor(theme.tokens["--color-elevated"]),
+    );
+    assert.ok(
+      borderContrast >= 1.4 && borderContrast < 3,
+      `Houston border should be a quiet surface boundary (got ${borderContrast.toFixed(2)}:1)`,
+    );
+    assert.ok(
+      contrastRatio(
+        parseCssColor(theme.tokens["--color-text-2"]),
+        parseCssColor(theme.tokens["--color-bg"]),
+      ) > borderContrast,
+      "Houston secondary text must carry more contrast than its hairlines",
+    );
   }
 
   assert.equal(

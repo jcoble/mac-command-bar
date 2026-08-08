@@ -220,25 +220,23 @@
     min-width: 48px;
     height: 48px;
     min-height: 48px;
-    border: 1px solid var(--color-border, #858599);
+    border: 0;
     border-radius: 50%;
-    background: var(--color-surface, #17171d);
-    box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55));
-    color: var(--color-text, #eef0f9);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-md);
+    color: var(--color-text);
     cursor: pointer;
   }
 
   .fab-trigger {
-    border-color: var(--color-accent, #4bf3c8);
-    background: var(--color-accent, #4bf3c8);
-    color: var(--color-on-accent, #0e1013);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
   }
 
   .fab-trigger:hover,
   .action-item:hover:not(:disabled) {
-    border-color: var(--color-accent, #4bf3c8);
-    background: var(--color-hover, #25252e);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-hover);
+    color: var(--color-text);
   }
 
   .action-item {
@@ -250,8 +248,8 @@
   .action-item:focus-visible,
   .action-sheet button:focus-visible,
   .confirmation-actions button:focus-visible {
-    outline: 2px solid var(--color-focus-solid, #4bf3c8);
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .action-item:disabled,
@@ -263,8 +261,8 @@
   .context-label {
     padding: 2px 6px;
     border-radius: 4px;
-    background: rgba(16, 16, 20, 0.9);
-    color: var(--color-text-3, #767687);
+    background: color-mix(in srgb, var(--color-surface) 94%, var(--color-bg));
+    color: var(--color-text-3);
     font-size: 12px;
   }
 
@@ -276,11 +274,11 @@
     bottom: 76px;
     width: min(300px, calc(100vw - 32px));
     padding: 9px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: var(--color-surface, #17171d);
-    box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.6));
-    color: var(--color-text, #eef0f9);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-lg);
+    color: var(--color-text);
   }
 
   .action-sheet {
@@ -298,10 +296,10 @@
     gap: 7px;
     min-height: 40px;
     padding: 0 9px;
-    border: 1px solid var(--color-border, #858599);
+    border: 0;
     border-radius: 5px;
     background: transparent;
-    color: var(--color-text-2, #a7a7b5);
+    color: var(--color-text-2);
     font: inherit;
     cursor: pointer;
     text-align: left;
@@ -309,8 +307,8 @@
 
   .action-sheet button:hover:not(:disabled),
   .confirmation-actions button:hover {
-    background: var(--color-hover, #25252e);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-hover);
+    color: var(--color-text);
   }
 
   .action-confirmation {
@@ -321,7 +319,7 @@
 
   .action-confirmation p {
     margin: 0;
-    color: var(--color-text-2, #a7a7b5);
+    color: var(--color-text-2);
     font-size: 13px;
   }
 
@@ -341,7 +339,7 @@
     align-items: flex-start;
     gap: 6px;
     bottom: 134px;
-    color: var(--color-bad, #ff6d91);
+    color: var(--color-bad);
     font-size: 12px;
   }
 

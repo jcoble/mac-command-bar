@@ -129,7 +129,7 @@
   dt { color: var(--color-text-3); font-size: 12px; }
   dd { margin: 3px 0 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; flex-wrap: wrap; gap: 5px; }
-  .actions button { min-height: 28px; padding: 0 7px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text-2); background: transparent; font-size: 12px; cursor: pointer; }
+  .actions button { min-height: 28px; padding: 0 7px; border: 0; border-radius: 5px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; cursor: pointer; }
   .actions button:hover, .actions button:focus-visible { color: var(--color-text); background: var(--color-hover); outline: none; }
   .actions button:disabled { cursor: default; opacity: .5; }
   .subsection { min-width: 0; padding-top: 7px; border-top: 1px solid var(--color-border); }

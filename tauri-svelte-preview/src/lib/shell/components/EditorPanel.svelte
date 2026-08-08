@@ -875,8 +875,8 @@
   }
 
   .retry {
-    background: transparent;
-    border: 1px solid var(--color-border);
+    background: var(--color-elevated);
+    border: 0;
     border-radius: 5px;
     color: var(--color-text-2);
     cursor: pointer;
@@ -887,7 +887,7 @@
 
   .retry:hover {
     color: var(--color-text);
-    border-color: var(--color-text-3);
+    background: var(--color-hover);
   }
 
   .editor-status {

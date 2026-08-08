@@ -141,18 +141,18 @@ for (const rule of sharedRules) {
 // ── The palette the plan asked for ────────────────────────────────────────
 {
   const expected = {
-    '--color-bg': '#101014',
-    '--color-surface': '#17171d',
-    '--color-border': '#858599',
-    '--color-text': '#eef0f9',
-    '--color-text-2': '#a7a7b5',
-    '--color-text-3': '#767687',
-    '--color-selected': '#26302f',
-    '--color-selected-border': '#4bbd9f',
-    '--color-hover': '#25252e',
-    '--color-focus-solid': '#4bf3c8',
-    '--color-disabled-text': '#858599',
-    '--color-status-idle': '#9494a5'
+    '--color-bg': '#161719',
+    '--color-surface': '#1d1f22',
+    '--color-border': '#4b4f57',
+    '--color-text': '#f1f3f5',
+    '--color-text-2': '#b3b7bf',
+    '--color-text-3': '#8b919b',
+    '--color-selected': '#263734',
+    '--color-selected-border': '#5cb29b',
+    '--color-hover': '#292c31',
+    '--color-focus-solid': '#6ed8be',
+    '--color-disabled-text': '#7f858e',
+    '--color-status-idle': '#969ca6'
   };
   for (const [name, value] of Object.entries(expected)) {
     assert.equal(nextTokens.get(name), value, `${name} should be ${value}`);
@@ -506,14 +506,16 @@ for (const rule of sharedRules) {
   /** Attributes our own markup sets by hand, e.g. `data-inset={inset}`. */
   const setByHand = new Set();
   for (const path of svelteFiles) {
-    for (const match of read(path).matchAll(/(?:^|\s)(data-[a-z-]+)=/g)) {
+    for (const match of stripComments(read(path)).matchAll(/(?:^|\s)(data-[a-z-]+)=/g)) {
       setByHand.add(match[1]);
     }
   }
 
   const unmatched = [];
   for (const path of svelteFiles) {
-    for (const match of read(path).matchAll(/(?:^|[\s"'/:])(data-[a-z-]+):/g)) {
+    // Comments in type-only modules may contain prose such as "data-only";
+    // only actual markup/class syntax belongs in this contract.
+    for (const match of stripComments(read(path)).matchAll(/(?:^|[\s"'/:])(data-[a-z-]+):/g)) {
       const name = match[1];
       if (redefined.has(name) || presence.has(name) || setByHand.has(name)) continue;
       unmatched.push(`${path}: ${name}:`);

@@ -119,7 +119,7 @@
     class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--color-border)] px-2.5 py-2"
   >
     <div class="min-w-0">
-      <p class="m-0 truncate text-[13px] leading-[1.35] text-[#e6e6ee]">
+      <p class="m-0 truncate text-[13px] leading-[1.35] text-[var(--color-text)]">
         {worktreeManager.projectName || 'Worktrees'}
       </p>
       <p class="m-0 truncate text-[12px] leading-[1.4] text-[var(--color-text-2)]">

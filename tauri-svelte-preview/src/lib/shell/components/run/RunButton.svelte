@@ -250,7 +250,7 @@
     align-items: stretch;
     flex: 0 0 auto;
     max-width: 260px;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
     background: var(--color-surface);
     overflow: hidden;

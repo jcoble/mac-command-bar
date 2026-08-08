@@ -36,19 +36,17 @@
     align-items: center;
     gap: 0.4rem;
     min-height: 32px;
-    border: 1px solid var(--color-border, #858599);
+    border: 0;
     border-radius: 6px;
     padding: 0.35rem 0.55rem;
-    background: var(--color-surface, #17171d);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-elevated, #25282d);
+    color: var(--color-text, #f1f3f5);
     cursor: pointer;
     font: inherit;
   }
 
-  .assistance-action:hover:not(:disabled),
-  .assistance-action:focus-visible {
-    border-color: var(--color-accent, #4bf3c8);
-  }
+  .assistance-action:hover:not(:disabled) { background: var(--color-hover, #292c31); }
+  .assistance-action:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(110, 216, 190, 0.42)); }
 
   .assistance-action:disabled {
     cursor: not-allowed;

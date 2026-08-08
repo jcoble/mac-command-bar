@@ -734,9 +734,9 @@
 
   .refresh {
     flex: 0 0 auto;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
-    background: transparent;
+    background: var(--color-elevated);
     color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
@@ -745,7 +745,7 @@
   }
 
   .refresh:hover:not(:disabled) {
-    border-color: var(--color-accent);
+    background: var(--color-hover);
     color: var(--color-text);
   }
 
@@ -1118,9 +1118,9 @@
   .stop {
     flex: 0 0 auto;
     margin-left: auto;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
-    background: transparent;
+    background: var(--color-elevated);
     color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
@@ -1130,7 +1130,7 @@
   }
 
   .stop:hover:not(:disabled) {
-    border-color: var(--color-bad);
+    background: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
@@ -1180,8 +1180,8 @@
   }
 
   button:focus-visible {
-    outline: 1px solid var(--color-accent);
-    outline-offset: -1px;
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   @media (prefers-reduced-motion: reduce) {

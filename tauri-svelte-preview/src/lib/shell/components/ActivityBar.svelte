@@ -97,10 +97,10 @@
     width: 44px;
     height: 100%;
     padding: 6px 0;
-    background: #0c0c10;
+    background: var(--color-bg);
     /* The strip is on the outer edge now, so its hairline faces the column it
        opens rather than the middle of the shell. */
-    border-left: 1px solid #22222c;
+    border-left: 1px solid var(--color-border);
     user-select: none;
   }
 
@@ -120,16 +120,16 @@
     height: 40px;
     border: 0;
     background: transparent;
-    color: #6d6d7d;
+    color: var(--color-text-3);
     cursor: pointer;
   }
 
   .icon-button:hover {
-    color: #d8d8e0;
+    color: var(--color-text);
   }
 
   .icon-button.active {
-    color: #e6e6ee;
+    color: var(--color-text);
   }
 
   /* The teal edge marking the open view — the same accent the pane dividers
@@ -143,11 +143,11 @@
     bottom: 6px;
     width: 2px;
     border-radius: 2px 0 0 2px;
-    background: #4bf3c8;
+    background: var(--color-accent);
   }
 
   .icon-button:focus-visible {
-    outline: 1px solid #bd93f9;
+    outline: 2px solid var(--color-focus-solid);
     outline-offset: -3px;
   }
 </style>

@@ -144,7 +144,7 @@
       <button
         type="button"
         class={cn(
-          buttonVariants({ variant: 'outline', size: 'xs' }),
+          buttonVariants({ variant: 'secondary', size: 'xs' }),
           'flex-1 gap-1 px-1.5 text-[12px] font-normal'
         )}
         disabled={!canWrite || busy || !panel.activated}

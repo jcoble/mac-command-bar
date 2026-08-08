@@ -349,7 +349,7 @@
 <style>
   .control-center { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; background: var(--color-bg); color: var(--color-text); }
   .error-banner { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--color-bad); color: var(--color-bad); background: var(--color-bad-bg); font-size: 13px; }
-  .error-banner button { min-height: 25px; padding: 0 6px; border: 1px solid var(--color-bad); border-radius: 4px; color: var(--color-bad); background: transparent; font-size: 12px; cursor: pointer; }
+  .error-banner button { min-height: 25px; padding: 0 6px; border: 0; border-radius: 4px; color: var(--color-bad); background: var(--color-bad-bg); font-size: 12px; cursor: pointer; }
   .workspace { display: grid; grid-template-columns: minmax(220px, 255px) minmax(0, 1fr) minmax(210px, 260px); flex: 1; min-height: 0; }
   .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
   .overview, .activity-grid, .inspector-grid { display: grid; gap: 10px; padding: 10px 14px 0; }

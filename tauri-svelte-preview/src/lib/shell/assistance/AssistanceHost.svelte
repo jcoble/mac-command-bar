@@ -74,7 +74,8 @@
 <style>
   .assistance-host { position: fixed; right: 16px; bottom: 80px; z-index: 56; display: grid; justify-items: end; gap: 0.5rem; pointer-events: none; }
   .assistance-host :global(button), .assistance-host :global(section) { pointer-events: auto; }
-  .assistance-trigger { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 36px; border: 1px solid var(--color-accent, #4bf3c8); border-radius: 999px; padding: 0.4rem 0.75rem; background: var(--color-surface, #17171d); color: var(--color-text, #eef0f9); cursor: pointer; font: inherit; box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55)); }
-  .assistance-menu { display: grid; gap: 0.35rem; width: min(300px, calc(100vw - 32px)); padding: 0.6rem; border: 1px solid var(--color-border, #858599); border-radius: 8px; background: var(--color-surface, #17171d); box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55)); }
+  .assistance-trigger { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 36px; border: 0; border-radius: 999px; padding: 0.4rem 0.75rem; background: var(--color-accent, #6ed8be); color: var(--color-on-accent, #10201b); cursor: pointer; font: inherit; box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55)); }
+  .assistance-trigger:hover, .assistance-trigger:focus-visible { filter: brightness(1.04); outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(110, 216, 190, 0.42)); }
+  .assistance-menu { display: grid; gap: 0.35rem; width: min(300px, calc(100vw - 32px)); padding: 0.6rem; border: 1px solid var(--color-border, #4b4f57); border-radius: 8px; background: var(--color-surface, #1d1f22); box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55)); }
   .assistance-menu :global(.assistance-action) { justify-content: flex-start; width: 100%; }
 </style>

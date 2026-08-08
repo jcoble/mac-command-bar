@@ -95,7 +95,7 @@
   .state-completed, .state-skipped { color: var(--color-good); }
   .state-failed, .state-cancelled { color: var(--color-bad); }
   .agent-actions { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
-  .agent-actions button { min-height: 25px; padding: 0 5px; border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text-2); background: transparent; font-size: 12px; cursor: pointer; }
+  .agent-actions button { min-height: 25px; padding: 0 5px; border: 0; border-radius: 4px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; cursor: pointer; }
   .agent-actions button:hover, .agent-actions button:focus-visible { color: var(--color-text); background: var(--color-hover); outline: none; }
   .agent-actions button:disabled { cursor: default; opacity: .5; }
   .empty { margin: 8px 0 0; color: var(--color-text-2); font-size: 13px; }

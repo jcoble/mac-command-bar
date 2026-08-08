@@ -88,10 +88,10 @@
   .provenance { color: var(--color-accent); background: var(--color-selected); text-transform: none; }
   .metrics { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--color-text-2); font-size: 12px; }
   .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
-  .action { min-height: 29px; padding: 0 9px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text-2); background: transparent; font-size: 12px; cursor: pointer; }
+  .action { min-height: 29px; padding: 0 9px; border: 0; border-radius: 5px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; cursor: pointer; }
   .action:hover, .action:focus-visible { color: var(--color-text); background: var(--color-hover); }
-  .action.accent { color: var(--color-on-accent); border-color: var(--color-accent); background: var(--color-accent); }
-  .action.danger { color: var(--color-bad); border-color: var(--color-bad); }
+  .action.accent { color: var(--color-on-accent); background: var(--color-accent); }
+  .action.danger { color: var(--color-bad); background: var(--color-bad-bg); }
   .action:disabled { cursor: default; opacity: .55; }
   @media (max-width: 680px) {
     .run-header { grid-template-columns: 1fr; }

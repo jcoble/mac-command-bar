@@ -216,10 +216,10 @@
   .gate-input-label textarea { min-height: 70px; }
   .subsection { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--color-border); }
   h3 { margin: 0; font-size: 13px; font-weight: 600; }
-  .action { min-height: 28px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text-2); background: transparent; font-size: 12px; cursor: pointer; }
+  .action { min-height: 28px; padding: 0 8px; border: 0; border-radius: 5px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; cursor: pointer; }
   .action:hover, .action:focus-visible { color: var(--color-text); background: var(--color-hover); outline: none; }
-  .action.accent { color: var(--color-on-accent); border-color: var(--color-accent); background: var(--color-accent); }
-  .action.danger { color: var(--color-bad); border-color: var(--color-bad); }
+  .action.accent { color: var(--color-on-accent); background: var(--color-accent); }
+  .action.danger { color: var(--color-bad); background: var(--color-bad-bg); }
   .action:disabled { cursor: default; opacity: .5; }
   textarea { min-height: 120px; resize: vertical; padding: 7px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text); background: var(--color-bg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   textarea:focus-visible { outline: 1px solid var(--color-focus-solid); outline-offset: 1px; }

@@ -121,7 +121,7 @@
   {#if value > 0}
     {@const Icon = SEVERITY_ICONS[severity]}
     <Badge
-      variant="outline"
+      variant="secondary"
       title="{value} {severityWord(severity, value)}"
       class="h-5 gap-1 px-1.5 text-[12px] font-normal {SEVERITY_TONE[severity]}"
     >
@@ -168,7 +168,7 @@
 
     <button
       type="button"
-      class="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border)]
+      class="flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-[var(--color-surface)]
              px-2 text-[12px] text-[var(--color-text-2)] transition-colors
              hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]
              focus-visible:ring-3 focus-visible:ring-ring/50 outline-none

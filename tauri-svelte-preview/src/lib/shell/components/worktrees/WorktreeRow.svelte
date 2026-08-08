@@ -127,7 +127,7 @@
         aria-hidden="true"
       />
       <FolderGit2 class="size-3.5 shrink-0 text-[var(--color-text-3)]" aria-hidden="true" />
-      <span class="min-w-0 flex-1 truncate text-[13px] leading-[1.35] font-medium text-[#e6e6ee]">
+      <span class="min-w-0 flex-1 truncate text-[13px] leading-[1.35] font-medium text-[var(--color-text)]">
         {row.branch}
       </span>
       {#if row.isPrimary}
@@ -140,7 +140,7 @@
       {/if}
       {#if row.taskId}
         <Badge
-          variant="outline"
+          variant="secondary"
           class="h-5 shrink-0 px-1.5 text-[12px] font-normal text-[var(--color-text-2)]"
         >
           {row.taskId}

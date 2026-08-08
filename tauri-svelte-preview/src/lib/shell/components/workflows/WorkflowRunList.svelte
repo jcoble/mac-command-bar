@@ -146,15 +146,16 @@
   .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
   button, input, select { font: inherit; }
   button { cursor: pointer; }
-  .quiet-button, .accent-button { min-height: 28px; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text-2); background: transparent; font-size: 12px; }
-  .accent-button { border-color: var(--color-selected-border); color: var(--color-on-accent); background: var(--color-accent); }
+  .quiet-button, .accent-button { min-height: 28px; padding: 0 8px; border: 0; border-radius: 5px; color: var(--color-text-2); background: var(--color-elevated); font-size: 12px; }
+  .accent-button { color: var(--color-on-accent); background: var(--color-accent); }
   .quiet-button:hover, .quiet-button:focus-visible { color: var(--color-text); background: var(--color-hover); }
   .accent-button:hover, .accent-button:focus-visible { filter: brightness(1.08); }
   button:disabled { cursor: default; opacity: .55; }
   .filters { display: grid; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--color-border); }
   .search-label, .filter-label { display: grid; gap: 4px; color: var(--color-text-2); font-size: 12px; }
   input, select { width: 100%; min-height: 30px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--color-border); border-radius: 5px; color: var(--color-text); background: var(--color-bg); font-size: 13px; }
-  input:focus-visible, select:focus-visible, button:focus-visible { outline: 1px solid var(--color-focus-solid); outline-offset: 1px; }
+  input:focus-visible, select:focus-visible { outline: 1px solid var(--color-focus-solid); outline-offset: 1px; }
+  button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .run-items { min-height: 0; overflow: auto; margin: 0; padding: 6px; list-style: none; }
   .run-items li { margin: 0 0 4px; }
   .run-items li.selected { border-radius: 6px; background: var(--color-selected); }
