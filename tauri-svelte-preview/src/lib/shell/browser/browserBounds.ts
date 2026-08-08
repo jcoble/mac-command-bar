@@ -17,7 +17,7 @@ export const BROWSER_VIEWPORT_PRESETS: Readonly<
   'mobile-m': { preset: 'mobile-m', width: 375, height: 667 },
   'mobile-l': { preset: 'mobile-l', width: 425, height: 812 },
   tablet: { preset: 'tablet', width: 768, height: 1024 },
-  laptop: { preset: 'laptop', width: 1366, height: 768 },
+  laptop: { preset: 'laptop', width: 1024, height: 768 },
   'laptop-l': { preset: 'laptop-l', width: 1440, height: 900 },
   desktop: { preset: 'desktop', width: 1920, height: 1080 },
   custom: { preset: 'custom', width: null, height: null }

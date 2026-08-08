@@ -90,17 +90,17 @@
     flex-wrap: wrap;
     gap: 5px;
     padding: 7px 9px;
-    border-bottom: 1px solid var(--color-border, #858599);
-    background: var(--color-bg, #101014);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
   }
 
   .feedback-tool {
     min-height: 30px;
     padding: 0 9px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 5px;
     background: transparent;
-    color: var(--color-text-2, #a7a7b5);
+    color: var(--color-text-2);
     font-family: inherit;
     font-size: 12px;
     cursor: pointer;
@@ -108,18 +108,18 @@
 
   .feedback-tool:hover:not(:disabled),
   .feedback-tool.active {
-    border-color: var(--color-selected-border, #4bbd9f);
-    background: var(--color-selected, #26302f);
-    color: var(--color-text, #eef0f9);
+    border-color: var(--color-selected-border);
+    background: var(--color-selected);
+    color: var(--color-text);
   }
 
   .feedback-tool.cancel {
     margin-left: auto;
-    color: var(--color-attention, #ffd493);
+    color: var(--color-attention);
   }
 
   .feedback-tool:disabled {
-    color: var(--color-disabled-text, #858599);
+    color: var(--color-disabled-text);
     cursor: not-allowed;
     opacity: 0.65;
   }
@@ -134,17 +134,17 @@
   .markup-tool {
     min-height: 28px;
     padding: 0 7px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 4px;
-    background: var(--color-surface, #17171d);
-    color: var(--color-text-2, #a7a7b5);
+    background: var(--color-surface);
+    color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
     cursor: pointer;
   }
 
   .markup-tool:hover {
-    background: var(--color-hover, #25252e);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-hover);
+    color: var(--color-text);
   }
 </style>

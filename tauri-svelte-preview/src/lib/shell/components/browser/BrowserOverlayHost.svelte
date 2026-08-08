@@ -115,18 +115,18 @@
     min-width: 64px;
     min-height: 44px;
     padding: 0 13px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 7px;
-    background: var(--color-surface, #17171d);
-    box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55));
-    color: var(--color-text, #eef0f9);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-md);
+    color: var(--color-text);
     font: inherit;
     font-size: 13px;
     cursor: pointer;
   }
 
   .browser-collapsed-control button:hover {
-    border-color: var(--color-accent, #4bf3c8);
-    background: var(--color-hover, #25252e);
+    border-color: var(--color-accent);
+    background: var(--color-hover);
   }
 </style>

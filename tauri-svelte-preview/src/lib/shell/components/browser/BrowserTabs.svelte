@@ -1,4 +1,8 @@
 <script lang="ts">
+  import Globe2 from '@lucide/svelte/icons/globe-2';
+  import Plus from '@lucide/svelte/icons/plus';
+  import X from '@lucide/svelte/icons/x';
+
   import type { BrowserTabState, BrowserWorkspaceState } from '$lib/shell/browser/browserTypes.ts';
   import { browserWorkspace } from '$lib/shell/browser/browserStore.svelte';
 
@@ -40,7 +44,9 @@
           data-testid={`browser-tab-${tab.id}`}
           onclick={() => onSelect?.(tab.id)}
         >
-          <span class="browser-tab-status" aria-hidden="true"></span>
+          <span class="browser-tab-favicon" aria-hidden="true">
+            <Globe2 size={14} strokeWidth={1.8} />
+          </span>
           <span class="browser-tab-title">{tab.title || tab.url || 'New tab'}</span>
         </button>
         <button
@@ -51,7 +57,7 @@
           data-testid={`browser-tab-close-${tab.id}`}
           onclick={() => onClose?.(tab.id)}
         >
-          <span aria-hidden="true">×</span>
+          <X size={14} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </div>
     {/each}
@@ -64,7 +70,7 @@
     data-testid="browser-tab-new"
     onclick={() => onCreate?.()}
   >
-    <span aria-hidden="true">+</span>
+    <Plus size={16} strokeWidth={1.8} aria-hidden="true" />
   </button>
 </nav>
 
@@ -73,9 +79,10 @@
     display: flex;
     align-items: stretch;
     min-width: 0;
-    min-height: 35px;
-    border-bottom: 1px solid var(--color-border, #858599);
-    background: var(--color-bg, #101014);
+    min-height: 38px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text);
   }
 
   .browser-tab-list {
@@ -83,6 +90,7 @@
     flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
+    scrollbar-width: thin;
   }
 
   .browser-tab,
@@ -97,16 +105,16 @@
     flex: 0 0 auto;
     align-items: center;
     min-width: 0;
-    max-width: 240px;
-    border-right: 1px solid var(--color-border, #858599);
+    max-width: 260px;
+    border-right: 1px solid var(--color-border);
   }
 
   .browser-tab-select,
   .browser-tab-new,
   .browser-tab-close {
-    color: var(--color-text-2, #a7a7b5);
     border: 0;
     background: transparent;
+    color: var(--color-text-2);
     cursor: pointer;
   }
 
@@ -115,27 +123,29 @@
     align-items: center;
     gap: 7px;
     min-width: 0;
-    height: 35px;
-    padding: 0 8px 0 11px;
+    height: 38px;
+    padding: 0 7px 0 12px;
     font-size: 12px;
   }
 
   .browser-tab-select:hover,
   .browser-tab-select.active {
-    color: var(--color-text, #eef0f9);
-    background: var(--color-surface, #17171d);
+    background: var(--color-elevated);
+    color: var(--color-text);
   }
 
-  .browser-tab-status {
-    width: 6px;
-    height: 6px;
+  .browser-tab-select.active {
+    box-shadow: inset 0 -2px 0 var(--color-accent);
+  }
+
+  .browser-tab-favicon {
+    display: inline-flex;
     flex: 0 0 auto;
-    border-radius: 50%;
-    background: var(--color-text-3, #767687);
+    color: var(--color-text-3);
   }
 
-  .browser-tab.active .browser-tab-status {
-    background: var(--color-accent, #4bf3c8);
+  .browser-tab.active .browser-tab-favicon {
+    color: var(--color-accent);
   }
 
   .browser-tab-title {
@@ -146,31 +156,35 @@
   }
 
   .browser-tab-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 28px;
-    height: 35px;
-    font-size: 16px;
-    line-height: 1;
+    height: 32px;
+    border-radius: 6px;
   }
 
   .browser-tab-close:hover,
   .browser-tab-new:hover {
-    color: var(--color-text, #eef0f9);
-    background: var(--color-hover, #25252e);
+    background: var(--color-hover);
+    color: var(--color-text);
   }
 
   .browser-tab-new {
-    width: 35px;
-    height: 35px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
     flex: 0 0 auto;
-    border-left: 1px solid var(--color-border, #858599);
-    font-size: 18px;
+    border-left: 1px solid var(--color-border);
   }
 
   .browser-tab-empty {
     display: inline-flex;
     align-items: center;
-    padding: 0 12px;
-    color: var(--color-text-3, #767687);
+    padding: 0 13px;
+    color: var(--color-text-3);
     font-size: 12px;
   }
 </style>

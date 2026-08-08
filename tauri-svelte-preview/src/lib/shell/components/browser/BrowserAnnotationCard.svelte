@@ -45,10 +45,10 @@
     flex-direction: column;
     gap: 7px;
     padding: 10px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 6px;
-    background: var(--color-surface, #17171d);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-surface);
+    color: var(--color-text);
     font-size: 13px;
   }
 
@@ -67,7 +67,7 @@
   .card-heading span,
   .card-target,
   .card-detail {
-    color: var(--color-text-3, #767687);
+    color: var(--color-text-3);
     font-size: 12px;
   }
 
@@ -89,7 +89,7 @@
   }
 
   .card-note {
-    color: var(--color-attention, #ffd493);
+    color: var(--color-attention);
   }
 
   .card-actions {
@@ -100,17 +100,17 @@
   .card-actions button {
     min-height: 28px;
     padding: 0 8px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 5px;
     background: transparent;
-    color: var(--color-text-2, #a7a7b5);
+    color: var(--color-text-2);
     font: inherit;
     font-size: 12px;
     cursor: pointer;
   }
 
   .card-actions button:hover {
-    background: var(--color-hover, #25252e);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-hover);
+    color: var(--color-text);
   }
 </style>

@@ -31,7 +31,7 @@ import {
   type BrowserFeedbackStageOptions
 } from './browserModel.ts';
 import {
-  createInMemoryBrowserBackend,
+  createBrowserBackend,
   type BrowserBackend
 } from './browserBackend.ts';
 import {
@@ -62,7 +62,7 @@ export interface BrowserCompatibilityState {
 }
 
 const workspace = createBrowserWorkspace({ workspaceId: 'next-browser' });
-const backend = createInMemoryBrowserBackend();
+const backend = createBrowserBackend();
 
 const conversationBridge = {
   read(ownedId: string) {

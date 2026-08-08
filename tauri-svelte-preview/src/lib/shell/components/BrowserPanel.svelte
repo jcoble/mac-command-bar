@@ -1,7 +1,6 @@
 <script lang="ts">
   /** Composition-only browser dock.  State and transitions live in the model
    * and compatibility facade; this component only assembles the surfaces. */
-  import BrowserAnnotationToolbar from './browser/BrowserAnnotationToolbar.svelte';
   import BrowserFeedbackPanel from './browser/BrowserFeedbackPanel.svelte';
   import BrowserTabs from './browser/BrowserTabs.svelte';
   import BrowserToolbar from './browser/BrowserToolbar.svelte';
@@ -29,7 +28,6 @@
     expandBrowserFrom,
     removeBrowserAnnotation,
     restoreBrowserToDock,
-    selectBrowserTab
   } from '$lib/shell/browser/browserModel.ts';
   import type {
     BrowserFeedbackAttachment,
@@ -162,11 +160,11 @@
       onViewport={viewport}
       onPresentation={presentation}
       onCollapse={collapse}
+      onCancel={() => cancelBrowserAnnotation(browserModelContext())}
     />
     {#if browser.error}
       <p class="browser-error" role="alert">{browser.error}</p>
     {/if}
-    <BrowserAnnotationToolbar workspace={browserWorkspace} onGrab={grab} onAnnotate={annotate} onDraw={draw} onCancel={() => cancelBrowserAnnotation(browserModelContext())} />
     <div class="browser-panel-body">
       <BrowserViewport workspace={browserWorkspace} />
       <BrowserFeedbackPanel
@@ -190,8 +188,8 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--color-bg, #101014);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-bg);
+    color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
   }
 
@@ -199,9 +197,9 @@
     flex: 0 0 auto;
     margin: 0;
     padding: 7px 10px;
-    border-bottom: 1px solid var(--color-bad, #ff6d91);
-    background: var(--color-bad-bg, rgba(255, 109, 145, 0.12));
-    color: var(--color-bad, #ff6d91);
+    border-bottom: 1px solid var(--color-bad);
+    background: var(--color-bad-bg);
+    color: var(--color-bad);
     font-size: 12px;
   }
 

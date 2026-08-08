@@ -48,17 +48,17 @@
     min-width: 240px;
     min-height: 0;
     overflow: hidden;
-    border-left: 1px solid var(--color-border, #858599);
-    background: var(--color-bg, #101014);
-    color: var(--color-text, #eef0f9);
+    border-left: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text);
   }
 
   .feedback-header {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 10px;
-    border-bottom: 1px solid var(--color-border, #858599);
+    padding: 13px 14px;
+    border-bottom: 1px solid var(--color-border);
   }
 
   .feedback-header div {
@@ -71,7 +71,7 @@
   .feedback-header span,
   .feedback-header small,
   .feedback-empty span {
-    color: var(--color-text-3, #767687);
+    color: var(--color-text-3);
     font-size: 12px;
   }
 
@@ -88,8 +88,9 @@
     display: flex;
     flex-direction: column;
     gap: 7px;
-    padding: 22px 12px;
-    color: var(--color-text-2, #a7a7b5);
+    min-height: 150px;
+    padding: 28px 16px;
+    color: var(--color-text-2);
     text-align: center;
   }
 </style>

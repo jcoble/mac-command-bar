@@ -47,8 +47,8 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--color-bg, #101014);
-    color: var(--color-text, #eef0f9);
+    background: var(--color-bg);
+    color: var(--color-text);
   }
 
   .browser-page-header {
@@ -58,8 +58,8 @@
     min-width: 0;
     min-height: 31px;
     padding: 0 10px;
-    border-bottom: 1px solid var(--color-border, #858599);
-    color: var(--color-text-2, #a7a7b5);
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text-2);
     font-size: 12px;
   }
 
@@ -67,17 +67,17 @@
   .browser-page-viewport {
     flex: 0 0 auto;
     padding: 2px 5px;
-    border: 1px solid var(--color-border, #858599);
+    border: 1px solid var(--color-border);
     border-radius: 4px;
     font-size: 12px;
   }
 
   .browser-page-state[data-state='error'] {
-    color: var(--color-bad, #ff6d91);
+    color: var(--color-bad);
   }
 
   .browser-page-state[data-state='loaded'] {
-    color: var(--color-good, #8bdc9b);
+    color: var(--color-good);
   }
 
   .browser-page-url {
@@ -90,7 +90,7 @@
 
   .browser-page-viewport {
     margin-left: auto;
-    color: var(--color-text-3, #767687);
+    color: var(--color-text-3);
   }
 
   .browser-native-host {
@@ -101,8 +101,8 @@
     min-height: 0;
     place-items: center;
     overflow: auto;
-    background: #ffffff;
-    color: #1e2026;
+    background: var(--color-surface);
+    color: var(--color-text);
   }
 
   .browser-native-placeholder,
@@ -119,21 +119,21 @@
 
   .browser-native-placeholder small {
     max-width: 440px;
-    color: #545866;
+    color: var(--color-text-3);
     font-size: 12px;
   }
 
   .browser-native-error {
-    color: #a3284f;
+    color: var(--color-bad);
   }
 
   .browser-viewport-empty {
     justify-content: center;
     height: 100%;
-    color: var(--color-text-2, #a7a7b5);
+    color: var(--color-text-2);
   }
 
   .browser-viewport-empty strong {
-    color: var(--color-text, #eef0f9);
+    color: var(--color-text);
   }
 </style>
