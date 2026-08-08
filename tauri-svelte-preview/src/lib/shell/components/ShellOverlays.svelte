@@ -16,6 +16,7 @@
   import SettingsHost from './SettingsHost.svelte';
   import BrowserOverlayHost from './browser/BrowserOverlayHost.svelte';
   import WorkbenchActionFab from './WorkbenchActionFab.svelte';
+  import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
   import type {
     BrowserFeedbackAttachment,
@@ -151,6 +152,7 @@
   devtoolsAvailable={false}
 />
 <WorkbenchActionFab actions={browserActions} context={workbenchActionContext} />
+<AssistanceHost />
 
 {#if message}
   <!-- Something went wrong, said once, along the bottom edge. Announced to
