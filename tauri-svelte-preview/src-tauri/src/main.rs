@@ -8254,6 +8254,13 @@ mod tests {
                 "lspDocumentSymbols".to_string(),
                 "lspStatusEvents".to_string(),
                 "lspLog".to_string(),
+                "resourceSnapshot".to_string(),
+                "resourceDiskScan".to_string(),
+                "resourceDiskCleanup".to_string(),
+                "resourceStopOwned".to_string(),
+                "providerUsageQuota".to_string(),
+                "usageHistory".to_string(),
+                "usageHistoryIncremental".to_string(),
             ]
         );
     }

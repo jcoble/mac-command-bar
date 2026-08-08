@@ -6522,7 +6522,7 @@ mod tests {
 
         let navigation_request = SourceLspLookupRequest {
             root: root.display().to_string(),
-            line: 2433,
+            line: 2482,
             column: 4,
             limit: Some(100),
         };
@@ -6532,8 +6532,8 @@ mod tests {
         assert!(
             definitions
                 .iter()
-                .any(|target| target.path == file_path.display().to_string() && target.line == 505),
-            "expected installWorker definition at line 505; got {definitions:?}"
+                .any(|target| target.path == file_path.display().to_string() && target.line == 506),
+            "expected installWorker definition at line 506; got {definitions:?}"
         );
 
         let references = registry
@@ -6541,9 +6541,9 @@ mod tests {
             .expect("Svelte references");
         assert!(
             references.iter().any(|target| {
-                target.path == file_path.display().to_string() && target.line == 2433
+                target.path == file_path.display().to_string() && target.line == 2482
             }),
-            "expected installWorker references to include line 2433; got {references:?}"
+            "expected installWorker references to include line 2482; got {references:?}"
         );
     }
 
