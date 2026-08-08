@@ -138,6 +138,7 @@ mod tests {
                 resume: true,
                 close: true,
                 steering: true,
+                fork: false,
             },
             prompt: AgentPromptCapabilities {
                 text: true,

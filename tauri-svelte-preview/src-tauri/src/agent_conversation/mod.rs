@@ -1,5 +1,6 @@
 mod attachments;
 pub mod capabilities;
+pub mod handoff;
 pub mod journal;
 pub mod manager;
 pub mod protocol;

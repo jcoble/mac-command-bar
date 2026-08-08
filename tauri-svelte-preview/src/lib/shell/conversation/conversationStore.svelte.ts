@@ -540,6 +540,11 @@ export function setConversationWriterLeaseTransition(
   return true;
 }
 
+export function clearConversationWriterLeaseTransition(ownedId: string, generation: number): void {
+  const current = conversationSessions[ownedId];
+  if (current?.generation === generation) current.writerLeaseTransition = null;
+}
+
 export function setConversationDraft(ownedId: string, draft: string): void {
   const current = conversationSessions[ownedId];
   if (!current || current.draft === draft) return;

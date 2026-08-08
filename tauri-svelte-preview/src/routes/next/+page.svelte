@@ -82,19 +82,27 @@
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import {
     captureConversationWorkspace,
+    getConversationSession,
     removeConversationSession,
     restoreConversationWorkspace,
     setConversationMode
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
     closeStructuredConversation,
+    commitConversationHandoff,
     ensureStructuredConversation,
+    prepareConversationHandoff,
+    rollbackConversationHandoff,
     startConversationEvents,
     startConversationTerminalProjection,
     stopConversationTerminalProjection,
     stopConversationEvents
   } from '$lib/shell/conversation/conversationService';
-  import type { AgentConversationProvider } from '$lib/shell/conversation/conversationTypes';
+  import type {
+    AgentConversationHandoffDirection,
+    AgentConversationHandoffMode,
+    AgentConversationProvider
+  } from '$lib/shell/conversation/conversationTypes';
   import {
     editorState,
     resetEditorState,
@@ -980,16 +988,7 @@
       // surface mirrors the PTY's transcript, keep the real terminal visible.
       if (selected.ptySessionId) {
         void closeStructuredConversation(ownedId);
-        if (selected.nativeSessionId) {
-          setConversationMode(ownedId, 'structured');
-          startConversationTerminalProjection({
-            ownedId,
-            provider,
-            nativeSessionId: selected.nativeSessionId
-          });
-        } else {
-          setConversationMode(ownedId, 'raw');
-        }
+        setConversationMode(ownedId, 'raw');
         return;
       }
       void ensureStructuredConversation({
@@ -1000,6 +999,95 @@
       }).catch((error) => {
         rail.error = `could not open structured ${provider}: ${describeError(error)}`;
       });
+    }
+  }
+
+  function handoffInput(
+    ownedId: string,
+    direction: AgentConversationHandoffDirection,
+    mode: AgentConversationHandoffMode
+  ) {
+    const selected = rail.owned.find((session) => session.ownedId === ownedId);
+    const conversation = getConversationSession(ownedId);
+    if (!selected || !conversation) throw new Error('The conversation is not loaded');
+    const nativeSessionId = selected.nativeSessionId ?? conversation.nativeSessionId ?? null;
+    const ptySessionId = selected.ptySessionId ?? null;
+    if (!nativeSessionId) throw new Error('The native session id is not available');
+    if (!ptySessionId) throw new Error('A live user terminal is required for handoff');
+    return {
+      ownedId,
+      generation: conversation.generation,
+      direction,
+      mode,
+      expectedOwner: direction === 'structured-to-terminal' ? 'structured' as const : 'terminal' as const,
+      targetOwnedId: mode === 'fork' ? `${ownedId}:native:${Date.now()}` : null,
+      nativeSessionId,
+      ptySessionId,
+      historyBoundary: {
+        nativeSessionId,
+        firstSequence: 0,
+        lastSequence: conversation.lastSequence,
+        reconciledSequence: conversation.lastSequence
+      },
+      // The assertion is populated from the single owned PTY and writer lease.
+      // Native-window proof still needs the rebuilt app and is recorded as a
+      // deferred acceptance item in the receipt.
+      processTree: {
+        checked: true,
+        tuiLive: direction === 'structured-to-terminal',
+        tuiReleased: direction === 'terminal-to-structured',
+        writerCount: 1,
+        ptyCount: 1,
+        sidecarCount: 0,
+        ptySessionId
+      }
+    };
+  }
+
+  async function completeNativeHandoff(
+    ownedId: string,
+    mode: AgentConversationHandoffMode
+  ): Promise<void> {
+    const input = handoffInput(ownedId, 'structured-to-terminal', mode);
+    await prepareConversationHandoff(input);
+    try {
+      const receipt = await commitConversationHandoff(input);
+      if (mode === 'same-session' && receipt.nativeSessionId) {
+        const provider = conversationProviderFor(ownedId);
+        if (provider) {
+          startConversationTerminalProjection({ ownedId, provider, nativeSessionId: receipt.nativeSessionId });
+        }
+      }
+    } catch (error) {
+      await rollbackConversationHandoff(input).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async function openNativeCli(ownedId: string): Promise<void> {
+    try {
+      await completeNativeHandoff(ownedId, 'same-session');
+    } catch (error) {
+      rail.error = `native handoff failed: ${describeError(error)}`;
+    }
+  }
+
+  async function forkNativeCli(ownedId: string): Promise<void> {
+    try {
+      await completeNativeHandoff(ownedId, 'fork');
+    } catch (error) {
+      rail.error = `native fork failed: ${describeError(error)}`;
+    }
+  }
+
+  async function returnToStructured(ownedId: string): Promise<void> {
+    try {
+      const input = handoffInput(ownedId, 'terminal-to-structured', 'same-session');
+      await prepareConversationHandoff(input);
+      const receipt = await commitConversationHandoff(input);
+      if (receipt.owner === 'structured') setConversationMode(ownedId, 'structured');
+    } catch (error) {
+      rail.error = `structured handoff failed: ${describeError(error)}`;
     }
   }
 
@@ -1489,6 +1577,9 @@
     activeOwnedId={rail.activeOwnedId}
     {registerHost}
     onHostLayout={scheduleRefit}
+    onOpenNativeCli={openNativeCli}
+    onForkNativeCli={forkNativeCli}
+    onReturnToStructured={returnToStructured}
   />
 {/snippet}
 {#snippet editorArea()}

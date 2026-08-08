@@ -5401,6 +5401,7 @@ fn main() {
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,
             agent_conversation::save_agent_conversation_attachment,
+            agent_conversation::handoff::handoff_agent_conversation,
             start_terminal_session,
             list_terminal_sessions,
             read_terminal_session_scrollback,

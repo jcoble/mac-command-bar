@@ -52,6 +52,7 @@ export interface AgentCapabilities {
     resume: boolean;
     close: boolean;
     steering: boolean;
+    fork?: boolean;
   };
   prompt: {
     text: boolean;
@@ -69,6 +70,141 @@ export interface AgentCapabilities {
   };
   configOptions: AgentConfigOption[];
   commands: AgentCommandDescriptor[];
+}
+
+export type AgentConversationHandoffDirection = 'structured-to-terminal' | 'terminal-to-structured';
+export type AgentConversationHandoffMode = 'same-session' | 'fork';
+export type AgentConversationHandoffPhase = 'prepare' | 'commit' | 'rollback';
+export type AgentConversationHandoffReceiptPhase = 'prepared' | 'committed' | 'rolled-back' | AgentConversationHandoffPhase;
+
+export interface AgentConversationHistoryBoundary {
+  nativeSessionId?: string | null;
+  firstSequence: number;
+  lastSequence: number;
+  reconciledSequence?: number | null;
+}
+
+export interface AgentConversationProcessTreeAssertion {
+  checked: boolean;
+  tuiLive?: boolean;
+  tuiReleased?: boolean;
+  writerCount?: number;
+  ptyCount?: number;
+  userPtyCount?: number;
+  sidecarCount?: number;
+  ptySessionId?: string | null;
+}
+
+export interface AgentConversationHandoffRequest {
+  ownedId: string;
+  generation: number;
+  direction: AgentConversationHandoffDirection;
+  mode: AgentConversationHandoffMode;
+  phase: AgentConversationHandoffPhase;
+  expectedOwner?: AgentWriterLeaseOwner;
+  targetOwnedId?: string | null;
+  nativeSessionId?: string | null;
+  ptySessionId?: string | null;
+  historyBoundary: AgentConversationHistoryBoundary;
+  processTree: AgentConversationProcessTreeAssertion;
+}
+
+export interface AgentConversationHandoffReceipt {
+  ownedId: string;
+  generation: number;
+  direction: AgentConversationHandoffDirection;
+  mode: AgentConversationHandoffMode;
+  phase: AgentConversationHandoffReceiptPhase;
+  previousOwner: AgentWriterLeaseOwner;
+  owner: AgentWriterLeaseOwner;
+  nativeSessionId?: string | null;
+  ptySessionId?: string | null;
+  historyBoundary: AgentConversationHistoryBoundary;
+  processTree: AgentConversationProcessTreeAssertion;
+  rollbackAvailable: boolean;
+  message: string;
+}
+
+export function createConversationHandoffRequest(
+  input: Partial<AgentConversationHandoffRequest> & Pick<AgentConversationHandoffRequest, 'ownedId' | 'generation' | 'direction' | 'mode' | 'phase'>
+): AgentConversationHandoffRequest {
+  return {
+    ownedId: input.ownedId,
+    generation: input.generation,
+    direction: input.direction,
+    mode: input.mode,
+    phase: input.phase,
+    expectedOwner: input.expectedOwner,
+    targetOwnedId: input.targetOwnedId ?? null,
+    nativeSessionId: input.nativeSessionId ?? null,
+    ptySessionId: input.ptySessionId ?? null,
+    historyBoundary: {
+      nativeSessionId: input.historyBoundary?.nativeSessionId ?? input.nativeSessionId ?? null,
+      firstSequence: input.historyBoundary?.firstSequence ?? 0,
+      lastSequence: input.historyBoundary?.lastSequence ?? 0,
+      reconciledSequence: input.historyBoundary?.reconciledSequence ?? null
+    },
+    processTree: {
+      checked: input.processTree?.checked ?? false,
+      tuiLive: input.processTree?.tuiLive ?? false,
+      tuiReleased: input.processTree?.tuiReleased ?? false,
+      writerCount: input.processTree?.writerCount ?? 0,
+      ptyCount: input.processTree?.ptyCount ?? input.processTree?.userPtyCount ?? 0,
+      sidecarCount: input.processTree?.sidecarCount ?? 0,
+      ptySessionId: input.processTree?.ptySessionId ?? input.ptySessionId ?? null
+    }
+  };
+}
+
+export function handoffGenerationMatches(
+  receipt: Pick<AgentConversationHandoffReceipt, 'ownedId' | 'generation'>,
+  ownedId: string,
+  generation: number
+): boolean {
+  return receipt.ownedId === ownedId && receipt.generation === generation;
+}
+
+export function handoffActionLabel(
+  direction: AgentConversationHandoffDirection,
+  mode: AgentConversationHandoffMode
+): string {
+  if (direction === 'terminal-to-structured') return 'Return to structured';
+  return mode === 'fork' ? 'Fork to native CLI' : 'Open in native CLI';
+}
+
+export function applyConversationHandoffReceipt<T extends Record<string, any>>(
+  workspace: T,
+  receipt: AgentConversationHandoffReceipt
+): T {
+  const terminal = receipt.owner === 'terminal';
+  const owner = receipt.owner;
+  const writerLease = {
+    ...(workspace.writerLease ?? {}),
+    ownedId: receipt.ownedId,
+    generation: receipt.generation,
+    owner
+  };
+  return {
+    ...workspace,
+    mode: terminal ? 'raw' : 'structured',
+    owner,
+    executionOwner: owner,
+    generation: receipt.generation,
+    lastSequence: receipt.historyBoundary.lastSequence ?? workspace.lastSequence,
+    nativeSessionId: receipt.nativeSessionId ?? workspace.nativeSessionId,
+    writerLease,
+    writerLeaseTransition: null
+  };
+}
+
+export function restoreConversationHandoffAfterFailure<T extends Record<string, any>>(
+  workspace: T
+): T {
+  return {
+    ...workspace,
+    writerLeaseTransition: null,
+    draft: workspace.draft
+  };
 }
 
 export type AgentConfigOptionPlacement =

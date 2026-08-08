@@ -13,7 +13,9 @@ import {
   confirmConversationConfigChange,
   failConversationConfigChange,
   setConversationCapabilities,
-  setConversationCapabilityError
+  setConversationCapabilityError,
+  setConversationWriterLeaseTransition,
+  clearConversationWriterLeaseTransition
 } from './conversationStore.svelte.ts';
 import type {
   AgentCapabilities,
@@ -26,7 +28,18 @@ import type {
   AgentConfigValue,
   AgentUserInputResponse,
   ConversationTranscriptSnapshot,
-  ConversationAttachment
+  ConversationAttachment,
+  AgentConversationHandoffRequest,
+  AgentConversationHandoffReceipt,
+  AgentConversationHandoffDirection,
+  AgentConversationHandoffPhase,
+  AgentWriterLeaseOwner,
+  AgentWriterLeaseTransition
+} from './conversationTypes.ts';
+import {
+  applyConversationHandoffReceipt,
+  createConversationHandoffRequest,
+  handoffGenerationMatches
 } from './conversationTypes.ts';
 import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
 
@@ -260,6 +273,65 @@ export function startConversationTerminalProjection(input: {
 export function stopConversationTerminalProjection(ownedId: string): void {
   if (!terminalProjections.delete(ownedId) || !isTauri()) return;
   void invoke<boolean>('stop_agent_conversation_terminal_projection', { ownedId });
+}
+
+type HandoffInput = Omit<AgentConversationHandoffRequest, 'phase'>;
+
+function handoffTargetOwner(direction: AgentConversationHandoffDirection): AgentWriterLeaseOwner {
+  return direction === 'structured-to-terminal' ? 'terminal' : 'structured';
+}
+
+function applyHandoffReceiptToStore(receipt: AgentConversationHandoffReceipt): void {
+  const state = getConversationSession(receipt.ownedId);
+  if (!state || !handoffGenerationMatches(receipt, receipt.ownedId, state.generation)) return;
+  if (receipt.phase === 'prepare' || receipt.phase === 'prepared') {
+    const transition: AgentWriterLeaseTransition = {
+      ownedId: receipt.ownedId,
+      generation: receipt.generation,
+      from: receipt.previousOwner,
+      to: handoffTargetOwner(receipt.direction),
+      state: 'requested'
+    };
+    setConversationWriterLeaseTransition(transition);
+    return;
+  }
+  const next = applyConversationHandoffReceipt(state, receipt);
+  Object.assign(state, next);
+}
+
+async function invokeHandoff(
+  input: HandoffInput,
+  phase: AgentConversationHandoffPhase
+): Promise<AgentConversationHandoffReceipt> {
+  if (!isTauri()) throw new Error('Native handoff is available only in the desktop application');
+  const request = createConversationHandoffRequest({ ...input, phase });
+  const current = getConversationSession(request.ownedId);
+  if (!current || current.generation !== request.generation) {
+    throw new Error('Handoff request belongs to a stale conversation generation');
+  }
+  try {
+    const receipt = await invoke<AgentConversationHandoffReceipt>('handoff_agent_conversation', { request });
+    if (!handoffGenerationMatches(receipt, request.ownedId, request.generation)) {
+      throw new Error('Handoff receipt belongs to a stale conversation generation');
+    }
+    applyHandoffReceiptToStore(receipt);
+    return receipt;
+  } catch (error) {
+    clearConversationWriterLeaseTransition(request.ownedId, request.generation);
+    throw error;
+  }
+}
+
+export function prepareConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
+  return invokeHandoff(input, 'prepare');
+}
+
+export function commitConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
+  return invokeHandoff(input, 'commit');
+}
+
+export function rollbackConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
+  return invokeHandoff(input, 'rollback');
 }
 
 async function resyncConversation(ownedId: string): Promise<void> {

@@ -24,8 +24,7 @@
     restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
-    setConversationConfigOption,
-    startConversationTerminalProjection
+    setConversationConfigOption
   } from '$lib/shell/conversation/conversationService';
   import {
     filterConversationCommandCatalog,
@@ -45,8 +44,19 @@
     activeOwnedId: string | null;
     registerHost(ownedId: string, host: HTMLElement): void;
     onHostLayout?(ownedId: string): void;
+    onOpenNativeCli?(ownedId: string): void | Promise<void>;
+    onForkNativeCli?(ownedId: string): void | Promise<void>;
+    onReturnToStructured?(ownedId: string): void | Promise<void>;
   }
-  let { owned, activeOwnedId, registerHost, onHostLayout }: Props = $props();
+  let {
+    owned,
+    activeOwnedId,
+    registerHost,
+    onHostLayout,
+    onOpenNativeCli,
+    onForkNativeCli,
+    onReturnToStructured
+  }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
   const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode !== 'raw');
@@ -99,12 +109,6 @@
     if (!active || !conversation || !structured) return;
     if (!conversation.attachments.length && conversation.attachmentIds.length) {
       void restoreConversationAttachments(active.ownedId).catch(() => undefined);
-    }
-  });
-
-  $effect(() => {
-    if (structured && (active?.agent === 'claude' || active?.agent === 'codex') && active.nativeSessionId && active.ptySessionId) {
-      startConversationTerminalProjection({ ownedId: active.ownedId, provider: active.agent, nativeSessionId: active.nativeSessionId });
     }
   });
 
@@ -220,6 +224,16 @@
   {#if structured && active && conversation}
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
       <ConversationHeader {active} {conversation} {selectedChild} onModeChange={(mode) => setConversationMode(active.ownedId, mode)} />
+      <div class="handoff-actions" aria-label="Conversation handoff actions">
+        <button type="button" data-testid="open-native-cli" onclick={() => void onOpenNativeCli?.(active.ownedId)}>
+          Open in native CLI
+        </button>
+        {#if conversation.capabilities?.session.fork}
+          <button type="button" data-testid="fork-native-cli" onclick={() => void onForkNativeCli?.(active.ownedId)}>
+            Fork to native CLI
+          </button>
+        {/if}
+      </div>
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
         items={visibleTimeline}
@@ -256,8 +270,12 @@
       {:else}<div class="read-only-note" data-testid="conversation-read-only-note">Read-only sub-agent transcript</div>{/if}
     </section>
   {:else if active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode === 'raw'}
-    <button class="structured-toggle" data-testid="conversation-structured-toggle" type="button" onclick={() => setConversationMode(active.ownedId, 'structured')}>Conversation</button>
+    <div class="raw-actions" aria-label="Conversation handoff actions">
+      <button class="structured-toggle" data-testid="conversation-structured-toggle" type="button" onclick={() => void onReturnToStructured?.(active.ownedId)}>
+        Return to structured
+      </button>
+    </div>
   {/if}
 </div>
 
-<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font:13px ui-sans-serif,system-ui}.read-only-note{padding:10px;text-align:center;border-top:1px solid var(--color-border);color:var(--color-text-2);font-size:12px}.structured-toggle{position:absolute;right:12px;top:12px;z-index:2;border:1px solid var(--color-border);border-radius:7px;background:var(--color-surface);color:inherit;padding:6px 9px}</style>
+<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:1px solid var(--color-border);border-radius:7px;background:var(--color-surface);color:inherit;padding:6px 9px}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}.read-only-note{padding:10px;text-align:center;border-top:1px solid var(--color-border);color:var(--color-text-2);font-size:12px}</style>

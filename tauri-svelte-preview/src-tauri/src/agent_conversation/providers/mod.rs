@@ -126,6 +126,9 @@ pub trait AgentRuntimeAdapter: Send + Sync {
         &mut self,
         input: UserInputResponse,
     ) -> Result<(), AgentRuntimeError>;
+    /// Stop the transport without sending the destructive session/close
+    /// request. The native session id remains valid for a later resume.
+    async fn detach_session(&mut self) -> Result<(), AgentRuntimeError>;
     async fn close_session(&mut self) -> Result<(), AgentRuntimeError>;
 }
 

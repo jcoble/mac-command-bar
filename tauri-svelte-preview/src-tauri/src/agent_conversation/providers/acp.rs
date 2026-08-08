@@ -118,6 +118,14 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
             .await
     }
 
+    async fn detach_session(&mut self) -> Result<(), AgentRuntimeError> {
+        if let Some(client) = &mut self.client {
+            client.detach().await?;
+        }
+        self.client = None;
+        Ok(())
+    }
+
     async fn close_session(&mut self) -> Result<(), AgentRuntimeError> {
         if let Some(client) = &mut self.client {
             client.close().await?;
@@ -175,6 +183,12 @@ impl StructuredRuntimeHandle {
     pub async fn close_session(&mut self) -> Result<(), AgentRuntimeError> {
         match self {
             Self::Acp(adapter) => adapter.close_session().await,
+        }
+    }
+
+    pub async fn detach_session(&mut self) -> Result<(), AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.detach_session().await,
         }
     }
 }

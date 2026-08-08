@@ -4,6 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex as AsyncMutex;
 
+use super::handoff::{
+    AgentConversationHandoffDirection, AgentConversationHandoffMode, AgentConversationHandoffPhase,
+    AgentConversationHandoffReceipt, AgentConversationHandoffRequest,
+};
 use super::journal::AgentEventJournal;
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentConversationConnection,
@@ -43,6 +47,12 @@ pub struct ManagedAgentSession {
     connection: AgentConversationConnection,
     frontend_events: VecDeque<AgentConversationEvent>,
     journal: AgentEventJournal,
+}
+
+pub(crate) struct HandoffContext {
+    pub previous_owner: AgentWriterLeaseOwner,
+    pub owner: AgentWriterLeaseOwner,
+    pub native_session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -172,6 +182,7 @@ impl AgentRuntimeManager {
             })
             .await
             .map_err(|error| error.to_string())?;
+        let expected_native_session_id = native_session_id.clone();
         let started = match native_session_id {
             Some(native_session_id) => {
                 adapter
@@ -184,6 +195,15 @@ impl AgentRuntimeManager {
             None => adapter.new_session(NewAgentSession { cwd }).await,
         }
         .map_err(|error| error.to_string())?;
+        if let Some(expected_native_session_id) = expected_native_session_id {
+            if started.native_session_id != expected_native_session_id {
+                let _ = adapter.detach_session().await;
+                return Err(
+                    "The provider resumed a different native session; handoff was rejected"
+                        .to_string(),
+                );
+            }
+        }
         let runtime = Arc::new(AsyncMutex::new(StructuredRuntimeHandle::Acp(adapter)));
         let mut sessions = self
             .sessions
@@ -194,9 +214,18 @@ impl AgentRuntimeManager {
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
         session.connection.state = ConversationConnectionState::Connected;
-        session.owner = AgentExecutionOwner::Structured;
+        let restoring_terminal_transition = session.owner
+            == AgentExecutionOwner::TransitioningToStructured
+            && session
+                .writer_lease_transition
+                .as_ref()
+                .map(|transition| transition.to == AgentWriterLeaseOwner::Structured)
+                .unwrap_or(false);
+        if !restoring_terminal_transition {
+            session.owner = AgentExecutionOwner::Structured;
+            session.writer_lease.owner = AgentWriterLeaseOwner::Structured;
+        }
         session.state = AgentRuntimeState::Ready;
-        session.writer_lease.owner = AgentWriterLeaseOwner::Structured;
         session.runtime = Some(runtime);
         Ok(session.connection.clone())
     }
@@ -458,6 +487,264 @@ impl AgentRuntimeManager {
         Ok(true)
     }
 
+    pub(crate) fn handoff_prepare(
+        &self,
+        request: &AgentConversationHandoffRequest,
+    ) -> Result<HandoffContext, String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        let expected = request
+            .expected_owner
+            .unwrap_or_else(|| match request.direction {
+                AgentConversationHandoffDirection::StructuredToTerminal => {
+                    AgentWriterLeaseOwner::Structured
+                }
+                AgentConversationHandoffDirection::TerminalToStructured => {
+                    AgentWriterLeaseOwner::Terminal
+                }
+            });
+        if session.writer_lease.owner != expected {
+            return Err("The current writer owner does not match the handoff request".to_string());
+        }
+        if session.writer_lease_transition.is_some() {
+            return Err("Another handoff is already in progress".to_string());
+        }
+        if request.mode == AgentConversationHandoffMode::Fork {
+            if request.direction != AgentConversationHandoffDirection::StructuredToTerminal {
+                return Err("Only structured conversations can fork to a terminal".to_string());
+            }
+            if !session.capabilities.session.fork {
+                return Err("The current provider did not advertise fork support".to_string());
+            }
+            let target = request
+                .target_owned_id
+                .as_deref()
+                .ok_or_else(|| "Fork handoff requires a distinct target owned id".to_string())?;
+            if target.trim().is_empty() || target == request.owned_id {
+                return Err("Fork handoff requires a distinct target owned id".to_string());
+            }
+        }
+        let to = match request.direction {
+            AgentConversationHandoffDirection::StructuredToTerminal => {
+                AgentWriterLeaseOwner::Terminal
+            }
+            AgentConversationHandoffDirection::TerminalToStructured => {
+                AgentWriterLeaseOwner::Structured
+            }
+        };
+        let previous_owner = session.writer_lease.owner;
+        session.owner = match request.direction {
+            AgentConversationHandoffDirection::StructuredToTerminal => {
+                AgentExecutionOwner::TransitioningToTerminal
+            }
+            AgentConversationHandoffDirection::TerminalToStructured => {
+                AgentExecutionOwner::TransitioningToStructured
+            }
+        };
+        session.writer_lease_transition = Some(AgentWriterLeaseTransition {
+            owned_id: request.owned_id.clone(),
+            generation: request.generation,
+            from: previous_owner,
+            to,
+            state: super::protocol::AgentWriterLeaseTransitionState::Requested,
+            error: None,
+        });
+        Ok(HandoffContext {
+            previous_owner,
+            owner: previous_owner,
+            native_session_id: session.native_session_id.clone(),
+        })
+    }
+
+    pub(crate) async fn detach_structured_runtime(
+        &self,
+        owned_id: &str,
+        generation: u64,
+    ) -> Result<(), String> {
+        let runtime = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            if session.owner != AgentExecutionOwner::TransitioningToTerminal {
+                return Err("Structured runtime is not in a terminal handoff".to_string());
+            }
+            session.runtime.take()
+        };
+        let Some(runtime) = runtime else {
+            return Ok(());
+        };
+        let result = runtime.lock().await.detach_session().await;
+        if let Err(error) = result {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+                session.runtime = Some(runtime);
+            }
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_handoff_history(
+        &self,
+        request: &AgentConversationHandoffRequest,
+    ) -> Result<(), String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session(&sessions, &request.owned_id, request.generation)?;
+        let boundary = &request.history_boundary;
+        if request.native_session_id != session.native_session_id {
+            return Err("Handoff native session does not match the current session".to_string());
+        }
+        if boundary.native_session_id != session.native_session_id {
+            return Err(
+                "Handoff history native session does not match the current session".to_string(),
+            );
+        }
+        if session.native_session_id.is_none() {
+            return Err(
+                "A native session id is required to resume the structured session".to_string(),
+            );
+        }
+        let last_sequence = session.next_sequence.saturating_sub(1);
+        if boundary.first_sequence > boundary.last_sequence
+            || boundary.last_sequence > last_sequence
+        {
+            return Err("Handoff history boundary is outside the stored conversation".to_string());
+        }
+        if boundary.reconciled_sequence != Some(last_sequence) {
+            return Err("Handoff history was not reconciled to the current sequence".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_handoff_identity(
+        &self,
+        request: &AgentConversationHandoffRequest,
+    ) -> Result<(), String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session(&sessions, &request.owned_id, request.generation)?;
+        if request.native_session_id != session.native_session_id {
+            return Err("Handoff native session does not match the current session".to_string());
+        }
+        if request.history_boundary.native_session_id != request.native_session_id {
+            return Err("Handoff history native session does not match the request".to_string());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn handoff_commit(
+        &self,
+        request: &AgentConversationHandoffRequest,
+    ) -> Result<AgentConversationHandoffReceipt, String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        let transition = session
+            .writer_lease_transition
+            .clone()
+            .ok_or_else(|| "Handoff commit has no prepared transition".to_string())?;
+        let expected_to = match request.direction {
+            AgentConversationHandoffDirection::StructuredToTerminal => {
+                AgentWriterLeaseOwner::Terminal
+            }
+            AgentConversationHandoffDirection::TerminalToStructured => {
+                AgentWriterLeaseOwner::Structured
+            }
+        };
+        if transition.to != expected_to || transition.from != session.writer_lease.owner {
+            return Err("Handoff commit does not match the prepared transition".to_string());
+        }
+        let previous_owner = transition.from;
+        let owner = if request.mode == AgentConversationHandoffMode::Fork {
+            previous_owner
+        } else {
+            expected_to
+        };
+        session.writer_lease_transition = None;
+        session.writer_lease.owner = owner;
+        session.owner = match owner {
+            AgentWriterLeaseOwner::Structured => AgentExecutionOwner::Structured,
+            AgentWriterLeaseOwner::Terminal => AgentExecutionOwner::Terminal,
+            AgentWriterLeaseOwner::None => AgentExecutionOwner::Stopped,
+        };
+        Ok(AgentConversationHandoffReceipt {
+            owned_id: request
+                .target_owned_id
+                .clone()
+                .filter(|_| request.mode == AgentConversationHandoffMode::Fork)
+                .unwrap_or_else(|| request.owned_id.clone()),
+            generation: request.generation,
+            direction: request.direction,
+            mode: request.mode,
+            phase: AgentConversationHandoffPhase::Commit,
+            previous_owner,
+            owner,
+            native_session_id: session.native_session_id.clone(),
+            pty_session_id: request
+                .pty_session_id
+                .clone()
+                .or_else(|| request.process_tree.pty_session_id.clone()),
+            history_boundary: request.history_boundary.clone(),
+            process_tree: request.process_tree.clone(),
+            rollback_available: false,
+            message: "Handoff committed without closing the terminal scrollback".to_string(),
+        })
+    }
+
+    pub(crate) fn handoff_rollback(
+        &self,
+        request: &AgentConversationHandoffRequest,
+    ) -> Result<AgentConversationHandoffReceipt, String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        let transition = session
+            .writer_lease_transition
+            .take()
+            .ok_or_else(|| "Handoff rollback has no prepared transition".to_string())?;
+        session.writer_lease.owner = transition.from;
+        session.owner = match transition.from {
+            AgentWriterLeaseOwner::Structured => AgentExecutionOwner::Structured,
+            AgentWriterLeaseOwner::Terminal => AgentExecutionOwner::Terminal,
+            AgentWriterLeaseOwner::None => AgentExecutionOwner::Stopped,
+        };
+        Ok(AgentConversationHandoffReceipt {
+            owned_id: request.owned_id.clone(),
+            generation: request.generation,
+            direction: request.direction,
+            mode: request.mode,
+            phase: AgentConversationHandoffPhase::Rollback,
+            previous_owner: transition.from,
+            owner: transition.from,
+            native_session_id: session.native_session_id.clone(),
+            pty_session_id: request
+                .pty_session_id
+                .clone()
+                .or_else(|| request.process_tree.pty_session_id.clone()),
+            history_boundary: request.history_boundary.clone(),
+            process_tree: request.process_tree.clone(),
+            rollback_available: false,
+            message: "Handoff rolled back; existing terminal scrollback was preserved".to_string(),
+        })
+    }
+
     pub fn canonical_snapshot(&self, owned_id: &str) -> Result<Vec<AgentEvent>, String> {
         let sessions = self
             .sessions
@@ -478,7 +765,11 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-        current_session(&sessions, owned_id, generation)?
+        let session = current_session(&sessions, owned_id, generation)?;
+        if session.owner != AgentExecutionOwner::Structured {
+            return Err("The structured writer is not the current owner".to_string());
+        }
+        session
             .runtime
             .clone()
             .ok_or_else(|| "Structured provider is still connecting".to_string())
@@ -606,6 +897,7 @@ fn empty_capabilities(provider: AgentConversationProvider) -> AgentCapabilities 
             resume: false,
             close: false,
             steering: false,
+            fork: false,
         },
         prompt: AgentPromptCapabilities {
             text: true,

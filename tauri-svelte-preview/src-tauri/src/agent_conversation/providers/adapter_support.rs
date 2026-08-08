@@ -1347,6 +1347,7 @@ pub fn empty_capabilities(provider: AgentConversationProvider) -> AgentCapabilit
             resume: false,
             close: false,
             steering: false,
+            fork: false,
         },
         prompt: AgentPromptCapabilities {
             text: true,
@@ -1420,6 +1421,14 @@ pub fn capabilities_from_initialize(
         &[
             &["agentCapabilities", "sessionCapabilities", "steering"],
             &["agentCapabilities", "session_capabilities", "steering"],
+        ],
+    );
+    capabilities.session.fork = advertised(
+        result,
+        &[
+            &["agentCapabilities", "sessionCapabilities", "fork"],
+            &["agentCapabilities", "session_capabilities", "fork"],
+            &["agentCapabilities", "fork"],
         ],
     );
     capabilities.prompt.image = advertised(

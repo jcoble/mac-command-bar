@@ -15,6 +15,7 @@
     "test:agent-session-focus": "node --experimental-strip-types scripts/agentSessionFocus.test.mjs",
     "test:agent-conversation-protocol": "node --experimental-strip-types scripts/agentConversationProtocol.test.mjs",
     "test:agent-conversation-store": "node --experimental-strip-types scripts/agentConversationStore.test.mjs",
+    "test:agent-conversation-handoff": "node --experimental-strip-types scripts/agentConversationHandoff.test.mjs",
     "test:conversation-session-isolation": "node --experimental-strip-types scripts/conversationSessionIsolation.test.mjs",
     "test:git-graph-view-model": "node --experimental-strip-types scripts/gitGraphViewModel.test.mjs",
     "test:git-task-links": "node --experimental-strip-types scripts/gitTaskLinks.test.mjs",

@@ -73,6 +73,10 @@ impl AcpClient {
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "steering"],
                 ),
+                fork: bool_at(
+                    &result,
+                    &["agentCapabilities", "sessionCapabilities", "fork"],
+                ) || bool_at(&result, &["agentCapabilities", "fork"]),
             },
             prompt: AgentPromptCapabilities {
                 text: true,
@@ -212,6 +216,13 @@ impl AcpClient {
         }
         self.process.stop().await;
         self.native_session_id = None;
+        Ok(())
+    }
+
+    /// Detach the local transport while preserving the provider-native
+    /// session id. A later activation can resume the same session.
+    pub async fn detach(&mut self) -> Result<(), AgentRuntimeError> {
+        self.process.stop().await;
         Ok(())
     }
 
