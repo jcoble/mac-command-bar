@@ -11,6 +11,12 @@ import type { AgentRuntimeState, OwnedSession } from '../ownedSessions.ts';
 
 export type SessionLibraryState = 'working' | 'done' | 'settled' | 'resumable';
 export type SessionLibrarySource = 'owned' | 'provider';
+export type SessionHistoryScope = 'workspace' | 'project' | 'all';
+
+export interface SessionLibraryTurn {
+  speaker: 'user' | 'agent';
+  text: string;
+}
 
 export interface SessionLibraryRecord {
   /** Stable row identity. Owned rows use ownedId; provider rows use a compound key. */
@@ -29,6 +35,11 @@ export interface SessionLibraryRecord {
   lastActivity: string | null;
   /** The best existing-authority timestamp for date filtering/display. */
   updatedAt: string | null;
+  /** The scanner's bounded count, when it has one. It is a floor, not a total. */
+  messageCount: number | null;
+  /** These remain null/empty until the backend exposes the complete transcript. */
+  firstPrompt: string | null;
+  latestTurns: SessionLibraryTurn[];
   owned: OwnedSession | null;
   available: AgentSession | null;
 }
@@ -44,6 +55,12 @@ export interface SessionLibraryFilters {
   dateTo?: string | null;
 }
 
+export interface SessionHistoryFilters extends SessionLibraryFilters {
+  scope?: SessionHistoryScope;
+  workspacePath?: string | null;
+  projectPath?: string | null;
+}
+
 export interface SessionLibraryPage {
   items: SessionLibraryRecord[];
   page: number;
@@ -55,6 +72,13 @@ export interface SessionLibraryPage {
 export interface SessionLibraryGroup {
   state: SessionLibraryState;
   label: string;
+  items: SessionLibraryRecord[];
+}
+
+export interface SessionHistoryGroup {
+  key: string;
+  name: string;
+  path: string | null;
   items: SessionLibraryRecord[];
 }
 
@@ -113,6 +137,10 @@ function bestUpdatedAt(session: OwnedSession): string | null {
   return session.lastActivity ?? session.settledAt ?? session.completedAt ?? null;
 }
 
+function latestTurnsFor(preview: string | null | undefined): SessionLibraryTurn[] {
+  return preview ? [{ speaker: 'agent', text: preview }] : [];
+}
+
 export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibraryRecord {
   const provider = providerForOwned(session);
   const cwd = canonicalCwd(session.cwd || session.projectPath);
@@ -131,6 +159,9 @@ export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibrary
     runtimeState: session.runtimeState ?? null,
     lastActivity: session.lastActivity,
     updatedAt: bestUpdatedAt(session),
+    messageCount: session.messageCount ?? null,
+    firstPrompt: null,
+    latestTurns: latestTurnsFor(session.latestTurnPreview),
     owned: session,
     available: null
   };
@@ -155,6 +186,9 @@ export function providerSessionLibraryRecord(session: AgentSession): SessionLibr
     runtimeState: null,
     lastActivity: session.lastActivity,
     updatedAt: session.lastActivity,
+    messageCount: session.messageCount ?? null,
+    firstPrompt: null,
+    latestTurns: latestTurnsFor(session.latestTurnPreview),
     owned: null,
     available: session
   };
@@ -211,7 +245,9 @@ function textFor(record: SessionLibraryRecord): string {
     record.projectPath,
     record.canonicalCwd,
     record.nativeSessionId,
-    record.state
+    record.state,
+    record.messageCount,
+    ...record.latestTurns.map((turn) => turn.text)
   ]
     .filter(Boolean)
     .join(' ')
@@ -254,6 +290,33 @@ export function filterSessionLibrary(
   });
 }
 
+/** The path used for the Workspace / Project scopes and project headings. */
+export function sessionProjectPath(record: Pick<SessionLibraryRecord, 'projectPath' | 'canonicalCwd'>): string {
+  return canonicalCwd(record.projectPath) || canonicalCwd(record.canonicalCwd);
+}
+
+function samePath(left: string | null | undefined, right: string | null | undefined): boolean {
+  const a = canonicalCwd(left);
+  const b = canonicalCwd(right);
+  return Boolean(a && b && a === b);
+}
+
+/** Apply the three Orca-style scopes after the regular library filters. */
+export function filterSessionHistory(
+  records: readonly SessionLibraryRecord[],
+  filters: SessionHistoryFilters = {}
+): SessionLibraryRecord[] {
+  const { scope = 'all', workspacePath, projectPath, ...libraryFilters } = filters;
+  const filtered = filterSessionLibrary(records, libraryFilters);
+  if (scope === 'workspace') {
+    return filtered.filter((record) => samePath(record.canonicalCwd, workspacePath));
+  }
+  if (scope === 'project') {
+    return filtered.filter((record) => samePath(sessionProjectPath(record), projectPath));
+  }
+  return filtered;
+}
+
 export function paginateSessionLibrary(
   records: readonly SessionLibraryRecord[],
   page = 1,
@@ -284,6 +347,41 @@ export function groupSessionLibrary(records: readonly SessionLibraryRecord[]): S
   return order
     .map((state) => ({ state, label: labels[state], items: records.filter((record) => record.state === state) }))
     .filter((group) => group.items.length > 0);
+}
+
+function projectName(path: string | null): string {
+  if (!path) return 'Other sessions';
+  const segments = path.split('/').filter(Boolean);
+  return segments.at(-1) || path;
+}
+
+/** Group history rows by project, retaining the input order within each group. */
+export function groupSessionHistory(records: readonly SessionLibraryRecord[]): SessionHistoryGroup[] {
+  const groups = new Map<string, SessionHistoryGroup>();
+  for (const record of records) {
+    const path = sessionProjectPath(record) || null;
+    const key = path || '__other__';
+    const current = groups.get(key);
+    if (current) {
+      current.items.push(record);
+      continue;
+    }
+    groups.set(key, {
+      key,
+      name: projectName(path),
+      path,
+      items: [record]
+    });
+  }
+  return [...groups.values()];
+}
+
+/** One row click expands one details card; clicking it again closes the card. */
+export function toggleSessionLibraryExpansion(
+  expandedKey: string | null,
+  key: string
+): string | null {
+  return expandedKey === key ? null : key;
 }
 
 // Friendly aliases for callers/tests that prefer “merge” terminology.

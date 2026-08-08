@@ -133,7 +133,9 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   const addPanelFor = (panel: CenterPanelSpec, position?: AddPanelPositionOptions): void => {
     api.addPanel({
       id: panel.id,
-      title: panel.title,
+      // Keep the persisted panel id/registration stable while giving the
+      // dedicated history experience the title users see in the tab.
+      title: panel.id === 'session-library' ? 'Session History' : panel.title,
       component: COMPONENT,
       params: { panelId: panel.id },
       position
@@ -148,6 +150,11 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * explicit form below is the exact body of `getGroupPanel` and of
    * `addPanel`'s own duplicate guard, so what we test is what dockview does. */
   const panelById = (id: string) => api.panels.find((panel) => panel.id === id);
+
+  /** Existing serialized layouts may still carry the former tab label. */
+  const normalizeSessionLibraryTitle = (): void => {
+    panelById('session-library')?.api.setTitle('Session History');
+  };
 
   /**
    * The layout a fresh dock opens with: the conversation panels on the left, the
@@ -308,6 +315,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
     buildDefault();
   });
+  normalizeSessionLibraryTitle();
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;

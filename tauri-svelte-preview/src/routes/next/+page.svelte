@@ -1610,6 +1610,9 @@
     owned={rail.owned}
     available={rail.available}
     service={sessionLibraryService}
+    workspacePath={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.cwd ?? null}
+    projectPath={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.projectPath ?? rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.cwd ?? null}
+    onOpenTab={() => frameControls?.showCenterPanel('session-library')}
     onRefresh={() => void scanRail()}
   />
 {/snippet}

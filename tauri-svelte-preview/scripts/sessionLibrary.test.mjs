@@ -5,10 +5,14 @@ import {
   canonicalCwd,
   deriveOwnedLibraryState,
   filterSessionLibrary,
+  filterSessionHistory,
+  groupSessionHistory,
   groupSessionLibrary,
   paginateSessionLibrary,
-  sessionIdentityKey
+  sessionIdentityKey,
+  toggleSessionLibraryExpansion
 } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
+import { sessionContextMenuRoster } from '../src/lib/shell/sessionLibrary/sessionLibraryContextMenu.ts';
 import {
   createSessionLibraryMountCoordinator,
   createSessionLibraryService
@@ -116,6 +120,38 @@ function available(id, cwd, extra = {}) {
     'resumable',
     'done'
   ]);
+
+  // The history view groups by project, while its segmented scopes narrow by
+  // exact canonical workspace/project paths before the text search runs.
+  assert.deepEqual(groupSessionHistory(rows).map((group) => [group.name, group.items.length]), [
+    ['one', 1],
+    ['two', 1],
+    ['three', 1]
+  ]);
+  assert.equal(filterSessionHistory(rows, { scope: 'workspace', workspacePath: '/repo/one' }).length, 1);
+  assert.equal(filterSessionHistory(rows, { scope: 'project', projectPath: '/repo/two' }).length, 1);
+  assert.equal(filterSessionHistory(rows, { scope: 'all', query: 'three' }).length, 1);
+  assert.equal(toggleSessionLibraryExpansion(null, rows[0].key), rows[0].key);
+  assert.equal(toggleSessionLibraryExpansion(rows[0].key, rows[0].key), null);
+}
+
+// Every context action stays visible. The current rail supports resume/archive/
+// delete for owned rows, while missing native actions remain explicitly disabled.
+{
+  const row = buildSessionLibrary([owned('menu', '/repo/menu')], [])[0];
+  const roster = sessionContextMenuRoster({ target: 'session', record: row });
+  assert.deepEqual(roster.map((item) => item.label), [
+    'Resume in Worktree',
+    'Continue in New Session',
+    'View Log',
+    'Copy ID',
+    'Archive',
+    'Delete'
+  ]);
+  assert.equal(roster.find((item) => item.id === 'resume-worktree').enabled, true);
+  assert.equal(roster.find((item) => item.id === 'continue-new-session').enabled, false);
+  assert.match(roster.find((item) => item.id === 'view-log').disabledReason, /Future-native/);
+  assert.equal(sessionContextMenuRoster({ target: 'center-tab' }).find((item) => item.id === 'copy-id').enabled, true);
 }
 
 // Service construction is inert. Refresh/actions call injected effects only

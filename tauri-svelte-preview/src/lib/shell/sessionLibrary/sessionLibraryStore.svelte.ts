@@ -14,7 +14,9 @@ export interface SessionLibraryUiState {
   model: string;
   dateFrom: string;
   dateTo: string;
+  scope: 'workspace' | 'project' | 'all';
   selectedKey: string | null;
+  expandedKey: string | null;
   page: number;
   pageSize: number;
 }
@@ -28,7 +30,9 @@ export const sessionLibraryState = $state<SessionLibraryUiState>({
   model: '',
   dateFrom: '',
   dateTo: '',
+  scope: 'all',
   selectedKey: null,
+  expandedKey: null,
   page: 1,
   pageSize: 50
 });
@@ -51,6 +55,12 @@ export function setSessionLibraryFilter<K extends keyof Pick<
 
 export function setSessionLibrarySelection(selectedKey: string | null): void {
   sessionLibraryState.selectedKey = selectedKey;
+  sessionLibraryState.expandedKey = selectedKey;
+}
+
+export function setSessionLibraryExpansion(expandedKey: string | null): void {
+  sessionLibraryState.expandedKey = expandedKey;
+  sessionLibraryState.selectedKey = expandedKey;
 }
 
 export function setSessionLibraryPage(page: number): void {
@@ -71,7 +81,9 @@ export function resetSessionLibraryState(): void {
   sessionLibraryState.model = '';
   sessionLibraryState.dateFrom = '';
   sessionLibraryState.dateTo = '';
+  sessionLibraryState.scope = 'all';
   sessionLibraryState.selectedKey = null;
+  sessionLibraryState.expandedKey = null;
   sessionLibraryState.page = 1;
   sessionLibraryState.pageSize = 50;
 }
