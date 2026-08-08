@@ -12,6 +12,15 @@
    */
   import { onMount, tick } from 'svelte';
 
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import ImageGlyph from '@lucide/svelte/icons/image';
+  import Maximize2 from '@lucide/svelte/icons/maximize-2';
+  import Minimize2 from '@lucide/svelte/icons/minimize-2';
+  import MousePointer2 from '@lucide/svelte/icons/mouse-pointer-2';
+  import PanelBottomOpen from '@lucide/svelte/icons/panel-bottom-open';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+
   import '$lib/shell/styles/nextTokens.css';
   /* Tailwind + the shadcn component variables. Imported HERE and nowhere else:
      the old shell shares `app.css` with this page and must keep rendering
@@ -25,9 +34,38 @@
   import ActivityBar from '$lib/shell/components/ActivityBar.svelte';
   import BrowserPanel from '$lib/shell/components/BrowserPanel.svelte';
   import {
+    activateBrowser,
+    browser,
+    browserBackend,
+    browserModelContext,
+    browserWorkspace,
     captureBrowserState,
-    restoreBrowserState
+    captureBrowserView,
+    clearBrowserError,
+    reloadBrowserFrame,
+    restoreBrowserState,
+    setBrowserPresentation,
+    setBrowserUrl,
+    setBrowserViewportPreset,
+    stageBrowserFeedback,
+    syncBrowserTab
   } from '$lib/shell/browser/browserStore.svelte';
+  import {
+    beginBrowserElementPicker,
+    cancelBrowserAnnotation,
+    closeBrowserTab,
+    collapseBrowserToControl,
+    createBrowserTab,
+    expandBrowserFrom,
+    minimizeBrowserToPrevious,
+    removeBrowserAnnotation,
+    restoreBrowserToDock
+  } from '$lib/shell/browser/browserModel.ts';
+  import type {
+    BrowserFeedbackAttachment,
+    BrowserPresentationMode,
+    BrowserViewportPreset
+  } from '$lib/shell/browser/browserTypes.ts';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
   import GitDiffView from '$lib/shell/components/GitDiffView.svelte';
@@ -112,6 +150,11 @@
   import type { SessionLibraryRecord } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import { registerShellCommands } from '$lib/shell/shellCommands';
   import { readSelection, shellPanels } from '$lib/shell/shellPanels';
+  import type {
+    WorkbenchAction,
+    WorkbenchActionContext,
+    WorkbenchActionContextKind
+  } from '$lib/shell/overlay/actionSurfaceModel.ts';
   import {
     noteSessionRemoved,
     noteTerminalExit,
@@ -189,6 +232,8 @@
    * the answer only because the icon strip that draws it is a separate region
    * of the frame, on the far right edge. */
   let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
+  /** The action island follows the same center-panel signal as the shell. */
+  let activeCenterPanelId = $state('session');
   /** The overlay layer, for opening the dialogs it owns. */
   let overlays: { openSettings(): void; openNewSession(): void } | null = null;
   /** The sessions column, for opening its "Find a session" drawer from the
@@ -199,6 +244,360 @@
    * start-up, and `scanRail` clears `rail.error` — which would erase a mount
    * failure on every launch and leave a blank shell with no message. */
   let layoutError = $state<string | null>(null);
+
+  type BrowserMarkupTool =
+    | 'pen'
+    | 'highlighter'
+    | 'arrow'
+    | 'rectangle'
+    | 'text'
+    | 'undo'
+    | 'clear'
+    | 'crop';
+
+  const NATIVE_BROWSER_DEFERRED_MESSAGE =
+    'Native browser commands are not registered yet; this web/dev action is unavailable.';
+
+  function setBrowserFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    browser.workspace.error = message;
+    browser.error = message;
+  }
+
+  function activeBrowserTab() {
+    return browserWorkspace.activeTabId
+      ? browserWorkspace.tabs[browserWorkspace.activeTabId] ?? null
+      : null;
+  }
+
+  function browserBackendCall(call: () => unknown): void {
+    try {
+      const result = call();
+      if (result && typeof (result as { then?: unknown }).then === 'function') {
+        void (result as Promise<unknown>).catch(setBrowserFailure);
+      }
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserNewTab(): void {
+    try {
+      createBrowserTab(browserModelContext(), {});
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserChooseTab(tabId: string): void {
+    syncBrowserTab(tabId);
+  }
+
+  function browserCloseTab(tabId: string): void {
+    try {
+      closeBrowserTab(browserModelContext(), tabId);
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserAddressInput(value: string): void {
+    const active = activeBrowserTab();
+    if (active) active.inputUrl = value;
+  }
+
+  function browserNavigate(value: string): void {
+    clearBrowserError();
+    setBrowserUrl(value);
+  }
+
+  function browserGoBack(): void {
+    const active = activeBrowserTab();
+    if (!active) return;
+    browserBackendCall(() => browserBackend.go_back_browser_tab({
+      workspaceId: active.workspaceId,
+      tabId: active.id,
+      generation: active.generation
+    }));
+  }
+
+  function browserGoForward(): void {
+    const active = activeBrowserTab();
+    if (!active) return;
+    browserBackendCall(() => browserBackend.go_forward_browser_tab({
+      workspaceId: active.workspaceId,
+      tabId: active.id,
+      generation: active.generation
+    }));
+  }
+
+  function browserOpenDevtools(): void {
+    const active = activeBrowserTab();
+    if (active && browserBackend.open_browser_tab_devtools) {
+      browserBackendCall(() => browserBackend.open_browser_tab_devtools!({
+        workspaceId: active.workspaceId,
+        tabId: active.id,
+        generation: active.generation
+      }));
+    } else {
+      browser.workspace.error = NATIVE_BROWSER_DEFERRED_MESSAGE;
+    }
+  }
+
+  function browserOpenExternal(): void {
+    const active = activeBrowserTab();
+    if (!active?.url) return;
+    if (browserBackend.open_browser_tab_external) {
+      browserBackendCall(() => browserBackend.open_browser_tab_external!({
+        workspaceId: active.workspaceId,
+        tabId: active.id,
+        generation: active.generation
+      }));
+    } else if (typeof window !== 'undefined') {
+      window.open(active.url, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  function browserGrab(): void {
+    try {
+      beginBrowserElementPicker(browserModelContext(), 'grab');
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserAnnotate(): void {
+    try {
+      beginBrowserElementPicker(browserModelContext(), 'annotation');
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserDraw(): void {
+    try {
+      void captureBrowserView({ forMarkup: true });
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserPresentation(mode: BrowserPresentationMode): void {
+    try {
+      if (mode === 'docked') restoreBrowserToDock(browserModelContext());
+      else if (mode === 'floating') expandBrowserFrom(browserModelContext(), 'docked');
+      else setBrowserPresentation(mode);
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserExpand(): void {
+    try {
+      activateBrowser();
+      expandBrowserFrom(browserModelContext(), browserWorkspace.presentation);
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserRestore(): void {
+    try {
+      restoreBrowserToDock(browserModelContext());
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserMinimize(): void {
+    try {
+      minimizeBrowserToPrevious(browserModelContext());
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserCollapse(): void {
+    try {
+      collapseBrowserToControl(browserModelContext());
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserCancelFeedback(): void {
+    try {
+      cancelBrowserAnnotation(browserModelContext());
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserMarkupTool(_tool: BrowserMarkupTool): void {
+    // The model can hold a deterministic preview capture, but it cannot claim
+    // to draw on a native page until the Rust browser commands are registered.
+    browser.workspace.error = NATIVE_BROWSER_DEFERRED_MESSAGE;
+  }
+
+  function browserRemoveFeedback(id: string): void {
+    try {
+      removeBrowserAnnotation(browserModelContext(), id);
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserCopyFeedback(attachment: BrowserFeedbackAttachment): void {
+    try {
+      const preview = stageBrowserFeedback({ attachmentId: attachment.id });
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        void navigator.clipboard.writeText(preview.mergedDraft);
+      }
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserStageFeedback(attachment: BrowserFeedbackAttachment): void {
+    try {
+      void stageBrowserFeedback({ attachmentId: attachment.id }).commit().catch(setBrowserFailure);
+    } catch (error) {
+      setBrowserFailure(error);
+    }
+  }
+
+  function browserViewport(value: BrowserViewportPreset): void {
+    setBrowserViewportPreset(value);
+  }
+
+  type BrowserActionRequirement = 'active' | 'expanded' | 'not-expanded';
+
+  function browserActionAvailability(
+    context: WorkbenchActionContext,
+    requirement: BrowserActionRequirement = 'active'
+  ): { enabled: boolean; reason: string | null } {
+    if (context.kind !== 'browser') return { enabled: false, reason: 'Browser actions need the Browser panel.' };
+    const active = activeBrowserTab();
+    if (!active) return { enabled: false, reason: 'Open a browser tab first.' };
+    if (context.workspaceId !== browserWorkspace.workspaceId || context.targetId !== active.id || context.generation !== active.generation) {
+      return { enabled: false, reason: 'The browser target changed; reopen the action surface.' };
+    }
+    if (browserWorkspace.ownedId && context.ownedId && browserWorkspace.ownedId !== context.ownedId) {
+      return { enabled: false, reason: 'The browser belongs to another session.' };
+    }
+    const expanded = browserWorkspace.presentation === 'floating' || browserWorkspace.presentation === 'maximized';
+    if (requirement === 'expanded' && !expanded) return { enabled: false, reason: 'Expand the browser first.' };
+    if (requirement === 'not-expanded' && expanded) return { enabled: false, reason: 'The browser is already expanded.' };
+    if (requirement === 'not-expanded' && browserWorkspace.presentation === 'collapsed') {
+      return { enabled: true, reason: null };
+    }
+    return { enabled: true, reason: null };
+  }
+
+  function makeBrowserAction(input: {
+    id: string;
+    label: string;
+    icon: WorkbenchAction['icon'];
+    requirement?: BrowserActionRequirement;
+    run: () => void;
+  }): WorkbenchAction {
+    const requirement = input.requirement ?? 'active';
+    return {
+      id: input.id,
+      label: input.label,
+      icon: input.icon,
+      contexts: ['browser'],
+      shortcut: null,
+      confirmation: 'none',
+      enabled: (context) => browserActionAvailability(context, requirement),
+      run: async (context) => {
+        const availability = browserActionAvailability(context, requirement);
+        if (!availability.enabled) throw new Error(availability.reason ?? 'Browser action unavailable');
+        input.run();
+      }
+    };
+  }
+
+  const workbenchBrowserActions: WorkbenchAction[] = [
+    makeBrowserAction({
+      id: 'browser-expand',
+      label: 'Expand browser',
+      icon: Maximize2,
+      requirement: 'not-expanded',
+      run: browserExpand
+    }),
+    makeBrowserAction({
+      id: 'browser-restore',
+      label: 'Restore browser to dock',
+      icon: PanelBottomOpen,
+      requirement: 'expanded',
+      run: browserRestore
+    }),
+    makeBrowserAction({
+      id: 'browser-minimize',
+      label: 'Minimize browser',
+      icon: Minimize2,
+      requirement: 'expanded',
+      run: browserMinimize
+    }),
+    makeBrowserAction({
+      id: 'browser-collapse',
+      label: 'Collapse browser',
+      icon: PanelBottomOpen,
+      run: browserCollapse
+    }),
+    makeBrowserAction({ id: 'browser-reload', label: 'Reload browser page', icon: RefreshCw, run: reloadBrowserFrame }),
+    makeBrowserAction({ id: 'browser-grab', label: 'Grab page element', icon: MousePointer2, run: browserGrab }),
+    makeBrowserAction({ id: 'browser-annotate', label: 'Annotate page element', icon: Pencil, run: browserAnnotate }),
+    makeBrowserAction({ id: 'browser-draw', label: 'Draw screenshot', icon: ImageGlyph, run: browserDraw }),
+    makeBrowserAction({ id: 'browser-open-external', label: 'Open in external browser', icon: ExternalLink, run: browserOpenExternal })
+  ];
+
+  const browserOverlayHandlers = {
+    onExpand: browserExpand,
+    onSelectTab: browserChooseTab,
+    onCloseTab: browserCloseTab,
+    onCreateTab: browserNewTab,
+    onAddressInput: browserAddressInput,
+    onNavigate: browserNavigate,
+    onReload: reloadBrowserFrame,
+    onBack: browserGoBack,
+    onForward: browserGoForward,
+    onGrab: browserGrab,
+    onAnnotate: browserAnnotate,
+    onDraw: browserDraw,
+    onOpenDevtools: browserOpenDevtools,
+    onOpenExternal: browserOpenExternal,
+    onViewport: browserViewport,
+    onPresentation: browserPresentation,
+    onCollapse: browserCollapse,
+    onCancelFeedback: browserCancelFeedback,
+    onMarkupTool: browserMarkupTool,
+    onRemoveFeedback: browserRemoveFeedback,
+    onCopyFeedback: browserCopyFeedback,
+    onStageFeedback: browserStageFeedback,
+    onMinimize: browserMinimize
+  };
+
+  function deriveWorkbenchActionContext(): WorkbenchActionContext {
+    const active = activeBrowserTab();
+    const kind: WorkbenchActionContextKind =
+      activeCenterPanelId === 'browser'
+        ? 'browser'
+        : activeCenterPanelId === 'editor'
+          ? 'editor'
+          : activeCenterPanelId === 'sessionLibrary'
+            ? 'history'
+            : 'session';
+    return {
+      kind,
+      centerPanelId: activeCenterPanelId,
+      ownedId: browserWorkspace.ownedId ?? rail.activeOwnedId,
+      workspaceId: browserWorkspace.workspaceId,
+      targetId: kind === 'browser' ? active?.id ?? null : null,
+      generation: kind === 'browser' ? active?.generation ?? null : null
+    };
+  }
 
   /** Settled is an explicit rail transition, persisted by the existing update
    * path. Age, process state, and title never infer this shelf. */
@@ -1152,7 +1551,10 @@
       agents: agentsArea
     }}
     onSessionPanelLayout={scheduleRefit}
-    onCenterPanelShown={(id) => shellPanels.panelShown(id)}
+    onCenterPanelShown={(id) => {
+      activeCenterPanelId = id;
+      shellPanels.panelShown(id);
+    }}
     onReady={(controls) => {
       frameControls = controls;
       // Say what the sessions column is, once, here, where the frame first
@@ -1198,6 +1600,10 @@
     newSessionRoots={rail.owned.map((session) => session.cwd)}
     message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}
+    {browserWorkspace}
+    browserActions={workbenchBrowserActions}
+    workbenchActionContext={deriveWorkbenchActionContext()}
+    browserOverlayHandlers={browserOverlayHandlers}
   />
   <div
     bind:this={extensionApiProbeTerminalHost}
