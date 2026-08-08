@@ -104,6 +104,12 @@
           dock: dockSlot
         }
       });
+      // Lay out the parent Gridview before the center Dockview restores or
+      // builds its panels. Center Dockview's restore path deliberately measures
+      // its host before calling `fromJSON`; doing that while the Gridview is
+      // still at 0×0 leaves always-rendered panels (including Monaco's diff
+      // editor) with stale overlay bounds until the next activation.
+      frame.layout(gridHost.clientWidth, gridHost.clientHeight);
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
         // The session is what you talk to, so it opens on its own on the left;
@@ -129,7 +135,6 @@
         },
         onPanelActivated: (id) => onCenterPanelShown?.(id)
       });
-      frame.layout(gridHost.clientWidth, gridHost.clientHeight);
       observer = new ResizeObserver(() => {
         frame?.layout(gridHost.clientWidth, gridHost.clientHeight);
       });
