@@ -1,0 +1,25 @@
+### Result
+Total messages: 19 (Errors: 0, Warnings: 7)
+Returning 7 messages for level "info"
+
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524
+[WARNING] %c[svelte] binding_property_non_reactive
+%c`bind:this={hosts[view.id]}` (src/lib/shell/components/ShellSidebar.svelte:324:8) is binding to a non-reactive property
+https://svelte.dev/e/binding_property_non_reactive font-weight: bold font-weight: normal @ http://localhost:5179/@vite/client:524

@@ -99,6 +99,7 @@ export type ProviderUsageSnapshot = import('./shell/usage/usageTypes.ts').Provid
 export type UsageHistoryQuery = import('./shell/usage/usageTypes.ts').UsageHistoryQuery;
 export type UsageSummary = import('./shell/usage/usageTypes.ts').UsageSummary;
 export type UsageBreakdownRow = import('./shell/usage/usageTypes.ts').UsageBreakdownRow;
+export type UsageProviderSummaryRow = import('./shell/usage/usageTypes.ts').UsageProviderSummaryRow;
 export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
 
 export type TerminalOutputPayload = {
@@ -588,6 +589,12 @@ export async function readUsageBreakdownFromTauri(query: UsageHistoryQuery = {})
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<UsageBreakdownRow[]>('read_usage_breakdown', { query });
+}
+
+export async function readUsageProviderSummaryFromTauri(query: UsageHistoryQuery = {}): Promise<UsageProviderSummaryRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageProviderSummaryRow[]>('read_usage_provider_summary', { query });
 }
 
 export async function readUsageDailyFromTauri(query: UsageHistoryQuery = {}): Promise<UsageDailyRow[] | null> {

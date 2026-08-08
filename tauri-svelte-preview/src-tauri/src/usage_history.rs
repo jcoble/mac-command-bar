@@ -1,4 +1,4 @@
-use crate::usage_db::{UsageBreakdownRow, UsageDailyRow, UsageDb, UsageFilter, UsageSummary};
+use crate::usage_db::{UsageBreakdownRow, UsageDailyRow, UsageDb, UsageFilter, UsageProviderSummaryRow, UsageSummary};
 use crate::usage_indexer::UsageIndexer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -33,6 +33,11 @@ pub fn read_usage_summary(app: AppHandle, query: UsageHistoryQuery) -> Result<Us
 #[tauri::command]
 pub fn read_usage_breakdown(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<UsageBreakdownRow>, String> {
     UsageDb::open(usage_db_path(&app)?)?.read_usage_breakdown(&query.into())
+}
+
+#[tauri::command]
+pub fn read_usage_provider_summary(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<UsageProviderSummaryRow>, String> {
+    UsageDb::open(usage_db_path(&app)?)?.read_usage_provider_summary(&query.into())
 }
 
 #[tauri::command]

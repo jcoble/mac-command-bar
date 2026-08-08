@@ -105,6 +105,23 @@ pub struct UsageBreakdownRow {
     pub total_count: u64,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProviderSummaryRow {
+    pub provider: String,
+    pub models: Vec<String>,
+    pub event_count: u64,
+    pub session_count: u64,
+    pub turn_count: u64,
+    pub workflow_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub estimated_cost_micros: Option<i64>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageDailyRow {
@@ -290,6 +307,27 @@ impl UsageDb {
         }).collect()
     }
 
+    pub fn read_usage_provider_summary(&self, filter: &UsageFilter) -> Result<Vec<UsageProviderSummaryRow>, String> {
+        self.query(&provider_summary_sql(filter))?.into_iter().map(|row| {
+            let mut models = value_models(&row);
+            models.sort();
+            Ok(UsageProviderSummaryRow {
+                provider: value_string(&row, "provider"),
+                models,
+                event_count: value_u64(&row, "event_count"),
+                session_count: value_u64(&row, "session_count"),
+                turn_count: value_u64(&row, "turn_count"),
+                workflow_count: value_u64(&row, "workflow_count"),
+                input_tokens: value_u64(&row, "input_tokens"),
+                output_tokens: value_u64(&row, "output_tokens"),
+                cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+                cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+                reasoning_tokens: value_u64(&row, "reasoning_tokens"),
+                estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+            })
+        }).collect()
+    }
+
     pub fn read_daily(&self, filter: &UsageFilter) -> Result<Vec<UsageDailyRow>, String> {
         self.query(&daily_sql(filter))?.into_iter().map(|row| {
             Ok(UsageDailyRow {
@@ -367,6 +405,12 @@ fn breakdown_sql(filter: &UsageFilter) -> String {
     format!("WITH filtered AS (SELECT provider, model, project_id, owned_id, turn_id, workflow_id, input_tokens, output_tokens FROM usage_events WHERE {where_sql}), grouped AS (SELECT provider, model, project_id, COUNT(*) AS event_count, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens FROM filtered GROUP BY provider, model, project_id) SELECT provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, COUNT(*) OVER () AS total_count FROM grouped ORDER BY provider ASC, model ASC, project_id ASC LIMIT {limit} OFFSET {offset}", where_sql = where_sql(filter), limit = limit, offset = offset)
 }
 
+fn provider_summary_sql(filter: &UsageFilter) -> String {
+    let limit = filter.limit.unwrap_or(20).clamp(1, 200);
+    let offset = filter.offset.unwrap_or(0).min(100_000);
+    format!("WITH filtered AS (SELECT provider, model, owned_id AS session_id, turn_id, workflow_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_sql}), grouped AS (SELECT provider, GROUP_CONCAT(DISTINCT model) AS models, COUNT(*) AS event_count, COUNT(DISTINCT session_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY provider) SELECT provider, models, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY provider ASC LIMIT {limit} OFFSET {offset}", where_sql = where_sql(filter), limit = limit, offset = offset)
+}
+
 fn daily_sql(filter: &UsageFilter) -> String {
     let limit = filter.limit.unwrap_or(31).clamp(1, 200);
     let offset = filter.offset.unwrap_or(0).min(100_000);
@@ -432,9 +476,15 @@ fn value_u64(row: &Value, key: &str) -> u64 { row.get(key).and_then(Value::as_u6
 fn value_i64(row: &Value, key: &str) -> Option<i64> { row.get(key).and_then(Value::as_i64) }
 fn value_string(row: &Value, key: &str) -> String { row.get(key).and_then(Value::as_str).unwrap_or_default().to_string() }
 fn value_optional_string(row: &Value, key: &str) -> Option<String> { row.get(key).and_then(Value::as_str).map(ToString::to_string) }
+fn value_models(row: &Value) -> Vec<String> {
+    value_optional_string(row, "models")
+        .map(|models| models.split(',').filter(|model| !model.is_empty()).map(ToString::to_string).collect())
+        .unwrap_or_default()
+}
 
 pub fn summary_sql_for_test(filter: &UsageFilter) -> String { summary_sql(filter) }
 pub fn breakdown_sql_for_test(filter: &UsageFilter) -> String { breakdown_sql(filter) }
+pub fn provider_summary_sql_for_test(filter: &UsageFilter) -> String { provider_summary_sql(filter) }
 
 #[cfg(test)]
 mod tests {
@@ -461,10 +511,58 @@ mod tests {
     }
 
     #[test]
+    fn provider_summary_counts_a_multi_model_session_once() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let mut first = event("event-model-a");
+        first.owned_id = Some("session-a".into());
+        first.model = "model-a".into();
+        first.input_tokens = 10;
+        first.output_tokens = 4;
+        first.cache_read_tokens = 3;
+        let mut second = event("event-model-b");
+        second.owned_id = Some("session-a".into());
+        second.model = "model-b".into();
+        second.input_tokens = 20;
+        second.output_tokens = 8;
+        second.cache_write_tokens = 5;
+        second.reasoning_tokens = 7;
+        db.insert_events(&[first, second]).expect("events should insert");
+
+        let breakdown = db
+            .read_usage_breakdown(&UsageFilter::default())
+            .expect("model breakdown should query");
+        assert_eq!(breakdown.iter().map(|row| row.session_count).sum::<u64>(), 2);
+        let rows = db
+            .read_usage_provider_summary(&UsageFilter::default())
+            .expect("provider summary should query");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "provider-a");
+        assert_eq!(rows[0].event_count, 2);
+        assert_eq!(rows[0].session_count, 1);
+        assert_eq!(rows[0].input_tokens, 30);
+        assert_eq!(rows[0].output_tokens, 12);
+        assert_eq!(rows[0].cache_read_tokens, 3);
+        assert_eq!(rows[0].cache_write_tokens, 5);
+        assert_eq!(rows[0].reasoning_tokens, 7);
+        assert_eq!(rows[0].models, vec!["model-a".to_string(), "model-b".to_string()]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn usage_queries_are_db_side_and_bounded() {
         let sql = breakdown_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
         assert!(sql.contains("GROUP BY"));
         assert!(sql.contains("COUNT(*) OVER ()"));
+        assert!(sql.contains("LIMIT 20 OFFSET 40"));
+    }
+
+    #[test]
+    fn provider_summary_query_groups_in_sql_and_is_bounded() {
+        let sql = provider_summary_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
+        assert!(sql.contains("GROUP BY provider"));
+        assert!(sql.contains("COUNT(DISTINCT session_id)"));
+        assert!(sql.contains("GROUP_CONCAT(DISTINCT model)"));
         assert!(sql.contains("LIMIT 20 OFFSET 40"));
     }
 

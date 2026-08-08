@@ -2,6 +2,7 @@ import {
   readCurrentProviderUsage,
   readUsageBreakdown,
   readUsageDaily,
+  readUsageProviderSummary,
   readUsageSummary,
   refreshUsageHistory
 } from './usageBackend.ts';
@@ -10,6 +11,7 @@ import type {
   UsageBreakdownRow,
   UsageDailyRow,
   UsageHistoryQuery,
+  UsageProviderSummaryRow,
   UsageSummary
 } from './usageTypes.ts';
 
@@ -31,6 +33,9 @@ export const usageService = {
   },
   readBreakdown(query?: UsageHistoryQuery): Promise<UsageBreakdownRow[] | null> {
     return readUsageBreakdown(query);
+  },
+  readProviderSummary(query?: UsageHistoryQuery): Promise<UsageProviderSummaryRow[] | null> {
+    return readUsageProviderSummary(query);
   },
   readDaily(query?: UsageHistoryQuery): Promise<UsageDailyRow[] | null> {
     return readUsageDaily(query);

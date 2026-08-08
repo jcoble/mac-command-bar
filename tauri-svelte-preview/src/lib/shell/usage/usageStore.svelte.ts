@@ -1,7 +1,7 @@
 import type {
   ProviderUsageSnapshot,
-  UsageBreakdownRow,
   UsageDailyRow,
+  UsageProviderSummaryRow,
   UsageSummary
 } from './usageTypes.ts';
 import { usageService } from './usageService.ts';
@@ -10,7 +10,7 @@ export const usageState = $state<{
   current: ProviderUsageSnapshot | null;
   currentByProvider: Record<string, ProviderUsageSnapshot>;
   summary: UsageSummary | null;
-  breakdown: UsageBreakdownRow[];
+  providerSummary: UsageProviderSummaryRow[];
   daily: UsageDailyRow[];
   loading: boolean;
   currentLoading: boolean;
@@ -22,7 +22,7 @@ export const usageState = $state<{
   current: null,
   currentByProvider: {},
   summary: null,
-  breakdown: [],
+  providerSummary: [],
   daily: [],
   loading: false,
   currentLoading: false,
@@ -63,13 +63,13 @@ export async function refreshUsageHistory(): Promise<UsageSummary | null> {
   usageState.error = null;
   try {
     await usageService.refreshHistory();
-    const [summary, breakdown, daily] = await Promise.all([
+    const [summary, providerSummary, daily] = await Promise.all([
       usageService.readSummary(),
-      usageService.readBreakdown({ limit: 20, offset: 0 }),
+      usageService.readProviderSummary({ limit: 20, offset: 0 }),
       usageService.readDaily({ limit: 31, offset: 0 })
     ]);
     usageState.summary = summary;
-    usageState.breakdown = breakdown ?? [];
+    usageState.providerSummary = providerSummary ?? [];
     usageState.daily = daily ?? [];
     return summary;
   } catch (error) {

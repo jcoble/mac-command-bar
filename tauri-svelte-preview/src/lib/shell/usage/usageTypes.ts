@@ -59,6 +59,21 @@ export type UsageBreakdownRow = {
   totalCount: number;
 };
 
+export type UsageProviderSummaryRow = {
+  provider: string;
+  models: string[];
+  eventCount: number;
+  sessionCount: number;
+  turnCount: number;
+  workflowCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  estimatedCostMicros: number | null;
+};
+
 export type UsageDailyRow = {
   day: string;
   provider: string;
