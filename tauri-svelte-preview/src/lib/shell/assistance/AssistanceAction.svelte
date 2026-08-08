@@ -39,14 +39,14 @@
     border: 0;
     border-radius: 6px;
     padding: 0.35rem 0.55rem;
-    background: var(--color-elevated, #25282d);
-    color: var(--color-text, #f1f3f5);
+    background: var(--color-elevated);
+    color: var(--color-text);
     cursor: pointer;
     font: inherit;
   }
 
-  .assistance-action:hover:not(:disabled) { background: var(--color-hover, #292c31); }
-  .assistance-action:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(110, 216, 190, 0.42)); }
+  .assistance-action:hover:not(:disabled) { background: var(--color-hover); }
+  .assistance-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
   .assistance-action:disabled {
     cursor: not-allowed;

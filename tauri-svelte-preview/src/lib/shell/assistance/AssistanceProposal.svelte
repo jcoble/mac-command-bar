@@ -75,34 +75,34 @@
     width: min(420px, calc(100vw - 32px));
     max-height: min(620px, calc(100vh - 32px));
     overflow: auto;
-    border: 1px solid var(--color-border, #4b4f57);
+    border: 1px solid var(--color-border);
     border-radius: 10px;
     padding: 1rem;
-    background: var(--color-surface, #1d1f22);
-    color: var(--color-text, #f1f3f5);
-    box-shadow: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.55));
+    background: var(--color-surface);
+    color: var(--color-text);
+    box-shadow: var(--shadow-md);
   }
 
   header, .actions, .patch-row, .metadata div { display: flex; align-items: center; }
   header { justify-content: space-between; gap: 1rem; }
-  .eyebrow { margin: 0; color: var(--color-text-2, #b3b7bf); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .eyebrow { margin: 0; color: var(--color-text-2); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
   h2 { margin: 0.2rem 0 0; font-size: 1rem; }
-  .status { border-radius: 999px; padding: 0.2rem 0.45rem; background: color-mix(in srgb, var(--color-accent, #6ed8be) 18%, transparent); font-size: 0.75rem; }
+  .status { border-radius: 999px; padding: 0.2rem 0.45rem; background: color-mix(in srgb, var(--color-accent) 18%, transparent); font-size: 0.75rem; }
   .metadata { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin: 1rem 0; }
   .metadata div { flex-direction: column; align-items: flex-start; gap: 0.1rem; }
-  dt { color: var(--color-text-2, #b3b7bf); font-size: 0.7rem; }
+  dt { color: var(--color-text-2); font-size: 0.7rem; }
   dd { margin: 0; font-size: 0.8rem; }
-  fieldset { margin: 0; border: 1px solid var(--color-border, #4b4f57); border-radius: 6px; padding: 0.5rem; }
-  legend { padding: 0 0.25rem; color: var(--color-text-2, #b3b7bf); font-size: 0.75rem; }
+  fieldset { margin: 0; border: 1px solid var(--color-border); border-radius: 6px; padding: 0.5rem; }
+  legend { padding: 0 0.25rem; color: var(--color-text-2); font-size: 0.75rem; }
   .patch-row { gap: 0.5rem; padding: 0.4rem 0; cursor: pointer; }
   .patch-row span { display: grid; gap: 0.1rem; }
-  small { color: var(--color-text-2, #b3b7bf); overflow-wrap: anywhere; }
-  .advisory, .safety-note { color: var(--color-text-2, #b3b7bf); font-size: 0.8rem; }
-  .safety-note { border-left: 2px solid var(--color-accent, #6ed8be); padding-left: 0.5rem; }
+  small { color: var(--color-text-2); overflow-wrap: anywhere; }
+  .advisory, .safety-note { color: var(--color-text-2); font-size: 0.8rem; }
+  .safety-note { border-left: 2px solid var(--color-accent); padding-left: 0.5rem; }
   .actions { flex-wrap: wrap; gap: 0.4rem; }
-  .actions button { border: 0; border-radius: 5px; padding: 0.35rem 0.5rem; background: var(--color-elevated, #25282d); color: inherit; cursor: pointer; font: inherit; }
-  .actions button:hover:not(:disabled) { background: var(--color-hover, #292c31); }
-  .actions button:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 3px rgba(110, 216, 190, 0.42)); }
-  .actions button:first-child { background: var(--color-accent, #6ed8be); color: var(--color-on-accent, #10201b); }
+  .actions button { border: 0; border-radius: 5px; padding: 0.35rem 0.5rem; background: var(--color-elevated); color: inherit; cursor: pointer; font: inherit; }
+  .actions button:hover:not(:disabled) { background: var(--color-hover); }
+  .actions button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .actions button:first-child { background: var(--color-accent); color: var(--color-on-accent); }
   .actions button:disabled { cursor: not-allowed; opacity: 0.5; }
 </style>

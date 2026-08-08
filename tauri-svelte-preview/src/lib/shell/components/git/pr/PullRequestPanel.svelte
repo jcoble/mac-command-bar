@@ -161,7 +161,7 @@
 
   const panelButton =
     'inline-flex items-center justify-center gap-1.5 rounded-[7px] px-2.5 py-1.5 text-[12px] ' +
-    'font-medium transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 outline-none ' +
+    'border-0 font-medium transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 outline-none ' +
     'disabled:pointer-events-none disabled:opacity-50';
 </script>
 
@@ -249,7 +249,7 @@
       <div class="mt-2 flex gap-2">
         <button
           type="button"
-          class={cn(panelButton, 'bg-[var(--color-elevated)] text-[var(--color-text-2)] hover:bg-[var(--color-border)] hover:text-[var(--color-text)]')}
+          class={cn(panelButton, 'bg-[var(--color-elevated)] text-[var(--color-text-2)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]')}
           disabled={busy || !activeAgent || !root}
           title={!activeAgent ? noAgentMessage() : 'Ask the active agent to regenerate the title and description'}
           onclick={() => void generateDetails()}
@@ -260,7 +260,7 @@
         </button>
         <button
           type="button"
-          class={cn(panelButton, 'flex-1 bg-[var(--color-accent)] text-[var(--color-bg)] hover:brightness-110')}
+          class={cn(panelButton, 'flex-1 bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:brightness-110')}
           disabled={!canCreate || busy}
           title={!canWrite ? READ_ONLY_IN_BROWSER_MESSAGE : canCreate ? 'Push this branch and create the pull request' : 'Generate a title and description first'}
           onclick={() => void createPullRequest()}
