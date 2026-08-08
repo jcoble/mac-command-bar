@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::usage_sources::read_latest_local_quota;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -43,9 +44,30 @@ pub fn read_current_provider_usage(
 ) -> Result<ProviderUsageSnapshot, String> {
     let provider = provider.unwrap_or_else(|| "unknown".to_string());
     let instance_id = instance_id.unwrap_or_else(|| "unknown".to_string());
-    Ok(normalize_provider_usage(
-        UnavailableProviderUsageReader.read(&provider, &instance_id),
-    ))
+    let snapshot = read_latest_local_quota(&provider)
+        .map(|quota| ProviderUsageSnapshot {
+            provider: quota.provider,
+            account: quota.account,
+            instance_id: instance_id.clone(),
+            state: ProviderUsageState::Available,
+            windows: quota
+                .windows
+                .into_iter()
+                .map(|window| ProviderUsageWindow {
+                    name: window.name,
+                    semantics: window.semantics,
+                    percent_consumed: Some(window.percent_consumed),
+                    percent_remaining: Some((100.0 - window.percent_consumed).clamp(0.0, 100.0)),
+                    reset_at: window.reset_at,
+                })
+                .collect(),
+            captured_at: quota.captured_at,
+            source: Some("local provider rate-limit records".to_string()),
+            source_version: Some("local-v1".to_string()),
+            unavailable_reason: None,
+        })
+        .unwrap_or_else(|| UnavailableProviderUsageReader.read(&provider, &instance_id));
+    Ok(normalize_provider_usage(snapshot))
 }
 
 #[derive(Debug, Default, Clone, Copy)]

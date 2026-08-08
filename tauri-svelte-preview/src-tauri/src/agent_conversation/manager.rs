@@ -61,6 +61,14 @@ pub struct AgentRuntimeManager {
     providers: Arc<ProviderRegistry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResourceRoot {
+    pub pid: u32,
+    pub owned_id: String,
+    pub provider: AgentConversationProvider,
+    pub cwd: String,
+}
+
 impl Default for AgentRuntimeManager {
     fn default() -> Self {
         Self::new(ProviderRegistry::default())
@@ -77,6 +85,30 @@ impl AgentRuntimeManager {
 
     pub fn providers(&self) -> &ProviderRegistry {
         &self.providers
+    }
+
+    /// Snapshot the provider processes that this registry currently owns.
+    /// The async runtime mutex is intentionally sampled with `try_lock`: a
+    /// resource refresh must never block an agent turn. A session that is in a
+    /// transition simply appears on the next refresh.
+    pub fn resource_roots(&self) -> Vec<AgentResourceRoot> {
+        let Ok(sessions) = self.sessions.lock() else {
+            return Vec::new();
+        };
+        sessions
+            .values()
+            .filter_map(|session| {
+                let runtime = session.runtime.as_ref()?;
+                let runtime = runtime.try_lock().ok()?;
+                let pid = runtime.process_id()?;
+                Some(AgentResourceRoot {
+                    pid,
+                    owned_id: session.owned_id.clone(),
+                    provider: session.provider,
+                    cwd: session.cwd.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Returns the capability snapshot advertised by the active ACP session. WorkflowEngine uses

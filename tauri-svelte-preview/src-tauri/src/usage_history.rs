@@ -1,4 +1,5 @@
 use crate::usage_db::{UsageBreakdownRow, UsageDailyRow, UsageDb, UsageFilter, UsageSummary};
+use crate::usage_indexer::UsageIndexer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -40,10 +41,9 @@ pub fn read_usage_daily(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<
 }
 
 #[tauri::command]
-pub fn refresh_usage_history(_app: AppHandle) -> Result<usize, String> {
-    // ACP event ingestion is owned by the conversation runtime. This command is
-    // a coalesced refresh hook; opening the popup never tails a source itself.
-    Ok(0)
+pub fn refresh_usage_history(app: AppHandle) -> Result<usize, String> {
+    let path = usage_db_path(&app)?;
+    UsageIndexer::new(path).ingest_local_sources()
 }
 
 pub fn usage_db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {

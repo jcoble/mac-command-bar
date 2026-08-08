@@ -2,7 +2,8 @@ import {
   readCurrentProviderUsageFromTauri,
   readUsageBreakdownFromTauri,
   readUsageDailyFromTauri,
-  readUsageSummaryFromTauri
+  readUsageSummaryFromTauri,
+  refreshUsageHistoryFromTauri
 } from '../../tauriSource.ts';
 import type {
   ProviderUsageSnapshot,
@@ -29,4 +30,8 @@ export async function readUsageBreakdown(query: UsageHistoryQuery = {}): Promise
 
 export async function readUsageDaily(query: UsageHistoryQuery = {}): Promise<UsageDailyRow[] | null> {
   return readUsageDailyFromTauri(query);
+}
+
+export async function refreshUsageHistory(): Promise<number | null> {
+  return refreshUsageHistoryFromTauri();
 }

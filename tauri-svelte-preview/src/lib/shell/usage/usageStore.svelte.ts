@@ -8,28 +8,42 @@ import { usageService } from './usageService.ts';
 
 export const usageState = $state<{
   current: ProviderUsageSnapshot | null;
+  currentByProvider: Record<string, ProviderUsageSnapshot>;
   summary: UsageSummary | null;
   breakdown: UsageBreakdownRow[];
   daily: UsageDailyRow[];
   loading: boolean;
+  currentLoading: boolean;
+  historyLoading: boolean;
   error: string | null;
   unavailableReason: string | null;
+  viewMode: 'detailed' | 'compact';
 }>({
   current: null,
+  currentByProvider: {},
   summary: null,
   breakdown: [],
   daily: [],
   loading: false,
+  currentLoading: false,
+  historyLoading: false,
   error: null,
-  unavailableReason: null
+  unavailableReason: null,
+  viewMode: 'detailed'
 });
 
 export async function refreshCurrentUsage(provider: string | null, instanceId: string | null): Promise<ProviderUsageSnapshot | null> {
-  if (usageState.loading) return usageState.current;
+  if (usageState.currentLoading) return usageState.current;
+  usageState.currentLoading = true;
   usageState.loading = true;
   usageState.error = null;
   try {
-    const current = await usageService.readCurrent(provider, instanceId);
+    const providers = provider ? [provider] : ['codex', 'claude'];
+    const snapshots = await Promise.all(providers.map((name) => usageService.readCurrent(name, instanceId ?? 'local')));
+    const current = snapshots.find((snapshot) => snapshot?.state === 'available') ?? snapshots[0] ?? null;
+    for (const snapshot of snapshots) {
+      if (snapshot) usageState.currentByProvider[snapshot.provider] = snapshot;
+    }
     usageState.current = current;
     usageState.unavailableReason = current?.state === 'unavailable' ? current.unavailableReason : current ? null : 'Usage is available in the desktop app.';
     return current;
@@ -37,12 +51,18 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
     usageState.error = error instanceof Error ? error.message : 'Usage could not be read.';
     return null;
   } finally {
-    usageState.loading = false;
+    usageState.currentLoading = false;
+    usageState.loading = usageState.historyLoading;
   }
 }
 
 export async function refreshUsageHistory(): Promise<UsageSummary | null> {
+  if (usageState.historyLoading) return usageState.summary;
+  usageState.historyLoading = true;
+  usageState.loading = true;
+  usageState.error = null;
   try {
+    await usageService.refreshHistory();
     const [summary, breakdown, daily] = await Promise.all([
       usageService.readSummary(),
       usageService.readBreakdown({ limit: 20, offset: 0 }),
@@ -55,5 +75,8 @@ export async function refreshUsageHistory(): Promise<UsageSummary | null> {
   } catch (error) {
     usageState.error = error instanceof Error ? error.message : 'Usage history could not be read.';
     return null;
+  } finally {
+    usageState.historyLoading = false;
+    usageState.loading = usageState.currentLoading;
   }
 }

@@ -565,6 +565,12 @@ export async function readUsageDailyFromTauri(query: UsageHistoryQuery = {}): Pr
   return invoke<UsageDailyRow[]>('read_usage_daily', { query });
 }
 
+export async function refreshUsageHistoryFromTauri(): Promise<number | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<number>('refresh_usage_history');
+}
+
 export async function readTerminalSessionScrollbackFromTauri(
   sessionId: string
 ): Promise<string | null> {
@@ -747,6 +753,23 @@ export async function openTerminalCommandFromTauri(
     terminal: terminal.trim() || null
   });
   return true;
+}
+
+/**
+ * Invoke one of the native browser commands when the shell is running inside
+ * Tauri. The browser model keeps the command names and payload shapes in its
+ * typed backend; this bridge owns the runtime check and IPC import.
+ */
+export async function invokeBrowserCommandFromTauri<T>(
+  command: string,
+  input: unknown
+): Promise<T> {
+  if (!isTauriRuntime()) {
+    throw new Error('Native browser commands require the Tauri runtime');
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(command, input as Record<string, unknown>);
 }
 
 export async function readProjectGitStatusFromTauri(
@@ -1422,7 +1445,7 @@ async function runPathCommand(command: string, path: string): Promise<boolean> {
   return true;
 }
 
-function isTauriRuntime(): boolean {
+export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 

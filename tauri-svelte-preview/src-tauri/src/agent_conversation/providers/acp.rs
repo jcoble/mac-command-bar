@@ -140,6 +140,15 @@ pub enum StructuredRuntimeHandle {
 }
 
 impl StructuredRuntimeHandle {
+    /// Return the OS process that backs this structured provider session.
+    /// Resources uses this as the root of the app-owned process tree; it is
+    /// intentionally read-only and never exposes the provider transport.
+    pub fn process_id(&self) -> Option<u32> {
+        match self {
+            Self::Acp(adapter) => adapter.process_id(),
+        }
+    }
+
     pub async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
         match self {
             Self::Acp(adapter) => adapter.prompt(input).await,

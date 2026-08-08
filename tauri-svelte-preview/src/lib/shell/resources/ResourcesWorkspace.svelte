@@ -1,9 +1,10 @@
 <script lang="ts">
   import { refreshResources, resourceState } from './resourceStore.svelte.ts';
-  import { formatBytes, resourceOwnerLabel, resourceCanStop } from './resourceViewModel.ts';
+  import { formatBytes, groupResourceProcesses, resourceCanStop, resourceOwnerLabel } from './resourceViewModel.ts';
   import { resourceService } from './resourceService.ts';
 
   let stoppingPid = $state<number | null>(null);
+  let groups = $derived(resourceState.snapshot ? groupResourceProcesses(resourceState.snapshot.processes) : []);
 
   async function stop(pid: number): Promise<void> {
     const process = resourceState.snapshot?.processes.find((item) => item.pid === pid);
@@ -18,19 +19,32 @@
   }
 </script>
 
-<section class="workspace" data-testid="resources-workspace" aria-label="Resources workspace">
-  <header><div><p class="eyebrow">Resources</p><h2>Processes and ownership</h2><p class="muted">One bounded inventory, grouped by the ownership the app can prove.</p></div><button type="button" onclick={() => void refreshResources()} disabled={resourceState.loading}>{resourceState.loading ? 'Reading…' : 'Refresh'}</button></header>
+<section class="workspace" data-testid="resources-workspace" aria-label="Resource Manager">
+  <header class="workspace-header"><div><p class="eyebrow">Owned process inventory</p><h2>Resource Manager</h2><p class="muted">Only terminal and agent trees rooted by this app are shown.</p></div><button type="button" onclick={() => void refreshResources()} disabled={resourceState.loading}>{resourceState.loading ? 'Refreshing…' : 'Refresh'}</button></header>
   {#if resourceState.snapshot}
-    <div class="summary"><span>{resourceState.snapshot.processes.length} processes</span><span>{resourceState.snapshot.totalCpuPercent.toFixed(1)}% CPU</span><span>{formatBytes(resourceState.snapshot.totalRssBytes)} RSS</span></div>
-    <div class="table" role="table"><div class="row heading" role="row"><span>Process</span><span>Owner</span><span>Ports</span><span>Action</span></div>{#each resourceState.snapshot.processes as process (process.pid)}<div class="row" role="row"><span><strong>{process.command || 'Unnamed process'}</strong><small>PID {process.pid} · {process.user} · {process.elapsedSeconds}s</small></span><span>{resourceOwnerLabel(process)}</span><span>{process.listeningPorts.length ? process.listeningPorts.join(', ') : '—'}</span><span><button type="button" disabled={!resourceCanStop(process) || stoppingPid === process.pid} onclick={() => void stop(process.pid)}>{resourceCanStop(process) ? stoppingPid === process.pid ? 'Stopping…' : 'Stop' : 'External'}</button></span></div>{/each}</div>
-  {:else}<p class="empty">{resourceState.error ?? resourceState.unavailableReason ?? 'Refresh to inspect resources.'}</p>{/if}
+    <div class="summary"><div><strong>{resourceState.snapshot.processes.length}</strong><span>processes</span></div><div><strong>{resourceState.snapshot.totalCpuPercent.toFixed(1)}%</strong><span>CPU</span></div><div><strong>{formatBytes(resourceState.snapshot.totalRssBytes)}</strong><span>RSS</span></div></div>
+    {#if groups.length === 0}<p class="empty">No owned sessions are active.</p>{/if}
+    <div class="table" role="table">
+      <div class="row heading" role="row"><span>Project / workspace / session</span><span>CPU</span><span>RSS</span><span>Action</span></div>
+      {#each groups as project (project.id)}
+        <div class="row group project" role="row"><strong>{project.label}</strong><span>{project.totalCpuPercent.toFixed(1)}%</span><span>{formatBytes(project.totalRssBytes)}</span><span>{project.workspaces.length} workspaces</span></div>
+        {#each project.workspaces as workspace (workspace.id)}
+          <div class="row group workspace-row" role="row"><span>↳ {workspace.label}</span><span>{workspace.totalCpuPercent.toFixed(1)}%</span><span>{formatBytes(workspace.totalRssBytes)}</span><span>{workspace.sessions.length} sessions</span></div>
+          {#each workspace.sessions as session (session.id)}
+            <div class="row group session-row" role="row"><span>↳ {session.label}</span><span>{session.totalCpuPercent.toFixed(1)}%</span><span>{formatBytes(session.totalRssBytes)}</span><span>{session.processes.length} processes</span></div>
+            {#each session.processes as process (process.pid)}
+              <div class="row process" role="row"><span><strong>{process.command || 'Unnamed process'}</strong><small>PID {process.pid} · {process.user} · {process.elapsedSeconds}s</small></span><span>{process.cpuPercent.toFixed(1)}%</span><span>{formatBytes(process.rssBytes)}</span><span><button type="button" disabled={!resourceCanStop(process) || stoppingPid === process.pid} onclick={() => void stop(process.pid)}>{stoppingPid === process.pid ? 'Stopping…' : 'Stop'}</button></span></div>
+            {/each}
+          {/each}
+        {/each}
+      {/each}
+    </div>
+  {:else}<p class="empty">{resourceState.error ?? 'Refresh to inspect resources.'}</p>{/if}
 </section>
 
 <style>
-  .workspace { display: grid; gap: 1rem; padding: 1rem; color: var(--color-text, #eef0f9); }
-  header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
-  h2, p { margin: 0; } .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; color: var(--color-muted, #a6a7b8); } .muted, small, .empty { color: var(--color-muted, #a6a7b8); }
-  header button, .row button { border: 1px solid var(--color-border, #858599); background: var(--color-surface, #17171d); color: inherit; border-radius: 6px; padding: 0.45rem 0.65rem; font: inherit; cursor: pointer; } button:disabled { opacity: 0.55; cursor: not-allowed; }
-  .summary { display: flex; gap: 1rem; flex-wrap: wrap; color: var(--color-muted, #a6a7b8); }
-  .table { overflow: auto; border: 1px solid var(--color-border-subtle, #383844); border-radius: 8px; } .row { display: grid; grid-template-columns: minmax(14rem, 2fr) minmax(9rem, 1fr) 5rem 6rem; gap: 0.8rem; align-items: center; padding: 0.65rem 0.8rem; border-top: 1px solid var(--color-border-subtle, #383844); min-width: 42rem; } .row:first-child { border-top: 0; } .heading { color: var(--color-muted, #a6a7b8); font-size: 0.78rem; } .row span:first-child { display: grid; gap: 0.2rem; min-width: 0; } strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workspace { display: grid; gap: 1rem; padding: 1rem; color: var(--color-text); background: var(--color-surface); } .workspace-header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; } h2, p { margin: 0; } h2 { font-size: 1.35rem; } .eyebrow { margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--color-text-2); font-size: 0.68rem; } .muted, small, .empty { color: var(--color-text-2); }
+  button { border: 1px solid var(--color-border); background: var(--color-elevated); color: var(--color-text); border-radius: 0.45rem; padding: 0.45rem 0.7rem; font: inherit; cursor: pointer; } button:disabled { cursor: not-allowed; opacity: 0.55; }
+  .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--color-border); border-radius: 0.55rem; overflow: hidden; } .summary div { display: grid; gap: 0.15rem; padding: 0.8rem; border-right: 1px solid var(--color-border); } .summary div:last-child { border-right: 0; } .summary strong { font-size: 1.2rem; } .summary span { color: var(--color-text-2); font-size: 0.78rem; }
+  .table { overflow: auto; border: 1px solid var(--color-border); border-radius: 0.55rem; } .row { display: grid; grid-template-columns: minmax(16rem, 1fr) 5rem 6rem 8rem; gap: 0.8rem; align-items: center; min-width: 39rem; padding: 0.65rem 0.8rem; border-top: 1px solid var(--color-border); } .row:first-child { border-top: 0; } .heading { color: var(--color-text-2); font-size: 0.75rem; } .row > span:not(:first-child) { text-align: right; color: var(--color-text-2); font-variant-numeric: tabular-nums; } .group { background: var(--color-elevated); } .group strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .workspace-row { padding-left: 1.45rem; } .session-row { padding-left: 2.1rem; } .process { padding-left: 3rem; } .process span:first-child { display: grid; gap: 0.15rem; min-width: 0; } .process strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .process button { padding: 0.28rem 0.5rem; font-size: 0.75rem; }
 </style>

@@ -21,12 +21,39 @@ export type ResourceProcess = {
   root: string | null;
   registryGeneration: number;
   canStop: boolean;
+  projectId: string | null;
+  workspaceId: string | null;
+  sessionName: string | null;
 };
 
 export type ResourceSnapshot = {
   generation: number;
   capturedAtMs: number;
   processes: ResourceProcess[];
+  totalCpuPercent: number;
+  totalRssBytes: number;
+};
+
+export type ResourceSessionGroup = {
+  id: string;
+  label: string;
+  processes: ResourceProcess[];
+  totalCpuPercent: number;
+  totalRssBytes: number;
+};
+
+export type ResourceWorkspaceGroup = {
+  id: string;
+  label: string;
+  sessions: ResourceSessionGroup[];
+  totalCpuPercent: number;
+  totalRssBytes: number;
+};
+
+export type ResourceProjectGroup = {
+  id: string;
+  label: string;
+  workspaces: ResourceWorkspaceGroup[];
   totalCpuPercent: number;
   totalRssBytes: number;
 };

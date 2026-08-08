@@ -2,7 +2,8 @@ import {
   readCurrentProviderUsage,
   readUsageBreakdown,
   readUsageDaily,
-  readUsageSummary
+  readUsageSummary,
+  refreshUsageHistory
 } from './usageBackend.ts';
 import type {
   ProviderUsageSnapshot,
@@ -12,16 +13,18 @@ import type {
   UsageSummary
 } from './usageTypes.ts';
 
-let currentInFlight: Promise<ProviderUsageSnapshot | null> | null = null;
+const currentInFlight = new Map<string, Promise<ProviderUsageSnapshot | null>>();
 
 export const usageService = {
   readCurrent(provider: string | null, instanceId: string | null): Promise<ProviderUsageSnapshot | null> {
-    if (!currentInFlight) {
-      currentInFlight = readCurrentProviderUsage(provider, instanceId).finally(() => {
-        currentInFlight = null;
-      });
-    }
-    return currentInFlight;
+    const key = `${provider ?? 'unknown'}:${instanceId ?? 'unknown'}`;
+    const existing = currentInFlight.get(key);
+    if (existing) return existing;
+    const request = readCurrentProviderUsage(provider, instanceId).finally(() => {
+      currentInFlight.delete(key);
+    });
+    currentInFlight.set(key, request);
+    return request;
   },
   readSummary(query?: UsageHistoryQuery): Promise<UsageSummary | null> {
     return readUsageSummary(query);
@@ -31,5 +34,8 @@ export const usageService = {
   },
   readDaily(query?: UsageHistoryQuery): Promise<UsageDailyRow[] | null> {
     return readUsageDaily(query);
+  },
+  refreshHistory(): Promise<number | null> {
+    return refreshUsageHistory();
   }
 };

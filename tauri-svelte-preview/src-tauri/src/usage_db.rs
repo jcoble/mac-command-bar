@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -140,6 +141,29 @@ impl UsageDb {
         &self.path
     }
 
+    /// Read every durable source cursor in one DB-side query so an indexing
+    /// pass can decide which bytes are new without opening one transaction per
+    /// source file.
+    pub fn read_source_cursors(&self) -> Result<HashMap<String, UsageSourceCursor>, String> {
+        let rows = self.query("SELECT provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id FROM usage_source_cursors")?;
+        let mut cursors = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let cursor = UsageSourceCursor {
+                provider: value_string(&row, "provider"),
+                provider_instance_id: value_string(&row, "provider_instance_id"),
+                source_kind: value_string(&row, "source_kind"),
+                source_key: value_string(&row, "source_key"),
+                file_identity: value_string(&row, "file_identity"),
+                offset: value_u64(&row, "offset_bytes"),
+                size: value_u64(&row, "size_bytes"),
+                modified_at_micros: value_i64(&row, "modified_at_micros").unwrap_or_default(),
+                last_event_id: value_optional_string(&row, "last_event_id"),
+            };
+            cursors.insert(cursor_lookup_key(&cursor.provider, &cursor.provider_instance_id, &cursor.source_kind, &cursor.source_key), cursor);
+        }
+        Ok(cursors)
+    }
+
     pub fn insert_events(&self, events: &[UsageEvent]) -> Result<(), String> {
         self.insert_events_with_cursor(events, None)
     }
@@ -149,49 +173,35 @@ impl UsageDb {
         events: &[UsageEvent],
         cursor: Option<&UsageSourceCursor>,
     ) -> Result<(), String> {
+        self.insert_batches(&[(events, cursor)])
+    }
+
+    fn insert_batches(&self, batches: &[(&[UsageEvent], Option<&UsageSourceCursor>)]) -> Result<(), String> {
         let mut sql = String::from("BEGIN IMMEDIATE;\n");
-        for event in events {
-            validate_event(event)?;
-            sql.push_str(&format!(
-                "INSERT OR IGNORE INTO usage_events (provider, provider_instance_id, owned_id, workflow_id, turn_id, project_id, workspace_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, estimated_cost_micros, estimate_rate_version, source_kind, source_event_id, source_key, inserted_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
-                quote(&event.provider),
-                quote(&event.provider_instance_id),
-                quote_option(event.owned_id.as_deref()),
-                quote_option(event.workflow_id.as_deref()),
-                quote_option(event.turn_id.as_deref()),
-                quote_option(event.project_id.as_deref()),
-                quote_option(event.workspace_id.as_deref()),
-                event.occurred_at_micros,
-                event.input_tokens,
-                event.output_tokens,
-                event.cache_read_tokens,
-                event.cache_write_tokens,
-                event.reasoning_tokens,
-                quote(&event.model),
-                event.estimated_cost_micros.map_or_else(|| "NULL".to_string(), |value| value.to_string()),
-                quote_option(event.estimate_rate_version.as_deref()),
-                quote(&event.source_kind),
-                quote(&event.source_event_id),
-                quote(&event.source_key),
-                now_micros(),
-            ));
+        let mut has_events = false;
+        for (events, cursor) in batches {
+            for event in *events {
+                has_events = true;
+                validate_event(event)?;
+                sql.push_str(&format!(
+                    "INSERT OR IGNORE INTO usage_events (provider, provider_instance_id, owned_id, workflow_id, turn_id, project_id, workspace_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, estimated_cost_micros, estimate_rate_version, source_kind, source_event_id, source_key, inserted_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                    quote(&event.provider), quote(&event.provider_instance_id), quote_option(event.owned_id.as_deref()),
+                    quote_option(event.workflow_id.as_deref()), quote_option(event.turn_id.as_deref()), quote_option(event.project_id.as_deref()),
+                    quote_option(event.workspace_id.as_deref()), event.occurred_at_micros, event.input_tokens, event.output_tokens,
+                    event.cache_read_tokens, event.cache_write_tokens, event.reasoning_tokens, quote(&event.model),
+                    event.estimated_cost_micros.map_or_else(|| "NULL".to_string(), |value| value.to_string()), quote_option(event.estimate_rate_version.as_deref()),
+                    quote(&event.source_kind), quote(&event.source_event_id), quote(&event.source_key), now_micros(),
+                ));
+            }
+            if let Some(cursor) = cursor {
+                sql.push_str(&format!(
+                    "INSERT INTO usage_source_cursors (provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id, updated_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}) ON CONFLICT(provider, provider_instance_id, source_kind, source_key) DO UPDATE SET file_identity=excluded.file_identity, offset_bytes=excluded.offset_bytes, size_bytes=excluded.size_bytes, modified_at_micros=excluded.modified_at_micros, last_event_id=excluded.last_event_id, updated_at_micros=excluded.updated_at_micros;\n",
+                    quote(&cursor.provider), quote(&cursor.provider_instance_id), quote(&cursor.source_kind), quote(&cursor.source_key), quote(&cursor.file_identity),
+                    cursor.offset, cursor.size, cursor.modified_at_micros, quote_option(cursor.last_event_id.as_deref()), now_micros()
+                ));
+            }
         }
-        if let Some(cursor) = cursor {
-            sql.push_str(&format!(
-                "INSERT INTO usage_source_cursors (provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id, updated_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}) ON CONFLICT(provider, provider_instance_id, source_kind, source_key) DO UPDATE SET file_identity=excluded.file_identity, offset_bytes=excluded.offset_bytes, size_bytes=excluded.size_bytes, modified_at_micros=excluded.modified_at_micros, last_event_id=excluded.last_event_id, updated_at_micros=excluded.updated_at_micros;\n",
-                quote(&cursor.provider),
-                quote(&cursor.provider_instance_id),
-                quote(&cursor.source_kind),
-                quote(&cursor.source_key),
-                quote(&cursor.file_identity),
-                cursor.offset,
-                cursor.size,
-                cursor.modified_at_micros,
-                quote_option(cursor.last_event_id.as_deref()),
-                now_micros()
-            ));
-        }
-        if events.is_empty() {
+        if !has_events {
             sql.push_str("COMMIT;\n");
             return self.execute(&sql);
         }
@@ -386,6 +396,9 @@ fn daily_where_sql(filter: &UsageFilter) -> String {
 
 fn quote(value: &str) -> String { format!("'{}'", value.replace('\'', "''")) }
 fn quote_option(value: Option<&str>) -> String { value.map(quote).unwrap_or_else(|| "NULL".to_string()) }
+pub fn cursor_lookup_key(provider: &str, provider_instance_id: &str, source_kind: &str, source_key: &str) -> String {
+    format!("{provider}\u{1f}{provider_instance_id}\u{1f}{source_kind}\u{1f}{source_key}")
+}
 fn trace_sql(sql: &str) {
     if std::env::var("MCB_SQL_TRACE").as_deref() == Ok("1") {
         eprintln!("MCB_SQL_TRACE {}", redact_sql_literals(sql).replace('\n', " "));

@@ -30,6 +30,9 @@ pub struct ResourceOwnerHint {
     pub owner: ProcessOwner,
     pub owner_id: Option<String>,
     pub root: Option<String>,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub session_name: Option<String>,
     pub registry_generation: u64,
     pub can_stop: bool,
 }
@@ -49,6 +52,9 @@ pub struct ResourceProcess {
     pub owner: ProcessOwner,
     pub owner_id: Option<String>,
     pub root: Option<String>,
+    pub project_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub session_name: Option<String>,
     pub registry_generation: u64,
     pub can_stop: bool,
 }
@@ -218,21 +224,49 @@ pub fn join_resource_identities(
     listeners: Vec<ResourceListener>,
     hints: &[ResourceOwnerHint],
 ) -> Vec<ResourceProcess> {
+    let parsed_by_pid = parsed
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect::<BTreeMap<_, _>>();
+    let mut children_by_parent = BTreeMap::<u32, Vec<u32>>::new();
+    for process in &parsed {
+        children_by_parent
+            .entry(process.ppid)
+            .or_default()
+            .push(process.pid);
+    }
+
+    // A resource row is owned only when it is reachable from a root PID that
+    // the application registered. This is the critical boundary: `ps` is a
+    // machine-wide inventory, while the Resources surface is an app-owned
+    // inventory. External/system rows are deliberately not returned.
+    let mut owner_by_pid = BTreeMap::<u32, &ResourceOwnerHint>::new();
+    for hint in hints {
+        let Some(root) = parsed_by_pid.get(&hint.pid) else {
+            continue;
+        };
+        let mut queue = vec![root.pid];
+        while let Some(pid) = queue.pop() {
+            if owner_by_pid.contains_key(&pid) {
+                continue;
+            }
+            owner_by_pid.insert(pid, hint);
+            if let Some(children) = children_by_parent.get(&pid) {
+                queue.extend(children.iter().copied());
+            }
+        }
+    }
+
     let listeners = listeners
         .into_iter()
         .map(|listener| (listener.pid, listener))
         .collect::<BTreeMap<_, _>>();
-    let hints = hints
-        .iter()
-        .map(|hint| (hint.pid, hint))
-        .collect::<BTreeMap<_, _>>();
-
     parsed
         .into_iter()
-        .map(|process| {
+        .filter_map(|process| {
             let listener = listeners.get(&process.pid);
-            let hint = hints.get(&process.pid).copied();
-            ResourceProcess {
+            let hint = owner_by_pid.get(&process.pid).copied()?;
+            Some(ResourceProcess {
                 pid: process.pid,
                 ppid: process.ppid,
                 pgid: process.pgid,
@@ -244,12 +278,15 @@ pub fn join_resource_identities(
                 listening_ports: listener
                     .map(|listener| listener.listening_ports.clone())
                     .unwrap_or_default(),
-                owner: hint.map(|hint| hint.owner).unwrap_or(ProcessOwner::External),
-                owner_id: hint.and_then(|hint| hint.owner_id.clone()),
-                root: hint.and_then(|hint| hint.root.clone()),
-                registry_generation: hint.map(|hint| hint.registry_generation).unwrap_or(0),
-                can_stop: hint.map(|hint| hint.can_stop).unwrap_or(false),
-            }
+                owner: hint.owner,
+                owner_id: hint.owner_id.clone(),
+                root: hint.root.clone(),
+                project_id: hint.project_id.clone(),
+                workspace_id: hint.workspace_id.clone(),
+                session_name: hint.session_name.clone(),
+                registry_generation: hint.registry_generation,
+                can_stop: hint.can_stop,
+            })
         })
         .collect()
 }
@@ -320,11 +357,34 @@ mod tests {
         let listeners = parse_lsof_listeners(lsof);
         let joined = join_resource_identities(processes, listeners, &[]);
 
-        assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].pid, 101);
-        assert_eq!(joined[0].listening_ports, vec![4312]);
-        assert_eq!(joined[0].owner, ProcessOwner::External);
-        assert!(!joined[0].can_stop);
+        assert!(joined.is_empty(), "unowned system rows never enter the default snapshot");
+    }
+
+    #[test]
+    fn resources_attribute_only_owned_process_tree_and_drop_sibling_daemon() {
+        let ps = "101 1 101 1.0 1024 00:01 alice /bin/zsh\n102 101 101 2.0 2048 00:01 alice /usr/bin/node agent\n103 102 101 3.0 4096 00:01 alice /usr/bin/tool\n201 1 201 99.0 8192 00:01 root /usr/libexec/launchd\n";
+        let hint = ResourceOwnerHint {
+            pid: 101,
+            pgid: Some(101),
+            owner: ProcessOwner::OwnedSession,
+            owner_id: Some("session-a".into()),
+            root: Some("/repo/workspace-a".into()),
+            project_id: Some("repo".into()),
+            workspace_id: Some("workspace-a".into()),
+            session_name: Some("Terminal 1".into()),
+            registry_generation: 7,
+            can_stop: true,
+        };
+        let joined = join_resource_identities(
+            parse_ps_snapshot(ps).expect("fixture process tree should parse"),
+            Vec::new(),
+            &[hint],
+        );
+
+        assert_eq!(joined.iter().map(|process| process.pid).collect::<Vec<_>>(), vec![101, 102, 103]);
+        assert!(joined.iter().all(|process| process.owner == ProcessOwner::OwnedSession));
+        assert!(joined.iter().all(|process| process.project_id.as_deref() == Some("repo")));
+        assert!(joined.iter().all(|process| process.workspace_id.as_deref() == Some("workspace-a")));
     }
 
     #[test]
@@ -342,6 +402,9 @@ mod tests {
             owner: ProcessOwner::External,
             owner_id: None,
             root: None,
+            project_id: None,
+            workspace_id: None,
+            session_name: None,
             registry_generation: 3,
             can_stop: false,
         };

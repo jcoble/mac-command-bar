@@ -100,43 +100,95 @@ pub fn next_generation(registry: &ResourceRegistry) -> u64 {
 pub fn read_resource_snapshot(
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
+    agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
 ) -> Result<ResourceSnapshot, String> {
     let generation = next_generation(&registry);
-    read_resource_snapshot_at_generation(generation, &terminal_registry)
+    read_resource_snapshot_at_generation(generation, &terminal_registry, &agent_runtime)
 }
 
 fn read_resource_snapshot_at_generation(
     generation: u64,
     terminal_registry: &crate::terminal::TerminalRegistry,
+    agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
 ) -> Result<ResourceSnapshot, String> {
     let sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
-    let hints = sessions
+    let mut hints = sessions
         .into_iter()
         .filter_map(|session| {
             let pid = session.pid?;
-            let (owner, owner_id) = match session.kind {
-                crate::terminal::TerminalKind::AgentTool => (
-                    ProcessOwner::OwnedSession,
-                    session
-                        .owned_id
-                        .clone()
-                        .or_else(|| session.tool_terminal_identity.as_ref().map(|value| value.owned_id.clone())),
-                ),
-                _ => (ProcessOwner::App, session.owned_id.clone()),
-            };
+            let session_name = resource_terminal_name(&session);
+            let cwd = session.cwd.clone();
+            let owner_id = session
+                .owned_id
+                .clone()
+                .or_else(|| session.tool_terminal_identity.as_ref().map(|value| value.owned_id.clone()))
+                .or_else(|| Some(session.session_id.clone()));
+            let (project_id, workspace_id) = resource_path_labels(&cwd);
             Some(ResourceOwnerHint {
                 pid,
                 pgid: None,
-                owner,
+                owner: ProcessOwner::OwnedSession,
                 owner_id,
-                root: Some(session.cwd),
+                root: Some(cwd),
+                project_id,
+                workspace_id,
+                session_name: Some(session_name),
                 registry_generation: generation,
                 can_stop: !session.exited,
             })
         })
         .collect::<Vec<_>>();
 
+    // Structured agents do not own a PTY, but their ACP transport has the same
+    // app-owned root process boundary. Include those roots beside terminal
+    // sessions so the scanner can walk both kinds of trees.
+    hints.extend(agent_runtime.resource_roots().into_iter().map(|agent| {
+        let (project_id, workspace_id) = resource_path_labels(&agent.cwd);
+        ResourceOwnerHint {
+            pid: agent.pid,
+            pgid: Some(agent.pid),
+            owner: ProcessOwner::OwnedSession,
+            owner_id: Some(agent.owned_id.clone()),
+            root: Some(agent.cwd.clone()),
+            project_id,
+            workspace_id,
+            session_name: Some(format!("{} agent", resource_provider_label(agent.provider))),
+            registry_generation: generation,
+            can_stop: true,
+        }
+    }));
+
     scan_resource_snapshot(&hints, generation)
+}
+
+fn resource_terminal_name(session: &crate::terminal::TerminalSessionInfo) -> String {
+    match session.kind {
+        crate::terminal::TerminalKind::AgentTool => session
+            .tool_terminal_identity
+            .as_ref()
+            .map(|identity| format!("Agent tool {}", identity.tool_call_id))
+            .unwrap_or_else(|| "Agent tool".to_string()),
+        crate::terminal::TerminalKind::RunConfiguration => "Run configuration".to_string(),
+        crate::terminal::TerminalKind::BrowserAutomation => "Browser automation".to_string(),
+        crate::terminal::TerminalKind::UserPty => "Terminal".to_string(),
+    }
+}
+
+fn resource_provider_label(provider: crate::agent_conversation::protocol::AgentConversationProvider) -> &'static str {
+    match provider {
+        crate::agent_conversation::protocol::AgentConversationProvider::Codex => "Codex",
+        crate::agent_conversation::protocol::AgentConversationProvider::Claude => "Provider",
+    }
+}
+
+fn resource_path_labels(cwd: &str) -> (Option<String>, Option<String>) {
+    let path = PathBuf::from(cwd);
+    let workspace = path.file_name().map(|value| value.to_string_lossy().to_string());
+    let project = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|value| value.to_string_lossy().to_string());
+    (project, workspace)
 }
 
 #[tauri::command]
@@ -203,9 +255,11 @@ pub fn cleanup_workspace_disk_entry(
         let repository_root = request
             .repository_root
             .as_deref()
-            .ok_or_else(|| "A worktree cleanup needs its repository root".to_string())?;
+            .map(PathBuf::from)
+            .or_else(|| derive_repository_root(&canonical))
+            .ok_or_else(|| "A worktree cleanup needs a discoverable repository root".to_string())?;
         let _result = crate::remove_project_worktree_sync(
-            PathBuf::from(repository_root),
+            repository_root,
             canonical.clone(),
             false,
         )?;
@@ -241,16 +295,29 @@ pub fn cleanup_workspace_disk_entry(
     })
 }
 
+fn derive_repository_root(worktree: &PathBuf) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["-C", worktree.to_str()?, "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let common_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    common_dir.parent().map(PathBuf::from)
+}
+
 #[tauri::command]
 pub fn stop_owned_resource(
     request: ResourceStopRequest,
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
+    agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
 ) -> Result<ResourceCommandReceipt, String> {
     if registry.generation.load(Ordering::Acquire) != request.expected_generation {
         return Err(resource_action_error_message(ResourceActionError::StaleSnapshot));
     }
-    let snapshot = read_resource_snapshot_at_generation(request.expected_generation, &terminal_registry)?;
+    let snapshot = read_resource_snapshot_at_generation(request.expected_generation, &terminal_registry, &agent_runtime)?;
     if registry.generation.load(Ordering::Acquire) != request.expected_generation {
         return Err(resource_action_error_message(ResourceActionError::StaleSnapshot));
     }
