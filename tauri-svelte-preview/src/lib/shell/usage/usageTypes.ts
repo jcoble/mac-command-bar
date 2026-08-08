@@ -87,3 +87,17 @@ export type UsageDailyRow = {
   outputTokens: number;
   estimatedCostMicros: number | null;
 };
+
+export type UsageDailyTotalsRow = {
+  day: string;
+  eventCount: number;
+  sessionCount: number;
+  turnCount: number;
+  workflowCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  estimatedCostMicros: number | null;
+};

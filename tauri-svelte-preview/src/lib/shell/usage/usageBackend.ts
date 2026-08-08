@@ -2,6 +2,7 @@ import {
   readCurrentProviderUsageFromTauri,
   readUsageBreakdownFromTauri,
   readUsageDailyFromTauri,
+  readUsageDailyTotalsFromTauri,
   readUsageProviderSummaryFromTauri,
   readUsageSummaryFromTauri,
   refreshUsageHistoryFromTauri
@@ -10,6 +11,7 @@ import type {
   ProviderUsageSnapshot,
   UsageBreakdownRow,
   UsageDailyRow,
+  UsageDailyTotalsRow,
   UsageHistoryQuery,
   UsageProviderSummaryRow,
   UsageSummary
@@ -36,6 +38,10 @@ export async function readUsageProviderSummary(query: UsageHistoryQuery = {}): P
 
 export async function readUsageDaily(query: UsageHistoryQuery = {}): Promise<UsageDailyRow[] | null> {
   return readUsageDailyFromTauri(query);
+}
+
+export async function readUsageDailyTotals(query: UsageHistoryQuery = {}): Promise<UsageDailyTotalsRow[] | null> {
+  return readUsageDailyTotalsFromTauri(query);
 }
 
 export async function refreshUsageHistory(): Promise<number | null> {

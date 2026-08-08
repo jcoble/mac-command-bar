@@ -138,6 +138,22 @@ pub struct UsageDailyRow {
     pub estimated_cost_micros: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDailyTotalsRow {
+    pub day: String,
+    pub event_count: u64,
+    pub session_count: u64,
+    pub turn_count: u64,
+    pub workflow_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub estimated_cost_micros: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UsageDb {
     path: PathBuf,
@@ -346,6 +362,24 @@ impl UsageDb {
         }).collect()
     }
 
+    pub fn read_usage_daily_totals(&self, filter: &UsageFilter) -> Result<Vec<UsageDailyTotalsRow>, String> {
+        self.query(&daily_totals_sql(filter))?.into_iter().map(|row| {
+            Ok(UsageDailyTotalsRow {
+                day: value_string(&row, "day"),
+                event_count: value_u64(&row, "event_count"),
+                session_count: value_u64(&row, "session_count"),
+                turn_count: value_u64(&row, "turn_count"),
+                workflow_count: value_u64(&row, "workflow_count"),
+                input_tokens: value_u64(&row, "input_tokens"),
+                output_tokens: value_u64(&row, "output_tokens"),
+                cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+                cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+                reasoning_tokens: value_u64(&row, "reasoning_tokens"),
+                estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+            })
+        }).collect()
+    }
+
     pub fn explain_breakdown(&self, filter: &UsageFilter) -> Result<Vec<Value>, String> {
         let sql = format!("EXPLAIN QUERY PLAN {}", breakdown_sql(filter));
         trace_sql(&sql);
@@ -417,6 +451,12 @@ fn daily_sql(filter: &UsageFilter) -> String {
     format!("SELECT day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, estimated_cost_micros FROM usage_daily_provider_model WHERE {} ORDER BY day DESC, provider ASC, model ASC, project_id ASC LIMIT {} OFFSET {}", daily_where_sql(filter), limit, offset)
 }
 
+fn daily_totals_sql(filter: &UsageFilter) -> String {
+    let limit = filter.limit.unwrap_or(31).clamp(1, 200);
+    let offset = filter.offset.unwrap_or(0).min(100_000);
+    format!("WITH filtered AS (SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_daily_rollups WHERE {where_sql}), grouped AS (SELECT day, COALESCE(SUM(event_count), 0) AS event_count, COALESCE(SUM(session_count), 0) AS session_count, COALESCE(SUM(turn_count), 0) AS turn_count, COALESCE(SUM(workflow_count), 0) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY day) SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY day DESC LIMIT {limit} OFFSET {offset}", where_sql = daily_where_sql(filter), limit = limit, offset = offset)
+}
+
 fn where_sql(filter: &UsageFilter) -> String {
     let mut parts = vec!["1 = 1".to_string()];
     if let Some(provider) = &filter.provider { parts.push(format!("provider = {}", quote(provider))); }
@@ -485,6 +525,7 @@ fn value_models(row: &Value) -> Vec<String> {
 pub fn summary_sql_for_test(filter: &UsageFilter) -> String { summary_sql(filter) }
 pub fn breakdown_sql_for_test(filter: &UsageFilter) -> String { breakdown_sql(filter) }
 pub fn provider_summary_sql_for_test(filter: &UsageFilter) -> String { provider_summary_sql(filter) }
+pub fn daily_totals_sql_for_test(filter: &UsageFilter) -> String { daily_totals_sql(filter) }
 
 #[cfg(test)]
 mod tests {
@@ -550,6 +591,38 @@ mod tests {
     }
 
     #[test]
+    fn daily_totals_groups_two_providers_on_one_day() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let mut first = event("daily-event-a");
+        first.input_tokens = 10;
+        first.output_tokens = 4;
+        first.cache_read_tokens = 3;
+        let mut second = event("daily-event-b");
+        second.provider = "provider-b".into();
+        second.provider_instance_id = "instance-b".into();
+        second.model = "model-b".into();
+        second.input_tokens = 20;
+        second.output_tokens = 8;
+        second.cache_write_tokens = 5;
+        second.reasoning_tokens = 7;
+        db.insert_events(&[first, second]).expect("events should insert");
+
+        let rows = db
+            .read_usage_daily_totals(&UsageFilter::default())
+            .expect("daily totals should query");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].day, "2023-11-14");
+        assert_eq!(rows[0].event_count, 2);
+        assert_eq!(rows[0].input_tokens, 30);
+        assert_eq!(rows[0].output_tokens, 12);
+        assert_eq!(rows[0].cache_read_tokens, 3);
+        assert_eq!(rows[0].cache_write_tokens, 5);
+        assert_eq!(rows[0].reasoning_tokens, 7);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn usage_queries_are_db_side_and_bounded() {
         let sql = breakdown_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
         assert!(sql.contains("GROUP BY"));
@@ -563,6 +636,16 @@ mod tests {
         assert!(sql.contains("GROUP BY provider"));
         assert!(sql.contains("COUNT(DISTINCT session_id)"));
         assert!(sql.contains("GROUP_CONCAT(DISTINCT model)"));
+        assert!(sql.contains("LIMIT 20 OFFSET 40"));
+    }
+
+    #[test]
+    fn daily_totals_query_groups_in_sql_and_is_bounded() {
+        let sql = daily_totals_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
+        assert!(sql.contains("GROUP BY day"));
+        assert!(sql.contains("SUM(input_tokens)"));
+        assert!(sql.contains("SUM(cache_read_tokens)"));
+        assert!(sql.contains("ORDER BY day DESC"));
         assert!(sql.contains("LIMIT 20 OFFSET 40"));
     }
 

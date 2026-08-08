@@ -1239,7 +1239,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 24] = [
+const BACKEND_CAPABILITIES: [&str; 25] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1276,6 +1276,7 @@ const BACKEND_CAPABILITIES: [&str; 24] = [
     "usageHistory",
     "usageHistoryIncremental",
     "usageProviderSummary",
+    "usageDailyTotals",
     // Source-control agent actions and the GitHub CLI PR lifecycle.
     "generate_commit_message",
     "read_pull_request_context",
@@ -5422,6 +5423,7 @@ fn main() {
             usage_history::read_usage_breakdown,
             usage_history::read_usage_provider_summary,
             usage_history::read_usage_daily,
+            usage_history::read_usage_daily_totals,
             usage_history::refresh_usage_history,
             list_orchestration_runs,
             record_orchestration_event,
@@ -8276,6 +8278,7 @@ mod tests {
                 "usageHistory".to_string(),
                 "usageHistoryIncremental".to_string(),
                 "usageProviderSummary".to_string(),
+                "usageDailyTotals".to_string(),
                 "generate_commit_message".to_string(),
                 "read_pull_request_context".to_string(),
                 "generate_pull_request_details".to_string(),

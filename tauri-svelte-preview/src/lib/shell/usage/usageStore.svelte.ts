@@ -1,6 +1,7 @@
 import type {
   ProviderUsageSnapshot,
   UsageDailyRow,
+  UsageDailyTotalsRow,
   UsageProviderSummaryRow,
   UsageSummary
 } from './usageTypes.ts';
@@ -12,6 +13,7 @@ export const usageState = $state<{
   summary: UsageSummary | null;
   providerSummary: UsageProviderSummaryRow[];
   daily: UsageDailyRow[];
+  dailyTotals: UsageDailyTotalsRow[];
   loading: boolean;
   currentLoading: boolean;
   historyLoading: boolean;
@@ -24,6 +26,7 @@ export const usageState = $state<{
   summary: null,
   providerSummary: [],
   daily: [],
+  dailyTotals: [],
   loading: false,
   currentLoading: false,
   historyLoading: false,
@@ -63,14 +66,16 @@ export async function refreshUsageHistory(): Promise<UsageSummary | null> {
   usageState.error = null;
   try {
     await usageService.refreshHistory();
-    const [summary, providerSummary, daily] = await Promise.all([
+    const [summary, providerSummary, daily, dailyTotals] = await Promise.all([
       usageService.readSummary(),
       usageService.readProviderSummary({ limit: 20, offset: 0 }),
-      usageService.readDaily({ limit: 31, offset: 0 })
+      usageService.readDaily({ limit: 31, offset: 0 }),
+      usageService.readDailyTotals({ limit: 31, offset: 0 })
     ]);
     usageState.summary = summary;
     usageState.providerSummary = providerSummary ?? [];
     usageState.daily = daily ?? [];
+    usageState.dailyTotals = dailyTotals ?? [];
     return summary;
   } catch (error) {
     usageState.error = error instanceof Error ? error.message : 'Usage history could not be read.';
