@@ -1,8 +1,100 @@
-import type { UsageHistoryQuery, UsageSummary } from './usageTypes.ts';
+import type {
+  UsageDailyTotalsRow,
+  UsageHistoryQuery,
+  UsageRange,
+  UsageSummary,
+  UsageTokenBreakdown
+} from './usageTypes.ts';
+
+export const usageRangeOptions: ReadonlyArray<{ value: UsageRange; label: string }> = [
+  { value: 'today', label: 'Today' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: '30-days', label: '30 days' },
+  { value: 'all', label: 'All' }
+];
+
+export type UsageHeatmapDay = {
+  day: string;
+  totalTokens: number;
+  intensity: 0 | 1 | 2 | 3 | 4;
+};
 
 export function usageSummaryLabel(summary: Pick<UsageSummary, 'inputTokens' | 'outputTokens'>): string {
   const total = summary.inputTokens + summary.outputTokens;
   return `${total.toLocaleString('en-US')} tokens`;
+}
+
+export function usageRangeQuery(range: UsageRange, now: Date = new Date()): UsageHistoryQuery {
+  if (range === 'all') return {};
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (range === 'today') {
+    return { startMicros: today.getTime() * 1_000, endMicros: tomorrow.getTime() * 1_000 };
+  }
+  if (range === 'yesterday') {
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return { startMicros: yesterday.getTime() * 1_000, endMicros: today.getTime() * 1_000 };
+  }
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
+  return { startMicros: thirtyDaysAgo.getTime() * 1_000, endMicros: tomorrow.getTime() * 1_000 };
+}
+
+export function usageHeatmapQuery(range: UsageRange, now: Date = new Date()): UsageHistoryQuery {
+  if (range !== 'all') return usageRangeQuery(range, now);
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 41);
+  const end = new Date(today);
+  end.setDate(end.getDate() + 1);
+  return { startMicros: start.getTime() * 1_000, endMicros: end.getTime() * 1_000 };
+}
+
+export function usageRangeLabel(range: UsageRange): string {
+  return usageRangeOptions.find((option) => option.value === range)?.label ?? 'Selected range';
+}
+
+export function usageTotalTokens(tokens: Pick<UsageTokenBreakdown, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens'>): number {
+  return tokens.inputTokens + tokens.outputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens;
+}
+
+export function usageCacheShare(tokens: Pick<UsageTokenBreakdown, 'cacheReadTokens' | 'cacheWriteTokens' | 'totalTokens'>): number {
+  if (tokens.totalTokens === 0) return 0;
+  return Math.round(((tokens.cacheReadTokens + tokens.cacheWriteTokens) / tokens.totalTokens) * 100);
+}
+
+export function buildUsageHeatmap(
+  rows: readonly UsageDailyTotalsRow[],
+  range: UsageRange,
+  now: Date = new Date()
+): UsageHeatmapDay[] {
+  const dayCount = range === 'today' || range === 'yesterday' ? 1 : range === '30-days' ? 30 : 42;
+  const anchor = new Date(now);
+  anchor.setHours(0, 0, 0, 0);
+  if (range === 'yesterday') anchor.setDate(anchor.getDate() - 1);
+  const indexed = new Map(rows.map((row) => [row.day, row]));
+  const days: UsageHeatmapDay[] = [];
+  for (let index = dayCount - 1; index >= 0; index -= 1) {
+    const date = new Date(anchor);
+    date.setDate(date.getDate() - index);
+    const day = [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-');
+    const row = indexed.get(day);
+    const totalTokens = row?.totalTokens ?? 0;
+    const maximum = row?.rangeMaxTokens ?? rows[0]?.rangeMaxTokens ?? 0;
+    const intensity = totalTokens === 0 || maximum === 0
+      ? 0
+      : Math.min(4, Math.max(1, Math.ceil((totalTokens / maximum) * 4)));
+    days.push({ day, totalTokens, intensity: intensity as UsageHeatmapDay['intensity'] });
+  }
+  return days;
 }
 
 /** A read-only SQL shape used in the review contract; the desktop backend runs it. */

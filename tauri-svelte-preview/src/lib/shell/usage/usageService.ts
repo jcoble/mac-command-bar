@@ -1,20 +1,26 @@
 import {
   readCurrentProviderUsage,
   readUsageBreakdown,
+  readUsageCostInputs,
   readUsageDaily,
   readUsageDailyTotals,
+  readUsageProviderDailyTotals,
   readUsageProviderSummary,
   readUsageSummary,
+  readUsageTokenBreakdown,
   refreshUsageHistory
 } from './usageBackend.ts';
 import type {
   ProviderUsageSnapshot,
   UsageBreakdownRow,
+  UsageCostInputRow,
   UsageDailyRow,
   UsageDailyTotalsRow,
   UsageHistoryQuery,
+  UsageProviderDailyTotalsRow,
   UsageProviderSummaryRow,
-  UsageSummary
+  UsageSummary,
+  UsageTokenBreakdown
 } from './usageTypes.ts';
 
 const currentInFlight = new Map<string, Promise<ProviderUsageSnapshot | null>>();
@@ -44,6 +50,15 @@ export const usageService = {
   },
   readDailyTotals(query?: UsageHistoryQuery): Promise<UsageDailyTotalsRow[] | null> {
     return readUsageDailyTotals(query);
+  },
+  readTokenBreakdown(query?: UsageHistoryQuery): Promise<UsageTokenBreakdown | null> {
+    return readUsageTokenBreakdown(query);
+  },
+  readProviderDailyTotals(query?: UsageHistoryQuery): Promise<UsageProviderDailyTotalsRow[] | null> {
+    return readUsageProviderDailyTotals(query);
+  },
+  readCostInputs(query?: UsageHistoryQuery): Promise<UsageCostInputRow[] | null> {
+    return readUsageCostInputs(query);
   },
   refreshHistory(): Promise<number | null> {
     return refreshUsageHistory();

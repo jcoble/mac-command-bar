@@ -30,6 +30,27 @@ export type UsageHistoryQuery = {
   offset?: number | null;
 };
 
+export type UsageRange = 'today' | 'yesterday' | '30-days' | 'all';
+
+export type UsageTokenBreakdown = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+};
+
+export type UsageCostInputRow = {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+};
+
 export type UsageSummary = {
   eventCount: number;
   providerCount: number;
@@ -71,6 +92,13 @@ export type UsageProviderSummaryRow = {
   cacheWriteTokens: number;
   reasoningTokens: number;
   estimatedCostMicros: number | null;
+  totalTokens: number;
+  rangeTotalTokens: number;
+  lastModel: string;
+  lastSessionId: string | null;
+  lastProjectId: string | null;
+  lastSeenAtMicros: number | null;
+  costInputs: UsageCostInputRow[];
 };
 
 export type UsageDailyRow = {
@@ -99,4 +127,11 @@ export type UsageDailyTotalsRow = {
   cacheWriteTokens: number;
   reasoningTokens: number;
   estimatedCostMicros: number | null;
+  totalTokens: number;
+  rangeMaxTokens: number;
+  bestDay: string;
+};
+
+export type UsageProviderDailyTotalsRow = Omit<UsageDailyTotalsRow, 'rangeMaxTokens' | 'bestDay'> & {
+  provider: string;
 };

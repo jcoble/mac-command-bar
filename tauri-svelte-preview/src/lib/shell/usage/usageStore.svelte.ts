@@ -3,8 +3,10 @@ import type {
   UsageDailyRow,
   UsageDailyTotalsRow,
   UsageProviderSummaryRow,
+  UsageRange,
   UsageSummary
 } from './usageTypes.ts';
+import { usageHeatmapQuery, usageRangeQuery } from './usageAnalytics.ts';
 import { usageService } from './usageService.ts';
 
 export const usageState = $state<{
@@ -20,6 +22,7 @@ export const usageState = $state<{
   error: string | null;
   unavailableReason: string | null;
   viewMode: 'detailed' | 'compact';
+  range: UsageRange;
 }>({
   current: null,
   currentByProvider: {},
@@ -32,7 +35,8 @@ export const usageState = $state<{
   historyLoading: false,
   error: null,
   unavailableReason: null,
-  viewMode: 'detailed'
+  viewMode: 'detailed',
+  range: '30-days'
 });
 
 export function describeUsageError(error: unknown): string {
@@ -65,22 +69,24 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
   }
 }
 
-export async function refreshUsageHistory(): Promise<UsageSummary | null> {
+async function loadUsageHistory(range: UsageRange, refreshIndex: boolean): Promise<UsageSummary | null> {
   if (usageState.historyLoading) return usageState.summary;
   usageState.historyLoading = true;
   usageState.loading = true;
   usageState.error = null;
+  usageState.range = range;
   try {
-    await usageService.refreshHistory();
-    const [summary, providerSummary, daily, dailyTotals] = await Promise.all([
-      usageService.readSummary(),
-      usageService.readProviderSummary({ limit: 20, offset: 0 }),
-      usageService.readDaily({ limit: 31, offset: 0 }),
-      usageService.readDailyTotals({ limit: 31, offset: 0 })
+    if (refreshIndex) await usageService.refreshHistory();
+    const query = usageRangeQuery(range);
+    const heatmapQuery = usageHeatmapQuery(range);
+    // One dashboard refresh is exactly three DB-side aggregate queries.
+    const [summary, providerSummary, dailyTotals] = await Promise.all([
+      usageService.readSummary(query),
+      usageService.readProviderSummary({ ...query, limit: 20, offset: 0 }),
+      usageService.readDailyTotals({ ...heatmapQuery, limit: 42, offset: 0 })
     ]);
     usageState.summary = summary;
     usageState.providerSummary = providerSummary ?? [];
-    usageState.daily = daily ?? [];
     usageState.dailyTotals = dailyTotals ?? [];
     return summary;
   } catch (error) {
@@ -90,4 +96,13 @@ export async function refreshUsageHistory(): Promise<UsageSummary | null> {
     usageState.historyLoading = false;
     usageState.loading = usageState.currentLoading;
   }
+}
+
+export async function refreshUsageHistory(): Promise<UsageSummary | null> {
+  return loadUsageHistory(usageState.range, true);
+}
+
+export async function selectUsageRange(range: UsageRange): Promise<UsageSummary | null> {
+  if (range === usageState.range && usageState.summary) return usageState.summary;
+  return loadUsageHistory(range, false);
 }

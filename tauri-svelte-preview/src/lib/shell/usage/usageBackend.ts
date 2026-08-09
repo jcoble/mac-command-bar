@@ -1,4 +1,5 @@
 import {
+  isTauriRuntime,
   readCurrentProviderUsageFromTauri,
   readUsageBreakdownFromTauri,
   readUsageDailyFromTauri,
@@ -10,11 +11,14 @@ import {
 import type {
   ProviderUsageSnapshot,
   UsageBreakdownRow,
+  UsageCostInputRow,
   UsageDailyRow,
   UsageDailyTotalsRow,
   UsageHistoryQuery,
+  UsageProviderDailyTotalsRow,
   UsageProviderSummaryRow,
-  UsageSummary
+  UsageSummary,
+  UsageTokenBreakdown
 } from './usageTypes.ts';
 import { normalizeProviderUsage } from './usageCurrent.ts';
 
@@ -44,6 +48,24 @@ export async function readUsageDaily(query: UsageHistoryQuery = {}): Promise<Usa
 
 export async function readUsageDailyTotals(query: UsageHistoryQuery = {}): Promise<UsageDailyTotalsRow[] | null> {
   return readUsageDailyTotalsFromTauri(query);
+}
+
+async function readUsageQueryFromTauri<T>(command: string, query: UsageHistoryQuery): Promise<T | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(command, { query });
+}
+
+export async function readUsageTokenBreakdown(query: UsageHistoryQuery = {}): Promise<UsageTokenBreakdown | null> {
+  return readUsageQueryFromTauri('read_usage_token_breakdown', query);
+}
+
+export async function readUsageProviderDailyTotals(query: UsageHistoryQuery = {}): Promise<UsageProviderDailyTotalsRow[] | null> {
+  return readUsageQueryFromTauri('read_usage_provider_daily_totals', query);
+}
+
+export async function readUsageCostInputs(query: UsageHistoryQuery = {}): Promise<UsageCostInputRow[] | null> {
+  return readUsageQueryFromTauri('read_usage_cost_inputs', query);
 }
 
 export async function refreshUsageHistory(): Promise<number | null> {

@@ -5316,6 +5316,33 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
     relative_path.to_lowercase().contains(query) || file_name.to_lowercase().contains(query)
 }
 
+#[tauri::command]
+fn read_usage_token_breakdown(
+    app: tauri::AppHandle,
+    query: usage_history::UsageHistoryQuery,
+) -> Result<usage_db::UsageTokenBreakdown, String> {
+    usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
+        .read_usage_token_breakdown(&query.into())
+}
+
+#[tauri::command]
+fn read_usage_provider_daily_totals(
+    app: tauri::AppHandle,
+    query: usage_history::UsageHistoryQuery,
+) -> Result<Vec<usage_db::UsageProviderDailyTotalsRow>, String> {
+    usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
+        .read_usage_provider_daily_totals(&query.into())
+}
+
+#[tauri::command]
+fn read_usage_cost_inputs(
+    app: tauri::AppHandle,
+    query: usage_history::UsageHistoryQuery,
+) -> Result<Vec<usage_db::UsageCostInputRow>, String> {
+    usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
+        .read_usage_cost_inputs(&query.into())
+}
+
 fn main() {
     let agent_runtime = agent_conversation::manager::AgentRuntimeManager::new(
         agent_conversation::providers::ProviderRegistry::bundled_from_environment()
@@ -5431,6 +5458,9 @@ fn main() {
             usage_history::read_usage_provider_summary,
             usage_history::read_usage_daily,
             usage_history::read_usage_daily_totals,
+            read_usage_token_breakdown,
+            read_usage_provider_daily_totals,
+            read_usage_cost_inputs,
             usage_history::refresh_usage_history,
             list_orchestration_runs,
             record_orchestration_event,

@@ -41,6 +41,7 @@ pub struct LocalQuotaSnapshot {
 pub struct UsageSourceContext {
     pub session_id: Option<String>,
     pub cwd: Option<String>,
+    pub model: Option<String>,
 }
 
 /// Discover the two provider transcript stores that exist on this machine.
@@ -160,6 +161,7 @@ pub fn parse_usage_events_for_source_with_context(
 ) -> Vec<UsageEvent> {
     let mut session_id = context.session_id.clone();
     let mut cwd = context.cwd.clone();
+    let mut model = context.model.clone();
     let mut seen = HashSet::new();
     let mut events = Vec::new();
 
@@ -180,6 +182,14 @@ pub fn parse_usage_events_for_source_with_context(
                     .map(ToString::to_string)
                     .or(cwd);
             }
+            if value.get("type").and_then(Value::as_str) == Some("turn_context") {
+                model = value
+                    .pointer("/payload/model")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToString::to_string)
+                    .or(model);
+            }
             if let Some(event) = parse_codex_usage_event(
                 &value,
                 index,
@@ -189,6 +199,7 @@ pub fn parse_usage_events_for_source_with_context(
                 source_key,
                 session_id.as_deref(),
                 cwd.as_deref(),
+                model.as_deref(),
             ) {
                 let dedupe_key = event.source_event_id.clone();
                 if seen.insert(dedupe_key) {
@@ -285,6 +296,7 @@ fn parse_codex_usage_event(
     source_key: &str,
     session_id: Option<&str>,
     cwd: Option<&str>,
+    model: Option<&str>,
 ) -> Option<UsageEvent> {
     if value.get("type").and_then(Value::as_str) != Some("event_msg")
         || value.pointer("/payload/type").and_then(Value::as_str) != Some("token_count")
@@ -320,7 +332,7 @@ fn parse_codex_usage_event(
         cache_read_tokens,
         cache_write_tokens,
         reasoning_tokens,
-        model: "codex".to_string(),
+        model: model.unwrap_or("codex").to_string(),
         estimated_cost_micros: None,
         estimate_rate_version: None,
         source_kind: source_kind.to_string(),
@@ -367,20 +379,30 @@ pub fn read_source_context(path: &Path, provider: &str) -> UsageSourceContext {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-            continue;
+        match value.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                context.session_id = value
+                    .pointer("/payload/id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .or(context.session_id);
+                context.cwd = value
+                    .pointer("/payload/cwd")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .or(context.cwd);
+            }
+            Some("turn_context") => {
+                context.model = value
+                    .pointer("/payload/model")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToString::to_string)
+                    .or(context.model);
+            }
+            _ => {}
         }
-        context.session_id = value
-            .pointer("/payload/id")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .or(context.session_id);
-        context.cwd = value
-            .pointer("/payload/cwd")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .or(context.cwd);
-        if context.session_id.is_some() && context.cwd.is_some() {
+        if context.session_id.is_some() && context.cwd.is_some() && context.model.is_some() {
             break;
         }
     }
@@ -704,6 +726,7 @@ mod tests {
     fn codex_token_count_records_become_non_zero_events() {
         let lines = vec![
             r#"{"type":"session_meta","payload":{"id":"session-2","cwd":"/tmp/project/workspace"}}"#.to_string(),
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#.to_string(),
             r#"{"type":"event_msg","timestamp":"2026-08-08T12:34:56Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":9,"reasoning_output_tokens":4}}}}"#.to_string(),
         ];
         let events = parse_usage_events_for_source_with_context(
@@ -720,6 +743,7 @@ mod tests {
         assert_eq!(events[0].cache_read_tokens, 5);
         assert_eq!(events[0].output_tokens, 9);
         assert_eq!(events[0].reasoning_tokens, 4);
+        assert_eq!(events[0].model, "gpt-5.6-sol");
     }
 
     #[test]

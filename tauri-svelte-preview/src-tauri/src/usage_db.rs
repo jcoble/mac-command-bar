@@ -109,6 +109,36 @@ pub struct UsageProviderSummaryRow {
     pub cache_write_tokens: u64,
     pub reasoning_tokens: u64,
     pub estimated_cost_micros: Option<i64>,
+    pub total_tokens: u64,
+    pub range_total_tokens: u64,
+    pub last_model: String,
+    pub last_session_id: Option<String>,
+    pub last_project_id: Option<String>,
+    pub last_seen_at_micros: Option<i64>,
+    pub cost_inputs: Vec<UsageCostInputRow>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTokenBreakdown {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCostInputRow {
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -141,6 +171,27 @@ pub struct UsageDailyTotalsRow {
     pub cache_write_tokens: u64,
     pub reasoning_tokens: u64,
     pub estimated_cost_micros: Option<i64>,
+    pub total_tokens: u64,
+    pub range_max_tokens: u64,
+    pub best_day: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProviderDailyTotalsRow {
+    pub day: String,
+    pub provider: String,
+    pub event_count: u64,
+    pub session_count: u64,
+    pub turn_count: u64,
+    pub workflow_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub estimated_cost_micros: Option<i64>,
+    pub total_tokens: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +362,23 @@ impl UsageDb {
         })
     }
 
+    pub fn read_usage_token_breakdown(
+        &self,
+        filter: &UsageFilter,
+    ) -> Result<UsageTokenBreakdown, String> {
+        let query = token_breakdown_query(filter);
+        let rows = self.query(&query.sql, &query.parameters)?;
+        let row = rows.first().cloned().unwrap_or(Value::Null);
+        Ok(UsageTokenBreakdown {
+            input_tokens: value_u64(&row, "input_tokens"),
+            output_tokens: value_u64(&row, "output_tokens"),
+            cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+            cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+            reasoning_tokens: value_u64(&row, "reasoning_tokens"),
+            total_tokens: value_u64(&row, "total_tokens"),
+        })
+    }
+
     pub fn read_usage_breakdown(
         &self,
         filter: &UsageFilter,
@@ -358,6 +426,13 @@ impl UsageDb {
                     cache_write_tokens: value_u64(&row, "cache_write_tokens"),
                     reasoning_tokens: value_u64(&row, "reasoning_tokens"),
                     estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+                    total_tokens: value_u64(&row, "total_tokens"),
+                    range_total_tokens: value_u64(&row, "range_total_tokens"),
+                    last_model: value_string(&row, "last_model"),
+                    last_session_id: value_optional_string(&row, "last_session_id"),
+                    last_project_id: value_optional_string(&row, "last_project_id"),
+                    last_seen_at_micros: value_i64(&row, "last_seen_at_micros"),
+                    cost_inputs: value_cost_inputs(&row)?,
                 })
             })
             .collect()
@@ -405,6 +480,57 @@ impl UsageDb {
                     cache_write_tokens: value_u64(&row, "cache_write_tokens"),
                     reasoning_tokens: value_u64(&row, "reasoning_tokens"),
                     estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+                    total_tokens: value_u64(&row, "total_tokens"),
+                    range_max_tokens: value_u64(&row, "range_max_tokens"),
+                    best_day: value_string(&row, "best_day"),
+                })
+            })
+            .collect()
+    }
+
+    pub fn read_usage_provider_daily_totals(
+        &self,
+        filter: &UsageFilter,
+    ) -> Result<Vec<UsageProviderDailyTotalsRow>, String> {
+        let query = provider_daily_totals_query(filter);
+        self.query(&query.sql, &query.parameters)?
+            .into_iter()
+            .map(|row| {
+                Ok(UsageProviderDailyTotalsRow {
+                    day: value_string(&row, "day"),
+                    provider: value_string(&row, "provider"),
+                    event_count: value_u64(&row, "event_count"),
+                    session_count: value_u64(&row, "session_count"),
+                    turn_count: value_u64(&row, "turn_count"),
+                    workflow_count: value_u64(&row, "workflow_count"),
+                    input_tokens: value_u64(&row, "input_tokens"),
+                    output_tokens: value_u64(&row, "output_tokens"),
+                    cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+                    cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+                    reasoning_tokens: value_u64(&row, "reasoning_tokens"),
+                    estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+                    total_tokens: value_u64(&row, "total_tokens"),
+                })
+            })
+            .collect()
+    }
+
+    pub fn read_usage_cost_inputs(
+        &self,
+        filter: &UsageFilter,
+    ) -> Result<Vec<UsageCostInputRow>, String> {
+        let query = cost_inputs_query(filter);
+        self.query(&query.sql, &query.parameters)?
+            .into_iter()
+            .map(|row| {
+                Ok(UsageCostInputRow {
+                    provider: value_string(&row, "provider"),
+                    model: value_string(&row, "model"),
+                    input_tokens: value_u64(&row, "input_tokens"),
+                    output_tokens: value_u64(&row, "output_tokens"),
+                    cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+                    cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+                    reasoning_tokens: value_u64(&row, "reasoning_tokens"),
                 })
             })
             .collect()
@@ -483,10 +609,24 @@ struct UsageQuery {
     parameters: Vec<SqlValue>,
 }
 
+// Codex transcripts report cached input as a subset of input_tokens. Other
+// indexed provider transcripts report new input and cache buckets separately.
+// Keep the source rows lossless, then normalize "new input" inside every
+// analytics aggregate so cache is neither double-counted nor double-billed.
+const NORMALIZED_INPUT_SQL: &str = "CASE WHEN provider = 'codex' THEN MAX(input_tokens - cache_read_tokens - cache_write_tokens, 0) ELSE input_tokens END";
+
 fn summary_query(filter: &UsageFilter) -> UsageQuery {
     let (where_clause, parameters) = where_clause(filter);
     UsageQuery {
-        sql: format!("SELECT COUNT(*) AS event_count, COUNT(DISTINCT provider) AS provider_count, COUNT(DISTINCT date(occurred_at_micros / 1000000, 'unixepoch')) AS active_days, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM usage_events WHERE {where_clause}"),
+        sql: format!("SELECT COUNT(*) AS event_count, COUNT(DISTINCT provider) AS provider_count, COUNT(DISTINCT date(occurred_at_micros / 1000000, 'unixepoch')) AS active_days, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM({NORMALIZED_INPUT_SQL}), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM usage_events WHERE {where_clause}"),
+        parameters,
+    }
+}
+
+fn token_breakdown_query(filter: &UsageFilter) -> UsageQuery {
+    let (where_clause, parameters) = where_clause(filter);
+    UsageQuery {
+        sql: format!("WITH totals AS (SELECT COALESCE(SUM({NORMALIZED_INPUT_SQL}), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens FROM usage_events WHERE {where_clause}) SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens AS total_tokens FROM totals"),
         parameters,
     }
 }
@@ -510,7 +650,7 @@ fn provider_summary_query(filter: &UsageFilter) -> UsageQuery {
     parameters.push(SqlValue::Integer(limit as i64));
     parameters.push(SqlValue::Integer(offset as i64));
     UsageQuery {
-        sql: format!("WITH filtered AS (SELECT provider, model, owned_id AS session_id, turn_id, workflow_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_clause}), grouped AS (SELECT provider, GROUP_CONCAT(DISTINCT model) AS models, COUNT(*) AS event_count, COUNT(DISTINCT session_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY provider) SELECT provider, models, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY provider ASC LIMIT ? OFFSET ?"),
+        sql: format!("WITH filtered AS (SELECT id, provider, model, owned_id AS session_id, project_id, turn_id, workflow_id, occurred_at_micros, {NORMALIZED_INPUT_SQL} AS input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_clause}), provider_totals AS (SELECT provider, GROUP_CONCAT(DISTINCT model) AS models, COUNT(*) AS event_count, COUNT(DISTINCT session_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY provider), measured AS (SELECT *, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens AS total_tokens FROM provider_totals), decorated AS (SELECT *, SUM(total_tokens) OVER () AS range_total_tokens FROM measured), latest AS (SELECT provider, model AS last_model, session_id AS last_session_id, project_id AS last_project_id, occurred_at_micros AS last_seen_at_micros, ROW_NUMBER() OVER (PARTITION BY provider ORDER BY occurred_at_micros DESC, id DESC) AS recency FROM filtered), model_costs AS (SELECT provider, model, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens FROM filtered GROUP BY provider, model), cost_groups AS (SELECT provider, json_group_array(json_object('provider', provider, 'model', model, 'inputTokens', input_tokens, 'outputTokens', output_tokens, 'cacheReadTokens', cache_read_tokens, 'cacheWriteTokens', cache_write_tokens, 'reasoningTokens', reasoning_tokens)) AS cost_inputs FROM model_costs GROUP BY provider) SELECT decorated.provider, models, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros, total_tokens, range_total_tokens, latest.last_model, latest.last_session_id, latest.last_project_id, latest.last_seen_at_micros, cost_groups.cost_inputs FROM decorated JOIN latest ON latest.provider = decorated.provider AND latest.recency = 1 JOIN cost_groups ON cost_groups.provider = decorated.provider ORDER BY decorated.provider ASC LIMIT ? OFFSET ?"),
         parameters,
     }
 }
@@ -528,13 +668,37 @@ fn daily_query(filter: &UsageFilter) -> UsageQuery {
 }
 
 fn daily_totals_query(filter: &UsageFilter) -> UsageQuery {
-    let limit = filter.limit.unwrap_or(31).clamp(1, 200);
+    let limit = filter.limit.unwrap_or(42).clamp(1, 200);
     let offset = filter.offset.unwrap_or(0).min(100_000);
-    let (where_clause, mut parameters) = daily_where_clause(filter);
+    let (where_clause, mut parameters) = where_clause(filter);
     parameters.push(SqlValue::Integer(limit as i64));
     parameters.push(SqlValue::Integer(offset as i64));
     UsageQuery {
-        sql: format!("WITH filtered AS (SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_daily_rollups WHERE {where_clause}), grouped AS (SELECT day, COALESCE(SUM(event_count), 0) AS event_count, COALESCE(SUM(session_count), 0) AS session_count, COALESCE(SUM(turn_count), 0) AS turn_count, COALESCE(SUM(workflow_count), 0) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY day) SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY day DESC LIMIT ? OFFSET ?"),
+        sql: format!("WITH filtered AS (SELECT date(occurred_at_micros / 1000000, 'unixepoch') AS day, owned_id, turn_id, workflow_id, {NORMALIZED_INPUT_SQL} AS input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_clause}), grouped AS (SELECT day, COUNT(*) AS event_count, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY day), measured AS (SELECT *, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens AS total_tokens FROM grouped), decorated AS (SELECT *, MAX(total_tokens) OVER () AS range_max_tokens, FIRST_VALUE(day) OVER (ORDER BY total_tokens DESC, day DESC) AS best_day FROM measured) SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros, total_tokens, range_max_tokens, best_day FROM decorated ORDER BY day DESC LIMIT ? OFFSET ?"),
+        parameters,
+    }
+}
+
+fn provider_daily_totals_query(filter: &UsageFilter) -> UsageQuery {
+    let limit = filter.limit.unwrap_or(84).clamp(1, 200);
+    let offset = filter.offset.unwrap_or(0).min(100_000);
+    let (where_clause, mut parameters) = where_clause(filter);
+    parameters.push(SqlValue::Integer(limit as i64));
+    parameters.push(SqlValue::Integer(offset as i64));
+    UsageQuery {
+        sql: format!("WITH filtered AS (SELECT date(occurred_at_micros / 1000000, 'unixepoch') AS day, provider, owned_id, turn_id, workflow_id, {NORMALIZED_INPUT_SQL} AS input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_clause}), grouped AS (SELECT day, provider, COUNT(*) AS event_count, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY day, provider) SELECT day, provider, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens AS total_tokens FROM grouped ORDER BY day DESC, provider ASC LIMIT ? OFFSET ?"),
+        parameters,
+    }
+}
+
+fn cost_inputs_query(filter: &UsageFilter) -> UsageQuery {
+    let limit = filter.limit.unwrap_or(200).clamp(1, 200);
+    let offset = filter.offset.unwrap_or(0).min(100_000);
+    let (where_clause, mut parameters) = where_clause(filter);
+    parameters.push(SqlValue::Integer(limit as i64));
+    parameters.push(SqlValue::Integer(offset as i64));
+    UsageQuery {
+        sql: format!("SELECT provider, model, COALESCE(SUM({NORMALIZED_INPUT_SQL}), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens FROM usage_events WHERE {where_clause} GROUP BY provider, model ORDER BY provider ASC, model ASC LIMIT ? OFFSET ?"),
         parameters,
     }
 }
@@ -694,6 +858,14 @@ fn value_models(row: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn value_cost_inputs(row: &Value) -> Result<Vec<UsageCostInputRow>, String> {
+    let Some(value) = row.get("cost_inputs").and_then(Value::as_str) else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(value)
+        .map_err(|error| format!("Usage cost inputs could not be decoded: {error}"))
 }
 
 #[cfg(test)]
@@ -876,6 +1048,13 @@ mod tests {
         assert_eq!(rows[0].cache_read_tokens, 3);
         assert_eq!(rows[0].cache_write_tokens, 5);
         assert_eq!(rows[0].reasoning_tokens, 7);
+        assert_eq!(rows[0].total_tokens, 50);
+        assert_eq!(rows[0].range_total_tokens, 50);
+        assert_eq!(rows[0].last_model, "model-b");
+        assert_eq!(rows[0].last_session_id.as_deref(), Some("session-a"));
+        assert_eq!(rows[0].last_project_id.as_deref(), Some("project-a"));
+        assert_eq!(rows[0].last_seen_at_micros, Some(1_700_000_000_000_000));
+        assert_eq!(rows[0].cost_inputs.len(), 2);
         assert_eq!(
             rows[0].models,
             vec!["model-a".to_string(), "model-b".to_string()]
@@ -913,6 +1092,106 @@ mod tests {
         assert_eq!(rows[0].cache_read_tokens, 3);
         assert_eq!(rows[0].cache_write_tokens, 5);
         assert_eq!(rows[0].reasoning_tokens, 7);
+        assert_eq!(rows[0].total_tokens, 50);
+        assert_eq!(rows[0].range_max_tokens, 50);
+        assert_eq!(rows[0].best_day, "2023-11-14");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn token_breakdown_filters_the_range_and_separates_cached_codex_input() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let mut codex = event("token-mix-codex");
+        codex.provider = "codex".into();
+        codex.model = "gpt-5.6-sol".into();
+        codex.input_tokens = 100;
+        codex.output_tokens = 10;
+        codex.cache_read_tokens = 80;
+        codex.reasoning_tokens = 4;
+        let mut claude = event("token-mix-claude");
+        claude.provider = "claude".into();
+        claude.model = "claude-opus-4-8".into();
+        claude.input_tokens = 30;
+        claude.output_tokens = 5;
+        claude.cache_read_tokens = 10;
+        let mut excluded = event("token-mix-excluded");
+        excluded.occurred_at_micros = 1_600_000_000_000_000;
+        excluded.input_tokens = 999;
+        db.insert_events_with_cursor(&[codex, claude, excluded], None)
+            .expect("events should insert");
+
+        let breakdown = db
+            .read_usage_token_breakdown(&UsageFilter {
+                start_micros: Some(1_699_999_000_000_000),
+                end_micros: Some(1_700_001_000_000_000),
+                ..UsageFilter::default()
+            })
+            .expect("token breakdown should query");
+        assert_eq!(breakdown.input_tokens, 50);
+        assert_eq!(breakdown.output_tokens, 15);
+        assert_eq!(breakdown.cache_read_tokens, 90);
+        assert_eq!(breakdown.reasoning_tokens, 4);
+        assert_eq!(breakdown.total_tokens, 155);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn provider_daily_totals_group_each_provider_and_day_in_sql() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let mut codex = event("provider-day-codex");
+        codex.provider = "codex".into();
+        codex.model = "gpt-5.6-sol".into();
+        codex.owned_id = Some("codex-session".into());
+        codex.input_tokens = 100;
+        codex.output_tokens = 10;
+        codex.cache_read_tokens = 80;
+        let mut other = event("provider-day-other");
+        other.provider = "provider-b".into();
+        other.owned_id = Some("other-session".into());
+        other.input_tokens = 20;
+        other.output_tokens = 5;
+        db.insert_events_with_cursor(&[codex, other], None)
+            .expect("events should insert");
+
+        let rows = db
+            .read_usage_provider_daily_totals(&UsageFilter::default())
+            .expect("provider daily totals should query");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].day, "2023-11-14");
+        let codex_row = rows.iter().find(|row| row.provider == "codex").unwrap();
+        assert_eq!(codex_row.input_tokens, 20);
+        assert_eq!(codex_row.cache_read_tokens, 80);
+        assert_eq!(codex_row.total_tokens, 110);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn cost_inputs_are_grouped_by_provider_and_model_in_sql() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let mut first = event("cost-input-a");
+        first.provider = "codex".into();
+        first.model = "gpt-5.6-sol".into();
+        first.input_tokens = 100;
+        first.cache_read_tokens = 80;
+        let mut second = event("cost-input-b");
+        second.provider = "codex".into();
+        second.model = "gpt-5.6-sol".into();
+        second.input_tokens = 50;
+        second.cache_read_tokens = 20;
+        db.insert_events_with_cursor(&[first, second], None)
+            .expect("events should insert");
+
+        let rows = db
+            .read_usage_cost_inputs(&UsageFilter::default())
+            .expect("cost inputs should query");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "codex");
+        assert_eq!(rows[0].model, "gpt-5.6-sol");
+        assert_eq!(rows[0].input_tokens, 50);
+        assert_eq!(rows[0].cache_read_tokens, 100);
         let _ = fs::remove_file(path);
     }
 
@@ -959,6 +1238,8 @@ mod tests {
         assert!(query.sql.contains("GROUP BY day"));
         assert!(query.sql.contains("SUM(input_tokens)"));
         assert!(query.sql.contains("SUM(cache_read_tokens)"));
+        assert!(query.sql.contains("MAX(total_tokens) OVER ()"));
+        assert!(query.sql.contains("FIRST_VALUE(day)"));
         assert!(query.sql.contains("ORDER BY day DESC"));
         assert!(query.sql.contains("LIMIT ? OFFSET ?"));
         assert_eq!(
