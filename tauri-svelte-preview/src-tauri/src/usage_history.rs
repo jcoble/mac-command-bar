@@ -1,4 +1,7 @@
-use crate::usage_db::{UsageBreakdownRow, UsageDailyRow, UsageDailyTotalsRow, UsageDb, UsageFilter, UsageProviderSummaryRow, UsageSummary};
+use crate::usage_db::{
+    UsageBreakdownRow, UsageDailyRow, UsageDailyTotalsRow, UsageDb, UsageFilter,
+    UsageProviderSummaryRow, UsageSummary,
+};
 use crate::usage_indexer::UsageIndexer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -21,39 +24,87 @@ pub struct UsageHistoryQuery {
 
 impl From<UsageHistoryQuery> for UsageFilter {
     fn from(value: UsageHistoryQuery) -> Self {
-        Self { provider: value.provider, model: value.model, project_id: value.project_id, workflow_id: value.workflow_id, start_micros: value.start_micros, end_micros: value.end_micros, limit: value.limit, offset: value.offset }
+        Self {
+            provider: value.provider,
+            model: value.model,
+            project_id: value.project_id,
+            workflow_id: value.workflow_id,
+            start_micros: value.start_micros,
+            end_micros: value.end_micros,
+            limit: value.limit,
+            offset: value.offset,
+        }
     }
 }
 
 #[tauri::command]
-pub fn read_usage_summary(app: AppHandle, query: UsageHistoryQuery) -> Result<UsageSummary, String> {
-    UsageDb::open(usage_db_path(&app)?)?.read_usage_summary(&query.into())
+pub async fn read_usage_summary(
+    app: AppHandle,
+    query: UsageHistoryQuery,
+) -> Result<UsageSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        UsageDb::open(usage_db_path(&app)?)?.read_usage_summary(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn read_usage_breakdown(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<UsageBreakdownRow>, String> {
-    UsageDb::open(usage_db_path(&app)?)?.read_usage_breakdown(&query.into())
+pub async fn read_usage_breakdown(
+    app: AppHandle,
+    query: UsageHistoryQuery,
+) -> Result<Vec<UsageBreakdownRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        UsageDb::open(usage_db_path(&app)?)?.read_usage_breakdown(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn read_usage_provider_summary(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<UsageProviderSummaryRow>, String> {
-    UsageDb::open(usage_db_path(&app)?)?.read_usage_provider_summary(&query.into())
+pub async fn read_usage_provider_summary(
+    app: AppHandle,
+    query: UsageHistoryQuery,
+) -> Result<Vec<UsageProviderSummaryRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        UsageDb::open(usage_db_path(&app)?)?.read_usage_provider_summary(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn read_usage_daily(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<UsageDailyRow>, String> {
-    UsageDb::open(usage_db_path(&app)?)?.read_daily(&query.into())
+pub async fn read_usage_daily(
+    app: AppHandle,
+    query: UsageHistoryQuery,
+) -> Result<Vec<UsageDailyRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        UsageDb::open(usage_db_path(&app)?)?.read_daily(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn read_usage_daily_totals(app: AppHandle, query: UsageHistoryQuery) -> Result<Vec<UsageDailyTotalsRow>, String> {
-    UsageDb::open(usage_db_path(&app)?)?.read_usage_daily_totals(&query.into())
+pub async fn read_usage_daily_totals(
+    app: AppHandle,
+    query: UsageHistoryQuery,
+) -> Result<Vec<UsageDailyTotalsRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        UsageDb::open(usage_db_path(&app)?)?.read_usage_daily_totals(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn refresh_usage_history(app: AppHandle) -> Result<usize, String> {
-    let path = usage_db_path(&app)?;
-    UsageIndexer::new(path).ingest_local_sources()
+pub async fn refresh_usage_history(app: AppHandle) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = usage_db_path(&app)?;
+        UsageIndexer::new(path).ingest_local_sources()
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 pub fn usage_db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
