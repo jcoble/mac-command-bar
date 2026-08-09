@@ -301,7 +301,7 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
     current.capabilityError = null;
   }
   if (eventType === 'plan.updated' || payload.kind === 'plan') {
-    if (Array.isArray(payload.steps)) current.planSteps = parsePlanSteps(payload.steps);
+    if (Array.isArray(payload.items)) current.planSteps = parsePlanSteps(payload.items);
   }
   if (eventType === 'tasks.updated' || payload.kind === 'tasks') {
     if (Array.isArray(payload.tasks)) current.tasks = parseTasks(payload.tasks);
@@ -354,9 +354,16 @@ function parsePlanSteps(value: unknown): AgentPlanStep[] {
     const state = asString(entry.state);
     return [{
       id: asString(entry.id) ?? `step-${index + 1}`,
-      title: asString(entry.title) ?? `Step ${index + 1}`,
+      title: asString(entry.title) ?? asString(entry.text) ?? `Step ${index + 1}`,
       detail: asString(entry.detail),
-      state: state === 'in-progress' || state === 'completed' || state === 'failed' || state === 'blocked' ? state : 'pending',
+      state: state === 'in-progress' || state === 'completed' || state === 'failed' || state === 'blocked'
+        ? state
+        : (() => {
+          const status = asString(entry.status)?.replaceAll('_', '-');
+          return status === 'in-progress' || status === 'completed' || status === 'failed' || status === 'blocked'
+            ? status
+            : 'pending';
+        })(),
       ownerAgentId: asString(entry.ownerAgentId),
       startedAt: asString(entry.startedAt),
       completedAt: asString(entry.completedAt)

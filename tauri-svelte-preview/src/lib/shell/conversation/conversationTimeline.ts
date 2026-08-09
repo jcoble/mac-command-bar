@@ -93,6 +93,25 @@ function stepsOf(value: unknown): AgentPlanStep[] {
   });
 }
 
+function planItemsOf(items: readonly { text: string; status: string }[]): AgentPlanStep[] {
+  return items.map((item, index) => ({
+    id: `step-${index + 1}`,
+    title: item.text,
+    detail: null,
+    state: planStateOf(item.status),
+    ownerAgentId: null,
+    startedAt: null,
+    completedAt: null
+  }));
+}
+
+function planStateOf(status: string): AgentPlanStep['state'] {
+  const normalized = status.trim().toLowerCase().replaceAll('_', '-');
+  return ['pending', 'in-progress', 'completed', 'failed', 'blocked'].includes(normalized)
+    ? normalized as AgentPlanStep['state']
+    : 'pending';
+}
+
 function tasksOf(value: unknown): ConversationTask[] {
   return stepsOf(value).map((step) => ({
     id: step.id,
@@ -182,6 +201,9 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
   if (entry.kind === 'approval') return {
     kind: 'approval', itemId: entry.itemId, requestId: entry.requestId, title: 'Approval requested', summary: entry.summary,
     state: entry.state, options: ['accept', 'decline'], timestampMs: entry.timestampMs
+  };
+  if (entry.kind === 'plan') return {
+    kind: 'plan', itemId: entry.itemId, title: 'Plan', steps: planItemsOf(entry.items), timestampMs: entry.timestampMs
   };
   if (entry.kind === 'error') return {
     kind: 'error', itemId: entry.itemId, text: entry.message, timestampMs: entry.timestampMs, metadata: { code: entry.code, recoverable: entry.recoverable }

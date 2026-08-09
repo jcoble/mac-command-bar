@@ -16,21 +16,47 @@ use super::protocol::{
     AgentConversationSnapshot, AgentEvent, AgentEventType, AgentExecutionOwner,
     AgentImplementation, AgentInteractionCapabilities, AgentPromptCapabilities,
     AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
-    AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition,
+    AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
     ConversationConnectionState, EnsureAgentConversationRequest, PlanItem, ToolState,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
 use super::providers::{
-    AcpRuntimeAdapter, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter, GeneratedText,
-    InitializeAgentInput, LoadAgentSession, NewAgentSession, PermissionResponse, ProviderRegistry,
-    StructuredRuntimeHandle,
+    AcpRuntimeAdapter, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter, AgentRuntimeError,
+    GeneratedText, InitializeAgentInput, LoadAgentSession, NewAgentSession, PermissionResponse,
+    ProviderRegistry, StructuredRuntimeHandle,
 };
+use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
 const JOURNAL_EVENT_CAP: usize = 10_000;
 
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
+
+#[derive(Clone, Debug)]
+struct PermissionOption {
+    option_id: String,
+    kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingPermission {
+    wire_id: Value,
+    options: Vec<PermissionOption>,
+    summary: String,
+}
+
+enum OrderedSessionEvent {
+    PromptResult {
+        turn_id: String,
+        result: Result<Value, AgentRuntimeError>,
+    },
+    ApprovalResolved {
+        request_id: String,
+        state: ApprovalState,
+        summary: String,
+    },
+}
 
 pub struct ManagedAgentSession {
     pub owned_id: String,
@@ -47,8 +73,9 @@ pub struct ManagedAgentSession {
     pub recent_events: VecDeque<AgentEvent>,
     pub writer_lease: AgentWriterLease,
     pub writer_lease_transition: Option<AgentWriterLeaseTransition>,
-    permission_requests: HashMap<String, Value>,
+    permission_requests: HashMap<String, PendingPermission>,
     next_permission_id: u64,
+    ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
     cwd: String,
     connection: AgentConversationConnection,
     frontend_events: VecDeque<AgentConversationEvent>,
@@ -194,6 +221,7 @@ impl AgentRuntimeManager {
                 writer_lease_transition: None,
                 permission_requests: HashMap::new(),
                 next_permission_id: 0,
+                ordered_events: None,
                 cwd,
                 connection: connection.clone(),
                 frontend_events: VecDeque::new(),
@@ -259,6 +287,7 @@ impl AgentRuntimeManager {
             let inbound = runtime.take_inbound().map_err(|error| error.to_string())?;
             (transport, inbound)
         };
+        let (ordered_tx, ordered_rx) = mpsc::unbounded_channel();
         let mut sessions = self
             .sessions
             .lock()
@@ -281,6 +310,7 @@ impl AgentRuntimeManager {
         }
         session.state = AgentRuntimeState::Ready;
         session.runtime = Some(runtime);
+        session.ordered_events = Some(ordered_tx);
         let connection = session.connection.clone();
         drop(sessions);
         spawn_inbound_pump(
@@ -288,6 +318,7 @@ impl AgentRuntimeManager {
             Arc::downgrade(&self.emitter),
             Arc::downgrade(&transport),
             inbound,
+            ordered_rx,
             owned_id.to_string(),
             generation,
         );
@@ -300,7 +331,12 @@ impl AgentRuntimeManager {
         generation: u64,
         payload: AgentConversationPayload,
     ) -> Result<AgentConversationEvent, String> {
-        record_payload(&self.sessions, owned_id, generation, payload)
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session_mut(&mut sessions, owned_id, generation)?;
+        record_payload_for_session_and_dispatch(session, &self.emitter, payload)
     }
 
     pub async fn prompt(
@@ -315,7 +351,7 @@ impl AgentRuntimeManager {
             runtime.transport().map_err(|error| error.to_string())?
         };
         let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
-        let (native_session_id, started_event) = {
+        let (native_session_id, ordered_events) = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -331,29 +367,25 @@ impl AgentRuntimeManager {
                 .native_session_id
                 .clone()
                 .ok_or_else(|| "Structured provider session has not started".to_string())?;
+            let ordered_events = session
+                .ordered_events
+                .clone()
+                .ok_or_else(|| "Structured event pump has not started".to_string())?;
             session.active_turn_id = Some(turn_id.clone());
             session.state = AgentRuntimeState::Working;
-            let event = record_payload_for_session(
+            record_payload_for_session_and_dispatch(
                 session,
+                &self.emitter,
                 AgentConversationPayload::Turn {
                     turn_id: turn_id.clone(),
                     state: super::protocol::TurnState::Started,
                 },
             )?;
-            (native_session_id, event)
+            (native_session_id, ordered_events)
         };
-        dispatch_event(&self.emitter, &started_event);
 
         let params = prompt_params(native_session_id, input);
-        spawn_prompt_completion(
-            Arc::downgrade(&self.sessions),
-            Arc::downgrade(&self.emitter),
-            transport,
-            owned_id.to_string(),
-            generation,
-            turn_id,
-            params,
-        );
+        spawn_prompt_completion(transport, ordered_events, turn_id, params);
         Ok(())
     }
 
@@ -385,45 +417,62 @@ impl AgentRuntimeManager {
             let runtime = runtime.lock().await;
             runtime.transport().map_err(|error| error.to_string())?
         };
-        let wire_id = {
+        let (pending, ordered_events, turn_active) = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-            current_session_mut(&mut sessions, &owned_id, generation)?
+            let session = current_session_mut(&mut sessions, &owned_id, generation)?;
+            let ordered_events = session
+                .ordered_events
+                .clone()
+                .ok_or_else(|| "Structured event pump has not started".to_string())?;
+            let pending = session
                 .permission_requests
                 .remove(&request_id)
-                .ok_or_else(|| "Approval request is no longer pending".to_string())?
+                .ok_or_else(|| "Approval request is no longer pending".to_string())?;
+            (pending, ordered_events, session.active_turn_id.is_some())
         };
-        let outcome = match input.decision {
-            AgentApprovalDecision::Accept => "selected",
-            AgentApprovalDecision::Decline | AgentApprovalDecision::Cancel => "cancelled",
+        let terminal_state = if turn_active {
+            match input.decision {
+                AgentApprovalDecision::Accept => ApprovalState::Accepted,
+                AgentApprovalDecision::Decline | AgentApprovalDecision::Cancel => {
+                    ApprovalState::Declined
+                }
+            }
+        } else {
+            ApprovalState::Declined
         };
-        if let Err(error) = transport
-            .respond(
-                wire_id.clone(),
-                serde_json::json!({
-                    "outcome": { "outcome": outcome }
-                }),
-            )
-            .await
-        {
+        let response = match if turn_active {
+            permission_response(&pending.options, input.decision)
+        } else {
+            Ok(serde_json::json!({ "outcome": { "outcome": "cancelled" } }))
+        } {
+            Ok(response) => response,
+            Err(error) => {
+                if let Ok(mut sessions) = self.sessions.lock() {
+                    if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
+                        session.permission_requests.insert(request_id, pending);
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = transport.respond(pending.wire_id.clone(), response).await {
             if let Ok(mut sessions) = self.sessions.lock() {
                 if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
-                    session.permission_requests.insert(request_id, wire_id);
+                    session.permission_requests.insert(request_id, pending);
                 }
             }
             return Err(error.to_string());
         }
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
-                session.state = if session.active_turn_id.is_some() {
-                    AgentRuntimeState::Working
-                } else {
-                    AgentRuntimeState::Ready
-                };
-            }
-        }
+        ordered_events
+            .send(OrderedSessionEvent::ApprovalResolved {
+                request_id,
+                state: terminal_state,
+                summary: pending.summary,
+            })
+            .map_err(|_| "Structured event pump is no longer running".to_string())?;
         Ok(())
     }
 
@@ -970,19 +1019,6 @@ fn current_session_mut<'a>(
     Ok(session)
 }
 
-fn record_payload(
-    sessions: &Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
-    owned_id: &str,
-    generation: u64,
-    payload: AgentConversationPayload,
-) -> Result<AgentConversationEvent, String> {
-    let mut sessions = sessions
-        .lock()
-        .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-    let session = current_session_mut(&mut sessions, owned_id, generation)?;
-    record_payload_for_session(session, payload)
-}
-
 fn record_payload_for_session(
     session: &mut ManagedAgentSession,
     payload: AgentConversationPayload,
@@ -1022,6 +1058,19 @@ fn record_payload_for_session(
     Ok(frontend_event)
 }
 
+fn record_payload_for_session_and_dispatch(
+    session: &mut ManagedAgentSession,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+    payload: AgentConversationPayload,
+) -> Result<AgentConversationEvent, String> {
+    let event = record_payload_for_session(session, payload)?;
+    // The session mutex is the emit-order lock. Keep it held through the
+    // callback so sequence allocation and frontend dispatch are one atomic
+    // operation for this session.
+    dispatch_event(emitter, &event);
+    Ok(event)
+}
+
 fn dispatch_event(
     emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
     event: &AgentConversationEvent,
@@ -1048,54 +1097,14 @@ fn prompt_params(native_session_id: String, input: AgentPrompt) -> Value {
 }
 
 fn spawn_prompt_completion(
-    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: Weak<Mutex<Option<ConversationEmitter>>>,
     transport: Arc<AcpTransport>,
-    owned_id: String,
-    generation: u64,
+    ordered_events: UnboundedSender<OrderedSessionEvent>,
     turn_id: String,
     params: Value,
 ) {
     tokio::spawn(async move {
         let result = transport.request("session/prompt", params).await;
-        let (Some(sessions), Some(emitter)) = (sessions.upgrade(), emitter.upgrade()) else {
-            return;
-        };
-        let event = {
-            let Ok(mut sessions) = sessions.lock() else {
-                return;
-            };
-            let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
-                return;
-            };
-            if session.active_turn_id.as_deref() != Some(turn_id.as_str())
-                || session.writer_lease.owner != AgentWriterLeaseOwner::Structured
-            {
-                return;
-            }
-            let payload = match result {
-                Ok(_) => AgentConversationPayload::Turn {
-                    turn_id: turn_id.clone(),
-                    state: super::protocol::TurnState::Completed,
-                },
-                Err(error) => AgentConversationPayload::Error {
-                    code: error.code.to_string(),
-                    message: error.message,
-                    recoverable: true,
-                },
-            };
-            let event = match record_payload_for_session(session, payload) {
-                Ok(event) => event,
-                Err(error) => {
-                    eprintln!("Could not record ACP turn completion: {error}");
-                    return;
-                }
-            };
-            session.active_turn_id = None;
-            session.state = AgentRuntimeState::Ready;
-            event
-        };
-        dispatch_event(&emitter, &event);
+        let _ = ordered_events.send(OrderedSessionEvent::PromptResult { turn_id, result });
     });
 }
 
@@ -1103,12 +1112,19 @@ fn spawn_inbound_pump(
     sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
     emitter: Weak<Mutex<Option<ConversationEmitter>>>,
     transport: Weak<AcpTransport>,
-    inbound: tokio::sync::mpsc::UnboundedReceiver<AcpInbound>,
+    inbound: mpsc::UnboundedReceiver<AcpInbound>,
+    ordered_events: mpsc::UnboundedReceiver<OrderedSessionEvent>,
     owned_id: String,
     generation: u64,
 ) {
     tokio::spawn(pump_inbound(
-        sessions, emitter, transport, inbound, owned_id, generation,
+        sessions,
+        emitter,
+        transport,
+        inbound,
+        ordered_events,
+        owned_id,
+        generation,
     ));
 }
 
@@ -1116,11 +1132,43 @@ async fn pump_inbound(
     sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
     emitter: Weak<Mutex<Option<ConversationEmitter>>>,
     transport: Weak<AcpTransport>,
-    mut inbound: tokio::sync::mpsc::UnboundedReceiver<AcpInbound>,
+    mut inbound: mpsc::UnboundedReceiver<AcpInbound>,
+    mut ordered_events: mpsc::UnboundedReceiver<OrderedSessionEvent>,
     owned_id: String,
     generation: u64,
 ) {
-    while let Some(inbound) = inbound.recv().await {
+    let mut ordered_open = true;
+    loop {
+        let inbound = if ordered_open {
+            tokio::select! {
+                biased;
+                inbound = inbound.recv() => inbound,
+                ordered = ordered_events.recv() => {
+                    match ordered {
+                        Some(ordered) => {
+                            if !handle_ordered_session_event(
+                                ordered,
+                                &sessions,
+                                &emitter,
+                                &transport,
+                                &owned_id,
+                                generation,
+                            ).await {
+                                return;
+                            }
+                        }
+                        None => ordered_open = false,
+                    }
+                    continue;
+                }
+            }
+        } else {
+            inbound.recv().await
+        };
+
+        let Some(inbound) = inbound else {
+            return;
+        };
         if transport.upgrade().is_none() {
             return;
         }
@@ -1129,32 +1177,26 @@ async fn pump_inbound(
         };
         match inbound {
             AcpInbound::SessionUpdate(params) => {
-                let event = {
-                    let Ok(mut sessions) = sessions.lock() else {
-                        return;
-                    };
-                    let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation)
-                    else {
-                        return;
-                    };
-                    if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
-                        continue;
-                    }
-                    let Some(payload) = payload_from_session_update_for_turn(
-                        &params,
-                        session.active_turn_id.as_deref(),
-                    ) else {
-                        continue;
-                    };
-                    match record_payload_for_session(session, payload) {
-                        Ok(event) => event,
-                        Err(error) => {
-                            eprintln!("Could not record ACP session update: {error}");
-                            continue;
-                        }
-                    }
+                let Ok(mut sessions) = sessions.lock() else {
+                    return;
                 };
-                dispatch_event(&emitter, &event);
+                let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
+                    return;
+                };
+                if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                    continue;
+                }
+                let Some(payload) = payload_from_session_update_for_turn(
+                    &params,
+                    session.active_turn_id.as_deref(),
+                ) else {
+                    continue;
+                };
+                if let Err(error) =
+                    record_payload_for_session_and_dispatch(session, &emitter, payload)
+                {
+                    eprintln!("Could not record ACP session update: {error}");
+                }
             }
             AcpInbound::AgentRequest {
                 wire_id,
@@ -1166,88 +1208,230 @@ async fn pump_inbound(
                     continue;
                 }
                 let summary = permission_summary(&params);
-                let event = {
-                    let Ok(mut sessions) = sessions.lock() else {
-                        return;
-                    };
-                    let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation)
-                    else {
-                        return;
-                    };
-                    if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
-                        continue;
-                    }
-                    session.next_permission_id = session.next_permission_id.saturating_add(1);
-                    let request_id = format!("perm-{}", session.next_permission_id);
-                    session
-                        .permission_requests
-                        .insert(request_id.clone(), wire_id);
-                    session.state = AgentRuntimeState::WaitingApproval;
-                    match record_payload_for_session(
-                        session,
-                        AgentConversationPayload::Approval {
-                            request_id,
-                            state: super::protocol::ApprovalState::Requested,
-                            summary,
-                        },
-                    ) {
-                        Ok(event) => event,
-                        Err(error) => {
-                            eprintln!("Could not record ACP permission request: {error}");
-                            continue;
-                        }
-                    }
+                let options = permission_options(&params);
+                let Ok(mut sessions) = sessions.lock() else {
+                    return;
                 };
-                dispatch_event(&emitter, &event);
+                let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
+                    return;
+                };
+                if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                    continue;
+                }
+                session.next_permission_id = session.next_permission_id.saturating_add(1);
+                let request_id = format!("perm-{}", session.next_permission_id);
+                session.permission_requests.insert(
+                    request_id.clone(),
+                    PendingPermission {
+                        wire_id,
+                        options,
+                        summary: summary.clone(),
+                    },
+                );
+                session.state = AgentRuntimeState::WaitingApproval;
+                if let Err(error) = record_payload_for_session_and_dispatch(
+                    session,
+                    &emitter,
+                    AgentConversationPayload::Approval {
+                        request_id,
+                        state: ApprovalState::Requested,
+                        summary,
+                    },
+                ) {
+                    eprintln!("Could not record ACP permission request: {error}");
+                }
             }
             AcpInbound::TransportClosed { reason } => {
-                let events = {
-                    let Ok(mut sessions) = sessions.lock() else {
-                        return;
-                    };
-                    let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation)
-                    else {
-                        return;
-                    };
-                    let should_emit =
-                        session.writer_lease.owner == AgentWriterLeaseOwner::Structured;
-                    let mut events = Vec::new();
-                    if should_emit {
-                        let native_session_id = session.native_session_id.clone();
-                        if let Ok(event) = record_payload_for_session(
-                            session,
-                            AgentConversationPayload::Connection {
-                                state: ConversationConnectionState::Failed,
-                                native_session_id,
-                            },
-                        ) {
-                            events.push(event);
-                        }
-                        if let Ok(event) = record_payload_for_session(
-                            session,
-                            AgentConversationPayload::Error {
-                                code: "acp-transport".to_string(),
-                                message: reason,
-                                recoverable: true,
-                            },
-                        ) {
-                            events.push(event);
-                        }
-                    } else {
-                        session.connection.state = ConversationConnectionState::Failed;
-                    }
-                    session.active_turn_id = None;
-                    session.permission_requests.clear();
-                    session.state = AgentRuntimeState::Failed;
-                    events
+                let Ok(mut sessions) = sessions.lock() else {
+                    return;
                 };
-                for event in events {
-                    dispatch_event(&emitter, &event);
+                let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
+                    return;
+                };
+                if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
+                    let native_session_id = session.native_session_id.clone();
+                    if let Err(error) = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::Connection {
+                            state: ConversationConnectionState::Failed,
+                            native_session_id,
+                        },
+                    ) {
+                        eprintln!("Could not record ACP transport failure: {error}");
+                    }
+                    if let Err(error) = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::Error {
+                            code: "acp-transport".to_string(),
+                            message: reason,
+                            recoverable: true,
+                        },
+                    ) {
+                        eprintln!("Could not record ACP transport error: {error}");
+                    }
+                } else {
+                    session.connection.state = ConversationConnectionState::Failed;
                 }
+                session.active_turn_id = None;
+                session.permission_requests.clear();
+                session.state = AgentRuntimeState::Failed;
                 return;
             }
         }
     }
+}
+
+async fn handle_ordered_session_event(
+    ordered: OrderedSessionEvent,
+    sessions: &Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
+    emitter: &Weak<Mutex<Option<ConversationEmitter>>>,
+    transport: &Weak<AcpTransport>,
+    owned_id: &str,
+    generation: u64,
+) -> bool {
+    let (Some(sessions), Some(emitter)) = (sessions.upgrade(), emitter.upgrade()) else {
+        return false;
+    };
+    match ordered {
+        OrderedSessionEvent::ApprovalResolved {
+            request_id,
+            state,
+            summary,
+        } => {
+            let Ok(mut sessions) = sessions.lock() else {
+                return false;
+            };
+            let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+                return false;
+            };
+            if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                return true;
+            }
+            if let Err(error) = record_payload_for_session_and_dispatch(
+                session,
+                &emitter,
+                AgentConversationPayload::Approval {
+                    request_id,
+                    state,
+                    summary,
+                },
+            ) {
+                eprintln!("Could not record ACP permission resolution: {error}");
+                return false;
+            }
+            session.state = if session.active_turn_id.is_some() {
+                AgentRuntimeState::Working
+            } else {
+                AgentRuntimeState::Ready
+            };
+            true
+        }
+        OrderedSessionEvent::PromptResult { turn_id, result } => {
+            let cancelled = result
+                .as_ref()
+                .ok()
+                .and_then(stop_reason)
+                .is_some_and(|reason| reason == "cancelled");
+            let pending_permissions = if cancelled {
+                let Some(transport) = transport.upgrade() else {
+                    return false;
+                };
+                let Some(pending) =
+                    take_pending_permissions(&sessions, owned_id, generation, &turn_id)
+                else {
+                    return true;
+                };
+                for (_, pending) in &pending {
+                    if let Err(error) = transport
+                        .respond(
+                            pending.wire_id.clone(),
+                            serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                        )
+                        .await
+                    {
+                        eprintln!("Could not cancel ACP permission request: {error}");
+                    }
+                }
+                pending
+            } else {
+                Vec::new()
+            };
+
+            let Ok(mut sessions) = sessions.lock() else {
+                return false;
+            };
+            let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+                return false;
+            };
+            if session.active_turn_id.as_deref() != Some(turn_id.as_str())
+                || session.writer_lease.owner != AgentWriterLeaseOwner::Structured
+            {
+                return true;
+            }
+            for (request_id, pending) in pending_permissions {
+                if let Err(error) = record_payload_for_session_and_dispatch(
+                    session,
+                    &emitter,
+                    AgentConversationPayload::Approval {
+                        request_id,
+                        state: ApprovalState::Declined,
+                        summary: pending.summary,
+                    },
+                ) {
+                    eprintln!("Could not record cancelled ACP permission request: {error}");
+                    return false;
+                }
+            }
+            let payload = match result {
+                Ok(_) if cancelled => AgentConversationPayload::Turn {
+                    turn_id: turn_id.clone(),
+                    state: super::protocol::TurnState::Interrupted,
+                },
+                Ok(_) => AgentConversationPayload::Turn {
+                    turn_id: turn_id.clone(),
+                    state: super::protocol::TurnState::Completed,
+                },
+                Err(error) => AgentConversationPayload::Error {
+                    code: error.code.to_string(),
+                    message: error.message,
+                    recoverable: true,
+                },
+            };
+            if let Err(error) = record_payload_for_session_and_dispatch(session, &emitter, payload)
+            {
+                eprintln!("Could not record ACP turn completion: {error}");
+                return false;
+            }
+            session.active_turn_id = None;
+            session.state = AgentRuntimeState::Ready;
+            true
+        }
+    }
+}
+
+fn take_pending_permissions(
+    sessions: &Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
+    owned_id: &str,
+    generation: u64,
+    turn_id: &str,
+) -> Option<Vec<(String, PendingPermission)>> {
+    let mut sessions = sessions.lock().ok()?;
+    let session = current_session_mut(&mut sessions, owned_id, generation).ok()?;
+    if session.active_turn_id.as_deref() != Some(turn_id)
+        || session.writer_lease.owner != AgentWriterLeaseOwner::Structured
+    {
+        return None;
+    }
+    Some(session.permission_requests.drain().collect())
+}
+
+fn stop_reason(response: &Value) -> Option<&str> {
+    response
+        .get("stopReason")
+        .or_else(|| response.get("stop_reason"))
+        .and_then(Value::as_str)
 }
 
 fn permission_summary(params: &Value) -> String {
@@ -1259,6 +1443,73 @@ fn permission_summary(params: &Value) -> String {
         .filter(|summary| !summary.is_empty())
         .unwrap_or("Permission requested")
         .to_string()
+}
+
+fn permission_options(params: &Value) -> Vec<PermissionOption> {
+    params
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            let option_id = option
+                .get("optionId")
+                .or_else(|| option.get("option_id"))
+                .and_then(Value::as_str)
+                .filter(|option_id| !option_id.is_empty())?
+                .to_string();
+            Some(PermissionOption {
+                option_id,
+                kind: option
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn permission_response(
+    options: &[PermissionOption],
+    decision: AgentApprovalDecision,
+) -> Result<Value, String> {
+    match decision {
+        AgentApprovalDecision::Cancel => Ok(serde_json::json!({
+            "outcome": { "outcome": "cancelled" }
+        })),
+        AgentApprovalDecision::Accept => {
+            let option_id = options
+                .iter()
+                .find(|option| is_allow_kind(&option.kind))
+                .or_else(|| options.first())
+                .map(|option| option.option_id.clone())
+                .ok_or_else(|| "ACP permission request did not provide an option".to_string())?;
+            Ok(serde_json::json!({
+                "outcome": { "outcome": "selected", "optionId": option_id }
+            }))
+        }
+        AgentApprovalDecision::Decline => {
+            let option_id = options
+                .iter()
+                .find(|option| is_reject_kind(&option.kind))
+                .map(|option| option.option_id.clone())
+                .ok_or_else(|| {
+                    "ACP permission request did not provide a reject option".to_string()
+                })?;
+            Ok(serde_json::json!({
+                "outcome": { "outcome": "selected", "optionId": option_id }
+            }))
+        }
+    }
+}
+
+fn is_allow_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("allow") || kind.to_ascii_lowercase().starts_with("allow_")
+}
+
+fn is_reject_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("reject") || kind.to_ascii_lowercase().starts_with("reject_")
 }
 
 fn canonical_event(
@@ -1956,6 +2207,140 @@ mod tests {
         })
         .await;
 
+        assert!(seen.lock().unwrap().iter().any(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Approval {
+                    state: ApprovalState::Accepted,
+                    ..
+                }
+            )
+        }));
+        let fixture_log = fs::read_to_string(fixture.root.join("permission_midturn.jsonl"))
+            .expect("permission fixture log");
+        assert!(
+            fixture_log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#),
+            "permission response must select a valid allow option: {fixture_log}"
+        );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_prompt_emits_interrupted_turn() {
+        let fixture = fixture_manager_with_acp_session("cancelled_turn").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        let fixture_log_path = fixture.root.join("cancelled_turn.jsonl");
+        wait_until(|| {
+            fs::read_to_string(&fixture_log_path)
+                .map(|log| log.contains(r#""method":"session/prompt""#))
+                .unwrap_or(false)
+        })
+        .await;
+        fixture
+            .manager
+            .cancel_turn(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("cancel notification");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Interrupted,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Turn {
+                    state: super::super::protocol::TurnState::Completed,
+                    ..
+                }
+            )
+        }));
+        assert!(seen
+            .windows(2)
+            .all(|events| events[1].sequence == events[0].sequence + 1));
+        drop(seen);
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_a_prompt_answers_pending_permissions() {
+        let fixture = fixture_manager_with_acp_session("permission_cancelled").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Approval {
+                        state: ApprovalState::Requested,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        fixture
+            .manager
+            .cancel_turn(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("cancel notification");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Interrupted,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Approval {
+                    state: ApprovalState::Declined,
+                    ..
+                }
+            )
+        }));
+        drop(seen);
+        let fixture_log = fs::read_to_string(fixture.root.join("permission_cancelled.jsonl"))
+            .expect("permission cancellation fixture log");
+        assert!(
+            fixture_log.contains(r#""outcome":{"outcome":"cancelled"}"#),
+            "cancellation must answer the wire permission request: {fixture_log}"
+        );
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }

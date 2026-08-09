@@ -749,11 +749,34 @@ while IFS= read -r line; do
         done
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-many","stopReason":"end_turn"}}}}\n' "$id"
       elif [ "$fixture" = "permission_midturn" ]; then
-        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow"}}]}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
         while IFS= read -r response; do
           printf '%s\n' "$response" >> "$log"
           case "$response" in
-            *'"id":77'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"; break ;;
+            *'"id":77'*)
+              if printf '%s' "$response" | grep -q '\"outcome\":{{\"outcome\":\"selected\",\"optionId\":\"allow\"'; then
+                printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+              elif printf '%s' "$response" | grep -q '\"outcome\":{{\"outcome\":\"selected\",\"optionId\":\"reject\"'; then
+                printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+              else
+                printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32000,"message":"invalid permission option"}}}}\n' "$id"
+              fi
+              break ;;
+          esac
+        done
+      elif [ "$fixture" = "permission_cancelled" ]; then
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+          case "$response" in
+            *'"method":"session/cancel"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-cancelled","stopReason":"cancelled"}}}}\n' "$id"; break ;;
+          esac
+        done
+      elif [ "$fixture" = "cancelled_turn" ]; then
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+          case "$response" in
+            *'"method":"session/cancel"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-cancelled","stopReason":"cancelled"}}}}\n' "$id"; break ;;
           esac
         done
       else
