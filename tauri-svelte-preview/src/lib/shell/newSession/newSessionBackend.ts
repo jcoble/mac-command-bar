@@ -57,7 +57,7 @@ export async function pickProjectFolder(): Promise<BackendAnswer<string | null>>
   if (!canPickFolder()) {
     return {
       status: 'unavailable',
-      message: 'Choosing a folder works in the desktop app only — type the full path instead.'
+      message: 'The folder picker works in the desktop app only. Enter the full path instead.'
     };
   }
   try {
@@ -66,7 +66,7 @@ export async function pickProjectFolder(): Promise<BackendAnswer<string | null>>
     const chosen = await open({
       directory: true,
       multiple: false,
-      title: 'Choose a project folder'
+      title: 'Choose where the agent should work'
     });
     const folder = Array.isArray(chosen) ? chosen[0] : chosen;
     if (typeof folder !== 'string' || folder.trim().length === 0) {
@@ -114,7 +114,7 @@ export async function validateProjectRoot(
 export async function listWorktrees(root: string): Promise<BackendAnswer<ProjectWorktree[]>> {
   const trimmed = root.trim();
   if (!trimmed) {
-    return { status: 'failed', message: 'Pick a project first.' };
+    return { status: 'failed', message: 'Choose a project folder first.' };
   }
   try {
     countInvoke('list_project_worktrees');
@@ -126,7 +126,7 @@ export async function listWorktrees(root: string): Promise<BackendAnswer<Project
   } catch (error) {
     return {
       status: 'failed',
-      message: `The checkouts for this project could not be listed: ${describeError(error)}`
+      message: `The working copies for this project could not be listed: ${describeError(error)}`
     };
   }
 }

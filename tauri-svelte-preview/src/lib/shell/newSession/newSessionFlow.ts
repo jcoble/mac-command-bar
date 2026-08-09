@@ -47,20 +47,20 @@ export const LAUNCH_CATALOG: LaunchOption[] = [
   {
     agent: 'claude',
     command: 'claude',
-    label: 'Claude Code',
-    hint: 'Opens a terminal in the folder and starts a new Claude Code conversation.'
+    label: 'Claude',
+    hint: 'Start a conversation with Claude.'
   },
   {
     agent: 'codex',
     command: 'codex',
     label: 'Codex',
-    hint: 'Opens a terminal in the folder and starts a new Codex conversation.'
+    hint: 'Start a conversation with Codex.'
   },
   {
     agent: 'shell',
     command: '',
-    label: 'Just a terminal',
-    hint: 'Opens a terminal in the folder and runs nothing.'
+    label: 'Terminal only',
+    hint: 'Open a terminal without starting an agent.'
   }
 ];
 
@@ -141,7 +141,7 @@ export function validateNewSession(draft: NewSessionDraft): NewSessionProblem[] 
   const cwd = normalizeRootPath(draft.cwd);
 
   if (!cwd) {
-    problems.push({ field: 'cwd', message: 'Pick the folder the session should run in.' });
+    problems.push({ field: 'cwd', message: 'Choose where the session should work.' });
   } else if (!cwd.startsWith('/')) {
     problems.push({
       field: 'cwd',
@@ -396,7 +396,7 @@ export function worktreeChoicesFor(input: {
   const choices: WorktreeChoice[] = [
     {
       path: root,
-      label: `${lastSegmentOf(root)} — main checkout`,
+      label: `${lastSegmentOf(root)} — main folder`,
       branch: primaryEntry?.branch ?? null,
       isPrimary: true,
       note: primaryEntry ? noteFor(primaryEntry) : null
