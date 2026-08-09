@@ -33,8 +33,9 @@ if [ ! -e "$CODEX_ACP_HOME/auth.json" ] && [ -f "$HOME/.codex/auth.json" ]; then
 fi
 if [ ! -f "$CODEX_ACP_HOME/config.toml" ]; then
   cat > "$CODEX_ACP_HOME/config.toml" <<'EOF'
-model = "gpt-5.6-sol"
-model_reasoning_effort = "medium"
+# No model pin: the adapter's bundled codex core predates the gpt-5.6
+# models and the API rejects them from it ("requires a newer version of
+# Codex"), so it must run its own default model.
 approval_policy = "untrusted"
 sandbox_mode = "workspace-write"
 EOF
