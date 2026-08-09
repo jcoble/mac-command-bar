@@ -65,7 +65,9 @@ Native repro required: run the packaged/dev native app, open Stats & Usage, reco
 
 ## Commits (phase 1)
 
-858d9ed browser input wrapping · 207a6db+50f27c9 usage error surfacing · 8e5b336+7c77f9a+90010a1 ACP transport actor · 50ca299+4cad892 manager integration · b91e29d ownership split · 776ac66 structured-only app sessions + inspector.
+858d9ed browser input wrapping · 207a6db+50f27c9 usage error surfacing · 8e5b336+7c77f9a+90010a1 ACP transport actor · 50ca299+4cad892 manager integration · b91e29d ownership split · 776ac66 structured-only app sessions + inspector · 8a883ea whole-branch fix wave (idempotent activation, one-shot busy guard, terminal events before cleanup, nativeSessionId persistence) · 81c84c2 atomic failed-prompt cleanup · 3ee53fe one-shot isolation for agent-minted turn ids.
+
+Two review scenarios are parked as accepted ACP v1 limits (see .superpowers ledger): both require an agent still streaming updates after its end-of-turn response while a new turn is already active — indistinguishable from legitimate updates at the protocol level.
 
 ## Native acceptance (user)
 
