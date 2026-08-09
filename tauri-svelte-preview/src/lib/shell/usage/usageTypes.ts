@@ -1,11 +1,10 @@
 export type ProviderUsageState = 'available' | 'unavailable' | 'error';
 
 export type ProviderUsageWindow = {
-  name: string;
-  semantics: string;
-  percentConsumed: number | null;
-  percentRemaining: number | null;
-  resetAt: string | null;
+  label: string;
+  usedPercent: number;
+  resetsAt: string | null;
+  windowMinutes?: number | null;
 };
 
 export type ProviderUsageSnapshot = {

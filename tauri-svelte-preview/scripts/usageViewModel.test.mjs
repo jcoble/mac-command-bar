@@ -8,7 +8,7 @@ const { describeUsageError } = await import('../src/lib/shell/usage/usageStore.s
 
 function testUsageErrorsPreserveStringRejections() {
   // describeUsageError must pass Tauri string rejections through untouched.
-  assert.equal(describeUsageError('SQLite is unavailable (sqlite3): spawn failed'), 'SQLite is unavailable (sqlite3): spawn failed');
+  assert.equal(describeUsageError('Usage history database could not open: disk failure'), 'Usage history database could not open: disk failure');
   assert.equal(describeUsageError(new Error('boom')), 'boom');
   assert.equal(describeUsageError({ weird: true }), 'Usage history could not be read.');
 }
@@ -16,8 +16,8 @@ function testUsageErrorsPreserveStringRejections() {
 testUsageErrorsPreserveStringRejections();
 
 assert.equal(usageProviderLabel('codex'), 'Codex');
-assert.equal(usagePercent({ percentConsumed: null, percentRemaining: 25 }), 75);
-assert.equal(usagePercent({ percentConsumed: 125, percentRemaining: null }), 100);
+assert.equal(usagePercent({ usedPercent: 75 }), 75);
+assert.equal(usagePercent({ usedPercent: 125 }), 100);
 assert.match(usageResetLabel(String(Date.now() + 3_600_000)), /^Resets in 1h/);
 assert.equal(usageSummaryLabel({ inputTokens: 12, outputTokens: 8 }), '20 tokens');
 

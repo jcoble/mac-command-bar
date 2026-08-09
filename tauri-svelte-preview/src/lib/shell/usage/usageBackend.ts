@@ -16,12 +16,14 @@ import type {
   UsageProviderSummaryRow,
   UsageSummary
 } from './usageTypes.ts';
+import { normalizeProviderUsage } from './usageCurrent.ts';
 
 export async function readCurrentProviderUsage(
   provider: string | null,
   instanceId: string | null
 ): Promise<ProviderUsageSnapshot | null> {
-  return readCurrentProviderUsageFromTauri(provider, instanceId);
+  const snapshot = await readCurrentProviderUsageFromTauri(provider, instanceId);
+  return snapshot ? normalizeProviderUsage(snapshot) : null;
 }
 
 export async function readUsageSummary(query: UsageHistoryQuery = {}): Promise<UsageSummary | null> {

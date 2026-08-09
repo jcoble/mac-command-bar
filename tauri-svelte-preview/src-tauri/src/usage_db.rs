@@ -1,9 +1,13 @@
+use rusqlite::{
+    params, params_from_iter,
+    types::{Value as SqlValue, ValueRef},
+    Connection, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub const USAGE_SCHEMA: &str = include_str!("../../migrations/0001_usage_history.sql");
 
@@ -152,7 +156,16 @@ impl UsageDb {
                 .map_err(|error| format!("Could not create usage database folder: {error}"))?;
         }
         let db = Self { path };
-        db.execute(&format!("BEGIN IMMEDIATE;\n{USAGE_SCHEMA}\nCOMMIT;"))?;
+        let mut connection = db.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| db.database_error("could not start schema migration", error))?;
+        transaction
+            .execute_batch(USAGE_SCHEMA)
+            .map_err(|error| db.database_error("could not apply schema migration", error))?;
+        transaction
+            .commit()
+            .map_err(|error| db.database_error("could not finish schema migration", error))?;
         Ok(db)
     }
 
@@ -160,7 +173,7 @@ impl UsageDb {
     /// pass can decide which bytes are new without opening one transaction per
     /// source file.
     pub fn read_source_cursors(&self) -> Result<HashMap<String, UsageSourceCursor>, String> {
-        let rows = self.query("SELECT provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id FROM usage_source_cursors")?;
+        let rows = self.query("SELECT provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id FROM usage_source_cursors", &[])?;
         let mut cursors = HashMap::with_capacity(rows.len());
         for row in rows {
             let cursor = UsageSourceCursor {
@@ -199,41 +212,88 @@ impl UsageDb {
         &self,
         batches: &[(&[UsageEvent], Option<&UsageSourceCursor>)],
     ) -> Result<(), String> {
-        let mut sql = String::from("BEGIN IMMEDIATE;\n");
+        const INSERT_EVENT_SQL: &str = "INSERT OR IGNORE INTO usage_events (provider, provider_instance_id, owned_id, workflow_id, turn_id, project_id, workspace_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, estimated_cost_micros, estimate_rate_version, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        const UPSERT_CURSOR_SQL: &str = "INSERT INTO usage_source_cursors (provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id, updated_at_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider, provider_instance_id, source_kind, source_key) DO UPDATE SET file_identity=excluded.file_identity, offset_bytes=excluded.offset_bytes, size_bytes=excluded.size_bytes, modified_at_micros=excluded.modified_at_micros, last_event_id=excluded.last_event_id, updated_at_micros=excluded.updated_at_micros";
+        const REBUILD_ROLLUPS_SQL: &str = "DELETE FROM usage_daily_rollups;\nINSERT INTO usage_daily_rollups (day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros) SELECT date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id, COUNT(*), COUNT(DISTINCT owned_id), COUNT(DISTINCT turn_id), COUNT(DISTINCT workflow_id), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(estimated_cost_micros) FROM usage_events GROUP BY date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id";
+
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| self.database_error("could not start usage batch", error))?;
         let mut has_events = false;
-        for (events, cursor) in batches {
-            for event in *events {
-                has_events = true;
-                validate_event(event)?;
-                sql.push_str(&format!(
-                    "INSERT OR IGNORE INTO usage_events (provider, provider_instance_id, owned_id, workflow_id, turn_id, project_id, workspace_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, estimated_cost_micros, estimate_rate_version, source_kind, source_event_id, source_key, inserted_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
-                    quote(&event.provider), quote(&event.provider_instance_id), quote_option(event.owned_id.as_deref()),
-                    quote_option(event.workflow_id.as_deref()), quote_option(event.turn_id.as_deref()), quote_option(event.project_id.as_deref()),
-                    quote_option(event.workspace_id.as_deref()), event.occurred_at_micros, event.input_tokens, event.output_tokens,
-                    event.cache_read_tokens, event.cache_write_tokens, event.reasoning_tokens, quote(&event.model),
-                    event.estimated_cost_micros.map_or_else(|| "NULL".to_string(), |value| value.to_string()), quote_option(event.estimate_rate_version.as_deref()),
-                    quote(&event.source_kind), quote(&event.source_event_id), quote(&event.source_key), now_micros(),
-                ));
-            }
-            if let Some(cursor) = cursor {
-                sql.push_str(&format!(
-                    "INSERT INTO usage_source_cursors (provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id, updated_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}) ON CONFLICT(provider, provider_instance_id, source_kind, source_key) DO UPDATE SET file_identity=excluded.file_identity, offset_bytes=excluded.offset_bytes, size_bytes=excluded.size_bytes, modified_at_micros=excluded.modified_at_micros, last_event_id=excluded.last_event_id, updated_at_micros=excluded.updated_at_micros;\n",
-                    quote(&cursor.provider), quote(&cursor.provider_instance_id), quote(&cursor.source_kind), quote(&cursor.source_key), quote(&cursor.file_identity),
-                    cursor.offset, cursor.size, cursor.modified_at_micros, quote_option(cursor.last_event_id.as_deref()), now_micros()
-                ));
+        {
+            let mut event_statement = transaction.prepare(INSERT_EVENT_SQL).map_err(|error| {
+                self.database_error("could not prepare usage event insert", error)
+            })?;
+            let mut cursor_statement = transaction.prepare(UPSERT_CURSOR_SQL).map_err(|error| {
+                self.database_error("could not prepare usage cursor update", error)
+            })?;
+            for (events, cursor) in batches {
+                for event in *events {
+                    has_events = true;
+                    validate_event(event)?;
+                    event_statement
+                        .execute(params![
+                            &event.provider,
+                            &event.provider_instance_id,
+                            event.owned_id.as_deref(),
+                            event.workflow_id.as_deref(),
+                            event.turn_id.as_deref(),
+                            event.project_id.as_deref(),
+                            event.workspace_id.as_deref(),
+                            event.occurred_at_micros,
+                            sqlite_integer(event.input_tokens, "input token count")?,
+                            sqlite_integer(event.output_tokens, "output token count")?,
+                            sqlite_integer(event.cache_read_tokens, "cache read token count")?,
+                            sqlite_integer(event.cache_write_tokens, "cache write token count")?,
+                            sqlite_integer(event.reasoning_tokens, "reasoning token count")?,
+                            &event.model,
+                            event.estimated_cost_micros,
+                            event.estimate_rate_version.as_deref(),
+                            &event.source_kind,
+                            &event.source_event_id,
+                            &event.source_key,
+                            now_micros(),
+                        ])
+                        .map_err(|error| {
+                            self.database_error("could not insert usage event", error)
+                        })?;
+                }
+                if let Some(cursor) = cursor {
+                    cursor_statement
+                        .execute(params![
+                            &cursor.provider,
+                            &cursor.provider_instance_id,
+                            &cursor.source_kind,
+                            &cursor.source_key,
+                            &cursor.file_identity,
+                            sqlite_integer(cursor.offset, "usage cursor offset")?,
+                            sqlite_integer(cursor.size, "usage source size")?,
+                            cursor.modified_at_micros,
+                            cursor.last_event_id.as_deref(),
+                            now_micros(),
+                        ])
+                        .map_err(|error| {
+                            self.database_error("could not update usage cursor", error)
+                        })?;
+                }
             }
         }
-        if !has_events {
-            sql.push_str("COMMIT;\n");
-            return self.execute(&sql);
+        if has_events {
+            // The rollup is rebuilt with one DB-side aggregate, never by loading
+            // usage rows into Rust.
+            transaction
+                .execute_batch(REBUILD_ROLLUPS_SQL)
+                .map_err(|error| self.database_error("could not rebuild usage rollups", error))?;
         }
-        // The rollup is rebuilt with SQL, not by loading events into Rust.
-        sql.push_str("DELETE FROM usage_daily_rollups;\nINSERT INTO usage_daily_rollups (day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros) SELECT date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id, COUNT(*), COUNT(DISTINCT owned_id), COUNT(DISTINCT turn_id), COUNT(DISTINCT workflow_id), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(estimated_cost_micros) FROM usage_events GROUP BY date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id;\nCOMMIT;\n");
-        self.execute(&sql)
+        transaction
+            .commit()
+            .map_err(|error| self.database_error("could not commit usage batch", error))
     }
 
     pub fn read_usage_summary(&self, filter: &UsageFilter) -> Result<UsageSummary, String> {
-        let rows = self.query(&summary_sql(filter))?;
+        let query = summary_query(filter);
+        let rows = self.query(&query.sql, &query.parameters)?;
         let row = rows.first().cloned().unwrap_or(Value::Null);
         Ok(UsageSummary {
             event_count: value_u64(&row, "event_count"),
@@ -255,7 +315,8 @@ impl UsageDb {
         &self,
         filter: &UsageFilter,
     ) -> Result<Vec<UsageBreakdownRow>, String> {
-        self.query(&breakdown_sql(filter))?
+        let query = breakdown_query(filter);
+        self.query(&query.sql, &query.parameters)?
             .into_iter()
             .map(|row| {
                 Ok(UsageBreakdownRow {
@@ -278,7 +339,8 @@ impl UsageDb {
         &self,
         filter: &UsageFilter,
     ) -> Result<Vec<UsageProviderSummaryRow>, String> {
-        self.query(&provider_summary_sql(filter))?
+        let query = provider_summary_query(filter);
+        self.query(&query.sql, &query.parameters)?
             .into_iter()
             .map(|row| {
                 let mut models = value_models(&row);
@@ -302,7 +364,8 @@ impl UsageDb {
     }
 
     pub fn read_daily(&self, filter: &UsageFilter) -> Result<Vec<UsageDailyRow>, String> {
-        self.query(&daily_sql(filter))?
+        let query = daily_query(filter);
+        self.query(&query.sql, &query.parameters)?
             .into_iter()
             .map(|row| {
                 Ok(UsageDailyRow {
@@ -326,7 +389,8 @@ impl UsageDb {
         &self,
         filter: &UsageFilter,
     ) -> Result<Vec<UsageDailyTotalsRow>, String> {
-        self.query(&daily_totals_sql(filter))?
+        let query = daily_totals_query(filter);
+        self.query(&query.sql, &query.parameters)?
             .into_iter()
             .map(|row| {
                 Ok(UsageDailyTotalsRow {
@@ -348,103 +412,55 @@ impl UsageDb {
 
     #[cfg(test)]
     fn explain_breakdown(&self, filter: &UsageFilter) -> Result<Vec<Value>, String> {
-        let sql = format!("EXPLAIN QUERY PLAN {}", breakdown_sql(filter));
-        trace_sql(&sql);
-        let binary = sqlite_binary();
-        let output = Command::new(&binary)
-            .arg("-batch")
-            .arg(&self.path)
-            .arg(&sql)
-            .output()
-            .map_err(|error| {
-                format!(
-                    "SQLite is unavailable ({}) for {}: {error}",
-                    binary.to_string_lossy(),
-                    self.path.display()
-                )
-            })?;
-        if !output.status.success() {
-            return Err(format!(
-                "SQLite query plan failed ({}) for {}: {}",
-                binary.to_string_lossy(),
-                self.path.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| Value::String(line.to_string()))
-            .collect())
+        let query = breakdown_query(filter);
+        self.query(
+            &format!("EXPLAIN QUERY PLAN {}", query.sql),
+            &query.parameters,
+        )
     }
 
-    fn execute(&self, sql: &str) -> Result<(), String> {
+    fn connection(&self) -> Result<Connection, String> {
+        Connection::open(&self.path)
+            .map_err(|error| self.database_error("could not open usage history", error))
+    }
+
+    fn database_error(&self, action: &str, error: rusqlite::Error) -> String {
+        format!(
+            "Usage history database {action} for {}: {error}",
+            self.path.display()
+        )
+    }
+
+    fn query(&self, sql: &str, parameters: &[SqlValue]) -> Result<Vec<Value>, String> {
         trace_sql(sql);
-        let binary = sqlite_binary();
-        let output = Command::new(&binary)
-            .arg("-batch")
-            .arg(&self.path)
-            .arg(sql)
-            .output()
-            .map_err(|error| {
-                format!(
-                    "SQLite is unavailable ({}) for {}: {error}",
-                    binary.to_string_lossy(),
-                    self.path.display()
-                )
-            })?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "SQLite command failed ({}) for {}: {}",
-                binary.to_string_lossy(),
-                self.path.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(sql)
+            .map_err(|error| self.database_error("could not prepare usage query", error))?;
+        let column_names = statement
+            .column_names()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut rows = statement
+            .query(params_from_iter(parameters.iter()))
+            .map_err(|error| self.database_error("could not run usage query", error))?;
+        let mut values = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| self.database_error("could not read usage query result", error))?
+        {
+            let mut object = serde_json::Map::with_capacity(column_names.len());
+            for (index, column_name) in column_names.iter().enumerate() {
+                let value = row.get_ref(index).map_err(|error| {
+                    self.database_error("could not decode usage query result", error)
+                })?;
+                object.insert(column_name.clone(), sqlite_value_to_json(value));
+            }
+            values.push(Value::Object(object));
         }
+        Ok(values)
     }
-
-    fn query(&self, sql: &str) -> Result<Vec<Value>, String> {
-        trace_sql(sql);
-        let binary = sqlite_binary();
-        let output = Command::new(&binary)
-            .arg("-batch")
-            .arg("-json")
-            .arg(&self.path)
-            .arg(sql)
-            .output()
-            .map_err(|error| {
-                format!(
-                    "SQLite is unavailable ({}) for {}: {error}",
-                    binary.to_string_lossy(),
-                    self.path.display()
-                )
-            })?;
-        if !output.status.success() {
-            return Err(format!(
-                "SQLite query failed ({}) for {}: {}",
-                binary.to_string_lossy(),
-                self.path.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        if text.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_str(text.trim()).map_err(|error| {
-            format!(
-                "SQLite JSON output was invalid ({}) for {}: {error}",
-                binary.to_string_lossy(),
-                self.path.display()
-            )
-        })
-    }
-}
-
-fn sqlite_binary() -> std::ffi::OsString {
-    std::env::var_os("MCB_SQLITE_BIN").unwrap_or_else(|| "sqlite3".into())
 }
 
 fn validate_event(event: &UsageEvent) -> Result<(), String> {
@@ -462,82 +478,142 @@ fn validate_event(event: &UsageEvent) -> Result<(), String> {
     Ok(())
 }
 
-fn summary_sql(filter: &UsageFilter) -> String {
-    format!("SELECT COUNT(*) AS event_count, COUNT(DISTINCT provider) AS provider_count, COUNT(DISTINCT date(occurred_at_micros / 1000000, 'unixepoch')) AS active_days, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM usage_events WHERE {}", where_sql(filter))
+struct UsageQuery {
+    sql: String,
+    parameters: Vec<SqlValue>,
 }
 
-fn breakdown_sql(filter: &UsageFilter) -> String {
+fn summary_query(filter: &UsageFilter) -> UsageQuery {
+    let (where_clause, parameters) = where_clause(filter);
+    UsageQuery {
+        sql: format!("SELECT COUNT(*) AS event_count, COUNT(DISTINCT provider) AS provider_count, COUNT(DISTINCT date(occurred_at_micros / 1000000, 'unixepoch')) AS active_days, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM usage_events WHERE {where_clause}"),
+        parameters,
+    }
+}
+
+fn breakdown_query(filter: &UsageFilter) -> UsageQuery {
     let limit = filter.limit.unwrap_or(20).clamp(1, 200);
     let offset = filter.offset.unwrap_or(0).min(100_000);
-    format!("WITH filtered AS (SELECT provider, model, project_id, owned_id, turn_id, workflow_id, input_tokens, output_tokens FROM usage_events WHERE {where_sql}), grouped AS (SELECT provider, model, project_id, COUNT(*) AS event_count, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens FROM filtered GROUP BY provider, model, project_id) SELECT provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, COUNT(*) OVER () AS total_count FROM grouped ORDER BY provider ASC, model ASC, project_id ASC LIMIT {limit} OFFSET {offset}", where_sql = where_sql(filter), limit = limit, offset = offset)
+    let (where_clause, mut parameters) = where_clause(filter);
+    parameters.push(SqlValue::Integer(limit as i64));
+    parameters.push(SqlValue::Integer(offset as i64));
+    UsageQuery {
+        sql: format!("WITH filtered AS (SELECT provider, model, project_id, owned_id, turn_id, workflow_id, input_tokens, output_tokens FROM usage_events WHERE {where_clause}), grouped AS (SELECT provider, model, project_id, COUNT(*) AS event_count, COUNT(DISTINCT owned_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens FROM filtered GROUP BY provider, model, project_id) SELECT provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, COUNT(*) OVER () AS total_count FROM grouped ORDER BY provider ASC, model ASC, project_id ASC LIMIT ? OFFSET ?"),
+        parameters,
+    }
 }
 
-fn provider_summary_sql(filter: &UsageFilter) -> String {
+fn provider_summary_query(filter: &UsageFilter) -> UsageQuery {
     let limit = filter.limit.unwrap_or(20).clamp(1, 200);
     let offset = filter.offset.unwrap_or(0).min(100_000);
-    format!("WITH filtered AS (SELECT provider, model, owned_id AS session_id, turn_id, workflow_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_sql}), grouped AS (SELECT provider, GROUP_CONCAT(DISTINCT model) AS models, COUNT(*) AS event_count, COUNT(DISTINCT session_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY provider) SELECT provider, models, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY provider ASC LIMIT {limit} OFFSET {offset}", where_sql = where_sql(filter), limit = limit, offset = offset)
+    let (where_clause, mut parameters) = where_clause(filter);
+    parameters.push(SqlValue::Integer(limit as i64));
+    parameters.push(SqlValue::Integer(offset as i64));
+    UsageQuery {
+        sql: format!("WITH filtered AS (SELECT provider, model, owned_id AS session_id, turn_id, workflow_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_events WHERE {where_clause}), grouped AS (SELECT provider, GROUP_CONCAT(DISTINCT model) AS models, COUNT(*) AS event_count, COUNT(DISTINCT session_id) AS session_count, COUNT(DISTINCT turn_id) AS turn_count, COUNT(DISTINCT workflow_id) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY provider) SELECT provider, models, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY provider ASC LIMIT ? OFFSET ?"),
+        parameters,
+    }
 }
 
-fn daily_sql(filter: &UsageFilter) -> String {
+fn daily_query(filter: &UsageFilter) -> UsageQuery {
     let limit = filter.limit.unwrap_or(31).clamp(1, 200);
     let offset = filter.offset.unwrap_or(0).min(100_000);
-    format!("SELECT day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, estimated_cost_micros FROM usage_daily_provider_model WHERE {} ORDER BY day DESC, provider ASC, model ASC, project_id ASC LIMIT {} OFFSET {}", daily_where_sql(filter), limit, offset)
+    let (where_clause, mut parameters) = daily_where_clause(filter);
+    parameters.push(SqlValue::Integer(limit as i64));
+    parameters.push(SqlValue::Integer(offset as i64));
+    UsageQuery {
+        sql: format!("SELECT day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, estimated_cost_micros FROM usage_daily_provider_model WHERE {where_clause} ORDER BY day DESC, provider ASC, model ASC, project_id ASC LIMIT ? OFFSET ?"),
+        parameters,
+    }
 }
 
-fn daily_totals_sql(filter: &UsageFilter) -> String {
+fn daily_totals_query(filter: &UsageFilter) -> UsageQuery {
     let limit = filter.limit.unwrap_or(31).clamp(1, 200);
     let offset = filter.offset.unwrap_or(0).min(100_000);
-    format!("WITH filtered AS (SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_daily_rollups WHERE {where_sql}), grouped AS (SELECT day, COALESCE(SUM(event_count), 0) AS event_count, COALESCE(SUM(session_count), 0) AS session_count, COALESCE(SUM(turn_count), 0) AS turn_count, COALESCE(SUM(workflow_count), 0) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY day) SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY day DESC LIMIT {limit} OFFSET {offset}", where_sql = daily_where_sql(filter), limit = limit, offset = offset)
+    let (where_clause, mut parameters) = daily_where_clause(filter);
+    parameters.push(SqlValue::Integer(limit as i64));
+    parameters.push(SqlValue::Integer(offset as i64));
+    UsageQuery {
+        sql: format!("WITH filtered AS (SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM usage_daily_rollups WHERE {where_clause}), grouped AS (SELECT day, COALESCE(SUM(event_count), 0) AS event_count, COALESCE(SUM(session_count), 0) AS session_count, COALESCE(SUM(turn_count), 0) AS turn_count, COALESCE(SUM(workflow_count), 0) AS workflow_count, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens, SUM(estimated_cost_micros) AS estimated_cost_micros FROM filtered GROUP BY day) SELECT day, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros FROM grouped ORDER BY day DESC LIMIT ? OFFSET ?"),
+        parameters,
+    }
 }
 
-fn where_sql(filter: &UsageFilter) -> String {
+fn where_clause(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     let mut parts = vec!["1 = 1".to_string()];
+    let mut parameters = Vec::new();
     if let Some(provider) = &filter.provider {
-        parts.push(format!("provider = {}", quote(provider)));
+        parts.push("provider = ?".to_string());
+        parameters.push(SqlValue::Text(provider.clone()));
     }
     if let Some(model) = &filter.model {
-        parts.push(format!("model = {}", quote(model)));
+        parts.push("model = ?".to_string());
+        parameters.push(SqlValue::Text(model.clone()));
     }
     if let Some(project_id) = &filter.project_id {
-        parts.push(format!("project_id = {}", quote(project_id)));
+        parts.push("project_id = ?".to_string());
+        parameters.push(SqlValue::Text(project_id.clone()));
     }
     if let Some(workflow_id) = &filter.workflow_id {
-        parts.push(format!("workflow_id = {}", quote(workflow_id)));
+        parts.push("workflow_id = ?".to_string());
+        parameters.push(SqlValue::Text(workflow_id.clone()));
     }
     if let Some(start) = filter.start_micros {
-        parts.push(format!("occurred_at_micros >= {}", start));
+        parts.push("occurred_at_micros >= ?".to_string());
+        parameters.push(SqlValue::Integer(start));
     }
     if let Some(end) = filter.end_micros {
-        parts.push(format!("occurred_at_micros < {}", end));
+        parts.push("occurred_at_micros < ?".to_string());
+        parameters.push(SqlValue::Integer(end));
     }
-    parts.join(" AND ")
+    (parts.join(" AND "), parameters)
 }
 
-fn daily_where_sql(filter: &UsageFilter) -> String {
+fn daily_where_clause(filter: &UsageFilter) -> (String, Vec<SqlValue>) {
     let mut parts = vec!["1 = 1".to_string()];
+    let mut parameters = Vec::new();
     if let Some(provider) = &filter.provider {
-        parts.push(format!("provider = {}", quote(provider)));
+        parts.push("provider = ?".to_string());
+        parameters.push(SqlValue::Text(provider.clone()));
     }
     if let Some(model) = &filter.model {
-        parts.push(format!("model = {}", quote(model)));
+        parts.push("model = ?".to_string());
+        parameters.push(SqlValue::Text(model.clone()));
     }
     if let Some(project_id) = &filter.project_id {
-        parts.push(format!("project_id = {}", quote(project_id)));
+        parts.push("project_id = ?".to_string());
+        parameters.push(SqlValue::Text(project_id.clone()));
     }
     if let Some(start) = filter.start_micros {
-        parts.push(format!("day >= date({} / 1000000, 'unixepoch')", start));
+        parts.push("day >= date(? / 1000000, 'unixepoch')".to_string());
+        parameters.push(SqlValue::Integer(start));
     }
     if let Some(end) = filter.end_micros {
-        parts.push(format!("day < date({} / 1000000, 'unixepoch')", end));
+        parts.push("day < date(? / 1000000, 'unixepoch')".to_string());
+        parameters.push(SqlValue::Integer(end));
     }
-    parts.join(" AND ")
+    (parts.join(" AND "), parameters)
 }
 
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+fn sqlite_integer(value: u64, description: &str) -> Result<i64, String> {
+    i64::try_from(value).map_err(|_| format!("{description} is too large for SQLite"))
 }
-fn quote_option(value: Option<&str>) -> String {
-    value.map(quote).unwrap_or_else(|| "NULL".to_string())
+
+fn sqlite_value_to_json(value: ValueRef<'_>) -> Value {
+    match value {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(value) => Value::Number(value.into()),
+        ValueRef::Real(value) => serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        ValueRef::Text(value) => Value::String(String::from_utf8_lossy(value).into_owned()),
+        ValueRef::Blob(value) => Value::Array(
+            value
+                .iter()
+                .map(|byte| Value::Number(u64::from(*byte).into()))
+                .collect(),
+        ),
+    }
 }
 pub fn cursor_lookup_key(
     provider: &str,
@@ -660,34 +736,89 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_failures_name_the_binary_and_database_path() {
-        let path = std::env::temp_dir().join("phase1-usage-test.sqlite3");
-        let db = UsageDb::open(&path).expect("open");
-        const SQLITE_BIN_ENV: &str = "MCB_SQLITE_BIN";
-        struct EnvGuard {
-            prior: Option<std::ffi::OsString>,
-        }
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                if let Some(prior) = self.prior.take() {
-                    std::env::set_var(SQLITE_BIN_ENV, prior);
-                } else {
-                    std::env::remove_var(SQLITE_BIN_ENV);
-                }
-            }
-        }
-        let _env_guard = EnvGuard {
-            prior: std::env::var_os(SQLITE_BIN_ENV),
-        };
-        std::env::set_var(SQLITE_BIN_ENV, "/nonexistent/not-sqlite3");
-        let error = db.query("SELECT 1;").unwrap_err();
+    fn rusqlite_failures_name_the_database_path() {
+        let path = test_db_path();
+        fs::write(&path, b"not a sqlite database").expect("invalid test database should write");
+        let error = UsageDb::open(&path).unwrap_err();
         assert!(
-            error.contains("/nonexistent/not-sqlite3"),
-            "error must name the binary: {error}"
-        );
-        assert!(
-            error.contains("phase1-usage-test.sqlite3"),
+            error.contains(path.to_string_lossy().as_ref()),
             "error must name the db path: {error}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn large_usage_batch_uses_prepared_transaction_without_argument_limits() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let events = (0..5_000)
+            .map(|index| event(&format!("large-batch-event-{index}")))
+            .collect::<Vec<_>>();
+        let cursor = UsageSourceCursor {
+            provider: "provider-a".into(),
+            provider_instance_id: "instance-a".into(),
+            source_kind: "acp".into(),
+            source_key: "large-batch-source".into(),
+            file_identity: "large-batch-file".into(),
+            offset: 8_000_000,
+            size: 8_000_000,
+            modified_at_micros: 1_700_000_000_000_000,
+            last_event_id: Some("large-batch-event-4999".into()),
+        };
+
+        db.insert_events_with_cursor(&events, Some(&cursor))
+            .expect("large event batch should insert");
+
+        let summary = db
+            .read_usage_summary(&UsageFilter::default())
+            .expect("large batch summary should query");
+        assert_eq!(summary.event_count, 5_000);
+        assert_eq!(summary.input_tokens, 50_000);
+        let cursors = db
+            .read_source_cursors()
+            .expect("large batch cursor should query");
+        assert_eq!(cursors.len(), 1);
+        assert_eq!(cursors.values().next().unwrap(), &cursor);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rusqlite_query_paths_return_the_previous_json_equivalent_shapes() {
+        let path = test_db_path();
+        let db = UsageDb::open(&path).expect("sqlite database should open");
+        let mut quoted = event("quoted-provider-event");
+        quoted.provider = "provider-'quoted'".into();
+        db.insert_events_with_cursor(&[quoted], None)
+            .expect("quoted event should insert through bound parameters");
+        let filter = UsageFilter {
+            provider: Some("provider-'quoted'".into()),
+            ..UsageFilter::default()
+        };
+
+        assert_eq!(db.read_usage_summary(&filter).unwrap().event_count, 1);
+        assert_eq!(db.read_usage_breakdown(&filter).unwrap().len(), 1);
+        assert_eq!(db.read_usage_provider_summary(&filter).unwrap().len(), 1);
+        assert_eq!(db.read_daily(&filter).unwrap().len(), 1);
+        assert_eq!(db.read_usage_daily_totals(&filter).unwrap().len(), 1);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reopening_an_existing_usage_database_preserves_history() {
+        let path = test_db_path();
+        {
+            let db = UsageDb::open(&path).expect("new sqlite database should open");
+            db.insert_events_with_cursor(&[event("existing-event")], None)
+                .expect("existing event should insert");
+        }
+
+        let reopened = UsageDb::open(&path).expect("existing sqlite database should reopen");
+        assert_eq!(
+            reopened
+                .read_usage_summary(&UsageFilter::default())
+                .unwrap()
+                .event_count,
+            1
         );
         let _ = fs::remove_file(path);
     }
@@ -787,41 +918,53 @@ mod tests {
 
     #[test]
     fn usage_queries_are_db_side_and_bounded() {
-        let sql = breakdown_sql(&UsageFilter {
+        let query = breakdown_query(&UsageFilter {
             limit: Some(20),
             offset: Some(40),
             ..UsageFilter::default()
         });
-        assert!(sql.contains("GROUP BY"));
-        assert!(sql.contains("COUNT(*) OVER ()"));
-        assert!(sql.contains("LIMIT 20 OFFSET 40"));
+        assert!(query.sql.contains("GROUP BY"));
+        assert!(query.sql.contains("COUNT(*) OVER ()"));
+        assert!(query.sql.contains("LIMIT ? OFFSET ?"));
+        assert_eq!(
+            query.parameters,
+            [SqlValue::Integer(20), SqlValue::Integer(40)]
+        );
     }
 
     #[test]
     fn provider_summary_query_groups_in_sql_and_is_bounded() {
-        let sql = provider_summary_sql(&UsageFilter {
+        let query = provider_summary_query(&UsageFilter {
             limit: Some(20),
             offset: Some(40),
             ..UsageFilter::default()
         });
-        assert!(sql.contains("GROUP BY provider"));
-        assert!(sql.contains("COUNT(DISTINCT session_id)"));
-        assert!(sql.contains("GROUP_CONCAT(DISTINCT model)"));
-        assert!(sql.contains("LIMIT 20 OFFSET 40"));
+        assert!(query.sql.contains("GROUP BY provider"));
+        assert!(query.sql.contains("COUNT(DISTINCT session_id)"));
+        assert!(query.sql.contains("GROUP_CONCAT(DISTINCT model)"));
+        assert!(query.sql.contains("LIMIT ? OFFSET ?"));
+        assert_eq!(
+            query.parameters,
+            [SqlValue::Integer(20), SqlValue::Integer(40)]
+        );
     }
 
     #[test]
     fn daily_totals_query_groups_in_sql_and_is_bounded() {
-        let sql = daily_totals_sql(&UsageFilter {
+        let query = daily_totals_query(&UsageFilter {
             limit: Some(20),
             offset: Some(40),
             ..UsageFilter::default()
         });
-        assert!(sql.contains("GROUP BY day"));
-        assert!(sql.contains("SUM(input_tokens)"));
-        assert!(sql.contains("SUM(cache_read_tokens)"));
-        assert!(sql.contains("ORDER BY day DESC"));
-        assert!(sql.contains("LIMIT 20 OFFSET 40"));
+        assert!(query.sql.contains("GROUP BY day"));
+        assert!(query.sql.contains("SUM(input_tokens)"));
+        assert!(query.sql.contains("SUM(cache_read_tokens)"));
+        assert!(query.sql.contains("ORDER BY day DESC"));
+        assert!(query.sql.contains("LIMIT ? OFFSET ?"));
+        assert_eq!(
+            query.parameters,
+            [SqlValue::Integer(20), SqlValue::Integer(40)]
+        );
     }
 
     #[test]

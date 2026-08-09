@@ -518,34 +518,63 @@ pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
         }
     }
     let captured = latest?;
-    let mut windows = Vec::new();
-    for (name, key) in [("5-hour", "primary"), ("weekly", "secondary")] {
-        let Some((_, window)) = latest_windows.get(key) else {
-            continue;
-        };
-        let Some(window) = window.as_object() else {
-            continue;
-        };
-        let Some(percent_consumed) = window.get("used_percent").and_then(Value::as_f64) else {
-            continue;
-        };
-        let reset_at = window
-            .get("resets_at")
-            .and_then(Value::as_i64)
-            .map(|value| value.to_string());
-        windows.push(LocalQuotaWindow {
-            name: name.to_string(),
-            semantics: format!("Provider {name} window"),
-            percent_consumed: percent_consumed.clamp(0.0, 100.0),
-            reset_at,
-        });
-    }
+    let rate_limits = Value::Object(
+        latest_windows
+            .into_iter()
+            .map(|(key, (_, window))| (key, window))
+            .collect(),
+    );
+    let windows = parse_quota_windows(&rate_limits);
     (!windows.is_empty()).then_some(LocalQuotaSnapshot {
         provider: provider.to_string(),
         account,
         windows,
         captured_at: (captured.max(0) as u128) / 1_000,
     })
+}
+
+fn parse_quota_windows(rate_limits: &Value) -> Vec<LocalQuotaWindow> {
+    ["primary", "secondary"]
+        .into_iter()
+        .filter_map(|key| rate_limits.get(key))
+        .filter_map(parse_quota_window)
+        .collect()
+}
+
+fn parse_quota_window(window: &Value) -> Option<LocalQuotaWindow> {
+    let window = window.as_object()?;
+    let percent_consumed = window.get("used_percent").and_then(Value::as_f64)?;
+    let window_minutes = window.get("window_minutes").and_then(Value::as_u64);
+    let reset_at = window
+        .get("resets_at")
+        .and_then(Value::as_i64)
+        .map(|value| value.to_string());
+    Some(LocalQuotaWindow {
+        name: quota_window_label(window_minutes),
+        semantics: window_minutes.map_or_else(
+            || "Provider-defined quota window".to_string(),
+            |minutes| format!("Provider-defined {minutes}-minute quota window"),
+        ),
+        percent_consumed: percent_consumed.clamp(0.0, 100.0),
+        reset_at,
+    })
+}
+
+fn quota_window_label(window_minutes: Option<u64>) -> String {
+    let Some(minutes) = window_minutes.filter(|minutes| *minutes > 0) else {
+        return "Provider window".to_string();
+    };
+    if (6 * 24 * 60..=8 * 24 * 60).contains(&minutes) {
+        return "Weekly".to_string();
+    }
+    if minutes < 60 {
+        return format!("{minutes}-minute");
+    }
+    if minutes % 60 == 0 {
+        return format!("{}-hour", minutes / 60);
+    }
+    let hours = minutes as f64 / 60.0;
+    format!("{hours:.1}-hour")
 }
 
 fn read_tail_text(path: &Path, max_bytes: u64) -> Result<String, String> {
@@ -703,5 +732,42 @@ mod tests {
             ),
             None => println!("live quota unavailable"),
         }
+    }
+
+    #[test]
+    fn weekly_only_primary_report_produces_one_weekly_window() {
+        let windows = parse_quota_windows(&serde_json::json!({
+            "primary": {
+                "used_percent": 42.0,
+                "window_minutes": 10_080,
+                "resets_at": 1_786_160_562_i64
+            },
+            "secondary": null
+        }));
+
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].name, "Weekly");
+        assert_eq!(windows[0].percent_consumed, 42.0);
+        assert_eq!(windows[0].reset_at.as_deref(), Some("1786160562"));
+    }
+
+    #[test]
+    fn five_hour_and_weekly_report_produces_two_duration_labeled_windows() {
+        let windows = parse_quota_windows(&serde_json::json!({
+            "primary": {
+                "used_percent": 12.0,
+                "window_minutes": 300,
+                "resets_at": 1_783_741_721_i64
+            },
+            "secondary": {
+                "used_percent": 17.0,
+                "window_minutes": 10_080,
+                "resets_at": 1_784_310_518_i64
+            }
+        }));
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].name, "5-hour");
+        assert_eq!(windows[1].name, "Weekly");
     }
 }

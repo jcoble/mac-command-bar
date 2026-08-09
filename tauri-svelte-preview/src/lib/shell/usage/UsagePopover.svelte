@@ -34,7 +34,7 @@
           <article class="provider-card">
             <div class="provider-heading"><div><strong>{usageProviderLabel(snapshot.provider)}</strong>{#if snapshot.account}<small>{snapshot.account}</small>{/if}</div><span class:available={snapshot.state === 'available'}>{snapshot.state === 'available' ? 'Available' : 'Unavailable'}</span></div>
             {#if snapshot.state === 'available' && snapshot.windows.length > 0}
-              {#each snapshot.windows as window (window.name)}<div class="quota-row"><div><span>{window.name}</span><small>{usageResetLabel(window.resetAt)}</small></div><strong>{Math.round(usagePercent(window))}% used</strong><div class="quota-bar"><i style={`width:${usagePercent(window)}%`}></i></div>{#if usageState.viewMode === 'detailed'}<small>{window.semantics}</small>{/if}</div>{/each}
+              {#each snapshot.windows as window, index (`${window.label}-${window.windowMinutes ?? index}`)}<div class="quota-row"><div><span>{window.label}</span><small>{usageResetLabel(window.resetsAt)}</small></div><strong>{Math.round(usagePercent(window))}% used</strong><div class="quota-bar"><i style={`width:${usagePercent(window)}%`}></i></div>{#if usageState.viewMode === 'detailed' && window.windowMinutes}<small>{window.windowMinutes.toLocaleString()}-minute provider window</small>{/if}</div>{/each}
             {:else}<p class="muted unavailable">{snapshot.unavailableReason ?? 'Quota is unavailable locally.'}</p>{/if}
           </article>
         {/each}
