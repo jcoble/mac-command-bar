@@ -25,7 +25,8 @@
     restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
-    setConversationConfigOption
+    setConversationConfigOption,
+    stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
   import {
     filterConversationCommandCatalog,
@@ -284,6 +285,7 @@
           {attachmentError}
           onDraftChange={(value) => setConversationDraft(active.ownedId, value)}
           onSend={send}
+          onStop={() => { if (activeOwnedId) void stopStructuredTurn(activeOwnedId).catch(() => undefined); }}
           onPaste={paste}
           onRemoveAttachment={removeAttachment}
           onCommandSelected={selectCommand}

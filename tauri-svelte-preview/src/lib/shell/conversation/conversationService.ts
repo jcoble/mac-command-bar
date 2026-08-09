@@ -459,6 +459,14 @@ export async function sendStructuredMessage(
   }
 }
 
+export async function stopStructuredTurn(ownedId: string): Promise<void> {
+  const state = getConversationSession(ownedId);
+  if (!state || state.generation < 1) return;
+  await invoke('stop_agent_conversation_turn', {
+    request: { ownedId, generation: state.generation }
+  });
+}
+
 export async function respondToStructuredApproval(
   ownedId: string,
   requestId: string,

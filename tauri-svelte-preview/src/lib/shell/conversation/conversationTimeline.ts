@@ -221,7 +221,10 @@ export function typedConversationTimeline(
   timestamps: Readonly<Record<string, number>> = {}
 ): ConversationDisplayItem[] {
   const byId = new Map<string, ConversationDisplayItem>();
-  legacy.forEach((entry) => byId.set(entry.itemId, displayItemFromLegacy(entry)));
+  // Turn boundaries are runtime bookkeeping, not conversation content.
+  legacy
+    .filter((entry) => entry.kind !== 'turn')
+    .forEach((entry) => byId.set(entry.itemId, displayItemFromLegacy(entry)));
   const legacyEnd = legacy.reduce((latest, entry) => Math.max(latest, entry.timestampMs), 0);
   items.forEach((item, index) => byId.set(item.id, displayItemFromAgentItem(item, timestamps[item.id] ?? legacyEnd + index + 1)));
   return [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
