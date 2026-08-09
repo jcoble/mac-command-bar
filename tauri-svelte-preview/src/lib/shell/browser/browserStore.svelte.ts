@@ -156,7 +156,11 @@ export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | u
     : null;
   try {
     if (nextUrl && !current) {
-      createBrowserTab(modelContext(), { url: nextUrl });
+      // Creating a native tab here would surface its webview over the shell
+      // before the browser panel is open; persist the url instead and let
+      // activateBrowser() create the tab when the panel is actually shown.
+      persist(nextUrl);
+      browser.workspace.activated = false;
     } else if (nextUrl && current && current.url !== nextUrl) {
       navigateActiveBrowserTab(modelContext(), nextUrl);
     }
