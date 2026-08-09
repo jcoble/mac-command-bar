@@ -595,6 +595,8 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
 
 // Conversation snapshots retain versioned runtime fields and fields introduced
 // by a newer build without adding them to an older snapshot that never had them.
+// Structured is the pinned mode for app-owned agents; raw remains valid for an
+// external session, so the persisted union intentionally stays two-valued.
 {
   const storage = storageStub({
     [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({
@@ -616,6 +618,8 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
     })
   });
   const restored = readWorkspaces(storage);
+  assert.equal(restored.current.conversation.mode, 'structured', 'app-owned mode is pinned');
+  assert.equal(restored.legacy.conversation.mode, 'raw', 'external raw mode persists');
   assert.equal(restored.current.conversation.futureField.nested, true);
   assert.equal(restored.current.conversation.config.future, 'value');
   assert.equal(restored.legacy.conversation.unknownLegacyField, 'preserved');

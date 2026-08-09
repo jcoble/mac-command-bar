@@ -35,6 +35,15 @@ import {
 
 export type ConversationViewMode = 'structured' | 'raw';
 
+export interface ConversationRecentEvent {
+  sequence: number;
+  kind: string;
+  summary: string;
+  timestampMs: number;
+}
+
+export const CONVERSATION_RECENT_EVENT_CAP = 200;
+
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
   mode: ConversationViewMode;
@@ -63,6 +72,7 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   pendingInputs: Record<string, AgentUserInputRequest>;
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
+  recentEvents: ConversationRecentEvent[];
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -105,7 +115,8 @@ function freshState(
     pendingApprovals: {},
     pendingInputs: {},
     pendingConfig: {},
-    configErrors: {}
+    configErrors: {},
+    recentEvents: []
   };
 }
 
@@ -125,8 +136,9 @@ export function ensureConversationSession(
 }
 
 export function applyAgentConversationEvent(event: AgentConversationEvent | AgentEvent): boolean {
-  if ('type' in event) return applyCanonicalAgentEvent(event);
   const current = ensureConversationSession(event.ownedId, event.provider);
+  appendRecentEvent(current, event);
+  if ('type' in event) return applyCanonicalAgentEvent(event);
   const next = applyConversationEvent(current, event);
   if (next === current) return false;
   conversationSessions[event.ownedId] = {
@@ -155,7 +167,8 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
     pendingApprovals: current.pendingApprovals,
     pendingInputs: current.pendingInputs,
     pendingConfig: current.pendingConfig,
-    configErrors: current.configErrors
+    configErrors: current.configErrors,
+    recentEvents: current.recentEvents
   };
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
@@ -168,6 +181,37 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
   }
   applyTypedEventPayload(conversationSessions[event.ownedId], event);
   return true;
+}
+
+export function conversationRecentEvents(ownedId: string): ReadonlyArray<ConversationRecentEvent> {
+  return conversationSessions[ownedId]?.recentEvents ?? [];
+}
+
+function appendRecentEvent(
+  current: ConversationWorkspaceState,
+  event: AgentConversationEvent | AgentEvent
+): void {
+  const recent = current.recentEvents ?? [];
+  current.recentEvents = [
+    ...recent,
+    {
+      sequence: event.sequence,
+      kind: 'type' in event ? event.type : event.payload.kind,
+      summary: summarizeRecentEvent(event),
+      timestampMs: event.timestampMs
+    }
+  ].slice(-CONVERSATION_RECENT_EVENT_CAP);
+}
+
+function summarizeRecentEvent(event: AgentConversationEvent | AgentEvent): string {
+  const payload = event.payload as Record<string, unknown>;
+  for (const key of ['summary', 'text', 'delta', 'message', 'name', 'state', 'code']) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 240);
+  }
+  if (Array.isArray(payload.items)) return `${payload.items.length} items`;
+  if (Array.isArray(payload.tasks)) return `${payload.tasks.length} tasks`;
+  return 'Event received';
 }
 
 function applyCanonicalAgentEvent(event: AgentEvent): boolean {
@@ -234,7 +278,10 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   rebuilt.generation = snapshot.connection.generation;
   rebuilt.connectionState = snapshot.connection.state;
   rebuilt.nativeSessionId = snapshot.connection.nativeSessionId;
-  for (const event of snapshot.events) rebuilt = applyConversationEvent(rebuilt, event);
+  for (const event of snapshot.events) {
+    appendRecentEvent(current, event);
+    rebuilt = applyConversationEvent(rebuilt, event);
+  }
   conversationSessions[snapshot.connection.ownedId] = {
     ...rebuilt,
     draft: current.draft,
@@ -261,7 +308,8 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     pendingApprovals: current.pendingApprovals,
     pendingInputs: current.pendingInputs,
     pendingConfig: current.pendingConfig,
-    configErrors: current.configErrors
+    configErrors: current.configErrors,
+    recentEvents: current.recentEvents
   };
   const restored = conversationSessions[snapshot.connection.ownedId];
   for (const event of snapshot.events) {

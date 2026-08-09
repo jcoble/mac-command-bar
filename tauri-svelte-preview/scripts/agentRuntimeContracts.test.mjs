@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   adoptAgentSession,
+  createFreshSession,
   parseStoredOwnedSessions,
   reconcileOwnedSessions,
   serializeOwnedSessions
@@ -109,8 +110,18 @@ const scanRecord = {
   assert.equal(configOptionPlacement(roundTrip.configOptions[0].category), 'more-options');
 }
 
-// The two identities keep independent generations, leases, and saved fields.
+// App-owned agent sessions are structured-only; an adopted/external session is
+// the identity that may retain raw-mode workspace state.
 {
+  const appSession = {
+    ...createFreshSession({ cwd: '/tmp/app-owned' }, () => 'owned-app'),
+    agent: 'codex',
+    origin: 'app'
+  };
+  const externalSession = adoptAgentSession(scanRecord, () => 'owned-external');
+  assert.equal(appSession.origin, 'app');
+  assert.equal(externalSession.origin, 'external');
+
   const storage = storageStub();
   const snapshots = {
     'owned-a': {
@@ -132,6 +143,8 @@ const scanRecord = {
   };
   assert.equal(writeWorkspaces(storage, snapshots), true);
   const restored = readWorkspaces(storage);
+  assert.equal(restored['owned-a'].conversation.mode, 'structured', 'app-owned sessions stay structured');
+  assert.equal(restored['owned-b'].conversation.mode, 'raw', 'external sessions retain raw mode');
   assert.equal(restored['owned-a'].conversation.writerLease.ownedId, 'owned-a');
   assert.equal(restored['owned-b'].conversation.writerLease.ownedId, 'owned-b');
   assert.notEqual(

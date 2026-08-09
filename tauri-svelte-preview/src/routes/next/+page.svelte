@@ -929,6 +929,9 @@
     const conversationProvider = conversationProviderFor(ownedId);
     if (conversationProvider) {
       restoreConversationWorkspace(ownedId, conversationProvider, snapshot?.conversation);
+      if (rail.owned.find((session) => session.ownedId === ownedId)?.origin === 'app') {
+        setConversationMode(ownedId, 'structured');
+      }
     }
     restoreBrowserState(snapshot?.browser);
     if (snapshot?.center) frameControls?.restoreCenterLayout(snapshot.center);
@@ -1614,6 +1617,7 @@
   <ConversationSurface
     owned={rail.owned}
     activeOwnedId={rail.activeOwnedId}
+    activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
     {registerHost}
     onHostLayout={scheduleRefit}
     onOpenNativeCli={openNativeCli}

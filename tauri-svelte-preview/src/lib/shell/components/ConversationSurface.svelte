@@ -3,6 +3,7 @@
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import TerminalSurface from './TerminalSurface.svelte';
   import ConversationHeader from './conversation/ConversationHeader.svelte';
+  import ConversationInspector from './conversation/ConversationInspector.svelte';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
@@ -42,6 +43,7 @@
   interface Props {
     owned: OwnedSession[];
     activeOwnedId: string | null;
+    activeOrigin?: OwnedSession['origin'];
     registerHost(ownedId: string, host: HTMLElement): void;
     onHostLayout?(ownedId: string): void;
     onOpenNativeCli?(ownedId: string): void | Promise<void>;
@@ -51,6 +53,7 @@
   let {
     owned,
     activeOwnedId,
+    activeOrigin,
     registerHost,
     onHostLayout,
     onOpenNativeCli,
@@ -58,8 +61,10 @@
     onReturnToStructured
   }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
+  const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
+  const appOwned = $derived(origin === 'app');
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
-  const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode !== 'raw');
+  const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude') && (appOwned || conversation?.mode !== 'raw'));
   const selectedChild = $derived(conversation && conversation.selectedChildId
     ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
     : null);
@@ -84,7 +89,7 @@
     }
     return items.sort((left, right) => left.timestampMs - right.timestampMs);
   });
-  const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.capabilities?.commands ?? []));
+  const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
   const commandQuery = $derived(conversation?.draft.trimStart().startsWith('/') ? conversation.draft.trimStart().slice(1) : '');
   const matchingCommands = $derived(filterConversationCommandCatalog(commandCatalog, commandQuery));
   const remainingContext = $derived.by(() => {
@@ -96,6 +101,14 @@
 
   let attachmentError = $state('');
   let capabilityRequest = $state('');
+  let inspectorOpen = $state(false);
+
+  $effect(() => {
+    if (!appOwned) inspectorOpen = false;
+    if (appOwned && activeOwnedId && conversation?.mode === 'raw') {
+      setConversationMode(activeOwnedId, 'structured');
+    }
+  });
 
   $effect(() => {
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex')) return;
@@ -175,6 +188,7 @@
 
   function selectCommand(command: ConversationCommand): void {
     if (!active) return;
+    if (appOwned && command.name === 'terminal') return;
     if (command.action === 'insert') {
       setConversationDraft(active.ownedId, `/${command.name} `);
       return;
@@ -223,17 +237,25 @@
   <div class:covered={structured} class="terminal-layer"><TerminalSurface {owned} {activeOwnedId} {registerHost} {onHostLayout} /></div>
   {#if structured && active && conversation}
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
-      <ConversationHeader {active} {conversation} {selectedChild} onModeChange={(mode) => setConversationMode(active.ownedId, mode)} />
-      <div class="handoff-actions" aria-label="Conversation handoff actions">
-        <button type="button" data-testid="open-native-cli" onclick={() => void onOpenNativeCli?.(active.ownedId)}>
-          Open in native CLI
-        </button>
-        {#if conversation.capabilities?.session.fork}
-          <button type="button" data-testid="fork-native-cli" onclick={() => void onForkNativeCli?.(active.ownedId)}>
-            Fork to native CLI
+      <ConversationHeader
+        {active}
+        {conversation}
+        {selectedChild}
+        onModeChange={(mode) => { if (!appOwned) setConversationMode(active.ownedId, mode); }}
+        onInspectorToggle={() => { if (appOwned) inspectorOpen = !inspectorOpen; }}
+      />
+      {#if !appOwned}
+        <div class="handoff-actions" aria-label="Conversation handoff actions">
+          <button type="button" data-testid="open-native-cli" onclick={() => void onOpenNativeCli?.(active.ownedId)}>
+            Open in native CLI
           </button>
-        {/if}
-      </div>
+          {#if conversation.capabilities?.session.fork}
+            <button type="button" data-testid="fork-native-cli" onclick={() => void onForkNativeCli?.(active.ownedId)}>
+              Fork to native CLI
+            </button>
+          {/if}
+        </div>
+      {/if}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
         items={visibleTimeline}
@@ -268,6 +290,7 @@
           onConfigChange={(optionId, value) => void changeConfig(optionId, value)}
         />
       {:else}<div class="read-only-note" data-testid="conversation-read-only-note">Read-only sub-agent transcript</div>{/if}
+      {#if appOwned && inspectorOpen}<ConversationInspector ownedId={active.ownedId} />{/if}
     </section>
   {:else if active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode === 'raw'}
     <div class="raw-actions" aria-label="Conversation handoff actions">
