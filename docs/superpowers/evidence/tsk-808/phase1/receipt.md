@@ -54,3 +54,5 @@ The fifteen frontend calls in `src/lib/shell/browser/browserBackend.ts` and thei
 
 - Before the implementation fix, `node --experimental-strip-types scripts/browserBackend.test.mjs` exited 1 and listed all fifteen commands as passing their payload unwrapped.
 - After the implementation fix, the same command exited 0 and printed `browserBackend: all tests passed`.
+
+Native repro required: run the packaged/dev native app, open Stats & Usage, record the now-specific error text. The follow-up fix is driven by that text.

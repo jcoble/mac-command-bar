@@ -35,6 +35,12 @@ export const usageState = $state<{
   viewMode: 'detailed'
 });
 
+export function describeUsageError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Usage history could not be read.';
+}
+
 export async function refreshCurrentUsage(provider: string | null, instanceId: string | null): Promise<ProviderUsageSnapshot | null> {
   if (usageState.currentLoading) return usageState.current;
   usageState.currentLoading = true;
@@ -51,7 +57,7 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
     usageState.unavailableReason = current?.state === 'unavailable' ? current.unavailableReason : current ? null : 'Usage is available in the desktop app.';
     return current;
   } catch (error) {
-    usageState.error = error instanceof Error ? error.message : 'Usage could not be read.';
+    usageState.error = describeUsageError(error);
     return null;
   } finally {
     usageState.currentLoading = false;
@@ -78,7 +84,7 @@ export async function refreshUsageHistory(): Promise<UsageSummary | null> {
     usageState.dailyTotals = dailyTotals ?? [];
     return summary;
   } catch (error) {
-    usageState.error = error instanceof Error ? error.message : 'Usage history could not be read.';
+    usageState.error = describeUsageError(error);
     return null;
   } finally {
     usageState.historyLoading = false;

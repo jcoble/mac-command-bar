@@ -3,6 +3,18 @@ import fs from 'node:fs';
 import { usagePercent, usageProviderLabel, usageResetLabel } from '../src/lib/shell/usage/usageCurrent.ts';
 import { usageSummaryLabel } from '../src/lib/shell/usage/usageAnalytics.ts';
 
+globalThis.$state = (value) => value;
+const { describeUsageError } = await import('../src/lib/shell/usage/usageStore.svelte.ts');
+
+function testUsageErrorsPreserveStringRejections() {
+  // describeUsageError must pass Tauri string rejections through untouched.
+  assert.equal(describeUsageError('SQLite is unavailable (sqlite3): spawn failed'), 'SQLite is unavailable (sqlite3): spawn failed');
+  assert.equal(describeUsageError(new Error('boom')), 'boom');
+  assert.equal(describeUsageError({ weird: true }), 'Usage history could not be read.');
+}
+
+testUsageErrorsPreserveStringRejections();
+
 assert.equal(usageProviderLabel('codex'), 'Codex');
 assert.equal(usagePercent({ percentConsumed: null, percentRemaining: 25 }), 75);
 assert.equal(usagePercent({ percentConsumed: 125, percentRemaining: null }), 100);

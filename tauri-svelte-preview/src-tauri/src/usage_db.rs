@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 pub const USAGE_SCHEMA: &str = include_str!("../../migrations/0001_usage_history.sql");
 
@@ -383,14 +383,15 @@ impl UsageDb {
     pub fn explain_breakdown(&self, filter: &UsageFilter) -> Result<Vec<Value>, String> {
         let sql = format!("EXPLAIN QUERY PLAN {}", breakdown_sql(filter));
         trace_sql(&sql);
-        let output = sqlite_command()
+        let binary = sqlite_binary();
+        let output = Command::new(&binary)
             .arg("-batch")
             .arg(&self.path)
             .arg(&sql)
             .output()
-            .map_err(|error| format!("SQLite is unavailable: {error}"))?;
+            .map_err(|error| format!("SQLite is unavailable ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))?;
         if !output.status.success() {
-            return Err(format!("SQLite query plan failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+            return Err(format!("SQLite query plan failed ({}) for {}: {}", binary.to_string_lossy(), self.path.display(), String::from_utf8_lossy(&output.stderr).trim()));
         }
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -401,25 +402,24 @@ impl UsageDb {
 
     fn execute(&self, sql: &str) -> Result<(), String> {
         trace_sql(sql);
-        let output = sqlite_command().arg("-batch").arg(&self.path).arg(sql).output().map_err(|error| format!("SQLite is unavailable: {error}"))?;
-        if output.status.success() { Ok(()) } else { Err(format!("SQLite command failed: {}", String::from_utf8_lossy(&output.stderr).trim())) }
+        let binary = sqlite_binary();
+        let output = Command::new(&binary).arg("-batch").arg(&self.path).arg(sql).output().map_err(|error| format!("SQLite is unavailable ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))?;
+        if output.status.success() { Ok(()) } else { Err(format!("SQLite command failed ({}) for {}: {}", binary.to_string_lossy(), self.path.display(), String::from_utf8_lossy(&output.stderr).trim())) }
     }
 
     fn query(&self, sql: &str) -> Result<Vec<Value>, String> {
         trace_sql(sql);
-        let output = sqlite_command().arg("-batch").arg("-json").arg(&self.path).arg(sql).output().map_err(|error| format!("SQLite is unavailable: {error}"))?;
-        if !output.status.success() { return Err(format!("SQLite query failed: {}", String::from_utf8_lossy(&output.stderr).trim())); }
+        let binary = sqlite_binary();
+        let output = Command::new(&binary).arg("-batch").arg("-json").arg(&self.path).arg(sql).output().map_err(|error| format!("SQLite is unavailable ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))?;
+        if !output.status.success() { return Err(format!("SQLite query failed ({}) for {}: {}", binary.to_string_lossy(), self.path.display(), String::from_utf8_lossy(&output.stderr).trim())); }
         let text = String::from_utf8_lossy(&output.stdout);
         if text.trim().is_empty() { return Ok(Vec::new()); }
-        serde_json::from_str(text.trim()).map_err(|error| format!("SQLite JSON output was invalid: {error}"))
+        serde_json::from_str(text.trim()).map_err(|error| format!("SQLite JSON output was invalid ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))
     }
 }
 
-fn sqlite_command() -> Command {
-    let binary = std::env::var_os("MCB_SQLITE_BIN").unwrap_or_else(|| "sqlite3".into());
-    let mut command = Command::new(binary);
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    command
+fn sqlite_binary() -> std::ffi::OsString {
+    std::env::var_os("MCB_SQLITE_BIN").unwrap_or_else(|| "sqlite3".into())
 }
 
 fn validate_event(event: &UsageEvent) -> Result<(), String> {
@@ -538,6 +538,18 @@ mod tests {
 
     fn event(id: &str) -> UsageEvent {
         UsageEvent { provider: "provider-a".into(), provider_instance_id: "instance-a".into(), owned_id: None, workflow_id: None, turn_id: None, project_id: Some("project-a".into()), workspace_id: None, occurred_at_micros: 1_700_000_000_000_000, input_tokens: 10, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, model: "model-a".into(), estimated_cost_micros: None, estimate_rate_version: None, source_kind: "acp".into(), source_event_id: id.into(), source_key: "session-a".into() }
+    }
+
+    #[test]
+    fn sqlite_failures_name_the_binary_and_database_path() {
+        let path = std::env::temp_dir().join("phase1-usage-test.sqlite3");
+        let db = UsageDb::open(&path).expect("open");
+        std::env::set_var("MCB_SQLITE_BIN", "/nonexistent/not-sqlite3");
+        let error = db.query("SELECT 1;").unwrap_err();
+        std::env::remove_var("MCB_SQLITE_BIN");
+        assert!(error.contains("/nonexistent/not-sqlite3"), "error must name the binary: {error}");
+        assert!(error.contains("phase1-usage-test.sqlite3"), "error must name the db path: {error}");
+        let _ = fs::remove_file(path);
     }
 
     #[test]
