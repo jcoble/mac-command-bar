@@ -74,6 +74,31 @@ const event = (overrides = {}) => ({
   });
 }
 
+// Plan payloads replace the current generation's plan without losing ordering.
+{
+  let state = applyConversationEvent(createConversationState('owned-a', 'codex'), event());
+  state = applyConversationEvent(state, event({
+    sequence: 2,
+    payload: {
+      kind: 'plan',
+      items: [{ text: 'Inspect the change', status: 'pending' }]
+    }
+  }));
+  state = applyConversationEvent(state, event({
+    sequence: 3,
+    payload: {
+      kind: 'plan',
+      items: [{ text: 'Inspect the change', status: 'completed' }]
+    }
+  }));
+  assert.deepEqual(state.timeline[0], {
+    kind: 'plan',
+    itemId: 'plan:1',
+    items: [{ text: 'Inspect the change', status: 'completed' }],
+    timestampMs: 1_000
+  });
+}
+
 // Provider history is imported once by native item identity.
 {
   const state = createConversationState('owned-a', 'codex');

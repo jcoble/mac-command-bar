@@ -1239,7 +1239,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 25] = [
+const BACKEND_CAPABILITIES: [&str; 26] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1283,6 +1283,8 @@ const BACKEND_CAPABILITIES: [&str; 25] = [
     "generate_pull_request_details",
     "create_pull_request",
     "read_pull_request_status",
+    // The conversation manager pushes ACP turn and item events while a turn is live.
+    "acpLiveConversationEvents",
 ];
 
 /// The event the app sends whenever a language server changes what it is doing.
@@ -5320,6 +5322,7 @@ fn main() {
             .expect("packaged ACP adapter configuration is invalid"),
     );
     let workflow_engine = WorkflowEngine::managed(agent_runtime.clone());
+    let conversation_events = agent_runtime.clone();
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
         .manage(agent_runtime)
@@ -5331,7 +5334,11 @@ fn main() {
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            conversation_events.set_emitter(Arc::new(move |event| {
+                let _ = handle.emit("agent-conversation-event", event);
+            }));
             // Every time a language server starts, finishes reading a project, or stops,
             // tell the editor straight away. Without this the editor would have to ask
             // over and over to notice, which is what it used to do.
@@ -8284,6 +8291,7 @@ mod tests {
                 "generate_pull_request_details".to_string(),
                 "create_pull_request".to_string(),
                 "read_pull_request_status".to_string(),
+                "acpLiveConversationEvents".to_string(),
             ]
         );
     }

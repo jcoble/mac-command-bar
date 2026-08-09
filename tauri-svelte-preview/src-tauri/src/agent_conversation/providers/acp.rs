@@ -1,11 +1,14 @@
 use super::super::capabilities::{replace_config_options, validate_capabilities};
 use super::super::protocol::{AgentCapabilities, AgentProviderManifest};
+use super::acp_client::{AcpInbound, AcpTransport};
 use super::{
     AcpClient, AgentConfigOption, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter,
     AgentRuntimeError, AgentSteeringInput, GeneratedText, InitializeAgentInput, LoadAgentSession,
     NewAgentSession, PermissionResponse, ResumeAgentSession, StartedAgentSession, StartedTurn,
     UserInputResponse,
 };
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 pub struct AcpRuntimeAdapter {
     manifest: AgentProviderManifest,
@@ -34,6 +37,21 @@ impl AcpRuntimeAdapter {
 
     pub fn process_id(&self) -> Option<u32> {
         self.client.as_ref().and_then(AcpClient::process_id)
+    }
+
+    pub fn transport(&self) -> Result<Arc<AcpTransport>, AgentRuntimeError> {
+        self.client
+            .as_ref()
+            .map(AcpClient::transport)
+            .ok_or_else(|| {
+                AgentRuntimeError::new("not-initialized", "ACP adapter is not initialized")
+            })
+    }
+
+    pub fn take_inbound(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<AcpInbound>, AgentRuntimeError> {
+        self.client_mut()?.take_inbound()
     }
 }
 
@@ -154,6 +172,20 @@ impl StructuredRuntimeHandle {
     pub fn process_id(&self) -> Option<u32> {
         match self {
             Self::Acp(adapter) => adapter.process_id(),
+        }
+    }
+
+    pub fn transport(&self) -> Result<Arc<AcpTransport>, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.transport(),
+        }
+    }
+
+    pub fn take_inbound(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<AcpInbound>, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.take_inbound(),
         }
     }
 

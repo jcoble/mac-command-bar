@@ -391,11 +391,12 @@ export type AgentConversationPayload =
       state: ConversationConnectionState;
       nativeSessionId?: string;
     }
-  | { kind: 'userMessage'; itemId: string; text: string; completed: true }
+  | { kind: 'userMessage'; itemId: string; text: string; completed: boolean }
   | { kind: 'assistantDelta'; itemId: string; delta: string }
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
   | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string }
   | { kind: 'approval'; requestId: string; state: ApprovalState; summary: string }
+  | { kind: 'plan'; items: { text: string; status: string }[] }
   | { kind: 'turn'; turnId: string; state: TurnState }
   | { kind: 'usage'; inputTokens?: number; outputTokens?: number }
   | { kind: 'error'; code: string; message: string; recoverable: boolean };
@@ -432,6 +433,12 @@ export type ConversationTimelineEntry =
       requestId: string;
       state: ApprovalState;
       summary: string;
+      timestampMs: number;
+    }
+  | {
+      kind: 'plan';
+      itemId: string;
+      items: { text: string; status: string }[];
       timestampMs: number;
     }
   | {

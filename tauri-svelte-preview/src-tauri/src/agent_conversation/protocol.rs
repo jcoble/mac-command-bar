@@ -464,6 +464,13 @@ pub enum TurnState {
     Failed,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanItem {
+    pub text: String,
+    pub status: String,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AgentConversationPayload {
@@ -497,6 +504,9 @@ pub enum AgentConversationPayload {
         request_id: String,
         state: ApprovalState,
         summary: String,
+    },
+    Plan {
+        items: Vec<PlanItem>,
     },
     Turn {
         turn_id: String,
@@ -656,5 +666,19 @@ mod contract_tests {
         let event: AgentEvent = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(event.event_type, AgentEventType::ContentDelta);
         assert_eq!(serde_json::to_value(event).unwrap(), value);
+
+        let plan = AgentConversationPayload::Plan {
+            items: vec![PlanItem {
+                text: "Inspect the change".to_string(),
+                status: "pending".to_string(),
+            }],
+        };
+        assert_eq!(
+            serde_json::from_value::<AgentConversationPayload>(
+                serde_json::to_value(&plan).unwrap()
+            )
+            .unwrap(),
+            plan
+        );
     }
 }

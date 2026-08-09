@@ -1,9 +1,20 @@
 import type {
+  AgentEvent,
   AgentConversationEvent,
   AgentConversationProvider,
   ConversationSessionState,
   ConversationTimelineEntry
 } from './conversationTypes.ts';
+
+export function shouldClearConversationSending(
+  event: AgentConversationEvent | AgentEvent
+): boolean {
+  if ('type' in event) {
+    return ['turn.completed', 'turn.interrupted', 'runtime.error'].includes(event.type);
+  }
+  return event.payload.kind === 'error'
+    || (event.payload.kind === 'turn' && event.payload.state !== 'started');
+}
 
 export function createConversationState(
   ownedId: string,
@@ -84,7 +95,7 @@ export function applyConversationEvent(
           kind: 'user',
           itemId: payload.itemId,
           text: payload.text,
-          completed: true,
+          completed: payload.completed,
           timestampMs: event.timestampMs
         }))
       };
@@ -136,6 +147,19 @@ export function applyConversationEvent(
           requestId: payload.requestId,
           state: payload.state,
           summary: payload.summary,
+          timestampMs: current?.timestampMs ?? event.timestampMs
+        }))
+      };
+    }
+
+    case 'plan': {
+      const itemId = 'plan:' + event.generation;
+      return {
+        ...next,
+        timeline: replaceOrAppend(next.timeline, itemId, (current) => ({
+          kind: 'plan',
+          itemId,
+          items: payload.items,
           timestampMs: current?.timestampMs ?? event.timestampMs
         }))
       };

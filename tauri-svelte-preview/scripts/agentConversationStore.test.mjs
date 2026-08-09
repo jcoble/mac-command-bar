@@ -3,6 +3,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
+import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 
 const storePath = fileURLToPath(
   new URL('../src/lib/shell/conversation/conversationStore.svelte.ts', import.meta.url)
@@ -89,6 +90,34 @@ store.applyAgentConversationEvent({
 });
 assert.equal(store.getConversationSession('owned-a').timeline.length, 2);
 assert.equal(store.getConversationSession('owned-b').timeline.length, 0);
+
+// A live turn start keeps the composer busy; only a terminal turn clears it.
+store.setConversationSending('owned-a', true);
+const startedTurn = {
+  ownedId: 'owned-a',
+  provider: 'codex',
+  generation: 1,
+  sequence: 2,
+  timestampMs: 130,
+  payload: { kind: 'turn', turnId: 'turn-live', state: 'started' }
+};
+store.applyAgentConversationEvent(startedTurn);
+if (shouldClearConversationSending(startedTurn)) {
+  store.setConversationSending('owned-a', false);
+}
+assert.equal(store.getConversationSession('owned-a').sending, true);
+
+const completedTurn = {
+  ...startedTurn,
+  sequence: 3,
+  timestampMs: 140,
+  payload: { kind: 'turn', turnId: 'turn-live', state: 'completed' }
+};
+store.applyAgentConversationEvent(completedTurn);
+if (shouldClearConversationSending(completedTurn)) {
+  store.setConversationSending('owned-a', false);
+}
+assert.equal(store.getConversationSession('owned-a').sending, false);
 
 // A native snapshot repairs a missed-event gap and restores every message.
 store.applyAgentConversationSnapshot({

@@ -42,10 +42,13 @@ import {
   handoffGenerationMatches
 } from './conversationTypes.ts';
 import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
+import { hasBackendCapability } from '../backendCapabilities.ts';
+import { shouldClearConversationSending } from './conversationReducer.ts';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();
 const terminalProjections = new Map<string, string>();
+const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
 
 type TerminalProjectionRegistration = {
   generation: number;
@@ -360,8 +363,7 @@ export async function startConversationEvents(): Promise<void> {
     if (getConversationSession(payload.ownedId)?.desynchronized) {
       void resyncConversation(payload.ownedId);
     }
-    if (('kind' in payload.payload && (payload.payload.kind === 'turn' || payload.payload.kind === 'error'))
-      || ('type' in payload && ['turn.completed', 'turn.interrupted', 'runtime.error'].includes(payload.type))) {
+    if (shouldClearConversationSending(payload)) {
       setConversationSending(payload.ownedId, false);
     }
   });
@@ -438,9 +440,13 @@ export async function sendStructuredMessage(
       hydratedAttachments,
       state.capabilities?.prompt.image === true
     );
+    const liveConversationEvents = await hasBackendCapability(
+      ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
+    );
     await invoke('send_agent_conversation_message', {
       request: { ownedId, generation: state.generation, text: prompt.text, content: prompt.content }
     });
+    if (!liveConversationEvents) await resyncConversation(ownedId);
     state.attachments.forEach(cleanupConversationAttachmentPreview);
     setConversationAttachments(ownedId, []);
   } catch (error) {

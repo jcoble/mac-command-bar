@@ -317,6 +317,21 @@ impl AcpClient {
         })
     }
 
+    pub fn transport(&self) -> Arc<AcpTransport> {
+        Arc::clone(&self.transport)
+    }
+
+    pub fn take_inbound(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<AcpInbound>, AgentRuntimeError> {
+        self.inbound.take().ok_or_else(|| {
+            AgentRuntimeError::new(
+                "inbound-already-taken",
+                "ACP inbound events already have a consumer",
+            )
+        })
+    }
+
     pub async fn initialize(
         &mut self,
         provider: AgentConversationProvider,
@@ -688,7 +703,7 @@ fn transport_error(message: String) -> AgentRuntimeError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -706,7 +721,7 @@ mod tests {
         fixture_manifest_named(log_path, "default")
     }
 
-    fn fixture_manifest_named(log_path: &Path, fixture: &str) -> AgentProviderManifest {
+    pub(crate) fn fixture_manifest_named(log_path: &Path, fixture: &str) -> AgentProviderManifest {
         let script = format!(
             r#"log={log}
 fixture={fixture}
