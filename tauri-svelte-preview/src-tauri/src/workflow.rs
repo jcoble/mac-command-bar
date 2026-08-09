@@ -519,6 +519,8 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     provider,
                     cwd: request.cwd.clone(),
                     native_session_id: None,
+                    native_session_mode:
+                        crate::agent_conversation::protocol::AgentNativeSessionMode::Resume,
                 })
                 .await
                 .map_err(WorkflowError::Runtime)?;

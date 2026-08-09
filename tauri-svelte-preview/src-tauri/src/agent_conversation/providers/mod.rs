@@ -93,6 +93,10 @@ pub trait AgentRuntimeAdapter: Send + Sync {
         &mut self,
         input: NewAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError>;
+    async fn load_session(
+        &mut self,
+        input: LoadAgentSession,
+    ) -> Result<StartedAgentSession, AgentRuntimeError>;
     async fn resume_session(
         &mut self,
         input: ResumeAgentSession,

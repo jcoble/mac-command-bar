@@ -98,6 +98,7 @@
     stopConversationTerminalProjection,
     stopConversationEvents
   } from '$lib/shell/conversation/conversationService';
+  import { decideConversationActivation } from '$lib/shell/conversation/conversationActivation';
   import type {
     AgentConversationHandoffDirection,
     AgentConversationHandoffMode,
@@ -985,26 +986,41 @@
     if (switching) restoreWorkspace(ownedId);
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
-      if (selected.origin === 'external') {
-        // Externally started sessions keep their PTY as the only writer. The
-        // terminal surface is their projection; never activate a second ACP
-        // runtime while the adopted process remains authoritative.
-        if (selected.ptySessionId) {
+      const activation = decideConversationActivation(
+        selected,
+        getConversationSession(ownedId)
+      );
+      if (activation.kind === 'terminal') {
+        // Externally started sessions keep their PTY as the only writer while
+        // running. Stopped sessions without loadable Codex history retain the
+        // same terminal fallback they had before structured loading existed.
+        if (selected.origin === 'external' && selected.ptySessionId) {
           void closeStructuredConversation(ownedId);
-          setConversationMode(ownedId, 'raw');
         }
+        setConversationMode(ownedId, 'raw');
         return;
       }
-      if (selected.origin === 'app') {
-        void ensureStructuredConversation({
-          ownedId,
-          provider,
-          cwd: selected.cwd,
-          nativeSessionId: selected.nativeSessionId
-        }).catch((error) => {
-          rail.error = `could not open structured ${provider}: ${describeError(error)}`;
-        });
-      }
+      setConversationMode(ownedId, 'structured');
+      if (activation.kind === 'view') return;
+
+      void ensureStructuredConversation({
+        ownedId,
+        provider,
+        cwd: selected.cwd,
+        nativeSessionId: selected.nativeSessionId,
+        nativeSessionMode: activation.nativeSessionMode
+      }).then(() => {
+        updateOwnedSession(ownedId, { lastError: null });
+      }).catch((error) => {
+        const message = describeError(error);
+        updateOwnedSession(ownedId, { lastError: message });
+        if (activation.nativeSessionMode === 'load') {
+          setConversationMode(ownedId, 'raw');
+          rail.error = `could not load ${selected.title || ownedId} as a conversation: ${message}`;
+        } else {
+          rail.error = `could not open structured ${provider}: ${message}`;
+        }
+      });
     }
   }
 

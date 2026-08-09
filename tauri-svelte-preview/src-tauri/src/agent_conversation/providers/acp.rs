@@ -3,8 +3,8 @@ use super::super::protocol::{AgentCapabilities, AgentProviderManifest};
 use super::acp_client::{AcpInbound, AcpTransport};
 use super::{
     AcpClient, AgentConfigOption, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter,
-    AgentRuntimeError, GeneratedText, InitializeAgentInput, NewAgentSession, ResumeAgentSession,
-    StartedAgentSession,
+    AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession, NewAgentSession,
+    ResumeAgentSession, StartedAgentSession,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -73,6 +73,14 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
         input: NewAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         self.client_mut()?.new_session(&input.cwd).await
+    }
+    async fn load_session(
+        &mut self,
+        input: LoadAgentSession,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        self.client_mut()?
+            .load_session(&input.cwd, &input.native_session_id)
+            .await
     }
     async fn resume_session(
         &mut self,

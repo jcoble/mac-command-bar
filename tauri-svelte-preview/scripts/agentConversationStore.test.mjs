@@ -150,6 +150,68 @@ assert.deepEqual(
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 
+// Re-applying the same snapshot is a read repair, not another stream of deltas.
+// This is the session-row re-entry regression: the legacy timeline was rebuilt,
+// but typed assistant items were retained and received the same delta again.
+{
+  const replayedSnapshot = {
+    connection: {
+      ownedId: 'owned-replayed',
+      provider: 'codex',
+      generation: 1,
+      state: 'connected',
+      nativeSessionId: 'thread-replayed'
+    },
+    lastSequence: 2,
+    events: [
+      {
+        ownedId: 'owned-replayed', provider: 'codex', generation: 1, sequence: 1, timestampMs: 200,
+        payload: { kind: 'connection', state: 'connected', nativeSessionId: 'thread-replayed' }
+      },
+      {
+        ownedId: 'owned-replayed', provider: 'codex', generation: 1, sequence: 2, timestampMs: 210,
+        payload: { kind: 'assistantDelta', itemId: 'assistant-replayed', delta: 'One answer' }
+      }
+    ]
+  };
+  store.applyAgentConversationSnapshot(replayedSnapshot);
+  store.applyAgentConversationSnapshot(replayedSnapshot);
+  assert.equal(store.getConversationSession('owned-replayed').timeline[0].text, 'One answer');
+  assert.equal(store.getConversationSession('owned-replayed').agentItems[0].content[0].text, 'One answer');
+  assert.equal(store.getConversationSession('owned-replayed').recentEvents.length, 2);
+}
+
+// Repair journals poisoned by historical replay: identical consecutive full
+// assistant chunks for the same item collapse while a snapshot is rebuilt.
+{
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-poisoned',
+      provider: 'codex',
+      generation: 1,
+      state: 'connected',
+      nativeSessionId: 'thread-poisoned'
+    },
+    lastSequence: 3,
+    events: [
+      {
+        ownedId: 'owned-poisoned', provider: 'codex', generation: 1, sequence: 1, timestampMs: 300,
+        payload: { kind: 'connection', state: 'connected', nativeSessionId: 'thread-poisoned' }
+      },
+      {
+        ownedId: 'owned-poisoned', provider: 'codex', generation: 1, sequence: 2, timestampMs: 310,
+        payload: { kind: 'assistantDelta', itemId: 'assistant-poisoned', delta: 'Recovered answer' }
+      },
+      {
+        ownedId: 'owned-poisoned', provider: 'codex', generation: 1, sequence: 3, timestampMs: 320,
+        payload: { kind: 'assistantDelta', itemId: 'assistant-poisoned', delta: 'Recovered answer' }
+      }
+    ]
+  });
+  assert.equal(store.getConversationSession('owned-poisoned').timeline[0].text, 'Recovered answer');
+  assert.equal(store.getConversationSession('owned-poisoned').agentItems[0].content[0].text, 'Recovered answer');
+}
+
 // A stale snapshot cannot replace a newer generation.
 store.setConversationConnection({
   ownedId: 'owned-a', provider: 'codex', generation: 3, state: 'reconnecting'

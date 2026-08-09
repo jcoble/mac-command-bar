@@ -491,6 +491,16 @@ impl AcpClient {
             .await
     }
 
+    pub async fn load_session(
+        &mut self,
+        cwd: &Path,
+        native_session_id: &str,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), cwd);
+        self.start_session("session/load", &request, Some(native_session_id))
+            .await
+    }
+
     /// Send a one-shot prompt and retain only assistant text updates.
     ///
     /// The regular `prompt` call intentionally returns as soon as ACP accepts
@@ -753,7 +763,11 @@ while IFS= read -r line; do
     *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id" ;;
     *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session"}}}}\n' "$id" ;;
     *'"method":"session/load"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
-    *'"method":"session/resume"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session"}}}}\n' "$id" ;;
+    *'"method":"session/resume"'*)
+      if [ "$fixture" = "replay_on_resume" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'
+      fi
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session"}}}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       turn=$(printf '%s\n' "$line" | sed -n 's/.*"turnId":"\([^"]*\)".*/\1/p')
       if [ -z "$turn" ]; then turn="turn-1"; fi
@@ -1090,6 +1104,24 @@ done"#,
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(log).unwrap();
         assert!(frames.contains("session/resume"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acp_load_uses_load_session_method() {
+        let root = fixture_root();
+        let log = root.join("load.jsonl");
+        let mut client = AcpClient::spawn(&fixture_manifest(&log), &root, "load").unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        let started = client.load_session(&root, "native-old").await.unwrap();
+        assert_eq!(started.native_session_id, "loaded-session");
+        client.close().await.unwrap();
+        let frames = std::fs::read_to_string(log).unwrap();
+        assert!(frames.contains("session/load"));
+        assert!(!frames.contains("session/resume"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

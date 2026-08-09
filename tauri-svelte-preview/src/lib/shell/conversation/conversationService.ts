@@ -48,6 +48,7 @@ import { updateOwnedSession } from '../stores/sessionRailStore.svelte';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();
+const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
 const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
 
@@ -386,18 +387,29 @@ export async function ensureStructuredConversation(input: {
   provider: AgentConversationProvider;
   cwd: string;
   nativeSessionId?: string | null;
+  nativeSessionMode?: 'resume' | 'load';
 }): Promise<AgentConversationConnection | null> {
   ensureConversationSession(input.ownedId, input.provider);
   if (!isTauri() || !input.cwd.trim()) return null;
-  const connection = await invoke<AgentConversationConnection>('ensure_agent_conversation', {
-    request: input
+  const request = { ...input, nativeSessionMode: input.nativeSessionMode ?? 'resume' };
+  const signature = JSON.stringify(request);
+  const active = ensuring.get(input.ownedId);
+  if (active?.signature === signature) return active.work;
+  const work = (async () => {
+    const connection = await invoke<AgentConversationConnection>('ensure_agent_conversation', {
+      request
+    });
+    setConversationConnection(connection);
+    if (connection.nativeSessionId) {
+      updateOwnedSession(input.ownedId, { nativeSessionId: connection.nativeSessionId });
+    }
+    await resyncConversation(input.ownedId);
+    return connection;
+  })().finally(() => {
+    if (ensuring.get(input.ownedId)?.work === work) ensuring.delete(input.ownedId);
   });
-  setConversationConnection(connection);
-  if (connection.nativeSessionId) {
-    updateOwnedSession(input.ownedId, { nativeSessionId: connection.nativeSessionId });
-  }
-  await resyncConversation(input.ownedId);
-  return connection;
+  ensuring.set(input.ownedId, { signature, work });
+  return work;
 }
 
 export async function sendStructuredMessage(

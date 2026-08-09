@@ -6,6 +6,7 @@ import {
   importConversationHistory
 } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
+import { decideConversationActivation } from '../src/lib/shell/conversation/conversationActivation.ts';
 
 const event = (overrides = {}) => ({
   ownedId: 'owned-a',
@@ -110,6 +111,44 @@ const event = (overrides = {}) => ({
   const twice = importConversationHistory(once, history);
   assert.equal(once.timeline.length, 2);
   assert.equal(twice.timeline.length, 2);
+}
+
+// A connected structured runtime is a pure view switch. Only a stopped,
+// native-id-bearing external Codex session may cross from terminal ownership
+// into a structured session/load activation.
+{
+  const appSession = {
+    agent: 'codex', origin: 'app', state: 'background',
+    executionOwner: 'structured', ptySessionId: null, nativeSessionId: 'thread-app'
+  };
+  assert.deepEqual(decideConversationActivation(appSession, {
+    provider: 'codex', state: 'connected', nativeSessionId: 'thread-app'
+  }), { kind: 'view' });
+  assert.deepEqual(decideConversationActivation(appSession, null), {
+    kind: 'structured', nativeSessionMode: 'resume'
+  });
+
+  const stoppedExternal = {
+    agent: 'codex', origin: 'external', state: 'background',
+    executionOwner: 'stopped', ptySessionId: null, nativeSessionId: 'thread-cli'
+  };
+  assert.deepEqual(decideConversationActivation(stoppedExternal, null), {
+    kind: 'structured', nativeSessionMode: 'load'
+  });
+  assert.deepEqual(decideConversationActivation(stoppedExternal, {
+    provider: 'codex', state: 'connected', nativeSessionId: 'thread-cli'
+  }), { kind: 'view' });
+  assert.deepEqual(decideConversationActivation({
+    ...stoppedExternal, executionOwner: 'terminal', ptySessionId: 'pty-live'
+  }, {
+    provider: 'codex', state: 'connected', nativeSessionId: 'thread-cli'
+  }), { kind: 'terminal' });
+  assert.deepEqual(decideConversationActivation({
+    ...stoppedExternal, nativeSessionId: null
+  }, null), { kind: 'terminal' });
+  assert.deepEqual(decideConversationActivation({
+    ...stoppedExternal, agent: 'other'
+  }, null), { kind: 'terminal' });
 }
 
 // A provider error is additive and does not clear completed messages.

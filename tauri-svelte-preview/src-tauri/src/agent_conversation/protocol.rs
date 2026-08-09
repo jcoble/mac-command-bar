@@ -34,6 +34,14 @@ pub enum AgentConversationProvider {
     Claude,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentNativeSessionMode {
+    #[default]
+    Resume,
+    Load,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfigOptionChoice {
@@ -428,6 +436,8 @@ pub struct EnsureAgentConversationRequest {
     pub provider: AgentConversationProvider,
     pub cwd: String,
     pub native_session_id: Option<String>,
+    #[serde(default)]
+    pub native_session_mode: AgentNativeSessionMode,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -14,10 +14,10 @@ use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentConversationConnection,
     AgentConversationEvent, AgentConversationPayload, AgentConversationProvider,
     AgentConversationSnapshot, AgentEvent, AgentEventType, AgentExecutionOwner,
-    AgentImplementation, AgentInteractionCapabilities, AgentPromptCapabilities,
-    AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentWriterLease,
-    AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState, ConversationConnectionState,
-    EnsureAgentConversationRequest, PlanItem, ToolState,
+    AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
+    AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
+    AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
+    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem, ToolState,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -63,6 +63,7 @@ pub struct ManagedAgentSession {
     pub provider: AgentConversationProvider,
     pub provider_instance_id: String,
     pub native_session_id: Option<String>,
+    native_session_mode: AgentNativeSessionMode,
     pub generation: u64,
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
@@ -207,6 +208,12 @@ impl AgentRuntimeManager {
         let cwd = validated_conversation_cwd(&request.cwd)?
             .display()
             .to_string();
+        let native_session_id = normalized_optional_id(request.native_session_id);
+        if request.native_session_mode == AgentNativeSessionMode::Load
+            && native_session_id.is_none()
+        {
+            return Err("A native session id is required to load a stopped session".to_string());
+        }
         let mut sessions = self
             .sessions
             .lock()
@@ -214,6 +221,10 @@ impl AgentRuntimeManager {
         if let Some(current) = sessions.get(&owned_id) {
             if current.provider == request.provider
                 && current.cwd == cwd
+                && native_session_id
+                    .as_ref()
+                    .is_none_or(|native_id| current.native_session_id.as_ref() == Some(native_id))
+                && current.native_session_mode == request.native_session_mode
                 && current.connection.state != ConversationConnectionState::Failed
             {
                 return Ok((current.connection.clone(), None));
@@ -231,7 +242,7 @@ impl AgentRuntimeManager {
             owned_id: owned_id.clone(),
             provider: request.provider,
             generation,
-            native_session_id: normalized_optional_id(request.native_session_id),
+            native_session_id,
             state: ConversationConnectionState::Connecting,
         };
         let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
@@ -242,6 +253,7 @@ impl AgentRuntimeManager {
                 provider: request.provider,
                 provider_instance_id,
                 native_session_id: connection.native_session_id.clone(),
+                native_session_mode: request.native_session_mode,
                 generation,
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Closed,
@@ -277,7 +289,7 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationConnection, String> {
         let activation_lock = self.activation_lock(owned_id)?;
         let _activation = activation_lock.lock().await;
-        let (provider, cwd, native_session_id) = {
+        let (provider, cwd, native_session_id, native_session_mode) = {
             let sessions = self
                 .sessions
                 .lock()
@@ -298,6 +310,7 @@ impl AgentRuntimeManager {
                 session.provider,
                 std::path::PathBuf::from(&session.cwd),
                 session.native_session_id.clone(),
+                session.native_session_mode,
             )
         };
         let manifest = self.providers.manifest(provider)?;
@@ -309,12 +322,14 @@ impl AgentRuntimeManager {
         let expected_native_session_id = native_session_id.clone();
         let started = match native_session_id {
             Some(native_session_id) => {
-                adapter
-                    .resume_session(LoadAgentSession {
-                        cwd,
-                        native_session_id,
-                    })
-                    .await
+                let input = LoadAgentSession {
+                    cwd,
+                    native_session_id,
+                };
+                match native_session_mode {
+                    AgentNativeSessionMode::Resume => adapter.resume_session(input).await,
+                    AgentNativeSessionMode::Load => adapter.load_session(input).await,
+                }
             }
             None => adapter.new_session(NewAgentSession { cwd }).await,
         }
@@ -1852,6 +1867,7 @@ mod tests {
             provider,
             cwd: root.into(),
             native_session_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume,
         }
     }
     fn temp_root() -> std::path::PathBuf {
@@ -2189,6 +2205,68 @@ mod tests {
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repeated_activation_does_not_replay_or_append_connected_session_history() {
+        let root = temp_root();
+        let log = root.join("replay_on_resume.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "replay_on_resume",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-replay";
+        let mut resume_request = request(
+            root.to_str().unwrap(),
+            owned_id,
+            AgentConversationProvider::Codex,
+        );
+        resume_request.native_session_id = Some("resumed-session".into());
+
+        let connection = manager
+            .ensure_async(resume_request.clone())
+            .await
+            .expect("ensure resumed session");
+        manager
+            .activate(owned_id, connection.generation)
+            .await
+            .expect("initial resume");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        for _ in 0..3 {
+            let same = manager
+                .ensure_async(resume_request.clone())
+                .await
+                .expect("connected ensure is idempotent");
+            manager
+                .activate(owned_id, same.generation)
+                .await
+                .expect("connected activation is idempotent");
+        }
+
+        let frames = fs::read_to_string(&log).expect("resume fixture log");
+        assert_eq!(frames.matches(r#""method":"session/resume""#).count(), 1);
+        let snapshot = manager.snapshot(owned_id).unwrap().unwrap();
+        let assistant_count = snapshot
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::AssistantDelta { .. }
+                )
+            })
+            .count();
+        assert_eq!(
+            assistant_count, 0,
+            "resume-time replay without an active turn must not enter the journal"
+        );
+
+        manager.close(owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

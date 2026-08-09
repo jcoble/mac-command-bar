@@ -265,6 +265,29 @@ function upsertAgentItem(items: AgentItem[], incoming: AgentItem, delta: boolean
   return items.map((item, itemIndex) => itemIndex === index ? { ...item, ...incoming, content } : item);
 }
 
+/**
+ * Historical replay from some ACP adapters can repeat a complete assistant
+ * chunk with the same item id. Keep the event sequence intact for snapshot gap
+ * checks, but make only the repeated delta empty while rebuilding the view.
+ */
+function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConversationEvent[] {
+  let previous: { itemId: string; delta: string } | null = null;
+  return events.map((event) => {
+    if (event.payload.kind !== 'assistantDelta') {
+      previous = null;
+      return event;
+    }
+    const current = { itemId: event.payload.itemId, delta: event.payload.delta };
+    const duplicate = current.delta.length > 0
+      && previous?.itemId === current.itemId
+      && previous.delta === current.delta;
+    previous = current;
+    return duplicate
+      ? { ...event, payload: { ...event.payload, delta: '' } }
+      : event;
+  });
+}
+
 export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapshot): void {
   const current = ensureConversationSession(
     snapshot.connection.ownedId,
@@ -278,8 +301,8 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   rebuilt.generation = snapshot.connection.generation;
   rebuilt.connectionState = snapshot.connection.state;
   rebuilt.nativeSessionId = snapshot.connection.nativeSessionId;
-  for (const event of snapshot.events) {
-    appendRecentEvent(current, event);
+  const events = idempotentSnapshotEvents(snapshot.events);
+  for (const event of events) {
     rebuilt = applyConversationEvent(rebuilt, event);
   }
   conversationSessions[snapshot.connection.ownedId] = {
@@ -302,17 +325,18 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     telemetry: current.telemetry,
     capabilities: current.capabilities,
     capabilityError: current.capabilityError,
-    agentItems: current.agentItems,
-    planSteps: current.planSteps,
-    tasks: current.tasks,
-    pendingApprovals: current.pendingApprovals,
-    pendingInputs: current.pendingInputs,
+    agentItems: [],
+    planSteps: [],
+    tasks: [],
+    pendingApprovals: {},
+    pendingInputs: {},
     pendingConfig: current.pendingConfig,
     configErrors: current.configErrors,
-    recentEvents: current.recentEvents
+    recentEvents: []
   };
   const restored = conversationSessions[snapshot.connection.ownedId];
-  for (const event of snapshot.events) {
+  for (const event of events) {
+    appendRecentEvent(restored, event);
     const typedItem = agentItemFromEvent(event);
     if (typedItem) {
       restored.agentItems = upsertAgentItem(
