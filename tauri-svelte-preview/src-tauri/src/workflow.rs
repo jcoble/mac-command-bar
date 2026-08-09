@@ -565,12 +565,13 @@ impl AgentRuntimePort for AgentRuntimeManager {
                 }
             };
             let connection = self
-                .ensure(EnsureAgentConversationRequest {
+                .ensure_async(EnsureAgentConversationRequest {
                     owned_id: request.owned_id.clone(),
                     provider,
                     cwd: request.cwd.clone(),
                     native_session_id: None,
                 })
+                .await
                 .map_err(WorkflowError::Runtime)?;
             if self.providers().manifest(provider).is_err() {
                 return Err(WorkflowError::Runtime(format!(

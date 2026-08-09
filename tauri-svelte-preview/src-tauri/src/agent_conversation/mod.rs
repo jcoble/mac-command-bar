@@ -21,7 +21,7 @@ pub async fn ensure_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: EnsureAgentConversationRequest,
 ) -> Result<AgentConversationConnection, String> {
-    let connection = manager.ensure(request)?;
+    let connection = manager.ensure_async(request).await?;
     if manager.providers().manifest(connection.provider).is_ok() {
         manager
             .activate(&connection.owned_id, connection.generation)

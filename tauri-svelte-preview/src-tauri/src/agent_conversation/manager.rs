@@ -69,7 +69,9 @@ pub struct ManagedAgentSession {
     pub capabilities: AgentCapabilities,
     pub next_sequence: u64,
     pub active_turn_id: Option<String>,
+    prompt_once_active: bool,
     pub runtime: Option<Arc<AsyncMutex<StructuredRuntimeHandle>>>,
+    transport: Option<Arc<AcpTransport>>,
     pub recent_events: VecDeque<AgentEvent>,
     pub writer_lease: AgentWriterLease,
     pub writer_lease_transition: Option<AgentWriterLeaseTransition>,
@@ -93,6 +95,7 @@ pub struct AgentRuntimeManager {
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +118,7 @@ impl AgentRuntimeManager {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
+            activation_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -172,6 +176,40 @@ impl AgentRuntimeManager {
         &self,
         request: EnsureAgentConversationRequest,
     ) -> Result<AgentConversationConnection, String> {
+        self.ensure_inner(request).map(|(connection, _)| connection)
+    }
+
+    /// Ensure an app-owned ACP session while serializing it with activation.
+    /// Replacing a failed or changed generation detaches the previous transport
+    /// before the caller can activate the new one.
+    pub async fn ensure_async(
+        &self,
+        request: EnsureAgentConversationRequest,
+    ) -> Result<AgentConversationConnection, String> {
+        let owned_id = required_id(&request.owned_id, "Owned session id")?;
+        let activation_lock = self.activation_lock(&owned_id)?;
+        let _activation = activation_lock.lock().await;
+        let (connection, previous_runtime) = self.ensure_inner(request)?;
+        if let Some((runtime, transport)) = previous_runtime {
+            // Stop through the transport directly so a one-shot prompt holding
+            // the runtime mutex cannot prevent the old generation from being
+            // shut down before the replacement activates.
+            transport.stop().await;
+            drop(runtime);
+        }
+        Ok(connection)
+    }
+
+    fn ensure_inner(
+        &self,
+        request: EnsureAgentConversationRequest,
+    ) -> Result<
+        (
+            AgentConversationConnection,
+            Option<(Arc<AsyncMutex<StructuredRuntimeHandle>>, Arc<AcpTransport>)>,
+        ),
+        String,
+    > {
         let owned_id = required_id(&request.owned_id, "Owned session id")?;
         let cwd = validated_conversation_cwd(&request.cwd)?
             .display()
@@ -181,11 +219,17 @@ impl AgentRuntimeManager {
             .lock()
             .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
         if let Some(current) = sessions.get(&owned_id) {
-            if current.provider == request.provider && current.cwd == cwd {
-                return Ok(current.connection.clone());
+            if current.provider == request.provider
+                && current.cwd == cwd
+                && current.connection.state != ConversationConnectionState::Failed
+            {
+                return Ok((current.connection.clone(), None));
             }
         }
         let prior = sessions.remove(&owned_id);
+        let previous_runtime = prior
+            .as_ref()
+            .and_then(|session| Some((session.runtime.clone()?, session.transport.clone()?)));
         let generation = prior
             .as_ref()
             .map(|session| session.generation.saturating_add(1))
@@ -211,7 +255,9 @@ impl AgentRuntimeManager {
                 capabilities: empty_capabilities(request.provider),
                 next_sequence: 1,
                 active_turn_id: None,
+                prompt_once_active: false,
                 runtime: None,
+                transport: None,
                 recent_events: VecDeque::new(),
                 writer_lease: AgentWriterLease {
                     owned_id,
@@ -228,7 +274,7 @@ impl AgentRuntimeManager {
                 journal: AgentEventJournal::new(JOURNAL_EVENT_CAP),
             },
         );
-        Ok(connection)
+        Ok((connection, previous_runtime))
     }
 
     pub async fn activate(
@@ -236,12 +282,25 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
     ) -> Result<AgentConversationConnection, String> {
+        let activation_lock = self.activation_lock(owned_id)?;
+        let _activation = activation_lock.lock().await;
         let (provider, provider_instance_id, cwd, native_session_id) = {
             let sessions = self
                 .sessions
                 .lock()
                 .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
             let session = current_session(&sessions, owned_id, generation)?;
+            if session.runtime.is_some() {
+                if session.connection.state == ConversationConnectionState::Connected
+                    && session.state != AgentRuntimeState::Failed
+                {
+                    return Ok(session.connection.clone());
+                }
+                return Err(
+                    "The structured session must be ensured again before it can reactivate"
+                        .to_string(),
+                );
+            }
             (
                 session.provider,
                 session.provider_instance_id.clone(),
@@ -310,6 +369,7 @@ impl AgentRuntimeManager {
         }
         session.state = AgentRuntimeState::Ready;
         session.runtime = Some(runtime);
+        session.transport = Some(Arc::clone(&transport));
         session.ordered_events = Some(ordered_tx);
         let connection = session.connection.clone();
         drop(sessions);
@@ -360,6 +420,11 @@ impl AgentRuntimeManager {
             if session.active_turn_id.is_some() {
                 return Err("The structured session already has an active turn".to_string());
             }
+            if session.prompt_once_active {
+                return Err(
+                    "The structured session is busy generating a one-shot result".to_string(),
+                );
+            }
             if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                 return Err("The structured writer is not the current owner".to_string());
             }
@@ -399,13 +464,33 @@ impl AgentRuntimeManager {
         input: AgentPrompt,
     ) -> Result<GeneratedText, String> {
         let runtime = self.runtime(owned_id, generation)?;
-        let result = runtime
-            .lock()
-            .await
-            .prompt_once(input)
-            .await
-            .map_err(|error| error.to_string());
-        result
+        {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            if session.active_turn_id.is_some() {
+                return Err(
+                    "The structured session already has an active turn; one-shot generation is unavailable"
+                        .to_string(),
+                );
+            }
+            if session.prompt_once_active {
+                return Err("A one-shot generation is already active".to_string());
+            }
+            if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                return Err("The structured writer is not the current owner".to_string());
+            }
+            session.prompt_once_active = true;
+        }
+        let result = runtime.lock().await.prompt_once(input).await;
+        if let Ok(mut sessions) = self.sessions.lock() {
+            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+                session.prompt_once_active = false;
+            }
+        }
+        result.map_err(|error| error.to_string())
     }
 
     pub async fn respond_permission(&self, input: PermissionResponse) -> Result<(), String> {
@@ -652,6 +737,7 @@ impl AgentRuntimeManager {
             session.state = AgentRuntimeState::Closed;
             session.owner = AgentExecutionOwner::Stopped;
             session.writer_lease.owner = AgentWriterLeaseOwner::None;
+            session.transport = None;
             session.runtime.take()
         };
         if let Some(runtime) = runtime {
@@ -936,6 +1022,17 @@ impl AgentRuntimeManager {
             .get(owned_id)
             .map(|session| session.recent_events.iter().cloned().collect())
             .unwrap_or_default())
+    }
+
+    fn activation_lock(&self, owned_id: &str) -> Result<Arc<AsyncMutex<()>>, String> {
+        let mut locks = self
+            .activation_locks
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        Ok(locks
+            .entry(owned_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone())
     }
 
     fn runtime(
@@ -1249,6 +1346,33 @@ async fn pump_inbound(
                     return;
                 };
                 if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
+                    let pending_permissions =
+                        session.permission_requests.drain().collect::<Vec<_>>();
+                    for (request_id, pending) in pending_permissions {
+                        if let Err(error) = record_payload_for_session_and_dispatch(
+                            session,
+                            &emitter,
+                            AgentConversationPayload::Approval {
+                                request_id,
+                                state: ApprovalState::Expired,
+                                summary: pending.summary,
+                            },
+                        ) {
+                            eprintln!("Could not record expired ACP permission request: {error}");
+                        }
+                    }
+                    if let Some(turn_id) = session.active_turn_id.clone() {
+                        if let Err(error) = record_payload_for_session_and_dispatch(
+                            session,
+                            &emitter,
+                            AgentConversationPayload::Turn {
+                                turn_id,
+                                state: super::protocol::TurnState::Failed,
+                            },
+                        ) {
+                            eprintln!("Could not record failed ACP turn: {error}");
+                        }
+                    }
                     let native_session_id = session.native_session_id.clone();
                     if let Err(error) = record_payload_for_session_and_dispatch(
                         session,
@@ -1275,7 +1399,7 @@ async fn pump_inbound(
                     session.connection.state = ConversationConnectionState::Failed;
                 }
                 session.active_turn_id = None;
-                session.permission_requests.clear();
+                session.prompt_once_active = false;
                 session.state = AgentRuntimeState::Failed;
                 return;
             }
@@ -1334,16 +1458,11 @@ async fn handle_ordered_session_event(
                 .ok()
                 .and_then(stop_reason)
                 .is_some_and(|reason| reason == "cancelled");
-            let pending_permissions = if cancelled {
-                let Some(transport) = transport.upgrade() else {
-                    return false;
-                };
-                let Some(pending) =
-                    take_pending_permissions(&sessions, owned_id, generation, &turn_id)
-                else {
-                    return true;
-                };
-                for (_, pending) in &pending {
+            let pending_permissions =
+                take_pending_permissions(&sessions, owned_id, generation, &turn_id)
+                    .unwrap_or_default();
+            if let Some(transport) = transport.upgrade() {
+                for (_, pending) in &pending_permissions {
                     if let Err(error) = transport
                         .respond(
                             pending.wire_id.clone(),
@@ -1351,13 +1470,14 @@ async fn handle_ordered_session_event(
                         )
                         .await
                     {
-                        eprintln!("Could not cancel ACP permission request: {error}");
+                        eprintln!("Could not expire ACP permission request: {error}");
                     }
                 }
-                pending
-            } else {
-                Vec::new()
-            };
+            }
+            let error_details = result
+                .as_ref()
+                .err()
+                .map(|error| (error.code.to_string(), error.message.clone()));
 
             let Ok(mut sessions) = sessions.lock() else {
                 return false;
@@ -1376,7 +1496,11 @@ async fn handle_ordered_session_event(
                     &emitter,
                     AgentConversationPayload::Approval {
                         request_id,
-                        state: ApprovalState::Declined,
+                        state: if cancelled {
+                            ApprovalState::Declined
+                        } else {
+                            ApprovalState::Expired
+                        },
                         summary: pending.summary,
                     },
                 ) {
@@ -1393,10 +1517,9 @@ async fn handle_ordered_session_event(
                     turn_id: turn_id.clone(),
                     state: super::protocol::TurnState::Completed,
                 },
-                Err(error) => AgentConversationPayload::Error {
-                    code: error.code.to_string(),
-                    message: error.message,
-                    recoverable: true,
+                Err(_) => AgentConversationPayload::Turn {
+                    turn_id: turn_id.clone(),
+                    state: super::protocol::TurnState::Failed,
                 },
             };
             if let Err(error) = record_payload_for_session_and_dispatch(session, &emitter, payload)
@@ -1404,7 +1527,22 @@ async fn handle_ordered_session_event(
                 eprintln!("Could not record ACP turn completion: {error}");
                 return false;
             }
+            if let Some((code, message)) = error_details {
+                if let Err(error) = record_payload_for_session_and_dispatch(
+                    session,
+                    &emitter,
+                    AgentConversationPayload::Error {
+                        code,
+                        message,
+                        recoverable: true,
+                    },
+                ) {
+                    eprintln!("Could not record ACP prompt error: {error}");
+                    return false;
+                }
+            }
             session.active_turn_id = None;
+            session.prompt_once_active = false;
             session.state = AgentRuntimeState::Ready;
             true
         }
@@ -2086,6 +2224,153 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn activating_the_same_generation_reuses_one_runtime_and_pump() {
+        let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("second activation is idempotent");
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
+        let log = fs::read_to_string(fixture.root.join("prompt_with_update.jsonl"))
+            .expect("activation fixture log");
+        assert_eq!(log.matches(r#""method":"initialize""#).count(), 1);
+        assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "idempotent activation emits no event"
+        );
+
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Completed,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(
+                    event.payload,
+                    AgentConversationPayload::AssistantDelta { .. }
+                ))
+                .count(),
+            1,
+            "one pump must emit one update"
+        );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prompt_once_updates_are_not_forwarded_to_the_conversation_emitter() {
+        let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        let generated = fixture
+            .manager
+            .prompt_once(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("write a subject"),
+            )
+            .await
+            .expect("one-shot prompt");
+        assert_eq!(generated.text, "generated text");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "one-shot updates must stay in the aggregation queue"
+        );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_prompt_emits_a_terminal_turn_before_clearing_it() {
+        let fixture = fixture_manager_with_acp_session("prompt_error").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Failed,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        let seen = seen.lock().unwrap();
+        let failed_turn = seen.iter().position(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Turn {
+                    state: super::super::protocol::TurnState::Failed,
+                    ..
+                }
+            )
+        });
+        let error = seen.iter().position(|event| {
+            matches!(
+                &event.payload,
+                AgentConversationPayload::Error { code, .. } if code == "acp-error"
+            )
+        });
+        assert!(failed_turn.is_some(), "failed prompt must close its turn");
+        assert!(error.is_some(), "failed prompt must retain the error");
+        assert!(failed_turn.unwrap() < error.unwrap());
+        drop(seen);
+        assert!(fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&fixture.owned_id)
+            .unwrap()
+            .active_turn_id
+            .is_none());
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn the_pump_is_silent_while_the_writer_lease_is_terminal() {
         let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
@@ -2384,6 +2669,15 @@ mod tests {
         assert!(seen
             .windows(2)
             .all(|events| events[1].sequence == events[0].sequence + 1));
+        assert!(seen.iter().any(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Turn {
+                    state: super::super::protocol::TurnState::Failed,
+                    ..
+                }
+            )
+        }));
         drop(seen);
         assert_eq!(
             fixture
@@ -2396,6 +2690,56 @@ mod tests {
                 .state,
             AgentRuntimeState::Failed
         );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_exit_expires_pending_approval_before_cleanup() {
+        let fixture = fixture_manager_with_acp_session("permission_dies").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Approval {
+                        state: ApprovalState::Expired,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Approval {
+                    state: ApprovalState::Requested,
+                    ..
+                }
+            )
+        }));
+        assert!(seen.iter().any(|event| {
+            matches!(
+                event.payload,
+                AgentConversationPayload::Turn {
+                    state: super::super::protocol::TurnState::Failed,
+                    ..
+                }
+            )
+        }));
+        drop(seen);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();

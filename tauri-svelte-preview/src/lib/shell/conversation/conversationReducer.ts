@@ -189,6 +189,7 @@ export function applyConversationEvent(
     case 'error':
       return {
         ...next,
+        activeTurnId: undefined,
         connectionState: payload.recoverable ? next.connectionState : 'failed',
         timeline: [
           ...next.timeline,

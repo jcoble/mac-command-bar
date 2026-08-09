@@ -165,12 +165,17 @@ impl AcpTransport {
         }
     }
 
-    fn send_prompt_update(&self, params: Value) {
+    /// Route an update to an active one-shot aggregation queue. Returning true
+    /// tells the reader that this frame belongs to that isolated request and
+    /// must not also enter the conversation pump.
+    fn send_prompt_update(&self, params: Value) -> bool {
         if let Ok(prompt_updates) = self.prompt_updates.lock() {
             if let Some(sender) = prompt_updates.as_ref() {
                 let _ = sender.send(params);
+                return true;
             }
         }
+        false
     }
 
     async fn write(&self, frame: Value) -> Result<(), AgentRuntimeError> {
@@ -274,10 +279,12 @@ async fn reader_loop(
             }
             (false, Some("session/update")) => {
                 let params = frame.get("params").cloned().unwrap_or(Value::Null);
-                let _ = inbound_tx.send(AcpInbound::SessionUpdate(params.clone()));
                 if let Some(transport) = transport.upgrade() {
-                    transport.send_prompt_update(params);
+                    if transport.send_prompt_update(params.clone()) {
+                        continue;
+                    }
                 }
+                let _ = inbound_tx.send(AcpInbound::SessionUpdate(params));
             }
             (false, Some(method)) => {
                 eprintln!("Ignoring unsupported ACP notification: {method}");
@@ -741,6 +748,8 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
       elif [ "$fixture" = "direct_result" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-direct","text":"direct response text"}}}}\n' "$id"
+      elif [ "$fixture" = "prompt_error" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture prompt failed"}}}}\n' "$id"
       elif [ "$fixture" = "many_updates" ]; then
         i=0
         while [ "$i" -lt 10000 ]; do
@@ -772,6 +781,9 @@ while IFS= read -r line; do
             *'"method":"session/cancel"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-cancelled","stopReason":"cancelled"}}}}\n' "$id"; break ;;
           esac
         done
+      elif [ "$fixture" = "permission_dies" ]; then
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"title":"Approval before transport exit","options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}}]}}}}\n'
+        exit 0
       elif [ "$fixture" = "cancelled_turn" ]; then
         while IFS= read -r response; do
           printf '%s\n' "$response" >> "$log"

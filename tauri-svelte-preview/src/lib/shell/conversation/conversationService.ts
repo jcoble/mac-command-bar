@@ -44,6 +44,7 @@ import {
 import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
+import { updateOwnedSession } from '../stores/sessionRailStore.svelte';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();
@@ -392,6 +393,9 @@ export async function ensureStructuredConversation(input: {
     request: input
   });
   setConversationConnection(connection);
+  if (connection.nativeSessionId) {
+    updateOwnedSession(input.ownedId, { nativeSessionId: connection.nativeSessionId });
+  }
   await resyncConversation(input.ownedId);
   return connection;
 }
