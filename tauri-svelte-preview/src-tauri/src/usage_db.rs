@@ -544,9 +544,24 @@ mod tests {
     fn sqlite_failures_name_the_binary_and_database_path() {
         let path = std::env::temp_dir().join("phase1-usage-test.sqlite3");
         let db = UsageDb::open(&path).expect("open");
-        std::env::set_var("MCB_SQLITE_BIN", "/nonexistent/not-sqlite3");
+        const SQLITE_BIN_ENV: &str = "MCB_SQLITE_BIN";
+        struct EnvGuard {
+            prior: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                if let Some(prior) = self.prior.take() {
+                    std::env::set_var(SQLITE_BIN_ENV, prior);
+                } else {
+                    std::env::remove_var(SQLITE_BIN_ENV);
+                }
+            }
+        }
+        let _env_guard = EnvGuard {
+            prior: std::env::var_os(SQLITE_BIN_ENV),
+        };
+        std::env::set_var(SQLITE_BIN_ENV, "/nonexistent/not-sqlite3");
         let error = db.query("SELECT 1;").unwrap_err();
-        std::env::remove_var("MCB_SQLITE_BIN");
         assert!(error.contains("/nonexistent/not-sqlite3"), "error must name the binary: {error}");
         assert!(error.contains("phase1-usage-test.sqlite3"), "error must name the db path: {error}");
         let _ = fs::remove_file(path);
