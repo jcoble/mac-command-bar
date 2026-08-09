@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -38,7 +38,18 @@ pub struct AcpTransport {
     closed: std::sync::atomic::AtomicBool,
     writer: tokio::sync::Mutex<SidecarWriteHalf>,
     process: Mutex<Option<SidecarProcessHandle>>,
-    prompt_updates: Mutex<Option<mpsc::UnboundedSender<Value>>>,
+    prompt_updates: Mutex<PromptUpdateRoute>,
+}
+
+#[derive(Default)]
+struct PromptUpdateRoute {
+    active: Option<ActivePromptUpdateRoute>,
+    completed_turn_ids: VecDeque<String>,
+}
+
+struct ActivePromptUpdateRoute {
+    turn_id: String,
+    sender: mpsc::UnboundedSender<Value>,
 }
 
 impl AcpTransport {
@@ -55,7 +66,7 @@ impl AcpTransport {
             closed: std::sync::atomic::AtomicBool::new(false),
             writer: tokio::sync::Mutex::new(writer),
             process: Mutex::new(Some(process_handle)),
-            prompt_updates: Mutex::new(None),
+            prompt_updates: Mutex::new(PromptUpdateRoute::default()),
         });
         let reader_transport = Arc::downgrade(&transport);
         tokio::spawn(async move {
@@ -138,41 +149,79 @@ impl AcpTransport {
 
     fn register_prompt_updates(
         self: &Arc<Self>,
+        turn_id: String,
     ) -> Result<(mpsc::UnboundedReceiver<Value>, PromptUpdateRegistration), AgentRuntimeError> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut prompt_updates = self
             .prompt_updates
             .lock()
             .map_err(|_| transport_error("prompt update queue is unavailable".to_string()))?;
-        if prompt_updates.is_some() {
+        if prompt_updates.active.is_some() {
             return Err(transport_error(
                 "ACP prompt aggregation is already active".to_string(),
             ));
         }
-        *prompt_updates = Some(sender);
+        prompt_updates.active = Some(ActivePromptUpdateRoute {
+            turn_id: turn_id.clone(),
+            sender,
+        });
         Ok((
             receiver,
             PromptUpdateRegistration {
                 transport: Arc::clone(self),
+                turn_id,
                 active: true,
             },
         ))
     }
 
-    fn unregister_prompt_updates(&self) {
+    fn unregister_prompt_updates(&self, turn_id: &str) {
         if let Ok(mut prompt_updates) = self.prompt_updates.lock() {
-            prompt_updates.take();
+            let is_registered = prompt_updates
+                .active
+                .as_ref()
+                .is_some_and(|active| active.turn_id == turn_id);
+            if is_registered {
+                prompt_updates.active.take();
+                if !prompt_updates
+                    .completed_turn_ids
+                    .iter()
+                    .any(|completed| completed == turn_id)
+                {
+                    prompt_updates
+                        .completed_turn_ids
+                        .push_back(turn_id.to_string());
+                    while prompt_updates.completed_turn_ids.len() > 32 {
+                        prompt_updates.completed_turn_ids.pop_front();
+                    }
+                }
+            }
         }
     }
 
-    /// Route an update to an active one-shot aggregation queue. Returning true
-    /// tells the reader that this frame belongs to that isolated request and
-    /// must not also enter the conversation pump.
+    /// Route an update to an active one-shot aggregation queue only when its
+    /// turn identity belongs to that request. Returning true tells the reader
+    /// that this frame was consumed and must not enter the conversation pump.
     fn send_prompt_update(&self, params: Value) -> bool {
+        let turn_id = prompt_update_turn_id(&params);
         if let Ok(prompt_updates) = self.prompt_updates.lock() {
-            if let Some(sender) = prompt_updates.as_ref() {
-                let _ = sender.send(params);
-                return true;
+            if let Some(turn_id) = turn_id {
+                if prompt_updates
+                    .completed_turn_ids
+                    .iter()
+                    .any(|completed| completed == turn_id)
+                {
+                    eprintln!(
+                        "[debug] Dropping late ACP one-shot update for completed turn {turn_id}"
+                    );
+                    return true;
+                }
+            }
+            if let Some(active) = prompt_updates.active.as_ref() {
+                if turn_id.is_none() || turn_id == Some(active.turn_id.as_str()) {
+                    let _ = active.sender.send(params);
+                    return true;
+                }
             }
         }
         false
@@ -205,13 +254,14 @@ struct PendingRequestGuard<'a> {
 
 struct PromptUpdateRegistration {
     transport: Arc<AcpTransport>,
+    turn_id: String,
     active: bool,
 }
 
 impl PromptUpdateRegistration {
     fn finish(&mut self) {
         if self.active {
-            self.transport.unregister_prompt_updates();
+            self.transport.unregister_prompt_updates(&self.turn_id);
             self.active = false;
         }
     }
@@ -473,7 +523,12 @@ impl AcpClient {
         }));
         let params = serde_json::to_value(acp::PromptRequest::new(session_id, blocks))
             .map_err(serialization_error)?;
-        let (mut updates, mut registration) = self.transport.register_prompt_updates()?;
+        let one_shot_turn_id = format!("turn-{}", uuid::Uuid::new_v4());
+        let mut params = params;
+        params["turnId"] = Value::String(one_shot_turn_id.clone());
+        let (mut updates, mut registration) = self
+            .transport
+            .register_prompt_updates(one_shot_turn_id.clone())?;
         let mut text = String::new();
         let mut turn_id = None;
         let response = self.transport.request("session/prompt", params).await;
@@ -487,7 +542,8 @@ impl AcpClient {
                 .get("turnId")
                 .or_else(|| response.get("turn_id"))
                 .and_then(Value::as_str)
-                .map(str::to_string);
+                .map(str::to_string)
+                .or_else(|| Some(one_shot_turn_id));
         }
         if let Some(result_text) = extract_text_value(&response) {
             text.push_str(&result_text);
@@ -689,6 +745,24 @@ fn append_prompt_update(params: &Value, turn_id: &mut Option<String>, text: &mut
     }
 }
 
+fn prompt_update_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.get("turn_id"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get("update")
+                .or_else(|| params.get("sessionUpdate"))
+                .and_then(|update| {
+                    update
+                        .get("turnId")
+                        .or_else(|| update.get("turn_id"))
+                        .and_then(Value::as_str)
+                })
+        })
+}
+
 fn bool_at(value: &Value, path: &[&str]) -> bool {
     path.iter()
         .try_fold(value, |current, part| current.get(*part))
@@ -741,6 +815,8 @@ while IFS= read -r line; do
     *'"method":"session/load"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
     *'"method":"session/resume"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session"}}}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
+      turn=$(printf '%s\n' "$line" | sed -n 's/.*"turnId":"\([^"]*\)".*/\1/p')
+      if [ -z "$turn" ]; then turn="turn-1"; fi
       if [ "$fixture" = "dies_midturn" ]; then
         exit 0
       elif [ "$fixture" = "pending_drop" ]; then
@@ -753,10 +829,18 @@ while IFS= read -r line; do
       elif [ "$fixture" = "many_updates" ]; then
         i=0
         while [ "$i" -lt 10000 ]; do
-          printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"x"}},"turnId":"turn-many"}}}}}}\n'
+          printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"x"}},"turnId":"%s"}}}}}}\n' "$turn"
           i=$((i + 1))
         done
-        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-many","stopReason":"end_turn"}}}}\n' "$id"
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
+      elif [ "$fixture" = "late_one_shot_update" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","text":"generated text"}}}}\n' "$id" "$turn"
+        sleep 0.05
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"late text"}},"turnId":"%s"}}}}}}\n' "$turn"
+      elif [ "$fixture" = "permission_prompt_error" ]; then
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"title":"Approval before failed prompt","options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}}]}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture prompt failed"}}}}\n' "$id"
+        exit 0
       elif [ "$fixture" = "permission_midturn" ]; then
         printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
         while IFS= read -r response; do
@@ -792,8 +876,8 @@ while IFS= read -r line; do
           esac
         done
       else
-        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"turn-1"}}}}}}\n'
-        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"%s"}}}}}}\n' "$turn"
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       fi ;;
     *'"method":"session/set_config_option"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id" ;;
     *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
@@ -989,7 +1073,13 @@ done"#,
             })
             .await
             .unwrap();
-        assert_eq!(generated.turn_id.as_deref(), Some("turn-many"));
+        assert!(
+            generated
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn_id| turn_id.starts_with("turn-")),
+            "one-shot turn id should be client-minted"
+        );
         assert_eq!(generated.text, "x".repeat(10000));
         client.close().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -1038,7 +1128,13 @@ done"#,
             })
             .await
             .unwrap();
-        assert_eq!(generated.turn_id.as_deref(), Some("turn-1"));
+        assert!(
+            generated
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn_id| turn_id.starts_with("turn-")),
+            "one-shot turn id should be client-minted"
+        );
         assert_eq!(generated.text, "generated text");
         let options = adapter.set_config("model", json!("new")).await.unwrap();
         assert_eq!(options[0].value, json!("new"));

@@ -1458,14 +1458,94 @@ async fn handle_ordered_session_event(
                 .ok()
                 .and_then(stop_reason)
                 .is_some_and(|reason| reason == "cancelled");
-            let pending_permissions =
-                take_pending_permissions(&sessions, owned_id, generation, &turn_id)
-                    .unwrap_or_default();
+            let error_details = result
+                .as_ref()
+                .err()
+                .map(|error| (error.code.to_string(), error.message.clone()));
+
+            // Approval draining and terminal event emission are one atomic
+            // session-lock operation. If transport closure wins this lock,
+            // it emits the same terminal approval/turn events and this handler
+            // returns without duplicating them.
+            let pending_permissions = {
+                let Ok(mut sessions) = sessions.lock() else {
+                    return false;
+                };
+                let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+                    return false;
+                };
+                if session.active_turn_id.as_deref() != Some(turn_id.as_str())
+                    || session.writer_lease.owner != AgentWriterLeaseOwner::Structured
+                {
+                    return true;
+                }
+                let pending_permissions = session.permission_requests.drain().collect::<Vec<_>>();
+                for (request_id, pending) in &pending_permissions {
+                    if let Err(error) = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::Approval {
+                            request_id: request_id.clone(),
+                            state: if cancelled {
+                                ApprovalState::Declined
+                            } else {
+                                ApprovalState::Expired
+                            },
+                            summary: pending.summary.clone(),
+                        },
+                    ) {
+                        eprintln!("Could not expire ACP permission request: {error}");
+                        return false;
+                    }
+                }
+                let payload = match result {
+                    Ok(_) if cancelled => AgentConversationPayload::Turn {
+                        turn_id: turn_id.clone(),
+                        state: super::protocol::TurnState::Interrupted,
+                    },
+                    Ok(_) => AgentConversationPayload::Turn {
+                        turn_id: turn_id.clone(),
+                        state: super::protocol::TurnState::Completed,
+                    },
+                    Err(_) => AgentConversationPayload::Turn {
+                        turn_id: turn_id.clone(),
+                        state: super::protocol::TurnState::Failed,
+                    },
+                };
+                if let Err(error) =
+                    record_payload_for_session_and_dispatch(session, &emitter, payload)
+                {
+                    eprintln!("Could not record ACP turn completion: {error}");
+                    return false;
+                }
+                if let Some((code, message)) = error_details {
+                    if let Err(error) = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::Error {
+                            code,
+                            message,
+                            recoverable: true,
+                        },
+                    ) {
+                        eprintln!("Could not record ACP prompt error: {error}");
+                        return false;
+                    }
+                }
+                session.active_turn_id = None;
+                session.prompt_once_active = false;
+                session.state = AgentRuntimeState::Ready;
+                pending_permissions
+            };
+
+            // The wire responses are transport I/O and must not hold the
+            // session lock. Lifecycle emission above is complete regardless of
+            // whether the transport is still able to accept these responses.
             if let Some(transport) = transport.upgrade() {
-                for (_, pending) in &pending_permissions {
+                for (_, pending) in pending_permissions {
                     if let Err(error) = transport
                         .respond(
-                            pending.wire_id.clone(),
+                            pending.wire_id,
                             serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
                         )
                         .await
@@ -1474,95 +1554,9 @@ async fn handle_ordered_session_event(
                     }
                 }
             }
-            let error_details = result
-                .as_ref()
-                .err()
-                .map(|error| (error.code.to_string(), error.message.clone()));
-
-            let Ok(mut sessions) = sessions.lock() else {
-                return false;
-            };
-            let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
-                return false;
-            };
-            if session.active_turn_id.as_deref() != Some(turn_id.as_str())
-                || session.writer_lease.owner != AgentWriterLeaseOwner::Structured
-            {
-                return true;
-            }
-            for (request_id, pending) in pending_permissions {
-                if let Err(error) = record_payload_for_session_and_dispatch(
-                    session,
-                    &emitter,
-                    AgentConversationPayload::Approval {
-                        request_id,
-                        state: if cancelled {
-                            ApprovalState::Declined
-                        } else {
-                            ApprovalState::Expired
-                        },
-                        summary: pending.summary,
-                    },
-                ) {
-                    eprintln!("Could not record cancelled ACP permission request: {error}");
-                    return false;
-                }
-            }
-            let payload = match result {
-                Ok(_) if cancelled => AgentConversationPayload::Turn {
-                    turn_id: turn_id.clone(),
-                    state: super::protocol::TurnState::Interrupted,
-                },
-                Ok(_) => AgentConversationPayload::Turn {
-                    turn_id: turn_id.clone(),
-                    state: super::protocol::TurnState::Completed,
-                },
-                Err(_) => AgentConversationPayload::Turn {
-                    turn_id: turn_id.clone(),
-                    state: super::protocol::TurnState::Failed,
-                },
-            };
-            if let Err(error) = record_payload_for_session_and_dispatch(session, &emitter, payload)
-            {
-                eprintln!("Could not record ACP turn completion: {error}");
-                return false;
-            }
-            if let Some((code, message)) = error_details {
-                if let Err(error) = record_payload_for_session_and_dispatch(
-                    session,
-                    &emitter,
-                    AgentConversationPayload::Error {
-                        code,
-                        message,
-                        recoverable: true,
-                    },
-                ) {
-                    eprintln!("Could not record ACP prompt error: {error}");
-                    return false;
-                }
-            }
-            session.active_turn_id = None;
-            session.prompt_once_active = false;
-            session.state = AgentRuntimeState::Ready;
             true
         }
     }
-}
-
-fn take_pending_permissions(
-    sessions: &Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
-    owned_id: &str,
-    generation: u64,
-    turn_id: &str,
-) -> Option<Vec<(String, PendingPermission)>> {
-    let mut sessions = sessions.lock().ok()?;
-    let session = current_session_mut(&mut sessions, owned_id, generation).ok()?;
-    if session.active_turn_id.as_deref() != Some(turn_id)
-        || session.writer_lease.owner != AgentWriterLeaseOwner::Structured
-    {
-        return None;
-    }
-    Some(session.permission_requests.drain().collect())
 }
 
 fn stop_reason(response: &Value) -> Option<&str> {
@@ -2282,8 +2276,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn prompt_once_updates_are_not_forwarded_to_the_conversation_emitter() {
-        let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+    async fn late_prompt_once_updates_are_dropped_after_registration_ends() {
+        let fixture = fixture_manager_with_acp_session("late_one_shot_update").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
         fixture
@@ -2300,10 +2294,10 @@ mod tests {
             .await
             .expect("one-shot prompt");
         assert_eq!(generated.text, "generated text");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
             seen.lock().unwrap().is_empty(),
-            "one-shot updates must stay in the aggregation queue"
+            "a late update for the completed one-shot turn must be dropped"
         );
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
@@ -2696,8 +2690,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn transport_exit_expires_pending_approval_before_cleanup() {
-        let fixture = fixture_manager_with_acp_session("permission_dies").await;
+    async fn failed_prompt_racing_transport_exit_expires_pending_approval_once() {
+        let fixture = fixture_manager_with_acp_session("permission_prompt_error").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
         fixture
@@ -2709,7 +2703,8 @@ mod tests {
             .await
             .expect("prompt starts");
         wait_until(|| {
-            seen.lock().unwrap().iter().any(|event| {
+            let seen = seen.lock().unwrap();
+            seen.iter().any(|event| {
                 matches!(
                     event.payload,
                     AgentConversationPayload::Approval {
@@ -2717,10 +2712,48 @@ mod tests {
                         ..
                     }
                 )
+            }) && seen.iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Failed,
+                        ..
+                    }
+                )
             })
         })
         .await;
         let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.iter()
+                .filter(|event| {
+                    matches!(
+                        event.payload,
+                        AgentConversationPayload::Approval {
+                            state: ApprovalState::Expired,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+            1,
+            "the failed prompt must expire its approval exactly once"
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|event| {
+                    matches!(
+                        event.payload,
+                        AgentConversationPayload::Turn {
+                            state: super::super::protocol::TurnState::Failed,
+                            ..
+                        }
+                    )
+                })
+                .count(),
+            1,
+            "the failed prompt must emit one terminal turn"
+        );
         assert!(seen.iter().any(|event| {
             matches!(
                 event.payload,
@@ -2739,6 +2772,11 @@ mod tests {
                 }
             )
         }));
+        assert!(
+            seen.windows(2)
+                .all(|events| events[1].sequence == events[0].sequence + 1),
+            "approval/turn race must preserve contiguous event sequences"
+        );
         drop(seen);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
