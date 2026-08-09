@@ -97,6 +97,21 @@ the design/spec derived from it lives in docs/superpowers/specs/.
   their best parts + everything captured here; fold into a final detailed spec and plan via
   the superpowers flow (brainstorm → spec → writing-plans).
 
+## 9. Agent workflows (deferred — direction only, not in this wave's build scope)
+
+- 42.png: the current Workflows tab is a dead form — name/id/description text boxes, one
+  "Implementer" role, and a hand-written "Run input (JSON object)" box. Nothing resembles an
+  actual workflow (agents with roles, who does what/when/how, agents messaging each other).
+- Requirements when it IS built: real multi-role workflows (CMUX oh-my-codex / oh-my-claude
+  style backends were named as the reference — agents message each other); decide the
+  transport (those backends vs ACP vs other); MUST NOT incur API costs — must ride the
+  ChatGPT/Claude subscription auth the CLIs already use; survey how other harnesses do agent
+  workflows.
+- Decision direction (design section 8): the app is the orchestrator; each workflow role is
+  an ACP session spawned through the subscription-authenticated provider CLIs (same as codex
+  exec / claude today — no API keys); hand-offs and agent-to-agent messages are app-mediated
+  routing between sessions plus files in the worktree; templates replace hand-written JSON.
+
 ## Screenshot index
 
 | File | What it shows |
