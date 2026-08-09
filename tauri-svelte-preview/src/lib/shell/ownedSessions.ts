@@ -40,6 +40,8 @@ export interface OwnedAgentRuntimeFields {
 export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSessionId'> & {
   ownedId: string;
   agent: AgentKind;
+  /** App-created agent sessions use ACP; adopted sessions stay PTY projections. */
+  origin?: 'app' | 'external';
   viaCmux: boolean;
   source: 'scanned' | 'fresh';
   title: string;
@@ -49,6 +51,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   nativeSessionId: string | null;
   ptySessionId: string | null;
   state: OwnedSessionState;
+  /** The most recent app-owned ACP start failure, retained for an in-rail retry. */
+  lastError?: string | null;
   /**
    * When the user marked this session done, as an ISO stamp; `null` while it is
    * still being worked on.
@@ -139,6 +143,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
   return {
     ownedId: mintId(),
     agent,
+    origin: 'external',
     viaCmux,
     source: 'scanned',
     title: record.title,
@@ -148,6 +153,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     nativeSessionId: record.id,
     ptySessionId: null,
     state: 'background',
+    lastError: null,
     executionOwner: 'stopped',
     runtimeState: 'closed',
     providerInstanceId: null,
@@ -174,6 +180,7 @@ export function createFreshSession(
   return {
     ownedId: mintId(),
     agent: 'other',
+    origin: 'external',
     viaCmux: false,
     source: 'fresh',
     title: opts.title ?? defaultTitle,
@@ -183,6 +190,7 @@ export function createFreshSession(
     nativeSessionId: null,
     ptySessionId: null,
     state: 'background',
+    lastError: null,
     executionOwner: 'stopped',
     runtimeState: 'closed',
     providerInstanceId: null,
@@ -248,6 +256,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
     const state = (KNOWN_STATES as string[]).includes(candidate.state as string)
       ? (candidate.state as OwnedSessionState)
       : 'exited';
+    const origin = candidate.origin === 'app' ? 'app' : 'external';
     const ptySessionId = isNonEmptyString(candidate.ptySessionId) ? candidate.ptySessionId : null;
     const executionOwner = (KNOWN_EXECUTION_OWNERS as string[]).includes(
       candidate.executionOwner as string
@@ -264,6 +273,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
     result.push({
       ownedId: candidate.ownedId,
       agent,
+      origin,
       viaCmux: candidate.viaCmux === true,
       source: candidate.source === 'fresh' ? 'fresh' : 'scanned',
       title: isNonEmptyString(candidate.title) ? candidate.title : '',
@@ -273,6 +283,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       nativeSessionId: isNonEmptyString(candidate.nativeSessionId) ? candidate.nativeSessionId : null,
       ptySessionId,
       state,
+      lastError: isNonEmptyString(candidate.lastError) ? candidate.lastError : null,
       executionOwner,
       runtimeState,
       providerInstanceId: isNonEmptyString(candidate.providerInstanceId)

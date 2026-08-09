@@ -982,23 +982,26 @@
     if (switching) restoreWorkspace(ownedId);
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
-      // A running PTY is already the owner of this agent session. Starting a
-      // second `claude --resume` / `codex app-server` here makes two agents
-      // append different answers to one conversation. Until the structured
-      // surface mirrors the PTY's transcript, keep the real terminal visible.
-      if (selected.ptySessionId) {
-        void closeStructuredConversation(ownedId);
-        setConversationMode(ownedId, 'raw');
+      if (selected.origin === 'external') {
+        // Externally started sessions keep their PTY as the only writer. The
+        // terminal surface is their projection; never activate a second ACP
+        // runtime while the adopted process remains authoritative.
+        if (selected.ptySessionId) {
+          void closeStructuredConversation(ownedId);
+          setConversationMode(ownedId, 'raw');
+        }
         return;
       }
-      void ensureStructuredConversation({
-        ownedId,
-        provider,
-        cwd: selected.cwd,
-        nativeSessionId: selected.nativeSessionId
-      }).catch((error) => {
-        rail.error = `could not open structured ${provider}: ${describeError(error)}`;
-      });
+      if (selected.origin === 'app') {
+        void ensureStructuredConversation({
+          ownedId,
+          provider,
+          cwd: selected.cwd,
+          nativeSessionId: selected.nativeSessionId
+        }).catch((error) => {
+          rail.error = `could not open structured ${provider}: ${describeError(error)}`;
+        });
+      }
     }
   }
 
@@ -1130,24 +1133,35 @@
     const owned = {
       ...createFreshSession({ cwd: request.cwd, title: request.title }),
       agent: request.agent,
-      resumeCommand: request.command
+      resumeCommand: request.command,
+      origin: request.agent === 'codex' || request.agent === 'claude' ? ('app' as const) : ('external' as const)
     };
     addOwnedSession(owned);
-    const host = await hostFor(owned.ownedId);
-    if (!host) {
-      rail.error = `no terminal host for "${owned.title}"`;
-      return;
+    if (owned.origin === 'app') {
+      updateOwnedSession(owned.ownedId, { state: 'live' });
+      try {
+        await ensureStructuredConversation({
+          ownedId: owned.ownedId,
+          provider: owned.agent as AgentConversationProvider,
+          cwd: owned.cwd
+        });
+      } catch (error) {
+        updateOwnedSession(owned.ownedId, { state: 'exited', lastError: describeError(error) });
+        rail.error = `could not start ${owned.agent} session: ${describeError(error)}`;
+        return;
+      }
+    } else {
+      const host = await hostFor(owned.ownedId);
+      if (!host) { rail.error = `no terminal host for "${owned.title}"`; return; }
+      const ptySessionId = await service.startOwned(owned, host);
+      if (!ptySessionId) {
+        updateOwnedSession(owned.ownedId, { state: 'exited' });
+        rail.error = `failed to start a terminal for "${owned.title}"`;
+        return;
+      }
+      updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     }
-    const ptySessionId = await service.startOwned(owned, host);
-    if (!ptySessionId) {
-      updateOwnedSession(owned.ownedId, { state: 'exited' });
-      rail.error = `failed to start a terminal for "${owned.title}"`;
-      return;
-    }
-    // Persist the PTY id: reload re-attach reads it back out of localStorage.
-    updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
-    // Same as resuming one: you asked for this session, so it comes to the front.
     frameControls?.showCenterPanel('session');
   }
 
@@ -1220,6 +1234,31 @@
     if (!session || session.state !== 'exited') return;
     const label = session.title || ownedId;
     restarting.add(ownedId);
+
+    if (session.origin === 'app') {
+      const provider = conversationProviderFor(ownedId);
+      if (!provider) {
+        restarting.delete(ownedId);
+        return;
+      }
+      updateOwnedSession(ownedId, { state: 'live', lastError: null });
+      try {
+        await ensureStructuredConversation({
+          ownedId,
+          provider,
+          cwd: session.cwd,
+          nativeSessionId: session.nativeSessionId
+        });
+        await selectOwned(ownedId);
+        frameControls?.showCenterPanel('session');
+      } catch (error) {
+        updateOwnedSession(ownedId, { state: 'exited', lastError: describeError(error) });
+        if (!disposed) rail.error = `could not retry ${provider} session: ${describeError(error)}`;
+      } finally {
+        restarting.delete(ownedId);
+      }
+      return;
+    }
 
     /**
      * Put the terminal the manager promoted back on screen. Closing a view

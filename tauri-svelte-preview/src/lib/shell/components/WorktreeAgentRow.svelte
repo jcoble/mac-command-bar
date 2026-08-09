@@ -108,10 +108,10 @@
           data-testid="worktree-agent-restart"
           type="button"
           class="action-button"
-          aria-label={`Start ${label} again`}
-          title="Start this session again"
+          aria-label={session.origin === 'app' ? `Retry ${label}` : `Start ${label} again`}
+          title={session.origin === 'app' ? 'Retry this structured session' : 'Start this session again'}
           onclick={(event) => stopPropagation(event, onRestart)}
-        ><Play class="size-3" aria-hidden="true" /></button>
+        >{#if session.origin === 'app'}<RotateCcw class="size-3" aria-hidden="true" />{:else}<Play class="size-3" aria-hidden="true" />{/if}</button>
       {/if}
       {#if shelf === 'working' && onComplete}
         <button
@@ -193,6 +193,7 @@
     {#if session.branch || session.taskId || session.pullRequest}
       <span>{[session.branch, session.taskId, session.pullRequest].filter(Boolean).join(' · ')}</span>
     {/if}
+    {#if session.lastError}<span data-testid="worktree-agent-error" class="error" title={session.lastError}>{session.lastError}</span>{/if}
     {#if session.lastActivity}<span>Last activity {session.lastActivity}</span>{/if}
   </div>
 
@@ -205,6 +206,7 @@
       {#if session.pullRequest}<span>Pull request</span><span class="truncate">{session.pullRequest}</span>{/if}
       {#if session.nativeSessionId}<span>Native session</span><span class="truncate">{session.nativeSessionId}</span>{/if}
       {#if session.latestTurnPreview}<span>Last turn</span><span class="truncate" title={session.latestTurnPreview}>{session.latestTurnPreview}</span>{/if}
+      {#if session.lastError}<span>Error</span><span class="truncate error" title={session.lastError}>{session.lastError}</span>{/if}
     </div>
   {/if}
 </li>
