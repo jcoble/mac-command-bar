@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
+use std::mem::ManuallyDrop;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
@@ -60,6 +62,20 @@ pub struct SidecarProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
+    stderr: BoundedStderr,
+}
+
+pub struct SidecarReadHalf {
+    stdout: Lines<BufReader<ChildStdout>>,
+    stderr: BoundedStderr,
+}
+
+pub struct SidecarWriteHalf {
+    stdin: ChildStdin,
+}
+
+pub struct SidecarProcessHandle {
+    child: Child,
     stderr: BoundedStderr,
 }
 
@@ -139,6 +155,25 @@ impl SidecarProcess {
         }
     }
 
+    pub fn split(self) -> (SidecarReadHalf, SidecarWriteHalf, SidecarProcessHandle) {
+        let mut process = ManuallyDrop::new(self);
+        // The process is deliberately transferred to independent transport
+        // owners; ManuallyDrop prevents the original Drop impl from killing it
+        // while these fields are moved out.
+        let child = unsafe { ptr::read(&mut process.child) };
+        let stdin = unsafe { ptr::read(&mut process.stdin) };
+        let stdout = unsafe { ptr::read(&mut process.stdout) };
+        let stderr = unsafe { ptr::read(&mut process.stderr) };
+        (
+            SidecarReadHalf {
+                stdout,
+                stderr: stderr.clone(),
+            },
+            SidecarWriteHalf { stdin },
+            SidecarProcessHandle { child, stderr },
+        )
+    }
+
     pub fn stderr_snapshot(&self) -> Vec<String> {
         self.stderr.snapshot()
     }
@@ -150,6 +185,60 @@ impl SidecarProcess {
 
     pub fn process_id(&self) -> Option<u32> {
         self.child.id()
+    }
+}
+
+impl SidecarWriteHalf {
+    pub async fn write_json(&mut self, value: &serde_json::Value) -> Result<(), String> {
+        let mut encoded = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+        encoded.push(b'\n');
+        self.stdin
+            .write_all(&encoded)
+            .await
+            .map_err(|error| format!("Could not write ACP request: {error}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|error| format!("Could not flush ACP request: {error}"))
+    }
+}
+
+impl SidecarReadHalf {
+    pub async fn next_json(&mut self) -> Result<serde_json::Value, String> {
+        loop {
+            let line = self
+                .stdout
+                .next_line()
+                .await
+                .map_err(|error| format!("Could not read ACP response: {error}"))?
+                .ok_or_else(|| {
+                    format!("ACP sidecar exited: {}", self.stderr.snapshot().join(" | "))
+                })?;
+            if let Ok(value) = serde_json::from_str(&line) {
+                return Ok(value);
+            }
+        }
+    }
+}
+
+impl SidecarProcessHandle {
+    pub async fn stop(&mut self) {
+        stop_process_group(&mut self.child);
+        let _ = self.child.wait().await;
+    }
+
+    pub fn stderr_snapshot(&self) -> Vec<String> {
+        self.stderr.snapshot()
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.id()
+    }
+}
+
+impl Drop for SidecarProcessHandle {
+    fn drop(&mut self) {
+        stop_process_group(&mut self.child);
     }
 }
 

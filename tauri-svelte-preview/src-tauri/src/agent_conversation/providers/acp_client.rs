@@ -1,21 +1,213 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 use agent_client_protocol::schema::{v1 as acp, ProtocolVersion};
 use serde::Serialize;
 use serde_json::{json, Value};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::super::protocol::{
     AgentCapabilities, AgentCommandDescriptor, AgentConfigOption, AgentConversationProvider,
     AgentImplementation, AgentInteractionCapabilities, AgentPromptCapabilities,
     AgentProviderManifest, AgentSessionCapabilities,
 };
-use super::process::SidecarProcess;
+use super::process::{SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf};
 use super::{AgentPrompt, AgentRuntimeError, GeneratedText, StartedAgentSession, StartedTurn};
 
+#[derive(Clone, Debug)]
+pub enum AcpInbound {
+    /// params of a session/update notification
+    SessionUpdate(Value),
+    /// an agent->client JSON-RPC REQUEST (session/request_permission, etc.)
+    AgentRequest {
+        wire_id: Value,
+        method: String,
+        params: Value,
+    },
+    /// reader ended: sidecar exited or stdout closed
+    TransportClosed { reason: String },
+}
+
+pub struct AcpTransport {
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, AgentRuntimeError>>>>,
+    next_id: AtomicU64,
+    writer: tokio::sync::Mutex<SidecarWriteHalf>,
+    process: Mutex<Option<SidecarProcessHandle>>,
+    inbound_copy: broadcast::Sender<AcpInbound>,
+}
+
+impl AcpTransport {
+    /// Splits the process pipes, spawns the reader task, returns the transport
+    /// plus the single consumer end of the inbound channel.
+    pub fn start(
+        process: SidecarProcess,
+    ) -> (Arc<AcpTransport>, mpsc::UnboundedReceiver<AcpInbound>) {
+        let (mut reader, writer, process_handle) = process.split();
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (copy_tx, _) = broadcast::channel(256);
+        let transport = Arc::new(Self {
+            pending: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(0),
+            writer: tokio::sync::Mutex::new(writer),
+            process: Mutex::new(Some(process_handle)),
+            inbound_copy: copy_tx.clone(),
+        });
+        let reader_transport = transport.clone();
+        tokio::spawn(async move {
+            reader_loop(&mut reader, &inbound_tx, &copy_tx, &reader_transport).await;
+        });
+        (transport, inbound_rx)
+    }
+
+    /// JSON-RPC request: allocate id, register oneshot, write, await.
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value, AgentRuntimeError> {
+        let id = self
+            .next_id
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| transport_error("pending request map is unavailable".to_string()))?
+            .insert(id, sender);
+        let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        if let Err(error) = self.write(frame).await {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&id);
+            }
+            return Err(error);
+        }
+        receiver
+            .await
+            .map_err(|_| transport_error("transport closed before response".to_string()))?
+    }
+
+    /// Fire-and-forget notification (e.g. session/cancel).
+    pub async fn notify(&self, method: &str, params: Value) -> Result<(), AgentRuntimeError> {
+        self.write(json!({"jsonrpc": "2.0", "method": method, "params": params}))
+            .await
+    }
+
+    /// Answer an agent->client request by wire id.
+    pub async fn respond(&self, wire_id: Value, result: Value) -> Result<(), AgentRuntimeError> {
+        self.write(json!({"jsonrpc": "2.0", "id": wire_id, "result": result}))
+            .await
+    }
+
+    pub async fn stop(&self) {
+        let process = self.process.lock().ok().and_then(|mut value| value.take());
+        if let Some(mut process) = process {
+            process.stop().await;
+        }
+    }
+
+    pub fn stderr_snapshot(&self) -> Vec<String> {
+        self.process
+            .lock()
+            .ok()
+            .and_then(|value| value.as_ref().map(SidecarProcessHandle::stderr_snapshot))
+            .unwrap_or_default()
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.process
+            .lock()
+            .ok()
+            .and_then(|value| value.as_ref().and_then(SidecarProcessHandle::process_id))
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AcpInbound> {
+        self.inbound_copy.subscribe()
+    }
+
+    async fn write(&self, frame: Value) -> Result<(), AgentRuntimeError> {
+        self.writer
+            .lock()
+            .await
+            .write_json(&frame)
+            .await
+            .map_err(transport_error)
+    }
+}
+
+async fn reader_loop(
+    reader: &mut SidecarReadHalf,
+    inbound_tx: &mpsc::UnboundedSender<AcpInbound>,
+    copy_tx: &broadcast::Sender<AcpInbound>,
+    transport: &AcpTransport,
+) {
+    let reason = loop {
+        let frame = match reader.next_json().await {
+            Ok(frame) => frame,
+            Err(reason) => break reason,
+        };
+        let has_id = frame.get("id").is_some();
+        let method = frame.get("method").and_then(Value::as_str);
+        match (has_id, method) {
+            (true, None) => {
+                let Some(id) = frame.get("id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let sender = transport
+                    .pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut map| map.remove(&id));
+                if let Some(sender) = sender {
+                    let result = if let Some(error) = frame.get("error") {
+                        Err(AgentRuntimeError::new("acp-error", error.to_string()))
+                    } else {
+                        Ok(frame.get("result").cloned().unwrap_or(Value::Null))
+                    };
+                    let _ = sender.send(result);
+                }
+            }
+            (true, Some(method)) => {
+                let inbound = AcpInbound::AgentRequest {
+                    wire_id: frame.get("id").cloned().unwrap_or(Value::Null),
+                    method: method.to_string(),
+                    params: frame.get("params").cloned().unwrap_or(Value::Null),
+                };
+                let _ = inbound_tx.send(inbound);
+            }
+            (false, Some("session/update")) => {
+                let inbound =
+                    AcpInbound::SessionUpdate(frame.get("params").cloned().unwrap_or(Value::Null));
+                let _ = inbound_tx.send(inbound);
+                let _ = copy_tx.send(AcpInbound::SessionUpdate(
+                    frame.get("params").cloned().unwrap_or(Value::Null),
+                ));
+            }
+            (false, Some(method)) => {
+                eprintln!("Ignoring unsupported ACP notification: {method}");
+            }
+            (false, None) => {}
+        }
+    };
+
+    let error = transport_error(reason.clone());
+    if let Ok(mut map) = transport.pending.lock() {
+        for (_, sender) in map.drain() {
+            let _ = sender.send(Err(AgentRuntimeError::new(
+                "transport",
+                error.message.clone(),
+            )));
+        }
+    }
+    let inbound = AcpInbound::TransportClosed { reason };
+    let _ = inbound_tx.send(inbound);
+    let _ = copy_tx.send(AcpInbound::TransportClosed {
+        reason: error.message,
+    });
+}
+
 pub struct AcpClient {
-    process: SidecarProcess,
-    next_request_id: u64,
+    transport: Arc<AcpTransport>,
+    inbound: Option<mpsc::UnboundedReceiver<AcpInbound>>,
     native_session_id: Option<String>,
 }
 
@@ -25,10 +217,12 @@ impl AcpClient {
         cwd: &Path,
         owned_id: &str,
     ) -> Result<Self, AgentRuntimeError> {
+        let process = SidecarProcess::spawn(manifest, cwd, owned_id)
+            .map_err(|message| AgentRuntimeError::new("sidecar-spawn", message))?;
+        let (transport, inbound) = AcpTransport::start(process);
         Ok(Self {
-            process: SidecarProcess::spawn(manifest, cwd, owned_id)
-                .map_err(|message| AgentRuntimeError::new("sidecar-spawn", message))?,
-            next_request_id: 0,
+            transport,
+            inbound: Some(inbound),
             native_session_id: None,
         })
     }
@@ -161,54 +355,24 @@ impl AcpClient {
         prompt: AgentPrompt,
     ) -> Result<GeneratedText, AgentRuntimeError> {
         let session_id = self.session_id()?;
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let request_id = self.next_request_id;
         let mut blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(prompt.text))];
         blocks.extend(prompt.images.into_iter().map(|image| {
             acp::ContentBlock::Image(acp::ImageContent::new(image.data, image.mime_type))
         }));
-        let params = acp::PromptRequest::new(session_id, blocks);
-        let params = serde_json::to_value(params).map_err(serialization_error)?;
-        self.process
-            .write_json(&json!({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": "session/prompt",
-                "params": params
-            }))
-            .await
-            .map_err(transport_error)?;
-
+        let mut updates = self.transport.subscribe();
+        let params = serde_json::to_value(acp::PromptRequest::new(session_id, blocks))
+            .map_err(serialization_error)?;
+        let response = self.transport.request("session/prompt", params).await?;
         let mut text = String::new();
         let mut turn_id = None;
-        loop {
-            let frame = self.process.next_json().await.map_err(transport_error)?;
-            if frame.get("id") == Some(&json!(request_id)) {
-                if let Some(error) = frame.get("error") {
-                    return Err(AgentRuntimeError::new("acp-error", error.to_string()));
-                }
-                if let Some(result_text) = frame
-                    .get("result")
-                    .and_then(extract_text_value)
-                    .filter(|value| !value.trim().is_empty())
-                {
-                    text.push_str(&result_text);
-                }
-                let text = text.trim().to_string();
-                if text.is_empty() {
-                    return Err(AgentRuntimeError::new(
-                        "empty-response",
-                        "The active agent returned no text",
-                    ));
-                }
-                return Ok(GeneratedText { turn_id, text });
-            }
-
-            let params = frame.get("params").unwrap_or(&Value::Null);
+        while let Ok(inbound) = updates.try_recv() {
+            let AcpInbound::SessionUpdate(params) = inbound else {
+                continue;
+            };
             let update = params
                 .get("update")
                 .or_else(|| params.get("sessionUpdate"))
-                .unwrap_or(params);
+                .unwrap_or(&params);
             if let Some(id) = update
                 .get("turnId")
                 .or_else(|| update.get("turn_id"))
@@ -239,6 +403,17 @@ impl AcpClient {
                 }
             }
         }
+        if let Some(result_text) = response.get("result").and_then(extract_text_value) {
+            text.push_str(&result_text);
+        }
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err(AgentRuntimeError::new(
+                "empty-response",
+                "The active agent returned no text",
+            ));
+        }
+        Ok(GeneratedText { turn_id, text })
     }
 
     pub async fn steer(&mut self, text: String) -> Result<(), AgentRuntimeError> {
@@ -254,10 +429,7 @@ impl AcpClient {
     pub async fn cancel(&mut self) -> Result<(), AgentRuntimeError> {
         let value = serde_json::to_value(acp::CancelNotification::new(self.session_id()?))
             .map_err(serialization_error)?;
-        self.process
-            .write_json(&json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": value }))
-            .await
-            .map_err(transport_error)
+        self.transport.notify("session/cancel", value).await
     }
 
     pub async fn set_config(
@@ -306,7 +478,7 @@ impl AcpClient {
                 .request("session/close", &acp::CloseSessionRequest::new(session_id))
                 .await;
         }
-        self.process.stop().await;
+        self.transport.stop().await;
         self.native_session_id = None;
         Ok(())
     }
@@ -314,15 +486,15 @@ impl AcpClient {
     /// Detach the local transport while preserving the provider-native
     /// session id. A later activation can resume the same session.
     pub async fn detach(&mut self) -> Result<(), AgentRuntimeError> {
-        self.process.stop().await;
+        self.transport.stop().await;
         Ok(())
     }
 
     pub fn stderr_snapshot(&self) -> Vec<String> {
-        self.process.stderr_snapshot()
+        self.transport.stderr_snapshot()
     }
     pub fn process_id(&self) -> Option<u32> {
-        self.process.process_id()
+        self.transport.process_id()
     }
 
     async fn start_session<T: Serialize>(
@@ -351,32 +523,14 @@ impl AcpClient {
         method: &str,
         params: &T,
     ) -> Result<Value, AgentRuntimeError> {
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        let id = self.next_request_id;
         let params = serde_json::to_value(params).map_err(serialization_error)?;
-        self.process
-            .write_json(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
-            .await
-            .map_err(transport_error)?;
-        loop {
-            let frame = self.process.next_json().await.map_err(transport_error)?;
-            if frame.get("id") != Some(&json!(id)) {
-                continue;
-            }
-            if let Some(error) = frame.get("error") {
-                return Err(AgentRuntimeError::new("acp-error", error.to_string()));
-            }
-            return Ok(frame.get("result").cloned().unwrap_or(Value::Null));
-        }
+        self.transport.request(method, params).await
     }
 
     async fn respond(&mut self, request_id: &str, result: Value) -> Result<(), AgentRuntimeError> {
         let id = serde_json::from_str::<Value>(request_id)
             .unwrap_or_else(|_| Value::String(request_id.to_string()));
-        self.process
-            .write_json(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-            .await
-            .map_err(transport_error)
+        self.transport.respond(id, result).await
     }
 
     fn session_id(&self) -> Result<String, AgentRuntimeError> {
@@ -449,8 +603,13 @@ mod tests {
     use crate::agent_conversation::providers::AgentRuntimeAdapter;
 
     fn fixture_manifest(log_path: &Path) -> AgentProviderManifest {
+        fixture_manifest_named(log_path, "default")
+    }
+
+    fn fixture_manifest_named(log_path: &Path, fixture: &str) -> AgentProviderManifest {
         let script = format!(
             r#"log={log}
+fixture={fixture}
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -459,13 +618,28 @@ while IFS= read -r line; do
     *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session"}}}}\n' "$id" ;;
     *'"method":"session/load"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
     *'"method":"session/resume"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session"}}}}\n' "$id" ;;
-    *'"method":"session/prompt"'*) printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"turn-1"}}}}}}\n'; printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id" ;;
+    *'"method":"session/prompt"'*)
+      if [ "$fixture" = "dies_midturn" ]; then
+        exit 0
+      elif [ "$fixture" = "permission_midturn" ]; then
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow"}}]}}}}\n'
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+          case "$response" in
+            *'"id":77'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"; break ;;
+          esac
+        done
+      else
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"turn-1"}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+      fi ;;
     *'"method":"session/set_config_option"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id" ;;
     *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/close"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"; exit 0 ;;
   esac
 done"#,
-            log = shell_quote(log_path)
+            log = shell_quote(log_path),
+            fixture = fixture
         );
         AgentProviderManifest {
             id: "fake-acp".into(),
@@ -477,6 +651,12 @@ done"#,
             content_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
             trusted_source: ProviderSource::Bundled,
         }
+    }
+
+    fn fixture_process(name: &str) -> SidecarProcess {
+        let root = fixture_root();
+        let log = root.join(format!("{name}.jsonl"));
+        SidecarProcess::spawn(&fixture_manifest_named(&log, name), &root, name).unwrap()
     }
 
     fn shell_quote(path: &Path) -> String {
@@ -497,6 +677,66 @@ done"#,
             turn_id: Some("turn-1".into()),
             item_id: None,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_routes_updates_and_responses_concurrently() {
+        let (transport, mut inbound) = AcpTransport::start(fixture_process("prompt_with_update"));
+        let response = transport
+            .request("session/prompt", json!({"sessionId": "s"}))
+            .await
+            .expect("prompt response");
+        assert_eq!(
+            response.get("stopReason").and_then(|v| v.as_str()),
+            Some("end_turn")
+        );
+        match inbound.recv().await.expect("inbound") {
+            AcpInbound::SessionUpdate(params) => {
+                assert_eq!(params["update"]["sessionUpdate"], "agent_message_chunk");
+            }
+            other => panic!("expected SessionUpdate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_requests_surface_on_the_inbound_channel_and_can_be_answered() {
+        let (transport, mut inbound) = AcpTransport::start(fixture_process("permission_midturn"));
+        let prompt = tokio::spawn({
+            let t = transport.clone();
+            async move { t.request("session/prompt", json!({"sessionId": "s"})).await }
+        });
+        let (wire_id, method) = match inbound.recv().await.expect("inbound") {
+            AcpInbound::AgentRequest {
+                wire_id, method, ..
+            } => (wire_id, method),
+            other => panic!("expected AgentRequest, got {other:?}"),
+        };
+        assert_eq!(method, "session/request_permission");
+        transport
+            .respond(
+                wire_id,
+                json!({"outcome": {"outcome": "selected", "optionId": "allow"}}),
+            )
+            .await
+            .expect("respond");
+        prompt
+            .await
+            .expect("join")
+            .expect("prompt completes after permission answered");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_close_fails_pending_requests_and_notifies() {
+        let (transport, mut inbound) = AcpTransport::start(fixture_process("dies_midturn"));
+        let error = transport
+            .request("session/prompt", json!({"sessionId": "s"}))
+            .await
+            .expect_err("must fail");
+        assert!(error.to_string().contains("transport"), "{error}");
+        assert!(matches!(
+            inbound.recv().await,
+            Some(AcpInbound::TransportClosed { .. })
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
