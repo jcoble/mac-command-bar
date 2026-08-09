@@ -56,3 +56,17 @@ The fifteen frontend calls in `src/lib/shell/browser/browserBackend.ts` and thei
 - After the implementation fix, the same command exited 0 and printed `browserBackend: all tests passed`.
 
 Native repro required: run the packaged/dev native app, open Stats & Usage, record the now-specific error text. The follow-up fix is driven by that text.
+
+## Final sweep (Task 7, controller-run)
+
+- `RUST_TEST_THREADS=1 cargo test`: 268 passed, 0 failed, 3 ignored (the flaky native C# lsp test passed this run; it failed intermittently during the wave).
+- Gates: `pnpm check` OK; `pnpm check:svelte` 0 errors in /next-owned files (16 old-shell legacy errors unchanged); `pnpm build` OK.
+- Script sweep: 2 failures, identical to the Task 0 baseline (sourceUi.test.mjs, workspaceSnapshotPlan.test.mjs — old-shell pins, die with TSK-811).
+
+## Commits (phase 1)
+
+858d9ed browser input wrapping · 207a6db+50f27c9 usage error surfacing · 8e5b336+7c77f9a+90010a1 ACP transport actor · 50ca299+4cad892 manager integration · b91e29d ownership split · 776ac66 structured-only app sessions + inspector.
+
+## Native acceptance (user)
+
+1. `pnpm tauri:dev:next`. 2. New Codex session → structured immediately, streams live, no mode toggle, Inspector shows events. 3. Mid-turn approval answerable; Stop cancels (turn shows interrupted). 4. Externally-started CLI session keeps its terminal + projection. 5. Browser tab create/navigate/screenshot works. 6. Stats & Usage → history loads, or the error names the sqlite binary + db path (that text drives the follow-up fix).
