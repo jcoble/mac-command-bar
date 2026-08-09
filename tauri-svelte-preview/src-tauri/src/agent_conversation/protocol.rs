@@ -472,7 +472,7 @@ pub struct PlanItem {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentConversationPayload {
     Connection {
         state: ConversationConnectionState,

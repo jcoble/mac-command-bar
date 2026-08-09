@@ -446,6 +446,17 @@ impl AgentRuntimeManager {
                     state: super::protocol::TurnState::Started,
                 },
             )?;
+            // Agents are not required to echo the prompt back as a
+            // user_message_chunk, so the app records its own copy.
+            record_payload_for_session_and_dispatch(
+                session,
+                &self.emitter,
+                AgentConversationPayload::UserMessage {
+                    item_id: format!("user-{turn_id}"),
+                    text: input.text.clone(),
+                    completed: true,
+                },
+            )?;
             (native_session_id, ordered_events)
         };
 

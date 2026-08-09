@@ -486,7 +486,7 @@ impl AcpClient {
         cwd: &Path,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let request = acp::NewSessionRequest::new(cwd);
-        self.start_session("session/new", &request).await
+        self.start_session("session/new", &request, None).await
     }
 
     pub async fn load_session(
@@ -495,7 +495,8 @@ impl AcpClient {
         native_session_id: &str,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let request = acp::LoadSessionRequest::new(native_session_id.to_string(), cwd);
-        self.start_session("session/load", &request).await
+        self.start_session("session/load", &request, Some(native_session_id))
+            .await
     }
 
     pub async fn resume_session(
@@ -504,7 +505,8 @@ impl AcpClient {
         native_session_id: &str,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), cwd);
-        self.start_session("session/resume", &request).await
+        self.start_session("session/resume", &request, Some(native_session_id))
+            .await
     }
 
     pub async fn prompt(&mut self, prompt: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
@@ -666,12 +668,16 @@ impl AcpClient {
         &mut self,
         method: &str,
         request: &T,
+        known_session_id: Option<&str>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let result = self.request(method, request).await?;
+        // session/new must return the id; session/load and session/resume
+        // may return a null result because the caller already knows it.
         let native_session_id = result
             .get("sessionId")
             .or_else(|| result.get("session_id"))
             .and_then(Value::as_str)
+            .or(known_session_id)
             .ok_or_else(|| {
                 AgentRuntimeError::new(
                     "invalid-response",
