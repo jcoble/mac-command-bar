@@ -1280,6 +1280,12 @@ async fn pump_inbound(
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
+                if session.active_turn_id.is_none() {
+                    eprintln!(
+                        "[debug] Dropping ACP session update without an active conversation turn"
+                    );
+                    continue;
+                }
                 if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                     continue;
                 }
@@ -2298,6 +2304,36 @@ mod tests {
         assert!(
             seen.lock().unwrap().is_empty(),
             "a late update for the completed one-shot turn must be dropped"
+        );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_prompt_once_consumes_agent_minted_updates_without_emitting() {
+        let fixture = fixture_manager_with_acp_session("agent_minted_in_flight_update").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        let generated = fixture
+            .manager
+            .prompt_once(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("write a subject"),
+            )
+            .await
+            .expect("one-shot prompt");
+        assert_eq!(generated.text, "agent-minted text");
+        assert_eq!(generated.turn_id.as_deref(), Some("agent-turn-9"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "an in-flight one-shot update must not reach the conversation emitter"
         );
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
