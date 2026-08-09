@@ -219,63 +219,63 @@ export class InMemoryBrowserBackend implements BrowserBackend {
  */
 export class TauriBrowserBackend implements BrowserBackend {
   create_browser_tab(input: BrowserBackendTabInput): Promise<BrowserBackendTabResult> {
-    return invokeBrowserCommandFromTauri<BrowserBackendTabResult>('create_browser_tab', input);
+    return invokeBrowserCommandFromTauri<BrowserBackendTabResult>('create_browser_tab', { input });
   }
 
   set_browser_tab_bounds(input: BrowserBackendBoundsInput): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('set_browser_tab_bounds', input);
+    return invokeBrowserCommandFromTauri<void>('set_browser_tab_bounds', { input });
   }
 
   set_browser_tab_viewport(input: BrowserBackendViewportInput): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('set_browser_tab_viewport', input);
+    return invokeBrowserCommandFromTauri<void>('set_browser_tab_viewport', { input });
   }
 
   show_browser_tab(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('show_browser_tab', input);
+    return invokeBrowserCommandFromTauri<void>('show_browser_tab', { input });
   }
 
   hide_browser_workspace(input: { workspaceId: string }): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('hide_browser_workspace', input);
+    return invokeBrowserCommandFromTauri<void>('hide_browser_workspace', { input });
   }
 
   navigate_browser_tab(input: BrowserBackendNavigationInput): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('navigate_browser_tab', input);
+    return invokeBrowserCommandFromTauri<void>('navigate_browser_tab', { input });
   }
 
   reload_browser_tab(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('reload_browser_tab', input);
+    return invokeBrowserCommandFromTauri<void>('reload_browser_tab', { input });
   }
 
   go_back_browser_tab(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('go_back_browser_tab', input);
+    return invokeBrowserCommandFromTauri<void>('go_back_browser_tab', { input });
   }
 
   go_forward_browser_tab(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('go_forward_browser_tab', input);
+    return invokeBrowserCommandFromTauri<void>('go_forward_browser_tab', { input });
   }
 
   close_browser_tab(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('close_browser_tab', input);
+    return invokeBrowserCommandFromTauri<void>('close_browser_tab', { input });
   }
 
   arm_browser_element_picker(input: BrowserBackendPickerInput): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('arm_browser_element_picker', input);
+    return invokeBrowserCommandFromTauri<void>('arm_browser_element_picker', { input });
   }
 
   cancel_browser_element_picker(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('cancel_browser_element_picker', input);
+    return invokeBrowserCommandFromTauri<void>('cancel_browser_element_picker', { input });
   }
 
   capture_browser_viewport(input: BrowserBackendTarget): Promise<BrowserMarkupCapture> {
-    return invokeBrowserCommandFromTauri<BrowserMarkupCapture>('capture_browser_viewport', input);
+    return invokeBrowserCommandFromTauri<BrowserMarkupCapture>('capture_browser_viewport', { input });
   }
 
   open_browser_tab_devtools(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('open_browser_tab_devtools', input);
+    return invokeBrowserCommandFromTauri<void>('open_browser_tab_devtools', { input });
   }
 
   open_browser_tab_external(input: BrowserBackendTarget): Promise<void> {
-    return invokeBrowserCommandFromTauri<void>('open_browser_tab_external', input);
+    return invokeBrowserCommandFromTauri<void>('open_browser_tab_external', { input });
   }
 }
 
