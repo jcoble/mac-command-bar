@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 pub const USAGE_SCHEMA: &str = include_str!("../../migrations/0001_usage_history.sql");
@@ -43,21 +43,6 @@ pub struct UsageSourceCursor {
     pub size: u64,
     pub modified_at_micros: i64,
     pub last_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageRateVersion {
-    pub provider: String,
-    pub model: String,
-    pub effective_from_micros: i64,
-    pub effective_to_micros: Option<i64>,
-    pub input_micros_per_million: i64,
-    pub output_micros_per_million: i64,
-    pub cache_read_micros_per_million: i64,
-    pub cache_write_micros_per_million: i64,
-    pub reasoning_micros_per_million: i64,
-    pub version: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -163,15 +148,12 @@ impl UsageDb {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, String> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("Could not create usage database folder: {error}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Could not create usage database folder: {error}"))?;
         }
         let db = Self { path };
         db.execute(&format!("BEGIN IMMEDIATE;\n{USAGE_SCHEMA}\nCOMMIT;"))?;
         Ok(db)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Read every durable source cursor in one DB-side query so an indexing
@@ -192,13 +174,17 @@ impl UsageDb {
                 modified_at_micros: value_i64(&row, "modified_at_micros").unwrap_or_default(),
                 last_event_id: value_optional_string(&row, "last_event_id"),
             };
-            cursors.insert(cursor_lookup_key(&cursor.provider, &cursor.provider_instance_id, &cursor.source_kind, &cursor.source_key), cursor);
+            cursors.insert(
+                cursor_lookup_key(
+                    &cursor.provider,
+                    &cursor.provider_instance_id,
+                    &cursor.source_kind,
+                    &cursor.source_key,
+                ),
+                cursor,
+            );
         }
         Ok(cursors)
-    }
-
-    pub fn insert_events(&self, events: &[UsageEvent]) -> Result<(), String> {
-        self.insert_events_with_cursor(events, None)
     }
 
     pub fn insert_events_with_cursor(
@@ -209,7 +195,10 @@ impl UsageDb {
         self.insert_batches(&[(events, cursor)])
     }
 
-    fn insert_batches(&self, batches: &[(&[UsageEvent], Option<&UsageSourceCursor>)]) -> Result<(), String> {
+    fn insert_batches(
+        &self,
+        batches: &[(&[UsageEvent], Option<&UsageSourceCursor>)],
+    ) -> Result<(), String> {
         let mut sql = String::from("BEGIN IMMEDIATE;\n");
         let mut has_events = false;
         for (events, cursor) in batches {
@@ -243,50 +232,6 @@ impl UsageDb {
         self.execute(&sql)
     }
 
-    pub fn upsert_cursor(&self, cursor: &UsageSourceCursor) -> Result<(), String> {
-        let sql = format!(
-            "INSERT INTO usage_source_cursors (provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id, updated_at_micros) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}) ON CONFLICT(provider, provider_instance_id, source_kind, source_key) DO UPDATE SET file_identity=excluded.file_identity, offset_bytes=excluded.offset_bytes, size_bytes=excluded.size_bytes, modified_at_micros=excluded.modified_at_micros, last_event_id=excluded.last_event_id, updated_at_micros=excluded.updated_at_micros;",
-            quote(&cursor.provider), quote(&cursor.provider_instance_id), quote(&cursor.source_kind), quote(&cursor.source_key), quote(&cursor.file_identity), cursor.offset, cursor.size, cursor.modified_at_micros, quote_option(cursor.last_event_id.as_deref()), now_micros()
-        );
-        self.execute(&sql)
-    }
-
-    pub fn insert_rate_version(&self, rate: &UsageRateVersion) -> Result<(), String> {
-        if rate.provider.trim().is_empty() || rate.model.trim().is_empty() || rate.version.trim().is_empty() {
-            return Err("Usage rates need provider, model, and version".to_string());
-        }
-        let sql = format!(
-            "INSERT OR REPLACE INTO usage_rate_versions (provider, model, effective_from_micros, effective_to_micros, input_micros_per_million, output_micros_per_million, cache_read_micros_per_million, cache_write_micros_per_million, reasoning_micros_per_million, version) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
-            quote(&rate.provider), quote(&rate.model), rate.effective_from_micros,
-            rate.effective_to_micros.map_or_else(|| "NULL".to_string(), |value| value.to_string()),
-            rate.input_micros_per_million, rate.output_micros_per_million,
-            rate.cache_read_micros_per_million, rate.cache_write_micros_per_million,
-            rate.reasoning_micros_per_million, quote(&rate.version)
-        );
-        self.execute(&sql)
-    }
-
-    /// Estimate only when one versioned rate covers the event timestamp. The
-    /// caller labels the result with the returned rate version.
-    pub fn estimate_event_cost_micros(&self, event: &UsageEvent) -> Result<Option<(i64, String)>, String> {
-        let sql = format!(
-            "SELECT input_micros_per_million, output_micros_per_million, cache_read_micros_per_million, cache_write_micros_per_million, reasoning_micros_per_million, version FROM usage_rate_versions WHERE provider = {} AND model = {} AND effective_from_micros <= {} AND (effective_to_micros IS NULL OR effective_to_micros > {}) ORDER BY effective_from_micros DESC LIMIT 1",
-            quote(&event.provider), quote(&event.model), event.occurred_at_micros, event.occurred_at_micros
-        );
-        let Some(row) = self.query(&sql)?.first().cloned() else { return Ok(None); };
-        let total = |tokens: u64, key: &str| -> Result<i64, String> {
-            let rate = row.get(key).and_then(Value::as_i64).unwrap_or_default();
-            let value = (tokens as i128).checked_mul(rate as i128).ok_or_else(|| "Usage cost overflow".to_string())? / 1_000_000;
-            i64::try_from(value).map_err(|_| "Usage cost overflow".to_string())
-        };
-        let cost = total(event.input_tokens, "input_micros_per_million")?
-            .saturating_add(total(event.output_tokens, "output_micros_per_million")?)
-            .saturating_add(total(event.cache_read_tokens, "cache_read_micros_per_million")?)
-            .saturating_add(total(event.cache_write_tokens, "cache_write_micros_per_million")?)
-            .saturating_add(total(event.reasoning_tokens, "reasoning_micros_per_million")?);
-        Ok(Some((cost, value_string(&row, "version"))))
-    }
-
     pub fn read_usage_summary(&self, filter: &UsageFilter) -> Result<UsageSummary, String> {
         let rows = self.query(&summary_sql(filter))?;
         let row = rows.first().cloned().unwrap_or(Value::Null);
@@ -306,81 +251,103 @@ impl UsageDb {
         })
     }
 
-    pub fn read_usage_breakdown(&self, filter: &UsageFilter) -> Result<Vec<UsageBreakdownRow>, String> {
-        self.query(&breakdown_sql(filter))?.into_iter().map(|row| {
-            Ok(UsageBreakdownRow {
-                provider: value_string(&row, "provider"),
-                model: value_string(&row, "model"),
-                project_id: value_optional_string(&row, "project_id"),
-                event_count: value_u64(&row, "event_count"),
-                session_count: value_u64(&row, "session_count"),
-                turn_count: value_u64(&row, "turn_count"),
-                workflow_count: value_u64(&row, "workflow_count"),
-                input_tokens: value_u64(&row, "input_tokens"),
-                output_tokens: value_u64(&row, "output_tokens"),
-                total_count: value_u64(&row, "total_count"),
+    pub fn read_usage_breakdown(
+        &self,
+        filter: &UsageFilter,
+    ) -> Result<Vec<UsageBreakdownRow>, String> {
+        self.query(&breakdown_sql(filter))?
+            .into_iter()
+            .map(|row| {
+                Ok(UsageBreakdownRow {
+                    provider: value_string(&row, "provider"),
+                    model: value_string(&row, "model"),
+                    project_id: value_optional_string(&row, "project_id"),
+                    event_count: value_u64(&row, "event_count"),
+                    session_count: value_u64(&row, "session_count"),
+                    turn_count: value_u64(&row, "turn_count"),
+                    workflow_count: value_u64(&row, "workflow_count"),
+                    input_tokens: value_u64(&row, "input_tokens"),
+                    output_tokens: value_u64(&row, "output_tokens"),
+                    total_count: value_u64(&row, "total_count"),
+                })
             })
-        }).collect()
+            .collect()
     }
 
-    pub fn read_usage_provider_summary(&self, filter: &UsageFilter) -> Result<Vec<UsageProviderSummaryRow>, String> {
-        self.query(&provider_summary_sql(filter))?.into_iter().map(|row| {
-            let mut models = value_models(&row);
-            models.sort();
-            Ok(UsageProviderSummaryRow {
-                provider: value_string(&row, "provider"),
-                models,
-                event_count: value_u64(&row, "event_count"),
-                session_count: value_u64(&row, "session_count"),
-                turn_count: value_u64(&row, "turn_count"),
-                workflow_count: value_u64(&row, "workflow_count"),
-                input_tokens: value_u64(&row, "input_tokens"),
-                output_tokens: value_u64(&row, "output_tokens"),
-                cache_read_tokens: value_u64(&row, "cache_read_tokens"),
-                cache_write_tokens: value_u64(&row, "cache_write_tokens"),
-                reasoning_tokens: value_u64(&row, "reasoning_tokens"),
-                estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+    pub fn read_usage_provider_summary(
+        &self,
+        filter: &UsageFilter,
+    ) -> Result<Vec<UsageProviderSummaryRow>, String> {
+        self.query(&provider_summary_sql(filter))?
+            .into_iter()
+            .map(|row| {
+                let mut models = value_models(&row);
+                models.sort();
+                Ok(UsageProviderSummaryRow {
+                    provider: value_string(&row, "provider"),
+                    models,
+                    event_count: value_u64(&row, "event_count"),
+                    session_count: value_u64(&row, "session_count"),
+                    turn_count: value_u64(&row, "turn_count"),
+                    workflow_count: value_u64(&row, "workflow_count"),
+                    input_tokens: value_u64(&row, "input_tokens"),
+                    output_tokens: value_u64(&row, "output_tokens"),
+                    cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+                    cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+                    reasoning_tokens: value_u64(&row, "reasoning_tokens"),
+                    estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+                })
             })
-        }).collect()
+            .collect()
     }
 
     pub fn read_daily(&self, filter: &UsageFilter) -> Result<Vec<UsageDailyRow>, String> {
-        self.query(&daily_sql(filter))?.into_iter().map(|row| {
-            Ok(UsageDailyRow {
-                day: value_string(&row, "day"),
-                provider: value_string(&row, "provider"),
-                model: value_string(&row, "model"),
-                project_id: value_optional_string(&row, "project_id"),
-                event_count: value_u64(&row, "event_count"),
-                session_count: value_u64(&row, "session_count"),
-                turn_count: value_u64(&row, "turn_count"),
-                workflow_count: value_u64(&row, "workflow_count"),
-                input_tokens: value_u64(&row, "input_tokens"),
-                output_tokens: value_u64(&row, "output_tokens"),
-                estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+        self.query(&daily_sql(filter))?
+            .into_iter()
+            .map(|row| {
+                Ok(UsageDailyRow {
+                    day: value_string(&row, "day"),
+                    provider: value_string(&row, "provider"),
+                    model: value_string(&row, "model"),
+                    project_id: value_optional_string(&row, "project_id"),
+                    event_count: value_u64(&row, "event_count"),
+                    session_count: value_u64(&row, "session_count"),
+                    turn_count: value_u64(&row, "turn_count"),
+                    workflow_count: value_u64(&row, "workflow_count"),
+                    input_tokens: value_u64(&row, "input_tokens"),
+                    output_tokens: value_u64(&row, "output_tokens"),
+                    estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+                })
             })
-        }).collect()
+            .collect()
     }
 
-    pub fn read_usage_daily_totals(&self, filter: &UsageFilter) -> Result<Vec<UsageDailyTotalsRow>, String> {
-        self.query(&daily_totals_sql(filter))?.into_iter().map(|row| {
-            Ok(UsageDailyTotalsRow {
-                day: value_string(&row, "day"),
-                event_count: value_u64(&row, "event_count"),
-                session_count: value_u64(&row, "session_count"),
-                turn_count: value_u64(&row, "turn_count"),
-                workflow_count: value_u64(&row, "workflow_count"),
-                input_tokens: value_u64(&row, "input_tokens"),
-                output_tokens: value_u64(&row, "output_tokens"),
-                cache_read_tokens: value_u64(&row, "cache_read_tokens"),
-                cache_write_tokens: value_u64(&row, "cache_write_tokens"),
-                reasoning_tokens: value_u64(&row, "reasoning_tokens"),
-                estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+    pub fn read_usage_daily_totals(
+        &self,
+        filter: &UsageFilter,
+    ) -> Result<Vec<UsageDailyTotalsRow>, String> {
+        self.query(&daily_totals_sql(filter))?
+            .into_iter()
+            .map(|row| {
+                Ok(UsageDailyTotalsRow {
+                    day: value_string(&row, "day"),
+                    event_count: value_u64(&row, "event_count"),
+                    session_count: value_u64(&row, "session_count"),
+                    turn_count: value_u64(&row, "turn_count"),
+                    workflow_count: value_u64(&row, "workflow_count"),
+                    input_tokens: value_u64(&row, "input_tokens"),
+                    output_tokens: value_u64(&row, "output_tokens"),
+                    cache_read_tokens: value_u64(&row, "cache_read_tokens"),
+                    cache_write_tokens: value_u64(&row, "cache_write_tokens"),
+                    reasoning_tokens: value_u64(&row, "reasoning_tokens"),
+                    estimated_cost_micros: value_i64(&row, "estimated_cost_micros"),
+                })
             })
-        }).collect()
+            .collect()
     }
 
-    pub fn explain_breakdown(&self, filter: &UsageFilter) -> Result<Vec<Value>, String> {
+    #[cfg(test)]
+    fn explain_breakdown(&self, filter: &UsageFilter) -> Result<Vec<Value>, String> {
         let sql = format!("EXPLAIN QUERY PLAN {}", breakdown_sql(filter));
         trace_sql(&sql);
         let binary = sqlite_binary();
@@ -389,9 +356,20 @@ impl UsageDb {
             .arg(&self.path)
             .arg(&sql)
             .output()
-            .map_err(|error| format!("SQLite is unavailable ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))?;
+            .map_err(|error| {
+                format!(
+                    "SQLite is unavailable ({}) for {}: {error}",
+                    binary.to_string_lossy(),
+                    self.path.display()
+                )
+            })?;
         if !output.status.success() {
-            return Err(format!("SQLite query plan failed ({}) for {}: {}", binary.to_string_lossy(), self.path.display(), String::from_utf8_lossy(&output.stderr).trim()));
+            return Err(format!(
+                "SQLite query plan failed ({}) for {}: {}",
+                binary.to_string_lossy(),
+                self.path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -403,18 +381,65 @@ impl UsageDb {
     fn execute(&self, sql: &str) -> Result<(), String> {
         trace_sql(sql);
         let binary = sqlite_binary();
-        let output = Command::new(&binary).arg("-batch").arg(&self.path).arg(sql).output().map_err(|error| format!("SQLite is unavailable ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))?;
-        if output.status.success() { Ok(()) } else { Err(format!("SQLite command failed ({}) for {}: {}", binary.to_string_lossy(), self.path.display(), String::from_utf8_lossy(&output.stderr).trim())) }
+        let output = Command::new(&binary)
+            .arg("-batch")
+            .arg(&self.path)
+            .arg(sql)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "SQLite is unavailable ({}) for {}: {error}",
+                    binary.to_string_lossy(),
+                    self.path.display()
+                )
+            })?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "SQLite command failed ({}) for {}: {}",
+                binary.to_string_lossy(),
+                self.path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
     }
 
     fn query(&self, sql: &str) -> Result<Vec<Value>, String> {
         trace_sql(sql);
         let binary = sqlite_binary();
-        let output = Command::new(&binary).arg("-batch").arg("-json").arg(&self.path).arg(sql).output().map_err(|error| format!("SQLite is unavailable ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))?;
-        if !output.status.success() { return Err(format!("SQLite query failed ({}) for {}: {}", binary.to_string_lossy(), self.path.display(), String::from_utf8_lossy(&output.stderr).trim())); }
+        let output = Command::new(&binary)
+            .arg("-batch")
+            .arg("-json")
+            .arg(&self.path)
+            .arg(sql)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "SQLite is unavailable ({}) for {}: {error}",
+                    binary.to_string_lossy(),
+                    self.path.display()
+                )
+            })?;
+        if !output.status.success() {
+            return Err(format!(
+                "SQLite query failed ({}) for {}: {}",
+                binary.to_string_lossy(),
+                self.path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
         let text = String::from_utf8_lossy(&output.stdout);
-        if text.trim().is_empty() { return Ok(Vec::new()); }
-        serde_json::from_str(text.trim()).map_err(|error| format!("SQLite JSON output was invalid ({}) for {}: {error}", binary.to_string_lossy(), self.path.display()))
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str(text.trim()).map_err(|error| {
+            format!(
+                "SQLite JSON output was invalid ({}) for {}: {error}",
+                binary.to_string_lossy(),
+                self.path.display()
+            )
+        })
     }
 }
 
@@ -423,8 +448,16 @@ fn sqlite_binary() -> std::ffi::OsString {
 }
 
 fn validate_event(event: &UsageEvent) -> Result<(), String> {
-    if event.provider.trim().is_empty() || event.provider_instance_id.trim().is_empty() || event.model.trim().is_empty() || event.source_kind.trim().is_empty() || event.source_event_id.trim().is_empty() {
-        return Err("Usage events need provider, instance, model, source kind, and source event id".to_string());
+    if event.provider.trim().is_empty()
+        || event.provider_instance_id.trim().is_empty()
+        || event.model.trim().is_empty()
+        || event.source_kind.trim().is_empty()
+        || event.source_event_id.trim().is_empty()
+    {
+        return Err(
+            "Usage events need provider, instance, model, source kind, and source event id"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -459,33 +492,67 @@ fn daily_totals_sql(filter: &UsageFilter) -> String {
 
 fn where_sql(filter: &UsageFilter) -> String {
     let mut parts = vec!["1 = 1".to_string()];
-    if let Some(provider) = &filter.provider { parts.push(format!("provider = {}", quote(provider))); }
-    if let Some(model) = &filter.model { parts.push(format!("model = {}", quote(model))); }
-    if let Some(project_id) = &filter.project_id { parts.push(format!("project_id = {}", quote(project_id))); }
-    if let Some(workflow_id) = &filter.workflow_id { parts.push(format!("workflow_id = {}", quote(workflow_id))); }
-    if let Some(start) = filter.start_micros { parts.push(format!("occurred_at_micros >= {}", start)); }
-    if let Some(end) = filter.end_micros { parts.push(format!("occurred_at_micros < {}", end)); }
+    if let Some(provider) = &filter.provider {
+        parts.push(format!("provider = {}", quote(provider)));
+    }
+    if let Some(model) = &filter.model {
+        parts.push(format!("model = {}", quote(model)));
+    }
+    if let Some(project_id) = &filter.project_id {
+        parts.push(format!("project_id = {}", quote(project_id)));
+    }
+    if let Some(workflow_id) = &filter.workflow_id {
+        parts.push(format!("workflow_id = {}", quote(workflow_id)));
+    }
+    if let Some(start) = filter.start_micros {
+        parts.push(format!("occurred_at_micros >= {}", start));
+    }
+    if let Some(end) = filter.end_micros {
+        parts.push(format!("occurred_at_micros < {}", end));
+    }
     parts.join(" AND ")
 }
 
 fn daily_where_sql(filter: &UsageFilter) -> String {
     let mut parts = vec!["1 = 1".to_string()];
-    if let Some(provider) = &filter.provider { parts.push(format!("provider = {}", quote(provider))); }
-    if let Some(model) = &filter.model { parts.push(format!("model = {}", quote(model))); }
-    if let Some(project_id) = &filter.project_id { parts.push(format!("project_id = {}", quote(project_id))); }
-    if let Some(start) = filter.start_micros { parts.push(format!("day >= date({} / 1000000, 'unixepoch')", start)); }
-    if let Some(end) = filter.end_micros { parts.push(format!("day < date({} / 1000000, 'unixepoch')", end)); }
+    if let Some(provider) = &filter.provider {
+        parts.push(format!("provider = {}", quote(provider)));
+    }
+    if let Some(model) = &filter.model {
+        parts.push(format!("model = {}", quote(model)));
+    }
+    if let Some(project_id) = &filter.project_id {
+        parts.push(format!("project_id = {}", quote(project_id)));
+    }
+    if let Some(start) = filter.start_micros {
+        parts.push(format!("day >= date({} / 1000000, 'unixepoch')", start));
+    }
+    if let Some(end) = filter.end_micros {
+        parts.push(format!("day < date({} / 1000000, 'unixepoch')", end));
+    }
     parts.join(" AND ")
 }
 
-fn quote(value: &str) -> String { format!("'{}'", value.replace('\'', "''")) }
-fn quote_option(value: Option<&str>) -> String { value.map(quote).unwrap_or_else(|| "NULL".to_string()) }
-pub fn cursor_lookup_key(provider: &str, provider_instance_id: &str, source_kind: &str, source_key: &str) -> String {
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+fn quote_option(value: Option<&str>) -> String {
+    value.map(quote).unwrap_or_else(|| "NULL".to_string())
+}
+pub fn cursor_lookup_key(
+    provider: &str,
+    provider_instance_id: &str,
+    source_kind: &str,
+    source_key: &str,
+) -> String {
     format!("{provider}\u{1f}{provider_instance_id}\u{1f}{source_kind}\u{1f}{source_key}")
 }
 fn trace_sql(sql: &str) {
     if std::env::var("MCB_SQL_TRACE").as_deref() == Ok("1") {
-        eprintln!("MCB_SQL_TRACE {}", redact_sql_literals(sql).replace('\n', " "));
+        eprintln!(
+            "MCB_SQL_TRACE {}",
+            redact_sql_literals(sql).replace('\n', " ")
+        );
     }
 }
 
@@ -511,21 +578,47 @@ fn redact_sql_literals(sql: &str) -> String {
     }
     redacted
 }
-fn now_micros() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|value| value.as_micros().min(i64::MAX as u128) as i64).unwrap_or_default() }
-fn value_u64(row: &Value, key: &str) -> u64 { row.get(key).and_then(Value::as_u64).or_else(|| row.get(key).and_then(Value::as_i64).map(|value| value.max(0) as u64)).unwrap_or_default() }
-fn value_i64(row: &Value, key: &str) -> Option<i64> { row.get(key).and_then(Value::as_i64) }
-fn value_string(row: &Value, key: &str) -> String { row.get(key).and_then(Value::as_str).unwrap_or_default().to_string() }
-fn value_optional_string(row: &Value, key: &str) -> Option<String> { row.get(key).and_then(Value::as_str).map(ToString::to_string) }
-fn value_models(row: &Value) -> Vec<String> {
-    value_optional_string(row, "models")
-        .map(|models| models.split(',').filter(|model| !model.is_empty()).map(ToString::to_string).collect())
+fn now_micros() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_micros().min(i64::MAX as u128) as i64)
         .unwrap_or_default()
 }
-
-pub fn summary_sql_for_test(filter: &UsageFilter) -> String { summary_sql(filter) }
-pub fn breakdown_sql_for_test(filter: &UsageFilter) -> String { breakdown_sql(filter) }
-pub fn provider_summary_sql_for_test(filter: &UsageFilter) -> String { provider_summary_sql(filter) }
-pub fn daily_totals_sql_for_test(filter: &UsageFilter) -> String { daily_totals_sql(filter) }
+fn value_u64(row: &Value, key: &str) -> u64 {
+    row.get(key)
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            row.get(key)
+                .and_then(Value::as_i64)
+                .map(|value| value.max(0) as u64)
+        })
+        .unwrap_or_default()
+}
+fn value_i64(row: &Value, key: &str) -> Option<i64> {
+    row.get(key).and_then(Value::as_i64)
+}
+fn value_string(row: &Value, key: &str) -> String {
+    row.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+fn value_optional_string(row: &Value, key: &str) -> Option<String> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+fn value_models(row: &Value) -> Vec<String> {
+    value_optional_string(row, "models")
+        .map(|models| {
+            models
+                .split(',')
+                .filter(|model| !model.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 #[cfg(test)]
 mod tests {
@@ -533,11 +626,37 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_db_path() -> PathBuf {
-        std::env::temp_dir().join(format!("mcb-usage-test-{}.sqlite3", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()))
+        std::env::temp_dir().join(format!(
+            "mcb-usage-test-{}.sqlite3",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
     fn event(id: &str) -> UsageEvent {
-        UsageEvent { provider: "provider-a".into(), provider_instance_id: "instance-a".into(), owned_id: None, workflow_id: None, turn_id: None, project_id: Some("project-a".into()), workspace_id: None, occurred_at_micros: 1_700_000_000_000_000, input_tokens: 10, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, model: "model-a".into(), estimated_cost_micros: None, estimate_rate_version: None, source_kind: "acp".into(), source_event_id: id.into(), source_key: "session-a".into() }
+        UsageEvent {
+            provider: "provider-a".into(),
+            provider_instance_id: "instance-a".into(),
+            owned_id: None,
+            workflow_id: None,
+            turn_id: None,
+            project_id: Some("project-a".into()),
+            workspace_id: None,
+            occurred_at_micros: 1_700_000_000_000_000,
+            input_tokens: 10,
+            output_tokens: 4,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            model: "model-a".into(),
+            estimated_cost_micros: None,
+            estimate_rate_version: None,
+            source_kind: "acp".into(),
+            source_event_id: id.into(),
+            source_key: "session-a".into(),
+        }
     }
 
     #[test]
@@ -562,8 +681,14 @@ mod tests {
         };
         std::env::set_var(SQLITE_BIN_ENV, "/nonexistent/not-sqlite3");
         let error = db.query("SELECT 1;").unwrap_err();
-        assert!(error.contains("/nonexistent/not-sqlite3"), "error must name the binary: {error}");
-        assert!(error.contains("phase1-usage-test.sqlite3"), "error must name the db path: {error}");
+        assert!(
+            error.contains("/nonexistent/not-sqlite3"),
+            "error must name the binary: {error}"
+        );
+        assert!(
+            error.contains("phase1-usage-test.sqlite3"),
+            "error must name the db path: {error}"
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -571,8 +696,11 @@ mod tests {
     fn usage_history_deduplicates_events_and_rebuilds_rollups() {
         let path = test_db_path();
         let db = UsageDb::open(&path).expect("sqlite database should open");
-        db.insert_events(&[event("event-1"), event("event-1")]).expect("events should insert");
-        let summary = db.read_usage_summary(&UsageFilter::default()).expect("summary should query");
+        db.insert_events_with_cursor(&[event("event-1"), event("event-1")], None)
+            .expect("events should insert");
+        let summary = db
+            .read_usage_summary(&UsageFilter::default())
+            .expect("summary should query");
         assert_eq!(summary.event_count, 1);
         assert_eq!(db.read_daily(&UsageFilter::default()).unwrap().len(), 1);
         let _ = fs::remove_file(path);
@@ -595,12 +723,16 @@ mod tests {
         second.output_tokens = 8;
         second.cache_write_tokens = 5;
         second.reasoning_tokens = 7;
-        db.insert_events(&[first, second]).expect("events should insert");
+        db.insert_events_with_cursor(&[first, second], None)
+            .expect("events should insert");
 
         let breakdown = db
             .read_usage_breakdown(&UsageFilter::default())
             .expect("model breakdown should query");
-        assert_eq!(breakdown.iter().map(|row| row.session_count).sum::<u64>(), 2);
+        assert_eq!(
+            breakdown.iter().map(|row| row.session_count).sum::<u64>(),
+            2
+        );
         let rows = db
             .read_usage_provider_summary(&UsageFilter::default())
             .expect("provider summary should query");
@@ -613,7 +745,10 @@ mod tests {
         assert_eq!(rows[0].cache_read_tokens, 3);
         assert_eq!(rows[0].cache_write_tokens, 5);
         assert_eq!(rows[0].reasoning_tokens, 7);
-        assert_eq!(rows[0].models, vec!["model-a".to_string(), "model-b".to_string()]);
+        assert_eq!(
+            rows[0].models,
+            vec!["model-a".to_string(), "model-b".to_string()]
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -633,7 +768,8 @@ mod tests {
         second.output_tokens = 8;
         second.cache_write_tokens = 5;
         second.reasoning_tokens = 7;
-        db.insert_events(&[first, second]).expect("events should insert");
+        db.insert_events_with_cursor(&[first, second], None)
+            .expect("events should insert");
 
         let rows = db
             .read_usage_daily_totals(&UsageFilter::default())
@@ -651,7 +787,11 @@ mod tests {
 
     #[test]
     fn usage_queries_are_db_side_and_bounded() {
-        let sql = breakdown_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
+        let sql = breakdown_sql(&UsageFilter {
+            limit: Some(20),
+            offset: Some(40),
+            ..UsageFilter::default()
+        });
         assert!(sql.contains("GROUP BY"));
         assert!(sql.contains("COUNT(*) OVER ()"));
         assert!(sql.contains("LIMIT 20 OFFSET 40"));
@@ -659,7 +799,11 @@ mod tests {
 
     #[test]
     fn provider_summary_query_groups_in_sql_and_is_bounded() {
-        let sql = provider_summary_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
+        let sql = provider_summary_sql(&UsageFilter {
+            limit: Some(20),
+            offset: Some(40),
+            ..UsageFilter::default()
+        });
         assert!(sql.contains("GROUP BY provider"));
         assert!(sql.contains("COUNT(DISTINCT session_id)"));
         assert!(sql.contains("GROUP_CONCAT(DISTINCT model)"));
@@ -668,7 +812,11 @@ mod tests {
 
     #[test]
     fn daily_totals_query_groups_in_sql_and_is_bounded() {
-        let sql = daily_totals_sql_for_test(&UsageFilter { limit: Some(20), offset: Some(40), ..UsageFilter::default() });
+        let sql = daily_totals_sql(&UsageFilter {
+            limit: Some(20),
+            offset: Some(40),
+            ..UsageFilter::default()
+        });
         assert!(sql.contains("GROUP BY day"));
         assert!(sql.contains("SUM(input_tokens)"));
         assert!(sql.contains("SUM(cache_read_tokens)"));
@@ -681,28 +829,24 @@ mod tests {
         let path = test_db_path();
         let db = UsageDb::open(&path).expect("sqlite database should open");
         let plan = db
-            .explain_breakdown(&UsageFilter { provider: Some("provider-a".into()), ..UsageFilter::default() })
+            .explain_breakdown(&UsageFilter {
+                provider: Some("provider-a".into()),
+                ..UsageFilter::default()
+            })
             .expect("sqlite should explain the bounded breakdown query");
         let plan_text = serde_json::to_string(&plan).expect("query plan should serialize");
-        assert!(plan_text.contains("usage_events_provider_model_time_idx"), "query plan did not use the provider index: {plan_text}");
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn usage_rates_estimate_only_with_a_matching_version() {
-        let path = test_db_path();
-        let db = UsageDb::open(&path).expect("sqlite database should open");
-        db.insert_rate_version(&UsageRateVersion { provider: "provider-a".into(), model: "model-a".into(), effective_from_micros: 1_600_000_000_000_000, effective_to_micros: None, input_micros_per_million: 2_000_000, output_micros_per_million: 4_000_000, cache_read_micros_per_million: 0, cache_write_micros_per_million: 0, reasoning_micros_per_million: 0, version: "v1".into() }).unwrap();
-        let event = event("rate-event");
-        assert_eq!(db.estimate_event_cost_micros(&event).unwrap(), Some((36, "v1".into())));
-        let mut unmatched = event;
-        unmatched.occurred_at_micros = 1;
-        assert_eq!(db.estimate_event_cost_micros(&unmatched).unwrap(), None);
+        assert!(
+            plan_text.contains("usage_events_provider_model_time_idx"),
+            "query plan did not use the provider index: {plan_text}"
+        );
         let _ = fs::remove_file(path);
     }
 
     #[test]
     fn sql_trace_redacts_string_literals() {
-        assert_eq!(redact_sql_literals("SELECT * FROM usage_events WHERE provider = 'private-provider'"), "SELECT * FROM usage_events WHERE provider = '?'" );
+        assert_eq!(
+            redact_sql_literals("SELECT * FROM usage_events WHERE provider = 'private-provider'"),
+            "SELECT * FROM usage_events WHERE provider = '?'"
+        );
     }
 }

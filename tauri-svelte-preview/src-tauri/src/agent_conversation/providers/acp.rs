@@ -3,9 +3,8 @@ use super::super::protocol::{AgentCapabilities, AgentProviderManifest};
 use super::acp_client::{AcpInbound, AcpTransport};
 use super::{
     AcpClient, AgentConfigOption, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter,
-    AgentRuntimeError, AgentSteeringInput, GeneratedText, InitializeAgentInput, LoadAgentSession,
-    NewAgentSession, PermissionResponse, ResumeAgentSession, StartedAgentSession, StartedTurn,
-    UserInputResponse,
+    AgentRuntimeError, GeneratedText, InitializeAgentInput, NewAgentSession, ResumeAgentSession,
+    StartedAgentSession,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -75,14 +74,6 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         self.client_mut()?.new_session(&input.cwd).await
     }
-    async fn load_session(
-        &mut self,
-        input: LoadAgentSession,
-    ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        self.client_mut()?
-            .load_session(&input.cwd, &input.native_session_id)
-            .await
-    }
     async fn resume_session(
         &mut self,
         input: ResumeAgentSession,
@@ -91,23 +82,12 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
             .resume_session(&input.cwd, &input.native_session_id)
             .await
     }
-    async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
-        self.client_mut()?.prompt(input).await
-    }
-
     async fn prompt_once(
         &mut self,
         input: AgentPrompt,
     ) -> Result<GeneratedText, AgentRuntimeError> {
         self.client_mut()?.prompt_once(input).await
     }
-    async fn steer(&mut self, input: AgentSteeringInput) -> Result<(), AgentRuntimeError> {
-        self.client_mut()?.steer(input.text).await
-    }
-    async fn cancel_turn(&mut self, _turn_id: Option<&str>) -> Result<(), AgentRuntimeError> {
-        self.client_mut()?.cancel().await
-    }
-
     async fn set_config(
         &mut self,
         option_id: &str,
@@ -119,29 +99,6 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
                 .map_err(|message| AgentRuntimeError::new("invalid-config", message))?;
         }
         Ok(replacement)
-    }
-
-    async fn respond_permission(
-        &mut self,
-        input: PermissionResponse,
-    ) -> Result<(), AgentRuntimeError> {
-        let decision = match input.decision {
-            super::super::protocol::AgentApprovalDecision::Accept => "selected",
-            super::super::protocol::AgentApprovalDecision::Decline => "cancelled",
-            super::super::protocol::AgentApprovalDecision::Cancel => "cancelled",
-        };
-        self.client_mut()?
-            .respond_permission(&input.identity.request_id, decision)
-            .await
-    }
-
-    async fn respond_user_input(
-        &mut self,
-        input: UserInputResponse,
-    ) -> Result<(), AgentRuntimeError> {
-        self.client_mut()?
-            .respond_user_input(&input.identity.request_id, input.values, input.cancelled)
-            .await
     }
 
     async fn detach_session(&mut self) -> Result<(), AgentRuntimeError> {
@@ -189,27 +146,12 @@ impl StructuredRuntimeHandle {
         }
     }
 
-    pub async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
-        match self {
-            Self::Acp(adapter) => adapter.prompt(input).await,
-        }
-    }
     pub async fn prompt_once(
         &mut self,
         input: AgentPrompt,
     ) -> Result<GeneratedText, AgentRuntimeError> {
         match self {
             Self::Acp(adapter) => adapter.prompt_once(input).await,
-        }
-    }
-    pub async fn cancel_turn(&mut self, turn_id: Option<&str>) -> Result<(), AgentRuntimeError> {
-        match self {
-            Self::Acp(adapter) => adapter.cancel_turn(turn_id).await,
-        }
-    }
-    pub async fn steer(&mut self, input: AgentSteeringInput) -> Result<(), AgentRuntimeError> {
-        match self {
-            Self::Acp(adapter) => adapter.steer(input).await,
         }
     }
     pub async fn set_config(
@@ -219,22 +161,6 @@ impl StructuredRuntimeHandle {
     ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
         match self {
             Self::Acp(adapter) => adapter.set_config(option_id, value).await,
-        }
-    }
-    pub async fn respond_permission(
-        &mut self,
-        input: PermissionResponse,
-    ) -> Result<(), AgentRuntimeError> {
-        match self {
-            Self::Acp(adapter) => adapter.respond_permission(input).await,
-        }
-    }
-    pub async fn respond_user_input(
-        &mut self,
-        input: UserInputResponse,
-    ) -> Result<(), AgentRuntimeError> {
-        match self {
-            Self::Acp(adapter) => adapter.respond_user_input(input).await,
         }
     }
     pub async fn close_session(&mut self) -> Result<(), AgentRuntimeError> {

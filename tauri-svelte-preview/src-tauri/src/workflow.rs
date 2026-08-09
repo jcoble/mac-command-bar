@@ -446,57 +446,6 @@ pub(crate) struct PlanReceipt {
     pub estimated_parallel_lanes: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub(crate) enum WorkflowCommand {
-    Start {
-        run_id: String,
-    },
-    Pause {
-        run_id: String,
-    },
-    Resume {
-        run_id: String,
-    },
-    Cancel {
-        run_id: String,
-    },
-    RetryNode {
-        run_id: String,
-        node_id: String,
-    },
-    SkipNode {
-        run_id: String,
-        node_id: String,
-    },
-    ApproveGate {
-        run_id: String,
-        node_id: String,
-        approval: Value,
-    },
-    SubmitResult {
-        run_id: String,
-        node_id: String,
-        result: Value,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AgentDelegationRequest {
-    pub workflow_run_id: String,
-    pub parent_node_run_id: String,
-    pub parent_owned_id: String,
-    pub parent_tool_call_id: String,
-    pub role_id: String,
-    pub task: String,
-    pub requested_workspace: Option<String>,
-    pub provider_override: Option<String>,
-    #[serde(default)]
-    pub config_overrides: BTreeMap<String, Value>,
-    pub depth: u32,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "detail", rename_all = "kebab-case")]
 pub(crate) enum WorkflowError {
@@ -1029,54 +978,6 @@ impl WorkflowPolicy {
             )));
         }
         Ok(provider)
-    }
-
-    pub fn authorize_delegation(
-        run: &WorkflowRunRecord,
-        request: &AgentDelegationRequest,
-    ) -> Result<(), WorkflowError> {
-        let parent = run
-            .nodes
-            .iter()
-            .find(|node| {
-                node.id == request.parent_node_run_id
-                    && node.owned_id == request.parent_owned_id
-                    && node.state == WorkflowNodeState::Running
-            })
-            .ok_or_else(|| {
-                WorkflowError::PolicyDenied(
-                    "Delegation parent is not an active workflow agent".into(),
-                )
-            })?;
-        if request.depth != parent.depth.saturating_add(1)
-            || request.depth > run.definition.budgets.maximum_child_depth
-        {
-            return Err(WorkflowError::BudgetExhausted(budget_failure(
-                "depth",
-                "Delegation depth budget exhausted",
-            )));
-        }
-        let role = run
-            .definition
-            .roles
-            .iter()
-            .find(|role| role.id == request.role_id)
-            .ok_or_else(|| {
-                WorkflowError::PolicyDenied("Delegation requested an unknown role".into())
-            })?;
-        if let Some(provider) = request.provider_override.as_deref() {
-            if !role
-                .provider_policy
-                .allowed_providers
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(provider))
-            {
-                return Err(WorkflowError::PolicyDenied(
-                    "Delegation provider override is not allow-listed".into(),
-                ));
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1797,9 +1698,6 @@ impl WorkflowEngine {
         }
     }
 
-    pub fn rebuild_from_events(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
-        self.list_runs()
-    }
     pub fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
         WorkflowReducer::reduce(read_workflow_event_values().map_err(WorkflowError::Ledger)?)
     }
@@ -2394,7 +2292,7 @@ mod tests {
         ));
     }
     #[test]
-    fn workflow_role_capability_mapping_and_delegation_authorization_are_enforced() {
+    fn workflow_role_capability_mapping_is_enforced() {
         let role = role("implementer", WorkflowOutputContract::ImplementationReceipt);
         assert_eq!(WorkflowPolicy::provider_for(&role).unwrap(), "codex");
         let mut denied = role;
@@ -2402,26 +2300,6 @@ mod tests {
         assert!(matches!(
             WorkflowPolicy::provider_for(&denied),
             Err(WorkflowError::PolicyDenied(_))
-        ));
-        let mut run = sample_run();
-        run.nodes[0].state = WorkflowNodeState::Running;
-        let mut request = AgentDelegationRequest {
-            workflow_run_id: run.id.clone(),
-            parent_node_run_id: run.nodes[0].id.clone(),
-            parent_owned_id: run.nodes[0].owned_id.clone(),
-            parent_tool_call_id: "tool-1".into(),
-            role_id: "reviewer".into(),
-            task: "review".into(),
-            requested_workspace: None,
-            provider_override: Some("codex".into()),
-            config_overrides: BTreeMap::new(),
-            depth: 1,
-        };
-        assert!(WorkflowPolicy::authorize_delegation(&run, &request).is_ok());
-        request.depth = run.definition.budgets.maximum_child_depth + 1;
-        assert!(matches!(
-            WorkflowPolicy::authorize_delegation(&run, &request),
-            Err(WorkflowError::BudgetExhausted(_))
         ));
     }
     #[test]
@@ -2544,10 +2422,7 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.get("ownedId").is_some_and(|value| !value.is_null())));
-        assert_eq!(
-            engine.rebuild_from_events().unwrap(),
-            engine.list_runs().unwrap()
-        );
+        assert_eq!(engine.list_runs().unwrap()[0].id, created.id);
     }
     fn sample_run() -> WorkflowRunRecord {
         let definition = definition();

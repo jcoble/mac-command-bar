@@ -1,8 +1,9 @@
-use crate::usage_db::{cursor_lookup_key, UsageDb, UsageEvent};
+use crate::usage_db::{cursor_lookup_key, UsageDb};
 use crate::usage_sources::{
     discover_local_usage_sources, opaque_source_key, parse_usage_events_for_source_with_context,
     read_incremental_jsonl, read_source_context,
 };
+#[cfg(test)]
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -12,13 +13,12 @@ pub struct UsageIndexer {
 
 impl UsageIndexer {
     pub fn new(database_path: impl Into<std::path::PathBuf>) -> Self {
-        Self { database_path: database_path.into() }
+        Self {
+            database_path: database_path.into(),
+        }
     }
 
-    pub fn ingest_events(&self, events: &[UsageEvent]) -> Result<(), String> {
-        UsageDb::open(&self.database_path)?.insert_events(events)
-    }
-
+    #[cfg(test)]
     pub fn ingest_jsonl(
         &self,
         path: &Path,
@@ -28,7 +28,14 @@ impl UsageIndexer {
         source_kind: &str,
         source_key: &str,
     ) -> Result<usize, String> {
-        let source = read_incremental_jsonl(path, cursor, provider, provider_instance_id, source_kind, source_key)?;
+        let source = read_incremental_jsonl(
+            path,
+            cursor,
+            provider,
+            provider_instance_id,
+            source_kind,
+            source_key,
+        )?;
         let context = read_source_context(path, provider);
         let events = parse_usage_events_for_source_with_context(
             &source.lines,
@@ -54,7 +61,12 @@ impl UsageIndexer {
         for source in discover_local_usage_sources() {
             let source_key = source.path.to_string_lossy().to_string();
             let opaque_key = opaque_source_key(&source_key);
-            let lookup = cursor_lookup_key(&source.provider, &source.provider_instance_id, &source.source_kind, &opaque_key);
+            let lookup = cursor_lookup_key(
+                &source.provider,
+                &source.provider_instance_id,
+                &source.source_kind,
+                &opaque_key,
+            );
             let cursor = cursors.get(&lookup);
             let incremental = read_incremental_jsonl(
                 &source.path,
@@ -89,18 +101,47 @@ mod tests {
 
     #[test]
     fn fixture_jsonl_is_indexed_incrementally_with_non_zero_totals() {
-        let root = std::env::temp_dir().join(format!("mcb-usage-indexer-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let root = std::env::temp_dir().join(format!(
+            "mcb-usage-indexer-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         fs::create_dir_all(&root).unwrap();
         let source_path = root.join("session.jsonl");
         let database_path = root.join("usage.sqlite3");
         let mut source = fs::File::create(&source_path).unwrap();
         writeln!(source, r#"{{"type":"assistant","uuid":"assistant-1","sessionId":"session-1","timestamp":"2026-08-08T12:34:56Z","cwd":"/tmp/project/workspace","message":{{"model":"model-a","usage":{{"input_tokens":12,"output_tokens":7}}}}}}"#).unwrap();
         let indexer = UsageIndexer::new(&database_path);
-        let first = indexer.ingest_jsonl(&source_path, None, "claude", "local", "claude-jsonl", &source_path.to_string_lossy()).unwrap();
+        let first = indexer
+            .ingest_jsonl(
+                &source_path,
+                None,
+                "claude",
+                "local",
+                "claude-jsonl",
+                &source_path.to_string_lossy(),
+            )
+            .unwrap();
         assert_eq!(first, 1);
         let db = UsageDb::open(&database_path).unwrap();
-        let cursor = db.read_source_cursors().unwrap().into_values().next().unwrap();
-        let second = indexer.ingest_jsonl(&source_path, Some(&cursor), "claude", "local", "claude-jsonl", &source_path.to_string_lossy()).unwrap();
+        let cursor = db
+            .read_source_cursors()
+            .unwrap()
+            .into_values()
+            .next()
+            .unwrap();
+        let second = indexer
+            .ingest_jsonl(
+                &source_path,
+                Some(&cursor),
+                "claude",
+                "local",
+                "claude-jsonl",
+                &source_path.to_string_lossy(),
+            )
+            .unwrap();
         assert_eq!(second, 0);
         let summary = db.read_usage_summary(&Default::default()).unwrap();
         assert_eq!(summary.event_count, 1);
@@ -113,7 +154,10 @@ mod tests {
     fn codex_incremental_tail_retains_session_context_and_unique_events() {
         let root = std::env::temp_dir().join(format!(
             "mcb-usage-codex-indexer-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&root).unwrap();
         let source_path = root.join("rollout.jsonl");
@@ -138,7 +182,12 @@ mod tests {
             1
         );
         let db = UsageDb::open(&database_path).unwrap();
-        let cursor = db.read_source_cursors().unwrap().into_values().next().unwrap();
+        let cursor = db
+            .read_source_cursors()
+            .unwrap()
+            .into_values()
+            .next()
+            .unwrap();
         writeln!(source, r#"{{"type":"event_msg","timestamp":"2026-08-08T12:35:56Z","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":21,"output_tokens":10}}}}}}}}"#).unwrap();
         source.flush().unwrap();
 
@@ -169,19 +218,40 @@ mod tests {
         let root = std::env::temp_dir().join(format!("mcb-live-usage-{}", std::process::id()));
         let indexer = UsageIndexer::new(root.join("usage.sqlite3"));
         let sources = crate::usage_sources::discover_local_usage_sources();
-        assert!(!sources.is_empty(), "the machine should expose at least one local usage source");
+        assert!(
+            !sources.is_empty(),
+            "the machine should expose at least one local usage source"
+        );
         let mut indexed_files = 0_usize;
         for source in sources.into_iter().take(32) {
             let key = source.path.to_string_lossy().to_string();
-            let count = indexer.ingest_jsonl(&source.path, None, &source.provider, &source.provider_instance_id, &source.source_kind, &key).unwrap();
+            let count = indexer
+                .ingest_jsonl(
+                    &source.path,
+                    None,
+                    &source.provider,
+                    &source.provider_instance_id,
+                    &source.source_kind,
+                    &key,
+                )
+                .unwrap();
             indexed_files += 1;
-            if count > 0 { break; }
+            if count > 0 {
+                break;
+            }
         }
         let db = UsageDb::open(indexer.database_path.clone()).unwrap();
         let summary = db.read_usage_summary(&Default::default()).unwrap();
         println!("live usage sample indexed_files={indexed_files} events={} input={} output={} cache_read={} cache_write={} reasoning={}", summary.event_count, summary.input_tokens, summary.output_tokens, summary.cache_read_tokens, summary.cache_write_tokens, summary.reasoning_tokens);
         assert!(summary.event_count > 0);
-        assert!(summary.input_tokens + summary.output_tokens + summary.cache_read_tokens + summary.cache_write_tokens + summary.reasoning_tokens > 0);
+        assert!(
+            summary.input_tokens
+                + summary.output_tokens
+                + summary.cache_read_tokens
+                + summary.cache_write_tokens
+                + summary.reasoning_tokens
+                > 0
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

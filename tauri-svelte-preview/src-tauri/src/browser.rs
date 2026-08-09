@@ -309,7 +309,6 @@ pub(crate) trait BrowserView: Send + Sync {
         script: &str,
         callback: Box<dyn Fn(String) + Send + 'static>,
     ) -> Result<(), BrowserCommandError>;
-    fn current_url(&self) -> Result<String, BrowserCommandError>;
     fn open_devtools(&self) -> Result<(), BrowserCommandError>;
 }
 
@@ -369,7 +368,6 @@ struct BrowserTab {
 #[derive(Debug, Clone, Copy)]
 struct PickerState {
     generation: u64,
-    mode: BrowserPickerMode,
     epoch: u64,
 }
 
@@ -832,7 +830,6 @@ impl BrowserRegistry {
                 .expect("validated browser tab disappeared while locked");
             tab.picker = Some(PickerState {
                 generation: target.generation,
-                mode: input.mode,
                 epoch,
             });
             (view, key)
@@ -1430,13 +1427,6 @@ impl BrowserView for TauriBrowserView {
             .map_err(native_error)
     }
 
-    fn current_url(&self) -> Result<String, BrowserCommandError> {
-        self.webview
-            .url()
-            .map(|url| url.to_string())
-            .map_err(native_error)
-    }
-
     fn open_devtools(&self) -> Result<(), BrowserCommandError> {
         #[cfg(debug_assertions)]
         {
@@ -1871,10 +1861,6 @@ mod tests {
             Ok(())
         }
 
-        fn current_url(&self) -> Result<String, BrowserCommandError> {
-            Ok("https://example.test/".to_string())
-        }
-
         fn open_devtools(&self) -> Result<(), BrowserCommandError> {
             Ok(())
         }
@@ -2130,7 +2116,6 @@ mod tests {
                 .unwrap()
                 .picker = Some(PickerState {
                 generation: 1,
-                mode: BrowserPickerMode::Grab,
                 epoch: 99,
             });
         }

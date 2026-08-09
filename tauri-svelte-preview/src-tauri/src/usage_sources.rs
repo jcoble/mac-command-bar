@@ -1,17 +1,16 @@
 use crate::usage_db::{UsageEvent, UsageSourceCursor};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct IncrementalJsonl {
     pub lines: Vec<String>,
     pub next_cursor: UsageSourceCursor,
-    pub reset: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +54,11 @@ pub fn discover_local_usage_sources() -> Vec<UsageSourceFile> {
     let sources = [
         (home.join(".claude/projects"), "claude", "claude-jsonl"),
         (home.join(".codex/sessions"), "codex", "codex-jsonl"),
-        (home.join(".codex/archived_sessions"), "codex", "codex-jsonl"),
+        (
+            home.join(".codex/archived_sessions"),
+            "codex",
+            "codex-jsonl",
+        ),
     ];
     for (root, provider, source_kind) in sources {
         collect_jsonl_files(&root, 0, &mut files, provider, source_kind);
@@ -108,14 +111,15 @@ pub fn read_incremental_jsonl(
     source_kind: &str,
     source_key: &str,
 ) -> Result<IncrementalJsonl, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("Usage source is unavailable: {error}"))?;
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("Usage source is unavailable: {error}"))?;
     let file_identity = file_identity(path, &metadata)?;
     let cursor_offset = cursor
         .filter(|cursor| cursor.file_identity == file_identity && cursor.offset <= metadata.len())
         .map(|cursor| cursor.offset as usize)
         .unwrap_or(0);
-    let reset = cursor.is_some_and(|cursor| cursor_offset == 0 && cursor.offset != 0);
-    let mut file = fs::File::open(path).map_err(|error| format!("Usage source could not be opened: {error}"))?;
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("Usage source could not be opened: {error}"))?;
     file.seek(SeekFrom::Start(cursor_offset as u64))
         .map_err(|error| format!("Usage source cursor could not seek: {error}"))?;
     let mut tail = Vec::new();
@@ -143,40 +147,7 @@ pub fn read_incremental_jsonl(
         modified_at_micros: metadata_modified_micros(&metadata),
         last_event_id: None,
     };
-    Ok(IncrementalJsonl { lines, next_cursor, reset })
-}
-
-pub fn parse_usage_events(lines: &[String]) -> Vec<UsageEvent> {
-    lines
-        .iter()
-        .filter_map(|line| {
-            let mut event = serde_json::from_str::<UsageEvent>(line).ok()?;
-            // Source keys identify a cursor, not a user path. Keep only the
-            // stable opaque form in the normalized index.
-            event.source_key = opaque_source_key(&event.source_key);
-            Some(event)
-        })
-        .collect()
-}
-
-/// Normalize real local transcript records into the SQLite event shape. The
-/// parser is intentionally conservative: only explicit numeric usage fields
-/// become events; prose/tool payloads are skipped.
-pub fn parse_usage_events_for_source(
-    lines: &[String],
-    provider: &str,
-    provider_instance_id: &str,
-    source_kind: &str,
-    source_key: &str,
-) -> Vec<UsageEvent> {
-    parse_usage_events_for_source_with_context(
-        lines,
-        provider,
-        provider_instance_id,
-        source_kind,
-        source_key,
-        &UsageSourceContext::default(),
-    )
+    Ok(IncrementalJsonl { lines, next_cursor })
 }
 
 pub fn parse_usage_events_for_source_with_context(
@@ -254,10 +225,14 @@ fn parse_claude_usage_event(
     let output_tokens = value_u64(usage, "output_tokens");
     let cache_read_tokens = value_u64(usage, "cache_read_input_tokens");
     let cache_write_tokens = value_u64(usage, "cache_creation_input_tokens");
-    if input_tokens == 0 && output_tokens == 0 && cache_read_tokens == 0 && cache_write_tokens == 0 {
+    if input_tokens == 0 && output_tokens == 0 && cache_read_tokens == 0 && cache_write_tokens == 0
+    {
         return None;
     }
-    let session_id = value.get("sessionId").and_then(Value::as_str).unwrap_or("local-session");
+    let session_id = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("local-session");
     let source_event_id = value
         .get("uuid")
         .and_then(Value::as_str)
@@ -269,12 +244,15 @@ fn parse_claude_usage_event(
         provider_instance_id: provider_instance_id.to_string(),
         owned_id: Some(session_id.to_string()),
         workflow_id: None,
-        turn_id: value.get("parentUuid").and_then(Value::as_str).map(ToString::to_string),
-        project_id: value
+        turn_id: value
+            .get("parentUuid")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        project_id: value.get("cwd").and_then(Value::as_str).and_then(path_leaf),
+        workspace_id: value
             .get("cwd")
             .and_then(Value::as_str)
-            .and_then(path_leaf),
-        workspace_id: value.get("cwd").and_then(Value::as_str).map(ToString::to_string),
+            .map(ToString::to_string),
         occurred_at_micros: value
             .get("timestamp")
             .and_then(parse_timestamp_micros)
@@ -313,7 +291,9 @@ fn parse_codex_usage_event(
     {
         return None;
     }
-    let usage = value.pointer("/payload/info/last_token_usage")?.as_object()?;
+    let usage = value
+        .pointer("/payload/info/last_token_usage")?
+        .as_object()?;
     let input_tokens = value_u64(usage, "input_tokens");
     let output_tokens = value_u64(usage, "output_tokens");
     let cache_read_tokens = value_u64(usage, "cached_input_tokens");
@@ -409,7 +389,13 @@ pub fn read_source_context(path: &Path, provider: &str) -> UsageSourceContext {
 
 fn parse_timestamp_micros(value: &Value) -> Option<i64> {
     if let Some(number) = value.as_i64() {
-        return Some(if number < 10_000_000_000 { number.saturating_mul(1_000_000) } else if number < 10_000_000_000_000 { number.saturating_mul(1_000) } else { number });
+        return Some(if number < 10_000_000_000 {
+            number.saturating_mul(1_000_000)
+        } else if number < 10_000_000_000_000 {
+            number.saturating_mul(1_000)
+        } else {
+            number
+        });
     }
     let text = value.as_str()?;
     parse_rfc3339_micros(text)
@@ -427,29 +413,40 @@ fn parse_rfc3339_micros(value: &str) -> Option<i64> {
     let hour = clock_parts.next()?.parse::<i64>().ok()?;
     let minute = clock_parts.next()?.parse::<i64>().ok()?;
     let second_fraction = clock_parts.next()?;
-    let (second_text, fraction_text) = second_fraction.split_once('.').unwrap_or((second_fraction, ""));
+    let (second_text, fraction_text) = second_fraction
+        .split_once('.')
+        .unwrap_or((second_fraction, ""));
     let second = second_text.parse::<i64>().ok()?;
-    let fraction = if fraction_text.is_empty() { 0 } else {
+    let fraction = if fraction_text.is_empty() {
+        0
+    } else {
         let digits = fraction_text.chars().take(6).collect::<String>();
-        digits.parse::<i64>().ok()?.saturating_mul(10_i64.pow(6_u32.saturating_sub(digits.len() as u32)))
+        digits
+            .parse::<i64>()
+            .ok()?
+            .saturating_mul(10_i64.pow(6_u32.saturating_sub(digits.len() as u32)))
     };
-    let offset_minutes = if time[timezone_start..].starts_with('Z') || timezone_start == time.len() {
+    let offset_minutes = if time[timezone_start..].starts_with('Z') || timezone_start == time.len()
+    {
         0
     } else {
         let offset = &time[timezone_start..];
         let sign = if offset.starts_with('-') { -1 } else { 1 };
         let offset = offset.trim_start_matches(['+', '-']);
         let mut parts = offset.split(':');
-        sign * (parts.next()?.parse::<i64>().ok()?.saturating_mul(60) + parts.next().unwrap_or("0").parse::<i64>().ok()?)
+        sign * (parts.next()?.parse::<i64>().ok()?.saturating_mul(60)
+            + parts.next().unwrap_or("0").parse::<i64>().ok()?)
     };
-    Some((days_from_civil(year, month, day)
-        .saturating_mul(86_400)
-        .saturating_add(hour.saturating_mul(3_600))
-        .saturating_add(minute.saturating_mul(60))
-        .saturating_add(second)
-        .saturating_sub(offset_minutes.saturating_mul(60)))
+    Some(
+        (days_from_civil(year, month, day)
+            .saturating_mul(86_400)
+            .saturating_add(hour.saturating_mul(3_600))
+            .saturating_add(minute.saturating_mul(60))
+            .saturating_add(second)
+            .saturating_sub(offset_minutes.saturating_mul(60)))
         .saturating_mul(1_000_000)
-        .saturating_add(fraction))
+        .saturating_add(fraction),
+    )
 }
 
 fn days_from_civil(mut year: i64, month: i64, day: i64) -> i64 {
@@ -473,7 +470,11 @@ pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
         .into_iter()
         .filter(|source| source.provider == "codex")
         .collect::<Vec<_>>();
-    sources.sort_by_key(|source| fs::metadata(&source.path).and_then(|metadata| metadata.modified()).ok());
+    sources.sort_by_key(|source| {
+        fs::metadata(&source.path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
     let mut latest = None::<i64>;
     let mut latest_windows = std::collections::BTreeMap::<String, (i64, Value)>::new();
     let mut account = None::<String>;
@@ -494,7 +495,10 @@ pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
             if rate_limits.is_null() {
                 continue;
             }
-            let captured = value.get("timestamp").and_then(parse_timestamp_micros).unwrap_or_default();
+            let captured = value
+                .get("timestamp")
+                .and_then(parse_timestamp_micros)
+                .unwrap_or_default();
             if latest.map_or(true, |current| captured > current) {
                 latest = Some(captured);
             }
@@ -503,7 +507,10 @@ pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
             }
             for key in ["primary", "secondary"] {
                 if let Some(window) = rate_limits.get(key) {
-                    if latest_windows.get(key).map_or(true, |(current, _)| captured > *current) {
+                    if latest_windows
+                        .get(key)
+                        .map_or(true, |(current, _)| captured > *current)
+                    {
                         latest_windows.insert(key.to_string(), (captured, window.clone()));
                     }
                 }
@@ -522,7 +529,10 @@ pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
         let Some(percent_consumed) = window.get("used_percent").and_then(Value::as_f64) else {
             continue;
         };
-        let reset_at = window.get("resets_at").and_then(Value::as_i64).map(|value| value.to_string());
+        let reset_at = window
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .map(|value| value.to_string());
         windows.push(LocalQuotaWindow {
             name: name.to_string(),
             semantics: format!("Provider {name} window"),
@@ -539,12 +549,16 @@ pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
 }
 
 fn read_tail_text(path: &Path, max_bytes: u64) -> Result<String, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("Usage source metadata is unavailable: {error}"))?;
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Usage source metadata is unavailable: {error}"))?;
     let start = metadata.len().saturating_sub(max_bytes);
-    let mut file = fs::File::open(path).map_err(|error| format!("Usage source could not be opened: {error}"))?;
-    file.seek(SeekFrom::Start(start)).map_err(|error| format!("Usage source tail could not seek: {error}"))?;
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("Usage source could not be opened: {error}"))?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| format!("Usage source tail could not seek: {error}"))?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|error| format!("Usage source tail could not be read: {error}"))?;
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("Usage source tail could not be read: {error}"))?;
     if start > 0 {
         if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
             bytes.drain(..=index);
@@ -556,7 +570,9 @@ fn read_tail_text(path: &Path, max_bytes: u64) -> Result<String, String> {
 pub fn opaque_source_key(source_key: &str) -> String {
     if source_key.len() == 23
         && source_key.starts_with("source-")
-        && source_key[7..].chars().all(|character| character.is_ascii_hexdigit())
+        && source_key[7..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
     {
         return source_key.to_string();
     }
@@ -607,38 +623,52 @@ mod tests {
 
     #[test]
     fn usage_source_cursor_resets_after_truncation_without_replaying_same_suffix() {
-        let path = std::env::temp_dir().join(format!("mcb-usage-source-{}.jsonl", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("mcb-usage-source-{}.jsonl", std::process::id()));
         let mut file = fs::File::create(&path).unwrap();
         writeln!(file, "{{\"provider\":\"p\"}}").unwrap();
         let first = read_incremental_jsonl(&path, None, "p", "i", "jsonl", "source").unwrap();
         assert_eq!(first.lines.len(), 1);
         fs::write(&path, b"{\"provider\":\"p\"}\n").unwrap();
-        let second = read_incremental_jsonl(&path, Some(&UsageSourceCursor { offset: 999, ..first.next_cursor.clone() }), "p", "i", "jsonl", "source").unwrap();
-        assert!(second.reset);
+        let second = read_incremental_jsonl(
+            &path,
+            Some(&UsageSourceCursor {
+                offset: 999,
+                ..first.next_cursor.clone()
+            }),
+            "p",
+            "i",
+            "jsonl",
+            "source",
+        )
+        .unwrap();
+        assert_eq!(second.lines.len(), 1);
         assert_eq!(first.next_cursor.source_key, opaque_source_key("source"));
         assert!(!first.next_cursor.source_key.contains("/"));
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn normalized_events_keep_source_keys_opaque() {
-        let events = parse_usage_events(&[r#"{"provider":"p","providerInstanceId":"i","model":"m","sourceKind":"jsonl","sourceEventId":"e","sourceKey":"/private/worktree/session.jsonl","occurredAtMicros":1,"inputTokens":1,"outputTokens":1,"cacheReadTokens":0,"cacheWriteTokens":0,"reasoningTokens":0}"#.to_string()]);
-        assert_eq!(events.len(), 1);
-        assert!(events[0].source_key.starts_with("source-"));
-        assert!(!events[0].source_key.contains("worktree"));
-    }
-
-    #[test]
     fn claude_jsonl_usage_records_become_non_zero_events() {
         let lines = vec![r#"{"type":"assistant","uuid":"assistant-1","sessionId":"session-1","timestamp":"2026-08-08T12:34:56Z","cwd":"/tmp/project/workspace","message":{"id":"msg-1","model":"model-a","usage":{"input_tokens":12,"output_tokens":7,"cache_read_input_tokens":3,"cache_creation_input_tokens":2}}}"#.to_string()];
-        let events = parse_usage_events_for_source(&lines, "claude", "local", "claude-jsonl", "/tmp/session.jsonl");
+        let events = parse_usage_events_for_source_with_context(
+            &lines,
+            "claude",
+            "local",
+            "claude-jsonl",
+            "/tmp/session.jsonl",
+            &UsageSourceContext::default(),
+        );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].input_tokens, 12);
         assert_eq!(events[0].output_tokens, 7);
         assert_eq!(events[0].cache_read_tokens, 3);
         assert_eq!(events[0].cache_write_tokens, 2);
         assert_eq!(events[0].project_id.as_deref(), Some("workspace"));
-        assert_eq!(events[0].workspace_id.as_deref(), Some("/tmp/project/workspace"));
+        assert_eq!(
+            events[0].workspace_id.as_deref(),
+            Some("/tmp/project/workspace")
+        );
     }
 
     #[test]
@@ -647,7 +677,14 @@ mod tests {
             r#"{"type":"session_meta","payload":{"id":"session-2","cwd":"/tmp/project/workspace"}}"#.to_string(),
             r#"{"type":"event_msg","timestamp":"2026-08-08T12:34:56Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":9,"reasoning_output_tokens":4}}}}"#.to_string(),
         ];
-        let events = parse_usage_events_for_source(&lines, "codex", "local", "codex-jsonl", "/tmp/rollout.jsonl");
+        let events = parse_usage_events_for_source_with_context(
+            &lines,
+            "codex",
+            "local",
+            "codex-jsonl",
+            "/tmp/rollout.jsonl",
+            &UsageSourceContext::default(),
+        );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].owned_id.as_deref(), Some("session-2"));
         assert_eq!(events[0].input_tokens, 20);
@@ -660,7 +697,10 @@ mod tests {
     #[ignore = "reads provider quota records from the machine"]
     fn live_quota_record_is_cleanly_available_or_unavailable() {
         match read_latest_local_quota("codex") {
-            Some(snapshot) => println!("live quota provider={} account={:?} windows={:?}", snapshot.provider, snapshot.account, snapshot.windows),
+            Some(snapshot) => println!(
+                "live quota provider={} account={:?} windows={:?}",
+                snapshot.provider, snapshot.account, snapshot.windows
+            ),
             None => println!("live quota unavailable"),
         }
     }

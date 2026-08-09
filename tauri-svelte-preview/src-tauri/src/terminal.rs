@@ -98,28 +98,6 @@ pub fn start_terminal_session<R: Runtime>(
     start_terminal_session_typed(app, registry, request, TerminalKind::UserPty, None)
 }
 
-pub fn start_tool_terminal_session<R: Runtime>(
-    app: tauri::AppHandle<R>,
-    registry: &TerminalRegistry,
-    request: TerminalStartRequest,
-    identity: ToolTerminalIdentity,
-) -> Result<TerminalSessionInfo, String> {
-    if identity.owned_id.trim().is_empty()
-        || identity.turn_id.trim().is_empty()
-        || identity.tool_call_id.trim().is_empty()
-        || identity.terminal_id.trim().is_empty()
-    {
-        return Err("Tool terminal identity is incomplete".to_string());
-    }
-    start_terminal_session_typed(
-        app,
-        registry,
-        request,
-        TerminalKind::AgentTool,
-        Some(identity),
-    )
-}
-
 fn start_terminal_session_typed<R: Runtime>(
     app: tauri::AppHandle<R>,
     registry: &TerminalRegistry,

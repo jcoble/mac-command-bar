@@ -1,6 +1,6 @@
 use mcb_core::scanners::disk::{
     disk_protection_allows_cleanup, scan_disk_roots, stable_entry_id, DiskProtection,
-    DiskScanOptions, DiskScanRoot, DiskScanReport, WorkspaceDiskKind,
+    DiskScanOptions, DiskScanReport, DiskScanRoot, WorkspaceDiskKind,
 };
 use mcb_core::scanners::resources::{
     scan_resource_snapshot, validate_resource_action, ProcessOwner, ResourceActionError,
@@ -123,7 +123,12 @@ fn read_resource_snapshot_at_generation(
             let owner_id = session
                 .owned_id
                 .clone()
-                .or_else(|| session.tool_terminal_identity.as_ref().map(|value| value.owned_id.clone()))
+                .or_else(|| {
+                    session
+                        .tool_terminal_identity
+                        .as_ref()
+                        .map(|value| value.owned_id.clone())
+                })
                 .or_else(|| Some(session.session_id.clone()));
             let (project_id, workspace_id) = resource_path_labels(&cwd);
             Some(ResourceOwnerHint {
@@ -176,7 +181,9 @@ fn resource_terminal_name(session: &crate::terminal::TerminalSessionInfo) -> Str
     }
 }
 
-fn resource_provider_label(provider: crate::agent_conversation::protocol::AgentConversationProvider) -> &'static str {
+fn resource_provider_label(
+    provider: crate::agent_conversation::protocol::AgentConversationProvider,
+) -> &'static str {
     match provider {
         crate::agent_conversation::protocol::AgentConversationProvider::Codex => "Codex",
         crate::agent_conversation::protocol::AgentConversationProvider::Claude => "Provider",
@@ -196,7 +203,8 @@ fn resource_path_labels(cwd: &str) -> ResourceIdentity {
         }
     }
 
-    let identity = git_resource_path_labels(&cache_key).unwrap_or_else(|| heuristic_resource_path_labels(&cache_key));
+    let identity = git_resource_path_labels(&cache_key)
+        .unwrap_or_else(|| heuristic_resource_path_labels(&cache_key));
     if let Ok(mut entries) = cache.lock() {
         entries.insert(cache_key, identity.clone());
     }
@@ -206,11 +214,14 @@ fn resource_path_labels(cwd: &str) -> ResourceIdentity {
 fn git_resource_path_labels(cwd: &Path) -> Option<ResourceIdentity> {
     let git_root = git_rev_parse_path(cwd, "--show-toplevel")?;
     let git_common_dir = git_rev_parse_path(cwd, "--git-common-dir")?;
-    let project = git_common_dir
-        .parent()
-        .and_then(path_leaf)
-        .or_else(|| git_root.file_name().map(|value| value.to_string_lossy().to_string()));
-    let workspace = git_root.file_name().map(|value| value.to_string_lossy().to_string());
+    let project = git_common_dir.parent().and_then(path_leaf).or_else(|| {
+        git_root
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+    });
+    let workspace = git_root
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string());
     Some((project, workspace))
 }
 
@@ -220,25 +231,32 @@ fn git_rev_parse_path(cwd: &Path, argument: &str) -> Option<PathBuf> {
         .args(["rev-parse", "--path-format=absolute", argument])
         .output()
         .ok();
-    let output = absolute_output.filter(|output| output.status.success()).or_else(|| {
-        Command::new("git")
-            .current_dir(cwd)
-            .args(["rev-parse", argument])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-    })?;
+    let output = absolute_output
+        .filter(|output| output.status.success())
+        .or_else(|| {
+            Command::new("git")
+                .current_dir(cwd)
+                .args(["rev-parse", argument])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+        })?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if value.is_empty() {
         None
     } else {
         let path = PathBuf::from(value);
-        Some(if path.is_absolute() { path } else { cwd.join(path) })
+        Some(if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        })
     }
 }
 
 fn path_leaf(path: &Path) -> Option<String> {
-    path.file_name().map(|value| value.to_string_lossy().to_string())
+    path.file_name()
+        .map(|value| value.to_string_lossy().to_string())
 }
 
 fn heuristic_resource_path_labels(path: &Path) -> ResourceIdentity {
@@ -314,11 +332,8 @@ pub fn cleanup_workspace_disk_entry(
             .map(PathBuf::from)
             .or_else(|| derive_repository_root(&canonical))
             .ok_or_else(|| "A worktree cleanup needs a discoverable repository root".to_string())?;
-        let _result = crate::remove_project_worktree_sync(
-            repository_root,
-            canonical.clone(),
-            false,
-        )?;
+        let _result =
+            crate::remove_project_worktree_sync(repository_root, canonical.clone(), false)?;
         "Removed the clean worktree through the existing Git safety route".to_string()
     } else {
         if fs::symlink_metadata(&path)
@@ -353,7 +368,13 @@ pub fn cleanup_workspace_disk_entry(
 
 fn derive_repository_root(worktree: &PathBuf) -> Option<PathBuf> {
     let output = std::process::Command::new("git")
-        .args(["-C", worktree.to_str()?, "rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .args([
+            "-C",
+            worktree.to_str()?,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -371,11 +392,19 @@ pub fn stop_owned_resource(
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
 ) -> Result<ResourceCommandReceipt, String> {
     if registry.generation.load(Ordering::Acquire) != request.expected_generation {
-        return Err(resource_action_error_message(ResourceActionError::StaleSnapshot));
+        return Err(resource_action_error_message(
+            ResourceActionError::StaleSnapshot,
+        ));
     }
-    let snapshot = read_resource_snapshot_at_generation(request.expected_generation, &terminal_registry, &agent_runtime)?;
+    let snapshot = read_resource_snapshot_at_generation(
+        request.expected_generation,
+        &terminal_registry,
+        &agent_runtime,
+    )?;
     if registry.generation.load(Ordering::Acquire) != request.expected_generation {
-        return Err(resource_action_error_message(ResourceActionError::StaleSnapshot));
+        return Err(resource_action_error_message(
+            ResourceActionError::StaleSnapshot,
+        ));
     }
     let process = snapshot
         .processes
@@ -398,7 +427,10 @@ pub fn stop_owned_resource(
     // recorded, but a group-wide signal could include an unowned sibling.
     let result = unsafe { libc::kill(process.pid as i32, libc::SIGTERM) };
     if result != 0 {
-        return Err(format!("Could not stop owned resource: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "Could not stop owned resource: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(ResourceCommandReceipt {
         action: "stop-owned-resource".to_string(),
@@ -412,7 +444,9 @@ pub fn stop_owned_resource(
 }
 
 #[tauri::command]
-pub fn restart_language_server_root(_request: ResourceRootRequest) -> Result<ResourceUnavailable, String> {
+pub fn restart_language_server_root(
+    _request: ResourceRootRequest,
+) -> Result<ResourceUnavailable, String> {
     Err("Language-server restart belongs to the isolated lifecycle lane".to_string())
 }
 
@@ -442,19 +476,21 @@ pub fn apply_resource_memory_pressure(_level: String) -> Result<ResourceUnavaila
 }
 
 #[tauri::command]
-pub fn read_language_server_log(_request: ResourceRootRequest) -> Result<ResourceUnavailable, String> {
+pub fn read_language_server_log(
+    _request: ResourceRootRequest,
+) -> Result<ResourceUnavailable, String> {
     Err("Language-server logs belong to the isolated lifecycle lane".to_string())
-}
-
-pub fn can_remove_disk_entry(protection: DiskProtection) -> bool {
-    disk_protection_allows_cleanup(protection)
 }
 
 fn resource_action_error_message(error: ResourceActionError) -> String {
     match error {
         ResourceActionError::External => "External resources cannot be stopped".to_string(),
-        ResourceActionError::StaleSnapshot => "The resource snapshot is stale; refresh first".to_string(),
-        ResourceActionError::ProcessGroupChanged => "The process group changed; refresh first".to_string(),
+        ResourceActionError::StaleSnapshot => {
+            "The resource snapshot is stale; refresh first".to_string()
+        }
+        ResourceActionError::ProcessGroupChanged => {
+            "The process group changed; refresh first".to_string()
+        }
     }
 }
 
@@ -465,7 +501,10 @@ fn validate_disk_scan_root(path: &PathBuf) -> Result<(), String> {
     if canonical.parent().is_none() || canonical == PathBuf::from("/") {
         return Err("The filesystem root is not an explicit workspace root".to_string());
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from).and_then(|path| path.canonicalize().ok()) {
+    if let Some(home) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .and_then(|path| path.canonicalize().ok())
+    {
         if canonical == home {
             return Err("The home folder is not an explicit workspace root".to_string());
         }
@@ -502,10 +541,7 @@ fn validate_cleanup_path(path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-fn scan_disk_entry(
-    request: &ResourceCleanupRequest,
-    canonical: &PathBuf,
-) -> Result<u64, String> {
+fn scan_disk_entry(request: &ResourceCleanupRequest, canonical: &PathBuf) -> Result<u64, String> {
     let report = scan_disk_roots(
         &[DiskScanRoot {
             repository_id: request.repository_id.clone(),
@@ -556,7 +592,8 @@ mod tests {
         let repository = root.join("fixture-repo");
         fs::create_dir_all(&repository).expect("fixture repository should be created");
         assert!(git(&repository, &["init", "--quiet"]).status.success());
-        fs::write(repository.join("README.md"), "fixture\n").expect("fixture file should be written");
+        fs::write(repository.join("README.md"), "fixture\n")
+            .expect("fixture file should be written");
         assert!(git(&repository, &["add", "."]).status.success());
         assert!(git(
             &repository,
@@ -577,8 +614,15 @@ mod tests {
         let primary_nested = repository.join("src").join("nested");
         fs::create_dir_all(&primary_nested).expect("nested primary checkout should be created");
         assert_eq!(
-            resource_path_labels(primary_nested.to_str().expect("primary path should be UTF-8")),
-            (Some("fixture-repo".to_string()), Some("fixture-repo".to_string()))
+            resource_path_labels(
+                primary_nested
+                    .to_str()
+                    .expect("primary path should be UTF-8")
+            ),
+            (
+                Some("fixture-repo".to_string()),
+                Some("fixture-repo".to_string())
+            )
         );
 
         let worktree = root.join("feature-worktree");
@@ -597,8 +641,15 @@ mod tests {
         let worktree_nested = worktree.join("src").join("nested");
         fs::create_dir_all(&worktree_nested).expect("nested worktree checkout should be created");
         assert_eq!(
-            resource_path_labels(worktree_nested.to_str().expect("worktree path should be UTF-8")),
-            (Some("fixture-repo".to_string()), Some("feature-worktree".to_string()))
+            resource_path_labels(
+                worktree_nested
+                    .to_str()
+                    .expect("worktree path should be UTF-8")
+            ),
+            (
+                Some("fixture-repo".to_string()),
+                Some("feature-worktree".to_string())
+            )
         );
 
         let plain = root.join("plain").join("nested");

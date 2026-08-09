@@ -76,7 +76,6 @@ pub struct SidecarWriteHalf {
 
 pub struct SidecarProcessHandle {
     child: Child,
-    stderr: BoundedStderr,
 }
 
 impl SidecarProcess {
@@ -126,35 +125,6 @@ impl SidecarProcess {
         })
     }
 
-    pub async fn write_json(&mut self, value: &serde_json::Value) -> Result<(), String> {
-        let mut encoded = serde_json::to_vec(value).map_err(|error| error.to_string())?;
-        encoded.push(b'\n');
-        self.stdin
-            .write_all(&encoded)
-            .await
-            .map_err(|error| format!("Could not write ACP request: {error}"))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|error| format!("Could not flush ACP request: {error}"))
-    }
-
-    pub async fn next_json(&mut self) -> Result<serde_json::Value, String> {
-        loop {
-            let line = self
-                .stdout
-                .next_line()
-                .await
-                .map_err(|error| format!("Could not read ACP response: {error}"))?
-                .ok_or_else(|| {
-                    format!("ACP sidecar exited: {}", self.stderr.snapshot().join(" | "))
-                })?;
-            if let Ok(value) = serde_json::from_str(&line) {
-                return Ok(value);
-            }
-        }
-    }
-
     pub fn split(self) -> (SidecarReadHalf, SidecarWriteHalf, SidecarProcessHandle) {
         let mut process = ManuallyDrop::new(self);
         // The process is deliberately transferred to independent transport
@@ -165,26 +135,10 @@ impl SidecarProcess {
         let stdout = unsafe { ptr::read(&mut process.stdout) };
         let stderr = unsafe { ptr::read(&mut process.stderr) };
         (
-            SidecarReadHalf {
-                stdout,
-                stderr: stderr.clone(),
-            },
+            SidecarReadHalf { stdout, stderr },
             SidecarWriteHalf { stdin },
-            SidecarProcessHandle { child, stderr },
+            SidecarProcessHandle { child },
         )
-    }
-
-    pub fn stderr_snapshot(&self) -> Vec<String> {
-        self.stderr.snapshot()
-    }
-
-    pub async fn stop(&mut self) {
-        stop_process_group(&mut self.child);
-        let _ = self.child.wait().await;
-    }
-
-    pub fn process_id(&self) -> Option<u32> {
-        self.child.id()
     }
 }
 
@@ -225,10 +179,6 @@ impl SidecarProcessHandle {
     pub async fn stop(&mut self) {
         stop_process_group(&mut self.child);
         let _ = self.child.wait().await;
-    }
-
-    pub fn stderr_snapshot(&self) -> Vec<String> {
-        self.stderr.snapshot()
     }
 
     pub fn process_id(&self) -> Option<u32> {
@@ -296,11 +246,12 @@ mod tests {
         };
         let mut process =
             SidecarProcess::spawn(&manifest, &std::env::temp_dir(), "owned-process-tree").unwrap();
-        let parent = process.process_id().unwrap();
+        let parent = process.child.id().unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         let child = loop {
             if let Some(child) = process
-                .stderr_snapshot()
+                .stderr
+                .snapshot()
                 .first()
                 .and_then(|line| line.parse::<i32>().ok())
             {
@@ -312,7 +263,8 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        process.stop().await;
+        stop_process_group(&mut process.child);
+        let _ = process.child.wait().await;
         assert_ne!(
             unsafe { libc::kill(parent as i32, 0) },
             0,

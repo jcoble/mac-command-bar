@@ -15,9 +15,9 @@ use super::protocol::{
     AgentConversationEvent, AgentConversationPayload, AgentConversationProvider,
     AgentConversationSnapshot, AgentEvent, AgentEventType, AgentExecutionOwner,
     AgentImplementation, AgentInteractionCapabilities, AgentPromptCapabilities,
-    AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
-    AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
-    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem, ToolState,
+    AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentWriterLease,
+    AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState, ConversationConnectionState,
+    EnsureAgentConversationRequest, PlanItem, ToolState,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -172,13 +172,6 @@ impl AgentRuntimeManager {
             .clone())
     }
 
-    pub fn ensure(
-        &self,
-        request: EnsureAgentConversationRequest,
-    ) -> Result<AgentConversationConnection, String> {
-        self.ensure_inner(request).map(|(connection, _)| connection)
-    }
-
     /// Ensure an app-owned ACP session while serializing it with activation.
     /// Replacing a failed or changed generation detaches the previous transport
     /// before the caller can activate the new one.
@@ -284,7 +277,7 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationConnection, String> {
         let activation_lock = self.activation_lock(owned_id)?;
         let _activation = activation_lock.lock().await;
-        let (provider, provider_instance_id, cwd, native_session_id) = {
+        let (provider, cwd, native_session_id) = {
             let sessions = self
                 .sessions
                 .lock()
@@ -303,7 +296,6 @@ impl AgentRuntimeManager {
             }
             (
                 session.provider,
-                session.provider_instance_id.clone(),
                 std::path::PathBuf::from(&session.cwd),
                 session.native_session_id.clone(),
             )
@@ -311,10 +303,7 @@ impl AgentRuntimeManager {
         let manifest = self.providers.manifest(provider)?;
         let mut adapter = AcpRuntimeAdapter::new(manifest, owned_id.to_string(), cwd.clone());
         let capabilities = adapter
-            .initialize(InitializeAgentInput {
-                provider,
-                provider_instance_id,
-            })
+            .initialize(InitializeAgentInput { provider })
             .await
             .map_err(|error| error.to_string())?;
         let expected_native_session_id = native_session_id.clone();
@@ -383,20 +372,6 @@ impl AgentRuntimeManager {
             generation,
         );
         Ok(connection)
-    }
-
-    pub fn emit_payload(
-        &self,
-        owned_id: &str,
-        generation: u64,
-        payload: AgentConversationPayload,
-    ) -> Result<AgentConversationEvent, String> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-        let session = current_session_mut(&mut sessions, owned_id, generation)?;
-        record_payload_for_session_and_dispatch(session, &self.emitter, payload)
     }
 
     pub async fn prompt(
@@ -572,37 +547,6 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    pub async fn respond_user_input(&self, input: AgentUserInputResponse) -> Result<(), String> {
-        let runtime = self.runtime(&input.identity.owned_id, input.identity.generation)?;
-        let result = runtime
-            .lock()
-            .await
-            .respond_user_input(input)
-            .await
-            .map_err(|error| error.to_string());
-        result
-    }
-
-    pub async fn steer(&self, owned_id: &str, generation: u64, text: String) -> Result<(), String> {
-        let runtime = self.runtime(owned_id, generation)?;
-        let transport = {
-            let runtime = runtime.lock().await;
-            runtime.transport().map_err(|error| error.to_string())?
-        };
-        let native_session_id = self.native_session_id(owned_id, generation)?;
-        transport
-            .request(
-                "session/steer",
-                serde_json::json!({
-                    "sessionId": native_session_id,
-                    "prompt": [{ "type": "text", "text": text }]
-                }),
-            )
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
     pub async fn set_config(
         &self,
         owned_id: &str,
@@ -643,32 +587,6 @@ impl AgentRuntimeManager {
             replacement.clone(),
         )?;
         Ok(replacement)
-    }
-
-    pub fn request_tool_terminal<R: tauri::Runtime>(
-        &self,
-        app: tauri::AppHandle<R>,
-        terminal_registry: &crate::terminal::TerminalRegistry,
-        generation: u64,
-        request: crate::terminal::TerminalStartRequest,
-        identity: crate::terminal::ToolTerminalIdentity,
-    ) -> Result<crate::terminal::TerminalSessionInfo, String> {
-        {
-            let sessions = self
-                .sessions
-                .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-            let session = current_session(&sessions, &identity.owned_id, generation)?;
-            if session.owner != AgentExecutionOwner::Structured || session.runtime.is_none() {
-                return Err(
-                    "Tool terminal request is not from a current structured runtime".to_string(),
-                );
-            }
-            if identity.turn_id.trim().is_empty() || identity.tool_call_id.trim().is_empty() {
-                return Err("Tool terminal request identity is incomplete".to_string());
-            }
-        }
-        crate::terminal::start_tool_terminal_session(app, terminal_registry, request, identity)
     }
 
     pub async fn respond_legacy_approval(
@@ -1024,17 +942,6 @@ impl AgentRuntimeManager {
         })
     }
 
-    pub fn canonical_snapshot(&self, owned_id: &str) -> Result<Vec<AgentEvent>, String> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-        Ok(sessions
-            .get(owned_id)
-            .map(|session| session.recent_events.iter().cloned().collect())
-            .unwrap_or_default())
-    }
-
     fn activation_lock(&self, owned_id: &str) -> Result<Arc<AsyncMutex<()>>, String> {
         let mut locks = self
             .activation_locks
@@ -1063,17 +970,6 @@ impl AgentRuntimeManager {
             .runtime
             .clone()
             .ok_or_else(|| "Structured provider is still connecting".to_string())
-    }
-
-    fn native_session_id(&self, owned_id: &str, generation: u64) -> Result<String, String> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
-        current_session(&sessions, owned_id, generation)?
-            .native_session_id
-            .clone()
-            .ok_or_else(|| "Structured provider session has not started".to_string())
     }
 
     #[cfg(test)]
@@ -1719,10 +1615,6 @@ fn canonical_event(
     })
 }
 
-pub fn payload_from_session_update(params: &Value) -> Option<AgentConversationPayload> {
-    payload_from_session_update_for_turn(params, None)
-}
-
 fn payload_from_session_update_for_turn(
     params: &Value,
     active_turn_id: Option<&str>,
@@ -1985,12 +1877,13 @@ mod tests {
         let manager = AgentRuntimeManager::new(providers);
         let owned_id = format!("owned-{fixture}");
         let connection = manager
-            .ensure(request(
+            .ensure_inner(request(
                 root.to_str().unwrap(),
                 &owned_id,
                 AgentConversationProvider::Codex,
             ))
-            .expect("ensure");
+            .expect("ensure")
+            .0;
         manager
             .activate(&owned_id, connection.generation)
             .await
@@ -2076,7 +1969,7 @@ mod tests {
             "sessionUpdate": "agent_message_chunk",
             "content": { "type": "text", "text": "Hi" }, "messageId": "m1" } });
         assert_eq!(
-            payload_from_session_update(&chunk),
+            payload_from_session_update_for_turn(&chunk, None),
             Some(AgentConversationPayload::AssistantDelta {
                 item_id: "m1".into(),
                 delta: "Hi".into(),
@@ -2085,7 +1978,7 @@ mod tests {
         let tool = json!({ "sessionId": "s", "update": {
             "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read file",
             "status": "in_progress" } });
-        match payload_from_session_update(&tool) {
+        match payload_from_session_update_for_turn(&tool, None) {
             Some(AgentConversationPayload::Tool {
                 item_id,
                 name,
@@ -2102,7 +1995,7 @@ mod tests {
             "sessionUpdate": "plan", "entries": [
                 { "content": "step one", "status": "pending" }
             ] } });
-        match payload_from_session_update(&plan) {
+        match payload_from_session_update_for_turn(&plan, None) {
             Some(AgentConversationPayload::Plan { items }) => {
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].text, "step one");
@@ -2116,7 +2009,7 @@ mod tests {
             "turnId": "turn-2"
         } });
         assert_eq!(
-            payload_from_session_update(&user),
+            payload_from_session_update_for_turn(&user, None),
             Some(AgentConversationPayload::UserMessage {
                 item_id: "user-turn-2".into(),
                 text: "Question".into(),
@@ -2137,7 +2030,7 @@ mod tests {
                 "content": [{ "type": "text", "text": "detail" }],
                 "locations": [{ "path": "src/main.rs" }]
             } });
-            match payload_from_session_update(&update) {
+            match payload_from_session_update_for_turn(&update, None) {
                 Some(AgentConversationPayload::Tool { state, summary, .. }) => {
                     assert_eq!(state, expected);
                     assert_eq!(summary.as_deref(), Some("detail\nsrc/main.rs"));
@@ -2147,16 +2040,22 @@ mod tests {
         }
 
         assert_eq!(
-            payload_from_session_update(&json!({ "update": {
+            payload_from_session_update_for_turn(
+                &json!({ "update": {
                 "sessionUpdate": "agent_thought_chunk",
                 "content": { "type": "text", "text": "private" }
-            } })),
+            } }),
+                None
+            ),
             None
         );
         assert_eq!(
-            payload_from_session_update(&json!({ "update": {
+            payload_from_session_update_for_turn(
+                &json!({ "update": {
                 "sessionUpdate": "future_update"
-            } })),
+            } }),
+                None
+            ),
             None
         );
     }
@@ -2835,41 +2734,36 @@ mod tests {
         let root = temp_root();
         let manager = AgentRuntimeManager::default();
         let first = manager
-            .ensure(request(
+            .ensure_inner(request(
                 root.to_str().unwrap(),
                 "owned-a",
                 AgentConversationProvider::Codex,
             ))
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(
             manager
-                .ensure(request(
+                .ensure_inner(request(
                     root.to_str().unwrap(),
                     "owned-a",
                     AgentConversationProvider::Codex
                 ))
-                .unwrap(),
+                .unwrap()
+                .0,
             first
         );
         let changed = manager
-            .ensure(request(
+            .ensure_inner(request(
                 root.to_str().unwrap(),
                 "owned-a",
                 AgentConversationProvider::Claude,
             ))
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(changed.generation, 2);
-        assert!(manager
-            .emit_payload(
-                "owned-a",
-                first.generation,
-                AgentConversationPayload::Error {
-                    code: "stale".into(),
-                    message: "stale".into(),
-                    recoverable: true
-                }
-            )
-            .is_err());
+        let mut sessions = manager.sessions.lock().unwrap();
+        assert!(current_session_mut(&mut sessions, "owned-a", first.generation).is_err());
+        drop(sessions);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2878,26 +2772,29 @@ mod tests {
         let root = temp_root();
         let manager = AgentRuntimeManager::default();
         let connection = manager
-            .ensure(request(
+            .ensure_inner(request(
                 root.to_str().unwrap(),
                 "owned-a",
                 AgentConversationProvider::Codex,
             ))
-            .unwrap();
+            .unwrap()
+            .0;
         for index in 0..(SNAPSHOT_EVENT_CAP + 3) {
-            manager
-                .emit_payload(
-                    "owned-a",
-                    connection.generation,
-                    AgentConversationPayload::Error {
-                        code: "fixture".into(),
-                        message: index.to_string(),
-                        recoverable: true,
-                    },
-                )
-                .unwrap();
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session =
+                current_session_mut(&mut sessions, "owned-a", connection.generation).unwrap();
+            record_payload_for_session_and_dispatch(
+                session,
+                &manager.emitter,
+                AgentConversationPayload::Error {
+                    code: "fixture".into(),
+                    message: index.to_string(),
+                    recoverable: true,
+                },
+            )
+            .unwrap();
         }
-        let events = manager.canonical_snapshot("owned-a").unwrap();
+        let events = manager.snapshot("owned-a").unwrap().unwrap().events;
         assert_eq!(events.len(), SNAPSHOT_EVENT_CAP);
         assert!(events
             .windows(2)
@@ -2910,7 +2807,7 @@ mod tests {
         let root = temp_root();
         let manager = AgentRuntimeManager::default();
         manager
-            .ensure(request(
+            .ensure_inner(request(
                 root.to_str().unwrap(),
                 "owned-a",
                 AgentConversationProvider::Codex,

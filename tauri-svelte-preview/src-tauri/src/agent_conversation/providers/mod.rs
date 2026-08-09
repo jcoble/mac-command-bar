@@ -1,8 +1,5 @@
 pub mod acp;
 pub mod acp_client;
-mod adapter_support;
-pub mod claude;
-pub mod codex;
 pub mod process;
 
 pub use acp::{AcpRuntimeAdapter, StructuredRuntimeHandle};
@@ -16,13 +13,12 @@ use serde_json::Value;
 use super::capabilities::{validate_manifest, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION};
 use super::protocol::{
     AgentApprovalResponse, AgentCapabilities, AgentConfigOption, AgentConversationProvider,
-    AgentProviderManifest, AgentUserInputResponse, ProviderSource, ProviderTransport,
+    AgentProviderManifest, ProviderSource, ProviderTransport,
 };
 
 #[derive(Clone, Debug)]
 pub struct InitializeAgentInput {
     pub provider: AgentConversationProvider,
-    pub provider_instance_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -50,23 +46,12 @@ pub struct AgentPrompt {
     pub images: Vec<AgentPromptImage>,
 }
 
-#[derive(Clone, Debug)]
-pub struct AgentSteeringInput {
-    pub text: String,
-}
-
 pub type AgentConfigValue = Value;
 pub type PermissionResponse = AgentApprovalResponse;
-pub type UserInputResponse = AgentUserInputResponse;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartedAgentSession {
     pub native_session_id: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StartedTurn {
-    pub turn_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,32 +93,17 @@ pub trait AgentRuntimeAdapter: Send + Sync {
         &mut self,
         input: NewAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError>;
-    async fn load_session(
-        &mut self,
-        input: LoadAgentSession,
-    ) -> Result<StartedAgentSession, AgentRuntimeError>;
     async fn resume_session(
         &mut self,
         input: ResumeAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError>;
-    async fn prompt(&mut self, input: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError>;
     async fn prompt_once(&mut self, input: AgentPrompt)
         -> Result<GeneratedText, AgentRuntimeError>;
-    async fn steer(&mut self, input: AgentSteeringInput) -> Result<(), AgentRuntimeError>;
-    async fn cancel_turn(&mut self, turn_id: Option<&str>) -> Result<(), AgentRuntimeError>;
     async fn set_config(
         &mut self,
         option_id: &str,
         value: AgentConfigValue,
     ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError>;
-    async fn respond_permission(
-        &mut self,
-        input: PermissionResponse,
-    ) -> Result<(), AgentRuntimeError>;
-    async fn respond_user_input(
-        &mut self,
-        input: UserInputResponse,
-    ) -> Result<(), AgentRuntimeError>;
     /// Stop the transport without sending the destructive session/close
     /// request. The native session id remains valid for a later resume.
     async fn detach_session(&mut self) -> Result<(), AgentRuntimeError>;
@@ -230,13 +200,6 @@ impl ProviderRegistry {
             .map(|(_, manifest)| manifest.clone())
             .ok_or_else(|| "No trusted adapter is registered for this provider".to_string())
     }
-
-    pub fn manifests(&self) -> Vec<AgentProviderManifest> {
-        self.manifests
-            .iter()
-            .map(|(_, manifest)| manifest.clone())
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -266,8 +229,8 @@ mod tests {
             ("claude-agent-acp", CLAUDE_AGENT_ACP_VERSION)
         );
         assert!(registry
-            .manifests()
+            .manifests
             .iter()
-            .all(|manifest| !manifest.args.iter().any(|arg| arg.contains("@latest"))));
+            .all(|(_, manifest)| !manifest.args.iter().any(|arg| arg.contains("@latest"))));
     }
 }

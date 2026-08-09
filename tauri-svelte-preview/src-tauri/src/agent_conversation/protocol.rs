@@ -27,18 +27,6 @@ pub enum AgentRuntimeState {
     Closed,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OwnedAgentRuntimeFields {
-    pub execution_owner: AgentExecutionOwner,
-    pub runtime_state: AgentRuntimeState,
-    pub provider_instance_id: Option<String>,
-    pub native_session_id: Option<String>,
-    pub active_turn_id: Option<String>,
-    pub capability_revision: u64,
-    pub last_runtime_error: Option<String>,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentConversationProvider {
@@ -214,38 +202,6 @@ pub enum AgentEventType {
     RuntimeError,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentItemType {
-    UserMessage,
-    AssistantMessage,
-    Reasoning,
-    Plan,
-    TaskList,
-    Command,
-    FileChange,
-    McpTool,
-    WebSearch,
-    ImageView,
-    ImageGeneration,
-    Subagent,
-    Review,
-    ContextCompaction,
-    Error,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentContentChannel {
-    Assistant,
-    Reasoning,
-    ReasoningSummary,
-    Plan,
-    CommandOutput,
-    FileChangeOutput,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentRawFrameReference {
     pub id: String,
@@ -280,28 +236,6 @@ pub struct AgentEvent {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentContent {
-    pub channel: AgentContentChannel,
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentItem {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub item_type: AgentItemType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    pub content: Vec<AgentContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_metadata: Option<BTreeMap<String, Value>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AgentRequestIdentity {
     pub owned_id: String,
     pub generation: u64,
@@ -322,63 +256,10 @@ pub enum AgentApprovalDecision {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentApprovalRequest {
-    #[serde(flatten)]
-    pub identity: AgentRequestIdentity,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub options: Vec<AgentApprovalDecision>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AgentApprovalResponse {
     #[serde(flatten)]
     pub identity: AgentRequestIdentity,
     pub decision: AgentApprovalDecision,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentUserInputKind {
-    Text,
-    Password,
-    Select,
-    Boolean,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUserInputField {
-    pub id: String,
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub required: bool,
-    pub kind: AgentUserInputKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub choices: Option<Vec<AgentConfigOptionChoice>>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUserInputRequest {
-    #[serde(flatten)]
-    pub identity: AgentRequestIdentity,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub fields: Vec<AgentUserInputField>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUserInputResponse {
-    #[serde(flatten)]
-    pub identity: AgentRequestIdentity,
-    pub values: BTreeMap<String, Value>,
-    pub cancelled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -472,7 +353,11 @@ pub struct PlanItem {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AgentConversationPayload {
     Connection {
         state: ConversationConnectionState,
@@ -598,26 +483,6 @@ pub struct AgentConversationSnapshot {
 mod contract_tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn runtime_owner_and_state_use_the_public_wire_names() {
-        let fields = OwnedAgentRuntimeFields {
-            execution_owner: AgentExecutionOwner::TransitioningToStructured,
-            runtime_state: AgentRuntimeState::WaitingApproval,
-            provider_instance_id: Some("provider-a".to_string()),
-            native_session_id: Some("native-a".to_string()),
-            active_turn_id: None,
-            capability_revision: 4,
-            last_runtime_error: None,
-        };
-        let value = serde_json::to_value(&fields).unwrap();
-        assert_eq!(value["executionOwner"], "transitioning-to-structured");
-        assert_eq!(value["runtimeState"], "waiting-approval");
-        assert_eq!(
-            serde_json::from_value::<OwnedAgentRuntimeFields>(value).unwrap(),
-            fields
-        );
-    }
 
     #[test]
     fn unknown_config_categories_round_trip_losslessly() {

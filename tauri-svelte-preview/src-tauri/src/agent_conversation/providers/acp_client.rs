@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -16,7 +16,7 @@ use super::super::protocol::{
     AgentProviderManifest, AgentSessionCapabilities,
 };
 use super::process::{SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf};
-use super::{AgentPrompt, AgentRuntimeError, GeneratedText, StartedAgentSession, StartedTurn};
+use super::{AgentPrompt, AgentRuntimeError, GeneratedText, StartedAgentSession};
 
 #[derive(Clone, Debug)]
 pub enum AcpInbound {
@@ -131,14 +131,6 @@ impl AcpTransport {
         if let Some(mut process) = process {
             process.stop().await;
         }
-    }
-
-    pub fn stderr_snapshot(&self) -> Vec<String> {
-        self.process
-            .lock()
-            .ok()
-            .and_then(|value| value.as_ref().map(SidecarProcessHandle::stderr_snapshot))
-            .unwrap_or_default()
     }
 
     pub fn process_id(&self) -> Option<u32> {
@@ -489,16 +481,6 @@ impl AcpClient {
         self.start_session("session/new", &request, None).await
     }
 
-    pub async fn load_session(
-        &mut self,
-        cwd: &Path,
-        native_session_id: &str,
-    ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), cwd);
-        self.start_session("session/load", &request, Some(native_session_id))
-            .await
-    }
-
     pub async fn resume_session(
         &mut self,
         cwd: &Path,
@@ -507,26 +489,6 @@ impl AcpClient {
         let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), cwd);
         self.start_session("session/resume", &request, Some(native_session_id))
             .await
-    }
-
-    pub async fn prompt(&mut self, prompt: AgentPrompt) -> Result<StartedTurn, AgentRuntimeError> {
-        let session_id = self.session_id()?;
-        let mut blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(prompt.text))];
-        blocks.extend(prompt.images.into_iter().map(|image| {
-            acp::ContentBlock::Image(acp::ImageContent::new(image.data, image.mime_type))
-        }));
-        let result = self
-            .request(
-                "session/prompt",
-                &acp::PromptRequest::new(session_id, blocks),
-            )
-            .await?;
-        Ok(StartedTurn {
-            turn_id: result
-                .get("turnId")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        })
     }
 
     /// Send a one-shot prompt and retain only assistant text updates.
@@ -583,22 +545,6 @@ impl AcpClient {
         Ok(GeneratedText { turn_id, text })
     }
 
-    pub async fn steer(&mut self, text: String) -> Result<(), AgentRuntimeError> {
-        let session_id = self.session_id()?;
-        self.request(
-            "session/steer",
-            &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": text }] }),
-        )
-        .await?;
-        Ok(())
-    }
-
-    pub async fn cancel(&mut self) -> Result<(), AgentRuntimeError> {
-        let value = serde_json::to_value(acp::CancelNotification::new(self.session_id()?))
-            .map_err(serialization_error)?;
-        self.transport.notify("session/cancel", value).await
-    }
-
     pub async fn set_config(
         &mut self,
         option_id: &str,
@@ -615,28 +561,6 @@ impl AcpClient {
                 .get("configOptions")
                 .or_else(|| result.get("sessionConfigOptions")),
         ))
-    }
-
-    pub async fn respond_permission(
-        &mut self,
-        request_id: &str,
-        decision: &str,
-    ) -> Result<(), AgentRuntimeError> {
-        self.respond(request_id, json!({ "outcome": { "outcome": decision } }))
-            .await
-    }
-
-    pub async fn respond_user_input(
-        &mut self,
-        request_id: &str,
-        values: BTreeMap<String, Value>,
-        cancelled: bool,
-    ) -> Result<(), AgentRuntimeError> {
-        self.respond(
-            request_id,
-            json!({ "values": values, "cancelled": cancelled }),
-        )
-        .await
     }
 
     pub async fn close(&mut self) -> Result<(), AgentRuntimeError> {
@@ -657,9 +581,6 @@ impl AcpClient {
         Ok(())
     }
 
-    pub fn stderr_snapshot(&self) -> Vec<String> {
-        self.transport.stderr_snapshot()
-    }
     pub fn process_id(&self) -> Option<u32> {
         self.transport.process_id()
     }
@@ -696,12 +617,6 @@ impl AcpClient {
     ) -> Result<Value, AgentRuntimeError> {
         let params = serde_json::to_value(params).map_err(serialization_error)?;
         self.transport.request(method, params).await
-    }
-
-    async fn respond(&mut self, request_id: &str, result: Value) -> Result<(), AgentRuntimeError> {
-        let id = serde_json::from_str::<Value>(request_id)
-            .unwrap_or_else(|_| Value::String(request_id.to_string()));
-        self.transport.respond(id, result).await
     }
 
     fn session_id(&self) -> Result<String, AgentRuntimeError> {
@@ -814,17 +729,13 @@ fn transport_error(message: String) -> AgentRuntimeError {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use serde_json::json;
 
     use super::*;
-    use crate::agent_conversation::protocol::{
-        AgentApprovalDecision, AgentApprovalResponse, AgentRequestIdentity, AgentUserInputResponse,
-        ProviderSource, ProviderTransport,
-    };
+    use crate::agent_conversation::protocol::{ProviderSource, ProviderTransport};
     use crate::agent_conversation::providers::AgentRuntimeAdapter;
 
     fn fixture_manifest(log_path: &Path) -> AgentProviderManifest {
@@ -946,16 +857,6 @@ done"#,
         let root = std::env::temp_dir().join(format!("mcb-fake-acp-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         root
-    }
-
-    fn identity(request_id: &str) -> AgentRequestIdentity {
-        AgentRequestIdentity {
-            owned_id: "owned-a".into(),
-            generation: 1,
-            request_id: request_id.into(),
-            turn_id: Some("turn-1".into()),
-            item_id: None,
-        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1119,7 +1020,7 @@ done"#,
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn acp_initialize_new_prompt_image_config_correlations_cancel_and_close() {
+    async fn acp_initialize_new_config_one_shot_and_close() {
         let root = fixture_root();
         let log = root.join("frames.jsonl");
         let mut adapter = super::super::AcpRuntimeAdapter::new(
@@ -1130,7 +1031,6 @@ done"#,
         let capabilities = adapter
             .initialize(super::super::InitializeAgentInput {
                 provider: AgentConversationProvider::Codex,
-                provider_instance_id: "fake-1".into(),
             })
             .await
             .unwrap();
@@ -1143,17 +1043,6 @@ done"#,
                 .native_session_id,
             "new-session"
         );
-        let turn = adapter
-            .prompt(super::super::AgentPrompt {
-                text: "hello".into(),
-                images: vec![super::super::AgentPromptImage {
-                    data: "aW1hZ2U=".into(),
-                    mime_type: "image/png".into(),
-                }],
-            })
-            .await
-            .unwrap();
-        assert_eq!(turn.turn_id.as_deref(), Some("turn-1"));
         let generated = adapter
             .prompt_once(super::super::AgentPrompt {
                 text: "write a commit subject".into(),
@@ -1171,22 +1060,6 @@ done"#,
         assert_eq!(generated.text, "generated text");
         let options = adapter.set_config("model", json!("new")).await.unwrap();
         assert_eq!(options[0].value, json!("new"));
-        adapter
-            .respond_permission(AgentApprovalResponse {
-                identity: identity("approval-7"),
-                decision: AgentApprovalDecision::Accept,
-            })
-            .await
-            .unwrap();
-        adapter
-            .respond_user_input(AgentUserInputResponse {
-                identity: identity("input-8"),
-                values: BTreeMap::from([("answer".into(), json!("yes"))]),
-                cancelled: false,
-            })
-            .await
-            .unwrap();
-        adapter.cancel_turn(Some("turn-1")).await.unwrap();
         let pid = adapter.process_id().unwrap();
         adapter.close_session().await.unwrap();
         assert_ne!(
@@ -1195,41 +1068,28 @@ done"#,
             "fake ACP parent process survived close"
         );
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let frames = loop {
-            let frames = std::fs::read_to_string(&log).unwrap_or_default();
-            if frames.contains("input-8") || Instant::now() >= deadline {
-                break frames;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
-        assert!(frames.contains("\"type\":\"image\""));
-        assert!(frames.contains("approval-7"));
-        assert!(frames.contains("input-8"));
-        assert!(frames.contains("session/cancel"));
+        let frames = std::fs::read_to_string(&log).unwrap();
+        assert!(frames.contains("session/new"));
+        assert!(frames.contains("session/prompt"));
+        assert!(frames.contains("session/set_config_option"));
+        assert!(frames.contains("session/close"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn acp_load_and_resume_use_distinct_session_methods() {
+    async fn acp_resume_uses_resume_session_method() {
         let root = fixture_root();
-        for (method, expected) in [("load", "loaded-session"), ("resume", "resumed-session")] {
-            let log = root.join(format!("{method}.jsonl"));
-            let mut client = AcpClient::spawn(&fixture_manifest(&log), &root, method).unwrap();
-            client
-                .initialize(AgentConversationProvider::Claude)
-                .await
-                .unwrap();
-            let started = if method == "load" {
-                client.load_session(&root, "native-old").await.unwrap()
-            } else {
-                client.resume_session(&root, "native-old").await.unwrap()
-            };
-            assert_eq!(started.native_session_id, expected);
-            client.close().await.unwrap();
-            let frames = std::fs::read_to_string(log).unwrap();
-            assert!(frames.contains(&format!("session/{method}")));
-        }
+        let log = root.join("resume.jsonl");
+        let mut client = AcpClient::spawn(&fixture_manifest(&log), &root, "resume").unwrap();
+        client
+            .initialize(AgentConversationProvider::Claude)
+            .await
+            .unwrap();
+        let started = client.resume_session(&root, "native-old").await.unwrap();
+        assert_eq!(started.native_session_id, "resumed-session");
+        client.close().await.unwrap();
+        let frames = std::fs::read_to_string(log).unwrap();
+        assert!(frames.contains("session/resume"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
