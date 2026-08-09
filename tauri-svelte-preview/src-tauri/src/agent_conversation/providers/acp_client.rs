@@ -8,7 +8,7 @@ use std::sync::{
 use agent_client_protocol::schema::{v1 as acp, ProtocolVersion};
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use super::super::protocol::{
     AgentCapabilities, AgentCommandDescriptor, AgentConfigOption, AgentConversationProvider,
@@ -38,7 +38,7 @@ pub struct AcpTransport {
     closed: std::sync::atomic::AtomicBool,
     writer: tokio::sync::Mutex<SidecarWriteHalf>,
     process: Mutex<Option<SidecarProcessHandle>>,
-    inbound_copy: broadcast::Sender<AcpInbound>,
+    prompt_updates: Mutex<Option<mpsc::UnboundedSender<Value>>>,
 }
 
 impl AcpTransport {
@@ -49,18 +49,17 @@ impl AcpTransport {
     ) -> (Arc<AcpTransport>, mpsc::UnboundedReceiver<AcpInbound>) {
         let (mut reader, writer, process_handle) = process.split();
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
-        let (copy_tx, _) = broadcast::channel(256);
         let transport = Arc::new(Self {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
             closed: std::sync::atomic::AtomicBool::new(false),
             writer: tokio::sync::Mutex::new(writer),
             process: Mutex::new(Some(process_handle)),
-            inbound_copy: copy_tx.clone(),
+            prompt_updates: Mutex::new(None),
         });
         let reader_transport = Arc::downgrade(&transport);
         tokio::spawn(async move {
-            reader_loop(&mut reader, &inbound_tx, &copy_tx, reader_transport).await;
+            reader_loop(&mut reader, &inbound_tx, reader_transport).await;
         });
         (transport, inbound_rx)
     }
@@ -137,8 +136,41 @@ impl AcpTransport {
             .and_then(|value| value.as_ref().and_then(SidecarProcessHandle::process_id))
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<AcpInbound> {
-        self.inbound_copy.subscribe()
+    fn register_prompt_updates(
+        self: &Arc<Self>,
+    ) -> Result<(mpsc::UnboundedReceiver<Value>, PromptUpdateRegistration), AgentRuntimeError> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut prompt_updates = self
+            .prompt_updates
+            .lock()
+            .map_err(|_| transport_error("prompt update queue is unavailable".to_string()))?;
+        if prompt_updates.is_some() {
+            return Err(transport_error(
+                "ACP prompt aggregation is already active".to_string(),
+            ));
+        }
+        *prompt_updates = Some(sender);
+        Ok((
+            receiver,
+            PromptUpdateRegistration {
+                transport: Arc::clone(self),
+                active: true,
+            },
+        ))
+    }
+
+    fn unregister_prompt_updates(&self) {
+        if let Ok(mut prompt_updates) = self.prompt_updates.lock() {
+            prompt_updates.take();
+        }
+    }
+
+    fn send_prompt_update(&self, params: Value) {
+        if let Ok(prompt_updates) = self.prompt_updates.lock() {
+            if let Some(sender) = prompt_updates.as_ref() {
+                let _ = sender.send(params);
+            }
+        }
     }
 
     async fn write(&self, frame: Value) -> Result<(), AgentRuntimeError> {
@@ -166,6 +198,26 @@ struct PendingRequestGuard<'a> {
     armed: bool,
 }
 
+struct PromptUpdateRegistration {
+    transport: Arc<AcpTransport>,
+    active: bool,
+}
+
+impl PromptUpdateRegistration {
+    fn finish(&mut self) {
+        if self.active {
+            self.transport.unregister_prompt_updates();
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for PromptUpdateRegistration {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 impl Drop for PendingRequestGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
@@ -179,7 +231,6 @@ impl Drop for PendingRequestGuard<'_> {
 async fn reader_loop(
     reader: &mut SidecarReadHalf,
     inbound_tx: &mpsc::UnboundedSender<AcpInbound>,
-    copy_tx: &broadcast::Sender<AcpInbound>,
     transport: Weak<AcpTransport>,
 ) {
     let reason = loop {
@@ -222,12 +273,11 @@ async fn reader_loop(
                 let _ = inbound_tx.send(inbound);
             }
             (false, Some("session/update")) => {
-                let inbound =
-                    AcpInbound::SessionUpdate(frame.get("params").cloned().unwrap_or(Value::Null));
-                let _ = inbound_tx.send(inbound);
-                let _ = copy_tx.send(AcpInbound::SessionUpdate(
-                    frame.get("params").cloned().unwrap_or(Value::Null),
-                ));
+                let params = frame.get("params").cloned().unwrap_or(Value::Null);
+                let _ = inbound_tx.send(AcpInbound::SessionUpdate(params.clone()));
+                if let Some(transport) = transport.upgrade() {
+                    transport.send_prompt_update(params);
+                }
             }
             (false, Some(method)) => {
                 eprintln!("Ignoring unsupported ACP notification: {method}");
@@ -243,7 +293,6 @@ async fn reader_loop(
         reason: reason.clone(),
     };
     let _ = inbound_tx.send(inbound);
-    let _ = copy_tx.send(AcpInbound::TransportClosed { reason });
 }
 
 pub struct AcpClient {
@@ -384,7 +433,7 @@ impl AcpClient {
         })
     }
 
-    /// Send a bounded one-shot prompt and retain only assistant text updates.
+    /// Send a one-shot prompt and retain only assistant text updates.
     ///
     /// The regular `prompt` call intentionally returns as soon as ACP accepts
     /// the request; the conversation event stream owns the rest of that turn.
@@ -400,34 +449,16 @@ impl AcpClient {
         blocks.extend(prompt.images.into_iter().map(|image| {
             acp::ContentBlock::Image(acp::ImageContent::new(image.data, image.mime_type))
         }));
-        let mut updates = self.transport.subscribe();
         let params = serde_json::to_value(acp::PromptRequest::new(session_id, blocks))
             .map_err(serialization_error)?;
+        let (mut updates, mut registration) = self.transport.register_prompt_updates()?;
         let mut text = String::new();
         let mut turn_id = None;
-        let mut response = Box::pin(self.transport.request("session/prompt", params));
-        let response = loop {
-            tokio::select! {
-                biased;
-                inbound = updates.recv() => match inbound {
-                    Ok(AcpInbound::SessionUpdate(params)) => {
-                        append_prompt_update(&params, &mut turn_id, &mut text);
-                    }
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        eprintln!("ACP prompt compatibility stream lagged by {skipped} updates");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        break response.await?;
-                    }
-                },
-                result = &mut response => break result?,
-            }
-        };
-        while let Ok(inbound) = updates.try_recv() {
-            if let AcpInbound::SessionUpdate(params) = inbound {
-                append_prompt_update(&params, &mut turn_id, &mut text);
-            }
+        let response = self.transport.request("session/prompt", params).await;
+        registration.finish();
+        let response = response?;
+        while let Some(params) = updates.recv().await {
+            append_prompt_update(&params, &mut turn_id, &mut text);
         }
         if turn_id.is_none() {
             turn_id = response
@@ -697,7 +728,7 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-direct","text":"direct response text"}}}}\n' "$id"
       elif [ "$fixture" = "many_updates" ]; then
         i=0
-        while [ "$i" -lt 300 ]; do
+        while [ "$i" -lt 10000 ]; do
           printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"x"}},"turnId":"turn-many"}}}}}}\n'
           i=$((i + 1))
         done
@@ -909,7 +940,7 @@ done"#,
             .await
             .unwrap();
         assert_eq!(generated.turn_id.as_deref(), Some("turn-many"));
-        assert_eq!(generated.text, "x".repeat(300));
+        assert_eq!(generated.text, "x".repeat(10000));
         client.close().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
