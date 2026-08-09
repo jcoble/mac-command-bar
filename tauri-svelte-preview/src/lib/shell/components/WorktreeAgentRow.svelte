@@ -14,6 +14,7 @@
   import Undo2 from '@lucide/svelte/icons/undo-2';
   import Terminal from '@lucide/svelte/icons/terminal';
 
+  import { presentAgentError } from '$lib/shell/errorPresentation';
   import { sessionLabel } from '$lib/shell/sessionStrip';
   import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
@@ -56,6 +57,7 @@
   const runtimeWord = $derived(
     session.state === 'exited' ? 'Stopped' : session.runtimeState === 'working' ? 'Working' : 'Ready'
   );
+  const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
   function stopPropagation(event: MouseEvent, action?: () => void): void {
     event.stopPropagation();
@@ -193,7 +195,7 @@
     {#if session.branch || session.taskId || session.pullRequest}
       <span>{[session.branch, session.taskId, session.pullRequest].filter(Boolean).join(' · ')}</span>
     {/if}
-    {#if session.lastError}<span data-testid="worktree-agent-error" class="error" title={session.lastError}>{session.lastError}</span>{/if}
+    {#if presentedError}<span data-testid="worktree-agent-error" class="error">{presentedError.summary}</span>{/if}
     {#if session.lastActivity}<span>Last activity {session.lastActivity}</span>{/if}
   </div>
 
@@ -206,7 +208,16 @@
       {#if session.pullRequest}<span>Pull request</span><span class="truncate">{session.pullRequest}</span>{/if}
       {#if session.nativeSessionId}<span>Native session</span><span class="truncate">{session.nativeSessionId}</span>{/if}
       {#if session.latestTurnPreview}<span>Last turn</span><span class="truncate" title={session.latestTurnPreview}>{session.latestTurnPreview}</span>{/if}
-      {#if session.lastError}<span>Error</span><span class="truncate error" title={session.lastError}>{session.lastError}</span>{/if}
+      {#if presentedError}
+        <span>Error</span><span class="error">{presentedError.summary}</span>
+        {#if presentedError.detail}
+          <span></span>
+          <details data-testid="worktree-agent-error-detail" class="error-detail min-w-0">
+            <summary>Technical details</summary>
+            <pre>{presentedError.detail}</pre>
+          </details>
+        {/if}
+      {/if}
     </div>
   {/if}
 </li>
@@ -249,6 +260,19 @@
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     gap: 3px 10px;
+  }
+
+  .error-detail summary {
+    cursor: pointer;
+    color: var(--color-text-2);
+  }
+
+  .error-detail pre {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    color: var(--color-text-2);
+    font: inherit;
   }
 
   .hover-popover {

@@ -40,6 +40,7 @@
 
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Card from '$lib/components/ui/card/index.js';
+  import { presentAgentError } from '$lib/shell/errorPresentation';
   import { projectLabel } from '$lib/shell/sessionGroups';
   import { formatLastActivity, exactLocalTime } from '$lib/shell/relativeTime';
   import type { AgentKind, OwnedSession } from '$lib/shell/ownedSessions';
@@ -102,6 +103,7 @@
    * running behind them. */
   const activityStamp = $derived(formatLastActivity(session.lastActivity, new Date()));
   const facts = $derived(sessionFacts(session, new Date()));
+  const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
   /** The status word wears the same colour as its dot. Tokens only — a hex here
    * would be the one colour in the shell a theme could not move. */
@@ -174,6 +176,14 @@
           {session.latestTurnPreview}
         </span>
       {/if}
+      {#if presentedError}
+        <span
+          data-testid="session-card-error"
+          class="w-full min-w-0 text-[12px] leading-[1.4] break-words text-destructive"
+        >
+          {presentedError.summary}
+        </span>
+      {/if}
     </button>
 
     <!-- Always drawn, never on hover: a control that appears when you point at
@@ -213,6 +223,16 @@
             {session.latestTurnPreview}
           </p>
         </div>
+      {/if}
+
+      {#if presentedError?.detail}
+        <details class="text-[12px] text-[var(--color-text-2)]">
+          <summary class="cursor-pointer">Technical error details</summary>
+          <pre
+            data-testid="session-card-error-detail"
+            class="mt-1 min-w-0 [overflow-wrap:anywhere] whitespace-pre-wrap font-[inherit]"
+          >{presentedError.detail}</pre>
+        </details>
       {/if}
 
       <div class="flex flex-wrap items-center gap-1">
