@@ -73,6 +73,30 @@ the design/spec derived from it lives in docs/superpowers/specs/.
 - The user has explained the session-centric/ACP direction repeatedly; it keeps getting lost
   between agent sessions. This capture + the derived spec exist so it stops getting lost.
 
+## 8. Round-2 additions (follow-up message)
+
+- Priority order approved: (1) session-centric layout + ACP structured primary, (2) Session
+  History rework, (3) blocking bug fixes (browser nav, usage history read), (4) browser
+  overlay + annotations, (5) resources/usage to bottom bar.
+- ACP is the FOUNDATION, not a minimal patch. The plan worked out with SOL Pro centered
+  everything on ACP. Groundwork first: good plan, structure, and a deliberate tech decision
+  (ACP vs old PTY way vs something else) before building features on top.
+- Composer parity with the Codex app prompt input: model/effort/permissions pickers in the
+  input bar, paste screenshots into the prompt, drag files in from Finder, and user/agent
+  turns styled like Codex (37.png bottom bar: "5.6 Sol Max", approval mode, mic, attach).
+- Browser overlay, exact experience wanted (37-40.png): overlay button stays at the bottom of
+  the page like now, but expands Codex-style to fill almost the whole app. The prompt input
+  is PART of the overlay at the bottom; annotation pins (numbered markers on page elements,
+  "Add a comment" inline, "N annotations" chip on the input, Send N) attach to the next turn
+  so the user never has to describe which part of the page they mean. If richer element info
+  (selector/DOM context) can be captured and sent with the turn, even better.
+- Left sidebar Active/Done conversations need live state: a spinner while an agent is
+  working (T3 Code does this well — 41.png: per-thread "Working 4h 3m" + spinner), and a
+  notification + done indicator when it finishes.
+- Process: run web recon on how T3 Code, the Codex desktop app, and Orca each work; write up
+  their best parts + everything captured here; fold into a final detailed spec and plan via
+  the superpowers flow (brainstorm → spec → writing-plans).
+
 ## Screenshot index
 
 | File | What it shows |
@@ -90,3 +114,8 @@ the design/spec derived from it lives in docs/superpowers/specs/.
 | 34.png | Resources popover: inline "full resource view", app-self usage missing |
 | 35.png | Orca Space full-page overlay (disk usage, treemap, worktree table) |
 | 36.png | Usage popover: "Usage history could not be read." |
+| 37.png | Codex app: browser panel docked right, composer with annotation chip + model picker |
+| 38.png | Codex app: browser expanded to fill nearly the whole app, floating composer |
+| 39.png | Codex app: annotation mode — numbered pins on elements, inline "Add a comment", Send 1 |
+| 40.png | Codex app: 2 annotations attached to the composer inside the expanded overlay |
+| 41.png | T3 Code: sidebar threads with per-thread Working spinner + elapsed time |
