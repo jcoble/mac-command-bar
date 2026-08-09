@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, Weak,
 };
 
 use agent_client_protocol::schema::{v1 as acp, ProtocolVersion};
@@ -35,6 +35,7 @@ pub enum AcpInbound {
 pub struct AcpTransport {
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, AgentRuntimeError>>>>,
     next_id: AtomicU64,
+    closed: std::sync::atomic::AtomicBool,
     writer: tokio::sync::Mutex<SidecarWriteHalf>,
     process: Mutex<Option<SidecarProcessHandle>>,
     inbound_copy: broadcast::Sender<AcpInbound>,
@@ -52,13 +53,14 @@ impl AcpTransport {
         let transport = Arc::new(Self {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
+            closed: std::sync::atomic::AtomicBool::new(false),
             writer: tokio::sync::Mutex::new(writer),
             process: Mutex::new(Some(process_handle)),
             inbound_copy: copy_tx.clone(),
         });
-        let reader_transport = transport.clone();
+        let reader_transport = Arc::downgrade(&transport);
         tokio::spawn(async move {
-            reader_loop(&mut reader, &inbound_tx, &copy_tx, &reader_transport).await;
+            reader_loop(&mut reader, &inbound_tx, &copy_tx, reader_transport).await;
         });
         (transport, inbound_rx)
     }
@@ -70,20 +72,34 @@ impl AcpTransport {
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
         let (sender, receiver) = oneshot::channel();
-        self.pending
-            .lock()
-            .map_err(|_| transport_error("pending request map is unavailable".to_string()))?
-            .insert(id, sender);
+        {
+            let mut pending = self
+                .pending
+                .lock()
+                .map_err(|_| transport_error("pending request map is unavailable".to_string()))?;
+            if self.closed.load(Ordering::Acquire) {
+                return Err(transport_error("ACP transport is closed".to_string()));
+            }
+            pending.insert(id, sender);
+        }
+        let mut guard = PendingRequestGuard {
+            transport: self,
+            id,
+            armed: true,
+        };
         let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         if let Err(error) = self.write(frame).await {
             if let Ok(mut pending) = self.pending.lock() {
                 pending.remove(&id);
             }
+            guard.armed = false;
             return Err(error);
         }
-        receiver
+        let result = receiver
             .await
-            .map_err(|_| transport_error("transport closed before response".to_string()))?
+            .map_err(|_| transport_error("transport closed before response".to_string()))?;
+        guard.armed = false;
+        result
     }
 
     /// Fire-and-forget notification (e.g. session/cancel).
@@ -99,6 +115,7 @@ impl AcpTransport {
     }
 
     pub async fn stop(&self) {
+        self.fail_pending("ACP transport stopped");
         let process = self.process.lock().ok().and_then(|mut value| value.take());
         if let Some(mut process) = process {
             process.stop().await;
@@ -132,13 +149,38 @@ impl AcpTransport {
             .await
             .map_err(transport_error)
     }
+
+    fn fail_pending(&self, reason: &str) {
+        if let Ok(mut map) = self.pending.lock() {
+            self.closed.store(true, Ordering::Release);
+            for (_, sender) in map.drain() {
+                let _ = sender.send(Err(transport_error(reason.to_string())));
+            }
+        }
+    }
+}
+
+struct PendingRequestGuard<'a> {
+    transport: &'a AcpTransport,
+    id: u64,
+    armed: bool,
+}
+
+impl Drop for PendingRequestGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Ok(mut pending) = self.transport.pending.lock() {
+                pending.remove(&self.id);
+            }
+        }
+    }
 }
 
 async fn reader_loop(
     reader: &mut SidecarReadHalf,
     inbound_tx: &mpsc::UnboundedSender<AcpInbound>,
     copy_tx: &broadcast::Sender<AcpInbound>,
-    transport: &AcpTransport,
+    transport: Weak<AcpTransport>,
 ) {
     let reason = loop {
         let frame = match reader.next_json().await {
@@ -149,6 +191,9 @@ async fn reader_loop(
         let method = frame.get("method").and_then(Value::as_str);
         match (has_id, method) {
             (true, None) => {
+                let Some(transport) = transport.upgrade() else {
+                    return;
+                };
                 let Some(id) = frame.get("id").and_then(Value::as_u64) else {
                     continue;
                 };
@@ -164,6 +209,8 @@ async fn reader_loop(
                         Ok(frame.get("result").cloned().unwrap_or(Value::Null))
                     };
                     let _ = sender.send(result);
+                } else {
+                    eprintln!("Unmatched ACP response id: {id}");
                 }
             }
             (true, Some(method)) => {
@@ -189,20 +236,14 @@ async fn reader_loop(
         }
     };
 
-    let error = transport_error(reason.clone());
-    if let Ok(mut map) = transport.pending.lock() {
-        for (_, sender) in map.drain() {
-            let _ = sender.send(Err(AgentRuntimeError::new(
-                "transport",
-                error.message.clone(),
-            )));
-        }
+    if let Some(transport) = transport.upgrade() {
+        transport.fail_pending(&reason);
     }
-    let inbound = AcpInbound::TransportClosed { reason };
+    let inbound = AcpInbound::TransportClosed {
+        reason: reason.clone(),
+    };
     let _ = inbound_tx.send(inbound);
-    let _ = copy_tx.send(AcpInbound::TransportClosed {
-        reason: error.message,
-    });
+    let _ = copy_tx.send(AcpInbound::TransportClosed { reason });
 }
 
 pub struct AcpClient {
@@ -362,48 +403,40 @@ impl AcpClient {
         let mut updates = self.transport.subscribe();
         let params = serde_json::to_value(acp::PromptRequest::new(session_id, blocks))
             .map_err(serialization_error)?;
-        let response = self.transport.request("session/prompt", params).await?;
         let mut text = String::new();
         let mut turn_id = None;
-        while let Ok(inbound) = updates.try_recv() {
-            let AcpInbound::SessionUpdate(params) = inbound else {
-                continue;
-            };
-            let update = params
-                .get("update")
-                .or_else(|| params.get("sessionUpdate"))
-                .unwrap_or(&params);
-            if let Some(id) = update
-                .get("turnId")
-                .or_else(|| update.get("turn_id"))
-                .and_then(Value::as_str)
-            {
-                turn_id = Some(id.to_string());
+        let mut response = Box::pin(self.transport.request("session/prompt", params));
+        let response = loop {
+            tokio::select! {
+                biased;
+                inbound = updates.recv() => match inbound {
+                    Ok(AcpInbound::SessionUpdate(params)) => {
+                        append_prompt_update(&params, &mut turn_id, &mut text);
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        eprintln!("ACP prompt compatibility stream lagged by {skipped} updates");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        break response.await?;
+                    }
+                },
+                result = &mut response => break result?,
             }
-            if update
-                .get("sessionUpdate")
-                .or_else(|| update.get("session_update"))
-                .or_else(|| update.get("type"))
-                .and_then(Value::as_str)
-                .is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        "agent_message_chunk"
-                            | "agent-message-chunk"
-                            | "agent_message"
-                            | "assistant_message_delta"
-                    )
-                })
-            {
-                if let Some(chunk) = update.get("content").and_then(extract_text_value) {
-                    text.push_str(&chunk);
-                }
-                if let Some(message) = update.get("message").and_then(extract_text_value) {
-                    text.push_str(&message);
-                }
+        };
+        while let Ok(inbound) = updates.try_recv() {
+            if let AcpInbound::SessionUpdate(params) = inbound {
+                append_prompt_update(&params, &mut turn_id, &mut text);
             }
         }
-        if let Some(result_text) = response.get("result").and_then(extract_text_value) {
+        if turn_id.is_none() {
+            turn_id = response
+                .get("turnId")
+                .or_else(|| response.get("turn_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if let Some(result_text) = extract_text_value(&response) {
             text.push_str(&result_text);
         }
         let text = text.trim().to_string();
@@ -567,6 +600,42 @@ fn extract_text_value(value: &Value) -> Option<String> {
     }
 }
 
+fn append_prompt_update(params: &Value, turn_id: &mut Option<String>, text: &mut String) {
+    let update = params
+        .get("update")
+        .or_else(|| params.get("sessionUpdate"))
+        .unwrap_or(params);
+    if let Some(id) = update
+        .get("turnId")
+        .or_else(|| update.get("turn_id"))
+        .and_then(Value::as_str)
+    {
+        *turn_id = Some(id.to_string());
+    }
+    if update
+        .get("sessionUpdate")
+        .or_else(|| update.get("session_update"))
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "agent_message_chunk"
+                    | "agent-message-chunk"
+                    | "agent_message"
+                    | "assistant_message_delta"
+            )
+        })
+    {
+        if let Some(chunk) = update.get("content").and_then(extract_text_value) {
+            text.push_str(&chunk);
+        }
+        if let Some(message) = update.get("message").and_then(extract_text_value) {
+            text.push_str(&message);
+        }
+    }
+}
+
 fn bool_at(value: &Value, path: &[&str]) -> bool {
     path.iter()
         .try_fold(value, |current, part| current.get(*part))
@@ -621,6 +690,18 @@ while IFS= read -r line; do
     *'"method":"session/prompt"'*)
       if [ "$fixture" = "dies_midturn" ]; then
         exit 0
+      elif [ "$fixture" = "pending_drop" ]; then
+        sleep 1
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+      elif [ "$fixture" = "direct_result" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-direct","text":"direct response text"}}}}\n' "$id"
+      elif [ "$fixture" = "many_updates" ]; then
+        i=0
+        while [ "$i" -lt 300 ]; do
+          printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"x"}},"turnId":"turn-many"}}}}}}\n'
+          i=$((i + 1))
+        done
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-many","stopReason":"end_turn"}}}}\n' "$id"
       elif [ "$fixture" = "permission_midturn" ]; then
         printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow"}}]}}}}\n'
         while IFS= read -r response; do
@@ -737,6 +818,100 @@ done"#,
             inbound.recv().await,
             Some(AcpInbound::TransportClosed { .. })
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropped_request_future_removes_pending_entry() {
+        let (transport, _inbound) = AcpTransport::start(fixture_process("pending_drop"));
+        let request = tokio::spawn({
+            let transport = transport.clone();
+            async move {
+                transport
+                    .request("session/prompt", json!({"sessionId": "s"}))
+                    .await
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while transport.pending.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "request was not registered");
+            tokio::task::yield_now().await;
+        }
+        request.abort();
+        let _ = request.await;
+        assert!(transport.pending.lock().unwrap().is_empty());
+        transport.stop().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_after_transport_eof_fails_immediately() {
+        let (transport, mut inbound) = AcpTransport::start(fixture_process("dies_midturn"));
+        let _ = transport
+            .request("session/prompt", json!({"sessionId": "s"}))
+            .await
+            .expect_err("initial request must fail on EOF");
+        assert!(matches!(
+            inbound.recv().await,
+            Some(AcpInbound::TransportClosed { .. })
+        ));
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            transport.request("session/prompt", json!({"sessionId": "s"})),
+        )
+        .await
+        .expect("post-EOF request must not wait");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prompt_once_reads_text_directly_from_response_result() {
+        let root = fixture_root();
+        let log = root.join("direct.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "direct_result"),
+            &root,
+            "direct",
+        )
+        .unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        client.new_session(&root).await.unwrap();
+        let generated = client
+            .prompt_once(AgentPrompt {
+                text: "write".into(),
+                images: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(generated.turn_id.as_deref(), Some("turn-direct"));
+        assert_eq!(generated.text, "direct response text");
+        client.close().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prompt_once_aggregates_more_than_256_updates_without_loss() {
+        let root = fixture_root();
+        let log = root.join("many.jsonl");
+        let mut client =
+            AcpClient::spawn(&fixture_manifest_named(&log, "many_updates"), &root, "many").unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        client.new_session(&root).await.unwrap();
+        let generated = client
+            .prompt_once(AgentPrompt {
+                text: "write".into(),
+                images: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(generated.turn_id.as_deref(), Some("turn-many"));
+        assert_eq!(generated.text, "x".repeat(300));
+        client.close().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
