@@ -92,7 +92,18 @@
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
-    <DropdownMenu.Content align="start" class="w-auto! max-w-[320px] min-w-[248px]">
+    <!-- Opens upward. This strip sits on the bottom edge of the window, so a
+         menu dropped below the trigger has nowhere to go and is cut off by the
+         edge; `avoidCollisions` then flips it back down only if the space
+         above ever runs out too. -->
+    <DropdownMenu.Content
+      side="top"
+      align="start"
+      sideOffset={8}
+      avoidCollisions
+      collisionPadding={12}
+      class="w-auto! max-w-[320px] min-w-[248px]"
+    >
       <DropdownMenu.Label>When {provider} needs permission</DropdownMenu.Label>
       {#each approvalOptions as policy (policy)}
         <DropdownMenu.Item
@@ -144,7 +155,15 @@
           </Button>
         {/snippet}
       </DropdownMenu.Trigger>
-      <DropdownMenu.Content align="end" class="w-auto! min-w-[220px]">
+      <!-- Same reason as the approval menu: upward, away from the window edge. -->
+      <DropdownMenu.Content
+        side="top"
+        align="end"
+        sideOffset={8}
+        avoidCollisions
+        collisionPadding={12}
+        class="w-auto! min-w-[220px]"
+      >
         <DropdownMenu.Sub>
           <DropdownMenu.SubTrigger
             data-testid="conversation-config-model"
@@ -153,7 +172,14 @@
             Model
             <span class="text-muted-foreground ml-auto pl-4">{modelLabel(state.model)}</span>
           </DropdownMenu.SubTrigger>
-          <DropdownMenu.SubContent class="min-w-[180px]">
+          <!-- A submenu hangs off its row, near the bottom of the window: its
+               bottom edge is pinned to the row's so it grows upward. -->
+          <DropdownMenu.SubContent
+            align="end"
+            avoidCollisions
+            collisionPadding={12}
+            class="min-w-[180px]"
+          >
             {#each modelOptions as model (model)}
               <DropdownMenu.Item onSelect={() => onChange?.('model', model)}>
                 <span class="flex size-3.5 shrink-0 items-center justify-center">
@@ -175,7 +201,14 @@
               {effortLabel(state.reasoningEffort)}
             </span>
           </DropdownMenu.SubTrigger>
-          <DropdownMenu.SubContent class="min-w-[180px]">
+          <!-- A submenu hangs off its row, near the bottom of the window: its
+               bottom edge is pinned to the row's so it grows upward. -->
+          <DropdownMenu.SubContent
+            align="end"
+            avoidCollisions
+            collisionPadding={12}
+            class="min-w-[180px]"
+          >
             {#each effortOptions as effort (effort)}
               <DropdownMenu.Item onSelect={() => onChange?.('reasoningEffort', effort)}>
                 <span class="flex size-3.5 shrink-0 items-center justify-center">
