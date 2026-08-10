@@ -1,5 +1,5 @@
 /**
- * centerDock.ts — the /next center tab area (one Dockview). DOM-only: zero
+ * centerDock.ts — the /next center surface area (one Dockview). DOM-only: zero
  * backend IO, zero Svelte imports. Same teleport contract as frame.ts, plus
  * an explicit "return to parking" on panel close so Svelte-owned content
  * (the terminal surface!) is never destroyed with a dockview renderer.
@@ -74,7 +74,21 @@ export interface CenterDockSnapshot {
 
 const COMPONENT = 'center-panel';
 const PERSIST_DEBOUNCE_MS = 250;
-const CENTER_PANEL_IDS_V4 = ['session', 'editor', 'browser', 'diff', 'session-library'] as const;
+export const CENTER_PANEL_IDS = [
+  'session',
+  'editor',
+  'browser',
+  'diff',
+  'session-library',
+  'agents'
+] as const;
+export type CenterPanelId = (typeof CENTER_PANEL_IDS)[number];
+
+const CENTER_PANEL_IDS_V4 = CENTER_PANEL_IDS.filter((id) => id !== 'agents');
+
+export function isCenterPanelId(id: string): id is CenterPanelId {
+  return CENTER_PANEL_IDS.some((candidate) => candidate === id);
+}
 
 export function createCenterDock(container: HTMLElement, options: CenterDockOptions): CenterDock {
   const specs = new Map(options.panels.map((panel) => [panel.id, panel]));
@@ -233,10 +247,11 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   };
 
   /**
-   * The six roster tabs are permanent for now. dockview puts a close button on
-   * every tab, and closing one hands its content back to the parking stage with
-   * no way left in the UI to bring it back — for the Session tab that is a LIVE
-   * terminal. Put the tab straight back instead, so the close button is a no-op.
+   * The six roster surfaces are permanent for now. Dockview still owns their
+   * lifecycle even though its horizontal headers are visually replaced by the
+   * right-side activity dock. If a panel is removed through a restored layout
+   * or API call, put it straight back so the activity dock never points at an
+   * unavailable surface — especially the live Session terminal.
    *
    * Deferred by a timer on purpose: dockview fires this event from
    * `doRemovePanel`, BEFORE it disposes the panel, and that dispose is what

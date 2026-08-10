@@ -17,8 +17,6 @@
   import BrowserOverlayHost from './browser/BrowserOverlayHost.svelte';
   import WorkbenchActionFab from './WorkbenchActionFab.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
-  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
-  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
   import type {
     BrowserFeedbackAttachment,
@@ -155,11 +153,6 @@
 />
 <WorkbenchActionFab actions={browserActions} context={workbenchActionContext} />
 <AssistanceHost />
-<div class="a10-popovers" data-testid="a10-resource-usage-popovers">
-  <ResourcePopover />
-  <UsagePopover />
-</div>
-
 {#if message}
   <!-- Something went wrong, said once, along the bottom edge. Announced to
        screen readers, and see-through to the mouse so it can never swallow a
@@ -167,7 +160,7 @@
   <footer
     role="alert"
     class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center
-           gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1
+           gap-2 rounded-lg bg-destructive/10 px-3 py-2 shadow-[var(--shadow-sm)]
            text-[13px] leading-[1.4] text-destructive"
   >
     <TriangleAlert class="size-3.5 shrink-0" aria-hidden="true" />
@@ -180,8 +173,6 @@
 {/if}
 
 <style>
-  .a10-popovers { position: fixed; top: 12px; right: 14px; z-index: 60; display: flex; gap: 0.5rem; pointer-events: auto; }
-
   /* Development-only readout of how many backend calls the shell has made.
      Deliberately not part of the shared component set: it is a debugging
      instrument, not chrome, and it never ships to a user. */
@@ -189,7 +180,7 @@
     position: absolute;
     bottom: 8px;
     right: 10px;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg));
     color: var(--color-text-3);
     font-family: ui-monospace, Menlo, monospace;

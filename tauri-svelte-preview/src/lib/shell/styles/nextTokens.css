@@ -31,9 +31,9 @@
  * quietly drops any part a browser does not understand, so on an
  * engine without `:has()` the `.next-shell` part still works.
  *
- * SCOPE: colors and elevation only. Spacing, font sizes, weights
- * and radii are identical in both shells and keep coming from
- * tokens.css — this file deliberately does not restate them.
+ * SCOPE: colors, elevation, and the /next shell's three-step corner scale.
+ * Spacing, font sizes, and weights remain shared with the old shell. Shape is
+ * scoped here so softening /next cannot silently reshape the legacy route.
  * Most names below already exist in tokens.css. The semantic interaction
  * and status names are owned by the /next theme registry until the old shell
  * adopts them deliberately. The shipped Houston palette is deliberately soft:
@@ -72,7 +72,7 @@
    * states carry the stronger mint signal.
    * ------------------------------------------------------------------ */
   --color-accent: #6ed8be;
-  --color-border: #4b4f57;
+  --color-border: rgba(241, 243, 245, 0.12);
   --color-focus: rgba(110, 216, 190, 0.42);
   --color-focus-solid: #6ed8be;
 
@@ -113,13 +113,19 @@
 
   /* ------------------------------------------------------------------
    * Elevation — drop shadows and the dimming layer behind a dialog.
-   * Deepened over tokens.css: on the quiet Houston backdrop the old shadows
-   * are invisible and a dialog looks pasted on rather than lifted.
+   * Diffused over tokens.css: larger footprints preserve depth while lower
+   * opacity keeps overlays from looking cut out against the quiet backdrop.
    * ------------------------------------------------------------------ */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.45);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.55), 0 1px 4px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.5);
-  --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.26), 0 1px 3px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 16px 42px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.3);
+  --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.26);
   --color-scrim: rgba(8, 10, 12, 0.58);
+
+  /* Shape — one consistent 8 / 12 / 16 rhythm for controls, panels and
+     overlays. The pill remains inherited from the shared scale. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
 }

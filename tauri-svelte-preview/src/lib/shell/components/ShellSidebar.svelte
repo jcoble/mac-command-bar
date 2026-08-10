@@ -354,7 +354,7 @@
     height: 100%;
     width: 100%;
     overflow: hidden;
-    background: var(--color-bg);
+    background: var(--color-surface);
   }
 
   /* Every view stacks in the same space; only the open one is displayed.
@@ -429,28 +429,31 @@
      to nothing — which is how you get an invisible header on a black column. */
   .view-host :global(.shell-pane-stack) {
     /* header background and header text */
-    --dv-group-view-background-color: var(--color-bg);
+    --dv-group-view-background-color: var(--color-surface);
     --dv-activegroup-visiblepanel-tab-color: var(--color-section-header-text);
     /* the hairline between two sections */
-    --dv-paneview-header-border-color: var(--color-border);
-    --dv-separator-border: var(--color-border);
+    --dv-paneview-header-border-color: color-mix(in srgb, var(--color-border) 58%, transparent);
+    --dv-separator-border: color-mix(in srgb, var(--color-border) 58%, transparent);
     /* the focus ring dockview draws around a header or body */
     --dv-paneview-active-outline-color: var(--color-section-focus-ring);
     /* VS Code-style resize feedback: the divider lights up teal as you grab it */
     --dv-active-sash-color: var(--color-accent);
     --dv-active-sash-transition-delay: 0.1s;
     --dv-active-sash-transition-duration: 0.05s;
-    background: var(--color-bg);
+    background: var(--color-surface);
   }
 
-  /* Section headers read like the rail's own group headings. */
+  /* Quiet sentence-case headers keep the tool rail from reading like a dense
+     outlined control panel. */
   .view-host :global(.dv-default-header) {
     align-items: center;
+    min-height: 32px;
+    padding: 0 12px;
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
     font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    text-transform: none;
   }
 
   .view-host :global(.dv-default-header:hover) {
@@ -458,7 +461,7 @@
   }
 
   .view-host :global(.dv-pane-body) {
-    background: var(--color-bg);
+    background: var(--color-surface);
     min-height: 0;
     /* The bodies scroll themselves; a second scrollbar out here would be the
        paneview's, on content that never overflows it. */

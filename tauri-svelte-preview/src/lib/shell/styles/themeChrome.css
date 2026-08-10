@@ -32,7 +32,7 @@
 :is(:root:has(.next-shell), .next-shell) {
   /* Sidebar section headers ("EXPLORER", "OUTLINE"), and the ring
      dockview draws around the section that has focus. */
-  --color-section-header-text: #b3b7bf;
+  --color-section-header-text: #8b919b;
   --color-section-focus-ring: #6ed8be;
 
   /* A tab that is showing, in a group you are not working in: one

@@ -10,7 +10,9 @@
   import { onMount, type Snippet } from 'svelte';
 
   import {
+    isCenterPanelId,
     createCenterDock,
+    type CenterPanelId,
     type CenterDock,
     type CenterDockSnapshot
   } from '$lib/shell/layout/centerDock';
@@ -21,6 +23,7 @@
     type ShellFrame as Frame,
     type ShellRegionId
   } from '$lib/shell/layout/frame';
+  import CenterActivityDock from './CenterActivityDock.svelte';
 
   interface Props {
     /** The left column: the sessions list, and nothing else. */
@@ -39,7 +42,7 @@
     activity: Snippet;
     dock: Snippet;
     onSessionPanelLayout?: () => void;
-    /** A center tab came to the front. Fires for the dock's own start-up
+    /** A center surface came to the front. Fires for Dockview's own start-up
      * announcements too — see the note in `centerDock.ts`. */
     onCenterPanelShown?: (id: string) => void;
     onReady?: (controls: {
@@ -76,6 +79,7 @@
 
   let gridHost: HTMLElement;
   let sessionsSlot: HTMLElement;
+  let centerRegionSlot: HTMLElement;
   let centerSlot: HTMLElement; // holds the center Dockview's own container
   let toolsSlot: HTMLElement;
   let activitySlot: HTMLElement;
@@ -89,7 +93,12 @@
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
+  let activeCenterPanel = $state<CenterPanelId>('session');
   let ready = $state(false);
+
+  function selectCenterPanel(id: CenterPanelId): void {
+    centerDock?.activatePanel(id);
+  }
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
@@ -98,7 +107,7 @@
         storage: window.localStorage,
         regions: {
           sessions: sessionsSlot,
-          center: centerSlot,
+          center: centerRegionSlot,
           tools: toolsSlot,
           activity: activitySlot,
           dock: dockSlot
@@ -139,7 +148,10 @@
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
         },
-        onPanelActivated: (id) => onCenterPanelShown?.(id)
+        onPanelActivated: (id) => {
+          if (isCenterPanelId(id)) activeCenterPanel = id;
+          onCenterPanelShown?.(id);
+        }
       });
       observer = new ResizeObserver(() => {
         frame?.layout(gridHost.clientWidth, gridHost.clientHeight);
@@ -180,7 +192,10 @@
      can be measured — see the note on `.parking-stage` in the styles below. -->
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
-  <div class="slot slot-center-dock" bind:this={centerSlot}></div>
+  <div class="slot center-region" bind:this={centerRegionSlot}>
+    <div class="center-dock-host" bind:this={centerSlot}></div>
+    <CenterActivityDock activeId={activeCenterPanel} onSelect={selectCenterPanel} />
+  </div>
   <div class="slot" bind:this={toolsSlot}>{@render tools()}</div>
   <div class="slot" bind:this={activitySlot}>{@render activity()}</div>
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
@@ -224,24 +239,38 @@
     overflow: hidden;
   }
 
+  .center-region {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 48px;
+    background: var(--color-bg);
+  }
+
+  .center-dock-host {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   /* ---- dockview overrides (ported from the old shell's audited CSS) ----
      BOTH theme classes must be targeted where dracula reasserts values.   */
   .shell-frame :global(.shell-grid),
   .shell-frame :global(.shell-center-dock) {
     /* token map: translate dockview vars onto the /next palette */
-    --dv-group-view-background-color: var(--color-bg);
-    --dv-tabs-and-actions-container-background-color: var(--color-bg);
+    --dv-group-view-background-color: var(--color-surface);
+    --dv-tabs-and-actions-container-background-color: var(--color-surface);
     --dv-activegroup-visiblepanel-tab-background-color: var(--color-surface);
     --dv-activegroup-hiddenpanel-tab-background-color: var(--color-bg);
     --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-tab-unfocused-surface);
     --dv-inactivegroup-hiddenpanel-tab-background-color: var(--color-bg);
     --dv-tab-divider-color: transparent;
-    --dv-tabs-and-actions-container-height: 35px;
+    --dv-tabs-and-actions-container-height: 0px;
     --dv-activegroup-visiblepanel-tab-color: var(--color-text);
     --dv-activegroup-hiddenpanel-tab-color: var(--color-text-2);
     --dv-inactivegroup-visiblepanel-tab-color: var(--color-tab-unfocused-text);
     --dv-inactivegroup-hiddenpanel-tab-color: var(--color-text-2);
-    --dv-separator-border: var(--color-border);
+    --dv-separator-border: color-mix(in srgb, var(--color-border) 64%, transparent);
     --dv-paneview-active-outline-color: transparent;
     /* NEUTRAL wash only — the teal accent here caused the green drag-flash. */
     --dv-drag-over-background-color: rgba(255, 255, 255, 0.05);
@@ -265,11 +294,10 @@
     box-shadow: none;
   }
 
-  /* The six center tabs are permanent navigation. A restored Dockview layout
-     must never collapse their strip to zero height. */
+  /* Dockview still owns the six panels and their active state, while the
+     right-side activity dock is their only visible navigation. */
   .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
-    min-height: 35px;
-    visibility: visible;
+    display: none;
   }
 
   /* Every center tab is permanent this slice (a close is undone on the next

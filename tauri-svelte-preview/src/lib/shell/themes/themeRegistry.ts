@@ -201,7 +201,7 @@ const HOUSTON: ShellTheme = {
     '--color-text-3': '#8b919b',
     '--color-disabled-text': '#7f858e',
     '--color-accent': '#6ed8be',
-    '--color-border': '#4b4f57',
+    '--color-border': 'rgba(241, 243, 245, 0.12)',
     '--color-focus': 'rgba(110, 216, 190, 0.42)',
     '--color-focus-solid': '#6ed8be',
     '--color-selected': '#263734',
@@ -221,7 +221,7 @@ const HOUSTON: ShellTheme = {
     '--color-attention-bg': 'rgba(215, 183, 126, 0.12)',
     '--color-scrim': 'rgba(8, 10, 12, 0.58)',
     // Copied from src/lib/shell/styles/themeChrome.css.
-    '--color-section-header-text': '#b3b7bf',
+    '--color-section-header-text': '#8b919b',
     '--color-section-focus-ring': '#6ed8be',
     '--color-tab-unfocused-surface': '#191b1e',
     '--color-tab-unfocused-text': '#b3b7bf'
@@ -361,7 +361,7 @@ const DRACULA: ShellTheme = {
     '--color-text-3': '#9298b5',
     '--color-disabled-text': '#8f95b3',
     '--color-accent': '#bd93f9',
-    '--color-border': '#8f95b3',
+    '--color-border': 'rgba(248, 248, 242, 0.12)',
     '--color-focus': 'rgba(189, 147, 249, 0.45)',
     '--color-focus-solid': '#bd93f9',
     '--color-selected': '#44475a',
@@ -380,7 +380,7 @@ const DRACULA: ShellTheme = {
     '--color-bad-bg-strong': 'rgba(255, 85, 85, 0.20)',
     '--color-attention-bg': 'rgba(241, 250, 140, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.62)',
-    '--color-section-header-text': '#b8b8c4',
+    '--color-section-header-text': '#9298b5',
     '--color-section-focus-ring': '#bd93f9',
     '--color-tab-unfocused-surface': '#242631',
     '--color-tab-unfocused-text': '#b8b8c4'
