@@ -5405,6 +5405,7 @@ fn main() {
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let handle = app.handle().clone();
             conversation_events.set_emitter(Arc::new(move |event| {

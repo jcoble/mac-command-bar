@@ -46,9 +46,9 @@ import {
 import type { AgentExecutionOwner } from '../ownedSessions.ts';
 import {
   clearSessionPresence,
-  recordConversationPresenceEvent,
   synchronizeSessionPresenceWork
 } from './sessionPresence.ts';
+import { recordConversationPresenceEvent } from './sessionNotifications.ts';
 import {
   SESSION_CONVERSATION_WORKSPACE_VERSION,
   type SessionConversationWorkspace

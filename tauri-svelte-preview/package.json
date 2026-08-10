@@ -132,6 +132,7 @@
     "@lucide/svelte": "^1.17.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "@xterm/addon-attach": "^0.12.0",
     "@xterm/addon-clipboard": "^0.2.0",
     "@xterm/addon-fit": "^0.11.0",
