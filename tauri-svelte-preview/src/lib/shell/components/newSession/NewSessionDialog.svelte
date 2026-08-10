@@ -86,7 +86,7 @@
   // ── What the user has chosen ───────────────────────────────────────────────
   let projectPath = $state('');
   let checkoutPath = $state('');
-  let selectedLaunch = $state(selectLaunchAgent('claude'));
+  let selectedLaunch = $state(selectLaunchAgent('codex'));
   let title = $state('');
 
   // ── What the screen is busy with ───────────────────────────────────────────
@@ -140,7 +140,7 @@
     advancedOpen = false;
     newWorktreeBranch = '';
     copiedLabel = null;
-    pickAgent(selectedLaunch.agent);
+    pickAgent('codex');
     title = '';
     const path = initialRootPath();
     if (path) {

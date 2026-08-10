@@ -9,6 +9,7 @@
    * shortcut and would fight over the seeded actions), which is why it lives
    * here and not inside a panel.
    */
+  import { onMount, tick } from 'svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   import NewSessionHost from './newSession/NewSessionHost.svelte';
@@ -18,6 +19,8 @@
   import WorkbenchActionFab from './WorkbenchActionFab.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
+  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
+  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type {
     BrowserFeedbackAttachment,
     BrowserPresentationMode,
@@ -27,6 +30,15 @@
   import type { WorkbenchAction, WorkbenchActionContext } from '$lib/shell/overlay/actionSurfaceModel.ts';
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
   import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
+  import {
+    RAIL_UTILITY_REQUEST_EVENT,
+    RAIL_UTILITY_STATE_EVENT,
+    isRailUtilityRequest,
+    railUtilityAnchorStyle,
+    type RailUtilityAnchor,
+    type RailUtilityId,
+    type RailUtilityRequest
+  } from './railUtilityEvents';
 
   export type BrowserMarkupTool =
     | 'pen'
@@ -105,6 +117,60 @@
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
   let newSessionHost: { open: (input?: { sessionRoots?: string[] }) => void } | null = null;
+  let resourcePopoverHost: HTMLDivElement | null = null;
+  let usagePopoverHost: HTMLDivElement | null = null;
+  let resourceAnchor = $state<RailUtilityAnchor | null>(null);
+  let usageAnchor = $state<RailUtilityAnchor | null>(null);
+
+  function popoverHost(id: RailUtilityId): HTMLDivElement | null {
+    return id === 'resources' ? resourcePopoverHost : usagePopoverHost;
+  }
+
+  function popoverTrigger(id: RailUtilityId): HTMLButtonElement | null {
+    return popoverHost(id)?.querySelector<HTMLButtonElement>('.trigger') ?? null;
+  }
+
+  function publishUtilityState(id: RailUtilityId, trigger: HTMLButtonElement): void {
+    window.dispatchEvent(new CustomEvent(RAIL_UTILITY_STATE_EVENT, {
+      detail: { id, open: trigger.getAttribute('aria-expanded') === 'true' }
+    }));
+  }
+
+  function observeUtilityState(id: RailUtilityId): () => void {
+    const trigger = popoverTrigger(id);
+    if (!trigger) return () => {};
+    trigger.tabIndex = -1;
+    trigger.setAttribute('aria-hidden', 'true');
+    const observer = new MutationObserver(() => publishUtilityState(id, trigger));
+    observer.observe(trigger, { attributes: true, attributeFilter: ['aria-expanded'] });
+    publishUtilityState(id, trigger);
+    return () => observer.disconnect();
+  }
+
+  /** Rail controls and overlay owners live in separate shell regions. Anchor
+   * the owner first, then toggle its existing trigger after Svelte has applied
+   * the fixed screen rectangle. */
+  async function openRailUtility(request: RailUtilityRequest): Promise<void> {
+    if (request.id === 'resources') resourceAnchor = request.anchor;
+    else usageAnchor = request.anchor;
+    await tick();
+    popoverTrigger(request.id)?.click();
+  }
+
+  onMount(() => {
+    const handleRailUtilityRequest = (event: Event): void => {
+      if (!(event instanceof CustomEvent) || !isRailUtilityRequest(event.detail)) return;
+      void openRailUtility(event.detail);
+    };
+    window.addEventListener(RAIL_UTILITY_REQUEST_EVENT, handleRailUtilityRequest);
+    const stopObservingResources = observeUtilityState('resources');
+    const stopObservingUsage = observeUtilityState('usage');
+    return () => {
+      window.removeEventListener(RAIL_UTILITY_REQUEST_EVENT, handleRailUtilityRequest);
+      stopObservingResources();
+      stopObservingUsage();
+    };
+  });
 
   /** Open the settings dialog from outside — the gear on the activity bar is
    * over in the left column, and the dialog lives here. Same shape as
@@ -158,6 +224,20 @@
 />
 <WorkbenchActionFab actions={browserActions} context={workbenchActionContext} />
 <AssistanceHost />
+<div
+  bind:this={resourcePopoverHost}
+  class="rail-popover-host"
+  style={resourceAnchor ? railUtilityAnchorStyle(resourceAnchor) : undefined}
+>
+  <ResourcePopover />
+</div>
+<div
+  bind:this={usagePopoverHost}
+  class="rail-popover-host"
+  style={usageAnchor ? railUtilityAnchorStyle(usageAnchor) : undefined}
+>
+  <UsagePopover />
+</div>
 {#if message}
   <!-- Something went wrong, said once, along the bottom edge. Announced to
        screen readers, and see-through to the mouse so it can never swallow a
@@ -178,6 +258,47 @@
 {/if}
 
 <style>
+  /* Resource and quota state stay with their existing components, but the
+     mounts live above Dockview so inward-opening content cannot be clipped by
+     the rail's fixed-width Gridview cell. The rail supplies the exact button
+     rectangle before each toggle. */
+  .rail-popover-host {
+    position: fixed;
+    z-index: 70;
+    width: 32px;
+    height: 32px;
+    pointer-events: none;
+  }
+
+  .rail-popover-host :global(aside) {
+    position: absolute;
+    inset: 0;
+    width: 32px;
+    height: 32px;
+    pointer-events: none;
+  }
+
+  .rail-popover-host :global(.trigger) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .rail-popover-host :global(.usage-popover .card),
+  .rail-popover-host :global(.usage-popover .modal-backdrop) {
+    pointer-events: auto;
+  }
+
+  .rail-popover-host :global(.usage-popover .card) {
+    top: auto;
+    right: calc(100% + 12px);
+    bottom: 0;
+  }
+
   /* Development-only readout of how many backend calls the shell has made.
      Deliberately not part of the shared component set: it is a debugging
      instrument, not chrome, and it never ships to a user. */

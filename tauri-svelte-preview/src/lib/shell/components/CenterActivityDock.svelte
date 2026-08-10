@@ -17,9 +17,14 @@
   } from '@lucide/svelte';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
-  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
-  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type { CenterPanelId } from '$lib/shell/layout/centerDock';
+  import {
+    RAIL_UTILITY_REQUEST_EVENT,
+    RAIL_UTILITY_STATE_EVENT,
+    isRailUtilityState,
+    railUtilityRequest,
+    type RailUtilityId
+  } from './railUtilityEvents';
 
   interface Props {
     activeId: CenterPanelId;
@@ -41,29 +46,25 @@
     { id: 'agents', label: 'Agents', icon: Bot }
   ];
 
-  let resourceMount: HTMLDivElement;
-  let usageMount: HTMLDivElement;
+  let utilityOpen = $state<Record<RailUtilityId, boolean>>({ resources: false, usage: false });
 
-  /**
-   * ResourcePopover and UsagePopover retain ownership of their open state and
-   * overlay content. Their legacy text triggers stay mounted as private event
-   * endpoints while the kit IconButton is the only visible/focusable control.
-   */
-  function popoverTrigger(host: HTMLDivElement): HTMLButtonElement | null {
-    return host.querySelector<HTMLButtonElement>('.trigger');
-  }
-
-  function activatePopover(host: HTMLDivElement): void {
-    popoverTrigger(host)?.click();
+  /** The overlay owners live outside Dockview. Send them both the requested
+   * utility and this exact button rectangle so the quota card opens beside the
+   * rail instead of inside its clipped 44px Gridview cell. */
+  function requestUtility(id: RailUtilityId, event: MouseEvent): void {
+    if (!(event.currentTarget instanceof HTMLElement)) return;
+    window.dispatchEvent(new CustomEvent(RAIL_UTILITY_REQUEST_EVENT, {
+      detail: railUtilityRequest(id, event.currentTarget.getBoundingClientRect())
+    }));
   }
 
   onMount(() => {
-    for (const host of [resourceMount, usageMount]) {
-      const trigger = popoverTrigger(host);
-      if (!trigger) continue;
-      trigger.tabIndex = -1;
-      trigger.setAttribute('aria-hidden', 'true');
-    }
+    const handleUtilityState = (event: Event): void => {
+      if (!(event instanceof CustomEvent) || !isRailUtilityState(event.detail)) return;
+      utilityOpen[event.detail.id] = event.detail.open;
+    };
+    window.addEventListener(RAIL_UTILITY_STATE_EVENT, handleUtilityState);
+    return () => window.removeEventListener(RAIL_UTILITY_STATE_EVENT, handleUtilityState);
   });
 </script>
 
@@ -75,46 +76,48 @@
         class="surface-action"
         class:active={surface.id === activeId}
         data-surface={surface.id}
+        aria-current={surface.id === activeId ? 'page' : undefined}
       >
         <IconButton
           label={surface.label}
-          size="sm"
+          size="default"
+          variant={surface.id === activeId ? 'secondary' : 'ghost'}
           side="left"
           class={surface.id === activeId
-            ? 'surface-button bg-secondary text-foreground'
+            ? 'surface-button text-foreground'
             : 'surface-button text-muted-foreground'}
           onclick={() => onSelect(surface.id)}
         >
-          <Icon class="size-4" strokeWidth={1.7} aria-hidden="true" />
+          <Icon class="size-5" strokeWidth={1.7} aria-hidden="true" />
         </IconButton>
       </span>
     {/each}
   </div>
 
   <div class="utility-group" aria-label="Workspace meters">
-    <div class="utility-popover" bind:this={resourceMount}>
+    <div class="utility-action" class:active={utilityOpen.resources}>
       <IconButton
         label="Resources"
-        size="sm"
+        size="default"
+        variant={utilityOpen.resources ? 'secondary' : 'ghost'}
         side="left"
         class="utility-button text-muted-foreground"
-        onclick={() => activatePopover(resourceMount)}
+        onclick={(event) => requestUtility('resources', event)}
       >
-        <Cpu class="size-4" strokeWidth={1.7} aria-hidden="true" />
+        <Cpu class="size-5" strokeWidth={1.7} aria-hidden="true" />
       </IconButton>
-      <ResourcePopover />
     </div>
-    <div class="utility-popover" bind:this={usageMount}>
+    <div class="utility-action" class:active={utilityOpen.usage}>
       <IconButton
         label="Usage and Stats"
-        size="sm"
+        size="default"
+        variant={utilityOpen.usage ? 'secondary' : 'ghost'}
         side="left"
         class="utility-button text-muted-foreground"
-        onclick={() => activatePopover(usageMount)}
+        onclick={(event) => requestUtility('usage', event)}
       >
-        <ChartNoAxesCombined class="size-4" strokeWidth={1.7} aria-hidden="true" />
+        <ChartNoAxesCombined class="size-5" strokeWidth={1.7} aria-hidden="true" />
       </IconButton>
-      <UsagePopover />
     </div>
   </div>
 </nav>
@@ -128,7 +131,7 @@
     justify-content: space-between;
     width: 44px;
     height: 100%;
-    padding: 8px;
+    padding: 8px 6px;
     border-left: 1px solid var(--border);
     background: var(--background);
     color: var(--muted-foreground);
@@ -138,7 +141,7 @@
   .surface-group,
   .utility-group {
     display: grid;
-    gap: 2px;
+    gap: 8px;
   }
 
   .utility-group {
@@ -147,62 +150,27 @@
   }
 
   .surface-action,
-  .utility-popover {
+  .utility-action {
     position: relative;
     display: grid;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     place-items: center;
   }
 
   .surface-action.active::before {
     position: absolute;
-    top: 6px;
-    bottom: 6px;
-    left: -8px;
-    width: 2px;
+    top: 8px;
+    bottom: 8px;
+    left: -6px;
+    width: 3px;
     border-radius: 0 2px 2px 0;
     background: var(--primary);
     content: '';
   }
 
-  .utility-popover:has(:global(.trigger[aria-expanded='true'])) :global(.utility-button) {
-    background: var(--secondary);
+  .surface-action.active :global(.surface-button),
+  .utility-action.active :global(.utility-button) {
     color: var(--foreground);
-  }
-
-  /* The popovers keep their own state machine, but their old text triggers are
-     no longer controls in the rail. IconButton supplies the 28px target,
-     tooltip, focus ring, and accessible name and forwards activation here. */
-  .utility-popover :global(aside) {
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    width: 28px;
-    height: 28px;
-    pointer-events: none;
-  }
-
-  .utility-popover :global(.trigger) {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    padding: 0;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .utility-popover :global(.usage-popover .card),
-  .utility-popover :global(.usage-popover .modal-backdrop) {
-    pointer-events: auto;
-  }
-
-  /* Open quota details inward and upward from the rail entry. ShellFrame lets
-     this anchored card cross the fixed 44px rail cell without clipping it. */
-  .utility-popover :global(.usage-popover .card) {
-    top: auto;
-    right: calc(100% + 12px);
-    bottom: 0;
   }
 </style>

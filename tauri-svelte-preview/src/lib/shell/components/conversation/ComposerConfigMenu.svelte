@@ -30,9 +30,10 @@
     modelEffortLabel,
     modelLabel
   } from '$lib/shell/conversation/agentConfigLabels.ts';
-  import type {
-    AgentConversationConfigField,
-    AgentConversationConfigState
+  import {
+    hasAgentConversationConfig,
+    type AgentConversationConfigField,
+    type AgentConversationConfigState
   } from '$lib/shell/conversation/conversationConfig.ts';
 
   interface Props {
@@ -52,10 +53,11 @@
   const approvalBusy = $derived('approvalPolicy' in pending);
   const saving = $derived(Object.keys(pending).length > 0);
 
-  /** The pill is dead weight when the agent offers no choice at all. */
+  /** Which individual controls have choices the agent can accept. */
   const canChooseModel = $derived(state.availableModels.length > 0);
   const canChooseEffort = $derived(state.availableEfforts.length > 0);
   const canChooseApproval = $derived(state.availableApprovalPolicies.length > 0);
+  const hasAgentSettings = $derived(hasAgentConversationConfig(state));
 
   /**
    * The options to show, with whatever the agent currently reports included
@@ -75,8 +77,13 @@
 </script>
 
 <div class="config-row" data-testid="conversation-config-bar" aria-label="Agent settings">
-  <!-- Left: what the agent may do on its own. -->
-  <DropdownMenu.Root>
+  {#if !hasAgentSettings}
+    <span class="unavailable" data-testid="conversation-config-unavailable">
+      Agent settings unavailable
+    </span>
+  {:else}
+    <!-- Left: what the agent may do on its own. -->
+    <DropdownMenu.Root>
     <DropdownMenu.Trigger disabled={!canChooseApproval || approvalBusy}>
       {#snippet child({ props })}
         <Button
@@ -124,10 +131,10 @@
         </DropdownMenu.Item>
       {/each}
     </DropdownMenu.Content>
-  </DropdownMenu.Root>
+    </DropdownMenu.Root>
 
-  <!-- Right: which model, thinking how hard. -->
-  <div class="config-right">
+    <!-- Right: which model, thinking how hard. -->
+    <div class="config-right">
     {#if saving}
       <span class="text-primary text-[12px]" data-testid="conversation-config-saving">Saving…</span>
     {/if}
@@ -223,7 +230,8 @@
         </DropdownMenu.Sub>
       </DropdownMenu.Content>
     </DropdownMenu.Root>
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -240,5 +248,9 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
+  }
+  .unavailable {
+    color: var(--color-text-3);
+    font-size: 12px;
   }
 </style>

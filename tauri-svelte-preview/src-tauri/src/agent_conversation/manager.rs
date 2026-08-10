@@ -1169,7 +1169,7 @@ fn dispatch_event(
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(event.clone())))
             .is_err()
         {
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "Agent conversation event emitter panicked; sequence {} remains available in the session snapshot",
                 event.sequence
             );
@@ -1281,7 +1281,7 @@ async fn pump_inbound(
                 };
                 let replay = is_replay_session_update(&params);
                 if session.active_turn_id.is_none() && !replay {
-                    eprintln!(
+                    crate::debug_log::stderr_log!(
                         "[debug] Dropping ACP session update without an active conversation turn"
                     );
                     continue;
@@ -1298,7 +1298,7 @@ async fn pump_inbound(
                 if let Err(error) =
                     record_payload_for_session_and_dispatch(session, &emitter, payload)
                 {
-                    eprintln!("Could not record ACP session update: {error}");
+                    crate::debug_log::stderr_log!("Could not record ACP session update: {error}");
                 }
             }
             AcpInbound::AgentRequest {
@@ -1307,7 +1307,9 @@ async fn pump_inbound(
                 params,
             } => {
                 if method != "session/request_permission" {
-                    eprintln!("Ignoring unsupported ACP agent request: {method}");
+                    crate::debug_log::stderr_log!(
+                        "Ignoring unsupported ACP agent request: {method}"
+                    );
                     continue;
                 }
                 let summary = permission_summary(&params);
@@ -1341,7 +1343,9 @@ async fn pump_inbound(
                         summary,
                     },
                 ) {
-                    eprintln!("Could not record ACP permission request: {error}");
+                    crate::debug_log::stderr_log!(
+                        "Could not record ACP permission request: {error}"
+                    );
                 }
             }
             AcpInbound::TransportClosed { reason } => {
@@ -1364,7 +1368,9 @@ async fn pump_inbound(
                                 summary: pending.summary,
                             },
                         ) {
-                            eprintln!("Could not record expired ACP permission request: {error}");
+                            crate::debug_log::stderr_log!(
+                                "Could not record expired ACP permission request: {error}"
+                            );
                         }
                     }
                     if let Some(turn_id) = session.active_turn_id.clone() {
@@ -1376,7 +1382,9 @@ async fn pump_inbound(
                                 state: super::protocol::TurnState::Failed,
                             },
                         ) {
-                            eprintln!("Could not record failed ACP turn: {error}");
+                            crate::debug_log::stderr_log!(
+                                "Could not record failed ACP turn: {error}"
+                            );
                         }
                     }
                     let native_session_id = session.native_session_id.clone();
@@ -1388,7 +1396,9 @@ async fn pump_inbound(
                             native_session_id,
                         },
                     ) {
-                        eprintln!("Could not record ACP transport failure: {error}");
+                        crate::debug_log::stderr_log!(
+                            "Could not record ACP transport failure: {error}"
+                        );
                     }
                     if let Err(error) = record_payload_for_session_and_dispatch(
                         session,
@@ -1399,7 +1409,9 @@ async fn pump_inbound(
                             recoverable: true,
                         },
                     ) {
-                        eprintln!("Could not record ACP transport error: {error}");
+                        crate::debug_log::stderr_log!(
+                            "Could not record ACP transport error: {error}"
+                        );
                     }
                 } else {
                     session.connection.state = ConversationConnectionState::Failed;
@@ -1448,7 +1460,9 @@ async fn handle_ordered_session_event(
                     summary,
                 },
             ) {
-                eprintln!("Could not record ACP permission resolution: {error}");
+                crate::debug_log::stderr_log!(
+                    "Could not record ACP permission resolution: {error}"
+                );
                 return false;
             }
             session.state = if session.active_turn_id.is_some() {
@@ -1500,7 +1514,9 @@ async fn handle_ordered_session_event(
                             summary: pending.summary.clone(),
                         },
                     ) {
-                        eprintln!("Could not expire ACP permission request: {error}");
+                        crate::debug_log::stderr_log!(
+                            "Could not expire ACP permission request: {error}"
+                        );
                         return false;
                     }
                 }
@@ -1521,7 +1537,7 @@ async fn handle_ordered_session_event(
                 if let Err(error) =
                     record_payload_for_session_and_dispatch(session, &emitter, payload)
                 {
-                    eprintln!("Could not record ACP turn completion: {error}");
+                    crate::debug_log::stderr_log!("Could not record ACP turn completion: {error}");
                     return false;
                 }
                 if let Some((code, message)) = error_details {
@@ -1534,7 +1550,7 @@ async fn handle_ordered_session_event(
                             recoverable: true,
                         },
                     ) {
-                        eprintln!("Could not record ACP prompt error: {error}");
+                        crate::debug_log::stderr_log!("Could not record ACP prompt error: {error}");
                         return false;
                     }
                 }
@@ -1556,7 +1572,9 @@ async fn handle_ordered_session_event(
                         )
                         .await
                     {
-                        eprintln!("Could not expire ACP permission request: {error}");
+                        crate::debug_log::stderr_log!(
+                            "Could not expire ACP permission request: {error}"
+                        );
                     }
                 }
             }
@@ -1720,7 +1738,7 @@ fn payload_from_session_update_for_turn(
         .or_else(|| update.get("type"))
         .and_then(Value::as_str)
     else {
-        eprintln!("Ignoring ACP session update without a kind");
+        crate::debug_log::stderr_log!("Ignoring ACP session update without a kind");
         return None;
     };
     let turn_id = active_turn_id.unwrap_or_else(|| {
@@ -1773,7 +1791,7 @@ fn payload_from_session_update_for_turn(
             completed: replay,
         }),
         "agent_thought_chunk" => {
-            eprintln!("Ignoring ACP agent thought update");
+            crate::debug_log::stderr_log!("Ignoring ACP agent thought update");
             None
         }
         "tool_call" => Some(AgentConversationPayload::Tool {
@@ -1792,7 +1810,9 @@ fn payload_from_session_update_for_turn(
                 Some("failed") => ToolState::Failed,
                 Some("in_progress") | None => ToolState::Updated,
                 Some(status) => {
-                    eprintln!("Ignoring unknown ACP tool status while retaining update: {status}");
+                    crate::debug_log::stderr_log!(
+                        "Ignoring unknown ACP tool status while retaining update: {status}"
+                    );
                     ToolState::Updated
                 }
             };
@@ -1827,7 +1847,7 @@ fn payload_from_session_update_for_turn(
                 .collect(),
         }),
         unknown => {
-            eprintln!("Ignoring unknown ACP session update kind: {unknown}");
+            crate::debug_log::stderr_log!("Ignoring unknown ACP session update kind: {unknown}");
             None
         }
     }

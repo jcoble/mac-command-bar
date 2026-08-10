@@ -56,6 +56,8 @@ assert.doesNotMatch(usageWorkspaceSource, /\.metric-grid strong \{[^}]*text-over
 assert.match(usagePopoverSource, /data-testid="usage-modal"/);
 assert.match(usagePopoverSource, /event\.key === 'Escape'/);
 assert.match(usagePopoverSource, /min-width: min\(900px/);
+assert.match(usagePopoverSource, /class="details"[\s\S]*?openStats\(\)[\s\S]*?>Open Stats &amp; Usage</);
+assert.match(usagePopoverSource, /function openStats\(\)[\s\S]*?open = false;[\s\S]*?fullOpen = true;/);
 assert.match(usagePopoverSource, /<\/aside>[\s\S]*\{#if fullOpen\}[\s\S]*<UsageWorkspace/);
 assert.doesNotMatch(usagePopoverSource, /minute provider window/);
 assert.match(usageStoreSource, /dailyTotals/);

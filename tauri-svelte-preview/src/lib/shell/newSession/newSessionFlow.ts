@@ -48,16 +48,16 @@ export type LaunchSelection = Pick<LaunchOption, 'agent' | 'command'>;
 
 export const LAUNCH_CATALOG: LaunchOption[] = [
   {
-    agent: 'claude',
-    command: 'claude',
-    label: 'Claude',
-    hint: 'Start a conversation with Claude.'
-  },
-  {
     agent: 'codex',
     command: 'codex',
     label: 'Codex',
     hint: 'Start a conversation with Codex.'
+  },
+  {
+    agent: 'claude',
+    command: 'claude',
+    label: 'Claude',
+    hint: 'Start a conversation with Claude.'
   },
   {
     agent: 'shell',

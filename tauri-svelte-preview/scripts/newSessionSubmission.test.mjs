@@ -42,6 +42,17 @@ const restartOwned = functionSource(
   'async function closeTerminal('
 );
 
+assert.match(
+  dialog,
+  /let selectedLaunch = \$state\(selectLaunchAgent\('codex'\)\)/,
+  'Codex is selected before the new-session dialog first opens'
+);
+assert.match(
+  dialog,
+  /export function reset[\s\S]*pickAgent\('codex'\)/,
+  'reopening the new-session dialog restores the Codex default'
+);
+
 // The same selection value must paint the card and build the submitted request.
 // This is the regression path captured by the native new-session proof: changing
 // the selected card may not leave the request on its initial value.

@@ -36,7 +36,7 @@ import {
 {
   assert.deepEqual(
     LAUNCH_CATALOG.map((option) => option.agent),
-    ['claude', 'codex', 'shell']
+    ['codex', 'claude', 'shell']
   );
 
   for (const option of LAUNCH_CATALOG) {

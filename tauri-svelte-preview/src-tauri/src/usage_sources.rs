@@ -750,11 +750,13 @@ mod tests {
     #[ignore = "reads provider quota records from the machine"]
     fn live_quota_record_is_cleanly_available_or_unavailable() {
         match read_latest_local_quota("codex") {
-            Some(snapshot) => println!(
+            Some(snapshot) => crate::debug_log::stderr_log!(
                 "live quota provider={} account={:?} windows={:?}",
-                snapshot.provider, snapshot.account, snapshot.windows
+                snapshot.provider,
+                snapshot.account,
+                snapshot.windows
             ),
-            None => println!("live quota unavailable"),
+            None => crate::debug_log::stderr_log!("live quota unavailable"),
         }
     }
 

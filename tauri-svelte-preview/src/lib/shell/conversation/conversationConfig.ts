@@ -28,6 +28,18 @@ export const emptyAgentConversationConfigState = (): AgentConversationConfigStat
   availableApprovalPolicies: []
 });
 
+/** Whether the composer has any current value or advertised choice to present. */
+export function hasAgentConversationConfig(state: AgentConversationConfigState): boolean {
+  return Boolean(
+    state.model ||
+      state.reasoningEffort ||
+      state.approvalPolicy ||
+      state.availableModels.length ||
+      state.availableEfforts.length ||
+      state.availableApprovalPolicies.length
+  );
+}
+
 export function readAgentConversationConfig(ownedId: string): Promise<AgentConversationConfigState> {
   return invoke<AgentConversationConfigState>('read_agent_conversation_config', { ownedId });
 }

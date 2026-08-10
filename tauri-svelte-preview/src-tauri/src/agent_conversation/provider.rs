@@ -135,7 +135,7 @@ async fn run_codex(
                 normalize_codex(registry, app, c, &value, &mut turn_id);
             },
             line = process.stderr.next_line() => {
-                if let Ok(Some(line)) = line { eprintln!("mcb structured codex [{}]: {}", c.owned_id, line); }
+                if let Ok(Some(line)) = line { crate::debug_log::stderr_log!("mcb structured codex [{}]: {}", c.owned_id, line); }
             }
         }
     }
@@ -308,7 +308,7 @@ async fn run_claude(
                 Some(ProviderCommand::Close)|None=>{process.stop().await;return Ok(());}
             },
             line=process.stdout.next_line()=>{ let Some(line)=line.map_err(|e|e.to_string())? else{return Err("Claude exited".into())}; if let Ok(v)=serde_json::from_str::<Value>(&line){normalize_claude(registry,app,c,&v,&mut assistant_item_id,&mut assistant_text);} },
-            line=process.stderr.next_line()=>{if let Ok(Some(line))=line{eprintln!("mcb structured claude [{}]: {}",c.owned_id,line);}}
+            line=process.stderr.next_line()=>{if let Ok(Some(line))=line{crate::debug_log::stderr_log!("mcb structured claude [{}]: {}",c.owned_id,line);}}
         }
     }
 }

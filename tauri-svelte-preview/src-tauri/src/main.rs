@@ -23,6 +23,7 @@ use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 mod agent_conversation;
 mod browser;
+mod debug_log;
 mod git_diff_models;
 mod git_pr;
 mod lsp;
@@ -1664,7 +1665,7 @@ fn list_source_files_sync_with_cancellation(
     stats.collection_limit = collect_limit;
     stats.collection_limit_reached = collected_file_count >= collect_limit;
     #[cfg(debug_assertions)]
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "mcb tauri source.list root={} count={} truncated={}",
         root.display(),
         records.len(),
@@ -1873,9 +1874,11 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         content,
     };
     #[cfg(debug_assertions)]
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "mcb tauri source.preview path={} language={} lines={}",
-        preview.path, preview.language, preview.line_count
+        preview.path,
+        preview.language,
+        preview.line_count
     );
     Ok(preview)
 }
@@ -2282,7 +2285,7 @@ fn log_reference_count_timing(
     } else {
         "every file on the list was read, so the totals are exact"
     };
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "Timing: counting {symbol_count} names across {} files took {} ms; {outcome}.",
         pass.scanned_files,
         elapsed_millis(started)
@@ -5374,7 +5377,9 @@ fn install_panic_hook() {
         let thread_name = thread.name().unwrap_or("<unnamed>");
         let backtrace = std::backtrace::Backtrace::force_capture();
 
-        eprintln!("panic in thread '{thread_name}': {message}\nForced backtrace:\n{backtrace}");
+        crate::debug_log::stderr_log!(
+            "panic in thread '{thread_name}': {message}\nForced backtrace:\n{backtrace}"
+        );
         default_hook(panic_info);
     }));
 }
@@ -8270,7 +8275,7 @@ mod tests {
                 .unwrap_or_else(|_| "/Users/blackcolours/dev/work/EdiPlatform".to_string()),
         );
         if !root.is_dir() {
-            eprintln!("skipping: {} is not a directory", root.display());
+            crate::debug_log::stderr_log!("skipping: {} is not a directory", root.display());
             return;
         }
 
@@ -8290,7 +8295,7 @@ mod tests {
                 &SourceScanCancellation::none(),
                 &mut SourceScanWalkProgress::default(),
             );
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "walk only: {} files in {} ms",
                 records.len(),
                 started.elapsed().as_millis()
@@ -8306,7 +8311,7 @@ mod tests {
                     bytes_read += bytes.len();
                 }
             }
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "read only: {} MB in {} ms",
                 bytes_read / 1_000_000,
                 started.elapsed().as_millis()
@@ -8319,7 +8324,7 @@ mod tests {
             let result =
                 count_source_references_sync(root.clone(), symbol_names.clone(), Some(600_000))
                     .unwrap();
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "pass {attempt}: {} files in {} ms (approximate: {})",
                 result.scanned_files,
                 started.elapsed().as_millis(),

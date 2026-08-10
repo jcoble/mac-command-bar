@@ -217,7 +217,7 @@ impl AcpTransport {
                     .iter()
                     .any(|completed| completed == turn_id)
                 {
-                    eprintln!(
+                    crate::debug_log::stderr_log!(
                         "[debug] Dropping late ACP one-shot update for completed turn {turn_id}"
                     );
                     return true;
@@ -333,7 +333,7 @@ async fn reader_loop(
                     };
                     let _ = sender.send(result);
                 } else {
-                    eprintln!("Unmatched ACP response id: {id}");
+                    crate::debug_log::stderr_log!("Unmatched ACP response id: {id}");
                 }
             }
             (true, Some(method)) => {
@@ -354,7 +354,7 @@ async fn reader_loop(
                 let _ = inbound_tx.send(AcpInbound::SessionUpdate(params));
             }
             (false, Some(method)) => {
-                eprintln!("Ignoring unsupported ACP notification: {method}");
+                crate::debug_log::stderr_log!("Ignoring unsupported ACP notification: {method}");
             }
             (false, None) => {}
         }

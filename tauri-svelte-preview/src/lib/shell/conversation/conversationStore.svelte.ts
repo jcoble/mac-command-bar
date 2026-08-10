@@ -805,6 +805,10 @@ export function setConversationConnection(connection: AgentConversationConnectio
   current.writerLease.generation = connection.generation;
   current.connectionState = connection.state;
   if (connection.nativeSessionId) current.nativeSessionId = connection.nativeSessionId;
+  if (connection.config) {
+    current.agentConfig = connection.config;
+    current.agentConfigError = null;
+  }
 }
 
 export function captureConversationWorkspace(

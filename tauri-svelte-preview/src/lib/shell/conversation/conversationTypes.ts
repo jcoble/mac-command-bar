@@ -611,6 +611,7 @@ export interface AgentConversationConnection {
   generation: number;
   nativeSessionId?: string;
   state: ConversationConnectionState;
+  config?: import('./conversationConfig').AgentConversationConfigState;
 }
 
 export interface AgentConversationSnapshot {

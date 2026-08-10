@@ -1420,7 +1420,7 @@ fn log_lsp_timing(router: &Arc<LspRouter>, method: &str, started: Instant, outco
     if !timing_enabled() {
         return;
     }
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "Timing: the question {method} to {} {outcome} after {} ms.",
         router.identity.server_name,
         started.elapsed().as_millis()
@@ -1579,7 +1579,7 @@ impl SourceLspRegistry {
                 let _ = shutdown_receiver.await;
             });
             if let Err(error) = server.await {
-                eprintln!("[native-csharp-bridge] {error}");
+                crate::debug_log::stderr_log!("[native-csharp-bridge] {error}");
             }
         });
 
@@ -2365,7 +2365,7 @@ async fn upgrade_native_csharp_lsp(
     ws.max_message_size(MAX_NATIVE_CSHARP_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             if let Err(error) = proxy_native_csharp_lsp(socket, state).await {
-                eprintln!("[native-csharp-bridge] {error}");
+                crate::debug_log::stderr_log!("[native-csharp-bridge] {error}");
             }
             connected.store(false, Ordering::Release);
         })
@@ -2403,7 +2403,7 @@ async fn proxy_native_csharp_lsp(
         tauri::async_runtime::spawn(async move {
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                eprintln!("[native-csharp-roslyn] {line}");
+                crate::debug_log::stderr_log!("[native-csharp-roslyn] {line}");
             }
         });
     }
@@ -4277,12 +4277,10 @@ fn command_search_paths() -> Vec<PathBuf> {
     // Resolve those before system locations so the editor does not silently use
     // an incompatible global version. Packaged builds can replace this location
     // with a bundled resource/sidecar without changing the LSP registry.
-    let mut paths = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("node_modules")
-            .join(".bin"),
-    ];
+    let mut paths = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("node_modules")
+        .join(".bin")];
     // Start from the user's *login-shell* PATH (the same environment the embedded
     // terminal loads with `-l`), not just the PATH this process inherited. A
     // Finder/Dock-launched .app inherits only the minimal launchd PATH
@@ -5785,7 +5783,7 @@ mod tests {
         // questions in the air, four right answers — and covers the new symbol list the
         // margin counts are built on.
         if resolve_server_for_language("typescript").is_none() {
-            eprintln!("skipping: typescript-language-server is not installed");
+            crate::debug_log::stderr_log!("skipping: typescript-language-server is not installed");
             return;
         }
 
@@ -5890,7 +5888,9 @@ mod tests {
     #[test]
     fn typescript_language_server_smoke_reads_intelligence_actions() {
         if resolve_server_for_language("typescript").is_none() {
-            eprintln!("skipping TypeScript LSP smoke: typescript-language-server not found");
+            crate::debug_log::stderr_log!(
+                "skipping TypeScript LSP smoke: typescript-language-server not found"
+            );
             return;
         }
 
@@ -5992,7 +5992,9 @@ mod tests {
     #[test]
     fn keeps_distinct_workspace_servers_warm_and_reuses_them() {
         if resolve_server_for_language("typescript").is_none() {
-            eprintln!("skipping LSP dedupe smoke: typescript-language-server not found");
+            crate::debug_log::stderr_log!(
+                "skipping LSP dedupe smoke: typescript-language-server not found"
+            );
             return;
         }
 
@@ -6149,7 +6151,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_native_csharp_ensure_calls_share_one_canonical_root_endpoint() {
         if resolve_server_for_language("csharp").is_none() {
-            eprintln!("skipping native C# endpoint coalescing: roslyn-language-server not found");
+            crate::debug_log::stderr_log!(
+                "skipping native C# endpoint coalescing: roslyn-language-server not found"
+            );
             return;
         }
         let registry = SourceLspRegistry::default();
@@ -6195,7 +6199,9 @@ mod tests {
     #[test]
     fn warm_adds_a_workspace_slot_without_restarting_existing_roots() {
         if resolve_server_for_language("typescript").is_none() {
-            eprintln!("skipping LSP warm smoke: typescript-language-server not found");
+            crate::debug_log::stderr_log!(
+                "skipping LSP warm smoke: typescript-language-server not found"
+            );
             return;
         }
 
@@ -6282,7 +6288,9 @@ mod tests {
     #[test]
     fn javascript_language_server_smoke_reads_intelligence_actions() {
         if resolve_server_for_language("javascript").is_none() {
-            eprintln!("skipping JavaScript LSP smoke: typescript-language-server not found");
+            crate::debug_log::stderr_log!(
+                "skipping JavaScript LSP smoke: typescript-language-server not found"
+            );
             return;
         }
 
@@ -6371,11 +6379,11 @@ mod tests {
     #[test]
     fn rust_language_server_smoke_reads_intelligence_actions() {
         if resolve_server_for_language("rust").is_none() {
-            eprintln!("skipping Rust LSP smoke: rust-analyzer not found");
+            crate::debug_log::stderr_log!("skipping Rust LSP smoke: rust-analyzer not found");
             return;
         }
         if let Err(reason) = rust_analyzer_ready_for_smoke() {
-            eprintln!("skipping Rust LSP smoke: {reason}");
+            crate::debug_log::stderr_log!("skipping Rust LSP smoke: {reason}");
             return;
         }
 
@@ -6475,7 +6483,7 @@ mod tests {
     #[test]
     fn svelte_language_server_smoke_reads_document_symbols_when_available() {
         if resolve_server_for_language("svelte").is_none() {
-            eprintln!("skipping Svelte LSP smoke: svelteserver not found");
+            crate::debug_log::stderr_log!("skipping Svelte LSP smoke: svelteserver not found");
             return;
         }
 
@@ -6487,7 +6495,9 @@ mod tests {
         let content = match std::fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(error) => {
-                eprintln!("skipping Svelte LSP smoke: could not read fixture component: {error}");
+                crate::debug_log::stderr_log!(
+                    "skipping Svelte LSP smoke: could not read fixture component: {error}"
+                );
                 return;
             }
         };
@@ -6515,7 +6525,7 @@ mod tests {
                 "expected Svelte document symbols to include installWorker; got {symbols:?}"
             ),
             Err(error) => {
-                eprintln!("skipping Svelte LSP smoke: {error}");
+                crate::debug_log::stderr_log!("skipping Svelte LSP smoke: {error}");
                 return;
             }
         }
@@ -6550,11 +6560,15 @@ mod tests {
     #[test]
     fn csharp_language_server_smoke_reads_intelligence_actions() {
         if env::var_os("MCB_RUN_CSHARP_LSP_SMOKE").is_none() {
-            eprintln!("skipping C# LSP smoke: set MCB_RUN_CSHARP_LSP_SMOKE=1 to enable");
+            crate::debug_log::stderr_log!(
+                "skipping C# LSP smoke: set MCB_RUN_CSHARP_LSP_SMOKE=1 to enable"
+            );
             return;
         }
         if resolve_server_for_language("csharp").is_none() {
-            eprintln!("skipping C# LSP smoke: roslyn-language-server not found");
+            crate::debug_log::stderr_log!(
+                "skipping C# LSP smoke: roslyn-language-server not found"
+            );
             return;
         }
 

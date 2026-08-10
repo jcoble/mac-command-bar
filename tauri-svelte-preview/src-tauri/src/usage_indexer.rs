@@ -242,7 +242,7 @@ mod tests {
         }
         let db = UsageDb::open(indexer.database_path.clone()).unwrap();
         let summary = db.read_usage_summary(&Default::default()).unwrap();
-        println!("live usage sample indexed_files={indexed_files} events={} input={} output={} cache_read={} cache_write={} reasoning={}", summary.event_count, summary.input_tokens, summary.output_tokens, summary.cache_read_tokens, summary.cache_write_tokens, summary.reasoning_tokens);
+        crate::debug_log::stderr_log!("live usage sample indexed_files={indexed_files} events={} input={} output={} cache_read={} cache_write={} reasoning={}", summary.event_count, summary.input_tokens, summary.output_tokens, summary.cache_read_tokens, summary.cache_write_tokens, summary.reasoning_tokens);
         assert!(summary.event_count > 0);
         assert!(
             summary.input_tokens

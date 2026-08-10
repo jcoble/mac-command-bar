@@ -266,20 +266,6 @@
     overflow: hidden;
   }
 
-  /* The quota card opens inward from the far-right rail. The rail's Gridview
-     cell is only 44px wide, so these three boundaries must allow that one
-     anchored overlay to paint over the adjacent tool pane. The shell root
-     still clips at the window edge. */
-  .activity-region,
-  .shell-frame :global(.shell-region-host-activity),
-  .shell-frame :global(.dv-view:has(.shell-region-host-activity)) {
-    overflow: visible;
-  }
-
-  .shell-frame :global(.dv-view:has(.shell-region-host-activity)) {
-    z-index: 20;
-  }
-
   .center-dock-host {
     width: 100%;
     height: 100%;

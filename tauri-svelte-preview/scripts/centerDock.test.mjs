@@ -109,13 +109,13 @@ assert.match(
 );
 assert.match(
   centerActivityDock,
-  /label=\{surface\.label\}[\s\S]*?size="sm"[\s\S]*?side="left"/,
-  'every surface icon must get its tooltip, accessible label, and 28px target from IconButton'
+  /label=\{surface\.label\}[\s\S]*?size="default"[\s\S]*?side="left"[\s\S]*?<Icon class="size-5"/,
+  'every surface icon must get its tooltip, accessible label, 32px target, and 20px glyph from IconButton'
 );
-assert.match(
+assert.doesNotMatch(
   centerActivityDock,
-  /<ResourcePopover \/>[\s\S]*?<UsagePopover \/>/,
-  'Resources and Usage/Stats must live at the bottom of the far-right surface rail'
+  /ResourcePopover|UsagePopover/,
+  'Dockview must not own the resource or quota overlay mounts'
 );
 assert.match(
   centerActivityDock,
@@ -124,13 +124,28 @@ assert.match(
 );
 assert.match(
   centerActivityDock,
-  /function activatePopover\(host: HTMLDivElement\): void \{[\s\S]*?popoverTrigger\(host\)\?\.click\(\)/,
-  'rail utility IconButtons must activate the existing popover state owners'
+  /requestUtility\(id: RailUtilityId, event: MouseEvent\)[\s\S]*?RAIL_UTILITY_REQUEST_EVENT[\s\S]*?railUtilityRequest\(id, event\.currentTarget\.getBoundingClientRect\(\)\)/,
+  'rail utility IconButtons must dispatch an anchored request to the global overlay owners'
 );
 assert.match(
   centerActivityDock,
-  /label="Usage and Stats"[\s\S]*?onclick=\{\(\) => activatePopover\(usageMount\)\}[\s\S]*?<UsagePopover \/>/,
-  'the Usage and Stats rail entry must activate the quota popover and its Stats overlay host'
+  /label="Usage and Stats"[\s\S]*?size="default"[\s\S]*?onclick=\{\(event\) => requestUtility\('usage', event\)\}[\s\S]*?<ChartNoAxesCombined class="size-5"/,
+  'the Usage and Stats entry must use the 32px rail control and request the quota popover'
+);
+assert.match(
+  centerActivityDock,
+  /\.surface-group,[\s\S]*?\.utility-group[\s\S]*?gap:\s*8px/,
+  'surface and utility buttons must retain an 8px vertical rhythm'
+);
+assert.match(
+  centerActivityDock,
+  /\.surface-action,[\s\S]*?\.utility-action[\s\S]*?width:\s*32px;[\s\S]*?height:\s*32px/,
+  'surface and utility wrappers must match the 32px IconButton target'
+);
+assert.match(
+  centerActivityDock,
+  /variant=\{surface\.id === activeId \? 'secondary' : 'ghost'\}[\s\S]*?\.surface-action\.active::before[\s\S]*?width:\s*3px/,
+  'the selected surface must combine a filled button treatment with a visible edge marker'
 );
 assert.doesNotMatch(
   centerActivityDock,
@@ -152,20 +167,35 @@ assert.match(
   /id: 'activity',[\s\S]*?direction: 'right', referencePanel: 'center'[\s\S]*?id: 'tools',[\s\S]*?direction: 'right', referencePanel: 'center'/,
   'the surface rail must be added outside the right tool panel'
 );
-assert.match(
+assert.doesNotMatch(
   shellFrame,
-  /\.activity-region,[\s\S]*?\.shell-region-host-activity[\s\S]*?overflow:\s*visible/,
-  'the inward-opening quota card must not be clipped by the fixed-width rail region'
+  /\.shell-region-host-activity[\s\S]*?overflow:\s*visible/,
+  'the quota overlay must not depend on escaping Dockview clipping'
 );
 assert.match(
   assistanceHost,
   /right:\s*calc\(44px \+ 16px\)[\s\S]*?z-index:\s*48/,
   'Assistance must sit one rail width left and below the rail stacking level'
 );
-assert.doesNotMatch(
+assert.match(
   shellOverlays,
-  /ResourcePopover|UsagePopover|a10-resource-usage-popovers/,
-  'Resources and Usage must no longer float at the window top-right'
+  /<ResourcePopover \/>[\s\S]*?<UsagePopover \/>/,
+  'the global overlay layer must own both rail utility state owners'
+);
+assert.match(
+  shellOverlays,
+  /handleRailUtilityRequest[\s\S]*?isRailUtilityRequest\(event\.detail\)[\s\S]*?openRailUtility\(event\.detail\)/,
+  'the global overlay layer must validate and handle each rail utility request'
+);
+assert.match(
+  shellOverlays,
+  /async function openRailUtility\(request: RailUtilityRequest\)[\s\S]*?await tick\(\);[\s\S]*?popoverTrigger\(request\.id\)\?\.click\(\)/,
+  'an anchored rail request must position first, then toggle the existing Resource or Usage trigger'
+);
+assert.match(
+  shellOverlays,
+  /\.rail-popover-host :global\(\.usage-popover \.card\)[\s\S]*?right:\s*calc\(100% \+ 12px\);[\s\S]*?bottom:\s*0/,
+  'the quota card must open inward from the requested rail button rectangle'
 );
 
 assert.match(
@@ -203,4 +233,4 @@ assert.match(
   'floating browser chrome must be absent after switching away from Browser'
 );
 
-console.log('centerDock: far-right surface rail, right-pane line tabs, protected utilities, and pure switching verified');
+console.log('centerDock: 32px far-right rail, global anchored utilities, right-pane line tabs, and pure switching verified');

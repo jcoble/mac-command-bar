@@ -789,7 +789,7 @@ pub fn cursor_lookup_key(
 }
 fn trace_sql(sql: &str) {
     if std::env::var("MCB_SQL_TRACE").as_deref() == Ok("1") {
-        eprintln!(
+        crate::debug_log::stderr_log!(
             "MCB_SQL_TRACE {}",
             redact_sql_literals(sql).replace('\n', " ")
         );
