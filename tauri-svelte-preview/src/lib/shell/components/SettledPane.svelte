@@ -23,10 +23,7 @@
   // Settled is explicit: only settledAt moves a record here. Age, title and
   // terminal state are intentionally not consulted.
   const settled = $derived(
-    sessions
-      .filter((session) => deriveOwnedLibraryState(session) === 'settled')
-      .slice()
-      .sort((a, b) => (b.settledAt ?? '').localeCompare(a.settledAt ?? ''))
+    sessions.filter((session) => deriveOwnedLibraryState(session) === 'settled')
   );
   let expanded = $state<Record<string, boolean>>({});
 

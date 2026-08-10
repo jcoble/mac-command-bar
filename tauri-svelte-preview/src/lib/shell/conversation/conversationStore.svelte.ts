@@ -45,6 +45,11 @@ import {
 } from './conversationConfig.ts';
 import type { AgentExecutionOwner } from '../ownedSessions.ts';
 import {
+  clearSessionPresence,
+  recordConversationPresenceEvent,
+  synchronizeSessionPresenceWork
+} from './sessionPresence.ts';
+import {
   SESSION_CONVERSATION_WORKSPACE_VERSION,
   type SessionConversationWorkspace
 } from '../sessionWorkspaces.ts';
@@ -162,7 +167,13 @@ export function ensureConversationSession(
 export function applyAgentConversationEvent(event: AgentConversationEvent | AgentEvent): boolean {
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
-  if ('type' in event) return applyCanonicalAgentEvent(event);
+  if ('type' in event) {
+    const applied = applyCanonicalAgentEvent(event);
+    if (applied && !conversationSessions[event.ownedId]?.desynchronized) {
+      recordConversationPresenceEvent(event);
+    }
+    return applied;
+  }
   const next = applyConversationEvent(current, event);
   if (next === current) return false;
   conversationSessions[event.ownedId] = {
@@ -207,6 +218,7 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
     );
   }
   applyTypedEventPayload(conversationSessions[event.ownedId], event);
+  if (!conversationSessions[event.ownedId].desynchronized) recordConversationPresenceEvent(event);
   return true;
 }
 
@@ -261,6 +273,14 @@ function applyCanonicalAgentEvent(event: AgentEvent): boolean {
     connectionState: event.type === 'session.closed' ? 'closed'
       : event.type === 'session.started' ? 'connected'
         : event.type === 'runtime.error' && payload.recoverable === false ? 'failed' : current.connectionState,
+    activeTurnId: event.type === 'turn.started'
+      ? event.turnId ?? asString(payload.turnId) ?? current.activeTurnId
+      : event.type === 'turn.completed'
+        || event.type === 'turn.interrupted'
+        || event.type === 'session.closed'
+        || event.type === 'runtime.error'
+        ? undefined
+        : current.activeTurnId,
     nativeSessionId: event.nativeSessionId ?? current.nativeSessionId,
     writerLease: { ...current.writerLease, generation: event.generation }
   };
@@ -359,7 +379,14 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
       );
     }
     applyTypedEventPayload(restored, event);
+    recordConversationPresenceEvent(event);
   }
+  synchronizeSessionPresenceWork(
+    snapshot.connection.ownedId,
+    restored.activeTurnId,
+    restored.sending,
+    events.at(-1)?.timestampMs ?? Date.now()
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -797,6 +824,7 @@ export function setConversationSending(ownedId: string, sending: boolean): void 
   const current = conversationSessions[ownedId];
   if (!current || current.sending === sending) return;
   current.sending = sending;
+  synchronizeSessionPresenceWork(ownedId, current.activeTurnId, sending);
 }
 
 export function setConversationConnection(connection: AgentConversationConnection): void {
@@ -861,4 +889,5 @@ export function restoreConversationWorkspace(
 
 export function removeConversationSession(ownedId: string): void {
   delete conversationSessions[ownedId];
+  clearSessionPresence(ownedId);
 }

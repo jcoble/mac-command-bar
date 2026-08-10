@@ -224,6 +224,25 @@ store.applyAgentConversationSnapshot({
 assert.equal(store.getConversationSession('owned-a').generation, 3);
 assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnecting');
 
+// Canonical turn events drive the same active-turn authority as legacy events.
+store.applyAgentConversationEvent({
+  type: 'session.started', ownedId: 'owned-canonical', provider: 'codex',
+  providerInstanceId: 'provider-canonical', generation: 1, sequence: 1, timestampMs: 400,
+  payload: {}
+});
+store.applyAgentConversationEvent({
+  type: 'turn.started', ownedId: 'owned-canonical', provider: 'codex',
+  providerInstanceId: 'provider-canonical', generation: 1, sequence: 2, timestampMs: 410,
+  turnId: 'turn-canonical', payload: {}
+});
+assert.equal(store.getConversationSession('owned-canonical').activeTurnId, 'turn-canonical');
+store.applyAgentConversationEvent({
+  type: 'turn.completed', ownedId: 'owned-canonical', provider: 'codex',
+  providerInstanceId: 'provider-canonical', generation: 1, sequence: 3, timestampMs: 420,
+  turnId: 'turn-canonical', payload: {}
+});
+assert.equal(store.getConversationSession('owned-canonical').activeTurnId, undefined);
+
 const saved = store.captureConversationWorkspace('owned-b');
 store.setConversationDraft('owned-b', 'Changed');
 store.setConversationMode('owned-b', 'structured');

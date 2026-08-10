@@ -7,7 +7,6 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Check from '@lucide/svelte/icons/check';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
-  import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -18,6 +17,8 @@
   import { sessionLabel } from '$lib/shell/sessionStrip';
   import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
+  import SessionPresenceIndicator from './conversation/SessionPresenceIndicator.svelte';
 
   interface Props {
     session: OwnedSession;
@@ -54,9 +55,7 @@
   const project = $derived(canonicalCwd(session.projectPath) || 'No project recorded');
   const location = $derived(canonicalCwd(session.cwd || session.projectPath) || 'No worktree recorded');
   const providerLabel = $derived(session.viaCmux ? `cmux · ${session.agent}` : session.agent);
-  const runtimeWord = $derived(
-    session.state === 'exited' ? 'Stopped' : session.runtimeState === 'working' ? 'Working' : 'Ready'
-  );
+  const conversation = $derived(conversationSessions[session.ownedId] ?? null);
   const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
   function stopPropagation(event: MouseEvent, action?: () => void): void {
@@ -81,12 +80,6 @@
       aria-current={active ? 'true' : undefined}
       onclick={() => onSelect?.()}
     >
-      <span
-        data-testid="worktree-agent-state-dot"
-        class="state-dot shrink-0"
-        data-state={shelf}
-        aria-hidden="true"
-      ></span>
       {#if session.viaCmux}
         <Terminal data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
       {:else}
@@ -95,26 +88,31 @@
       <span data-testid="worktree-agent-title" class="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text)]">
         {label}
       </span>
-      <span data-testid="worktree-agent-runtime" class="shrink-0 text-[12px] text-[var(--color-text-2)]">
-        {shelf === 'settled' ? 'Settled' : shelf === 'done' ? 'Done' : runtimeWord}
-      </span>
     </button>
+
+    <span data-testid="worktree-agent-runtime" class="shrink-0">
+      <SessionPresenceIndicator
+        ownedId={session.ownedId}
+        terminalState={session.state}
+        connectionState={session.origin === 'app' ? conversation?.connectionState : null}
+        activeTurnId={conversation?.activeTurnId ?? session.activeTurnId}
+        sending={conversation?.sending}
+        pendingApprovalCount={conversation
+          ? Object.keys(conversation.pendingApprovals).length
+            + conversation.timeline.filter((item) => item.kind === 'approval' && item.state === 'requested').length
+          : 0}
+        runtimeState={conversation
+          ? session.runtimeState === 'starting' ? 'starting' : null
+          : session.runtimeState}
+        onRestart={session.state === 'exited' ? onRestart : onSelect}
+      />
+    </span>
 
     <span
       data-testid="worktree-agent-actions"
       class="row-actions flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity
         group-hover:opacity-100 group-focus-within:opacity-100"
     >
-      {#if session.state === 'exited' && onRestart}
-        <button
-          data-testid="worktree-agent-restart"
-          type="button"
-          class="action-button"
-          aria-label={session.origin === 'app' ? `Retry ${label}` : `Start ${label} again`}
-          title={session.origin === 'app' ? 'Retry this structured session' : 'Start this session again'}
-          onclick={(event) => stopPropagation(event, onRestart)}
-        >{#if session.origin === 'app'}<RotateCcw class="size-3" aria-hidden="true" />{:else}<Play class="size-3" aria-hidden="true" />{/if}</button>
-      {/if}
       {#if shelf === 'working' && onComplete}
         <button
           data-testid="worktree-agent-mark-done"
@@ -226,17 +224,6 @@
   .active {
     background: color-mix(in srgb, var(--color-selected) 70%, transparent);
   }
-
-  .state-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-    background: var(--color-idle);
-  }
-
-  .state-dot[data-state='working'] { background: var(--color-live); }
-  .state-dot[data-state='done'] { background: var(--color-good); }
-  .state-dot[data-state='settled'] { background: var(--color-text-3); }
 
   .action-button {
     display: inline-flex;

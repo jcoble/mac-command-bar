@@ -18,6 +18,11 @@
   } from '$lib/shell/layout/sidePaneRegistry';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
+  import MyWorkSessionList from './MyWorkSessionList.svelte';
+  import {
+    prepareMyWorkSessions,
+    type MyWorkViewOptions
+  } from './myWorkViewOptions';
 
   import WorkingPane from './WorkingPane.svelte';
   import DonePane from './DonePane.svelte';
@@ -67,6 +72,7 @@
     available?: AgentSession[];
     scanning?: boolean;
     activeOwnedId?: string | null;
+    viewOptions: MyWorkViewOptions;
     layoutStore?: LayoutStorage;
     /** Compatibility only; new hosts use the injected store's v1 map. */
     storageKey?: string;
@@ -89,6 +95,7 @@
     available = [],
     scanning = false,
     activeOwnedId = null,
+    viewOptions,
     layoutStore,
     storageKey,
     onSelect,
@@ -123,6 +130,7 @@
       (session) => !adoptedIds.has(session.id) && !adoptedIds.has(`${session.provider}:${session.id}`)
     )
   );
+  const visibleSessions = $derived(prepareMyWorkSessions(sessions, viewOptions));
 
   /** The context panel and the old row now activate the full center tab. */
   export function openFinder(): void {
@@ -169,7 +177,30 @@
 </script>
 
 <div data-testid="sessions-paneview" class="sessions-paneview">
-  <div data-testid="sessions-paneview-stack" class="pane-stack-host" bind:this={host}></div>
+  <div
+    data-testid="sessions-paneview-stack"
+    class="pane-stack-host"
+    class:hidden={viewOptions.groupBy !== 'status'}
+    bind:this={host}
+  ></div>
+
+  {#if viewOptions.groupBy !== 'status'}
+    <div class="min-h-0 flex-1 overflow-hidden">
+      <MyWorkSessionList
+        sessions={visibleSessions}
+        options={{ ...viewOptions, visibleStatuses: ['working', 'done', 'settled'] }}
+        {activeOwnedId}
+        {onSelect}
+        {onRestart}
+        {onComplete}
+        {onReopen}
+        {onSettle}
+        {onUnsettle}
+        {onClose}
+        {onAskRemove}
+      />
+    </div>
+  {/if}
 
   <div data-testid="session-finder" class="finder shrink-0 border-t border-[var(--color-border)]">
     <div class="flex items-center gap-1 px-2 py-1.5">
@@ -207,7 +238,7 @@
 <div data-testid="sessions-paneview-parking" class="parking-stage" aria-hidden="true">
   <div data-testid="working-pane-slot" class="pane-slot" bind:this={workingSlot}>
     <WorkingPane
-      {sessions}
+      sessions={visibleSessions}
       {activeOwnedId}
       onSelect={onSelect}
       onRestart={onRestart}
@@ -217,7 +248,7 @@
   </div>
   <div data-testid="done-pane-slot" class="pane-slot" bind:this={doneSlot}>
     <DonePane
-      {sessions}
+      sessions={visibleSessions}
       {activeOwnedId}
       onSelect={onSelect}
       onRestart={onRestart}
@@ -229,7 +260,7 @@
   </div>
   <div data-testid="settled-pane-slot" class="pane-slot" bind:this={settledSlot}>
     <SettledPane
-      {sessions}
+      sessions={visibleSessions}
       {activeOwnedId}
       onSelect={onSelect}
       onRestart={onRestart}

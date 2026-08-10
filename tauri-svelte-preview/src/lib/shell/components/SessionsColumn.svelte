@@ -8,6 +8,9 @@
    * forwarding every session intent to the page-owned rail authorities.
    */
   import Bot from '@lucide/svelte/icons/bot';
+  import Archive from '@lucide/svelte/icons/archive';
+  import Check from '@lucide/svelte/icons/check';
+  import CircleDot from '@lucide/svelte/icons/circle-dot';
   import Gem from '@lucide/svelte/icons/gem';
   import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
@@ -15,15 +18,34 @@
   import SquareCode from '@lucide/svelte/icons/square-code';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Terminal from '@lucide/svelte/icons/terminal';
+  import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
+  import { onMount } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
+  import * as Select from '$lib/components/ui/select/index.js';
+  import { Switch } from '$lib/components/ui/switch/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import type { AgentSession } from '$lib/tauriSource';
   import type { AgentKind, OwnedSession } from '$lib/shell/ownedSessions';
+  import { registerSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import SessionsPaneview from './SessionsPaneview.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
   import { cn } from '$lib/utils';
+  import {
+    DEFAULT_MY_WORK_VIEW_OPTIONS,
+    MY_WORK_STATUSES,
+    normalizeMyWorkViewOptions,
+    readMyWorkViewOptions,
+    writeMyWorkViewOptions,
+    type MyWorkGrouping,
+    type MyWorkSort,
+    type MyWorkStatus,
+    type MyWorkViewOptions
+  } from './myWorkViewOptions';
 
   interface Props {
     owned: OwnedSession[];
@@ -67,6 +89,42 @@
 
   let paneview = $state<{ openFinder(): void } | null>(null);
   const cells = $derived(stripCells(owned, activeOwnedId));
+  let viewOptions = $state<MyWorkViewOptions>({
+    ...DEFAULT_MY_WORK_VIEW_OPTIONS,
+    visibleStatuses: [...MY_WORK_STATUSES]
+  });
+
+  const GROUPING_ITEMS = [
+    { value: 'none', label: 'None' },
+    { value: 'status', label: 'Status' },
+    { value: 'project', label: 'Project' }
+  ] as const;
+
+  const STATUS_CONTROLS = [
+    { value: 'working', label: 'Working', icon: CircleDot },
+    { value: 'done', label: 'Done', icon: Check },
+    { value: 'settled', label: 'Settled', icon: Archive }
+  ] as const;
+
+  $effect(() => registerSessionRestart(onRestart, onSelect));
+
+  onMount(() => {
+    viewOptions = readMyWorkViewOptions(window.localStorage);
+  });
+
+  function setViewOptions(patch: Partial<MyWorkViewOptions>): void {
+    viewOptions = normalizeMyWorkViewOptions({ ...viewOptions, ...patch });
+    writeMyWorkViewOptions(window.localStorage, viewOptions);
+  }
+
+  function toggleStatus(status: MyWorkStatus): void {
+    const visibleStatuses = viewOptions.visibleStatuses.includes(status)
+      ? viewOptions.visibleStatuses.filter((candidate) => candidate !== status)
+      : MY_WORK_STATUSES.filter(
+          (candidate) => candidate === status || viewOptions.visibleStatuses.includes(candidate)
+        );
+    setViewOptions({ visibleStatuses });
+  }
 
   /** The session the remove confirmation is about, or null while it is shut. */
   let removing = $state<OwnedSession | null>(null);
@@ -165,6 +223,90 @@
         <h2 class="text-[12px] font-semibold tracking-[0.09em] text-[var(--color-text-2)] uppercase">My work</h2>
         <span class="text-[12px] text-[var(--color-text-2)]">{owned.length}</span>
         <div class="ml-auto flex items-center gap-1">
+          <DropdownMenu.Root>
+            <Tooltip.Root>
+              <Tooltip.Trigger>
+                {#snippet child({ props })}
+                  <DropdownMenu.Trigger
+                    {...props}
+                    data-testid="my-work-view-options-trigger"
+                    class={cn(buttonVariants({ variant: 'ghost', size: 'icon-xs' }), ACTION_CLASS)}
+                    aria-label="My Work view options"
+                  >
+                    <SlidersHorizontal aria-hidden="true" />
+                  </DropdownMenu.Trigger>
+                {/snippet}
+              </Tooltip.Trigger>
+              <Tooltip.Content side="bottom" class={TOOLTIP_CLASS} arrowClasses={TOOLTIP_ARROW_CLASS}>
+                My Work view options
+              </Tooltip.Content>
+            </Tooltip.Root>
+
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={7}
+              class="w-[304px]! space-y-1.5 bg-popover p-2 text-foreground ring-border"
+            >
+              <div class="flex min-h-8 items-center justify-between gap-3 px-1">
+                <span class="text-[13px] text-foreground">Show: Projects</span>
+                <Switch
+                  size="sm"
+                  checked={viewOptions.groupBy === 'project'}
+                  aria-label="Show projects"
+                  onCheckedChange={(checked) => setViewOptions({ groupBy: checked ? 'project' : 'none' })}
+                />
+              </div>
+
+              <div class="flex flex-col gap-1.5 px-1 py-1">
+                <span class="text-[13px] text-foreground">Group by</span>
+                <SegmentedControl
+                  class="w-full"
+                  size="sm"
+                  items={GROUPING_ITEMS}
+                  value={viewOptions.groupBy}
+                  aria-label="Group My Work sessions"
+                  onValueChange={(value) => setViewOptions({ groupBy: value as MyWorkGrouping })}
+                />
+              </div>
+
+              <div class="flex min-h-8 items-center justify-between gap-3 px-1 py-1">
+                <span class="text-[13px] text-foreground">Sort</span>
+                <Select.Root
+                  type="single"
+                  value={viewOptions.sortBy}
+                  onValueChange={(value) => setViewOptions({ sortBy: value as MyWorkSort })}
+                >
+                  <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort My Work sessions">
+                    {viewOptions.sortBy === 'recent' ? 'Recent activity' : 'Name'}
+                  </Select.Trigger>
+                  <Select.Content>
+                    <Select.Item value="recent" label="Recent activity" />
+                    <Select.Item value="name" label="Name" />
+                  </Select.Content>
+                </Select.Root>
+              </div>
+
+              <div class="flex flex-col gap-1.5 px-1 pt-1 pb-0.5">
+                <span class="text-[13px] text-foreground">Status filters</span>
+                <div class="grid grid-cols-3 gap-1" aria-label="Visible statuses">
+                  {#each STATUS_CONTROLS as control (control.value)}
+                    {@const StatusIcon = control.icon}
+                    {@const pressed = viewOptions.visibleStatuses.includes(control.value)}
+                    <Button
+                      size="xs"
+                      variant={pressed ? 'secondary' : 'ghost'}
+                      class="min-w-0 gap-1 px-1 text-[13px] font-normal"
+                      aria-pressed={pressed}
+                      onclick={() => toggleStatus(control.value)}
+                    >
+                      <StatusIcon class="size-3" aria-hidden="true" />
+                      <span class="truncate">{control.label}</span>
+                    </Button>
+                  {/each}
+                </div>
+              </div>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
           {@render action('start a new session', 'New session', Plus, onNewSession)}
           {@render action('fold the sessions column up', 'Fold this column up', PanelLeftClose, () => onCollapse(true))}
         </div>
@@ -177,6 +319,7 @@
           {available}
           {scanning}
           activeOwnedId={activeOwnedId}
+          {viewOptions}
           onSelect={onSelect}
           onAdopt={onAdopt}
           onRescan={onRescan}

@@ -25,10 +25,7 @@
   }: Props = $props();
 
   const done = $derived(
-    sessions
-      .filter((session) => deriveOwnedLibraryState(session) === 'done')
-      .slice()
-      .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''))
+    sessions.filter((session) => deriveOwnedLibraryState(session) === 'done')
   );
   let expanded = $state<Record<string, boolean>>({});
 

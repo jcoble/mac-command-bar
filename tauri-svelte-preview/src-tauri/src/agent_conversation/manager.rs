@@ -1279,6 +1279,11 @@ async fn pump_inbound(
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
+                if let Some(mode_id) = current_mode_update(&params) {
+                    session.config.approval_policy = Some(mode_id.to_string());
+                    session.connection.config = session.config.clone();
+                    continue;
+                }
                 let replay = is_replay_session_update(&params);
                 if session.active_turn_id.is_none() && !replay {
                     crate::debug_log::stderr_log!(
@@ -1587,6 +1592,23 @@ fn stop_reason(response: &Value) -> Option<&str> {
     response
         .get("stopReason")
         .or_else(|| response.get("stop_reason"))
+        .and_then(Value::as_str)
+}
+
+fn current_mode_update(params: &Value) -> Option<&str> {
+    let update = params
+        .get("update")
+        .or_else(|| params.get("sessionUpdate"))
+        .unwrap_or(params);
+    update
+        .get("sessionUpdate")
+        .or_else(|| update.get("session_update"))
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "current_mode_update")?;
+    update
+        .get("currentModeId")
+        .or_else(|| update.get("current_mode_id"))
         .and_then(Value::as_str)
 }
 
@@ -2752,6 +2774,31 @@ mod tests {
             fixture_log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#),
             "permission response must select a valid allow option: {fixture_log}"
         );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_mode_update_refreshes_the_stored_config() {
+        let fixture = fixture_manager_with_acp_session("current_mode_update").await;
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("change mode"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .is_ok_and(|config| config.approval_policy.as_deref() == Some("plan"))
+        })
+        .await;
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();

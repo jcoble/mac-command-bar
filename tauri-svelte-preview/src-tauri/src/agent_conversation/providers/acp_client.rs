@@ -42,6 +42,7 @@ pub struct AcpTransport {
     writer: tokio::sync::Mutex<SidecarWriteHalf>,
     process: Mutex<Option<SidecarProcessHandle>>,
     prompt_updates: Mutex<PromptUpdateRoute>,
+    conversation_config: Mutex<AgentConversationConfigState>,
 }
 
 #[derive(Default)]
@@ -71,6 +72,7 @@ impl AcpTransport {
             writer: tokio::sync::Mutex::new(writer),
             process: Mutex::new(Some(process_handle)),
             prompt_updates: Mutex::new(PromptUpdateRoute::default()),
+            conversation_config: Mutex::new(AgentConversationConfigState::default()),
         });
         let reader_transport = Arc::downgrade(&transport);
         tokio::spawn(async move {
@@ -141,6 +143,34 @@ impl AcpTransport {
             .lock()
             .ok()
             .and_then(|value| value.as_ref().and_then(SidecarProcessHandle::process_id))
+    }
+
+    fn conversation_config(&self) -> AgentConversationConfigState {
+        self.conversation_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn replace_conversation_config(&self, config: AgentConversationConfigState) {
+        *self
+            .conversation_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
+    }
+
+    fn set_conversation_model(&self, model_id: String) {
+        self.conversation_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .model = Some(model_id);
+    }
+
+    fn set_conversation_mode(&self, mode_id: String) {
+        self.conversation_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .approval_policy = Some(mode_id);
     }
 
     fn register_prompt_updates(
@@ -347,6 +377,9 @@ async fn reader_loop(
             (false, Some("session/update")) => {
                 let params = frame.get("params").cloned().unwrap_or(Value::Null);
                 if let Some(transport) = transport.upgrade() {
+                    if let Some(mode_id) = current_mode_update(&params) {
+                        transport.set_conversation_mode(mode_id.to_string());
+                    }
                     if transport.send_prompt_update(params.clone()) {
                         continue;
                     }
@@ -373,6 +406,13 @@ pub struct AcpClient {
     transport: Arc<AcpTransport>,
     inbound: Option<mpsc::UnboundedReceiver<AcpInbound>>,
     native_session_id: Option<String>,
+    conversation_config_protocol: ConversationConfigProtocol,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConversationConfigProtocol {
+    Metadata,
+    Standard,
 }
 
 impl AcpClient {
@@ -388,6 +428,7 @@ impl AcpClient {
             transport,
             inbound: Some(inbound),
             native_session_id: None,
+            conversation_config_protocol: ConversationConfigProtocol::Metadata,
         })
     }
 
@@ -580,6 +621,9 @@ impl AcpClient {
         &mut self,
         update: &AgentConversationConfigUpdate,
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        if self.conversation_config_protocol == ConversationConfigProtocol::Standard {
+            return self.set_standard_conversation_config(update).await;
+        }
         let mut params = serde_json::to_value(update)
             .map_err(serialization_error)?
             .as_object()
@@ -590,7 +634,41 @@ impl AcpClient {
             .transport
             .request("session/set_config_option", Value::Object(params))
             .await?;
-        parse_conversation_config(Some(&result))
+        let config = parse_conversation_config(Some(&result))?;
+        self.transport.replace_conversation_config(config.clone());
+        Ok(config)
+    }
+
+    async fn set_standard_conversation_config(
+        &mut self,
+        update: &AgentConversationConfigUpdate,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        if update.reasoning_effort.is_some() {
+            return Err(AgentRuntimeError::new(
+                "unsupported-config",
+                "This ACP session does not expose a reasoning-effort control",
+            ));
+        }
+        let session_id = self.session_id()?;
+        if let Some(model_id) = &update.model {
+            self.transport
+                .request(
+                    "session/set_model",
+                    json!({ "sessionId": session_id, "modelId": model_id }),
+                )
+                .await?;
+            self.transport.set_conversation_model(model_id.clone());
+        }
+        if let Some(mode_id) = &update.approval_policy {
+            self.transport
+                .request(
+                    "session/set_mode",
+                    json!({ "sessionId": session_id, "modeId": mode_id }),
+                )
+                .await?;
+            self.transport.set_conversation_mode(mode_id.clone());
+        }
+        Ok(self.transport.conversation_config())
     }
 
     pub async fn close(&mut self) -> Result<(), AgentRuntimeError> {
@@ -636,8 +714,20 @@ impl AcpClient {
                 )
             })?
             .to_string();
-        let config = parse_conversation_config(result.get("_meta"))?;
+        let metadata_config = parse_conversation_config(result.get("_meta"))?;
+        let (config, protocol) = if metadata_config == AgentConversationConfigState::default() {
+            let standard_config = parse_standard_conversation_config(&result);
+            if standard_config == AgentConversationConfigState::default() {
+                (metadata_config, ConversationConfigProtocol::Metadata)
+            } else {
+                (standard_config, ConversationConfigProtocol::Standard)
+            }
+        } else {
+            (metadata_config, ConversationConfigProtocol::Metadata)
+        };
         self.native_session_id = Some(native_session_id.clone());
+        self.transport.replace_conversation_config(config.clone());
+        self.conversation_config_protocol = protocol;
         Ok(StartedAgentSession {
             native_session_id,
             config,
@@ -754,6 +844,23 @@ fn prompt_update_turn_id(params: &Value) -> Option<&str> {
         })
 }
 
+fn current_mode_update(params: &Value) -> Option<&str> {
+    let update = params
+        .get("update")
+        .or_else(|| params.get("sessionUpdate"))
+        .unwrap_or(params);
+    update
+        .get("sessionUpdate")
+        .or_else(|| update.get("session_update"))
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "current_mode_update")?;
+    update
+        .get("currentModeId")
+        .or_else(|| update.get("current_mode_id"))
+        .and_then(Value::as_str)
+}
+
 fn bool_at(value: &Value, path: &[&str]) -> bool {
     path.iter()
         .try_fold(value, |current, part| current.get(*part))
@@ -781,6 +888,39 @@ fn parse_conversation_config(
         })
         .transpose()
         .map(Option::unwrap_or_default)
+}
+
+fn parse_standard_conversation_config(value: &Value) -> AgentConversationConfigState {
+    let models = value.get("models");
+    let modes = value.get("modes");
+    AgentConversationConfigState {
+        model: models
+            .and_then(|models| models.get("currentModelId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        available_models: models
+            .and_then(|models| models.get("availableModels"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model.get("modelId").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+        reasoning_effort: None,
+        available_efforts: Vec::new(),
+        approval_policy: modes
+            .and_then(|modes| modes.get("currentModeId"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        available_approval_policies: modes
+            .and_then(|modes| modes.get("availableModes"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|mode| mode.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
+    }
 }
 
 fn serialization_error(error: serde_json::Error) -> AgentRuntimeError {
@@ -814,7 +954,12 @@ while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id" ;;
-	    *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
+    *'"method":"session/new"'*)
+      if [ "$fixture" = "standard_config" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","models":{{"availableModels":[{{"modelId":"default","name":"Default (recommended)","description":"Opus 4.6 · Most capable for complex work"}},{{"modelId":"sonnet","name":"Sonnet","description":"Sonnet 4.5 · Best for everyday tasks"}},{{"modelId":"haiku","name":"Haiku","description":"Haiku 4.5 · Fastest for quick answers"}}],"currentModelId":"default"}},"modes":{{"currentModeId":"default","availableModes":[{{"id":"default","name":"Default","description":"Standard behavior, prompts for dangerous operations"}},{{"id":"acceptEdits","name":"Accept Edits","description":"Auto-accept file edit operations"}},{{"id":"plan","name":"Plan Mode","description":"Planning mode, no actual tool execution"}},{{"id":"dontAsk","name":"Dont Ask","description":"Deny operations that are not pre-approved"}},{{"id":"bypassPermissions","name":"Bypass Permissions","description":"Bypass all permission checks"}}]}}}}}}\n' "$id"
+      else
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id"
+      fi ;;
     *'"method":"session/load"'*)
       if [ "$fixture" = "replay_on_load" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"user_message_chunk","messageId":"history-user-1","content":{{"type":"text","text":"First question"}},"turnId":"history-turn-1","_meta":{{"replay":true}}}}}}}}\n'
@@ -839,6 +984,9 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
       elif [ "$fixture" = "direct_result" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-direct","text":"direct response text"}}}}\n' "$id"
+      elif [ "$fixture" = "current_mode_update" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       elif [ "$fixture" = "prompt_error" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture prompt failed"}}}}\n' "$id"
       elif [ "$fixture" = "many_updates" ]; then
@@ -901,6 +1049,8 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       fi ;;
 	    *'"method":"session/set_config_option"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"model":"gpt-5.6-terra","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"xhigh","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"never","availableApprovalPolicies":["untrusted","on-request","never"],"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id" ;;
+    *'"method":"session/set_model"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
+    *'"method":"session/set_mode"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/close"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"; exit 0 ;;
   esac
@@ -1160,6 +1310,65 @@ done"#,
         assert!(frames.contains("session/prompt"));
         assert!(frames.contains("session/set_config_option"));
         assert!(frames.contains("session/close"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acp_new_maps_and_sets_standard_session_config() {
+        let root = fixture_root();
+        let log = root.join("standard-config.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "standard_config"),
+            &root,
+            "standard-config",
+        )
+        .unwrap();
+        client
+            .initialize(AgentConversationProvider::Claude)
+            .await
+            .unwrap();
+
+        let started = client.new_session(&root).await.unwrap();
+
+        assert_eq!(
+            started.config,
+            AgentConversationConfigState {
+                model: Some("default".into()),
+                available_models: vec!["default".into(), "sonnet".into(), "haiku".into()],
+                reasoning_effort: None,
+                available_efforts: Vec::new(),
+                approval_policy: Some("default".into()),
+                available_approval_policies: vec![
+                    "default".into(),
+                    "acceptEdits".into(),
+                    "plan".into(),
+                    "dontAsk".into(),
+                    "bypassPermissions".into(),
+                ],
+            }
+        );
+
+        let configured = client
+            .set_conversation_config(&AgentConversationConfigUpdate {
+                model: Some("sonnet".into()),
+                reasoning_effort: None,
+                approval_policy: Some("bypassPermissions".into()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(configured.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            configured.approval_policy.as_deref(),
+            Some("bypassPermissions")
+        );
+        client.close().await.unwrap();
+        let frames = std::fs::read_to_string(&log).unwrap();
+        assert!(frames.contains(r#""method":"session/set_model""#));
+        assert!(frames.contains(r#""modelId":"sonnet""#));
+        assert!(frames.contains(r#""method":"session/set_mode""#));
+        assert!(frames.contains(r#""modeId":"bypassPermissions""#));
+        assert!(!frames.contains("session/set_config_option"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

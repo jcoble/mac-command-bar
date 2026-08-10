@@ -50,6 +50,8 @@
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
+  import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
+  import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
 
   interface Props {
     owned: OwnedSession[];
@@ -114,6 +116,13 @@
   let capabilityRequest = $state('');
   let configRequest = $state('');
   let inspectorOpen = $state(false);
+
+  $effect(() => {
+    const ownedId = activeOwnedId;
+    setViewedSession(ownedId);
+    if (!ownedId) return;
+    return () => clearViewedSession(ownedId);
+  });
 
   $effect(() => {
     if (!appOwned) inspectorOpen = false;
@@ -292,6 +301,7 @@
         {active}
         {conversation}
         {selectedChild}
+        onRestart={() => requestSessionRestart(active.ownedId, active.state === 'exited')}
         onModeChange={(mode) => { if (!appOwned) setConversationMode(active.ownedId, mode); }}
         onInspectorToggle={() => { if (appOwned) inspectorOpen = !inspectorOpen; }}
       />
