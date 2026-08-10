@@ -43,6 +43,9 @@ export type LaunchOption = {
   hint: string;
 };
 
+/** The one value shared by the selected card, command field, and request. */
+export type LaunchSelection = Pick<LaunchOption, 'agent' | 'command'>;
+
 export const LAUNCH_CATALOG: LaunchOption[] = [
   {
     agent: 'claude',
@@ -67,6 +70,14 @@ export const LAUNCH_CATALOG: LaunchOption[] = [
 /** The catalog entry for `agent`, or `null` when that is not one of the three. */
 export function launchOptionFor(agent: string): LaunchOption | null {
   return LAUNCH_CATALOG.find((option) => option.agent === agent) ?? null;
+}
+
+/** Select an agent and its matching default command as one indivisible value. */
+export function selectLaunchAgent(agent: LaunchAgent): LaunchSelection {
+  return {
+    agent,
+    command: launchOptionFor(agent)?.command ?? ''
+  };
 }
 
 /**

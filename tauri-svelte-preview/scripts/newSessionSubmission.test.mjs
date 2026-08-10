@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+import {
+  buildNewSessionRequest,
+  selectLaunchAgent
+} from '../src/lib/shell/newSession/newSessionFlow.ts';
+
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
 const dialog = readFileSync(
   new URL('../src/lib/shell/components/newSession/NewSessionDialog.svelte', import.meta.url),
+  'utf8'
+);
+const host = readFileSync(
+  new URL('../src/lib/shell/components/newSession/NewSessionHost.svelte', import.meta.url),
   'utf8'
 );
 
@@ -22,6 +31,43 @@ const startNewSession = functionSource(
 const restartOwned = functionSource(
   'async function restartOwned(',
   'async function closeTerminal('
+);
+
+// The same selection value must paint the card and build the submitted request.
+// This is the regression path captured by the native new-session proof: changing
+// the selected card may not leave the request on its initial value.
+{
+  const selection = selectLaunchAgent('codex');
+  const request = buildNewSessionRequest({
+    cwd: '/Users/me/dev/work/thing',
+    title: '',
+    ...selection
+  });
+
+  assert.equal(selection.agent, 'codex');
+  assert.equal(request?.agent, 'codex');
+  assert.equal(request?.command, 'codex');
+}
+
+assert.match(
+  dialog,
+  /aria-pressed=\{selectedLaunch\.agent === option\.agent\}[\s\S]*onclick=\{\(\) => pickAgent\(option\.agent\)\}/,
+  'the selected card and its click handler share selectedLaunch'
+);
+assert.match(
+  dialog,
+  /const draft = \$derived\(\{ cwd, title, \.\.\.selectedLaunch \}\)/,
+  'the submitted draft reads the same selectedLaunch value as the card'
+);
+assert.match(
+  dialog,
+  /`Start \$\{selectedLaunch\.agent\} session`/,
+  'the primary button names the agent that will be submitted'
+);
+assert.match(
+  host,
+  /<NewSessionDialog[\s\S]*\{onStart\}/,
+  'the host forwards the request callback without substituting an agent'
 );
 
 assert.doesNotMatch(

@@ -48,8 +48,8 @@
     LAUNCH_CATALOG,
     buildCommandPreview,
     buildNewSessionRequest,
-    launchOptionFor,
     resolveSessionTitle,
+    selectLaunchAgent,
     suggestSessionTitle,
     validateNewSession,
     worktreeAddCommand,
@@ -86,8 +86,7 @@
   // ── What the user has chosen ───────────────────────────────────────────────
   let projectPath = $state('');
   let checkoutPath = $state('');
-  let agent = $state<LaunchAgent>('claude');
-  let command = $state(launchOptionFor('claude')?.command ?? 'claude');
+  let selectedLaunch = $state(selectLaunchAgent('claude'));
   let title = $state('');
 
   // ── What the screen is busy with ───────────────────────────────────────────
@@ -112,11 +111,11 @@
   const checkouts = $derived(worktreeChoicesFor({ projectRoot: projectPath, worktrees }));
   /** The folder the terminal actually opens in: the chosen checkout. */
   const cwd = $derived(checkoutPath || projectPath);
-  const draft = $derived({ cwd, command, agent, title });
+  const draft = $derived({ cwd, title, ...selectedLaunch });
   const problems = $derived(validateNewSession(draft));
-  const preview = $derived(buildCommandPreview({ cwd, command }));
-  const titlePlaceholder = $derived(suggestSessionTitle({ cwd, agent }));
-  const resolvedTitle = $derived(resolveSessionTitle({ cwd, agent, title }));
+  const preview = $derived(buildCommandPreview({ cwd, command: selectedLaunch.command }));
+  const titlePlaceholder = $derived(suggestSessionTitle({ cwd, agent: selectedLaunch.agent }));
+  const resolvedTitle = $derived(resolveSessionTitle({ cwd, agent: selectedLaunch.agent, title }));
   const addWorktreeLine = $derived(worktreeAddCommand(projectPath, newWorktreeBranch));
   const projectLabel = $derived(
     roots.find((root) => root.path === projectPath)?.name ?? 'Choose a project folder'
@@ -141,7 +140,7 @@
     advancedOpen = false;
     newWorktreeBranch = '';
     copiedLabel = null;
-    pickAgent(agent);
+    pickAgent(selectedLaunch.agent);
     title = '';
     const path = initialRootPath();
     if (path) {
@@ -191,8 +190,7 @@
 
   /** Choose what to run. Picking an agent rewrites the command box. */
   function pickAgent(next: LaunchAgent): void {
-    agent = next;
-    command = launchOptionFor(next)?.command ?? '';
+    selectedLaunch = selectLaunchAgent(next);
   }
 
   /** Ask the system for a folder and add it to the list. */
@@ -327,17 +325,17 @@
             <button
               type="button"
               data-agent-choice
-              aria-pressed={agent === option.agent}
+              aria-pressed={selectedLaunch.agent === option.agent}
               class="flex min-h-[66px] flex-col gap-1 rounded-lg border px-3 py-2.5 text-left
                      transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
-                     {agent === option.agent
+                     {selectedLaunch.agent === option.agent
                 ? 'border-[var(--color-accent)] bg-[var(--color-selected)]'
                 : 'border-[var(--color-border)] bg-transparent hover:bg-[var(--color-hover)]'}"
               onclick={() => pickAgent(option.agent)}
             >
               <span class="flex w-full items-center justify-between gap-2">
                 <span class="text-[13px] leading-[1.3] font-medium">{option.label}</span>
-                {#if agent === option.agent}
+                {#if selectedLaunch.agent === option.agent}
                   <Check class="size-3.5 shrink-0 text-[var(--color-accent)]" aria-hidden="true" />
                 {/if}
               </span>
@@ -353,7 +351,9 @@
       <section class="flex flex-col gap-3" aria-labelledby="new-session-location-label">
         <div class="flex flex-col gap-1">
           <h3 id="new-session-location-label" class="text-[13px] leading-[1.3] font-medium">
-            {agent === 'shell' ? 'Where should the terminal open?' : 'Where should the agent work?'}
+            {selectedLaunch.agent === 'shell'
+              ? 'Where should the terminal open?'
+              : 'Where should the agent work?'}
           </h3>
           <p class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
             Choose the project folder for this session.
@@ -555,17 +555,17 @@
             </span>
             <button
               type="button"
-              aria-pressed={agent === 'shell'}
+              aria-pressed={selectedLaunch.agent === 'shell'}
               class="flex flex-col gap-0.5 rounded-md border px-2.5 py-2 text-left transition-colors
                      focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
-                     {agent === 'shell'
+                     {selectedLaunch.agent === 'shell'
                 ? 'border-[var(--color-accent)] bg-[var(--color-selected)]'
                 : 'border-[var(--color-border)] hover:bg-[var(--color-hover)]'}"
               onclick={() => pickAgent('shell')}
             >
               <span class="flex w-full items-center justify-between gap-2 text-[12px] font-medium">
                 Start without an agent
-                {#if agent === 'shell'}
+                {#if selectedLaunch.agent === 'shell'}
                   <Check class="size-3.5 shrink-0 text-[var(--color-accent)]" aria-hidden="true" />
                 {/if}
               </span>
@@ -584,7 +584,7 @@
             </label>
             <Input
               id="new-session-command"
-              bind:value={command}
+              bind:value={selectedLaunch.command}
               placeholder="Leave empty to open a terminal only"
               spellcheck={false}
               class="h-8 font-mono text-[13px]"
@@ -684,7 +684,7 @@
         Cancel
       </Button>
       <Button size="sm" class="text-[13px]" disabled={!readyToStart} onclick={() => void start()}>
-        {starting ? 'Starting…' : 'Start session'}
+        {starting ? 'Starting…' : `Start ${selectedLaunch.agent} session`}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>
