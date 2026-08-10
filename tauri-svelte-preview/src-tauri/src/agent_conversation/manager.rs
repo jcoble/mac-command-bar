@@ -1202,7 +1202,8 @@ async fn pump_inbound(
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
-                if session.active_turn_id.is_none() {
+                let replay = is_replay_session_update(&params);
+                if session.active_turn_id.is_none() && !replay {
                     eprintln!(
                         "[debug] Dropping ACP session update without an active conversation turn"
                     );
@@ -1635,6 +1636,7 @@ fn payload_from_session_update_for_turn(
     active_turn_id: Option<&str>,
 ) -> Option<AgentConversationPayload> {
     let update = params.get("update").unwrap_or(params);
+    let replay = is_replay_session_update(params);
     let Some(kind) = update
         .get("sessionUpdate")
         .or_else(|| update.get("session_update"))
@@ -1655,6 +1657,19 @@ fn payload_from_session_update_for_turn(
     });
 
     match kind {
+        "agent_message_chunk" if replay => Some(AgentConversationPayload::AssistantMessage {
+            item_id: update
+                .get("messageId")
+                .or_else(|| update.get("message_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("assistant-{turn_id}")),
+            text: update
+                .get("content")
+                .and_then(text_from_value)
+                .unwrap_or_default(),
+            completed: true,
+        }),
         "agent_message_chunk" => Some(AgentConversationPayload::AssistantDelta {
             item_id: update
                 .get("messageId")
@@ -1678,7 +1693,7 @@ fn payload_from_session_update_for_turn(
                 .get("content")
                 .and_then(text_from_value)
                 .unwrap_or_default(),
-            completed: false,
+            completed: replay,
         }),
         "agent_thought_chunk" => {
             eprintln!("Ignoring ACP agent thought update");
@@ -1739,6 +1754,22 @@ fn payload_from_session_update_for_turn(
             None
         }
     }
+}
+
+fn is_replay_session_update(params: &Value) -> bool {
+    fn replay_flag(value: &Value) -> bool {
+        value
+            .get("_meta")
+            .and_then(|metadata| metadata.get("replay"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    replay_flag(params)
+        || params
+            .get("update")
+            .or_else(|| params.get("sessionUpdate"))
+            .is_some_and(replay_flag)
 }
 
 fn tool_item_id(update: &Value, turn_id: &str) -> String {
@@ -1991,6 +2022,20 @@ mod tests {
                 delta: "Hi".into(),
             })
         );
+        let replayed_chunk = json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "Restored" },
+            "messageId": "m-replay",
+            "_meta": { "replay": true }
+        } });
+        assert_eq!(
+            payload_from_session_update_for_turn(&replayed_chunk, None),
+            Some(AgentConversationPayload::AssistantMessage {
+                item_id: "m-replay".into(),
+                text: "Restored".into(),
+                completed: true,
+            })
+        );
         let tool = json!({ "sessionId": "s", "update": {
             "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read file",
             "status": "in_progress" } });
@@ -2030,6 +2075,21 @@ mod tests {
                 item_id: "user-turn-2".into(),
                 text: "Question".into(),
                 completed: false,
+            })
+        );
+        let replayed_user = json!({ "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": { "type": "text", "text": "Restored question" },
+            "messageId": "user-replay",
+            "turnId": "turn-2",
+            "_meta": { "replay": true }
+        } });
+        assert_eq!(
+            payload_from_session_update_for_turn(&replayed_user, None),
+            Some(AgentConversationPayload::UserMessage {
+                item_id: "user-replay".into(),
+                text: "Restored question".into(),
+                completed: true,
             })
         );
 
@@ -2208,37 +2268,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn repeated_activation_does_not_replay_or_append_connected_session_history() {
+    async fn load_replay_populates_two_turns_once_across_repeated_ensure() {
         let root = temp_root();
-        let log = root.join("replay_on_resume.jsonl");
+        let log = root.join("replay_on_load.jsonl");
         let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
             &log,
-            "replay_on_resume",
+            "replay_on_load",
         );
         let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
             .expect("fixture provider");
         let manager = AgentRuntimeManager::new(providers);
-        let owned_id = "owned-replay";
-        let mut resume_request = request(
+        let owned_id = "owned-load-replay";
+        let mut load_request = request(
             root.to_str().unwrap(),
             owned_id,
             AgentConversationProvider::Codex,
         );
-        resume_request.native_session_id = Some("resumed-session".into());
+        load_request.native_session_id = Some("loaded-session".into());
+        load_request.native_session_mode = AgentNativeSessionMode::Load;
 
         let connection = manager
-            .ensure_async(resume_request.clone())
+            .ensure_async(load_request.clone())
             .await
-            .expect("ensure resumed session");
+            .expect("ensure loaded session");
         manager
             .activate(owned_id, connection.generation)
             .await
-            .expect("initial resume");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+            .expect("initial load");
+        wait_until(|| {
+            manager
+                .snapshot(owned_id)
+                .unwrap()
+                .is_some_and(|snapshot| snapshot.events.len() == 4)
+        })
+        .await;
 
         for _ in 0..3 {
             let same = manager
-                .ensure_async(resume_request.clone())
+                .ensure_async(load_request.clone())
                 .await
                 .expect("connected ensure is idempotent");
             manager
@@ -2247,22 +2314,49 @@ mod tests {
                 .expect("connected activation is idempotent");
         }
 
-        let frames = fs::read_to_string(&log).expect("resume fixture log");
-        assert_eq!(frames.matches(r#""method":"session/resume""#).count(), 1);
+        let frames = fs::read_to_string(&log).expect("load fixture log");
+        assert_eq!(frames.matches(r#""method":"session/load""#).count(), 1);
         let snapshot = manager.snapshot(owned_id).unwrap().unwrap();
-        let assistant_count = snapshot
+        assert_eq!(snapshot.events.len(), 4);
+        let item_ids = snapshot
             .events
             .iter()
-            .filter(|event| {
-                matches!(
-                    event.payload,
-                    AgentConversationPayload::AssistantDelta { .. }
-                )
+            .filter_map(|event| match &event.payload {
+                AgentConversationPayload::UserMessage { item_id, .. }
+                | AgentConversationPayload::AssistantMessage { item_id, .. } => {
+                    Some(item_id.as_str())
+                }
+                _ => None,
             })
-            .count();
+            .collect::<Vec<_>>();
         assert_eq!(
-            assistant_count, 0,
-            "resume-time replay without an active turn must not enter the journal"
+            item_ids,
+            [
+                "history-user-1",
+                "history-agent-1",
+                "history-user-2",
+                "history-agent-2"
+            ]
+        );
+        let recent_item_ids = manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(owned_id)
+            .unwrap()
+            .recent_events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .payload
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recent_item_ids, item_ids,
+            "the canonical journal feed and frontend snapshot must contain one copy per item"
         );
 
         manager.close(owned_id).await.unwrap();

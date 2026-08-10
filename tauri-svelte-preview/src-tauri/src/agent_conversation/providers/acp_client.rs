@@ -762,7 +762,15 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id" ;;
     *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session"}}}}\n' "$id" ;;
-    *'"method":"session/load"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
+    *'"method":"session/load"'*)
+      if [ "$fixture" = "replay_on_load" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"user_message_chunk","messageId":"history-user-1","content":{{"type":"text","text":"First question"}},"turnId":"history-turn-1","_meta":{{"replay":true}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"history-agent-1","content":{{"type":"text","text":"First answer"}},"turnId":"history-turn-1","_meta":{{"replay":true}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"user_message_chunk","messageId":"history-user-2","content":{{"type":"text","text":"Second question"}},"turnId":"history-turn-2","_meta":{{"replay":true}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"history-agent-2","content":{{"type":"text","text":"Second answer"}},"turnId":"history-turn-2","_meta":{{"replay":true}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"unmarked-update","content":{{"type":"text","text":"Must stay dropped"}},"turnId":"history-turn-2"}}}}}}\n'
+      fi
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
     *'"method":"session/resume"'*)
       if [ "$fixture" = "replay_on_resume" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'

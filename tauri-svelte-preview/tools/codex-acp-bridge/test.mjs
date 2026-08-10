@@ -2,6 +2,8 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -11,7 +13,7 @@ const bridgePath = path.join(directory, "bridge.mjs");
 const mockCodexPath = path.join(directory, "mock-codex.mjs");
 
 class AcpPeer {
-  constructor(scenario = "normal", permissionChoice = "allow") {
+  constructor(scenario = "normal", permissionChoice = "allow", codexBin = mockCodexPath) {
     this.nextId = 1;
     this.pending = new Map();
     this.updates = [];
@@ -19,11 +21,12 @@ class AcpPeer {
     this.permissions = [];
     this.permissionWaiters = [];
     this.permissionChoice = permissionChoice;
+    this.messages = [];
     this.stderr = "";
     this.child = spawn(process.execPath, [bridgePath], {
       env: {
         ...process.env,
-        CODEX_BIN: mockCodexPath,
+        CODEX_BIN: codexBin,
         BRIDGE_MOCK_SCENARIO: scenario,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -125,6 +128,7 @@ class AcpPeer {
   async read() {
     for await (const line of this.lines) {
       const message = JSON.parse(line);
+      this.messages.push(message);
       if (message.method === "session/update") {
         this.updates.push(message);
         for (const waiter of this.updateWaiters.splice(0)) waiter(message);
@@ -186,6 +190,115 @@ function updatesOf(peer, kind) {
     .filter((update) => update.sessionUpdate === kind);
 }
 
+function createReplayMock() {
+  const root = mkdtempSync(path.join(tmpdir(), "mcb-bridge-replay-"));
+  const executable = path.join(root, "mock-replay.mjs");
+  const turns = [
+    {
+      id: "history-turn-1",
+      status: "completed",
+      items: [
+        {
+          id: "history-user-1",
+          type: "userMessage",
+          content: [{ type: "text", text: "First question" }],
+        },
+        {
+          id: "history-thought-1",
+          type: "reasoning",
+          summary: ["First thought"],
+          content: [],
+        },
+        {
+          id: "history-tool-1",
+          type: "commandExecution",
+          command: "printf first",
+          cwd: "/mock/work",
+          aggregatedOutput: "first",
+          exitCode: 0,
+          status: "completed",
+        },
+        { id: "history-agent-1", type: "agentMessage", text: "First answer" },
+      ],
+    },
+    {
+      id: "history-turn-2",
+      status: "completed",
+      items: [
+        {
+          id: "history-user-2",
+          type: "userMessage",
+          content: [{ type: "text", text: "Second question" }],
+        },
+        {
+          id: "history-tool-2",
+          type: "mcpToolCall",
+          server: "mock-server",
+          tool: "lookup",
+          arguments: {},
+          result: { content: "found" },
+          status: "completed",
+        },
+        { id: "history-agent-2", type: "agentMessage", text: "Second answer" },
+      ],
+    },
+    {
+      id: "history-turn-in-flight",
+      status: "inProgress",
+      items: [
+        {
+          id: "history-user-in-flight",
+          type: "userMessage",
+          content: [{ type: "text", text: "Do not replay" }],
+        },
+        { id: "history-agent-in-flight", type: "agentMessage", text: "Partial answer" },
+      ],
+    },
+  ];
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+const turns = ${JSON.stringify(turns)};
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+  const message = JSON.parse(line);
+  if (message.method === "initialized") continue;
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "mock-replay/1.0.0" } });
+  } else if (message.method === "thread/resume") {
+    if (Object.hasOwn(message.params ?? {}, "excludeTurns")) {
+      send({ id: message.id, error: { code: -32602, message: "excludeTurns must be omitted" } });
+    } else {
+      send({ id: message.id, result: {
+        thread: { id: message.params.threadId, turns },
+        model: "gpt-5.6-sol",
+        cwd: message.params.cwd
+      } });
+    }
+  } else {
+    send({ id: message.id, error: { code: -32601, message: "unsupported mock method" } });
+  }
+}
+`,
+  );
+  chmodSync(executable, 0o755);
+  return { executable, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+function replayUpdatesBeforeResponse(messages) {
+  assert(messages.length > 1, "replay must emit updates before its response");
+  const response = messages.at(-1);
+  assert.equal(Object.hasOwn(response, "id"), true, "resume result must be last");
+  const updates = messages.slice(0, -1);
+  assert(updates.every((message) => message.method === "session/update"));
+  return updates.map((message) => message.params.update);
+}
+
+function replayItemId(update) {
+  return update.messageId ?? update.toolCallId ?? update.planId;
+}
+
 const tests = [];
 
 tests.push([
@@ -239,23 +352,69 @@ tests.push([
 ]);
 
 tests.push([
-  "session/load and session/resume preserve id and exclude ignored turns",
+  "session/load and session/resume replay completed turns before their results with stable ids",
   async () => {
-    const peer = new AcpPeer("normal");
-    await peer.initialize();
-    const loaded = await peer.request("session/load", {
-      sessionId: "persisted-thread",
-      cwd: directory,
-    });
-    assert.equal(loaded.sessionId, "persisted-thread");
-    assert.equal(loaded.model, "gpt-5.6-sol");
-    const resumed = await peer.request("session/resume", {
-      sessionId: "persisted-thread",
-      cwd: directory,
-    });
-    assert.equal(resumed.sessionId, "persisted-thread");
-    const closed = await peer.close(resumed.sessionId);
-    assert.equal(closed.exited.code, 0, peer.stderr);
+    const mock = createReplayMock();
+    const peer = new AcpPeer("replay", "allow", mock.executable);
+    try {
+      await peer.initialize();
+
+      const loadStart = peer.messages.length;
+      const loaded = await peer.request("session/load", {
+        sessionId: "persisted-thread",
+        cwd: directory,
+      });
+      assert.equal(loaded.sessionId, "persisted-thread");
+      assert.equal(loaded.model, "gpt-5.6-sol");
+      const loadUpdates = replayUpdatesBeforeResponse(peer.messages.slice(loadStart));
+
+      const resumeStart = peer.messages.length;
+      const resumed = await peer.request("session/resume", {
+        sessionId: "persisted-thread",
+        cwd: directory,
+      });
+      assert.equal(resumed.sessionId, "persisted-thread");
+      const resumeUpdates = replayUpdatesBeforeResponse(peer.messages.slice(resumeStart));
+
+      const expectedKinds = [
+        "user_message_chunk",
+        "agent_thought_chunk",
+        "tool_call",
+        "tool_call_update",
+        "agent_message_chunk",
+        "user_message_chunk",
+        "tool_call",
+        "tool_call_update",
+        "agent_message_chunk",
+      ];
+      assert.deepEqual(
+        loadUpdates.map((update) => update.sessionUpdate),
+        expectedKinds,
+      );
+      assert.deepEqual(
+        resumeUpdates.map((update) => update.sessionUpdate),
+        expectedKinds,
+      );
+      assert(loadUpdates.every((update) => update._meta?.replay === true));
+      assert(resumeUpdates.every((update) => update._meta?.replay === true));
+      assert.equal(loadUpdates.some((update) => replayItemId(update)?.includes("in-flight")), false);
+
+      const loadIds = loadUpdates.map(replayItemId);
+      const resumeIds = resumeUpdates.map(replayItemId);
+      assert.deepEqual(resumeIds, loadIds, "history item ids must remain stable across reloads");
+      const clientItems = new Map();
+      for (const update of loadUpdates) clientItems.set(replayItemId(update), update);
+      const firstReplaySize = clientItems.size;
+      for (const update of resumeUpdates) clientItems.set(replayItemId(update), update);
+      assert.equal(clientItems.size, firstReplaySize, "a second replay must replace the same items");
+      assert.equal(firstReplaySize, 7);
+
+      const closed = await peer.close(resumed.sessionId);
+      assert.equal(closed.exited.code, 0, peer.stderr);
+    } finally {
+      if (peer.child.exitCode === null && peer.child.signalCode === null) peer.child.kill("SIGTERM");
+      mock.cleanup();
+    }
   },
 ]);
 

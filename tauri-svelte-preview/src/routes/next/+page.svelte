@@ -992,7 +992,7 @@
         selected,
         conversation
       );
-      console.debug('mcb next: conversation activation', {
+      console.warn('mcb next: conversation activation', {
         ownedId,
         origin: selected.origin ?? 'external',
         sessionState: selected.state,
@@ -1159,6 +1159,7 @@
    * `startOwned`: that is the call which types the command in.
    */
   async function startNewSession(request: NewSessionRequest): Promise<void> {
+    console.warn('mcb next: startNewSession', { agent: request.agent, cwd: request.cwd, disposed });
     if (disposed) return;
     const startsStructured = request.agent === 'codex' || request.agent === 'claude';
     if (!startsStructured && !service) {
@@ -1180,6 +1181,7 @@
           cwd: owned.cwd
         });
       } catch (error) {
+        console.warn('mcb next: startNewSession failed', describeError(error));
         updateOwnedSession(owned.ownedId, { state: 'exited', lastError: describeError(error) });
         rail.error = `could not start ${owned.agent} session: ${describeError(error)}`;
         return;

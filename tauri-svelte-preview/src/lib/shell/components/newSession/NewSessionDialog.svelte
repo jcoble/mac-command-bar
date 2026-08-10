@@ -276,7 +276,7 @@
   async function start(): Promise<void> {
     const request = buildNewSessionRequest(draft);
     if (!request || starting) return;
-    console.debug('mcb next: new-session submit', {
+    console.warn('mcb next: new-session submit', {
       agent: request.agent,
       cwd: request.cwd,
       title: request.title,

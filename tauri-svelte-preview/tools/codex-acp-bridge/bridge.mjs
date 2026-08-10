@@ -204,10 +204,23 @@ function promptResult(prompt, stopReason) {
 }
 
 async function emitSessionUpdate(prompt, update) {
+  const annotatedUpdate = prompt.replay
+    ? { ...update, _meta: { ...(update._meta ?? {}), replay: true } }
+    : update;
   await acpWriter.write({
     jsonrpc: "2.0",
     method: "session/update",
-    params: { sessionId: prompt.threadId, update },
+    params: { sessionId: prompt.threadId, update: annotatedUpdate },
+  });
+}
+
+async function emitUserText(prompt, turnId, itemId, text) {
+  if (typeof text !== "string" || text.length === 0) return;
+  await emitSessionUpdate(prompt, {
+    sessionUpdate: "user_message_chunk",
+    turnId,
+    messageId: itemId,
+    content: { type: "text", text },
   });
 }
 
@@ -366,6 +379,7 @@ function getItemState(prompt, itemId, item) {
   if (!state) {
     state = {
       started: false,
+      textSeen: false,
       thoughtSeen: false,
       outputSeen: false,
       planText: "",
@@ -410,43 +424,84 @@ async function emitToolUpdate(prompt, turnId, item, state, overrides = {}) {
   });
 }
 
+async function mapThreadItem(prompt, turnId, item, lifecycle, includeUserMessages = false) {
+  const state = getItemState(prompt, item.id, item);
+  const completed = lifecycle === "completed";
+  if (item.type === "userMessage") {
+    if (completed && includeUserMessages) {
+      const text = Array.isArray(item.content)
+        ? item.content
+            .filter((content) => content?.type === "text" && typeof content.text === "string")
+            .map((content) => content.text)
+            .join("\n")
+        : "";
+      await emitUserText(prompt, turnId, item.id, text);
+    }
+    return;
+  }
+  if (item.type === "agentMessage") {
+    if (completed && !state.textSeen) await emitText(prompt, turnId, item.id, item.text);
+    return;
+  }
+  if (item.type !== "plan" && item.type !== "reasoning" && !isCoreToolItem(item)) return;
+
+  if (item.type === "reasoning") {
+    if (completed && !state.thoughtSeen) {
+      const summary = Array.isArray(item.summary) ? item.summary.join("\n") : "";
+      const content = Array.isArray(item.content) ? item.content.join("\n") : "";
+      await emitThought(prompt, turnId, item.id, summary || content);
+    }
+    return;
+  }
+  if (item.type === "plan") {
+    if (typeof item.text === "string" && item.text) state.planText = item.text;
+    if (state.planText) {
+      await emitPlan(prompt, turnId, item.id, [
+        { content: state.planText, status: completed ? "completed" : "in_progress" },
+      ]);
+    }
+    return;
+  }
+
+  if (completed) {
+    await emitToolUpdate(prompt, turnId, item, state, {
+      lifecycle: "completed",
+      status: toolStatus(item, "completed"),
+    });
+  } else {
+    await emitToolStart(prompt, turnId, item, state);
+  }
+}
+
 async function mapItemLifecycle(method, params) {
   const { turnId, item } = params ?? {};
   const prompt = promptForEvent(params);
   if (!prompt || !item || typeof item.id !== "string" || typeof turnId !== "string") return;
-  if (item.type !== "plan" && item.type !== "reasoning" && !isCoreToolItem(item)) return;
 
-  const state = getItemState(prompt, item.id, item);
   const completed = method === "item/completed";
   try {
-    if (item.type === "reasoning") {
-      if (completed && !state.thoughtSeen) {
-        const summary = Array.isArray(item.summary) ? item.summary.join("\n") : "";
-        const content = Array.isArray(item.content) ? item.content.join("\n") : "";
-        await emitThought(prompt, turnId, item.id, summary || content);
-      }
-      return;
-    }
-    if (item.type === "plan") {
-      if (typeof item.text === "string" && item.text) state.planText = item.text;
-      if (state.planText) {
-        await emitPlan(prompt, turnId, item.id, [
-          { content: state.planText, status: completed ? "completed" : "in_progress" },
-        ]);
-      }
-      return;
-    }
-
-    if (completed) {
-      await emitToolUpdate(prompt, turnId, item, state, {
-        lifecycle: "completed",
-        status: toolStatus(item, "completed"),
-      });
-    } else {
-      await emitToolStart(prompt, turnId, item, state);
-    }
+    await mapThreadItem(prompt, turnId, item, completed ? "completed" : "started");
   } finally {
     if (completed) prompt.itemStates.delete(item.id);
+  }
+}
+
+async function replayCompletedTurns(threadId, turns) {
+  const replay = {
+    threadId,
+    replay: true,
+    itemStates: new Map(),
+  };
+  for (const turn of Array.isArray(turns) ? turns : []) {
+    if (turn?.status !== "completed" || typeof turn.id !== "string") continue;
+    for (const item of Array.isArray(turn.items) ? turn.items : []) {
+      if (!item || typeof item.id !== "string") continue;
+      try {
+        await mapThreadItem(replay, turn.id, item, "completed", true);
+      } finally {
+        replay.itemStates.delete(item.id);
+      }
+    }
   }
 }
 
@@ -648,7 +703,9 @@ async function handleAppNotification(message) {
   const params = message.params ?? {};
   if (message.method === "item/agentMessage/delta") {
     const prompt = promptForEvent(params);
-    if (!prompt) return;
+    if (!prompt || typeof params.itemId !== "string") return;
+    const state = getItemState(prompt, params.itemId);
+    state.textSeen = true;
     await emitText(prompt, params.turnId, params.itemId, params.delta);
     return;
   }
@@ -827,7 +884,6 @@ async function resumeSession(params) {
   const request = {
     threadId: requestedSessionId,
     ...(typeof params?.cwd === "string" && params.cwd ? { cwd: params.cwd } : {}),
-    excludeTurns: true,
   };
   const opened = await appRequest("thread/resume", request);
   const sessionId = requireString(opened?.thread?.id, "thread/resume result.thread.id");
@@ -835,6 +891,7 @@ async function resumeSession(params) {
     cwd: opened.cwd ?? params?.cwd ?? process.cwd(),
     model: opened.model,
   });
+  await replayCompletedTurns(sessionId, opened?.thread?.turns);
   return { sessionId, ...(opened.model ? { model: opened.model } : {}) };
 }
 
