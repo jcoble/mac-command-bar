@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeProviderUsage, usageWindowDurationLabel } from '../src/lib/shell/usage/usageCurrent.ts';
+import { normalizeProviderUsage, usageQuotaWindowLabel, usageWindowDurationLabel } from '../src/lib/shell/usage/usageCurrent.ts';
 
 const unavailable = normalizeProviderUsage({ provider: 'local', state: 'unavailable', reason: 'No quota data' });
 assert.equal(unavailable.state, 'unavailable');
@@ -21,6 +21,7 @@ const weeklyOnly = normalizeProviderUsage({
 });
 assert.deepEqual(weeklyOnly.windows.map((window) => window.label), ['Weekly']);
 assert.equal(weeklyOnly.windows[0].windowMinutes, 10080);
+assert.equal(usageQuotaWindowLabel(weeklyOnly.windows[0]), 'Weekly (7-day) window');
 
 const fiveHourAndWeekly = normalizeProviderUsage({
   provider: 'codex',
@@ -33,4 +34,5 @@ const fiveHourAndWeekly = normalizeProviderUsage({
 });
 assert.deepEqual(fiveHourAndWeekly.windows.map((window) => window.label), ['5-hour', 'Weekly']);
 assert.equal(usageWindowDurationLabel(720), '12-hour');
+assert.equal(usageQuotaWindowLabel(fiveHourAndWeekly.windows[0]), 'Session (5-hour) window');
 console.log('current usage tests passed');

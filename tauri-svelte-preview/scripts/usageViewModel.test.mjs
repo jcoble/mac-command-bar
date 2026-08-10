@@ -4,7 +4,7 @@ import { usagePercent, usageProviderLabel, usageResetLabel } from '../src/lib/sh
 import { usageSummaryLabel } from '../src/lib/shell/usage/usageAnalytics.ts';
 
 globalThis.$state = (value) => value;
-const { describeUsageError } = await import('../src/lib/shell/usage/usageStore.svelte.ts');
+const { describeUsageError, usageState } = await import('../src/lib/shell/usage/usageStore.svelte.ts');
 
 function testUsageErrorsPreserveStringRejections() {
   // describeUsageError must pass Tauri string rejections through untouched.
@@ -15,6 +15,14 @@ function testUsageErrorsPreserveStringRejections() {
 
 testUsageErrorsPreserveStringRejections();
 
+usageState.currentLoading = true;
+assert.equal(usageState.loading, true);
+usageState.currentLoading = false;
+usageState.historyLoading = true;
+assert.equal(usageState.loading, true);
+usageState.historyLoading = false;
+assert.equal(usageState.loading, false);
+
 assert.equal(usageProviderLabel('codex'), 'Codex');
 assert.equal(usagePercent({ usedPercent: 75 }), 75);
 assert.equal(usagePercent({ usedPercent: 125 }), 100);
@@ -22,20 +30,35 @@ assert.match(usageResetLabel(String(Date.now() + 3_600_000)), /^Resets in 1h/);
 assert.equal(usageSummaryLabel({ inputTokens: 12, outputTokens: 8 }), '20 tokens');
 
 const usageWorkspaceSource = fs.readFileSync(new URL('../src/lib/shell/usage/UsageWorkspace.svelte', import.meta.url), 'utf8');
+const usagePopoverSource = fs.readFileSync(new URL('../src/lib/shell/usage/UsagePopover.svelte', import.meta.url), 'utf8');
 const usageStoreSource = fs.readFileSync(new URL('../src/lib/shell/usage/usageStore.svelte.ts', import.meta.url), 'utf8');
 const usageBackendSource = fs.readFileSync(new URL('../src/lib/shell/usage/usageBackend.ts', import.meta.url), 'utf8');
 const usageDbSource = fs.readFileSync(new URL('../src-tauri/src/usage_db.rs', import.meta.url), 'utf8');
 const mainSource = fs.readFileSync(new URL('../src-tauri/src/main.rs', import.meta.url), 'utf8');
 const tauriSource = fs.readFileSync(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
 assert.match(usageWorkspaceSource, /usageState\.providerSummary/);
-assert.match(usageWorkspaceSource, /card\.sessionCount/);
+assert.match(usageWorkspaceSource, /usageState\.providerRollups/);
+assert.match(usageWorkspaceSource, /usageState\.providerDailyTotals/);
+assert.match(usageWorkspaceSource, /usageState\.costInputs/);
 assert.match(usageWorkspaceSource, /usageRangeOptions/);
 assert.match(usageWorkspaceSource, /Best: \{formatDay\(bestDay\)\}/);
-assert.match(usageWorkspaceSource, /No activity in/);
+assert.match(usageWorkspaceSource, /donut-segment/);
+assert.match(usageWorkspaceSource, /buildProviderUsageTrend/);
+assert.match(usageWorkspaceSource, /grid-template-columns: repeat\(6, 14px\)/);
+assert.match(usageWorkspaceSource, /grid-template-rows: repeat\(7, 14px\)/);
 assert.match(usageWorkspaceSource, /Costs are estimates, not billing totals/);
 assert.doesNotMatch(usageWorkspaceSource, /usageState\.daily\.slice\(\)\.reverse\(\)/);
-assert.doesNotMatch(usageWorkspaceSource, /\.reduce\(/);
+assert.doesNotMatch(usageWorkspaceSource, /\.metric-grid strong \{[^}]*text-overflow/s);
+assert.match(usagePopoverSource, /data-testid="usage-modal"/);
+assert.match(usagePopoverSource, /event\.key === 'Escape'/);
+assert.match(usagePopoverSource, /min-width: min\(900px/);
+assert.match(usagePopoverSource, /<\/aside>[\s\S]*\{#if fullOpen\}[\s\S]*<UsageWorkspace/);
+assert.doesNotMatch(usagePopoverSource, /minute provider window/);
 assert.match(usageStoreSource, /dailyTotals/);
+assert.match(usageStoreSource, /providerRollups/);
+assert.match(usageStoreSource, /readProviderDailyTotals/);
+assert.match(usageStoreSource, /readCostInputs/);
+assert.match(usageStoreSource, /get loading\(\) \{ return this\.currentLoading \|\| this\.historyLoading; \}/);
 assert.match(usageStoreSource, /readDailyTotals/);
 assert.match(usageStoreSource, /exactly three DB-side aggregate queries/);
 assert.match(usageStoreSource, /selectUsageRange/);

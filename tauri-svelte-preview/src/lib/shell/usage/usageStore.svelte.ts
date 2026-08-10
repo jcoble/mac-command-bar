@@ -1,7 +1,9 @@
 import type {
   ProviderUsageSnapshot,
+  UsageCostInputRow,
   UsageDailyRow,
   UsageDailyTotalsRow,
+  UsageProviderDailyTotalsRow,
   UsageProviderSummaryRow,
   UsageRange,
   UsageSummary
@@ -14,28 +16,32 @@ export const usageState = $state<{
   currentByProvider: Record<string, ProviderUsageSnapshot>;
   summary: UsageSummary | null;
   providerSummary: UsageProviderSummaryRow[];
+  providerRollups: Record<'today' | 'yesterday' | '30-days', UsageProviderSummaryRow[]>;
+  providerDailyTotals: UsageProviderDailyTotalsRow[];
+  costInputs: UsageCostInputRow[];
   daily: UsageDailyRow[];
   dailyTotals: UsageDailyTotalsRow[];
-  loading: boolean;
+  readonly loading: boolean;
   currentLoading: boolean;
   historyLoading: boolean;
   error: string | null;
   unavailableReason: string | null;
-  viewMode: 'detailed' | 'compact';
   range: UsageRange;
 }>({
   current: null,
   currentByProvider: {},
   summary: null,
   providerSummary: [],
+  providerRollups: { today: [], yesterday: [], '30-days': [] },
+  providerDailyTotals: [],
+  costInputs: [],
   daily: [],
   dailyTotals: [],
-  loading: false,
+  get loading() { return this.currentLoading || this.historyLoading; },
   currentLoading: false,
   historyLoading: false,
   error: null,
   unavailableReason: null,
-  viewMode: 'detailed',
   range: '30-days'
 });
 
@@ -48,7 +54,6 @@ export function describeUsageError(error: unknown): string {
 export async function refreshCurrentUsage(provider: string | null, instanceId: string | null): Promise<ProviderUsageSnapshot | null> {
   if (usageState.currentLoading) return usageState.current;
   usageState.currentLoading = true;
-  usageState.loading = true;
   usageState.error = null;
   try {
     const providers = provider ? [provider] : ['codex', 'claude'];
@@ -65,36 +70,51 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
     return null;
   } finally {
     usageState.currentLoading = false;
-    usageState.loading = usageState.historyLoading;
   }
 }
 
 async function loadUsageHistory(range: UsageRange, refreshIndex: boolean): Promise<UsageSummary | null> {
   if (usageState.historyLoading) return usageState.summary;
   usageState.historyLoading = true;
-  usageState.loading = true;
   usageState.error = null;
   usageState.range = range;
   try {
     if (refreshIndex) await usageService.refreshHistory();
     const query = usageRangeQuery(range);
     const heatmapQuery = usageHeatmapQuery(range);
-    // One dashboard refresh is exactly three DB-side aggregate queries.
-    const [summary, providerSummary, dailyTotals] = await Promise.all([
+    const rollupRanges = ['today', 'yesterday', '30-days'] as const;
+    const rollupRequests = rollupRanges.map((rollupRange) =>
+      usageService.readProviderSummary({ ...usageRangeQuery(rollupRange), limit: 20, offset: 0 })
+    );
+    const selectedProviderSummary = range === 'all'
+      ? usageService.readProviderSummary({ ...query, limit: 20, offset: 0 })
+      : rollupRequests[rollupRanges.indexOf(range)];
+    // The selected-range core remains exactly three DB-side aggregate queries;
+    // fixed provider rollups, cost inputs, and daily trends are also DB-shaped.
+    const [summary, providerSummary, dailyTotals, providerDailyTotals, costInputs, ...rollups] = await Promise.all([
       usageService.readSummary(query),
-      usageService.readProviderSummary({ ...query, limit: 20, offset: 0 }),
-      usageService.readDailyTotals({ ...heatmapQuery, limit: 42, offset: 0 })
+      selectedProviderSummary,
+      usageService.readDailyTotals({ ...heatmapQuery, limit: 42, offset: 0 }),
+      usageService.readProviderDailyTotals({ ...usageRangeQuery('30-days'), limit: 200, offset: 0 }),
+      usageService.readCostInputs({ ...query, limit: 200, offset: 0 }),
+      ...rollupRequests
     ]);
     usageState.summary = summary;
     usageState.providerSummary = providerSummary ?? [];
     usageState.dailyTotals = dailyTotals ?? [];
+    usageState.providerDailyTotals = providerDailyTotals ?? [];
+    usageState.costInputs = costInputs ?? [];
+    usageState.providerRollups = {
+      today: rollups[0] ?? [],
+      yesterday: rollups[1] ?? [],
+      '30-days': rollups[2] ?? []
+    };
     return summary;
   } catch (error) {
     usageState.error = describeUsageError(error);
     return null;
   } finally {
     usageState.historyLoading = false;
-    usageState.loading = usageState.currentLoading;
   }
 }
 

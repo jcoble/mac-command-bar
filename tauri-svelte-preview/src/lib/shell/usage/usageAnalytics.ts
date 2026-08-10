@@ -9,14 +9,20 @@ import type {
 export const usageRangeOptions: ReadonlyArray<{ value: UsageRange; label: string }> = [
   { value: 'today', label: 'Today' },
   { value: 'yesterday', label: 'Yesterday' },
-  { value: '30-days', label: '30 days' },
-  { value: 'all', label: 'All' }
+  { value: '30-days', label: '30 Days' }
 ];
 
 export type UsageHeatmapDay = {
   day: string;
   totalTokens: number;
   intensity: 0 | 1 | 2 | 3 | 4;
+};
+
+export type UsageTrendPoint = {
+  day: string;
+  totalTokens: number;
+  x: number;
+  y: number;
 };
 
 export function usageSummaryLabel(summary: Pick<UsageSummary, 'inputTokens' | 'outputTokens'>): string {
@@ -44,9 +50,9 @@ export function usageRangeQuery(range: UsageRange, now: Date = new Date()): Usag
 }
 
 export function usageHeatmapQuery(range: UsageRange, now: Date = new Date()): UsageHistoryQuery {
-  if (range !== 'all') return usageRangeQuery(range, now);
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
+  if (range === 'yesterday') today.setDate(today.getDate() - 1);
   const start = new Date(today);
   start.setDate(start.getDate() - 41);
   const end = new Date(today);
@@ -72,7 +78,7 @@ export function buildUsageHeatmap(
   range: UsageRange,
   now: Date = new Date()
 ): UsageHeatmapDay[] {
-  const dayCount = range === 'today' || range === 'yesterday' ? 1 : range === '30-days' ? 30 : 42;
+  const dayCount = 42;
   const anchor = new Date(now);
   anchor.setHours(0, 0, 0, 0);
   if (range === 'yesterday') anchor.setDate(anchor.getDate() - 1);
@@ -95,6 +101,39 @@ export function buildUsageHeatmap(
     days.push({ day, totalTokens, intensity: intensity as UsageHeatmapDay['intensity'] });
   }
   return days;
+}
+
+export function buildProviderUsageTrend(
+  rows: readonly { day: string; provider: string; totalTokens: number }[],
+  provider: string,
+  now: Date = new Date(),
+  dayCount = 30
+): UsageTrendPoint[] {
+  const providerRows = new Map(
+    rows
+      .filter((row) => row.provider === provider)
+      .map((row) => [row.day, row.totalTokens])
+  );
+  const anchor = new Date(now);
+  anchor.setHours(0, 0, 0, 0);
+  const totals: Array<{ day: string; totalTokens: number }> = [];
+  for (let index = dayCount - 1; index >= 0; index -= 1) {
+    const date = new Date(anchor);
+    date.setDate(date.getDate() - index);
+    const day = [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-');
+    totals.push({ day, totalTokens: providerRows.get(day) ?? 0 });
+  }
+  const maximum = Math.max(1, ...totals.map((point) => point.totalTokens));
+  const finalIndex = Math.max(1, totals.length - 1);
+  return totals.map((point, index) => ({
+    ...point,
+    x: Number(((index / finalIndex) * 100).toFixed(2)),
+    y: Number((28 - (point.totalTokens / maximum) * 24).toFixed(2))
+  }));
 }
 
 /** A read-only SQL shape used in the review contract; the desktop backend runs it. */

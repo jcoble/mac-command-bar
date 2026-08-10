@@ -25,6 +25,14 @@ export function usageWindowDurationLabel(windowMinutes: number | null | undefine
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}-hour`;
 }
 
+export function usageQuotaWindowLabel(window: { label: string; windowMinutes?: number | null }): string {
+  const minutes = window.windowMinutes;
+  if (minutes && minutes >= 6 * 24 * 60 && minutes <= 8 * 24 * 60) return 'Weekly (7-day) window';
+  if (minutes === 5 * 60) return 'Session (5-hour) window';
+  const label = window.label.trim() || 'Provider';
+  return /window$/i.test(label) ? label : `${label} window`;
+}
+
 function reportedWindowMinutes(window: ProviderUsageWindowInput): number | null {
   if (Number.isFinite(window.windowMinutes) && window.windowMinutes && window.windowMinutes > 0) return window.windowMinutes;
   const semanticsMatch = window.semantics?.match(/\b(\d+)-minute\b/);

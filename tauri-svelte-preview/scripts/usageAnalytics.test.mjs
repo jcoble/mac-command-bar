@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildUsageBreakdownQuery,
+  buildProviderUsageTrend,
   buildUsageHeatmap,
   usageCacheShare,
   usageHeatmapQuery,
@@ -45,4 +46,13 @@ const heatmap = buildUsageHeatmap([
 assert.equal(heatmap.length, 42);
 assert.deepEqual(heatmap.at(-1), { day: '2026-08-09', totalTokens: 20, intensity: 4 });
 assert.equal(heatmap[0].intensity, 0);
+assert.equal(buildUsageHeatmap([], 'today', now).length, 42);
+
+const trend = buildProviderUsageTrend([
+  { day: '2026-08-09', provider: 'codex', totalTokens: 200 },
+  { day: '2026-08-09', provider: 'claude', totalTokens: 800 }
+], 'codex', now, 3);
+assert.equal(trend.length, 3);
+assert.deepEqual(trend.at(-1), { day: '2026-08-09', totalTokens: 200, x: 100, y: 4 });
+assert.equal(trend[0].totalTokens, 0);
 console.log('usage analytics tests passed');
