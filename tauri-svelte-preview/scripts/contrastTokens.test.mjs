@@ -232,31 +232,31 @@ for (const theme of THEMES) {
     }
   }
 
-  if (theme.id === "houston") {
-    // Houston's border is a surface boundary, not an attention signal. It
-    // must remain visible against the layered surfaces without becoming the
-    // bright outline that prompted this rework.
+  {
+    // A hairline is a translucent surface boundary, not an attention signal.
+    // Resolve it over the raised layer it separates before measuring it.
+    const elevated = parseCssColor(theme.tokens["--color-elevated"]);
     const borderContrast = contrastRatio(
-      parseCssColor(theme.tokens["--color-border"]),
-      parseCssColor(theme.tokens["--color-elevated"]),
+      parseCssColor(theme.tokens["--color-border"], elevated),
+      elevated,
     );
     assert.ok(
-      borderContrast >= 1.4 && borderContrast < 3,
-      `Houston border should be a quiet surface boundary (got ${borderContrast.toFixed(2)}:1)`,
+      borderContrast >= 1.4 && borderContrast < 2,
+      `${theme.id} border should be a quiet surface boundary (got ${borderContrast.toFixed(2)}:1)`,
     );
     assert.ok(
       contrastRatio(
         parseCssColor(theme.tokens["--color-text-2"]),
         parseCssColor(theme.tokens["--color-bg"]),
       ) > borderContrast,
-      "Houston secondary text must carry more contrast than its hairlines",
+      `${theme.id} secondary text must carry more contrast than its hairlines`,
     );
   }
 
   assert.equal(
     theme.tokens["--color-section-header-text"],
-    theme.tokens["--color-text-2"],
-    `${theme.id} section headings carry information and must use the secondary-text tone`
+    theme.tokens["--color-text-3"],
+    `${theme.id} section headings must use the muted text tone`
   );
   assert.equal(
     theme.tokens["--color-tab-unfocused-text"],

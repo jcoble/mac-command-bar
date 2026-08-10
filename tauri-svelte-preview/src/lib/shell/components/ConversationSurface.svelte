@@ -8,7 +8,12 @@
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
   import {
+    beginConversationAgentConfigChange,
+    confirmConversationAgentConfigChange,
     conversationSessions,
+    failConversationAgentConfigChange,
+    setConversationAgentConfigError,
+    setConversationAgentConfigState,
     setConversationAttachments,
     setConversationDraft,
     setConversationMode,
@@ -20,14 +25,19 @@
     loadConversationCapabilities,
     readChildConversationTranscript,
     removeConversationAttachment,
-    respondToStructuredApproval,
+    sendPermissionResponse,
     respondToStructuredInput,
     restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
-    setConversationConfigOption,
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
+  import {
+    readAgentConversationConfig,
+    setAgentConversationConfig,
+    type AgentConversationConfigField,
+    type AgentConversationConfigRequest
+  } from '$lib/shell/conversation/conversationConfig.ts';
   import {
     filterConversationCommandCatalog,
     mergeConversationCommandCatalog,
@@ -90,7 +100,7 @@
     }
     return items.sort((left, right) => left.timestampMs - right.timestampMs);
   });
-  const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
+  const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
   const commandQuery = $derived(conversation?.draft.trimStart().startsWith('/') ? conversation.draft.trimStart().slice(1) : '');
   const matchingCommands = $derived(filterConversationCommandCatalog(commandCatalog, commandQuery));
   const remainingContext = $derived.by(() => {
@@ -102,6 +112,7 @@
 
   let attachmentError = $state('');
   let capabilityRequest = $state('');
+  let configRequest = $state('');
   let inspectorOpen = $state(false);
 
   $effect(() => {
@@ -109,6 +120,24 @@
     if (appOwned && activeOwnedId && conversation?.mode === 'raw') {
       setConversationMode(activeOwnedId, 'structured');
     }
+  });
+
+  $effect(() => {
+    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex')) return;
+    const ownedId = active.ownedId;
+    const generation = conversation.generation;
+    const key = `${ownedId}:${generation}`;
+    if (configRequest === key) return;
+    configRequest = key;
+    void readAgentConversationConfig(ownedId).then((state) => {
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationAgentConfigState(ownedId, state);
+      }
+    }).catch((error) => {
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+    });
   });
 
   $effect(() => {
@@ -199,9 +228,9 @@
     else setConversationDraft(active.ownedId, `/${command.name} `);
   }
 
-  function onApprovalDecision(requestId: string, decision: string): void {
-    if (!active || (decision !== 'accept' && decision !== 'decline' && decision !== 'cancel')) return;
-    void respondToStructuredApproval(active.ownedId, requestId, decision).catch((error) => {
+  function onApprovalDecision(requestId: string, optionId: string): void {
+    if (!active || !optionId) return;
+    void sendPermissionResponse(active.ownedId, requestId, optionId).catch((error) => {
       attachmentError = error instanceof Error ? error.message : String(error);
     });
   }
@@ -228,9 +257,30 @@
     requestOpenFile({ path: absolute, projectRoot: root });
   }
 
-  async function changeConfig(optionId: string, value: import('$lib/shell/conversation/conversationTypes.ts').AgentConfigValue): Promise<void> {
-    if (!active) return;
-    await setConversationConfigOption(active.ownedId, optionId, value).catch(() => undefined);
+  async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
+    if (!active || !conversation) return;
+    const generation = conversation.generation;
+    const previous = beginConversationAgentConfigChange(active.ownedId, field, value);
+    if (!previous) return;
+    const request: AgentConversationConfigRequest = {
+      ownedId: active.ownedId,
+      generation,
+      [field]: value
+    };
+    try {
+      const state = await setAgentConversationConfig(request);
+      if (conversationSessions[active.ownedId]?.generation !== generation) throw new Error('Configuration response belongs to a stale conversation generation');
+      confirmConversationAgentConfigChange(active.ownedId, field, state);
+    } catch (error) {
+      if (conversationSessions[active.ownedId]?.generation === generation) {
+        failConversationAgentConfigChange(
+          active.ownedId,
+          field,
+          previous,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
   }
 </script>
 
@@ -277,10 +327,9 @@
           draft={conversation.draft}
           attachments={conversation.attachments}
           sending={conversation.sending}
-          capabilities={conversation.capabilities}
-          config={conversation.config}
-          pendingConfig={conversation.pendingConfig}
-          configErrors={conversation.configErrors}
+          configState={conversation.agentConfig}
+          pendingConfig={conversation.pendingAgentConfig}
+          configError={conversation.agentConfigError}
           commands={matchingCommands}
           {attachmentError}
           onDraftChange={(value) => setConversationDraft(active.ownedId, value)}

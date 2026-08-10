@@ -1,9 +1,45 @@
 <script lang="ts">
-  import ConversationMessage from './ConversationMessage.svelte';
+  import FileDiff from '@lucide/svelte/icons/file-diff';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
-  let { item, onFileLink }: { item: Extract<ConversationDisplayItem, { kind: 'file' }>; onFileLink?(path: string): void } = $props();
+
+  let { item, onFileLink }: {
+    item: Extract<ConversationDisplayItem, { kind: 'file' }>;
+    onFileLink?(path: string): void;
+  } = $props();
+
+  const path = $derived(typeof item.metadata?.path === 'string' ? item.metadata.path : 'File change');
+  const diff = $derived(typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text);
+  const lines = $derived(diff.split('\n'));
+  const additions = $derived(lines.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length);
+  const deletions = $derived(lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length);
+
+  function tone(line: string): 'add' | 'delete' | 'header' | 'context' {
+    if (line.startsWith('+') && !line.startsWith('+++')) return 'add';
+    if (line.startsWith('-') && !line.startsWith('---')) return 'delete';
+    if (line.startsWith('@@') || line.startsWith('diff ') || line.startsWith('+++') || line.startsWith('---')) return 'header';
+    return 'context';
+  }
 </script>
 
-<aside class="timeline-event file-event" data-testid="timeline-file-change-item"><span class="event-label">File change</span><ConversationMessage text={item.text} role="assistant" label="File change" itemId={item.itemId} completed={item.completed} {onFileLink} /></aside>
+<aside class="file-change" data-testid="timeline-file-change-item">
+  <div class="file-heading">
+    <FileDiff size={14} strokeWidth={1.8} aria-hidden="true" />
+    {#if onFileLink && path !== 'File change'}<button type="button" onclick={() => onFileLink?.(path)}>{path}</button>{:else}<strong>{path}</strong>{/if}
+    <span class="counts"><em>+{additions}</em><del>-{deletions}</del></span>
+  </div>
+  <pre data-testid="timeline-file-diff"><code>{#each lines as line, index}<span class={tone(line)}>{line || ' '}{#if index < lines.length - 1}{'\n'}{/if}</span>{/each}</code></pre>
+</aside>
 
-<style>.timeline-event{padding:10px 12px;border-left:2px solid color-mix(in srgb,var(--color-accent) 50%,var(--color-border));background:color-mix(in srgb,var(--color-surface) 45%,transparent)}.event-label{display:block;margin-bottom:6px;color:var(--color-text-2);font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase}</style>
+<style>
+  .file-change{min-width:0;border:1px solid color-mix(in srgb,var(--color-border) 72%,transparent);border-radius:7px;overflow:hidden;background:color-mix(in srgb,var(--color-bg) 78%,var(--color-surface))}
+  .file-heading{display:flex;align-items:center;gap:7px;min-height:31px;padding:5px 8px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 64%,transparent);color:var(--color-text-2)}
+  .file-heading strong,.file-heading button{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text);font:500 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left}
+  .file-heading button{border:0;background:transparent;padding:0;cursor:pointer}.file-heading button:hover{text-decoration:underline}
+  .counts{display:flex;gap:7px;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}.counts em{color:var(--color-good);font-style:normal}.counts del{color:var(--color-bad);text-decoration:none}
+  pre{max-height:280px;overflow:auto;margin:0;padding:6px 0;white-space:pre;tab-size:2}
+  code{display:block;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  code span{display:block;min-height:1.5em;padding:0 9px;color:var(--color-text-2)}
+  code .add{background:color-mix(in srgb,var(--color-good) 11%,transparent);color:color-mix(in srgb,var(--color-good) 76%,var(--color-text))}
+  code .delete{background:color-mix(in srgb,var(--color-bad) 11%,transparent);color:color-mix(in srgb,var(--color-bad) 74%,var(--color-text))}
+  code .header{color:var(--color-accent)}
+</style>

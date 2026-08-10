@@ -34,10 +34,11 @@
   let viewportHeight = $state(480);
   let currentScrollTop = $state(0);
   let follow = $state(true);
-  let lastItemId = '';
+  let lastItemRevision = '';
   const rowEstimate = 96;
   const range = $derived(visibleConversationRange(items.length, currentScrollTop, viewportHeight, rowEstimate));
   const visibleItems = $derived(items.slice(range.start, range.end));
+  const latestRevision = $derived(items.length ? JSON.stringify(items[items.length - 1]) : '');
 
   function measure(): void {
     if (host) viewportHeight = Math.max(1, host.clientHeight);
@@ -58,10 +59,8 @@
   }
 
   $effect(() => {
-    const latest = items[items.length - 1];
-    const latestId = latest?.itemId ?? '';
-    if (!latestId || latestId === lastItemId) return;
-    lastItemId = latestId;
+    if (!latestRevision || latestRevision === lastItemRevision) return;
+    lastItemRevision = latestRevision;
     if (!follow) return;
     void tick().then(() => jumpToLatest());
   });
@@ -88,4 +87,4 @@
   {#if !follow && items.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" onclick={jumpToLatest}>Jump to latest</button>{/if}
 </div>
 
-<style>.timeline-wrap{position:relative;flex:1;min-height:0}.timeline-scroll{height:100%;overflow:auto;padding:34px max(28px,calc((100% - 820px)/2)) 220px;scrollbar-gutter:stable}.timeline-list{display:flex;flex-direction:column;gap:24px;min-height:1px}.virtual-spacer{flex:none}.empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2)}.jump-latest{position:absolute;right:22px;bottom:192px;border:0;border-radius:999px;background:var(--color-elevated);color:inherit;padding:7px 11px;box-shadow:var(--shadow-sm)}.jump-latest:hover{background:var(--color-hover)}</style>
+<style>.timeline-wrap{position:relative;flex:1;min-height:0}.timeline-scroll{height:100%;overflow:auto;padding:34px max(28px,calc((100% - 820px)/2)) 220px;scrollbar-gutter:stable}.timeline-list{display:flex;flex-direction:column;gap:12px;min-height:1px}.virtual-spacer{flex:none}.empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2)}.jump-latest{position:absolute;right:22px;bottom:192px;border:0;border-radius:999px;background:var(--color-elevated);color:inherit;padding:7px 11px;box-shadow:var(--shadow-sm)}.jump-latest:hover{background:var(--color-hover)}</style>

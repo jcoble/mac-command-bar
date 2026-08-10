@@ -491,6 +491,25 @@ export async function respondToStructuredApproval(
   });
 }
 
+export async function sendPermissionResponse(
+  ownedId: string,
+  requestId: string,
+  optionId: string
+): Promise<void> {
+  const state = getConversationSession(ownedId);
+  if (!state) return;
+  try {
+    await invoke('respond_agent_conversation_permission', {
+      request: { ownedId, generation: state.generation, requestId, optionId }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/not found|unknown command/i.test(message)) throw error;
+    const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
+    await respondToStructuredApproval(ownedId, requestId, decision);
+  }
+}
+
 export async function respondToStructuredInput(
   ownedId: string,
   response: Omit<AgentUserInputResponse, 'ownedId' | 'generation'>

@@ -154,12 +154,16 @@ export function applyConversationEvent(
 
     case 'plan': {
       const itemId = 'plan:' + event.generation;
+      const items = payload.items ?? (payload.entries ?? []).map((entry) => ({
+        text: entry.title ?? entry.text ?? entry.content ?? '',
+        status: entry.status ?? 'pending'
+      }));
       return {
         ...next,
         timeline: replaceOrAppend(next.timeline, itemId, (current) => ({
           kind: 'plan',
           itemId,
-          items: payload.items,
+          items,
           timestampMs: current?.timestampMs ?? event.timestampMs
         }))
       };
@@ -203,5 +207,18 @@ export function applyConversationEvent(
           }
         ]
       };
+
+    // Rich ACP bridge items are projected by conversationTimeline.ts. The
+    // reducer still advances the generation/sequence checkpoint so live and
+    // replayed streams share the same ordering and resync behavior.
+    case 'agentThoughtChunk':
+    case 'toolCall':
+    case 'toolCallUpdate':
+    case 'turnDiff':
+    case 'permissionRequest':
+    case 'availableCommandsUpdate':
+    case 'agentMessageChunk':
+    case 'userMessageChunk':
+      return next;
   }
 }

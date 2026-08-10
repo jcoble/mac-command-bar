@@ -1,5 +1,9 @@
 <script lang="ts">
-  import type { AgentCapabilities, AgentConfigValue, ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
+  import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
+  import type {
+    AgentConversationConfigField,
+    AgentConversationConfigState
+  } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import AgentConfigBar from './AgentConfigBar.svelte';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
@@ -10,10 +14,9 @@
     draft: string;
     attachments: readonly ComposerAttachment[];
     sending: boolean;
-    capabilities: AgentCapabilities | null;
-    config: Record<string, AgentConfigValue>;
-    pendingConfig: Record<string, AgentConfigValue>;
-    configErrors: Record<string, string>;
+    configState: AgentConversationConfigState;
+    pendingConfig: Partial<Record<AgentConversationConfigField, string>>;
+    configError?: string | null;
     commands: readonly ConversationCommand[];
     attachmentError?: string;
     onDraftChange?(value: string): void;
@@ -22,7 +25,7 @@
     onPaste?(event: ClipboardEvent): void | Promise<void>;
     onRemoveAttachment?(id: string): void | Promise<void>;
     onAnnotateAttachment?(id: string): void;
-    onConfigChange?(optionId: string, value: AgentConfigValue): void | Promise<void>;
+    onConfigChange?(field: AgentConversationConfigField, value: string): void | Promise<void>;
     onCommandSelected?(command: ConversationCommand): void;
   }
   let {
@@ -30,10 +33,9 @@
     draft,
     attachments,
     sending,
-    capabilities,
-    config,
+    configState,
     pendingConfig,
-    configErrors,
+    configError = null,
     commands,
     attachmentError = '',
     onDraftChange,
@@ -60,11 +62,11 @@
   {#if attachments.length}<div class="attachments" data-testid="conversation-attachment-previews">{#each attachments as attachment (attachment.id)}<figure data-testid="conversation-attachment-preview"><img src={attachment.previewUrl} alt={attachment.name} /><div class="attachment-actions"><button data-testid="conversation-attachment-remove" aria-label={`Remove ${attachment.name}`} type="button" onclick={() => void onRemoveAttachment?.(attachment.id)}>Remove</button>{#if onAnnotateAttachment}<button data-testid="conversation-attachment-annotate" type="button" onclick={() => onAnnotateAttachment?.(attachment.id)}>Annotate</button>{/if}</div><figcaption><strong>{attachment.name}</strong><small>{byteLabel(attachment)}</small></figcaption></figure>{/each}</div>{/if}
   {#if attachmentError}<div class="attachment-error" data-testid="conversation-attachment-error" role="alert">{attachmentError}</div>{/if}
   {#if commandQuery && commands.length}<AgentCommandMenu commands={commands} query={commandQuery} onSelect={onCommandSelected} />{/if}
+  <AgentConfigBar {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} />
   <div class="composer-row" data-testid="conversation-composer">
     <textarea data-testid="conversation-composer-input" aria-label="Message" placeholder={`Message ${provider}`} value={draft} onpaste={(event) => void onPaste?.(event)} oninput={(event) => onDraftChange?.(event.currentTarget.value)} onkeydown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (commandQuery && commands.length) onCommandSelected?.(commands[0]); else void onSend?.(); } }}></textarea>
     {#if sending}<button class="send stop" data-testid="conversation-stop" type="button" onclick={() => void onStop?.()}>Stop</button>{:else}<button class="send" data-testid="conversation-send" type="button" disabled={!draft.trim() && attachments.length === 0} onclick={() => void onSend?.()}>Send</button>{/if}
   </div>
-  <AgentConfigBar capabilities={capabilities} {config} pending={pendingConfig} errors={configErrors} onChange={onConfigChange} />
   <div class="composer-hint" data-testid="conversation-paste-hint">Paste screenshots with ⌘V · images stay attached until Send</div>
 </div>
 

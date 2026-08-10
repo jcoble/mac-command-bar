@@ -76,7 +76,7 @@ assert.deepEqual(
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
 assert.match(
   page,
-  /console\.debug\('mcb next: conversation activation'/,
+  /console\.(?:debug|warn)\('mcb next: conversation activation'/,
   'each activation attempt must be visible in future frontend logs'
 );
 

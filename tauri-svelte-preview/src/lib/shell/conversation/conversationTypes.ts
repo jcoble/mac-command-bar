@@ -318,10 +318,24 @@ export interface AgentRequestIdentity {
 
 export type AgentApprovalDecision = 'accept' | 'decline' | 'cancel';
 
+export interface AgentPermissionOption {
+  optionId: string;
+  name: string;
+  kind?: string;
+}
+
 export interface AgentApprovalRequest extends AgentRequestIdentity {
   title: string;
   description?: string;
   options: AgentApprovalDecision[];
+}
+
+export interface AgentPermissionRequest extends AgentRequestIdentity {
+  title: string;
+  toolTitle: string;
+  description?: string;
+  options: AgentPermissionOption[];
+  state: string;
 }
 
 export interface AgentApprovalResponse extends AgentRequestIdentity {
@@ -396,10 +410,88 @@ export type AgentConversationPayload =
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
   | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string }
   | { kind: 'approval'; requestId: string; state: ApprovalState; summary: string }
-  | { kind: 'plan'; items: { text: string; status: string }[] }
+  | {
+      kind: 'plan';
+      items?: { text: string; status: string; id?: string; title?: string; detail?: string }[];
+      entries?: { content?: string; text?: string; title?: string; status?: string; id?: string; detail?: string }[];
+      planId?: string;
+      turnId?: string;
+      _meta?: Record<string, AgentConfigValue>;
+    }
   | { kind: 'turn'; turnId: string; state: TurnState }
   | { kind: 'usage'; inputTokens?: number; outputTokens?: number }
   | { kind: 'error'; code: string; message: string; recoverable: boolean };
+
+/**
+ * Rich ACP bridge payloads are retained until the timeline has normalized
+ * them. The Rust controller serializes the enum tag and fields as camelCase;
+ * optional aliases keep replay snapshots from older controller builds usable.
+ */
+export type AgentConversationRichPayload =
+  | {
+      kind: 'agentThoughtChunk';
+      messageId?: string;
+      itemId?: string;
+      turnId?: string;
+      content?: AgentConfigValue;
+      text?: string;
+      delta?: string;
+      _meta?: Record<string, AgentConfigValue>;
+    }
+  | {
+      kind: 'toolCall' | 'toolCallUpdate';
+      toolCallId?: string;
+      itemId?: string;
+      turnId?: string;
+      title?: string;
+      name?: string;
+      toolKind?: string;
+      status?: string;
+      state?: string;
+      content?: AgentConfigValue;
+      locations?: AgentConfigValue;
+      command?: string;
+      path?: string;
+      diff?: string;
+      _meta?: Record<string, AgentConfigValue>;
+    }
+  | {
+      kind: 'turnDiff';
+      turnId?: string;
+      itemId?: string;
+      path?: string;
+      diff: string;
+      status?: string;
+      _meta?: Record<string, AgentConfigValue>;
+    }
+  | {
+      kind: 'permissionRequest';
+      requestId: string;
+      turnId?: string;
+      itemId?: string;
+      toolCallId?: string;
+      title?: string;
+      toolTitle?: string;
+      description?: string;
+      options?: AgentPermissionOption[];
+      state?: string;
+      _meta?: Record<string, AgentConfigValue>;
+    }
+  | {
+      kind: 'availableCommandsUpdate';
+      availableCommands: AgentCommandDescriptor[];
+      _meta?: Record<string, AgentConfigValue>;
+    }
+  | {
+      kind: 'agentMessageChunk' | 'userMessageChunk';
+      messageId?: string;
+      itemId?: string;
+      turnId?: string;
+      content?: AgentConfigValue;
+      text?: string;
+      delta?: string;
+      _meta?: Record<string, AgentConfigValue>;
+    };
 
 export interface AgentConversationEvent {
   ownedId: string;
@@ -407,7 +499,7 @@ export interface AgentConversationEvent {
   generation: number;
   sequence: number;
   timestampMs: number;
-  payload: AgentConversationPayload;
+  payload: AgentConversationPayload | AgentConversationRichPayload;
 }
 
 interface ConversationTextEntry {

@@ -63,7 +63,7 @@ assert.match(
 
 assert.match(
   dialog,
-  /console\.debug\('mcb next: new-session submit'/,
+  /console\.(?:debug|warn)\('mcb next: new-session submit'/,
   'new-session submit attempts must be visible in future frontend logs'
 );
 

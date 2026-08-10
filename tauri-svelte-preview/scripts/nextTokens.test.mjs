@@ -143,7 +143,7 @@ for (const rule of sharedRules) {
   const expected = {
     '--color-bg': '#161719',
     '--color-surface': '#1d1f22',
-    '--color-border': '#4b4f57',
+    '--color-border': 'rgba(241, 243, 245, 0.12)',
     '--color-text': '#f1f3f5',
     '--color-text-2': '#b3b7bf',
     '--color-text-3': '#8b919b',
@@ -229,8 +229,8 @@ for (const rule of sharedRules) {
     );
   }
 
-  // Sizes, weights and radii are the same in both shells on purpose: the
-  // /next file must NOT restate them, or they drift apart silently.
+  // Sizes and weights remain shared. /next deliberately owns its softened
+  // three-step radius scale so the legacy route is not reshaped with it.
   const layoutish = [...used].filter(
     (name) =>
       name.startsWith('--space-') ||
@@ -239,12 +239,26 @@ for (const rule of sharedRules) {
       name.startsWith('--radius-')
   );
   assert.ok(layoutish.length > 0, 'expected spacing, type or radius names to be in use');
+  const nextRadii = new Map([
+    ['--radius-sm', '8px'],
+    ['--radius-md', '12px'],
+    ['--radius-lg', '16px']
+  ]);
   for (const name of layoutish) {
-    assert.ok(
-      !nextTokens.has(name),
-      `${name} is shared with the old shell and should stay in ${SHARED_TOKENS_PATH} only`
-    );
+    if (nextRadii.has(name)) {
+      assert.equal(nextTokens.get(name), nextRadii.get(name), `${name} must follow the /next shape rhythm`);
+    } else {
+      assert.ok(
+        !nextTokens.has(name),
+        `${name} is shared with the old shell and should stay in ${SHARED_TOKENS_PATH} only`
+      );
+    }
   }
+  assert.deepEqual(
+    [...nextTokens.keys()].filter((name) => name.startsWith('--radius-')).sort(),
+    [...nextRadii.keys()].sort(),
+    '/next must override exactly the three non-pill radius tokens'
+  );
 }
 
 // ── The host wires the pieces together ────────────────────────────────────

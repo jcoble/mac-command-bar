@@ -32,7 +32,7 @@
   {:else if item.kind === 'tasks'}<TaskListItem {item} />
   {:else if item.kind === 'command'}<CommandItem {item} {onFileLink} />
   {:else if item.kind === 'file'}<FileChangeItem {item} {onFileLink} />
-  {:else if item.kind === 'tool'}<ToolItem {item} />
+  {:else if item.kind === 'tool'}<ToolItem {item} {onFileLink} />
   {:else if item.kind === 'subagent'}<SubagentItem {item} />
   {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
   {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />

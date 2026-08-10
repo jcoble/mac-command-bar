@@ -8,6 +8,7 @@ import { applyConversationEvent, createConversationState } from './conversationR
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
+  AgentCommandDescriptor,
   AgentEvent,
   AgentConversationConnection,
   AgentConversationEvent,
@@ -15,6 +16,8 @@ import type {
   AgentConversationSnapshot,
   AgentConfigValue,
   AgentItem,
+  AgentPermissionOption,
+  AgentPermissionRequest,
   AgentUserInputRequest,
   AgentWriterLease,
   AgentWriterLeaseTransition,
@@ -26,7 +29,20 @@ import type {
   ConversationSessionState,
   ConversationTimelineEntry
 } from './conversationTypes.ts';
-import { agentItemFromEvent, type AgentPlanStep, type ConversationTask } from './conversationTimeline.ts';
+import {
+  agentItemFromEvent,
+  availableCommandsFromEvent,
+  conversationEventAppendsItemContent,
+  mergeAgentItem,
+  permissionRequestFromEvent,
+  type AgentPlanStep,
+  type ConversationTask
+} from './conversationTimeline.ts';
+import {
+  emptyAgentConversationConfigState,
+  type AgentConversationConfigField,
+  type AgentConversationConfigState
+} from './conversationConfig.ts';
 import type { AgentExecutionOwner } from '../ownedSessions.ts';
 import {
   SESSION_CONVERSATION_WORKSPACE_VERSION,
@@ -60,6 +76,9 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   writerLeaseTransition: AgentWriterLeaseTransition | null;
   attachmentIds: string[];
   config: Record<string, AgentConfigValue>;
+  agentConfig: AgentConversationConfigState;
+  pendingAgentConfig: Partial<Record<AgentConversationConfigField, string>>;
+  agentConfigError: string | null;
   telemetry: Record<string, AgentConfigValue>;
   /** The provider's authoritative capability snapshot for this owned session. */
   capabilities: AgentCapabilities | null;
@@ -68,7 +87,8 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   agentItems: AgentItem[];
   planSteps: AgentPlanStep[];
   tasks: ConversationTask[];
-  pendingApprovals: Record<string, AgentApprovalRequest & { state: string }>;
+  availableCommands: AgentCommandDescriptor[];
+  pendingApprovals: Record<string, AgentPermissionRequest>;
   pendingInputs: Record<string, AgentUserInputRequest>;
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
@@ -106,12 +126,16 @@ function freshState(
     writerLeaseTransition: null,
     attachmentIds: [],
     config: {},
+    agentConfig: emptyAgentConversationConfigState(),
+    pendingAgentConfig: {},
+    agentConfigError: null,
     telemetry: {},
     capabilities: null,
     capabilityError: null,
     agentItems: [],
     planSteps: [],
     tasks: [],
+    availableCommands: [],
     pendingApprovals: {},
     pendingInputs: {},
     pendingConfig: {},
@@ -158,12 +182,16 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
     writerLeaseTransition: current.writerLeaseTransition,
     attachmentIds: current.attachmentIds,
     config: current.config,
+    agentConfig: current.agentConfig,
+    pendingAgentConfig: current.pendingAgentConfig,
+    agentConfigError: current.agentConfigError,
     telemetry: current.telemetry,
     capabilities: current.capabilities,
     capabilityError: current.capabilityError,
     agentItems: current.agentItems,
     planSteps: current.planSteps,
     tasks: current.tasks,
+    availableCommands: current.availableCommands,
     pendingApprovals: current.pendingApprovals,
     pendingInputs: current.pendingInputs,
     pendingConfig: current.pendingConfig,
@@ -172,11 +200,10 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
   };
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
-    const delta = event.payload.kind === 'assistantDelta';
-    conversationSessions[event.ownedId].agentItems = upsertAgentItem(
+    conversationSessions[event.ownedId].agentItems = mergeAgentItem(
       conversationSessions[event.ownedId].agentItems,
       typedItem,
-      delta
+      conversationEventAppendsItemContent(event)
     );
   }
   applyTypedEventPayload(conversationSessions[event.ownedId], event);
@@ -241,28 +268,10 @@ function applyCanonicalAgentEvent(event: AgentEvent): boolean {
   const target = conversationSessions[event.ownedId];
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
-    target.agentItems = upsertAgentItem(target.agentItems, typedItem, event.type === 'content.delta');
+    target.agentItems = mergeAgentItem(target.agentItems, typedItem, conversationEventAppendsItemContent(event));
   }
   applyTypedEventPayload(target, event);
   return true;
-}
-
-function upsertAgentItem(items: AgentItem[], incoming: AgentItem, delta: boolean): AgentItem[] {
-  const index = items.findIndex((item) => item.id === incoming.id);
-  if (index < 0) return [...items, incoming];
-  const existing = items[index];
-  const content = delta && existing.content.length && incoming.content.length
-    && existing.content[existing.content.length - 1].channel === incoming.content[0].channel
-    ? [
-      ...existing.content.slice(0, -1),
-      {
-        ...existing.content[existing.content.length - 1],
-        text: `${existing.content[existing.content.length - 1].text}${incoming.content[0].text}`
-      },
-      ...incoming.content.slice(1)
-    ]
-    : incoming.content.length ? incoming.content : existing.content;
-  return items.map((item, itemIndex) => itemIndex === index ? { ...item, ...incoming, content } : item);
 }
 
 /**
@@ -328,10 +337,14 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     agentItems: [],
     planSteps: [],
     tasks: [],
+    availableCommands: current.availableCommands,
     pendingApprovals: {},
     pendingInputs: {},
     pendingConfig: current.pendingConfig,
     configErrors: current.configErrors,
+    agentConfig: current.agentConfig,
+    pendingAgentConfig: current.pendingAgentConfig,
+    agentConfigError: current.agentConfigError,
     recentEvents: []
   };
   const restored = conversationSessions[snapshot.connection.ownedId];
@@ -339,10 +352,10 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     appendRecentEvent(restored, event);
     const typedItem = agentItemFromEvent(event);
     if (typedItem) {
-      restored.agentItems = upsertAgentItem(
+      restored.agentItems = mergeAgentItem(
         restored.agentItems,
         typedItem,
-        event.payload.kind === 'assistantDelta'
+        conversationEventAppendsItemContent(event)
       );
     }
     applyTypedEventPayload(restored, event);
@@ -355,6 +368,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function permissionOptions(value: unknown): AgentPermissionOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry === 'string') {
+      return [{
+        optionId: entry,
+        name: entry === 'accept' ? 'Allow' : entry === 'decline' || entry === 'cancel' ? 'Deny' : entry
+      }];
+    }
+    if (!isRecord(entry)) return [];
+    const optionId = asString(entry.optionId) ?? asString(entry.id);
+    if (!optionId) return [];
+    return [{
+      optionId,
+      name: asString(entry.name) ?? asString(entry.label) ?? optionId,
+      kind: asString(entry.kind) ?? undefined
+    }];
+  });
+}
+
+function finishReasoningItems(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {
+  const payload = event.payload as Record<string, unknown>;
+  const rawKind = asString(payload.kind)?.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()) ?? '';
+  const turnFinished = rawKind === 'turn' && payload.state !== 'started';
+  const assistantStarted = rawKind === 'assistantDelta' || rawKind === 'assistantMessage' || rawKind === 'agentMessageChunk';
+  const canonicalFinished = 'type' in event && (event.type === 'turn.completed' || event.type === 'turn.interrupted');
+  const canonicalAssistant = 'type' in event && event.type === 'content.delta' && payload.channel === 'assistant';
+  if (!turnFinished && !assistantStarted && !canonicalFinished && !canonicalAssistant) return;
+  const turnId = 'turnId' in event ? event.turnId : asString(payload.turnId) ?? undefined;
+  current.agentItems = current.agentItems.map((item) => {
+    if (item.type !== 'reasoning' || (turnId && item.turnId && item.turnId !== turnId)) return item;
+    return {
+      ...item,
+      providerMetadata: { ...(item.providerMetadata ?? {}), completed: true, streaming: false }
+    };
+  });
 }
 
 function applyTypedEventPayload(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {
@@ -370,29 +421,47 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   const capabilities = isRecord(payload.capabilities) ? payload.capabilities as unknown as AgentCapabilities : null;
   if (capabilities && Array.isArray(capabilities.configOptions) && Array.isArray(capabilities.commands)) {
     current.capabilities = capabilities;
+    current.availableCommands = capabilities.commands;
     current.capabilityError = null;
   }
+  const commands = availableCommandsFromEvent(event);
+  if (commands) {
+    current.availableCommands = commands;
+    if (current.capabilities) current.capabilities = { ...current.capabilities, commands };
+  }
   if (eventType === 'plan.updated' || payload.kind === 'plan') {
-    if (Array.isArray(payload.items)) current.planSteps = parsePlanSteps(payload.items);
+    const entries = Array.isArray(payload.items) ? payload.items : payload.entries;
+    if (Array.isArray(entries)) current.planSteps = parsePlanSteps(entries);
   }
   if (eventType === 'tasks.updated' || payload.kind === 'tasks') {
     if (Array.isArray(payload.tasks)) current.tasks = parseTasks(payload.tasks);
   }
-  if (eventType === 'approval.requested') {
+  const richPermission = permissionRequestFromEvent(event);
+  if (richPermission) {
+    if (richPermission.state === 'requested') current.pendingApprovals[richPermission.requestId] = richPermission;
+    else delete current.pendingApprovals[richPermission.requestId];
+  } else if (eventType === 'approval.requested') {
     const requestId = asString(payload.requestId) ?? requestIdFromEvent;
-    const legacyState = payload.kind === 'approval' ? asString(payload.state) : null;
-    if (requestId && legacyState && legacyState !== 'requested') delete current.pendingApprovals[requestId];
-    else if (requestId) current.pendingApprovals[requestId] = {
+    if (requestId) {
+      const tool = isRecord(payload.toolCall) ? payload.toolCall : null;
+      const toolTitle = asString(payload.toolTitle) ?? asString(tool?.title) ?? asString(payload.summary) ?? asString(payload.title) ?? 'Permission requested';
+      const options = permissionOptions(payload.options);
+      current.pendingApprovals[requestId] = {
         ownedId: current.ownedId,
         generation: current.generation,
         requestId,
         turnId: turnIdFromEvent,
         itemId: itemIdFromEvent,
-        title: asString(payload.title) ?? 'Approval requested',
-        description: asString(payload.description) ?? undefined,
-        options: Array.isArray(payload.options) ? payload.options.filter((value): value is 'accept' | 'decline' | 'cancel' => value === 'accept' || value === 'decline' || value === 'cancel') : ['accept', 'decline'],
+        title: asString(payload.title) ?? 'Approval needed',
+        toolTitle,
+        description: asString(payload.description) ?? asString(payload.summary) ?? undefined,
+        options: options.length ? options : [
+          { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'decline', name: 'Deny', kind: 'reject_once' }
+        ],
         state: 'requested'
       };
+    }
   }
   if (eventType === 'approval.resolved') {
     const requestId = asString(payload.requestId) ?? requestIdFromEvent;
@@ -417,6 +486,7 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
     const requestId = asString(payload.requestId) ?? requestIdFromEvent;
     if (requestId) delete current.pendingInputs[requestId];
   }
+  finishReasoningItems(current, event);
 }
 
 function parsePlanSteps(value: unknown): AgentPlanStep[] {
@@ -503,12 +573,94 @@ export function setConversationCapabilities(ownedId: string, capabilities: Agent
   const current = conversationSessions[ownedId];
   if (!current || capabilities.provider !== current.provider) return;
   current.capabilities = capabilities;
+  current.availableCommands = capabilities.commands;
   current.capabilityError = null;
 }
 
 export function setConversationCapabilityError(ownedId: string, message: string | null): void {
   const current = conversationSessions[ownedId];
   if (current) current.capabilityError = message;
+}
+
+export function setConversationAgentConfigState(
+  ownedId: string,
+  state: AgentConversationConfigState
+): boolean {
+  const current = conversationSessions[ownedId];
+  if (!current) return false;
+  current.agentConfig = state;
+  current.agentConfigError = null;
+  current.metadata = {
+    ...current.metadata,
+    model: state.model,
+    effort: state.reasoningEffort,
+    approvalPolicy: state.approvalPolicy
+  };
+  return true;
+}
+
+export function beginConversationAgentConfigChange(
+  ownedId: string,
+  field: AgentConversationConfigField,
+  value: string
+): AgentConversationConfigState | null {
+  const current = conversationSessions[ownedId];
+  if (!current) return null;
+  const available = field === 'model'
+    ? current.agentConfig.availableModels
+    : field === 'reasoningEffort'
+      ? current.agentConfig.availableEfforts
+      : current.agentConfig.availableApprovalPolicies;
+  if (!available.includes(value)) return null;
+  const previous = current.agentConfig;
+  current.agentConfig = { ...current.agentConfig, [field]: value };
+  current.pendingAgentConfig[field] = value;
+  current.agentConfigError = null;
+  return previous;
+}
+
+export function confirmConversationAgentConfigChange(
+  ownedId: string,
+  field: AgentConversationConfigField,
+  state: AgentConversationConfigState
+): boolean {
+  const current = conversationSessions[ownedId];
+  if (!current || !(field in current.pendingAgentConfig)) return false;
+  delete current.pendingAgentConfig[field];
+  const optimistic = { ...current.pendingAgentConfig };
+  current.agentConfig = { ...state, ...optimistic };
+  current.agentConfigError = null;
+  current.metadata = {
+    ...current.metadata,
+    model: current.agentConfig.model,
+    effort: current.agentConfig.reasoningEffort,
+    approvalPolicy: current.agentConfig.approvalPolicy
+  };
+  return true;
+}
+
+export function failConversationAgentConfigChange(
+  ownedId: string,
+  field: AgentConversationConfigField,
+  previous: AgentConversationConfigState,
+  message: string
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current || !(field in current.pendingAgentConfig)) return;
+  delete current.pendingAgentConfig[field];
+  current.agentConfig = { ...current.agentConfig, [field]: previous[field] };
+  current.metadata = {
+    ...current.metadata,
+    model: current.agentConfig.model,
+    effort: current.agentConfig.reasoningEffort,
+    approvalPolicy: current.agentConfig.approvalPolicy
+  };
+  current.agentConfigError = message;
+}
+
+export function setConversationAgentConfigError(ownedId: string, message: string | null): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.agentConfigError = message;
 }
 
 export function beginConversationConfigChange(
@@ -568,7 +720,12 @@ export function setConversationPendingApproval(
 ): void {
   const current = conversationSessions[ownedId];
   if (current && request.ownedId === ownedId && request.generation === current.generation) {
-    current.pendingApprovals[request.requestId] = request;
+    current.pendingApprovals[request.requestId] = {
+      ...request,
+      toolTitle: request.title,
+      options: permissionOptions(request.options),
+      state: request.state
+    };
   }
 }
 
