@@ -1239,7 +1239,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 26] = [
+const BACKEND_CAPABILITIES: [&str; 27] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1267,6 +1267,7 @@ const BACKEND_CAPABILITIES: [&str; 26] = [
     // own error output.
     "lspLog",
     // A10 resource and space inventory/action commands.
+    "resourceSample",
     "resourceSnapshot",
     "resourceDiskScan",
     "resourceDiskCleanup",
@@ -5456,6 +5457,7 @@ fn main() {
             kill_playwright_session,
             kill_playwright_sessions,
             kill_process,
+            resources::read_resource_sample,
             resources::read_resource_snapshot,
             resources::read_resource_disk_scan,
             resources::cleanup_workspace_disk_entry,
@@ -8319,6 +8321,7 @@ mod tests {
                 "lspDocumentSymbols".to_string(),
                 "lspStatusEvents".to_string(),
                 "lspLog".to_string(),
+                "resourceSample".to_string(),
                 "resourceSnapshot".to_string(),
                 "resourceDiskScan".to_string(),
                 "resourceDiskCleanup".to_string(),
