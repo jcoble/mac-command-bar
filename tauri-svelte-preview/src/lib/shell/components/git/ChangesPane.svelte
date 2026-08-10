@@ -26,18 +26,24 @@
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import {
     buildGitStatusFileGroups,
     describeGitStatusGroups,
     gitFileTitle,
     gitStatusGroupActionLabel,
     hasStagedChanges,
+    isGitFileDeleted,
     type GitPanelState,
     type GitStatusFileGroup
   } from '$lib/shell/git/gitPanelStore.svelte';
   import { splitRepositoryPath } from '$lib/shell/git/gitCommitFilesStore.svelte';
   import { absolutePathWithin, type GitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
+  import {
+    sourceControlFileContextMenuItems,
+    type SourceControlFileAction
+  } from './sourceControlContextMenu';
   import { cn } from '$lib/utils';
   import type { ProjectGitFileStatus } from '$lib/tauriSource';
 
@@ -119,6 +125,34 @@
   function openInEditor(file: ProjectGitFileStatus): void {
     if (!panel.root) return;
     requestOpenFile({ path: absolutePathWithin(panel.root, file.relativePath) });
+  }
+
+  /** Put the same repository-relative path shown by the row on the clipboard. */
+  function copyPath(file: ProjectGitFileStatus): void {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    void navigator.clipboard.writeText(file.relativePath);
+  }
+
+  function fileContextItems(group: GitStatusFileGroup, file: ProjectGitFileStatus) {
+    return sourceControlFileContextMenuItems({
+      groupAction: group.action,
+      canWrite,
+      busy,
+      deleted: isGitFileDeleted(file),
+      hasRoot: Boolean(panel.root)
+    });
+  }
+
+  /** Route context-menu choices through the row's existing button handlers. */
+  function runFileContextAction(
+    action: SourceControlFileAction,
+    group: GitStatusFileGroup,
+    file: ProjectGitFileStatus
+  ): void {
+    if (action === 'open-diff') pickFile(file);
+    else if (action === 'stage' || action === 'unstage') runFileAction(group, file);
+    else if (action === 'open-file') openInEditor(file);
+    else copyPath(file);
   }
 
   function commitOnShortcut(event: KeyboardEvent): void {
@@ -255,70 +289,88 @@
 
           {#each group.files as file (group.id + file.relativePath)}
             {@const parts = splitRepositoryPath(file.relativePath)}
-            <div
-              class={cn(
-                'group flex items-center gap-1 rounded-[4px] pr-1 transition-colors',
-                'hover:bg-[var(--color-elevated)]',
-                panel.selectedPath === file.relativePath && 'bg-[var(--color-elevated)]'
-              )}
-            >
-              <button
-                type="button"
-                class="flex min-w-0 flex-1 items-center gap-1.5 rounded-[4px] py-[3px] pl-1.5
-                       text-left focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
-                title={gitFileTitle(file)}
-                onclick={() => pickFile(file)}
-              >
-                <FileDiff
-                  class="size-3.5 shrink-0 text-[var(--color-text-3)]"
-                  aria-hidden="true"
-                />
-                <span class="shrink-0 truncate text-[13px] leading-[18px]">{parts.name}</span>
-                {#if parts.folder}
-                  <span class="min-w-0 truncate text-[12px] leading-[16px] text-[var(--color-text-3)]">
-                    {parts.folder}
+            <ContextMenu.Root>
+              <ContextMenu.Trigger class="block">
+                <div
+                  class={cn(
+                    'group flex items-center gap-1 rounded-[4px] pr-1 transition-colors',
+                    'hover:bg-[var(--color-elevated)]',
+                    panel.selectedPath === file.relativePath && 'bg-[var(--color-elevated)]'
+                  )}
+                >
+                  <button
+                    type="button"
+                    class="flex min-w-0 flex-1 items-center gap-1.5 rounded-[4px] py-[3px] pl-1.5
+                           text-left focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
+                    title={gitFileTitle(file)}
+                    onclick={() => pickFile(file)}
+                  >
+                    <FileDiff
+                      class="size-3.5 shrink-0 text-[var(--color-text-3)]"
+                      aria-hidden="true"
+                    />
+                    <span class="shrink-0 truncate text-[13px] leading-[18px]">{parts.name}</span>
+                    {#if parts.folder}
+                      <span class="min-w-0 truncate text-[12px] leading-[16px] text-[var(--color-text-3)]">
+                        {parts.folder}
+                      </span>
+                    {/if}
+                  </button>
+
+                  <button
+                    type="button"
+                    class={ROW_ACTION}
+                    aria-label="Open {parts.name}"
+                    title="Open this file in the editor"
+                    onclick={() => openInEditor(file)}
+                  >
+                    <SquareArrowOutUpRight class="size-3" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    class={ROW_ACTION}
+                    disabled={!canWrite || busy}
+                    aria-label="{group.action === 'stage' ? 'Stage' : 'Unstage'} {parts.name}"
+                    title={canWrite
+                      ? group.action === 'stage'
+                        ? 'Stage this file'
+                        : 'Unstage this file'
+                      : readOnlyReason}
+                    onclick={() => runFileAction(group, file)}
+                  >
+                    {#if group.action === 'stage'}
+                      <Plus class="size-3" aria-hidden="true" />
+                    {:else}
+                      <Minus class="size-3" aria-hidden="true" />
+                    {/if}
+                  </button>
+
+                  <span
+                    class={cn(
+                      'w-3 shrink-0 text-center text-[12px] leading-[16px] font-medium',
+                      badgeTone(file.badge)
+                    )}
+                    title={file.status}
+                  >
+                    {file.badge || '·'}
                   </span>
-                {/if}
-              </button>
+                </div>
+              </ContextMenu.Trigger>
 
-              <button
-                type="button"
-                class={ROW_ACTION}
-                aria-label="Open {parts.name}"
-                title="Open this file in the editor"
-                onclick={() => openInEditor(file)}
-              >
-                <SquareArrowOutUpRight class="size-3" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                class={ROW_ACTION}
-                disabled={!canWrite || busy}
-                aria-label="{group.action === 'stage' ? 'Stage' : 'Unstage'} {parts.name}"
-                title={canWrite
-                  ? group.action === 'stage'
-                    ? 'Stage this file'
-                    : 'Unstage this file'
-                  : readOnlyReason}
-                onclick={() => runFileAction(group, file)}
-              >
-                {#if group.action === 'stage'}
-                  <Plus class="size-3" aria-hidden="true" />
-                {:else}
-                  <Minus class="size-3" aria-hidden="true" />
-                {/if}
-              </button>
-
-              <span
-                class={cn(
-                  'w-3 shrink-0 text-center text-[12px] leading-[16px] font-medium',
-                  badgeTone(file.badge)
-                )}
-                title={file.status}
-              >
-                {file.badge || '·'}
-              </span>
-            </div>
+              <ContextMenu.Content>
+                {#each fileContextItems(group, file) as item (item.id)}
+                  {#if item.id === 'copy-path'}
+                    <ContextMenu.Separator />
+                  {/if}
+                  <ContextMenu.Item
+                    disabled={!item.enabled}
+                    onSelect={() => runFileContextAction(item.id, group, file)}
+                  >
+                    {item.label}
+                  </ContextMenu.Item>
+                {/each}
+              </ContextMenu.Content>
+            </ContextMenu.Root>
           {/each}
         </div>
       {/each}

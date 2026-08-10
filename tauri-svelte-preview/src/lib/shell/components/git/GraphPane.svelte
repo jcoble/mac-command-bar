@@ -34,6 +34,7 @@
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
   import {
     assignGitGraphLanes,
@@ -61,6 +62,10 @@
   import { COMMIT_HISTORY_PAGE, type GitService } from '$lib/shell/git/gitService';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { cn } from '$lib/utils';
+  import {
+    sourceControlCommitContextMenuItems,
+    type SourceControlCommitAction
+  } from './sourceControlContextMenu';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
 
   interface Props {
@@ -145,6 +150,17 @@
   function toggleCommit(row: GitGraphLaneRow): void {
     commitFiles.activate(panel.root);
     void commitFiles.toggleCommit(row.sha, row.isMerge);
+  }
+
+  function copyCommitHash(sha: string): void {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    void navigator.clipboard.writeText(sha);
+  }
+
+  /** Keep the context menu on the same expansion path as a left click. */
+  function runCommitContextAction(action: SourceControlCommitAction, row: GitGraphLaneRow): void {
+    if (action === 'toggle-commit') toggleCommit(row);
+    else copyCommitHash(row.sha);
   }
 
   function pickFile(sha: string, file: GitCommitFileChange): void {
@@ -240,71 +256,86 @@
             onOpenChange={() => row && toggleCommit(row)}
             class="border-b border-[var(--color-border)]/45 last:border-b-0"
           >
-            <Collapsible.Trigger
-              class={cn(
-                'flex w-full items-stretch gap-1.5 pr-2 text-left transition-colors',
-                'hover:bg-[var(--color-elevated)] focus-visible:ring-3 focus-visible:ring-ring/50',
-                'outline-none',
-                expanded && 'bg-[var(--color-elevated)]'
-              )}
-              title={commit.detailLabel}
-            >
-              <svg
-                class="shrink-0"
-                width={graphWidth}
-                height={ROW_HEIGHT}
-                viewBox="0 0 {graphWidth} {ROW_HEIGHT}"
-                aria-hidden="true"
-              >
-                {#if row}
-                  {#each row.edges as edge, edgeIndex (edgeIndex)}
-                    <path
-                      d={edgePath(edge.kind, edge.fromLane, edge.toLane)}
-                      fill="none"
-                      stroke={laneColor(edge.kind === 'child' ? edge.toLane : edge.fromLane)}
-                      stroke-width="1.5"
-                      stroke-linecap="round"
-                      opacity="0.75"
-                    />
-                  {/each}
-                  <circle
-                    cx={laneX(row.lane)}
-                    cy={ROW_HEIGHT / 2}
-                    r={row.isMerge ? 3 : 3.5}
-                    fill={row.isMerge ? 'var(--color-bg)' : laneColor(row.lane)}
-                    stroke={laneColor(row.lane)}
-                    stroke-width="1.5"
-                  />
-                {/if}
-              </svg>
+            <ContextMenu.Root>
+              <ContextMenu.Trigger class="block">
+                <Collapsible.Trigger
+                  class={cn(
+                    'flex w-full items-stretch gap-1.5 pr-2 text-left transition-colors',
+                    'hover:bg-[var(--color-elevated)] focus-visible:ring-3 focus-visible:ring-ring/50',
+                    'outline-none',
+                    expanded && 'bg-[var(--color-elevated)]'
+                  )}
+                  title={commit.detailLabel}
+                >
+                  <svg
+                    class="shrink-0"
+                    width={graphWidth}
+                    height={ROW_HEIGHT}
+                    viewBox="0 0 {graphWidth} {ROW_HEIGHT}"
+                    aria-hidden="true"
+                  >
+                    {#if row}
+                      {#each row.edges as edge, edgeIndex (edgeIndex)}
+                        <path
+                          d={edgePath(edge.kind, edge.fromLane, edge.toLane)}
+                          fill="none"
+                          stroke={laneColor(edge.kind === 'child' ? edge.toLane : edge.fromLane)}
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          opacity="0.75"
+                        />
+                      {/each}
+                      <circle
+                        cx={laneX(row.lane)}
+                        cy={ROW_HEIGHT / 2}
+                        r={row.isMerge ? 3 : 3.5}
+                        fill={row.isMerge ? 'var(--color-bg)' : laneColor(row.lane)}
+                        stroke={laneColor(row.lane)}
+                        stroke-width="1.5"
+                      />
+                    {/if}
+                  </svg>
 
-              <span class="flex min-w-0 flex-1 flex-col justify-center py-[3px]">
-                <span class="flex min-w-0 items-center gap-1">
-                  {#each commit.refs.headLabels as label (label)}
-                    <span class="{PILL} bg-[var(--color-live-bg)] text-[var(--color-live)]">
-                      {label}
+                  <span class="flex min-w-0 flex-1 flex-col justify-center py-[3px]">
+                    <span class="flex min-w-0 items-center gap-1">
+                      {#each commit.refs.headLabels as label (label)}
+                        <span class="{PILL} bg-[var(--color-live-bg)] text-[var(--color-live)]">
+                          {label}
+                        </span>
+                      {/each}
+                      {#each branchPills(commit.refs) as label (label)}
+                        <span class="{PILL} bg-[var(--color-elevated)] text-[var(--color-text-2)]">
+                          {label}
+                        </span>
+                      {/each}
+                      {#each commit.refs.tagLabels as label (label)}
+                        <span class="{PILL} bg-[var(--color-attention-bg)] text-[var(--color-attention)]">
+                          {label}
+                        </span>
+                      {/each}
+                      <span class="min-w-0 truncate text-[13px] leading-[17px]">
+                        {commit.subject || '(no message)'}
+                      </span>
                     </span>
-                  {/each}
-                  {#each branchPills(commit.refs) as label (label)}
-                    <span class="{PILL} bg-[var(--color-elevated)] text-[var(--color-text-2)]">
-                      {label}
+                    <span class="truncate text-[12px] leading-[15px] text-[var(--color-text-3)]">
+                      {commit.shortSha} · {commit.author} · {whenCommitted(commit.committedAt)}
+                      {#if row?.isMerge}· merge{/if}
                     </span>
-                  {/each}
-                  {#each commit.refs.tagLabels as label (label)}
-                    <span class="{PILL} bg-[var(--color-attention-bg)] text-[var(--color-attention)]">
-                      {label}
-                    </span>
-                  {/each}
-                  <span class="min-w-0 truncate text-[13px] leading-[17px]">
-                    {commit.subject || '(no message)'}
                   </span>
-                </span>
-                <span class="truncate text-[12px] leading-[15px] text-[var(--color-text-3)]">
-                  {commit.shortSha} · {commit.author} · {whenCommitted(commit.committedAt)}
-                  {#if row?.isMerge}· merge{/if}
-                </span>
-              </span>
-            </Collapsible.Trigger>
+                </Collapsible.Trigger>
+              </ContextMenu.Trigger>
+
+              <ContextMenu.Content>
+                {#each sourceControlCommitContextMenuItems(expanded) as item (item.id)}
+                  <ContextMenu.Item
+                    disabled={!item.enabled || !row}
+                    onSelect={() => row && runCommitContextAction(item.id, row)}
+                  >
+                    {item.label}
+                  </ContextMenu.Item>
+                {/each}
+              </ContextMenu.Content>
+            </ContextMenu.Root>
 
             <!-- Layout classes go on the div INSIDE: a closed collapsible is
                  hidden by the `hidden` attribute, which any display rule of

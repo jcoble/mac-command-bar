@@ -70,6 +70,7 @@ only for a group heading in small caps.
 | On or off, taking effect immediately | `Switch` |
 | A number on a range | `Slider`, with the value shown beside it |
 | Actions, or a setting changed from a compact trigger | `DropdownMenu`, with `Sub` when a row has its own list of values |
+| Actions for the row or region under the pointer | `ContextMenu`; attach its trigger only to that target so other native context menus remain available |
 | Naming what an icon does | `Tooltip` (already inside `IconButton`) |
 | Grouping rows of settings or details | `Card`, or a plain `rounded-xl border` box with rows divided by `border-b` |
 
@@ -78,7 +79,7 @@ only for a group heading in small caps.
 Vendored components stay verbatim where they can, so the next copy from the
 registry is a clean paste. These are the deliberate exceptions:
 
-- `dropdown-menu-item`, `dropdown-menu-sub-trigger`, `select-item`: 13px text
+- `dropdown-menu-item`, `dropdown-menu-sub-trigger`, `context-menu-item`, `select-item`: 13px text
   and `min-h-6`, per the floor and hit-target rules above. Menu rows also style
   `data-highlighted` alongside `focus:`, because keyboard movement through a
   bits-ui menu marks the row rather than focusing it.
