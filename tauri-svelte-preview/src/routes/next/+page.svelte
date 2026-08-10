@@ -191,6 +191,7 @@
     listAgentSessionsFromTauri,
     type AgentSession
   } from '$lib/tauriSource';
+  import BottomBar from '$lib/shell/resources/BottomBar.svelte';
 
   /** Hosts mount before the service finishes async init: parked here, drained later. */
   const pendingHosts = new Map<string, HTMLElement>();
@@ -986,10 +987,20 @@
     if (switching) restoreWorkspace(ownedId);
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
+      const conversation = getConversationSession(ownedId);
       const activation = decideConversationActivation(
         selected,
-        getConversationSession(ownedId)
+        conversation
       );
+      console.debug('mcb next: conversation activation', {
+        ownedId,
+        origin: selected.origin ?? 'external',
+        sessionState: selected.state,
+        executionOwner: selected.executionOwner ?? null,
+        connectionState: conversation?.connectionState ?? null,
+        decision: activation.kind,
+        nativeSessionMode: activation.kind === 'structured' ? activation.nativeSessionMode : null
+      });
       if (activation.kind === 'terminal') {
         // Externally started sessions keep their PTY as the only writer while
         // running. Stopped sessions without loadable Codex history retain the
@@ -1148,12 +1159,16 @@
    * `startOwned`: that is the call which types the command in.
    */
   async function startNewSession(request: NewSessionRequest): Promise<void> {
-    if (!service || disposed) return;
+    if (disposed) return;
+    const startsStructured = request.agent === 'codex' || request.agent === 'claude';
+    if (!startsStructured && !service) {
+      throw new Error('The terminal service is not ready yet.');
+    }
     const owned = {
       ...createFreshSession({ cwd: request.cwd, title: request.title }),
       agent: request.agent,
       resumeCommand: request.command,
-      origin: request.agent === 'codex' || request.agent === 'claude' ? ('app' as const) : ('external' as const)
+      origin: startsStructured ? ('app' as const) : ('external' as const)
     };
     addOwnedSession(owned);
     if (owned.origin === 'app') {
@@ -1170,9 +1185,11 @@
         return;
       }
     } else {
+      const terminalService = service;
+      if (!terminalService) throw new Error('The terminal service is not ready yet.');
       const host = await hostFor(owned.ownedId);
       if (!host) { rail.error = `no terminal host for "${owned.title}"`; return; }
-      const ptySessionId = await service.startOwned(owned, host);
+      const ptySessionId = await terminalService.startOwned(owned, host);
       if (!ptySessionId) {
         updateOwnedSession(owned.ownedId, { state: 'exited' });
         rail.error = `failed to start a terminal for "${owned.title}"`;
@@ -1247,7 +1264,7 @@
   async function restartOwned(ownedId: string): Promise<void> {
     // Checked and claimed before the first await, so a second click cannot slip
     // through the window the first one opens.
-    if (!service || disposed || restarting.has(ownedId)) return;
+    if (disposed || restarting.has(ownedId)) return;
     const session = rail.owned.find((entry) => entry.ownedId === ownedId);
     // Only a finished session can be started again; a running one already is.
     if (!session || session.state !== 'exited') return;
@@ -1266,7 +1283,8 @@
           ownedId,
           provider,
           cwd: session.cwd,
-          nativeSessionId: session.nativeSessionId
+          nativeSessionId: session.nativeSessionId,
+          nativeSessionMode: 'resume'
         });
         await selectOwned(ownedId);
         frameControls?.showCenterPanel('session');
@@ -1276,6 +1294,12 @@
       } finally {
         restarting.delete(ownedId);
       }
+      return;
+    }
+
+    if (!service) {
+      restarting.delete(ownedId);
+      rail.error = `could not start "${label}" again: the terminal service is not ready`;
       return;
     }
 
@@ -1769,6 +1793,7 @@
       <span>{extensionApiProbeObservation.detail}</span>
     </div>
   {/if}
+  <BottomBar />
 </main>
 
 <style>

@@ -5,6 +5,10 @@ const shellFrame = readFileSync(
   new URL('../src/lib/shell/components/ShellFrame.svelte', import.meta.url),
   'utf8'
 );
+const centerDock = readFileSync(
+  new URL('../src/lib/shell/layout/centerDock.ts', import.meta.url),
+  'utf8'
+);
 
 const centerDockStart = shellFrame.indexOf('centerDock = createCenterDock(');
 const parentLayout = shellFrame.indexOf('frame.layout(gridHost.clientWidth, gridHost.clientHeight);');
@@ -16,4 +20,15 @@ assert.ok(
   'the parent Gridview must have real bounds before center Dockview restore/build'
 );
 
-console.log('centerDock: parent layout precedes center restore/build');
+assert.match(
+  shellFrame,
+  /id: 'diff',[\s\S]*?renderer: 'onlyWhenVisible'/,
+  'the Monaco Diff surface must detach when another center tab is active'
+);
+assert.match(
+  centerDock,
+  /renderer: panel\.renderer/,
+  'the center tab model must pass a panel-specific renderer to Dockview'
+);
+
+console.log('centerDock: parent layout and visible-only Diff renderer verified');

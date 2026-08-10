@@ -29,8 +29,9 @@ function connectedSessionMatches(
   session: ConversationActivationSession,
   connection: ConversationConnection | null
 ): boolean {
+  const stopped = session.executionOwner === 'stopped' || session.state === 'exited';
   const state = connection?.state ?? connection?.connectionState;
-  if (!connection || state !== 'connected' || connection.provider !== session.agent) {
+  if (stopped || !connection || state !== 'connected' || connection.provider !== session.agent) {
     return false;
   }
   return !session.nativeSessionId || connection.nativeSessionId === session.nativeSessionId;
@@ -53,7 +54,6 @@ export function decideConversationActivation(
     const stopped = session.executionOwner === 'stopped' || session.state === 'exited';
     if (terminalOwned || !stopped) return { kind: 'terminal' };
     if (session.agent !== 'codex' || !session.nativeSessionId) return { kind: 'terminal' };
-    if (connectedSessionMatches(session, connection)) return { kind: 'view' };
     return { kind: 'structured', nativeSessionMode: 'load' };
   }
 

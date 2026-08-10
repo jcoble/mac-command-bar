@@ -107,8 +107,8 @@
       // Lay out the parent Gridview before the center Dockview restores or
       // builds its panels. Center Dockview's restore path deliberately measures
       // its host before calling `fromJSON`; doing that while the Gridview is
-      // still at 0×0 leaves always-rendered panels (including Monaco's diff
-      // editor) with stale overlay bounds until the next activation.
+      // still at 0×0 leaves always-rendered panels with stale overlay bounds
+      // until the next activation.
       frame.layout(gridHost.clientWidth, gridHost.clientHeight);
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
@@ -121,7 +121,13 @@
           { id: 'session', title: 'Session', element: sessionSlot },
           { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
           { id: 'browser', title: 'Browser', element: browserSlot, group: 'display' },
-          { id: 'diff', title: 'Diff', element: diffSlot, group: 'display' },
+          {
+            id: 'diff',
+            title: 'Diff',
+            element: diffSlot,
+            group: 'display',
+            renderer: 'onlyWhenVisible'
+          },
           {
             id: 'session-library',
             title: 'Session Library',

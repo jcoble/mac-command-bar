@@ -8,6 +8,7 @@ import {
   createDockview,
   themeDracula,
   type AddPanelPositionOptions,
+  type DockviewPanelRenderer,
   type DockviewApi,
   type GroupPanelPartInitParameters,
   type IContentRenderer
@@ -28,6 +29,9 @@ export interface CenterPanelSpec {
   id: string;
   title: string;
   element: HTMLElement;
+  /** Override the dock-wide attachment policy for surfaces that cannot remain
+   * in the overlay container while another tab is active. */
+  renderer?: DockviewPanelRenderer;
   /**
    * Which side of the default layout this panel opens on: `'conversation'` (the
    * left group, where the user talks to the session) or `'display'` (the right
@@ -138,6 +142,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       title: panel.id === 'session-library' ? 'Session History' : panel.title,
       component: COMPONENT,
       params: { panelId: panel.id },
+      renderer: panel.renderer,
       position
     });
   };
@@ -154,6 +159,14 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   /** Existing serialized layouts may still carry the former tab label. */
   const normalizeSessionLibraryTitle = (): void => {
     panelById('session-library')?.api.setTitle('Session History');
+  };
+
+  /** Old saved layouts predate per-panel renderers, so enforce the current
+   * roster contract after either restore or build. */
+  const normalizePanelRenderers = (): void => {
+    for (const panel of options.panels) {
+      if (panel.renderer) panelById(panel.id)?.api.setRenderer(panel.renderer);
+    }
   };
 
   /**
@@ -316,6 +329,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     buildDefault();
   });
   normalizeSessionLibraryTitle();
+  normalizePanelRenderers();
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;

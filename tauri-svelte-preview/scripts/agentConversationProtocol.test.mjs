@@ -137,7 +137,9 @@ const event = (overrides = {}) => ({
   });
   assert.deepEqual(decideConversationActivation(stoppedExternal, {
     provider: 'codex', state: 'connected', nativeSessionId: 'thread-cli'
-  }), { kind: 'view' });
+  }), {
+    kind: 'structured', nativeSessionMode: 'load'
+  });
   assert.deepEqual(decideConversationActivation({
     ...stoppedExternal, executionOwner: 'terminal', ptySessionId: 'pty-live'
   }, {
