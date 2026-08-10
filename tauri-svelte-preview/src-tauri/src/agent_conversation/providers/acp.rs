@@ -1,10 +1,12 @@
 use super::super::capabilities::{replace_config_options, validate_capabilities};
-use super::super::protocol::{AgentCapabilities, AgentProviderManifest};
+use super::super::protocol::{
+    AgentCapabilities, AgentConversationConfigState, AgentProviderManifest,
+};
 use super::acp_client::{AcpInbound, AcpTransport};
 use super::{
-    AcpClient, AgentConfigOption, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter,
-    AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession, NewAgentSession,
-    ResumeAgentSession, StartedAgentSession,
+    AcpClient, AgentConfigOption, AgentConfigValue, AgentConversationConfigUpdate, AgentPrompt,
+    AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
+    NewAgentSession, ResumeAgentSession, StartedAgentSession,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -51,6 +53,13 @@ impl AcpRuntimeAdapter {
         &mut self,
     ) -> Result<mpsc::UnboundedReceiver<AcpInbound>, AgentRuntimeError> {
         self.client_mut()?.take_inbound()
+    }
+
+    pub async fn set_conversation_config(
+        &mut self,
+        update: &AgentConversationConfigUpdate,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        self.client_mut()?.set_conversation_config(update).await
     }
 }
 
@@ -169,6 +178,14 @@ impl StructuredRuntimeHandle {
     ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
         match self {
             Self::Acp(adapter) => adapter.set_config(option_id, value).await,
+        }
+    }
+    pub async fn set_conversation_config(
+        &mut self,
+        update: &AgentConversationConfigUpdate,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.set_conversation_config(update).await,
         }
     }
     pub async fn close_session(&mut self) -> Result<(), AgentRuntimeError> {

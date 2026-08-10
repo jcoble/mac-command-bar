@@ -471,6 +471,27 @@ pub struct StopAgentConversationTurnRequest {
     pub generation: u64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentConversationConfigState {
+    pub model: Option<String>,
+    pub available_models: Vec<String>,
+    pub reasoning_effort: Option<String>,
+    pub available_efforts: Vec<String>,
+    pub approval_policy: Option<String>,
+    pub available_approval_policies: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentConversationConfigRequest {
+    pub owned_id: String,
+    pub generation: u64,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub approval_policy: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationConnection {
@@ -479,6 +500,7 @@ pub struct AgentConversationConnection {
     pub generation: u64,
     pub native_session_id: Option<String>,
     pub state: ConversationConnectionState,
+    pub config: AgentConversationConfigState,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -554,6 +576,29 @@ mod contract_tests {
             )
             .unwrap(),
             plan
+        );
+    }
+
+    #[test]
+    fn conversation_config_contract_uses_camel_case_fields() {
+        let config = AgentConversationConfigState {
+            model: Some("gpt-5.6-sol".into()),
+            available_models: vec!["gpt-5.6-sol".into(), "gpt-5.6-terra".into()],
+            reasoning_effort: Some("xhigh".into()),
+            available_efforts: vec!["low".into(), "xhigh".into()],
+            approval_policy: Some("on-request".into()),
+            available_approval_policies: vec!["untrusted".into(), "on-request".into()],
+        };
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            json!({
+                "model": "gpt-5.6-sol",
+                "availableModels": ["gpt-5.6-sol", "gpt-5.6-terra"],
+                "reasoningEffort": "xhigh",
+                "availableEfforts": ["low", "xhigh"],
+                "approvalPolicy": "on-request",
+                "availableApprovalPolicies": ["untrusted", "on-request"]
+            })
         );
     }
 }

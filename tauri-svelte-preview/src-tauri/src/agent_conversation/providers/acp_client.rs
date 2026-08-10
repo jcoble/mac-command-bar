@@ -11,12 +11,15 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
 use super::super::protocol::{
-    AgentCapabilities, AgentCommandDescriptor, AgentConfigOption, AgentConversationProvider,
-    AgentImplementation, AgentInteractionCapabilities, AgentPromptCapabilities,
-    AgentProviderManifest, AgentSessionCapabilities,
+    AgentCapabilities, AgentCommandDescriptor, AgentConfigOption, AgentConversationConfigState,
+    AgentConversationProvider, AgentImplementation, AgentInteractionCapabilities,
+    AgentPromptCapabilities, AgentProviderManifest, AgentSessionCapabilities,
 };
 use super::process::{SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf};
-use super::{AgentPrompt, AgentRuntimeError, GeneratedText, StartedAgentSession};
+use super::{
+    AgentConversationConfigUpdate, AgentPrompt, AgentRuntimeError, GeneratedText,
+    StartedAgentSession,
+};
 
 #[derive(Clone, Debug)]
 pub enum AcpInbound {
@@ -573,6 +576,23 @@ impl AcpClient {
         ))
     }
 
+    pub async fn set_conversation_config(
+        &mut self,
+        update: &AgentConversationConfigUpdate,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        let mut params = serde_json::to_value(update)
+            .map_err(serialization_error)?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| AgentRuntimeError::new("serialization", "Config update is invalid"))?;
+        params.insert("sessionId".to_string(), Value::String(self.session_id()?));
+        let result = self
+            .transport
+            .request("session/set_config_option", Value::Object(params))
+            .await?;
+        parse_conversation_config(Some(&result))
+    }
+
     pub async fn close(&mut self) -> Result<(), AgentRuntimeError> {
         if let Some(session_id) = self.native_session_id.clone() {
             let _ = self
@@ -616,8 +636,12 @@ impl AcpClient {
                 )
             })?
             .to_string();
+        let config = parse_conversation_config(result.get("_meta"))?;
         self.native_session_id = Some(native_session_id.clone());
-        Ok(StartedAgentSession { native_session_id })
+        Ok(StartedAgentSession {
+            native_session_id,
+            config,
+        })
     }
 
     async fn request<T: Serialize>(
@@ -730,6 +754,22 @@ fn parse_config_options(value: Option<&Value>) -> Vec<AgentConfigOption> {
         .unwrap_or_default()
 }
 
+fn parse_conversation_config(
+    value: Option<&Value>,
+) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+    value
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|error| {
+                AgentRuntimeError::new(
+                    "invalid-response",
+                    format!("ACP session configuration is invalid: {error}"),
+                )
+            })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
 fn serialization_error(error: serde_json::Error) -> AgentRuntimeError {
     AgentRuntimeError::new("serialization", error.to_string())
 }
@@ -761,7 +801,7 @@ while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id" ;;
-    *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session"}}}}\n' "$id" ;;
+	    *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
     *'"method":"session/load"'*)
       if [ "$fixture" = "replay_on_load" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"user_message_chunk","messageId":"history-user-1","content":{{"type":"text","text":"First question"}},"turnId":"history-turn-1","_meta":{{"replay":true}}}}}}}}\n'
@@ -770,12 +810,12 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"history-agent-2","content":{{"type":"text","text":"Second answer"}},"turnId":"history-turn-2","_meta":{{"replay":true}}}}}}}}\n'
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"unmarked-update","content":{{"type":"text","text":"Must stay dropped"}},"turnId":"history-turn-2"}}}}}}\n'
       fi
-      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session"}}}}\n' "$id" ;;
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
     *'"method":"session/resume"'*)
       if [ "$fixture" = "replay_on_resume" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'
       fi
-      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session"}}}}\n' "$id" ;;
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       turn=$(printf '%s\n' "$line" | sed -n 's/.*"turnId":"\([^"]*\)".*/\1/p')
       if [ -z "$turn" ]; then turn="turn-1"; fi
@@ -812,11 +852,13 @@ while IFS= read -r line; do
         while IFS= read -r response; do
           printf '%s\n' "$response" >> "$log"
           case "$response" in
-            *'"id":77'*)
-              if printf '%s' "$response" | grep -q '\"outcome\":{{\"outcome\":\"selected\",\"optionId\":\"allow\"'; then
-                printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
-              elif printf '%s' "$response" | grep -q '\"outcome\":{{\"outcome\":\"selected\",\"optionId\":\"reject\"'; then
-                printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+	            *'"id":77'*)
+	              if printf '%s' "$response" | grep -q '\"outcome\":{{\"outcome\":\"selected\",\"optionId\":\"allow\"'; then
+	                printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"after-approval","content":{{"type":"text","text":"continued after approval"}},"turnId":"%s"}}}}}}\n' "$turn"
+	                printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+	              elif printf '%s' "$response" | grep -q '\"outcome\":{{\"outcome\":\"selected\",\"optionId\":\"reject\"'; then
+	                printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"after-approval","content":{{"type":"text","text":"continued after approval"}},"turnId":"%s"}}}}}}\n' "$turn"
+	                printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
               else
                 printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32000,"message":"invalid permission option"}}}}\n' "$id"
               fi
@@ -845,7 +887,7 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"%s"}}}}}}\n' "$turn"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       fi ;;
-    *'"method":"session/set_config_option"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id" ;;
+	    *'"method":"session/set_config_option"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"model":"gpt-5.6-terra","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"xhigh","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"never","availableApprovalPolicies":["untrusted","on-request","never"],"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id" ;;
     *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/close"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"; exit 0 ;;
   esac

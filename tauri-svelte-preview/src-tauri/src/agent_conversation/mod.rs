@@ -10,8 +10,9 @@ mod transcript;
 
 use manager::AgentRuntimeManager;
 use protocol::{
-    AgentConversationConnection, AgentConversationSnapshot, EnsureAgentConversationRequest,
-    RespondAgentConversationApprovalRequest, SendAgentConversationMessageRequest,
+    AgentConversationConfigState, AgentConversationConnection, AgentConversationSnapshot,
+    EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
+    SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
     StopAgentConversationTurnRequest,
 };
 use providers::AgentPrompt;
@@ -78,6 +79,22 @@ pub async fn stop_agent_conversation_turn(
     manager
         .cancel_turn(&request.owned_id, request.generation)
         .await
+}
+
+#[tauri::command]
+pub async fn set_agent_conversation_config(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request: SetAgentConversationConfigRequest,
+) -> Result<AgentConversationConfigState, String> {
+    manager.set_conversation_config(request).await
+}
+
+#[tauri::command]
+pub fn read_agent_conversation_config(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> Result<AgentConversationConfigState, String> {
+    manager.conversation_config(&owned_id)
 }
 
 #[tauri::command]

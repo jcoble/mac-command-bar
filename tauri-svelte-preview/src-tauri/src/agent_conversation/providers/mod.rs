@@ -8,12 +8,13 @@ pub use acp_client::AcpClient;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::Value;
 
 use super::capabilities::{validate_manifest, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION};
 use super::protocol::{
-    AgentApprovalResponse, AgentCapabilities, AgentConfigOption, AgentConversationProvider,
-    AgentProviderManifest, ProviderSource, ProviderTransport,
+    AgentApprovalResponse, AgentCapabilities, AgentConfigOption, AgentConversationConfigState,
+    AgentConversationProvider, AgentProviderManifest, ProviderSource, ProviderTransport,
 };
 
 #[derive(Clone, Debug)]
@@ -52,6 +53,18 @@ pub type PermissionResponse = AgentApprovalResponse;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartedAgentSession {
     pub native_session_id: String,
+    pub config: AgentConversationConfigState,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationConfigUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

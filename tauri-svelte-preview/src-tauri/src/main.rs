@@ -5492,6 +5492,8 @@ fn main() {
             agent_conversation::send_agent_conversation_message,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::stop_agent_conversation_turn,
+            agent_conversation::set_agent_conversation_config,
+            agent_conversation::read_agent_conversation_config,
             agent_conversation::close_agent_conversation,
             agent_conversation::read_agent_conversation_snapshot,
             agent_conversation::read_agent_conversation_transcript,

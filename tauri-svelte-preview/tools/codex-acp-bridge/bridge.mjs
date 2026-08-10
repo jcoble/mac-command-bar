@@ -10,6 +10,9 @@ const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
 const CHILD_EXITED = -32098;
+const FALLBACK_MODELS = Object.freeze(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const AVAILABLE_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
+const AVAILABLE_APPROVAL_POLICIES = Object.freeze(["untrusted", "on-request", "never"]);
 
 class RpcFailure extends Error {
   constructor(code, message, data) {
@@ -61,6 +64,7 @@ const appWriter = new OrderedWriter(child.stdin);
 let nextAppRequestId = 1;
 let nextPermissionRequestId = 1;
 let appInitializePromise;
+let availableModelsPromise;
 let closing = false;
 let fatal = false;
 let childClosed = false;
@@ -155,6 +159,84 @@ function requireString(value, name) {
 
 function sessionIdFrom(params) {
   return requireString(params?.sessionId ?? params?.session_id, "sessionId");
+}
+
+function optionalConfigString(params, key) {
+  if (!Object.hasOwn(params ?? {}, key) || params[key] === null || params[key] === undefined) {
+    return undefined;
+  }
+  return requireString(params[key], key);
+}
+
+function distinctStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
+}
+
+async function listAvailableModels() {
+  if (!availableModelsPromise) {
+    availableModelsPromise = (async () => {
+      const models = [];
+      let cursor;
+      do {
+        const result = await appRequest("model/list", {
+          ...(cursor ? { cursor } : {}),
+        });
+        models.push(...(Array.isArray(result?.data) ? result.data.map((entry) => entry?.model) : []));
+        cursor = typeof result?.nextCursor === "string" && result.nextCursor ? result.nextCursor : undefined;
+      } while (cursor);
+      return distinctStrings(models);
+    })().catch((error) => {
+      if (error instanceof RpcFailure && error.code === METHOD_NOT_FOUND) {
+        return [...FALLBACK_MODELS];
+      }
+      availableModelsPromise = undefined;
+      throw error;
+    });
+  }
+  return availableModelsPromise;
+}
+
+function configState(session) {
+  return {
+    model: session.model ?? null,
+    availableModels: [...session.availableModels],
+    reasoningEffort: session.reasoningEffort ?? null,
+    availableEfforts: [...AVAILABLE_EFFORTS],
+    approvalPolicy: session.approvalPolicy ?? null,
+    availableApprovalPolicies: [...AVAILABLE_APPROVAL_POLICIES],
+  };
+}
+
+function sessionResponse(sessionId, session) {
+  return {
+    sessionId,
+    ...(session.model ? { model: session.model } : {}),
+    _meta: configState(session),
+  };
+}
+
+async function sessionFromOpened(opened, cwd, existing) {
+  const model = existing?.model ?? optionalConfigString(opened, "model") ?? null;
+  const advertisedModels = existing?.availableModels ?? (await listAvailableModels());
+  const availableModels = distinctStrings([
+    ...advertisedModels,
+    ...(model ? [model] : []),
+  ]);
+  return {
+    cwd: opened?.cwd ?? cwd,
+    model,
+    availableModels,
+    reasoningEffort:
+      existing?.reasoningEffort ?? optionalConfigString(opened, "reasoningEffort") ?? null,
+    approvalPolicy:
+      existing?.approvalPolicy ?? optionalConfigString(opened, "approvalPolicy") ?? null,
+  };
+}
+
+function validateConfigChoice(value, available, label) {
+  if (value !== undefined && !available.includes(value)) {
+    throw new RpcFailure(INVALID_PARAMS, `${label} is not available for this session`);
+  }
 }
 
 function promptInput(blocks) {
@@ -776,14 +858,27 @@ async function handleAppNotification(message) {
 
   if (message.method === "model/rerouted") {
     const session = sessions.get(params.threadId);
-    if (session && typeof params.toModel === "string") session.model = params.toModel;
+    if (session && typeof params.toModel === "string") {
+      session.model = params.toModel;
+      session.availableModels = distinctStrings([...session.availableModels, params.toModel]);
+    }
     return;
   }
 
   if (message.method === "thread/settings/updated") {
     const session = sessions.get(params.threadId);
-    if (session && typeof params.threadSettings?.model === "string") {
-      session.model = params.threadSettings.model;
+    if (session) {
+      const settings = params.threadSettings ?? {};
+      if (typeof settings.model === "string") {
+        session.model = settings.model;
+        session.availableModels = distinctStrings([...session.availableModels, settings.model]);
+      }
+      if (typeof settings.reasoningEffort === "string") {
+        session.reasoningEffort = settings.reasoningEffort;
+      }
+      if (typeof settings.approvalPolicy === "string") {
+        session.approvalPolicy = settings.approvalPolicy;
+      }
     }
     return;
   }
@@ -875,29 +970,33 @@ async function newSession(params) {
   const cwd = typeof params?.cwd === "string" && params.cwd ? params.cwd : process.cwd();
   const opened = await appRequest("thread/start", { cwd });
   const sessionId = requireString(opened?.thread?.id, "thread/start result.thread.id");
-  sessions.set(sessionId, { cwd: opened.cwd ?? cwd, model: opened.model });
-  return { sessionId, ...(opened.model ? { model: opened.model } : {}) };
+  const session = await sessionFromOpened(opened, cwd);
+  sessions.set(sessionId, session);
+  return sessionResponse(sessionId, session);
 }
 
 async function resumeSession(params) {
   const requestedSessionId = sessionIdFrom(params);
+  const existing = sessions.get(requestedSessionId);
   const request = {
     threadId: requestedSessionId,
     ...(typeof params?.cwd === "string" && params.cwd ? { cwd: params.cwd } : {}),
+    ...(existing?.model ? { model: existing.model } : {}),
+    ...(existing?.approvalPolicy ? { approvalPolicy: existing.approvalPolicy } : {}),
   };
   const opened = await appRequest("thread/resume", request);
   const sessionId = requireString(opened?.thread?.id, "thread/resume result.thread.id");
-  sessions.set(sessionId, {
-    cwd: opened.cwd ?? params?.cwd ?? process.cwd(),
-    model: opened.model,
-  });
+  const session = await sessionFromOpened(opened, params?.cwd ?? process.cwd(), existing);
+  sessions.set(sessionId, session);
+  if (sessionId !== requestedSessionId) sessions.delete(requestedSessionId);
   await replayCompletedTurns(sessionId, opened?.thread?.turns);
-  return { sessionId, ...(opened.model ? { model: opened.model } : {}) };
+  return sessionResponse(sessionId, session);
 }
 
 async function startPrompt(params) {
   const threadId = sessionIdFrom(params);
-  if (!sessions.has(threadId)) throw new RpcFailure(INVALID_PARAMS, `Unknown session: ${threadId}`);
+  const session = sessions.get(threadId);
+  if (!session) throw new RpcFailure(INVALID_PARAMS, `Unknown session: ${threadId}`);
   if (activePrompts.has(threadId)) {
     throw new RpcFailure(-32002, `Session ${threadId} already has an active turn`);
   }
@@ -925,6 +1024,9 @@ async function startPrompt(params) {
     const started = await appRequest("turn/start", {
       threadId,
       input: promptInput(params?.prompt),
+      ...(session.model ? { model: session.model } : {}),
+      ...(session.reasoningEffort ? { effort: session.reasoningEffort } : {}),
+      ...(session.approvalPolicy ? { approvalPolicy: session.approvalPolicy } : {}),
     });
     if (!prompt.settled && typeof started?.turn?.id === "string") {
       prompt.turnId = started.turn.id;
@@ -935,6 +1037,23 @@ async function startPrompt(params) {
     settlePrompt(prompt, { error: normalizeError(error) });
   }
   return done;
+}
+
+async function setSessionConfig(params) {
+  const threadId = sessionIdFrom(params);
+  const session = sessions.get(threadId);
+  if (!session) throw new RpcFailure(INVALID_PARAMS, `Unknown session: ${threadId}`);
+
+  const model = optionalConfigString(params, "model");
+  const reasoningEffort = optionalConfigString(params, "reasoningEffort");
+  const approvalPolicy = optionalConfigString(params, "approvalPolicy");
+  validateConfigChoice(model, session.availableModels, "model");
+  validateConfigChoice(reasoningEffort, AVAILABLE_EFFORTS, "reasoningEffort");
+  validateConfigChoice(approvalPolicy, AVAILABLE_APPROVAL_POLICIES, "approvalPolicy");
+  if (model !== undefined) session.model = model;
+  if (reasoningEffort !== undefined) session.reasoningEffort = reasoningEffort;
+  if (approvalPolicy !== undefined) session.approvalPolicy = approvalPolicy;
+  return configState(session);
 }
 
 async function cancelSession(params) {
@@ -1000,7 +1119,7 @@ async function dispatchAcpMethod(method, params) {
     case "session/cancel":
       return cancelSession(params);
     case "session/set_config_option":
-      return {};
+      return setSessionConfig(params);
     case "session/steer":
       return steerSession(params);
     default:

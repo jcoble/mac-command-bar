@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -286,6 +286,69 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
   return { executable, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
+function createConfigMock() {
+  const root = mkdtempSync(path.join(tmpdir(), "mcb-bridge-config-"));
+  const executable = path.join(root, "mock-config.mjs");
+  const log = path.join(root, "frames.jsonl");
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+const log = ${JSON.stringify(log)};
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+let nextTurn = 1;
+for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+  const message = JSON.parse(line);
+  appendFileSync(log, JSON.stringify(message) + "\\n");
+  if (message.method === "initialized") continue;
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "mock-config/1.0.0" } });
+  } else if (message.method === "model/list") {
+    if (message.params?.cursor === "page-2") {
+      send({ id: message.id, result: { data: [{ model: "gpt-5.6-luna" }], nextCursor: null } });
+    } else {
+      send({ id: message.id, result: {
+        data: [{ model: "gpt-5.6-sol" }, { model: "gpt-5.6-terra" }],
+        nextCursor: "page-2"
+      } });
+    }
+  } else if (message.method === "thread/start") {
+    send({ id: message.id, result: {
+      thread: { id: "config-thread", turns: [] }, cwd: message.params.cwd,
+      model: "gpt-5.6-sol", reasoningEffort: "high", approvalPolicy: "on-request",
+      serviceTier: "priority"
+    } });
+  } else if (message.method === "thread/resume") {
+    send({ id: message.id, result: {
+      thread: { id: message.params.threadId, turns: [] }, cwd: message.params.cwd,
+      model: "gpt-5.6-sol", reasoningEffort: "low", approvalPolicy: "untrusted",
+      serviceTier: "priority"
+    } });
+  } else if (message.method === "turn/start") {
+    const turnId = "config-turn-" + nextTurn++;
+    send({ id: message.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });
+    send({ method: "item/agentMessage/delta", params: {
+      threadId: message.params.threadId, turnId, itemId: "config-answer", delta: "configured"
+    } });
+    send({ method: "turn/completed", params: {
+      threadId: message.params.threadId,
+      turn: { id: turnId, status: "completed", error: null, items: [] }
+    } });
+  } else {
+    send({ id: message.id, error: { code: -32601, message: "unsupported mock method" } });
+  }
+}
+`,
+  );
+  chmodSync(executable, 0o755);
+  return {
+    executable,
+    frames: () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
 function replayUpdatesBeforeResponse(messages) {
   assert(messages.length > 1, "replay must emit updates before its response");
   const response = messages.at(-1);
@@ -342,12 +405,87 @@ tests.push([
       assert.deepEqual(
         await peer.request("session/set_config_option", {
           sessionId: session.sessionId,
-          configId: "model",
-          value: "ignored",
+          model: "gpt-5.6-terra",
         }),
-        {},
+        {
+          model: "gpt-5.6-terra",
+          availableModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+          reasoningEffort: null,
+          availableEfforts: ["low", "medium", "high", "xhigh", "max"],
+          approvalPolicy: null,
+          availableApprovalPolicies: ["untrusted", "on-request", "never"],
+        },
       );
     });
+  },
+]);
+
+tests.push([
+  "session configuration is discovered, stored, applied to turn/start, and echoed by load/resume",
+  async () => {
+    const mock = createConfigMock();
+    const peer = new AcpPeer("config", "allow", mock.executable);
+    try {
+      await peer.initialize();
+      const session = await peer.newSession();
+      assert.deepEqual(session._meta, {
+        model: "gpt-5.6-sol",
+        availableModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        reasoningEffort: "high",
+        availableEfforts: ["low", "medium", "high", "xhigh", "max"],
+        approvalPolicy: "on-request",
+        availableApprovalPolicies: ["untrusted", "on-request", "never"],
+      });
+
+      const configured = await peer.request("session/set_config_option", {
+        sessionId: session.sessionId,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "xhigh",
+        approvalPolicy: "never",
+      });
+      assert.deepEqual(configured, {
+        ...session._meta,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "xhigh",
+        approvalPolicy: "never",
+      });
+
+      assert.equal(
+        (
+          await peer.request("session/prompt", {
+            sessionId: session.sessionId,
+            prompt: [{ type: "text", text: "use configured values" }],
+          })
+        ).stopReason,
+        "end_turn",
+      );
+      const firstTurn = mock.frames().find((frame) => frame.method === "turn/start");
+      assert.equal(firstTurn.params.model, "gpt-5.6-terra");
+      assert.equal(firstTurn.params.effort, "xhigh");
+      assert.equal(firstTurn.params.approvalPolicy, "never");
+
+      const loaded = await peer.request("session/load", {
+        sessionId: session.sessionId,
+        cwd: directory,
+      });
+      assert.deepEqual(loaded._meta, configured);
+      const resumed = await peer.request("session/resume", {
+        sessionId: session.sessionId,
+        cwd: directory,
+      });
+      assert.deepEqual(resumed._meta, configured);
+
+      const resumeFrames = mock.frames().filter((frame) => frame.method === "thread/resume");
+      assert.equal(resumeFrames.length, 2);
+      assert(resumeFrames.every((frame) => frame.params.model === "gpt-5.6-terra"));
+      assert(resumeFrames.every((frame) => frame.params.approvalPolicy === "never"));
+
+      const closed = await peer.close(session.sessionId);
+      assert.equal(closed.exited.code, 0, peer.stderr);
+    } finally {
+      if (peer.child.exitCode === null && peer.child.signalCode === null) peer.child.kill("SIGTERM");
+      mock.cleanup();
+    }
   },
 ]);
 
@@ -467,6 +605,7 @@ tests.push([
               prompt: [{ type: "text", text: `${approvalCase.prompt}${suffix}` }],
             });
             assert.equal(result.stopReason, "end_turn");
+            assert.equal(result.turnId, "mock-turn-1");
             assert.equal(peer.permissions.length, 1);
             const permission = peer.permissions[0].params;
             assert.equal(permission.title, approvalCase.title);
@@ -478,6 +617,11 @@ tests.push([
               { optionId: "allow", name: "Allow", kind: "allow_once" },
               { optionId: "reject", name: "Reject", kind: "reject_once" },
             ]);
+            assert.equal(
+              updatesOf(peer, "agent_message_chunk").map((update) => update.content.text).join(""),
+              "approved",
+              "the app-server turn must continue after its approval response",
+            );
           },
           permissionChoice,
         );

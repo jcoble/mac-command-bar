@@ -11,20 +11,21 @@ use super::handoff::{
 };
 use super::journal::AgentEventJournal;
 use super::protocol::{
-    AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentConversationConnection,
-    AgentConversationEvent, AgentConversationPayload, AgentConversationProvider,
-    AgentConversationSnapshot, AgentEvent, AgentEventType, AgentExecutionOwner,
-    AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
+    AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentConversationConfigState,
+    AgentConversationConnection, AgentConversationEvent, AgentConversationPayload,
+    AgentConversationProvider, AgentConversationSnapshot, AgentEvent, AgentEventType,
+    AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
     AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
     AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
-    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem, ToolState,
+    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
+    SetAgentConversationConfigRequest, ToolState,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
 use super::providers::{
-    AcpRuntimeAdapter, AgentConfigValue, AgentPrompt, AgentRuntimeAdapter, AgentRuntimeError,
-    GeneratedText, InitializeAgentInput, LoadAgentSession, NewAgentSession, PermissionResponse,
-    ProviderRegistry, StructuredRuntimeHandle,
+    AcpRuntimeAdapter, AgentConfigValue, AgentConversationConfigUpdate, AgentPrompt,
+    AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
+    NewAgentSession, PermissionResponse, ProviderRegistry, StructuredRuntimeHandle,
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -80,6 +81,7 @@ pub struct ManagedAgentSession {
     next_permission_id: u64,
     ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
     cwd: String,
+    config: AgentConversationConfigState,
     connection: AgentConversationConnection,
     frontend_events: VecDeque<AgentConversationEvent>,
     journal: AgentEventJournal,
@@ -244,6 +246,7 @@ impl AgentRuntimeManager {
             generation,
             native_session_id,
             state: ConversationConnectionState::Connecting,
+            config: AgentConversationConfigState::default(),
         };
         let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
         sessions.insert(
@@ -274,6 +277,7 @@ impl AgentRuntimeManager {
                 next_permission_id: 0,
                 ordered_events: None,
                 cwd,
+                config: connection.config.clone(),
                 connection: connection.clone(),
                 frontend_events: VecDeque::new(),
                 journal: AgentEventJournal::new(JOURNAL_EVENT_CAP),
@@ -360,6 +364,8 @@ impl AgentRuntimeManager {
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
         session.connection.state = ConversationConnectionState::Connected;
+        session.config = started.config;
+        session.connection.config = session.config.clone();
         let restoring_terminal_transition = session.owner
             == AgentExecutionOwner::TransitioningToStructured
             && session
@@ -602,6 +608,57 @@ impl AgentRuntimeManager {
             replacement.clone(),
         )?;
         Ok(replacement)
+    }
+
+    pub fn conversation_config(
+        &self,
+        owned_id: &str,
+    ) -> Result<AgentConversationConfigState, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        sessions
+            .get(owned_id)
+            .map(|session| session.config.clone())
+            .ok_or_else(|| "Conversation session was not found".to_string())
+    }
+
+    pub async fn set_conversation_config(
+        &self,
+        request: SetAgentConversationConfigRequest,
+    ) -> Result<AgentConversationConfigState, String> {
+        let update = AgentConversationConfigUpdate {
+            model: normalized_optional_id(request.model),
+            reasoning_effort: normalized_optional_id(request.reasoning_effort),
+            approval_policy: normalized_optional_id(request.approval_policy),
+        };
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            let session = current_session(&sessions, &request.owned_id, request.generation)?;
+            validate_conversation_config_update(&session.config, &update)?;
+            if update == AgentConversationConfigUpdate::default() {
+                return Ok(session.config.clone());
+            }
+        }
+        let runtime = self.runtime(&request.owned_id, request.generation)?;
+        let config = runtime
+            .lock()
+            .await
+            .set_conversation_config(&update)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        session.config = config.clone();
+        session.connection.config = config.clone();
+        Ok(config)
     }
 
     pub async fn respond_legacy_approval(
@@ -1877,6 +1934,35 @@ fn normalized_optional_id(value: Option<String>) -> Option<String> {
     })
 }
 
+fn validate_conversation_config_update(
+    current: &AgentConversationConfigState,
+    update: &AgentConversationConfigUpdate,
+) -> Result<(), String> {
+    for (value, available, label) in [
+        (&update.model, &current.available_models, "model"),
+        (
+            &update.reasoning_effort,
+            &current.available_efforts,
+            "reasoning effort",
+        ),
+        (
+            &update.approval_policy,
+            &current.available_approval_policies,
+            "approval policy",
+        ),
+    ] {
+        if value
+            .as_ref()
+            .is_some_and(|value| !available.contains(value))
+        {
+            return Err(format!(
+                "The requested {label} is not available for this session"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2548,7 +2634,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn permission_requests_are_answerable_while_a_turn_is_pending() {
+    async fn respond_agent_conversation_permission_round_trips_through_fake_agent() {
         let fixture = fixture_manager_with_acp_session("permission_midturn").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
@@ -2613,12 +2699,79 @@ mod tests {
                 }
             )
         }));
+        assert!(seen.lock().unwrap().iter().any(|event| {
+            matches!(
+                &event.payload,
+                AgentConversationPayload::AssistantDelta { delta, .. }
+                    if delta == "continued after approval"
+            )
+        }));
         let fixture_log = fs::read_to_string(fixture.root.join("permission_midturn.jsonl"))
             .expect("permission fixture log");
         assert!(
             fixture_log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#),
             "permission response must select a valid allow option: {fixture_log}"
         );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn conversation_config_commands_read_set_forward_and_reject_stale_generation() {
+        let fixture = fixture_manager_with_acp_session("conversation_config").await;
+        let initial = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("initial config");
+        assert_eq!(initial.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(initial.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(initial.approval_policy.as_deref(), Some("on-request"));
+
+        let configured = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: Some("gpt-5.6-terra".into()),
+                reasoning_effort: Some("xhigh".into()),
+                approval_policy: Some("never".into()),
+            })
+            .await
+            .expect("set config");
+        assert_eq!(configured.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(configured.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(configured.approval_policy.as_deref(), Some("never"));
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("stored config"),
+            configured
+        );
+
+        let stale = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation.saturating_add(1),
+                model: Some("gpt-5.6-sol".into()),
+                reasoning_effort: None,
+                approval_policy: None,
+            })
+            .await
+            .expect_err("stale generation must fail");
+        assert_eq!(
+            stale,
+            "Conversation connection changed; retry on the current session"
+        );
+
+        let fixture_log = fs::read_to_string(fixture.root.join("conversation_config.jsonl"))
+            .expect("config fixture log");
+        assert_eq!(fixture_log.matches("session/set_config_option").count(), 1);
+        assert!(fixture_log.contains(r#""model":"gpt-5.6-terra""#));
+        assert!(fixture_log.contains(r#""reasoningEffort":"xhigh""#));
+        assert!(fixture_log.contains(r#""approvalPolicy":"never""#));
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
