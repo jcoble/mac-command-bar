@@ -249,8 +249,8 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   /**
    * The six roster surfaces are permanent for now. Dockview still owns their
    * lifecycle even though its horizontal headers are visually replaced by the
-   * right-side activity dock. If a panel is removed through a restored layout
-   * or API call, put it straight back so the activity dock never points at an
+   * shell's top surface strip. If a panel is removed through a restored layout
+   * or API call, put it straight back so the strip never points at an
    * unavailable surface — especially the live Session terminal.
    *
    * Deferred by a timer on purpose: dockview fires this event from

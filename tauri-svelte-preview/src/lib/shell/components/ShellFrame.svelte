@@ -129,7 +129,13 @@
         panels: [
           { id: 'session', title: 'Session', element: sessionSlot },
           { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
-          { id: 'browser', title: 'Browser', element: browserSlot, group: 'display' },
+          {
+            id: 'browser',
+            title: 'Browser',
+            element: browserSlot,
+            group: 'display',
+            renderer: 'onlyWhenVisible'
+          },
           {
             id: 'diff',
             title: 'Diff',
@@ -193,8 +199,8 @@
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
   <div class="slot center-region" bind:this={centerRegionSlot}>
-    <div class="center-dock-host" bind:this={centerSlot}></div>
     <CenterActivityDock activeId={activeCenterPanel} onSelect={selectCenterPanel} />
+    <div class="center-dock-host" bind:this={centerSlot}></div>
   </div>
   <div class="slot" bind:this={toolsSlot}>{@render tools()}</div>
   <div class="slot" bind:this={activitySlot}>{@render activity()}</div>
@@ -241,7 +247,7 @@
 
   .center-region {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 48px;
+    grid-template-rows: 44px minmax(0, 1fr);
     background: var(--color-bg);
   }
 
@@ -295,7 +301,7 @@
   }
 
   /* Dockview still owns the six panels and their active state, while the
-     right-side activity dock is their only visible navigation. */
+     horizontal surface strip is their only visible navigation. */
   .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
     display: none;
   }

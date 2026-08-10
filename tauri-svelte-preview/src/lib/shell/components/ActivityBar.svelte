@@ -12,6 +12,8 @@
   import {
     Activity,
     Bot,
+    ChartNoAxesCombined,
+    Cpu,
     Files,
     GitBranch,
     Layers,
@@ -21,6 +23,8 @@
   } from '@lucide/svelte';
 
   import { settings } from '$lib/settingsStore.svelte';
+  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
+  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import {
     PROBLEMS_VIEW_ID,
     SIDEBAR_VIEWS,
@@ -75,7 +79,15 @@
     {/each}
   </div>
 
-  <div class="group">
+  <div class="group utility-group" aria-label="Workspace meters and settings">
+    <div class="utility-action" title="Resources">
+      <Cpu size={19} strokeWidth={1.6} aria-hidden="true" />
+      <ResourcePopover />
+    </div>
+    <div class="utility-action" title="Stats and Usage">
+      <ChartNoAxesCombined size={19} strokeWidth={1.6} aria-hidden="true" />
+      <UsagePopover />
+    </div>
     <button
       type="button"
       class="icon-button"
@@ -149,5 +161,61 @@
   .icon-button:focus-visible {
     outline: 2px solid var(--color-focus-solid);
     outline-offset: -3px;
+  }
+
+  .utility-group {
+    padding-top: 6px;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+  }
+
+  .utility-action {
+    position: relative;
+    display: grid;
+    width: 44px;
+    height: 40px;
+    place-items: center;
+    color: var(--color-text-3);
+  }
+
+  .utility-action:hover,
+  .utility-action:has(:global(.trigger[aria-expanded='true'])) {
+    color: var(--color-text);
+  }
+
+  .utility-action :global(aside) {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: 44px;
+    height: 40px;
+  }
+
+  .utility-action :global(.trigger) {
+    position: absolute;
+    inset: 0;
+    width: 44px;
+    height: 40px;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    color: transparent;
+    font-size: 0;
+  }
+
+  .utility-action :global(.trigger span) {
+    display: none;
+  }
+
+  .utility-action:has(:global(.trigger:focus-visible)) {
+    outline: 2px solid var(--color-focus-solid);
+    outline-offset: -3px;
+  }
+
+  /* The far-right strip opens its compact stats card inward and upward, never
+     beyond the window edge. The full stats workspace remains a fixed modal. */
+  .utility-action :global(.usage-popover .card) {
+    top: auto;
+    right: calc(100% + 10px);
+    bottom: 0;
   }
 </style>

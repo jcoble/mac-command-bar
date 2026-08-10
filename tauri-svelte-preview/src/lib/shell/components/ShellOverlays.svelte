@@ -82,6 +82,9 @@
      * here; the page is what opens or closes the strip along the bottom. */
     onProblemsLocationChange?: (location: ProblemsLocation) => void;
     browserWorkspace: BrowserWorkspaceState;
+    /** Floating browser chrome exists outside Dockview, so it also needs the
+     * center surface's visibility signal. */
+    browserSurfaceVisible: boolean;
     browserActions: WorkbenchAction[];
     workbenchActionContext: WorkbenchActionContext;
     browserOverlayHandlers: BrowserOverlayHandlers;
@@ -94,6 +97,7 @@
     message,
     onProblemsLocationChange,
     browserWorkspace,
+    browserSurfaceVisible,
     browserActions,
     workbenchActionContext,
     browserOverlayHandlers
@@ -126,6 +130,7 @@
 <NewSessionHost bind:this={newSessionHost} onStart={onStartNewSession} />
 <BrowserOverlayHost
   workspace={browserWorkspace}
+  surfaceVisible={browserSurfaceVisible}
   onExpand={browserOverlayHandlers.onExpand}
   onSelectTab={browserOverlayHandlers.onSelectTab}
   onCloseTab={browserOverlayHandlers.onCloseTab}

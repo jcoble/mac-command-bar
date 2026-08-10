@@ -2,12 +2,10 @@
   /**
    * CenterActivityDock.svelte — the center Dockview's permanent navigation.
    * Dockview remains the layout and activation state machine; this component
-   * only presents that state as a compact rail on the center region's right.
+   * only presents that state as a compact horizontal strip above the center.
    */
   import {
     Bot,
-    ChartNoAxesCombined,
-    Cpu,
     FileCode2,
     GitCompareArrows,
     Globe2,
@@ -15,8 +13,6 @@
     SquareTerminal
   } from '@lucide/svelte';
 
-  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
-  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type { CenterPanelId } from '$lib/shell/layout/centerDock';
 
   interface Props {
@@ -59,20 +55,10 @@
         aria-current={surface.id === activeId ? 'page' : undefined}
         onclick={() => onSelect(surface.id)}
       >
-        <Icon size={19} strokeWidth={1.6} aria-hidden="true" />
+        <Icon size={16} strokeWidth={1.7} aria-hidden="true" />
+        <span class="dock-label">{surface.label}</span>
       </button>
     {/each}
-  </div>
-
-  <div class="utility-group" aria-label="Workspace meters">
-    <div class="utility-action" data-tooltip="Resources">
-      <Cpu size={19} strokeWidth={1.6} aria-hidden="true" />
-      <ResourcePopover />
-    </div>
-    <div class="utility-action" data-tooltip="Usage">
-      <ChartNoAxesCombined size={19} strokeWidth={1.6} aria-hidden="true" />
-      <UsagePopover />
-    </div>
   </div>
 </nav>
 
@@ -81,59 +67,53 @@
     position: relative;
     z-index: 4;
     display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    width: 48px;
-    height: 100%;
-    padding: 8px 4px;
-    border-left: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    align-items: center;
+    width: 100%;
+    height: 44px;
+    min-width: 0;
+    padding: 4px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
     background: var(--color-surface);
     color: var(--color-text-3);
     user-select: none;
   }
 
-  .surface-group,
-  .utility-group {
-    display: grid;
-    gap: 4px;
+  .surface-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  .utility-group {
-    padding-top: 8px;
-    border-top: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+  .surface-group::-webkit-scrollbar {
+    display: none;
   }
 
-  .dock-button,
-  .utility-action {
+  .dock-button {
     position: relative;
-    display: grid;
-    width: 40px;
-    height: 40px;
-    place-items: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    height: 36px;
+    padding: 0 11px;
     border: 0;
     border-radius: var(--radius-md);
     background: transparent;
     color: var(--color-text-3);
-  }
-
-  .dock-button {
-    padding: 0;
     font: inherit;
     cursor: pointer;
     transition:
       color 140ms ease,
-      background-color 140ms ease,
-      transform 140ms ease;
+      background-color 140ms ease;
   }
 
-  .dock-button:hover,
-  .utility-action:hover {
+  .dock-button:hover {
     background: var(--color-hover);
     color: var(--color-text);
-  }
-
-  .dock-button:active {
-    transform: scale(0.96);
   }
 
   .dock-button.active {
@@ -141,95 +121,32 @@
     color: var(--color-text);
   }
 
-  .dock-button.active::before {
+  .dock-button.active::after {
     position: absolute;
-    top: 9px;
-    bottom: 9px;
-    left: -4px;
-    width: 2px;
-    border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+    right: 8px;
+    bottom: 0;
+    left: 8px;
+    height: 2px;
+    border-radius: var(--radius-pill) var(--radius-pill) 0 0;
     background: var(--color-accent);
     content: '';
   }
 
-  .dock-button:focus-visible,
-  .utility-action:has(:global(.trigger:focus-visible)) {
+  .dock-label {
+    font-size: 12px;
+    font-weight: 540;
+    letter-spacing: 0.005em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .dock-button:focus-visible {
     outline: 2px solid var(--color-focus-solid);
     outline-offset: -3px;
   }
 
-  .dock-button::after,
-  .utility-action::after {
-    position: absolute;
-    top: 50%;
-    right: calc(100% + 10px);
-    z-index: 12;
-    padding: 6px 8px;
-    border-radius: var(--radius-sm);
-    background: var(--color-elevated);
-    box-shadow: var(--shadow-sm);
-    color: var(--color-text);
-    content: attr(data-tooltip);
-    font-size: 12px;
-    line-height: 1.2;
-    opacity: 0;
-    pointer-events: none;
-    transform: translate(4px, -50%);
-    transition:
-      opacity 120ms ease,
-      transform 120ms ease;
-    white-space: nowrap;
-  }
-
-  .dock-button:hover::after,
-  .dock-button:focus-visible::after,
-  .utility-action:hover::after,
-  .utility-action:focus-within::after {
-    opacity: 1;
-    transform: translate(0, -50%);
-  }
-
-  .utility-action :global(aside) {
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    width: 40px;
-    height: 40px;
-  }
-
-  .utility-action :global(.trigger) {
-    position: absolute;
-    inset: 0;
-    width: 40px;
-    height: 40px;
-    padding: 0;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: transparent;
-    font-size: 0;
-  }
-
-  .utility-action :global(.trigger span) {
-    display: none;
-  }
-
-  .utility-action:has(:global(.trigger[aria-expanded='true'])) {
-    background: var(--color-selected);
-    color: var(--color-text);
-  }
-
-  /* Usage used to open downward from the window's top-right. In the dock it
-     opens inward and upward, staying inside the center region. */
-  .utility-action :global(.usage-popover .card) {
-    top: auto;
-    right: calc(100% + 10px);
-    bottom: 0;
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    .dock-button,
-    .dock-button::after,
-    .utility-action::after {
+    .dock-button {
       transition: none;
     }
   }

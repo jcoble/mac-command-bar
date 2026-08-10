@@ -56,6 +56,7 @@
     closeBrowserTab,
     collapseBrowserToControl,
     createBrowserTab,
+    deactivateBrowserWorkspace,
     expandBrowserFrom,
     minimizeBrowserToPrevious,
     removeBrowserAnnotation,
@@ -289,6 +290,16 @@
     } catch (error) {
       setBrowserFailure(error);
     }
+  }
+
+  /** A center-surface change only changes what the reader is looking at. The
+   * session row remains the sole path that selects or opens a conversation.
+   * Native browser views sit above the web UI, so leaving Browser also needs an
+   * explicit backend hide; Dockview hiding the HTML host cannot cover it. */
+  function handleCenterPanelShown(id: string): void {
+    activeCenterPanelId = id;
+    if (id !== 'browser') deactivateBrowserWorkspace(browserModelContext());
+    shellPanels.panelShown(id);
   }
 
   function browserNewTab(): void {
@@ -1730,10 +1741,7 @@
       agents: agentsArea
     }}
     onSessionPanelLayout={scheduleRefit}
-    onCenterPanelShown={(id) => {
-      activeCenterPanelId = id;
-      shellPanels.panelShown(id);
-    }}
+    onCenterPanelShown={handleCenterPanelShown}
     onReady={(controls) => {
       frameControls = controls;
       // Say what the sessions column is, once, here, where the frame first
@@ -1777,9 +1785,10 @@
     onRescanSessions={scanRail}
     onStartNewSession={startNewSession}
     newSessionRoots={rail.owned.map((session) => session.cwd)}
-    message={[layoutError, rail.error].filter(Boolean).join('; ') || null}
+    message={[layoutError, activeCenterPanelId === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}
     {browserWorkspace}
+    browserSurfaceVisible={activeCenterPanelId === 'browser'}
     browserActions={workbenchBrowserActions}
     workbenchActionContext={deriveWorkbenchActionContext()}
     browserOverlayHandlers={browserOverlayHandlers}

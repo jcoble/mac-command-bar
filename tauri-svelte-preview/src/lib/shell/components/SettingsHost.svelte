@@ -1,11 +1,11 @@
 <!--
-  SettingsHost.svelte — puts the settings dialog on the /next shell.
+  SettingsHost.svelte — puts the settings screen on the /next shell.
 
   It owns three things and nothing else:
-    1. the /next stylesheets, so the dialog (and everything else rendered
+    1. the /next stylesheets, so the screen (and everything else rendered
        inside /next) paints in the /next palette;
-    2. the open/closed state of the dialog;
-    3. loading the dialog itself, which only happens the first time
+    2. whether the screen is showing;
+    3. loading the screen itself, which only happens the first time
        someone asks for it.
 
   The settings surface is `$lib/shell/components/SettingsDialog.svelte` — the

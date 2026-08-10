@@ -10,6 +10,7 @@
 
   interface Props {
     workspace?: BrowserWorkspaceState;
+    surfaceVisible?: boolean;
     onExpand?: () => void;
     onSelectTab?: (id: string) => void;
     onCloseTab?: (id: string) => void;
@@ -38,6 +39,7 @@
 
   let {
     workspace = browserWorkspace,
+    surfaceVisible = true,
     onExpand,
     onSelectTab,
     onCloseTab,
@@ -64,7 +66,7 @@
     devtoolsAvailable = false
   }: Props = $props();
 
-  const visible = $derived(workspace.presentation !== 'docked');
+  const visible = $derived(surfaceVisible && workspace.presentation !== 'docked');
   const collapsed = $derived(workspace.presentation === 'collapsed');
 </script>
 
