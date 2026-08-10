@@ -1,4 +1,5 @@
 use crate::usage_sources::read_latest_local_quota;
+use crate::{claude_quota, usage_remote};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -12,11 +13,10 @@ pub enum ProviderUsageState {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageWindow {
-    pub name: String,
-    pub semantics: String,
-    pub percent_consumed: Option<f64>,
-    pub percent_remaining: Option<f64>,
-    pub reset_at: Option<String>,
+    pub label: String,
+    pub used_percent: f64,
+    pub resets_at: Option<String>,
+    pub window_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -38,12 +38,41 @@ pub trait ProviderUsageReader: Send + Sync {
 }
 
 #[tauri::command]
-pub fn read_current_provider_usage(
+pub async fn read_current_provider_usage(
     provider: Option<String>,
     instance_id: Option<String>,
 ) -> Result<ProviderUsageSnapshot, String> {
     let provider = provider.unwrap_or_else(|| "unknown".to_string());
     let instance_id = instance_id.unwrap_or_else(|| "unknown".to_string());
+    if provider.eq_ignore_ascii_case("claude") {
+        let snapshot = match usage_remote::read_claude_quota().await {
+            Ok(quota) => ProviderUsageSnapshot {
+                provider: "claude".to_string(),
+                account: quota.account,
+                instance_id,
+                state: ProviderUsageState::Available,
+                windows: quota
+                    .windows
+                    .into_iter()
+                    .map(|window| ProviderUsageWindow {
+                        label: window.label,
+                        used_percent: window.used_percent,
+                        resets_at: window.resets_at,
+                        window_minutes: window.window_minutes,
+                    })
+                    .collect(),
+                captured_at: quota.captured_at,
+                source: Some(claude_quota::USAGE_SOURCE.to_string()),
+                source_version: Some(claude_quota::USAGE_SOURCE_VERSION.to_string()),
+                unavailable_reason: None,
+            },
+            Err(error) if error.is_unavailable() => {
+                unavailable_snapshot(&provider, &instance_id, &error.reason())
+            }
+            Err(error) => error_snapshot(&provider, &instance_id, &error.reason()),
+        };
+        return Ok(normalize_provider_usage(snapshot));
+    }
     let snapshot = read_latest_local_quota(&provider)
         .map(|quota| ProviderUsageSnapshot {
             provider: quota.provider,
@@ -54,11 +83,14 @@ pub fn read_current_provider_usage(
                 .windows
                 .into_iter()
                 .map(|window| ProviderUsageWindow {
-                    name: window.name,
-                    semantics: window.semantics,
-                    percent_consumed: Some(window.percent_consumed),
-                    percent_remaining: Some((100.0 - window.percent_consumed).clamp(0.0, 100.0)),
-                    reset_at: window.reset_at,
+                    label: window.name,
+                    used_percent: window.percent_consumed,
+                    resets_at: window.reset_at,
+                    window_minutes: window
+                        .semantics
+                        .split_whitespace()
+                        .find_map(|part| part.strip_suffix("-minute"))
+                        .and_then(|minutes| minutes.parse::<u64>().ok()),
                 })
                 .collect(),
             captured_at: quota.captured_at,
@@ -68,6 +100,20 @@ pub fn read_current_provider_usage(
         })
         .unwrap_or_else(|| UnavailableProviderUsageReader.read(&provider, &instance_id));
     Ok(normalize_provider_usage(snapshot))
+}
+
+fn error_snapshot(provider: &str, instance_id: &str, reason: &str) -> ProviderUsageSnapshot {
+    ProviderUsageSnapshot {
+        provider: provider.trim().to_string(),
+        account: None,
+        instance_id: instance_id.trim().to_string(),
+        state: ProviderUsageState::Error,
+        windows: Vec::new(),
+        captured_at: now_ms(),
+        source: Some(claude_quota::USAGE_SOURCE.to_string()),
+        source_version: Some(claude_quota::USAGE_SOURCE_VERSION.to_string()),
+        unavailable_reason: Some(reason.to_string()),
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -115,12 +161,9 @@ pub fn normalize_provider_usage(mut snapshot: ProviderUsageSnapshot) -> Provider
         snapshot.unavailable_reason = Some("The provider returned no quota windows".to_string());
     }
     for window in &mut snapshot.windows {
-        window.percent_consumed = window.percent_consumed.map(|value| value.clamp(0.0, 100.0));
-        window.percent_remaining = window
-            .percent_remaining
-            .map(|value| value.clamp(0.0, 100.0));
-        if window.semantics.trim().is_empty() {
-            window.semantics = "Provider-defined quota window".to_string();
+        window.used_percent = window.used_percent.clamp(0.0, 100.0);
+        if window.label.trim().is_empty() {
+            window.label = "Provider window".to_string();
         }
     }
     snapshot

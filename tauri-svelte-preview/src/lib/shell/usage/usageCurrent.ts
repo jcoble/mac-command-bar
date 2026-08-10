@@ -27,9 +27,9 @@ export function usageWindowDurationLabel(windowMinutes: number | null | undefine
 
 export function usageQuotaWindowLabel(window: { label: string; windowMinutes?: number | null }): string {
   const minutes = window.windowMinutes;
-  if (minutes && minutes >= 6 * 24 * 60 && minutes <= 8 * 24 * 60) return 'Weekly (7-day) window';
-  if (minutes === 5 * 60) return 'Session (5-hour) window';
   const label = window.label.trim() || 'Provider';
+  if (minutes && minutes >= 6 * 24 * 60 && minutes <= 8 * 24 * 60 && label === 'Weekly') return 'Weekly (7-day) window';
+  if (minutes === 5 * 60 && (label === 'Session' || label === '5-hour')) return 'Session (5-hour) window';
   return /window$/i.test(label) ? label : `${label} window`;
 }
 
@@ -43,7 +43,7 @@ function normalizeProviderWindow(window: ProviderUsageWindowInput) {
   const windowMinutes = reportedWindowMinutes(window);
   const usedPercent = window.usedPercent ?? window.percentConsumed ?? (window.percentRemaining == null ? 0 : 100 - window.percentRemaining);
   return {
-    label: windowMinutes == null ? window.label?.trim() || window.name?.trim() || 'Provider window' : usageWindowDurationLabel(windowMinutes),
+    label: window.label?.trim() || (windowMinutes == null ? window.name?.trim() || 'Provider window' : usageWindowDurationLabel(windowMinutes)),
     usedPercent: Math.max(0, Math.min(100, usedPercent)),
     resetsAt: window.resetsAt ?? window.resetAt ?? null,
     windowMinutes

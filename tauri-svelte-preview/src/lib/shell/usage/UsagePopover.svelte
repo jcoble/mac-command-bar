@@ -19,8 +19,9 @@
   }
 
   function unavailableMessage(snapshot: ProviderUsageSnapshot | null): string {
-    if (snapshot?.provider === 'claude') return 'Live quota is not advertised by this provider.';
-    return snapshot?.unavailableReason ?? 'Live quota is unavailable locally.';
+    return snapshot?.unavailableReason ?? (snapshot?.provider === 'claude'
+      ? 'Live Claude quota is unavailable.'
+      : 'Live quota is unavailable locally.');
   }
 
   function toggleOpen(): void {

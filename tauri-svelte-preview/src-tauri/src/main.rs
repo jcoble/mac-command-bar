@@ -23,6 +23,7 @@ use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 mod agent_conversation;
 mod browser;
+mod claude_quota;
 mod debug_log;
 mod git_diff_models;
 mod git_pr;
@@ -34,6 +35,7 @@ mod usage_current;
 mod usage_db;
 mod usage_history;
 mod usage_indexer;
+mod usage_remote;
 mod usage_sources;
 mod workflow;
 
