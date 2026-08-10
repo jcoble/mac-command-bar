@@ -35,7 +35,11 @@ function titleCasePart(part: string): string {
  */
 export function modelLabel(model: string | null | undefined): string {
   if (!model) return 'Default';
-  const parts = model.trim().split(/[-_\s]+/).filter(Boolean);
+  const parts = model
+    .trim()
+    .split(/[-_\s]+/)
+    .flatMap((part) => part.split(/(?<=[a-z0-9])(?=[A-Z])/))
+    .filter(Boolean);
   if (parts.length === 0) return model;
   const withoutVendor =
     parts.length > 1 && VENDOR_PREFIXES.has(parts[0].toLowerCase()) ? parts.slice(1) : parts;
@@ -79,6 +83,26 @@ const APPROVAL_LABELS: Record<string, { label: string; description: string }> = 
   never: {
     label: 'Never ask',
     description: 'The agent runs everything itself. Nothing stops to wait for you.'
+  },
+  default: {
+    label: 'Default',
+    description: 'Standard behavior. The agent asks before anything dangerous.'
+  },
+  acceptedits: {
+    label: 'Accept Edits',
+    description: 'File edits are accepted automatically; other actions still ask.'
+  },
+  plan: {
+    label: 'Plan Mode',
+    description: 'Planning only. No tools actually run.'
+  },
+  dontask: {
+    label: "Don't Ask",
+    description: 'Never prompts. Anything not pre-approved is denied.'
+  },
+  bypasspermissions: {
+    label: 'Bypass Permissions',
+    description: 'Runs everything without permission checks.'
   }
 };
 
