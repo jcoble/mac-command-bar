@@ -130,9 +130,11 @@ impl AgentRuntimeManager {
     }
 
     pub fn set_emitter(&self, emitter: ConversationEmitter) {
-        if let Ok(mut current) = self.emitter.lock() {
-            *current = Some(emitter);
-        }
+        let mut current = self
+            .emitter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(emitter);
     }
 
     /// Snapshot the provider processes that this registry currently owns.
@@ -140,9 +142,10 @@ impl AgentRuntimeManager {
     /// resource refresh must never block an agent turn. A session that is in a
     /// transition simply appears on the next refresh.
     pub fn resource_roots(&self) -> Vec<AgentResourceRoot> {
-        let Ok(sessions) = self.sessions.lock() else {
-            return Vec::new();
-        };
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         sessions
             .values()
             .filter_map(|session| {
@@ -169,7 +172,7 @@ impl AgentRuntimeManager {
         let sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(current_session(&sessions, owned_id, generation)?
             .capabilities
             .clone())
@@ -219,7 +222,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(current) = sessions.get(&owned_id) {
             if current.provider == request.provider
                 && current.cwd == cwd
@@ -297,7 +300,7 @@ impl AgentRuntimeManager {
             let sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session(&sessions, owned_id, generation)?;
             if session.runtime.is_some() {
                 if session.connection.state == ConversationConnectionState::Connected
@@ -358,7 +361,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, owned_id, generation)?;
         session.capabilities = capabilities;
         session.native_session_id = Some(started.native_session_id.clone());
@@ -411,7 +414,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
             if session.active_turn_id.is_some() {
                 return Err("The structured session already has an active turn".to_string());
@@ -475,7 +478,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
             if session.active_turn_id.is_some() {
                 return Err(
@@ -492,10 +495,12 @@ impl AgentRuntimeManager {
             session.prompt_once_active = true;
         }
         let result = runtime.lock().await.prompt_once(input).await;
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
-                session.prompt_once_active = false;
-            }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+            session.prompt_once_active = false;
         }
         result.map_err(|error| error.to_string())
     }
@@ -513,7 +518,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, &owned_id, generation)?;
             let ordered_events = session
                 .ordered_events
@@ -542,19 +547,23 @@ impl AgentRuntimeManager {
         } {
             Ok(response) => response,
             Err(error) => {
-                if let Ok(mut sessions) = self.sessions.lock() {
-                    if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
-                        session.permission_requests.insert(request_id, pending);
-                    }
+                let mut sessions = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
+                    session.permission_requests.insert(request_id, pending);
                 }
                 return Err(error);
             }
         };
         if let Err(error) = transport.respond(pending.wire_id.clone(), response).await {
-            if let Ok(mut sessions) = self.sessions.lock() {
-                if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
-                    session.permission_requests.insert(request_id, pending);
-                }
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
+                session.permission_requests.insert(request_id, pending);
             }
             return Err(error.to_string());
         }
@@ -579,7 +588,7 @@ impl AgentRuntimeManager {
             let sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session(&sessions, owned_id, generation)?;
             let option = session
                 .capabilities
@@ -601,7 +610,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, owned_id, generation)?;
         super::capabilities::replace_config_options(
             &mut session.capabilities,
@@ -617,7 +626,7 @@ impl AgentRuntimeManager {
         let sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         sessions
             .get(owned_id)
             .map(|session| session.config.clone())
@@ -637,7 +646,7 @@ impl AgentRuntimeManager {
             let sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session(&sessions, &request.owned_id, request.generation)?;
             validate_conversation_config_update(&session.config, &update)?;
             if update == AgentConversationConfigUpdate::default() {
@@ -654,7 +663,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         session.config = config.clone();
         session.connection.config = config.clone();
@@ -695,7 +704,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
             session.state = AgentRuntimeState::Interrupting;
             session
@@ -716,7 +725,7 @@ impl AgentRuntimeManager {
         let sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(sessions
             .get(owned_id)
             .map(|session| AgentConversationSnapshot {
@@ -731,7 +740,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(session) = sessions.get_mut(owned_id) else {
                 return Ok(false);
             };
@@ -751,7 +760,7 @@ impl AgentRuntimeManager {
         }
         self.sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(owned_id);
         Ok(true)
     }
@@ -763,7 +772,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         let expected = request
             .expected_owner
@@ -837,7 +846,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
             if session.owner != AgentExecutionOwner::TransitioningToTerminal {
                 return Err("Structured runtime is not in a terminal handoff".to_string());
@@ -852,7 +861,7 @@ impl AgentRuntimeManager {
             let mut sessions = self
                 .sessions
                 .lock()
-                .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
                 session.runtime = Some(runtime);
             }
@@ -868,7 +877,7 @@ impl AgentRuntimeManager {
         let sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session(&sessions, &request.owned_id, request.generation)?;
         let boundary = &request.history_boundary;
         if request.native_session_id != session.native_session_id {
@@ -903,7 +912,7 @@ impl AgentRuntimeManager {
         let sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session(&sessions, &request.owned_id, request.generation)?;
         if request.native_session_id != session.native_session_id {
             return Err("Handoff native session does not match the current session".to_string());
@@ -921,7 +930,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         let transition = session
             .writer_lease_transition
@@ -982,7 +991,7 @@ impl AgentRuntimeManager {
         let mut sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         let transition = session
             .writer_lease_transition
@@ -1018,7 +1027,7 @@ impl AgentRuntimeManager {
         let mut locks = self
             .activation_locks
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(locks
             .entry(owned_id.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
@@ -1033,7 +1042,7 @@ impl AgentRuntimeManager {
         let sessions = self
             .sessions
             .lock()
-            .map_err(|_| "Agent runtime manager is unavailable".to_string())?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session(&sessions, owned_id, generation)?;
         if session.owner != AgentExecutionOwner::Structured {
             return Err("The structured writer is not the current owner".to_string());
@@ -1051,7 +1060,7 @@ impl AgentRuntimeManager {
     ) -> Option<AgentWriterLeaseOwner> {
         self.sessions
             .lock()
-            .ok()?
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(owned_id)
             .map(|session| session.writer_lease.owner)
     }
@@ -1060,9 +1069,10 @@ impl AgentRuntimeManager {
 impl Drop for AgentRuntimeManager {
     fn drop(&mut self) {
         if Arc::strong_count(&self.sessions) == 1 {
-            if let Ok(mut sessions) = self.sessions.lock() {
-                sessions.clear();
-            }
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
         }
     }
 }
@@ -1151,9 +1161,19 @@ fn dispatch_event(
     emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
     event: &AgentConversationEvent,
 ) {
-    let callback = emitter.lock().ok().and_then(|current| current.clone());
+    let callback = emitter
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     if let Some(callback) = callback {
-        callback(event.clone());
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(event.clone())))
+            .is_err()
+        {
+            eprintln!(
+                "Agent conversation event emitter panicked; sequence {} remains available in the session snapshot",
+                event.sequence
+            );
+        }
     }
 }
 
@@ -1253,9 +1273,9 @@ async fn pump_inbound(
         };
         match inbound {
             AcpInbound::SessionUpdate(params) => {
-                let Ok(mut sessions) = sessions.lock() else {
-                    return;
-                };
+                let mut sessions = sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
@@ -1292,9 +1312,9 @@ async fn pump_inbound(
                 }
                 let summary = permission_summary(&params);
                 let options = permission_options(&params);
-                let Ok(mut sessions) = sessions.lock() else {
-                    return;
-                };
+                let mut sessions = sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
@@ -1325,9 +1345,9 @@ async fn pump_inbound(
                 }
             }
             AcpInbound::TransportClosed { reason } => {
-                let Ok(mut sessions) = sessions.lock() else {
-                    return;
-                };
+                let mut sessions = sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
@@ -1410,9 +1430,9 @@ async fn handle_ordered_session_event(
             state,
             summary,
         } => {
-            let Ok(mut sessions) = sessions.lock() else {
-                return false;
-            };
+            let mut sessions = sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
                 return false;
             };
@@ -1454,9 +1474,9 @@ async fn handle_ordered_session_event(
             // it emits the same terminal approval/turn events and this handler
             // returns without duplicating them.
             let pending_permissions = {
-                let Ok(mut sessions) = sessions.lock() else {
-                    return false;
-                };
+                let mut sessions = sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
                     return false;
                 };
@@ -3089,6 +3109,85 @@ mod tests {
         let mut sessions = manager.sessions.lock().unwrap();
         assert!(current_session_mut(&mut sessions, "owned-a", first.generation).is_err());
         drop(sessions);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_and_resource_listing_recover_after_sessions_mutex_is_poisoned() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let poisoned_sessions = Arc::clone(&manager.sessions);
+
+        let panic = std::thread::spawn(move || {
+            let _sessions = poisoned_sessions.lock().unwrap();
+            panic!("deliberately poison the agent sessions mutex");
+        })
+        .join();
+        assert!(panic.is_err());
+        assert!(manager.sessions.is_poisoned());
+
+        let connection = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-after-poison",
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .expect("ensure must recover the poisoned sessions map");
+        let snapshot = manager
+            .snapshot("owned-after-poison")
+            .expect("snapshot listing must recover the poisoned sessions map")
+            .expect("ensured session must be listed");
+
+        assert_eq!(snapshot.connection, connection);
+        assert!(manager.resource_roots().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn emitter_panic_is_contained_before_it_can_poison_sessions() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-emitter-panic",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        manager.set_emitter(Arc::new(|_| panic!("fixture emitter panic")));
+
+        {
+            let mut sessions = manager
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session =
+                current_session_mut(&mut sessions, "owned-emitter-panic", connection.generation)
+                    .unwrap();
+            record_payload_for_session_and_dispatch(
+                session,
+                &manager.emitter,
+                AgentConversationPayload::Error {
+                    code: "fixture".into(),
+                    message: "retained after emitter panic".into(),
+                    recoverable: true,
+                },
+            )
+            .unwrap();
+        }
+
+        assert!(!manager.sessions.is_poisoned());
+        assert_eq!(
+            manager
+                .snapshot("owned-emitter-panic")
+                .unwrap()
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

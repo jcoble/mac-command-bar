@@ -5356,7 +5356,31 @@ async fn read_usage_cost_inputs(
     .map_err(|error| format!("usage task failed: {error}"))?
 }
 
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let message = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| {
+                panic_info
+                    .payload()
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+            })
+            .unwrap_or("non-string panic payload");
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        eprintln!("panic in thread '{thread_name}': {message}\nForced backtrace:\n{backtrace}");
+        default_hook(panic_info);
+    }));
+}
+
 fn main() {
+    install_panic_hook();
     let agent_runtime = agent_conversation::manager::AgentRuntimeManager::new(
         agent_conversation::providers::ProviderRegistry::bundled_from_environment()
             .expect("packaged ACP adapter configuration is invalid"),

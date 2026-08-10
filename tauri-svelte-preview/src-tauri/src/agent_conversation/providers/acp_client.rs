@@ -524,7 +524,7 @@ impl AcpClient {
             .map_err(serialization_error)?;
         let one_shot_turn_id = format!("turn-{}", uuid::Uuid::new_v4());
         let mut params = params;
-        params["turnId"] = Value::String(one_shot_turn_id.clone());
+        insert_prompt_turn_id(&mut params, &one_shot_turn_id)?;
         let (mut updates, mut registration) = self
             .transport
             .register_prompt_updates(one_shot_turn_id.clone())?;
@@ -658,6 +658,19 @@ impl AcpClient {
             AgentRuntimeError::new("session-not-started", "ACP session has not started")
         })
     }
+}
+
+fn insert_prompt_turn_id(params: &mut Value, turn_id: &str) -> Result<(), AgentRuntimeError> {
+    params
+        .as_object_mut()
+        .ok_or_else(|| {
+            AgentRuntimeError::new(
+                "serialization",
+                "ACP prompt request did not serialize to an object",
+            )
+        })?
+        .insert("turnId".to_string(), Value::String(turn_id.to_string()));
+    Ok(())
 }
 
 fn extract_text_value(value: &Value) -> Option<String> {
@@ -921,6 +934,16 @@ done"#,
         let root = std::env::temp_dir().join(format!("mcb-fake-acp-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn prompt_turn_id_insertion_rejects_non_object_params() {
+        let mut params = Value::Null;
+
+        let error = insert_prompt_turn_id(&mut params, "turn-1").unwrap_err();
+
+        assert_eq!(error.code, "serialization");
+        assert_eq!(params, Value::Null);
     }
 
     #[tokio::test(flavor = "current_thread")]
