@@ -192,6 +192,13 @@ export type NewSessionRequest = {
   command: string | null;
 };
 
+/** Whether this request belongs to the structured conversation runtime. */
+export function startsStructuredSession(
+  request: Pick<NewSessionRequest, 'agent'> | null
+): request is Pick<NewSessionRequest, 'agent'> & { agent: 'codex' | 'claude' } {
+  return request?.agent === 'codex' || request?.agent === 'claude';
+}
+
 /**
  * The draft turned into the request, or `null` when the draft is not startable.
  *

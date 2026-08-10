@@ -133,7 +133,10 @@
   } from '$lib/shell/layout/frame';
   import type { CenterDockSnapshot } from '$lib/shell/layout/centerDock';
   import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
-  import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
+  import {
+    startsStructuredSession,
+    type NewSessionRequest
+  } from '$lib/shell/newSession/newSessionFlow';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import {
     adoptAgentSession,
@@ -971,7 +974,10 @@
     setScrollTop(snapshot.scrollTop);
   }
 
-  async function selectOwned(ownedId: string): Promise<void> {
+  async function selectOwned(
+    ownedId: string,
+    propagateStructuredFailure = false
+  ): Promise<void> {
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
     const selected = rail.owned.find((session) => session.ownedId === ownedId);
@@ -1025,15 +1031,17 @@
       setConversationMode(ownedId, 'structured');
       if (activation.kind === 'view') return;
 
-      void ensureStructuredConversation({
+      const structuredActivation = ensureStructuredConversation({
         ownedId,
         provider,
         cwd: selected.cwd,
         nativeSessionId: selected.nativeSessionId,
         nativeSessionMode: activation.nativeSessionMode
-      }).then(() => {
+      });
+      const connected = (): void => {
         updateOwnedSession(ownedId, { lastError: null });
-      }).catch((error) => {
+      };
+      const failed = (error: unknown): void => {
         const message = describeError(error);
         updateOwnedSession(ownedId, { lastError: message });
         if (activation.nativeSessionMode === 'load') {
@@ -1042,7 +1050,18 @@
         } else {
           rail.error = `could not open structured ${provider}: ${message}`;
         }
-      });
+      };
+      if (!propagateStructuredFailure) {
+        void structuredActivation.then(connected).catch(failed);
+        return;
+      }
+      try {
+        await structuredActivation;
+        connected();
+      } catch (error) {
+        failed(error);
+        throw error;
+      }
     }
   }
 
@@ -1172,44 +1191,51 @@
   async function startNewSession(request: NewSessionRequest): Promise<void> {
     console.warn('mcb next: startNewSession', { agent: request.agent, cwd: request.cwd, disposed });
     if (disposed) return;
-    const startsStructured = request.agent === 'codex' || request.agent === 'claude';
-    if (!startsStructured && !service) {
+    if (!startsStructuredSession(request) && !service) {
       throw new Error('The terminal service is not ready yet.');
     }
     const owned = {
       ...createFreshSession({ cwd: request.cwd, title: request.title }),
       agent: request.agent,
       resumeCommand: request.command,
-      origin: startsStructured ? ('app' as const) : ('external' as const)
+      origin: startsStructuredSession(request) ? ('app' as const) : ('external' as const)
     };
     addOwnedSession(owned);
     if (owned.origin === 'app') {
-      updateOwnedSession(owned.ownedId, { state: 'live' });
+      updateOwnedSession(owned.ownedId, {
+        state: 'live',
+        executionOwner: 'structured',
+        runtimeState: 'starting',
+        lastError: null
+      });
+      frameControls?.showCenterPanel('session');
       try {
-        await ensureStructuredConversation({
-          ownedId: owned.ownedId,
-          provider: owned.agent as AgentConversationProvider,
-          cwd: owned.cwd
-        });
+        await selectOwned(owned.ownedId, true);
+        updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
       } catch (error) {
         console.warn('mcb next: startNewSession failed', describeError(error));
-        updateOwnedSession(owned.ownedId, { state: 'exited', lastError: describeError(error) });
+        updateOwnedSession(owned.ownedId, {
+          state: 'exited',
+          executionOwner: 'stopped',
+          runtimeState: 'failed',
+          lastError: describeError(error)
+        });
         rail.error = `could not start ${owned.agent} session: ${describeError(error)}`;
-        return;
       }
-    } else {
-      const terminalService = service;
-      if (!terminalService) throw new Error('The terminal service is not ready yet.');
-      const host = await hostFor(owned.ownedId);
-      if (!host) { rail.error = `no terminal host for "${owned.title}"`; return; }
-      const ptySessionId = await terminalService.startOwned(owned, host);
-      if (!ptySessionId) {
-        updateOwnedSession(owned.ownedId, { state: 'exited' });
-        rail.error = `failed to start a terminal for "${owned.title}"`;
-        return;
-      }
-      updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
+      return;
     }
+
+    const terminalService = service;
+    if (!terminalService) throw new Error('The terminal service is not ready yet.');
+    const host = await hostFor(owned.ownedId);
+    if (!host) { rail.error = `no terminal host for "${owned.title}"`; return; }
+    const ptySessionId = await terminalService.startOwned(owned, host);
+    if (!ptySessionId) {
+      updateOwnedSession(owned.ownedId, { state: 'exited' });
+      rail.error = `failed to start a terminal for "${owned.title}"`;
+      return;
+    }
+    updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
     await selectOwned(owned.ownedId);
     frameControls?.showCenterPanel('session');
   }

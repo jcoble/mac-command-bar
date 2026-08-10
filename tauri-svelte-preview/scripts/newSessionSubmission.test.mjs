@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 
 import {
   buildNewSessionRequest,
-  selectLaunchAgent
+  selectLaunchAgent,
+  startsStructuredSession
 } from '../src/lib/shell/newSession/newSessionFlow.ts';
 
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
@@ -13,6 +14,10 @@ const dialog = readFileSync(
 );
 const host = readFileSync(
   new URL('../src/lib/shell/components/newSession/NewSessionHost.svelte', import.meta.url),
+  'utf8'
+);
+const sessionCard = readFileSync(
+  new URL('../src/lib/shell/components/sessions/SessionCard.svelte', import.meta.url),
   'utf8'
 );
 
@@ -28,6 +33,10 @@ const startNewSession = functionSource(
   'async function startNewSession(',
   'async function onStartStack('
 );
+const selectOwned = functionSource(
+  'async function selectOwned(',
+  'function handoffInput('
+);
 const restartOwned = functionSource(
   'async function restartOwned(',
   'async function closeTerminal('
@@ -36,17 +45,21 @@ const restartOwned = functionSource(
 // The same selection value must paint the card and build the submitted request.
 // This is the regression path captured by the native new-session proof: changing
 // the selected card may not leave the request on its initial value.
-{
-  const selection = selectLaunchAgent('codex');
+for (const agent of ['codex', 'claude']) {
+  const selection = selectLaunchAgent(agent);
   const request = buildNewSessionRequest({
     cwd: '/Users/me/dev/work/thing',
     title: '',
     ...selection
   });
 
-  assert.equal(selection.agent, 'codex');
-  assert.equal(request?.agent, 'codex');
-  assert.equal(request?.command, 'codex');
+  assert.deepEqual(request, {
+    cwd: '/Users/me/dev/work/thing',
+    title: `${agent === 'codex' ? 'Codex' : 'Claude'} in thing`,
+    agent,
+    command: agent
+  });
+  assert.equal(startsStructuredSession(request), true, `${agent} must start structured`);
 }
 
 assert.match(
@@ -82,8 +95,29 @@ assert.match(
 );
 assert.match(
   startNewSession,
-  /if \(!startsStructured && !service\)/,
+  /if \(!startsStructuredSession\(request\) && !service\)/,
   'only terminal launches require the terminal service'
+);
+assert.match(
+  startNewSession,
+  /origin: startsStructuredSession\(request\) \? \('app' as const\) : \('external' as const\)/,
+  'the same request predicate owns the persisted structured origin'
+);
+
+{
+  const structuredBranch = startNewSession.indexOf("if (owned.origin === 'app')");
+  const structuredSelect = startNewSession.indexOf('await selectOwned(owned.ownedId, true);', structuredBranch);
+  const structuredFailure = startNewSession.indexOf("state: 'exited'", structuredBranch);
+  assert.ok(structuredBranch >= 0 && structuredSelect >= 0 && structuredFailure >= 0);
+  assert.ok(
+    structuredSelect < structuredFailure,
+    'the new app-owned row must activate its structured surface before connection can reject'
+  );
+}
+assert.match(
+  selectOwned,
+  /const structuredActivation = ensureStructuredConversation\(\{[\s\S]*if \(!propagateStructuredFailure\)[\s\S]*await structuredActivation;[\s\S]*throw error;/,
+  'new-session activation must be able to await and propagate its structured connection failure'
 );
 
 assert.doesNotMatch(
@@ -111,6 +145,22 @@ assert.match(
   dialog,
   /console\.(?:debug|warn)\('mcb next: new-session submit'/,
   'new-session submit attempts must be visible in future frontend logs'
+);
+
+assert.match(
+  startNewSession,
+  /updateOwnedSession\(owned\.ownedId, \{[\s\S]*state: 'exited',[\s\S]*lastError: describeError\(error\)[\s\S]*\}\);/,
+  'a rejected structured start must retain its diagnostic on the session record'
+);
+assert.match(
+  sessionCard,
+  /presentAgentError\(session\.lastError\)/,
+  'session cards must humanize retained structured-start errors'
+);
+assert.match(
+  sessionCard,
+  /data-testid="session-card-error"[\s\S]*\{presentedError\.summary\}/,
+  'session cards must render the humanized structured-start error summary'
 );
 
 console.log('newSessionSubmission.test.mjs passed');
